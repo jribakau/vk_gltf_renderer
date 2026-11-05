@@ -85,7 +85,7 @@ struct Kernels
   VkDevice         device      = VK_NULL_HANDLE;
   VkCommandPool    commandPool = VK_NULL_HANDLE;
   VkPipelineLayout layout      = VK_NULL_HANDLE;
-  VkPipeline       integrate{}, edges{}, attach{}, recover{}, hold{}, collide{}, velocity{}, cluster{}, commit{};
+  VkPipeline       integrate{}, edges{}, attach{}, recover{}, hold{}, collide{}, velocity{}, cluster{}, commit{}, snap{};
 
   Kernels() = default;
   Kernels(const Kernels&)            = delete;
@@ -94,7 +94,7 @@ struct Kernels
   {
     if(!device)
       return;
-    for(VkPipeline p : {integrate, edges, attach, recover, hold, collide, velocity, cluster, commit})
+    for(VkPipeline p : {integrate, edges, attach, recover, hold, collide, velocity, cluster, commit, snap})
       if(p)
         vkDestroyPipeline(device, p, nullptr);
     if(layout)
@@ -137,7 +137,7 @@ struct Kernels
     };
     return pipe("integrateMain", integrate) && pipe("edgesMain", edges) && pipe("attachMain", attach) && pipe("recoverMain", recover)
            && pipe("holdMain", hold) && pipe("collideMain", collide) && pipe("velocityMain", velocity) && pipe("clusterMain", cluster)
-           && pipe("commitMain", commit);
+           && pipe("commitMain", commit) && pipe("snapMain", snap);
   }
 };
 
@@ -184,19 +184,26 @@ struct DforceGpu::Impl
   int                lengthColours = 0;
   // as the buffers take them, from prepare() until create()
   std::vector<shaderio::DforceEdge> sorted;
-  std::vector<shaderio::DforceTri>  faces;
+  std::vector<shaderio::DforceTri>  faces, clothFaces;
 
   VkPipelineLayout layout{};
-  VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{}, clusterPipe{}, commitPipe{};
+  VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{}, clusterPipe{}, commitPipe{},
+      snapPipe{};
 
   // the static faces' corners, three a face, and the grid made from them each frame (its buffers kept)
   std::vector<int32_t>     faceCorners;
   fv::physics::SweepGrid   grid;
+  // the cloth's own faces, when one can meet a vertex (another garment's, or its own with Self Collide):
+  // their corners, and their grid made each frame from where they were at its start
+  bool                     clothOn = false;
+  std::vector<int32_t>     clothCorners;
+  fv::physics::SweepGrid   clothGrid;
   // the model's buffers; `cells` and `items` grow with the grid
   nvvk::Buffer x, prev, vel, cprev, kinStart, kinEnd, kinematic, freeVerts, inv, dampRate, offset, friction, layer, collides, grav, edges,
       lam, tris, cells, items, softVerts, attAlpha, lamAtt, contact, modelBuf, readback, clusterEdgeBuf, clusterLamBuf, clusterVertBuf, clusterVertStartBuf,
-      clusterOwnedBuf, clusterColourBuf, clusterSoftBuf, clusterSoftStartBuf, xTwin;
-  size_t cellCapacity = 0, itemCapacity = 0;
+      clusterOwnedBuf, clusterColourBuf, clusterSoftBuf, clusterSoftStartBuf, xTwin, clothTris, clothCells, clothItems, meshOf, ring2Start, ring2,
+      frameStart, snap, cprevSnap;
+  size_t cellCapacity = 0, itemCapacity = 0, clothCellCapacity = 0, clothItemCapacity = 0;
   bool   gridFailed = false;
 
   // host copies: every position (the kinematic ones kept where the last frame ended them)
@@ -243,6 +250,10 @@ struct DforceGpu::Impl
   // ---- a frame
   void kinematicAt(float t, std::vector<float>& out);
   bool buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::DforceModel& m);
+  // a grid into its buffers, made larger when it outgrew them; false when they could not be made
+  bool uploadGrid(const fv::physics::SweepGrid& g, nvvk::Buffer& cellBuf, size_t& cellCap, nvvk::Buffer& itemBuf, size_t& itemCap);
+  // the cloth's faces where they are at the frame's start (xHost), into their grid and `m`
+  bool buildClothGrid(shaderio::DforceModel& m);
   // `steps` substeps in `seconds`; 0, 0: a frame of opts.frameDt in `substeps`
   void frame(float t0, float t1, float extraDamping, float seconds = 0, int steps = 0);
   // the cloth carried with the pose to fraction t of the sweep (DforceGpu::carry)
@@ -381,8 +392,38 @@ bool DforceGpu::Impl::prepare()
   for(int t : model.staticTris)
   {
     const Tri& tri = model.tris[size_t(t)];
-    faces.push_back({tri.a, tri.b, tri.c, tri.layer, tri.offset, tri.friction, 0.f, 0.f});
+    faces.push_back({tri.a, tri.b, tri.c, tri.layer, tri.offset, tri.friction, tri.mesh, tri.self ? 1 : 0});
     faceCorners.insert(faceCorners.end(), {tri.a, tri.b, tri.c});
+  }
+  // The cloth's faces, when any can meet a vertex of another garment (a petticoat under a skirt): off
+  // unless asked for (Options::clothCollide, or FV_DFORCE_GPU_DEBUG's bit 64), it isn't finished. A
+  // garment's own faces (Self Collide, bit 128 as well) tore the Kai Dress apart (887 ms a frame, 4,375
+  // vertices in the body) and worsened a stride in the She Is The Boss skirt; without them the BBR
+  // Skirt's walk stretched (99th centile 1.61 against 1.04 with none)
+  {
+    const bool           own = (debug & 128) != 0;
+    std::vector<uint8_t> movingMesh(meshes.size(), 0);
+    for(int i : model.freeVerts)
+      if(model.collides[size_t(i)])
+        movingMesh[size_t(model.meshOf[size_t(i)])] = 1;
+    bool canMeet = false;
+    for(int t : model.dynamicTris)
+    {
+      const Tri& tri = model.tris[size_t(t)];
+      for(size_t mi = 0; mi < meshes.size() && !canMeet; mi++)
+        canMeet = movingMesh[mi] && (int(mi) != tri.mesh || (own && tri.self));
+      if(canMeet)
+        break;
+    }
+    clothOn = canMeet && (gpu.clothCollide || (debug & 64));
+    if(clothOn)
+      for(int t : model.dynamicTris)
+      {
+        const Tri& tri = model.tris[size_t(t)];
+        clothFaces.push_back({tri.a, tri.b, tri.c, tri.layer, tri.offset, tri.friction, tri.mesh, own && tri.self ? 1 : 0});
+        clothCorners.insert(clothCorners.end(), {tri.a, tri.b, tri.c});
+      }
+    stats.clothFaces = clothFaces.size();
   }
 
   // the start: the rest shape, with what overlaps the body moved out of it, as the CPU solver starts
@@ -470,6 +511,16 @@ bool DforceGpu::Impl::create()
     ok &= mapped(clusterSoftStartBuf, clusters.softStart);
     ok &= mapped(xTwin, xHost);
   }
+  if(clothOn)
+  {
+    ok &= mapped(clothTris, clothFaces);
+    ok &= mapped(meshOf, model.meshOf);
+    ok &= mapped(ring2Start, model.ring2Start);
+    ok &= mapped(ring2, model.ring2.empty() ? std::vector<int>{-1} : model.ring2);
+    ok &= mapped(frameStart, xHost);
+    ok &= mapped(snap, xHost);
+    ok &= mapped(cprevSnap, xHost);
+  }
   ok &= mappedBytes(modelBuf, nullptr, sizeof(shaderio::DforceModel), VMA_MEMORY_USAGE_CPU_TO_GPU);
   ok &= mappedBytes(readback, nullptr, n * 3 * sizeof(float), VMA_MEMORY_USAGE_GPU_TO_CPU);
   if(!ok)
@@ -494,6 +545,7 @@ bool DforceGpu::Impl::create()
   velocityPipe  = kernels->velocity;
   clusterPipe   = kernels->cluster;
   commitPipe    = kernels->commit;
+  snapPipe      = kernels->snap;
   if(gpu.timestamps)
   {
     VkPhysicalDeviceProperties props{};
@@ -510,8 +562,11 @@ bool DforceGpu::Impl::create()
   if(clusters.count())
     LOGI("dForce GPU: %d clusters of up to %d vertices, %d colours each, %zu rows held by two\n", clusters.count(), clusters.mostLocal,
          clusters.colours(), clusters.haloRows);
-  sorted = {};
-  faces  = {};
+  if(clothOn)
+    LOGI("dForce GPU: the cloth meets %zu of its own faces\n", clothFaces.size());
+  sorted     = {};
+  faces      = {};
+  clothFaces = {};
   return true;
 }
 
@@ -562,13 +617,14 @@ void DforceGpu::Impl::destroy()
   // the kernels' handles are theirs: they go with the last simulation that holds them
   commandPool = VK_NULL_HANDLE;
   layout      = VK_NULL_HANDLE;
-  for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe, &clusterPipe, &commitPipe})
+  for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe, &clusterPipe, &commitPipe, &snapPipe})
     *p = VK_NULL_HANDLE;
   kernels.reset();
   for(nvvk::Buffer* b : {&x, &prev, &vel, &cprev, &kinStart, &kinEnd, &kinematic, &freeVerts, &inv, &dampRate, &offset, &friction, &layer,
                          &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &contact, &modelBuf, &readback,
                          &clusterEdgeBuf, &clusterLamBuf, &clusterVertBuf, &clusterVertStartBuf, &clusterOwnedBuf, &clusterColourBuf, &clusterSoftBuf,
-                         &clusterSoftStartBuf, &xTwin})
+                         &clusterSoftStartBuf, &xTwin, &clothTris, &clothCells, &clothItems, &meshOf, &ring2Start, &ring2, &frameStart, &snap,
+                         &cprevSnap})
     if(b->buffer != VK_NULL_HANDLE)
       alloc->destroyBuffer(*b);
 }
@@ -611,21 +667,7 @@ bool DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vect
   stats.gridEntries += grid.entries;
   stats.gridSlots += grid.cells.size();
   const auto copyStart = std::chrono::steady_clock::now();
-  bool       ok        = true;
-  if(grid.cells.size() > cellCapacity)
-  {
-    ok           = mapped(cells, grid.cells);
-    cellCapacity = ok ? grid.cells.size() : 0;
-  }
-  else
-    std::memcpy(cells.mapping, grid.cells.data(), grid.cells.size() * sizeof(fv::physics::SweepCell));
-  if(ok && grid.items.size() > itemCapacity)
-  {
-    ok           = mapped(items, grid.items);
-    itemCapacity = ok ? grid.items.size() : 0;
-  }
-  else if(ok)
-    std::memcpy(items.mapping, grid.items.data(), grid.items.size() * sizeof(int32_t));
+  const bool ok        = uploadGrid(grid, cells, cellCapacity, items, itemCapacity);
   stats.gridCopyMs += msSince(copyStart);
   if(!ok)
     return false;
@@ -633,6 +675,41 @@ bool DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vect
   m.items    = reinterpret_cast<int*>(items.address);
   m.cellMask = grid.mask();
   return true;
+}
+
+bool DforceGpu::Impl::uploadGrid(const fv::physics::SweepGrid& g, nvvk::Buffer& cellBuf, size_t& cellCap, nvvk::Buffer& itemBuf, size_t& itemCap)
+{
+  bool ok = true;
+  if(g.cells.size() > cellCap)
+  {
+    ok      = mapped(cellBuf, g.cells);
+    cellCap = ok ? g.cells.size() : 0;
+  }
+  else
+    std::memcpy(cellBuf.mapping, g.cells.data(), g.cells.size() * sizeof(fv::physics::SweepCell));
+  if(ok && g.items.size() > itemCap)
+  {
+    ok      = mapped(itemBuf, g.items);
+    itemCap = ok ? g.items.size() : 0;
+  }
+  else if(ok)
+    std::memcpy(itemBuf.mapping, g.items.data(), g.items.size() * sizeof(int32_t));
+  return ok;
+}
+
+bool DforceGpu::Impl::buildClothGrid(shaderio::DforceModel& m)
+{
+  const auto start = std::chrono::steady_clock::now();
+  std::memcpy(frameStart.mapping, xHost.data(), xHost.size() * sizeof(float));
+  fv::physics::buildSweepGrid(clothCorners, xHost.data(), xHost.data(), kCell, clothGrid);
+  const bool ok = uploadGrid(clothGrid, clothCells, clothCellCapacity, clothItems, clothItemCapacity);
+  m.clothCells    = reinterpret_cast<shaderio::DforceCell*>(clothCells.address);
+  m.clothItems    = reinterpret_cast<int*>(clothItems.address);
+  m.clothCellMask = clothGrid.mask();
+  m.numClothTris  = ok ? uint32_t(clothCorners.size() / 3) : 0;
+  stats.clothGridMs += msSince(start);
+  fv::timing::accumulate("dforceGpu: a frame's cloth grid on the host", msSince(start));
+  return ok;
 }
 
 void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds, int stepCount)
@@ -712,6 +789,16 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       m.clusterStretch     = uint32_t(clusters.stretchColours);
       m.clusterReach       = uint32_t(clusters.reachColours);
     }
+    if(clothOn)
+    {
+      m.clothTris  = reinterpret_cast<shaderio::DforceTri*>(clothTris.address);
+      m.meshOf     = reinterpret_cast<int*>(meshOf.address);
+      m.ring2Start = reinterpret_cast<int*>(ring2Start.address);
+      m.ring2      = reinterpret_cast<int*>(ring2.address);
+      m.frameStart = reinterpret_cast<glm::vec3*>(frameStart.address);
+      m.snap       = reinterpret_cast<glm::vec3*>(snap.address);
+      m.cprevSnap  = reinterpret_cast<glm::vec3*>(cprevSnap.address);
+    }
     const auto gridStart = std::chrono::steady_clock::now();
     const bool grid      = !model.staticTris.empty() && buildGrid(start, end, m);
     stats.gridMs += msSince(gridStart);
@@ -725,6 +812,16 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       m.items    = nullptr;
       m.cellMask = 0;
       m.numTris  = 0;
+    }
+    std::memcpy(modelBuf.mapping, &m, sizeof(m));
+  }
+  // the cloth's faces where the cloth is now, every frame: it moves while the pose holds
+  if(clothOn)
+  {
+    if(!buildClothGrid(m) && !gridFailed)
+    {
+      LOGE("dForce GPU: the cloth's grid could not be made; it doesn't meet itself\n");
+      gridFailed = true;
     }
     std::memcpy(modelBuf.mapping, &m, sizeof(m));
   }
@@ -865,9 +962,18 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     for(int it = 0; it < opts.stretchSweeps; it++)
       sweep(true);
     hold(true);
-    if(s == next && m.numTris > 0)
+    if(s == next && (m.numTris > 0 || m.numClothTris > 0))
     {
       timed(0, [&] {
+        // the cloth's faces as the pass begins, so a vertex reads them as they are, not as far as
+        // another has got
+        if(m.numClothTris > 0)
+        {
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, snapPipe);
+          vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+          dispatch(cmd, groups(m.nv), 1, 1);
+          barrier();
+        }
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, collidePipe);
         vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
         dispatch(cmd, groups(m.numFree), 1, 1);
@@ -981,6 +1087,7 @@ DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, st
       m_impl->queue = {};
     if(bits & 32)
       m_impl->gpu.timestamps = true;
+    // 64: the cloth meets other garments' faces, 128 its own too (unfinished; read in prepare)
   }
   if(alloc && app)
     m_prepared = fv::jobs::pool().submit([impl = m_impl] { return impl->prepare(); });

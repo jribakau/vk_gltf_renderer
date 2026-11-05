@@ -1,0 +1,34 @@
+{
+  "about": "Cloth against cloth for the GPU cloth bench (physics-plan step 13d): Meshitup's BBR Skirt on HID Kelly (Genesis 8), a plaid skirt over a lace petticoat on one collision layer, standing and in a walk's pose (Mocap Online's Walk 01 Relaxed IP, held where the file leaves it), at the file's strength and fully cloth (Keep shape at 0, strength 2), each settled on the CPU island and written as a job (_out/jobs/<case>.job) for src/tools/fv_cloth_bench.cpp to replay. The bench's `wrongSide` counts each garment's vertices that ended on the other side of the other. Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {
+      "load": "People/Genesis 8 Female/Characters/HID Kelly.duf"
+    },
+    {
+      "wear": "People/Genesis 8 Female/Clothing/Meshitup/BBR/BBR Skirt.duf"
+    },
+    {
+      "dforce": "bbr_standing",
+      "job": "_out/jobs/bbr_standing.job"
+    },
+    {
+      "preset": "People/Genesis 8 Female/Poses/Mocap Online/Walks Animation/Walk 01 Relaxed IP Victoria 8.duf"
+    },
+    {
+      "dforce": "bbr_walking",
+      "job": "_out/jobs/bbr_walking.job"
+    },
+    {
+      "cloth": {
+        "item": "BBR Skirt",
+        "on": true,
+        "strength": 2.0
+      }
+    },
+    {
+      "dforce": "bbr_walking_loose",
+      "job": "_out/jobs/bbr_walking_loose.job"
+    }
+  ]
+}

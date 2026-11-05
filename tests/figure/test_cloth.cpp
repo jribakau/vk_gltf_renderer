@@ -20,6 +20,7 @@
 #include <figure/physics/cloth/clusters.hpp>
 #include <figure/physics/cloth/island.hpp>
 #include <figure/physics/cloth/job.hpp>
+#include <figure/physics/cloth/report.hpp>
 #include <figure/physics/collide/tri_grid.hpp>
 #include <figure/physics/collide/sweep_grid.hpp>
 
@@ -531,6 +532,36 @@ Soup soup(int faces, float spread, float move, unsigned seed)
     }
   }
   return s;
+}
+
+TEST(ClothReport, aGarmentPushedThroughAnotherIsCountedOnTheWrongSide)
+{
+  // two sheets 1 cm apart, the upper one's vertices on the outside (up) of the lower; at the end the
+  // upper sheet's middle row has gone 0.5 cm under the lower
+  const auto sheet = [](float y) {
+    Surface s;
+    for(int z = 0; z <= 4; z++)
+      for(int x = 0; x <= 4; x++)
+        s.rest.insert(s.rest.end(), {float(x), y, float(z)});
+    for(int z = 0; z < 4; z++)
+      for(int x = 0; x < 4; x++)
+      {
+        const uint32_t a = uint32_t(z * 5 + x), b = a + 1, c = a + 5, d = a + 6;
+        // wound so the normal points up
+        s.tris.insert(s.tris.end(), {a, c, b, b, c, d});
+      }
+    s.posed = s.rest;
+    return s;
+  };
+  const Surface lower = sheet(0), upper = sheet(1);
+  std::vector<float>   upperOut = upper.rest;
+  for(int x = 0; x <= 4; x++)
+    upperOut[size_t(2 * 5 + x) * 3 + 1] = -0.5f;
+  EXPECT_EQ(physics::cloth::wrongSide(upper, upper.rest, lower, lower.rest), 0u);
+  EXPECT_EQ(physics::cloth::wrongSide(upper, upperOut, lower, lower.rest), 5u);
+  // and from the lower's side: none of its vertices moved, but now the upper sheet's middle lies under
+  // them, which the closest faces show as a side changed for the vertices it passed
+  EXPECT_GT(physics::cloth::wrongSide(lower, lower.rest, upper, upperOut), 0u);
 }
 
 TEST(SweepGrid, theGridHoldsTheReferencesCellsFrameAfterFrame)

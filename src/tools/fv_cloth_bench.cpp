@@ -130,6 +130,10 @@ Json judge(const cloth::Job& job, const cloth::Model& model, const std::vector<s
     for(size_t v = 1; v < out[size_t(slot)].size(); v += 3)
       top = std::max(top, out[size_t(slot)][v]);
     j["topY"] = r4(top);
+    // through another garment: its vertices on the other side of each other drape than they were made
+    for(const auto& [other, otherName] : job.drapes)
+      if(other != slot)
+        j["wrongSide"][otherName] = cloth::wrongSide(mesh, out[size_t(slot)], job.surfaces[size_t(other)], out[size_t(other)]);
     // its bits, so two runs can be told the same or not
     uint64_t h = 1469598103934665603ull;
     for(const float f : out[size_t(slot)])
@@ -427,6 +431,8 @@ int main(int argc, char** argv)
                                {"gridCopyMsPerFrame", r4(s.gridCopyMs / std::max(1, s.frames))},
                                {"gridEntriesPerFrame", r4(double(s.gridEntries) / std::max(1, s.frames))},
                                {"gridSlotsPerFrame", r4(double(s.gridSlots) / std::max(1, s.frames))},
+                               {"clothFaces", s.clothFaces},
+                               {"clothGridMsPerFrame", r4(s.clothGridMs / std::max(1, s.frames))},
                                {"dispatchesPerFrame", r4(double(s.dispatches) / std::max(1, s.frames))},
                                {"dispatchesPerSubstep", r4(double(s.dispatches) / std::max(1, s.frames * std::max(1, s.substeps)))},
                                {"rows", s.rows}};

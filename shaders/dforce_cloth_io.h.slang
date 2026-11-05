@@ -49,7 +49,9 @@ struct DforceEdge
 struct DforceTri
 {
   int   a, b, c, layer;
-  float offset, friction, pad0, pad1;
+  float offset, friction;
+  int   mesh;  // a cloth face's mesh, and whether its own vertices meet it (Self Collide)
+  int   self;
 };
 
 // A cell of the collision grid, open-addressed by the hash of its coordinates: `start` is -1 while
@@ -79,9 +81,24 @@ struct DforceModel
   float3* grav;
   DforceEdge* edges;  // sorted by colour; no two edges of a colour share a vertex
   float*      lam;
-  DforceTri*  tris;  // the faces the pose moves (the body); the cloth's own faces are not collided with here
+  DforceTri*  tris;  // the faces the pose moves (the body)
   DforceCell* cells;
   int*        items;
+  // The cloth's own faces: a garment meets another's (and its own with Self Collide, `self`, which the host
+  // leaves off for now; not those around a vertex: ring2, its stretch neighbours and theirs, sorted, from
+  // ring2Start). Their grid is made from
+  // where they were at the frame's start (`frameStart`, every vertex); a collision pass reads them from
+  // `snap` and `cprevSnap`, the positions and the last pass's as the pass began, so what one vertex
+  // finds doesn't hang on how far the others have got
+  DforceTri*  clothTris;
+  DforceCell* clothCells;
+  int*        clothItems;
+  int*        meshOf;
+  int*        ring2Start;
+  int*        ring2;
+  float3*     frameStart;
+  float3*     snap;
+  float3*     cprevSnap;
   int*        softVerts;  // the free vertices of partial strength, tethered to where the pose would put them
   float*      attAlpha;   // each one's tether compliance, by vertex index (0 for the rest)
   float*      lamAtt;     // and its multiplier, by soft index
@@ -100,6 +117,7 @@ struct DforceModel
   uint2*      clusterSoft;
   int*        clusterSoftStart;
   uint        nv, numKinematic, numFree, numEdges, numTris, cellMask, numSoft, numClusterEdges;
+  uint        numClothTris, clothCellMask, pad0, pad1;
   uint        numClusters, clusterColours, clusterStretch, clusterReach;
   float       cellSize, depth, cap, maxSpeed, searchReach, recoverDepth;
 };

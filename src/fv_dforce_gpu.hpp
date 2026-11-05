@@ -90,6 +90,11 @@ public:
       eColoured,
     } crossing = Crossing::eHalo;
     bool timestamps   = false;  // time each frame on the GPU (stats().gpuMs)
+    // a garment meets another garment's faces, as on the CPU. Off: unfinished (physics-plan step 13d). On
+    // the BBR Skirt standing it keeps the petticoat inside the plaid, but in a walk it stretches both,
+    // and a garment meeting its own faces (Self Collide) tore the Kai Dress apart. FV_DFORCE_GPU_DEBUG's
+    // bit 64 turns it on, 128 with a garment's own faces
+    bool clothCollide = false;
   };
   // What it has done so far.
   struct Stats
@@ -102,6 +107,10 @@ public:
     // the copy into its buffers), with its entries (a face once per cell its sweep meets) and slots
     double skinMs = 0, gridMs = 0, gridCopyMs = 0;
     size_t gridEntries = 0, gridSlots = 0;
+    // the cloth's own faces that collide (0: none can meet a vertex that may meet them), and their grid
+    // on the host each frame
+    size_t clothFaces = 0;
+    double clothGridMs = 0;
     // the cluster solve's shape (0 without it): clusters, colours a cluster runs, the rows that cross
     // and their colours
     int    clusters = 0, clusterColours = 0, crossingColours = 0, substeps = 0, mostLocal = 0;
