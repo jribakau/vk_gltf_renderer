@@ -14,12 +14,14 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <random>
 
 #include <figure/dforce/solver.hpp>
 #include <figure/physics/cloth/clusters.hpp>
 #include <figure/physics/cloth/island.hpp>
 #include <figure/physics/cloth/job.hpp>
 #include <figure/physics/collide/tri_grid.hpp>
+#include <figure/physics/collide/sweep_grid.hpp>
 
 namespace {
 
@@ -499,4 +501,120 @@ TEST(ClothSurface, sameButPoseLooksPastThePoseAlone)
   EXPECT_STREQ(physics::cloth::poseFreeDifference(a, cloth, true), "rest");
   dented.rest.pop_back();
   EXPECT_NE(physics::cloth::poseFreeDifference(body, dented, true), nullptr) << "another size is another mesh";
+}
+
+// A soup of `faces` faces, 0.5 to 3 cm across, in a box `spread` cm wide, and the same moved by up to `move`
+// cm a corner: a frame of the GPU solver's sweep.
+struct Soup
+{
+  std::vector<int32_t> corners;
+  std::vector<float>   start, end;
+};
+
+Soup soup(int faces, float spread, float move, unsigned seed)
+{
+  std::mt19937                          rng(seed);
+  std::uniform_real_distribution<float> at(-spread / 2, spread / 2), size(0.5f, 3.f), jitter(-1.f, 1.f);
+  Soup                                  s;
+  for(int f = 0; f < faces; f++)
+  {
+    const float cx = at(rng), cy = at(rng), cz = at(rng), r = size(rng);
+    for(int k = 0; k < 3; k++)
+    {
+      s.corners.push_back(int32_t(s.start.size() / 3));
+      const float p[3] = {cx + r * jitter(rng), cy + r * jitter(rng), cz + r * jitter(rng)};
+      for(int c = 0; c < 3; c++)
+      {
+        s.start.push_back(p[c]);
+        s.end.push_back(p[c] + move * jitter(rng));
+      }
+    }
+  }
+  return s;
+}
+
+TEST(SweepGrid, theGridHoldsTheReferencesCellsFrameAfterFrame)
+{
+  // the table sized by the cells met (an eighth full at most, grown in the middle of a frame when it
+  // fills) holds the same cells with the same faces in the same order as the reference's, sized by the
+  // entries: the GPU's nearest-face search finds the same faces in it, ties included
+  physics::SweepGrid grid, ref;
+  const struct
+  {
+    int   faces;
+    float spread, move;
+  } frames[] = {{400, 20, 0.5f}, {400, 20, 0.5f}, {3000, 60, 1}, {3000, 60, 4}, {200, 10, 0}, {6000, 120, 2}, {8000, 16, 0.5f}};
+  unsigned seed = 1;
+  for(const auto& f : frames)
+  {
+    const Soup s = soup(f.faces, f.spread, f.move, seed++);
+    physics::buildSweepGrid(s.corners, s.start.data(), s.end.data(), 2.f, grid);
+    physics::buildSweepGridReference(s.corners, s.start.data(), s.end.data(), 2.f, ref);
+    EXPECT_TRUE(physics::sameSweepGrids(ref, grid)) << f.faces << " faces";
+    EXPECT_EQ(grid.entries, ref.entries);
+    // an eighth full at most, or the reference's size (half full at most) when the cells are nearly
+    // as many as the entries
+    EXPECT_TRUE(grid.used * 8 <= grid.cells.size() || grid.cells.size() == ref.cells.size()) << f.faces << " faces";
+    EXPECT_LE(grid.cells.size(), ref.cells.size());
+  }
+  // a body's faces share cells: 8,000 in a 16 cm box want a table smaller than their entries do, from
+  // the frame after (a frame starts at the size the last one needed)
+  physics::SweepGrid dense;
+  for(unsigned frame = 0; frame < 2; frame++)
+  {
+    const Soup s = soup(8000, 16, 0.5f, 100 + frame);
+    physics::buildSweepGrid(s.corners, s.start.data(), s.end.data(), 2.f, dense);
+    physics::buildSweepGridReference(s.corners, s.start.data(), s.end.data(), 2.f, ref);
+    EXPECT_TRUE(physics::sameSweepGrids(ref, dense));
+  }
+  EXPECT_LE(dense.used * 8, dense.cells.size());
+  EXPECT_LT(dense.cells.size() * 4, ref.cells.size());
+}
+
+TEST(SweepGrid, everyFaceIsInEveryCellItsSweepMeetsInAscendingOrder)
+{
+  const Soup         s = soup(300, 16, 1.5f, 7);
+  physics::SweepGrid grid;
+  physics::buildSweepGrid(s.corners, s.start.data(), s.end.data(), 2.f, grid);
+  // every cell's run ascends
+  size_t listed = 0;
+  for(const physics::SweepCell& c : grid.cells)
+    if(c.start >= 0)
+    {
+      listed += size_t(c.count);
+      EXPECT_TRUE(std::is_sorted(grid.items.begin() + c.start, grid.items.begin() + c.start + c.count));
+    }
+  EXPECT_EQ(listed, grid.entries);
+  // and each face is found in each cell its swept box meets, as the kernels look a cell up
+  const auto lookup = [&](int x, int y, int z) -> const physics::SweepCell* {
+    const uint32_t mask = grid.mask();
+    for(uint32_t probe = 0, at = physics::sweepCellHash(x, y, z) & mask; probe <= mask; probe++)
+    {
+      const physics::SweepCell& e = grid.cells[(at + probe) & mask];
+      if(e.start < 0)
+        return nullptr;
+      if(e.x == x && e.y == y && e.z == z)
+        return &e;
+    }
+    return nullptr;
+  };
+  for(size_t f = 0; f < s.corners.size() / 3; f++)
+  {
+    float lo[3] = {INFINITY, INFINITY, INFINITY}, hi[3] = {-INFINITY, -INFINITY, -INFINITY};
+    for(int k = 0; k < 3; k++)
+      for(int c = 0; c < 3; c++)
+        for(const std::vector<float>* p : {&s.start, &s.end})
+        {
+          lo[c] = std::min(lo[c], (*p)[size_t(s.corners[f * 3 + size_t(k)]) * 3 + c]);
+          hi[c] = std::max(hi[c], (*p)[size_t(s.corners[f * 3 + size_t(k)]) * 3 + c]);
+        }
+    for(int x = int(std::floor(lo[0] / 2)); x <= int(std::floor(hi[0] / 2)); x++)
+      for(int y = int(std::floor(lo[1] / 2)); y <= int(std::floor(hi[1] / 2)); y++)
+        for(int z = int(std::floor(lo[2] / 2)); z <= int(std::floor(hi[2] / 2)); z++)
+        {
+          const physics::SweepCell* c = lookup(x, y, z);
+          ASSERT_NE(c, nullptr);
+          EXPECT_TRUE(std::binary_search(grid.items.begin() + c->start, grid.items.begin() + c->start + c->count, int32_t(f)));
+        }
+  }
 }

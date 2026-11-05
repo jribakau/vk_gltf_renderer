@@ -98,8 +98,10 @@ public:
     double gpuMs = 0, waitMs = 0;
     // of gpuMs: the collision passes and the frame's recovery, and the holds on faces
     double collideMs = 0, holdMs = 0;
-    // on the host, each frame: the kinematic vertices skinned, and the collision grid built
-    double skinMs = 0, gridMs = 0;
+    // on the host, each frame: the kinematic vertices skinned, and the collision grid built (of which
+    // the copy into its buffers), with its entries (a face once per cell its sweep meets) and slots
+    double skinMs = 0, gridMs = 0, gridCopyMs = 0;
+    size_t gridEntries = 0, gridSlots = 0;
     // the cluster solve's shape (0 without it): clusters, colours a cluster runs, the rows that cross
     // and their colours
     int    clusters = 0, clusterColours = 0, crossingColours = 0, substeps = 0, mostLocal = 0;

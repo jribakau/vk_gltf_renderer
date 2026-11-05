@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <limits>
 #include <cmath>
 #include <cstring>
@@ -29,6 +30,7 @@
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/physics/cloth/clusters.hpp>
+#include <figure/physics/collide/sweep_grid.hpp>
 #include <glm/glm.hpp>
 #include <nvapp/application.hpp>
 #include <nvutils/logger.hpp>
@@ -64,15 +66,9 @@ nvvk::QueueInfo s_queue{};
 constexpr VkBufferUsageFlags2 kUsage = VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
                                        | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT;
 
-uint32_t cellHash(int ix, int iy, int iz)
-{
-  return (uint32_t(ix) * 73856093u) ^ (uint32_t(iy) * 19349663u) ^ (uint32_t(iz) * 83492791u);
-}
-
-int cellOf(float p)
-{
-  return int(std::floor(p / kCell));
-}
+static_assert(sizeof(fv::physics::SweepCell) == sizeof(shaderio::DforceCell) && offsetof(fv::physics::SweepCell, start) == offsetof(shaderio::DforceCell, start)
+                  && offsetof(fv::physics::SweepCell, count) == offsetof(shaderio::DforceCell, count),
+              "the grid's cells are the kernels'");
 
 // How a mesh's kinematic vertices move: a sweep of its bones from one pose to another.
 struct Kinematic
@@ -193,6 +189,9 @@ struct DforceGpu::Impl
   VkPipelineLayout layout{};
   VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{}, clusterPipe{}, commitPipe{};
 
+  // the static faces' corners, three a face, and the grid made from them each frame (its buffers kept)
+  std::vector<int32_t>     faceCorners;
+  fv::physics::SweepGrid   grid;
   // the model's buffers; `cells` and `items` grow with the grid
   nvvk::Buffer x, prev, vel, cprev, kinStart, kinEnd, kinematic, freeVerts, inv, dampRate, offset, friction, layer, collides, grav, edges,
       lam, tris, cells, items, softVerts, attAlpha, lamAtt, contact, modelBuf, readback, clusterEdgeBuf, clusterLamBuf, clusterVertBuf, clusterVertStartBuf,
@@ -378,6 +377,7 @@ bool DforceGpu::Impl::prepare()
   {
     const Tri& tri = model.tris[size_t(t)];
     faces.push_back({tri.a, tri.b, tri.c, tri.layer, tri.offset, tri.friction, 0.f, 0.f});
+    faceCorners.insert(faceCorners.end(), {tri.a, tri.b, tri.c});
   }
 
   // the start: the rest shape, with what overlaps the body moved out of it, as the CPU solver starts
@@ -539,7 +539,8 @@ void DforceGpu::Impl::resetState()
   // the run's counts start over; the cut's shape stays
   stats.frames     = 0;
   stats.dispatches = 0;
-  stats.gpuMs = stats.waitMs = stats.collideMs = stats.holdMs = stats.skinMs = stats.gridMs = 0;
+  stats.gpuMs = stats.waitMs = stats.collideMs = stats.holdMs = stats.skinMs = stats.gridMs = stats.gridCopyMs = 0;
+  stats.gridEntries = stats.gridSlots = 0;
 }
 
 void DforceGpu::Impl::destroy()
@@ -595,100 +596,36 @@ void DforceGpu::Impl::kinematicAt(float t, std::vector<float>& out)
   }
 }
 
-// The body's faces over their sweep through the frame, into the open-addressed cell table. False
-// when the table's buffers could not be made: the frame then runs without collisions.
+// The body's faces over their sweep through the frame, into the open-addressed cell table
+// (figure/physics/collide/sweep_grid.hpp). False when the table's buffers could not be made: the frame
+// then runs without collisions.
 bool DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::DforceModel& m)
 {
-  const size_t                 n = model.staticTris.size();
-  std::vector<std::array<int, 6>> range(n);
-  size_t                        entries = 0;
-  for(size_t t = 0; t < n; t++)
+  fv::physics::buildSweepGrid(faceCorners, start.data(), end.data(), kCell, grid);
+  stats.gridEntries += grid.entries;
+  stats.gridSlots += grid.cells.size();
+  const auto copyStart = std::chrono::steady_clock::now();
+  bool       ok        = true;
+  if(grid.cells.size() > cellCapacity)
   {
-    const Tri& tri = model.tris[size_t(model.staticTris[t])];
-    float      lo[3] = {INFINITY, INFINITY, INFINITY}, hi[3] = {-INFINITY, -INFINITY, -INFINITY};
-    for(int k = 0; k < 6; k++)
-    {
-      const int   v = k % 3 == 0 ? tri.a : k % 3 == 1 ? tri.b : tri.c;
-      const auto& p = k < 3 ? start : end;
-      for(int c = 0; c < 3; c++)
-      {
-        lo[c] = std::min(lo[c], p[size_t(v) * 3 + c]);
-        hi[c] = std::max(hi[c], p[size_t(v) * 3 + c]);
-      }
-    }
-    size_t count = 1;
-    for(int c = 0; c < 3; c++)
-    {
-      range[t][c]     = cellOf(lo[c]);
-      range[t][c + 3] = cellOf(hi[c]);
-      count *= size_t(range[t][c + 3] - range[t][c] + 1);
-    }
-    entries += count;
-  }
-  size_t slots = 64;
-  while(slots < entries * 2)
-    slots *= 2;
-  std::vector<shaderio::DforceCell> table(slots, shaderio::DforceCell{0, 0, 0, -1, 0, 0, 0, 0});
-  const auto                        find = [&](int ix, int iy, int iz) {
-    size_t s = cellHash(ix, iy, iz) & (slots - 1);
-    while(table[s].start >= 0 && (table[s].x != ix || table[s].y != iy || table[s].z != iz))
-      s = (s + 1) & (slots - 1);
-    return s;
-  };
-  // count per cell, then place: `start` doubles as the "taken" flag, so the first pass stores the
-  // count there and the second turns it into offsets
-  for(size_t t = 0; t < n; t++)
-    for(int ix = range[t][0]; ix <= range[t][3]; ix++)
-      for(int iy = range[t][1]; iy <= range[t][4]; iy++)
-        for(int iz = range[t][2]; iz <= range[t][5]; iz++)
-        {
-          const size_t s = find(ix, iy, iz);
-          if(table[s].start < 0)
-            table[s] = {ix, iy, iz, 0, 0, 0, 0, 0};
-          table[s].count++;
-        }
-  int at = 0;
-  for(shaderio::DforceCell& c : table)
-    if(c.start >= 0)
-    {
-      c.start = at;
-      at += c.count;
-      c.count = 0;
-    }
-  std::vector<int> list(std::max<size_t>(1, entries), 0);
-  for(size_t t = 0; t < n; t++)
-    for(int ix = range[t][0]; ix <= range[t][3]; ix++)
-      for(int iy = range[t][1]; iy <= range[t][4]; iy++)
-        for(int iz = range[t][2]; iz <= range[t][5]; iz++)
-        {
-          shaderio::DforceCell& c            = table[find(ix, iy, iz)];
-          list[size_t(c.start + c.count++)] = int(t);
-        }
-  if(slots > cellCapacity)
-  {
-    if(!mapped(cells, table))
-    {
-      cellCapacity = 0;
-      return false;
-    }
-    cellCapacity = slots;
+    ok           = mapped(cells, grid.cells);
+    cellCapacity = ok ? grid.cells.size() : 0;
   }
   else
-    std::memcpy(cells.mapping, table.data(), slots * sizeof(shaderio::DforceCell));
-  if(list.size() > itemCapacity)
+    std::memcpy(cells.mapping, grid.cells.data(), grid.cells.size() * sizeof(fv::physics::SweepCell));
+  if(ok && grid.items.size() > itemCapacity)
   {
-    if(!mapped(items, list))
-    {
-      itemCapacity = 0;
-      return false;
-    }
-    itemCapacity = list.size();
+    ok           = mapped(items, grid.items);
+    itemCapacity = ok ? grid.items.size() : 0;
   }
-  else
-    std::memcpy(items.mapping, list.data(), list.size() * sizeof(int));
+  else if(ok)
+    std::memcpy(items.mapping, grid.items.data(), grid.items.size() * sizeof(int32_t));
+  stats.gridCopyMs += msSince(copyStart);
+  if(!ok)
+    return false;
   m.cells    = reinterpret_cast<shaderio::DforceCell*>(cells.address);
   m.items    = reinterpret_cast<int*>(items.address);
-  m.cellMask = uint32_t(slots - 1);
+  m.cellMask = grid.mask();
   return true;
 }
 
@@ -1163,6 +1100,10 @@ bool DforceGpu::settleSome(double seconds)
     LOGI("[fv-time] dforceGpuSettle %d frames %.1f ms of work, %.1f ms waiting on the GPU, %.1f ms in all (%.1f ms a frame, %d substeps; on the host %.1f ms skinning, %.1f the collision grid)\n",
          s.settled, s.settleWork, s.settleWait, std::chrono::duration<double, std::milli>(end - s.settleStart).count(), s.settleWork / std::max(1, s.settled),
          s.substeps, s.stats.skinMs, s.stats.gridMs);
+  if(done && s.stats.frames > 0)
+    LOGI("[fv-time] dforceGpuGrid %.0f entries and %.0f slots a frame, %.2f ms of its %.2f a frame copying\n",
+         double(s.stats.gridEntries) / s.stats.frames, double(s.stats.gridSlots) / s.stats.frames, s.stats.gridCopyMs / s.stats.frames,
+         s.stats.gridMs / s.stats.frames);
   return done;
 }
 

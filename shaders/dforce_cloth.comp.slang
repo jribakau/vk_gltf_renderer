@@ -85,9 +85,18 @@ void closestOn(float3 q, float3 a, float3 b, float3 c, float3 n, out float signe
   dist       = length(d);
 }
 
+// As the host's (figure/physics/collide/sweep_grid.hpp, sweepCellHash): the cell's coordinates mixed,
+// then finished as MurmurHash3's fmix32 does, so neighbouring cells land apart in the table and a
+// probe stays short in a fuller one
 uint cellHash(int ix, int iy, int iz)
 {
-  return (uint(ix) * 73856093u) ^ (uint(iy) * 19349663u) ^ (uint(iz) * 83492791u);
+  uint h = (uint(ix) * 73856093u) ^ (uint(iy) * 19349663u) ^ (uint(iz) * 83492791u);
+  h ^= h >> 16;
+  h *= 0x85ebca6bu;
+  h ^= h >> 13;
+  h *= 0xc2b2ae35u;
+  h ^= h >> 16;
+  return h;
 }
 
 int cellOf(float p, float cellSize)

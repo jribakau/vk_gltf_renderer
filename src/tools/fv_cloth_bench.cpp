@@ -4,13 +4,17 @@
 // against the CPU's vertex by vertex. Needs a Vulkan device and nothing of the app.
 //
 //   fv_cloth_bench <job> [out.json] [--solvers cpu,gpu,cluster,coloured] [--cluster 1024[,512..]] [--local 2048]
-//                  [--analyse]
+//                  [--analyse] [--grid]
 //
 // "cluster" has both clusters of a row that crosses them hold it, each moving its own end; "coloured"
 // runs those rows after the clusters, a dispatch a colour of them.
 //
 // --analyse prints how each cluster size cuts the model (clusters, colours, the rows that cross) and
 // runs nothing. Every number goes to out.json too.
+//
+// --grid needs no GPU: the colliders swept through the job's transition, frame by frame as the GPU solver
+// sweeps them, and the collision grid made from each frame (figure/physics/collide/sweep_grid.hpp) by the
+// builder and by its reference, both timed, and whether they agree.
 //
 // Each GPU run settles the job twice on one simulation, the second time through restart (physics-plan
 // step 13b: it keeps its model, buffers and kernels): "restart" says how long that took and whether its
@@ -38,6 +42,8 @@
 #include <figure/physics/cloth/island.hpp>
 #include <figure/physics/cloth/job.hpp>
 #include <figure/physics/cloth/report.hpp>
+#include <figure/physics/collide/sweep_grid.hpp>
+#include <figure/physics/sweep.hpp>
 #include <nvapp/application.hpp>
 #include <nvutils/logger.hpp>
 #include <nvvk/context.hpp>
@@ -159,6 +165,98 @@ Json judge(const cloth::Job& job, const cloth::Model& model, const std::vector<s
   return drapes;
 }
 
+// The colliders at fraction t of the transition, as the GPU solver puts them (kinematicAt): a skinned
+// one along its bones from the memorized pose, another along straight lines.
+void collidersAt(const cloth::Job& job, const cloth::Model& model, float t, std::vector<float>& out)
+{
+  for(size_t mi = 0; mi < job.surfaces.size(); mi++)
+  {
+    const cloth::Surface& m = job.surfaces[mi];
+    if(m.kind != cloth::Surface::Kind::eCollider)
+      continue;
+    float* to = out.data() + size_t(model.base[mi]) * 3;
+    if(m.skinned())
+    {
+      std::vector<fv::Mat4> bones(m.bones.size());
+      for(size_t b = 0; b < bones.size(); b++)
+        bones[b] = fv::physics::sweepAt(fv::physics::poseOf(fv::Mat4{}), fv::physics::poseOf(m.bones[b]), t);
+      cloth::skin(m, bones, to);
+    }
+    else
+      for(size_t k = 0; k < m.rest.size(); k++)
+        to[k] = (1 - t) * m.rest[k] + t * m.posed[k];
+  }
+}
+
+// --grid: the collision grid over the transition, the builder against its reference.
+Json gridRun(const cloth::Job& job, const cloth::Model& model)
+{
+  std::vector<int32_t> corners;
+  for(int t : model.staticTris)
+  {
+    const cloth::Face& f = model.tris[size_t(t)];
+    corners.insert(corners.end(), {f.a, f.b, f.c});
+  }
+  const cloth::Island island(job.surfaces, job.options);
+  const int           frames = std::max(1, int(std::lround(island.transitionSeconds() / job.options.frameDt)));
+  std::vector<float>  start = model.rest, end = model.rest;
+  fv::physics::SweepGrid fast, ref;
+  double fastMs = 0, refMs = 0, entries = 0, used = 0, slots = 0;
+  bool   same   = true;
+  collidersAt(job, model, 0, end);
+  for(int f = 0; f < frames; f++)
+  {
+    start = end;
+    collidersAt(job, model, float(f + 1) / float(frames), end);
+    auto t0 = std::chrono::steady_clock::now();
+    fv::physics::buildSweepGrid(corners, start.data(), end.data(), 2.f, fast);
+    fastMs += since(t0);
+    t0 = std::chrono::steady_clock::now();
+    fv::physics::buildSweepGridReference(corners, start.data(), end.data(), 2.f, ref);
+    refMs += since(t0);
+    same = same && fv::physics::sameSweepGrids(ref, fast);
+    entries += double(fast.entries);
+    used += double(fast.used);
+    slots += double(fast.cells.size());
+  }
+  // what a lookup costs in the last frame's table, as the kernels probe it: slots read to find a cell, and
+  // to find that a cell next to one isn't there
+  double hitProbes = 0, missProbes = 0, hits = 0, misses = 0;
+  const uint32_t mask = fast.mask();
+  for(const fv::physics::SweepCell& c : fast.cells)
+  {
+    if(c.start < 0)
+      continue;
+    for(int dx = -1; dx <= 1; dx++)
+      for(int dy = -1; dy <= 1; dy++)
+        for(int dz = -1; dz <= 1; dz++)
+        {
+          const int x = c.x + dx, y = c.y + dy, z = c.z + dz;
+          uint32_t  at = fv::physics::sweepCellHash(x, y, z) & mask;
+          int       read = 0;
+          bool      found = false;
+          for(uint32_t probe = 0; probe <= mask; probe++)
+          {
+            const fv::physics::SweepCell& e = fast.cells[(at + probe) & mask];
+            read++;
+            if(e.start < 0)
+              break;
+            if(e.x == x && e.y == y && e.z == z)
+            {
+              found = true;
+              break;
+            }
+          }
+          (found ? hitProbes : missProbes) += read;
+          (found ? hits : misses) += 1;
+        }
+  }
+  return {{"frames", frames},       {"faces", corners.size() / 3},          {"entriesPerFrame", r4(entries / frames)},
+          {"slotsReadToFind", r4(hitProbes / std::max(1.0, hits))}, {"slotsReadToMiss", r4(missProbes / std::max(1.0, misses))},
+          {"cellsPerFrame", r4(used / frames)}, {"slotsPerFrame", r4(slots / frames)}, {"msPerFrame", r4(fastMs / frames)},
+          {"referenceMsPerFrame", r4(refMs / frames)}, {"same", same}};
+}
+
 // The CPU island's settle, frame by frame as Island::settle runs it, so the frames can be counted.
 std::vector<std::vector<float>> settleCpu(const cloth::Job& job, Json& report)
 {
@@ -197,7 +295,7 @@ int main(int argc, char** argv)
   std::vector<std::string> solvers = {"cpu", "gpu", "cluster"};
   std::vector<int>         sizes   = {1024};
   int                      local   = 2048;
-  bool                     onlyAnalyse = false;
+  bool                     onlyAnalyse = false, onlyGrid = false;
   for(int i = 2; i < argc; i++)
   {
     const std::string a = argv[i];
@@ -213,6 +311,8 @@ int main(int argc, char** argv)
       local = std::stoi(argv[++i]);
     else if(a == "--analyse")
       onlyAnalyse = true;
+    else if(a == "--grid")
+      onlyGrid = true;
     else if(outFile.empty())
       outFile = a;
   }
@@ -236,6 +336,13 @@ int main(int argc, char** argv)
   };
   if(onlyAnalyse)
   {
+    write();
+    return 0;
+  }
+  if(onlyGrid)
+  {
+    out["grid"] = gridRun(*job, model);
+    std::cout << "grid " << out["grid"].dump() << std::endl;
     write();
     return 0;
   }
@@ -317,6 +424,9 @@ int main(int argc, char** argv)
                                {"waitMsPerFrame", r4(s.waitMs / std::max(1, s.frames))},
                                {"skinMsPerFrame", r4(s.skinMs / std::max(1, s.frames))},
                                {"gridMsPerFrame", r4(s.gridMs / std::max(1, s.frames))},
+                               {"gridCopyMsPerFrame", r4(s.gridCopyMs / std::max(1, s.frames))},
+                               {"gridEntriesPerFrame", r4(double(s.gridEntries) / std::max(1, s.frames))},
+                               {"gridSlotsPerFrame", r4(double(s.gridSlots) / std::max(1, s.frames))},
                                {"dispatchesPerFrame", r4(double(s.dispatches) / std::max(1, s.frames))},
                                {"dispatchesPerSubstep", r4(double(s.dispatches) / std::max(1, s.frames * std::max(1, s.substeps)))},
                                {"rows", s.rows}};
