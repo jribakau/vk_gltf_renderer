@@ -187,6 +187,10 @@ public:
   };
   const std::vector<Part>& parts() const { return m_parts; }
   const RigidWorld&        world() const { return m_world; }
+  // A part's capsule as it was fitted, in the body cage's space at rest; and where its bone has it
+  // now, in the root's space, in either mode (what the soft flesh meets while it moves, step 11).
+  Capsule restCapsule(size_t part) const;
+  Capsule capsuleNow(size_t part) const;
   // the part a pose bone is, or -1
   int partOf(int poseBone) const;
 

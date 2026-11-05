@@ -467,9 +467,10 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
       if(f->fig->pose)
       {
         f->secondary = std::make_unique<fv::physics::Secondary>(f->fig->loaded.scene, *f->fig->pose, f->fig->loaded.root);
-        f->flesh     = std::make_unique<fv::physics::Flesh>(f->fig->loaded.scene, *f->fig->morphs, body);
+        f->flesh     = std::make_unique<fv::physics::Flesh>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
         f->physics            = std::make_unique<fv::physics::FigurePhysics>(f->fig->loaded.scene, *f->fig->pose, f->fig->morphs.get(), body, f->fig->loaded.root);
         f->physics->colliders = [this, raw = f.get()] { return contactColliders(*raw, true, true); };
+        f->flesh->colliders   = [this, raw = f.get()] { return fleshColliders(*raw); };
       }
       // the clothes are fitted and draped over the body as it will be once dented
       f->collider->waitWhile = [raw = f.get()] { return raw->contact && raw->contact->busy(); };

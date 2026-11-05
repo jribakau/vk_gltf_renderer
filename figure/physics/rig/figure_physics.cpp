@@ -119,6 +119,24 @@ Mat4 FigurePhysics::boneWorld(int node) const
   return inverse(m_scene.world(m_root)) * m_scene.world(node);
 }
 
+Capsule FigurePhysics::restCapsule(size_t part) const
+{
+  // at rest a part's bone frame is the root's moved to its joint centre
+  const Part&    p = m_parts[part];
+  const Capsule& s = m_world.bodies[part].shape;
+  const auto&    d = m_scene.nodes[size_t(p.node)].joint;
+  const Vec3     o = (d ? Vec3{d->center[0], d->center[1], d->center[2]} : Vec3{}) + p.com;
+  return {o + s.a, o + s.b, s.radius};
+}
+
+Capsule FigurePhysics::capsuleNow(size_t part) const
+{
+  const Part&    p = m_parts[part];
+  const Capsule& s = m_world.bodies[part].shape;
+  const Mat4     w = boneWorld(p.node);
+  return {w.transformPoint(p.com + s.a), w.transformPoint(p.com + s.b), s.radius};
+}
+
 Mat4 FigurePhysics::targetWorld(int node) const
 {
   // a part's own bone as its channels pose it, every other bone as it is

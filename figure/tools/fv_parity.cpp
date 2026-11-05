@@ -38,6 +38,9 @@
 // its middle and extent in the rest cage (cm), and its softest share; then bobs the skin up and down
 // (2 cm at 2 Hz, a walk's) for "frames" frames at 60 fps and reports the solve's time a frame and
 // each lobe's largest offset, and the time of a frame's skin of the lobes at the figure's pose.
+// {"touch": label} bobs the figure's hip (2 cm at 2 Hz) for "frames" frames at the pose it is in, with
+// its soft flesh on and meeting its own limbs (its ragdoll's capsules, step 11): the most particles
+// pressed in a frame, how far the deepest went, which lobes, and a frame of the flesh's time.
 // {"contact": label} runs the body's contact pass at the pose it is in with nothing near it, so only
 // its own parts press on one another (figure/physics/contact, step 10): the vertices pressed, the
 // dents, how many vertices moved and how far at most, by part, and the pass's time.
@@ -73,6 +76,8 @@
 #include <figure/physics/contact/contact.hpp>
 #include <figure/physics/flesh/flesh.hpp>
 #include <figure/physics/flesh/follow.hpp>
+#include <figure/physics/flesh/touch.hpp>
+#include <figure/physics/rig/figure_physics.hpp>
 #include <figure/pose/retarget.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/bind.hpp>
@@ -1035,6 +1040,66 @@ int main(int argc, char** argv)
                      {"pastLimitsDegrees", pastLimits},
                      {"lowerAnkleRiseCm", {{"source", r(lowSrc[1] - lowSrc[0])}, {"figure", r(lowDst[1] - lowDst[0])}}}};
         std::cerr << "retarget " << label << ": " << dump.dump() << "\n";
+        dumps[label] = dump;
+      }
+      else if(step.contains("touch"))
+      {
+        if(!loaded || !loaded->pose)
+          throw std::runtime_error("touch before a figure loads");
+        const auto& ctx = loaded->loaded.morphs;
+        if(ctx.mainMeshes.empty())
+          throw std::runtime_error("touch without a figure body");
+        const std::string label = step["touch"].get<std::string>();
+        const int         body  = ctx.meshes[ctx.mainMeshes[0]].mesh;
+        fv::SceneGraph&   scene = loaded->loaded.scene;
+        const int         root  = loaded->loaded.root;
+        fv::physics::FigurePhysics physics(scene, *loaded->pose, loaded->morphs.get(), body, root);
+        fv::physics::Flesh         flesh(scene, *loaded->morphs, body, root);
+        if(!flesh.solver() || !physics.valid())
+          throw std::runtime_error("the body has no flesh or no ragdoll");
+        std::vector<int> parts;
+        for(const auto& p : physics.parts())
+          parts.push_back(fv::physics::partOfBone(scene, p.node));
+        flesh.colliders = [&] {
+          fv::physics::FleshColliders c;
+          for(size_t k = 0; k < parts.size(); k++)
+            c.limbs.push_back({physics.capsuleNow(k), 1.0, parts[k], physics.restCapsule(k)});
+          return c;
+        };
+        fv::physics::FleshSettings s;
+        s.on = true;
+        flesh.set(s);
+        const fv::physics::FleshModel& m = flesh.solver()->model();
+        const double                    hipY = loaded->pose->get("hip") ? loaded->pose->get("hip")->shown(fv::pose::ChannelKind::eTranslation, 1) : 0;
+        const int    frames = step.value("frames", 120);
+        size_t       mostPressed = 0;
+        double       deepest = 0, ms = 0;
+        Json         byLobe = Json::object();
+        for(int f = 0; f < frames; f++)
+        {
+          const double bob = 2 * std::sin(2 * 3.14159265358979 * 2 * f / 60.0);
+          loaded->pose->setMany({{"hip", fv::pose::ChannelKind::eTranslation, "y", hipY + bob}});
+          loaded->settle();
+          const auto t0 = std::chrono::steady_clock::now();
+          flesh.step(1.0 / 60);
+          ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+          const auto pressed = flesh.solver()->pressed();
+          size_t     count   = 0;
+          for(size_t p = 0; p < pressed.size(); p++)
+            if(pressed[p])
+            {
+              count++;
+              const double* d = &flesh.solver()->offsets()[p * 3];
+              deepest         = std::max(deepest, std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+              const std::string& lobe = m.lobes[m.lobe[p]].name;
+              byLobe[lobe]            = std::max(byLobe.value(lobe, 0), 1);
+            }
+          mostPressed = std::max(mostPressed, count);
+        }
+        loaded->pose->setMany({{"hip", fv::pose::ChannelKind::eTranslation, "y", hipY}});
+        loaded->settle();
+        Json dump = {{"mostPressed", mostPressed}, {"deepestCm", r(deepest)}, {"lobesPressed", byLobe}, {"particles", m.vertex.size()}, {"frameMs", r(ms / frames)}};
+        std::cerr << "touch " << label << ": " << dump.dump() << "\n";
         dumps[label] = dump;
       }
       else if(step.contains("contact"))

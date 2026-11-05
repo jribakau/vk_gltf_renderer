@@ -1,5 +1,6 @@
-// Soft flesh (docs/physics-plan.md steps 8 and 9): the lobes found on a body, their solve against the
-// skin, the skin the targets come from against the GPU's, and what is worn over it following it.
+// Soft flesh (docs/physics-plan.md steps 8, 9 and 11): the lobes found on a body, their solve against
+// the skin, the skin the targets come from against the GPU's, what is worn over it following it, and
+// what it meets while it moves.
 
 #include <gtest/gtest.h>
 
@@ -11,7 +12,9 @@
 
 #include <figure/dforce/skin.hpp>
 #include <figure/physics/flesh/flesh.hpp>
+#include <figure/physics/contact/contact.hpp>
 #include <figure/physics/flesh/follow.hpp>
+#include <figure/physics/flesh/touch.hpp>
 
 #include "../common/skin_reference.hpp"
 
@@ -421,6 +424,275 @@ TEST(Soft, aShapeDialMovesTheLobesWithoutAJiggle)
     ASSERT_EQ(solver.largest(), 0.0) << f;
     ASSERT_TRUE(solver.asleep()) << f;
   }
+}
+
+//--------------------------------------------------------------------------------------------------
+// What the flesh meets while it moves (step 11, touch.hpp).
+
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+
+// The chest's particles as touch.hpp sees them: all on the torso, `fromEdge` from its edge, and the
+// torso joined to the parts in `joined`
+FleshTouch touchOf(const Chest& chest, const FleshModel& m, float fromEdge = 10, uint32_t joined = 0)
+{
+  std::vector<uint8_t> parts(m.vertex.size(), part::kTorso);
+  std::vector<float>   edge(m.vertex.size(), fromEdge), rest;
+  for(uint32_t v : m.vertex)
+    rest.insert(rest.end(), {chest.cage[v * 3], chest.cage[v * 3 + 1], chest.cage[v * 3 + 2]});
+  std::vector<uint32_t> joinedTo(part::kRFoot + 1, 0);
+  joinedTo[part::kTorso] = joined;
+  return FleshTouch(parts, edge, joinedTo, rest);
+}
+
+// A hand lying across the left breast's top along y (the dome `dome` high at x = 5), `into` it, moved
+// with the chest by `shift`; at rest it hung at the figure's side
+FleshColliders handOn(const glm::dvec3& shift, double into, double dome, int part = part::kLHand)
+{
+  FleshColliders       c;
+  FleshColliders::Limb l;
+  const double         r = 1.5, z = dome + r - into;
+  l.now  = {{5 + shift.x, -4 + shift.y, z + shift.z}, {5 + shift.x, 4 + shift.y, z + shift.z}, r};
+  l.part = part;
+  l.rest = {{30, -4, 0}, {30, 4, 0}, r};
+  c.limbs.push_back(l);
+  return c;
+}
+
+// A frame pressed by `with`: its contacts where the targets are, then the step
+void pressedStep(FleshSolver& solver, FleshTouch& touch, const std::vector<float>& targets, const FleshColliders& with, bool reshaped = false)
+{
+  solver.setContacts(touch.find(targets, solver.offsets(), with, fv::Mat4{}), with.bulge);
+  solver.step(targets, 1.0 / 60, reshaped);
+}
+
+// Where each particle is: its target and its offset
+std::vector<double> positions(const FleshSolver& solver, const std::vector<float>& targets)
+{
+  std::vector<double> out(solver.offsets().begin(), solver.offsets().end());
+  for(size_t i = 0; i < out.size(); i++)
+    out[i] += targets[i];
+  return out;
+}
+
+double largestMove(const std::vector<double>& a, const std::vector<double>& b)
+{
+  double most = 0;
+  for(size_t i = 0; i + 2 < a.size(); i += 3)
+    most = std::max(most, std::hypot(a[i] - b[i], a[i + 1] - b[i + 1], a[i + 2] - b[i + 2]));
+  return most;
+}
+
+// How far a point is from a capsule's axis
+double fromAxis(const Capsule& c, const double* p)
+{
+  const glm::dvec3 a{c.a.x, c.a.y, c.a.z}, b{c.b.x, c.b.y, c.b.z}, x{p[0], p[1], p[2]};
+  const double     t = std::clamp(glm::dot(x - a, b - a) / glm::dot(b - a, b - a), 0.0, 1.0);
+  return glm::length(x - (a + (b - a) * t));
+}
+
+}  // namespace
+
+// A hand resting on the left breast as the chest bobs (2 cm at 2 Hz) dents it: the flesh stays out of
+// the hand and goes a centimetre in under it, while the right breast moves as it would alone.
+TEST(Soft, aHandOnTheChestDentsItWhileItMoves)
+{
+  Chest       chest(2.5f);
+  FleshSolver pressed(buildFlesh(chest.in)), alone(buildFlesh(chest.in));
+  pressed.set(on());
+  alone.set(on());
+  const FleshModel&       m     = pressed.model();
+  FleshTouch              touch = touchOf(chest, m);
+  const FleshModel::Lobe* left  = lobeNamed(m, "Left breast");
+  const FleshModel::Lobe* right = lobeNamed(m, "Right breast");
+  ASSERT_TRUE(left && right);
+  double deepest = 0;
+  for(int f = 0; f < 90; f++)
+  {
+    const glm::dvec3     shift{0, 2 * std::sin(2 * kPi * 2 * f / 60.0), 0};
+    const auto           targets = targetsOf(chest, m, shift);
+    const FleshColliders hand    = handOn(shift, 1, 2.5);
+    pressedStep(pressed, touch, targets, hand);
+    alone.step(targets, 1.0 / 60);
+    if(f < 2)
+      continue;
+    const std::vector<double> at = positions(pressed, targets);
+    for(uint32_t p : left->particles)
+    {
+      ASSERT_GE(fromAxis(hand.limbs[0].now, &at[p * 3]), 1.5 - 0.01) << "frame " << f << ", particle " << p;
+      deepest = std::max(deepest, double(targets[p * 3 + 2]) - at[p * 3 + 2]);
+    }
+    for(uint32_t p : right->particles)
+      for(int a = 0; a < 3; a++)
+        ASSERT_NEAR(pressed.offsets()[p * 3 + a], alone.offsets()[p * 3 + a], 1e-9) << "frame " << f;
+  }
+  EXPECT_GT(deepest, 0.9);
+}
+
+// A limb in the flesh at rest (a capsule that fits the arm loosely) is allowed as deep as it was: it
+// makes no dent, only holds back what sways deeper into it, a tenth of a millimetre where the same hand
+// pressing in afresh dents it a centimetre.
+TEST(Soft, aLimbInTheFleshAtRestIsAllowedThatDeep)
+{
+  Chest       chest(2.5f);
+  FleshSolver pressed(buildFlesh(chest.in)), alone(buildFlesh(chest.in));
+  pressed.set(on());
+  alone.set(on());
+  FleshTouch touch = touchOf(chest, pressed.model());
+  double     most  = 0;
+  for(int f = 0; f < 60; f++)
+  {
+    const glm::dvec3 shift{0, 2 * std::sin(2 * kPi * 2 * f / 60.0), 0};
+    const auto       targets = targetsOf(chest, pressed.model(), shift);
+    FleshColliders   hand    = handOn(shift, 1, 2.5);
+    hand.limbs[0].rest       = handOn({0, 0, 0}, 1, 2.5).limbs[0].now;
+    pressedStep(pressed, touch, targets, hand);
+    alone.step(targets, 1.0 / 60);
+    for(size_t i = 0; i < alone.offsets().size(); i++)
+      most = std::max(most, std::fabs(pressed.offsets()[i] - alone.offsets()[i]));
+  }
+  EXPECT_LT(most, 0.01);
+}
+
+// A particle never meets its own part's limb, and a part joined to its own only 5 cm or more from its
+// part's edge along the skin.
+TEST(Soft, aParticleMeetsNeitherItsOwnPartNorAJoinedOneByTheJoint)
+{
+  Chest                     chest(2.5f);
+  const FleshModel          m       = buildFlesh(chest.in);
+  const auto                targets = targetsOf(chest, m, {0, 0, 0});
+  const std::vector<double> still(m.vertex.size() * 3, 0.0);
+  const auto                found = [&](float fromEdge, uint32_t joined, int part) {
+    FleshTouch touch = touchOf(chest, m, fromEdge, joined);
+    return touch.find(targets, still, handOn({0, 0, 0}, 1, 2.5, part), fv::Mat4{}).size();
+  };
+  EXPECT_GT(found(10, 0, part::kLHand), 0u);
+  EXPECT_EQ(found(10, 0, part::kTorso), 0u);
+  const uint32_t arm = 1u << part::kLUpperArm;
+  EXPECT_EQ(found(4, arm, part::kLUpperArm), 0u);
+  EXPECT_GT(found(6, arm, part::kLUpperArm), 0u);
+}
+
+// Pressed in, the lobe bulges by the contact's share of what the press pushed in: sum A n . d comes to
+// -(1 - beta) of the volume pushed in.
+TEST(Soft, aPressBulgesItsLobeByTheContactsShare)
+{
+  for(const double beta : {0.0, 0.7})
+  {
+    Chest       chest(2.5f);
+    FleshSolver solver(buildFlesh(chest.in));
+    solver.set(on());
+    const FleshModel& m     = solver.model();
+    FleshTouch        touch = touchOf(chest, m);
+    // drifting at a steady speed, so the flesh is awake and feels nothing but the hand
+    for(int f = 0; f < 60; f++)
+    {
+      const glm::dvec3 shift{0, 0.02 * f, 0};
+      FleshColliders   hand = handOn(shift, 1, 2.5);
+      hand.bulge            = beta;
+      pressedStep(solver, touch, targetsOf(chest, m, shift), hand);
+    }
+    double sum = 0, dent = 0;
+    for(uint32_t p : lobeNamed(m, "Left breast")->particles)
+    {
+      const double* an = &solver.areaNormals()[p * 3];
+      const double* d  = &solver.offsets()[p * 3];
+      const double  v  = an[0] * d[0] + an[1] * d[1] + an[2] * d[2];
+      sum += v;
+      if(solver.pressed()[p])
+        dent += std::max(0.0, -v);
+    }
+    ASSERT_GT(dent, 0.5) << "beta " << beta;
+    EXPECT_NEAR(sum, -(1 - beta) * dent, 0.1 * dent) << "beta " << beta;
+  }
+}
+
+// Once the chest stops, the still pass's dent fades in under the press (its skin sinks to where the
+// flesh holds it, over a quarter of a second): no vertex moves more than half a millimetre a frame,
+// and the flesh comes to rest on its skin.
+TEST(Soft, theHandoverMovesNoVertexMoreThanHalfAMillimetreAFrame)
+{
+  Chest       chest(2.5f);
+  FleshSolver solver(buildFlesh(chest.in));
+  solver.set(on());
+  const FleshModel& m     = solver.model();
+  FleshTouch        touch = touchOf(chest, m);
+  glm::dvec3        shift{0, 0, 0};
+  for(int f = 0; f < 30; f++)
+  {
+    shift.y = 0.05 * f;
+    pressedStep(solver, touch, targetsOf(chest, m, shift), handOn(shift, 1, 2.5));
+  }
+  // stopped
+  std::vector<float> base = targetsOf(chest, m, shift);
+  for(int f = 0; f < 12; f++)
+    pressedStep(solver, touch, base, handOn(shift, 1, 2.5));
+  // the dent the still pass would write: each pressed particle's skin where the flesh holds it
+  std::vector<double> was     = positions(solver, base);
+  std::vector<float>  dented  = base;
+  int                 handing = 0;
+  for(size_t p = 0; p < m.vertex.size(); p++)
+    if(solver.pressed()[p])
+    {
+      handing++;
+      for(int a = 0; a < 3; a++)
+        dented[p * 3 + a] = float(was[p * 3 + a]);
+    }
+  ASSERT_GT(handing, 5);
+  double most = 0;
+  for(int f = 1; f <= 15; f++)
+  {
+    std::vector<float> targets(base.size());
+    for(size_t i = 0; i < base.size(); i++)
+      targets[i] = base[i] + (dented[i] - base[i]) * float(f / 15.0);
+    pressedStep(solver, touch, targets, handOn(shift, 1, 2.5), true);
+    const std::vector<double> now = positions(solver, targets);
+    most                           = std::max(most, largestMove(was, now));
+    was                            = now;
+  }
+  for(int f = 0; f < 240 && !solver.asleep(); f++)
+  {
+    pressedStep(solver, touch, dented, handOn(shift, 1, 2.5));
+    const std::vector<double> now = positions(solver, dented);
+    most                          = std::max(most, largestMove(was, now));
+    was                           = now;
+  }
+  EXPECT_LT(most, 0.05);
+  EXPECT_TRUE(solver.asleep());
+  EXPECT_EQ(solver.largest(), 0.0);
+}
+
+// With no dent to hand over to, a still press lets go a second after the chest stops, smoothly (a
+// centimetre over a quarter of a second), and the flesh sleeps on its skin.
+TEST(Soft, aStillPressLetsGoWithoutAJump)
+{
+  Chest       chest(2.5f);
+  FleshSolver solver(buildFlesh(chest.in));
+  solver.set(on());
+  const FleshModel& m     = solver.model();
+  FleshTouch        touch = touchOf(chest, m);
+  glm::dvec3        shift{0, 0, 0};
+  for(int f = 0; f < 30; f++)
+  {
+    shift.y = 0.05 * f;
+    pressedStep(solver, touch, targetsOf(chest, m, shift), handOn(shift, 1, 2.5));
+  }
+  const std::vector<float> still = targetsOf(chest, m, shift);
+  std::vector<double>      was   = positions(solver, still);
+  double                   most  = 0;
+  int                      f     = 0;
+  for(; f < 240 && !solver.asleep(); f++)
+  {
+    pressedStep(solver, touch, still, handOn(shift, 1, 2.5));
+    const std::vector<double> now = positions(solver, still);
+    most                          = std::max(most, largestMove(was, now));
+    was                           = now;
+  }
+  EXPECT_LT(most, 0.15);
+  EXPECT_TRUE(solver.asleep());
+  EXPECT_GT(f, 55) << "it let go before a second";
+  EXPECT_LT(f, 3 * 60 + 2);
 }
 
 // A top bound to the chest (each of its vertices to three body vertices and their weights, as a

@@ -207,6 +207,8 @@ struct Loaded
   // its soft flesh (figure/physics/flesh/flesh.hpp), in either mode; null but for a person
   std::unique_ptr<fv::physics::Flesh> flesh;
   int                                 fleshVersion = -1;
+  // per ragdoll part, its part of the body (contact.hpp's `part`): what the flesh meets of its own limbs
+  std::vector<int> limbParts;
   // without dents of its own (a DAZ prop, a chair), it is what the bodies near it meet: its shown
   // meshes posed in its root's space (a person's body alone, without its own dent), made again once
   // its pose or shape moved (`contactRev` bumps; a person's own dent doesn't)
@@ -1104,6 +1106,9 @@ struct FvHost::Impl
   std::vector<fv::physics::ColliderRef>               contactColliders(const Loaded& f, bool bodies = true, bool ragdoll = false);
   // another figure near this one moves by physics: its dents are held until it rests
   bool                                                movesNear(const Loaded& f);
+  // what a person's soft flesh meets while it moves: the props near them and the limbs of the
+  // people near them, and with self-contact their own
+  fv::physics::FleshColliders                         fleshColliders(Loaded& f);
   std::shared_ptr<const fv::physics::SharedTriangles> contactMesh(const std::shared_ptr<const tinygltf::Model>& model, int mesh);
   const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& contactSets(Loaded& prop);
   void                                                pokeContacts();

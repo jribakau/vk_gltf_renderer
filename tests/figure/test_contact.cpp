@@ -837,8 +837,9 @@ TEST(Contact, turningItOffClearsTheChannel)
   EXPECT_FALSE(c.busy());
 }
 
-// While a clip plays the dent is off; on pause a pass puts it back.
-TEST(Contact, playbackHoldsTheChannelAtZero)
+// While a clip plays the dent fades out over a quarter of a second, a little each frame, and no pass
+// runs; on pause a pass on the pose it stopped at fades it back in the same way.
+TEST(Contact, playbackFadesTheChannelOutAndBackIn)
 {
   Rig     r(flat(3, 0.25));
   Contact c(r.scene, r.morphs, 0, r.root);
@@ -846,15 +847,37 @@ TEST(Contact, playbackHoldsTheChannelAtZero)
   c.driven        = [&] { return playing; };
   c.colliders     = [] { return std::vector<ColliderRef>{{shared(box({-1.1f, -1.f, -1.1f}, {1.1f, 4.f, 1.1f})), Mat4{}, 1}}; };
   ASSERT_TRUE(pumpUntilWritten(c));
-  playing = true;
-  EXPECT_TRUE(c.pump());
-  EXPECT_EQ(r.morphs.get(contactChannelOf(0)), 0.0);
+  EXPECT_EQ(r.morphs.get(contactChannelOf(0)), 1.0) << "a pass not after a hold writes at once";
+  // frames of 5 ms until it is out
+  const auto weight = [&] { return r.morphs.get(contactChannelOf(0)); };
+  const auto fade   = [&](double to) {
+    const auto start = std::chrono::steady_clock::now();
+    double     was = weight(), most = 0;
+    for(int i = 0; i < 400 && weight() != to; i++)
+    {
+      c.pump();
+      most = std::max(most, std::fabs(weight() - was));
+      was  = weight();
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_EQ(weight(), to);
+    EXPECT_LT(most, 0.45) << "a frame of the fade jumped";
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  };
+  playing          = true;
+  const double out = fade(0.0);
+  EXPECT_GT(out, 0.2);
+  EXPECT_LT(out, 0.6);
+  EXPECT_TRUE(c.held());
   EXPECT_FALSE(c.busy());
   c.poke();
   EXPECT_FALSE(c.pump());
   playing = false;
-  ASSERT_TRUE(pumpUntilWritten(c));
-  EXPECT_EQ(r.morphs.get(contactChannelOf(0)), 1.0);
+  // the pass waits for the pose to rest (120 ms), then fades in
+  const double back = fade(1.0);
+  EXPECT_GT(back, 0.3);
+  EXPECT_LT(back, 1.0);
+  EXPECT_FALSE(c.held());
 }
 
 // A pass on what the last one left writes nothing, so the body's vertices aren't flushed again.

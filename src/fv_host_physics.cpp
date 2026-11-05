@@ -232,6 +232,58 @@ bool FvHost::Impl::movesNear(const Loaded& f)
   return false;
 }
 
+// What a person's soft flesh meets while it moves (figure/physics/flesh/touch.hpp), in their root's
+// space: what their contact pass meets of props, the ragdoll capsules of the people near them where
+// their bones are, and with self-contact their own. Nothing while body contact is off.
+fv::physics::FleshColliders FvHost::Impl::fleshColliders(Loaded& f)
+{
+  fv::physics::FleshColliders out;
+  if(!f.contact || !f.contact->enabled() || !renderer->feedsHostScene() || !f.feed)
+    return out;
+  const fv::physics::ContactSettings& mine = f.contact->settings();
+  out.bulge                                = mine.bulge;
+  out.sets                                 = contactColliders(f, false);
+  if(mine.self && f.physics && f.physics->valid())
+  {
+    const auto& parts = f.physics->parts();
+    if(f.limbParts.size() != parts.size())
+    {
+      f.limbParts.clear();
+      for(const fv::physics::FigurePhysics::Part& p : parts)
+        f.limbParts.push_back(fv::physics::partOfBone(f.fig->loaded.scene, p.node));
+    }
+    for(size_t k = 0; k < parts.size(); k++)
+      out.limbs.push_back({f.physics->capsuleNow(k), 1.0, f.limbParts[k], f.physics->restCapsule(k)});
+  }
+  rs::RetainedScene& scene = renderer->hostScene();
+  const rs::EntityId root  = f.feed->entityOf(f.fig->loaded.root);
+  if(!scene.entity(root))
+    return out;
+  const fv::Mat4   fromWorld = inverse(toMat4(scene.world(root)));
+  fv::physics::Box around;
+  for(const auto& p : props)
+  {
+    const Loaded* other = p->figure.get();
+    if(!other || other == &f || !other->physics || !other->physics->valid() || !other->feed || !shown(*p))
+      continue;
+    if(around.empty())
+      around = boneBounds(f, scene);
+    const rs::EntityId at = other->feed->entityOf(other->fig->loaded.root);
+    if(!scene.entity(at) || !boneBounds(*other, scene).overlaps(around))
+      continue;
+    const fv::Mat4 toMine = fromWorld * toMat4(scene.world(at));
+    const double   scale  = std::cbrt(std::fabs(toMine.e[0] * (toMine.e[5] * toMine.e[10] - toMine.e[6] * toMine.e[9]) - toMine.e[4] * (toMine.e[1] * toMine.e[10] - toMine.e[2] * toMine.e[9])
+                                               + toMine.e[8] * (toMine.e[1] * toMine.e[6] - toMine.e[2] * toMine.e[5])));
+    const double   share  = fv::physics::overlapShare(mine, other->contact ? &other->contact->settings() : nullptr);
+    for(size_t k = 0; k < other->physics->parts().size(); k++)
+    {
+      const fv::physics::Capsule c = other->physics->capsuleNow(k);
+      out.limbs.push_back({{toMine.transformPoint(c.a), toMine.transformPoint(c.b), c.radius * scale}, share, -1, {}});
+    }
+  }
+  return out;
+}
+
 // Once a frame, before the figures pump: a model prop, a DAZ prop or another person that moved, showed,
 // hid, came or went (or whose pose or shape changed) pokes the contact of each figure whose body it is
 // near, before or after; a figure placed elsewhere meets its colliders anew. What a figure's own pose

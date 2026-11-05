@@ -7,6 +7,8 @@
 
 #include <figure/materials/procedural.hpp>
 #include <figure/physics/collide/cage_graph.hpp>
+#include <figure/physics/contact/contact.hpp>
+#include <figure/physics/flesh/touch.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 
 namespace fv::physics {
@@ -24,8 +26,13 @@ constexpr double kMostAcceleration = 4900;
 // a frame whose targets moved further than this (cm) starts again at rest
 constexpr double kJump = 30;
 constexpr double kMaxFrame = 1.0 / 20, kMaxSpeed = 400;
-// the limits: how far from the skin (cm), and how far into the body
-constexpr double kReach = 3, kBackStop = 0.5;
+// the limits: how far from the skin (cm), and how far into the body; pressed by what it meets, as far
+// as the still contact pass dents
+constexpr double kReach = 3, kBackStop = 0.5, kPressDepth = 3;
+// the skin still for `kRelease` seconds, what presses the flesh lets go over `kLetGo`
+constexpr double kRelease = 1, kLetGo = 0.25;
+// in a contact by less than this (cm) is on it: the targets are floats
+constexpr double kTouch = 1e-5;
 // the skin still for `kFree` seconds, the damping ramps in over `kCalming` to `kCalmRate`; at `kHold`
 // it sleeps whatever (physics-plan: "Sleep, one rule", the cloth and flesh constants)
 constexpr double kFree = 1, kCalming = 1, kHold = 3, kCalmRate = 6;
@@ -254,6 +261,13 @@ FleshSolver::FleshSolver(FleshModel model)
   m_u.assign(n * 3, 0.0);
   m_an.assign(n * 3, 0.0);
   m_normal.assign(n * 3, 0.0);
+  m_pressed.assign(n, 0);
+}
+
+void FleshSolver::setContacts(std::vector<FleshContact> contacts, double bulge)
+{
+  m_contacts = std::move(contacts);
+  m_bulge    = std::clamp(bulge, 0.0, 1.0);
 }
 
 double FleshSolver::omega(size_t lobe) const
@@ -298,6 +312,12 @@ void FleshSolver::surface(std::span<const float> targets)
 
 void FleshSolver::step(std::span<const float> targets, double seconds, bool reshaped)
 {
+  // the contacts are this step's
+  struct Forget
+  {
+    std::vector<FleshContact>& contacts;
+    ~Forget() { contacts.clear(); }
+  } forget{m_contacts};
   const size_t n = m_model.vertex.size();
   if(!n || targets.size() != (n + m_model.support.size()) * 3)
     return;
@@ -305,6 +325,7 @@ void FleshSolver::step(std::span<const float> targets, double seconds, bool resh
     std::fill(m_d.begin(), m_d.end(), 0.0);
     std::fill(m_e.begin(), m_e.end(), 0.0);
     std::fill(m_u.begin(), m_u.end(), 0.0);
+    std::fill(m_pressed.begin(), m_pressed.end(), uint8_t(0));
     m_last.assign(targets.begin(), targets.end());
     m_carry  = 0;
     m_asleep = true;
@@ -327,7 +348,13 @@ void FleshSolver::step(std::span<const float> targets, double seconds, bool resh
   if(reshaped)
   {
     // a change of shape moves the lobes with their skin and isn't felt; the skin's velocity is
-    // taken to go on as it was
+    // taken to go on as it was. A pressed particle keeps its place: its skin moving under it is the
+    // still pass's dent fading in, which takes the press over from it
+    if(m_last.size() == targets.size())
+      for(size_t i = 0; i < n; i++)
+        if(m_pressed[i])
+          for(size_t a = 0; a < 3; a++)
+            m_d[i * 3 + a] -= double(targets[i * 3 + a]) - m_last[i * 3 + a];
     m_last.assign(targets.begin(), targets.end());
     m_still += seconds;
     if(m_asleep)
@@ -383,8 +410,9 @@ void FleshSolver::step(std::span<const float> targets, double seconds, bool resh
   const int steps = int(m_carry / kSubstep);
   m_carry -= steps * kSubstep;
   const double calm = smooth((m_still - kFree) / kCalming);
+  const double hold = 1 - smooth((m_still - kRelease) / kLetGo);
   for(int k = 0; k < steps; k++)
-    substep(kSubstep, calm);
+    substep(kSubstep, calm, hold);
 
   bool still = !moved;
   for(size_t i = 0; still && i < n * 3; i += 3)
@@ -394,11 +422,12 @@ void FleshSolver::step(std::span<const float> targets, double seconds, bool resh
     std::fill(m_d.begin(), m_d.end(), 0.0);
     std::fill(m_e.begin(), m_e.end(), 0.0);
     std::fill(m_u.begin(), m_u.end(), 0.0);
+    std::fill(m_pressed.begin(), m_pressed.end(), uint8_t(0));
     m_asleep = true;
   }
 }
 
-void FleshSolver::substep(double h, double calm)
+void FleshSolver::substep(double h, double calm, double hold)
 {
   const size_t n  = m_model.vertex.size();
   const size_t nl = m_model.lobes.size();
@@ -461,41 +490,69 @@ void FleshSolver::substep(double h, double calm)
     for(int k = 0; k < 3; k++)
       m_d[p * 3 + size_t(k)] -= m_d[p * 3 + size_t(k)] * s;
   }
-  // each lobe keeps its volume against the skin: sum A n . d = 0
+  // each lobe keeps its volume against the skin: sum A n . d = 0, or where it is pressed in, the
+  // contact's share of what that pushed in comes back around it: sum A n . d = -(1 - beta) V
   for(const FleshModel::Lobe& lobe : m_model.lobes)
   {
-    double c = 0, den = 0;
+    double c = 0, den = 0, dent = 0;
     for(const uint32_t i : lobe.particles)
       if(free(i))
       {
-        c += dot3(&m_an[i * 3], &m_d[i * 3]);
+        const double an = dot3(&m_an[i * 3], &m_d[i * 3]);
+        c += an;
         den += m_model.weight[i] * dot3(&m_an[i * 3], &m_an[i * 3]);
+        if(m_pressed[i])
+          dent += std::max(0.0, -an);
       }
     if(den <= 0)
       continue;
+    c += (1 - m_bulge) * dent;
     for(const uint32_t i : lobe.particles)
       if(free(i))
         add3(&m_d[i * 3], &m_an[i * 3], -m_model.weight[i] * c / den);
   }
-  // the limits, last: no further than its reach, nor further into the body than the back stop
+  // what it meets: in front of each plane, less what it may be in, and once the skin has been still
+  // a while (`hold` toward 0) as deep as its skin is
+  std::vector<uint8_t> pressed(n, 0);
+  for(const FleshContact& k : m_contacts)
+  {
+    const size_t i = k.particle;
+    if(i >= n || !free(i))
+      continue;
+    const float* s      = &m_last[i * 3];
+    double*      d      = &m_d[i * 3];
+    const double rel[3] = {s[0] - k.point[0], s[1] - k.point[1], s[2] - k.point[2]};
+    const double skin   = -dot3(rel, k.normal.data());
+    const double allow  = k.allow + (1 - hold) * std::max(0.0, skin);
+    const double gap    = dot3(rel, k.normal.data()) + dot3(d, k.normal.data()) + allow;
+    if(gap < -kTouch)
+      add3(d, k.normal.data(), -gap);
+    if(gap < -kTouch || skin > allow + kTouch)
+      pressed[i] = 1;
+  }
+  // the limits, last: no further than its reach, nor further into the body than the back stop (or
+  // than a press may take it)
   for(size_t i = 0; i < n; i++)
   {
-    double*       d  = &m_d[i * 3];
-    const double* nn = &m_normal[i * 3];
-    if(const double into = dot3(d, nn); into < -kBackStop)
-      add3(d, nn, -kBackStop - into);
+    double*       d    = &m_d[i * 3];
+    const double* nn   = &m_normal[i * 3];
+    const double  stop = pressed[i] ? kPressDepth : kBackStop;
+    if(const double into = dot3(d, nn); into < -stop)
+      add3(d, nn, -stop - into);
     if(const double l = std::sqrt(dot3(d, d)); l > kReach)
       for(int a = 0; a < 3; a++)
         d[a] *= kReach / l;
   }
   for(size_t i = 0; i < n * 3; i++)
     m_e[i] = (m_d[i] - before[i]) / h;
+  m_pressed.swap(pressed);
 }
 
-Flesh::Flesh(const SceneGraph& scene, const morph::MorphSet& morphs, int bodyMesh)
+Flesh::Flesh(const SceneGraph& scene, const morph::MorphSet& morphs, int bodyMesh, int root)
     : m_scene(scene)
     , m_morphs(morphs)
     , m_bodyMesh(bodyMesh)
+    , m_root(root)
 {
   if(bodyMesh < 0 || size_t(bodyMesh) >= scene.meshes.size())
     return;
@@ -517,6 +574,8 @@ Flesh::Flesh(const SceneGraph& scene, const morph::MorphSet& morphs, int bodyMes
   m_solver = std::make_unique<FleshSolver>(buildFlesh(in));
   m_displacement.assign(body.geo->cagePositions.size(), 0.f);
 }
+
+Flesh::~Flesh() = default;
 
 void Flesh::set(const FleshSettings& settings)
 {
@@ -572,6 +631,33 @@ bool Flesh::step(double seconds)
     rest.insert(rest.end(), {cage[v * 3], cage[v * 3 + 1], cage[v * 3 + 2]});
   const bool reshaped = !m_rest.empty() && rest != m_rest;
   m_rest              = std::move(rest);
+  // what it meets while it moves, in the targets' space: the mesh's posed space
+  if(colliders && (!m_solver->asleep() || targets != m_targets))
+  {
+    const FleshColliders with = colliders();
+    if(!with.sets.empty() || !with.limbs.empty())
+    {
+      if(!m_touch)
+      {
+        // each particle's part of the body and how far it is from the part's edge, as self-contact has them
+        const std::vector<uint8_t> parts = bodyParts(m_scene, body);
+        const PartEdges            edges = partEdges(cage, body.geo->cagePolyStart, body.geo->cagePolyVerts, body.geo->dsonTris, parts);
+        std::vector<uint8_t>       part;
+        std::vector<float>         fromEdge, at;
+        for(const uint32_t v : model.vertex)
+        {
+          part.push_back(v < parts.size() ? parts[v] : uint8_t(0));
+          fromEdge.push_back(v < edges.fromEdge.size() ? edges.fromEdge[v] : 0.f);
+          at.insert(at.end(), {cage[v * 3], cage[v * 3 + 1], cage[v * 3 + 2]});
+        }
+        m_touch = std::make_unique<FleshTouch>(std::move(part), std::move(fromEdge), edges.joined, std::move(at));
+      }
+      const int  node   = nodeOf[size_t(m_bodyMesh)];
+      const Mat4 toRoot = (m_root >= 0 ? inverse(worlds[size_t(m_root)]) : Mat4{}) * (node >= 0 ? worlds[size_t(node)] : Mat4{});
+      m_solver->setContacts(m_touch->find(targets, m_solver->offsets(), with, inverse(toRoot)), with.bulge);
+    }
+  }
+  m_targets = targets;
   m_solver->step(targets, seconds, reshaped);
   wake();
   if(m_solver->asleep())

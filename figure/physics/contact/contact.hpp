@@ -22,11 +22,15 @@
 // (step 10), each giving way by half so the two meet between: a vertex meets the skin of another part
 // only when the way to it along the skin is long, so the crease of a bent knee or elbow, which DAZ's
 // own corrective shapes look after, is left as it is.
-// While what it meets is driven (a clip plays, another figure's ragdoll moves) the channel is at
-// weight 0 and no pass runs: a dent where a hand used to be looks wrong.
+// While what it meets is driven (a clip plays, another figure's ragdoll moves) the channel fades to
+// weight 0 over a quarter of a second and no pass runs: a dent where a hand used to be looks wrong.
+// The soft flesh dents as it moves instead (flesh.hpp, step 11). Once it stops, a pass on the pose it
+// stopped at fades the channel back in, and the flesh's skin sinking into the dent hands its own
+// dents over to it.
 //
 // One thread (the figure's owner) calls everything; the pass runs on the pool over a snapshot.
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <span>
@@ -94,6 +98,21 @@ constexpr uint8_t kTorso = 0, kHead = 1, kLUpperArm = 2, kRUpperArm = 3, kLForea
 uint8_t              partOfBone(const SceneGraph& scene, int node);
 std::vector<uint8_t> bodyParts(const SceneGraph& scene, const Mesh& mesh);
 
+// How far apart along the skin two parts' vertices are at least for one to press on the other (cm):
+// nearer, both are the skin of the joint between them, which bends with DAZ's corrective shapes.
+constexpr float kPartsApart = 5;
+// Per vertex of a cage (xyz per vertex, as the skin lies at rest): how far it is along the skin from
+// the edge of its part, up to `reach`; and per part, the parts it meets along the skin (bit q of
+// joined[p]). Two vertices of different parts are at least the sum of their distances apart, since
+// the way between leaves the one part and enters the other.
+struct PartEdges
+{
+  std::vector<float>    fromEdge;
+  std::vector<uint32_t> joined;
+};
+PartEdges partEdges(std::span<const float> positions, std::span<const int32_t> polyStart, std::span<const int32_t> polyVerts,
+                    std::span<const uint32_t> tris, std::span<const uint8_t> parts, float reach = kPartsApart);
+
 // A figure's meshes as posed now, with their morphs and skin: xyz per cage vertex in the space of its
 // root node (cm), one list per mesh asked, empty for one without a cage. How a DAZ prop (a chair) is
 // met by the bodies near it.
@@ -124,8 +143,10 @@ public:
   bool busy() const;
   // How many dents the last pass made.
   int patches() const { return m_patches; }
-  // The channel is at weight 0 while what it meets is driven.
+  // The channel fades to weight 0 while what it meets is driven.
   bool held() const { return m_held; }
+  // How long a fade in or out takes (s).
+  static constexpr double kFade = 0.25;
   // Bumps whenever busy(), patches() or the settings change, for a status topic.
   int version() const { return m_pass.version(); }
   // The posed body's bounds in the root's space as the last pass found it; empty before one.
@@ -153,6 +174,8 @@ private:
   };
   std::shared_ptr<Job> prepare();
   bool                 apply(const Landed* landed);
+  // The channel's weight a frame further toward m_aim. True when it moved (flushed).
+  bool fade();
 
   SceneGraph&      m_scene;
   morph::MorphSet& m_morphs;
@@ -160,8 +183,12 @@ private:
   int              m_root;
   ChannelWriter    m_writer;
   ContactSettings  m_settings;
-  // held at weight 0 while driven
-  bool                       m_held    = false;
+  // held at weight 0 while driven; the weight shown, the one it fades to, and since when; the next
+  // pass to land fades in (after a hold)
+  bool                                  m_held   = false;
+  double                                m_weight = 1, m_aim = 1;
+  std::chrono::steady_clock::time_point m_at     = std::chrono::steady_clock::now();
+  bool                                  m_fadeIn = false;
   int                        m_patches = 0;
   Box                        m_bounds;
   // the body's parts, made the first time a pass presses them on one another

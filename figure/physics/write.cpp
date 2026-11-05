@@ -5,7 +5,7 @@
 
 namespace fv::physics {
 
-bool ChannelWriter::write(morph::MorphSet& morphs, const mesh::BuiltMesh& geo, std::span<const float> delta) const
+bool ChannelWriter::write(morph::MorphSet& morphs, const mesh::BuiltMesh& geo, std::span<const float> delta, double weight) const
 {
   const size_t     n = geo.cagePositions.size() / 3;
   mesh::CageDeltas cage;
@@ -18,11 +18,17 @@ bool ChannelWriter::write(morph::MorphSet& morphs, const mesh::BuiltMesh& geo, s
     cage.deltas.insert(cage.deltas.end(), {x, y, z});
   }
   const dson::TargetPtr had = morphs.cpuTarget(name, mesh);
-  const bool            on  = morphs.has(name) && morphs.get(name) == 1.0;
+  const auto            weighed = [&] {
+    if(morphs.get(name) == weight)
+      return false;
+    morphs.set(name, weight);
+    morphs.flush();
+    return true;
+  };
   if(!had && cage.verts.empty())
     return false;
-  // the same as the channel holds, within what isn't worth a morph: nothing to write
-  if(had && on)
+  // the same as the channel holds, within what isn't worth a morph: only its weight to set, if that
+  if(had)
   {
     std::vector<float> old(n * 3, 0.f);
     for(size_t k = 0; k < had->cageIndices.size(); k++)
@@ -37,30 +43,26 @@ bool ChannelWriter::write(morph::MorphSet& morphs, const mesh::BuiltMesh& geo, s
     for(size_t v = 0; v < n && same; v++)
       same = std::fabs(now[v * 3] - old[v * 3]) + std::fabs(now[v * 3 + 1] - old[v * 3 + 1]) + std::fabs(now[v * 3 + 2] - old[v * 3 + 2]) <= kMinMove;
     if(same)
-      return false;
+      return morphs.has(name) && weighed();
   }
   auto target = std::make_shared<const mesh::RenderTarget>(cage.verts.empty() ? mesh::RenderTarget{} : mesh::target(geo, cage));
   morph::ChannelOptions opts;
   opts.hidden = true;
   opts.label  = label;
-  opts.value  = 1.0;
+  opts.value  = weight;
   opts.min    = 0.0;
   opts.max    = 1.0;
   morphs.replaceCpuTarget(name, mesh, std::move(target), opts);
-  // a channel turned off earlier keeps its weight: back to 1
-  if(morphs.get(name) != 1.0)
-  {
-    morphs.set(name, 1.0);
-    morphs.flush();
-  }
+  // a channel at another weight earlier keeps it: to this one
+  weighed();
   return true;
 }
 
-bool ChannelWriter::off(morph::MorphSet& morphs) const
+bool ChannelWriter::weigh(morph::MorphSet& morphs, double weight) const
 {
-  if(!morphs.has(name) || morphs.get(name) == 0.0)
+  if(!morphs.has(name) || morphs.get(name) == weight)
     return false;
-  morphs.set(name, 0.0);
+  morphs.set(name, weight);
   return true;
 }
 

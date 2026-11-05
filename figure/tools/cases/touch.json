@@ -1,0 +1,14 @@
+{
+  "about": "What the soft flesh meets of the body's own limbs while it moves (physics-plan step 11), on a Genesis 9 and a Genesis 8 body bobbing 2 cm at 2 Hz: at rest (the arms at the sides press nothing: their capsules' misfit at rest is allowed), and with the arms lowered against the chest; and a frame's time. Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {"load": "People/Genesis 9/Characters/Mirel.duf"},
+    {"touch": "g9 rest"},
+    {"pose": {"l_upperarm/rotation/z": -35, "r_upperarm/rotation/z": 35}},
+    {"touch": "g9 arms lowered"},
+    {"load": "People/Genesis 8 Female/Genesis 8 Basic Female.duf"},
+    {"touch": "g8 rest"},
+    {"pose": {"lShldrBend/rotation/z": -35, "rShldrBend/rotation/z": 35}},
+    {"touch": "g8 arms lowered"}
+  ]
+}

@@ -151,6 +151,7 @@ SharedTriangles::SharedTriangles(std::shared_ptr<const TriangleSet> made)
     , m_set(std::move(made))
 {
   std::call_once(m_once, [] {});
+  m_made.store(true, std::memory_order_release);
 }
 
 const TriangleSet& SharedTriangles::get() const
@@ -167,6 +168,7 @@ const TriangleSet& SharedTriangles::get() const
           tris.push_back(i + offset);
       }
     m_set = std::make_shared<const TriangleSet>(std::move(positions), std::move(tris));
+    m_made.store(true, std::memory_order_release);
   });
   return *m_set;
 }

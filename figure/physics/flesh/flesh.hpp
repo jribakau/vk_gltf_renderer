@@ -16,12 +16,18 @@
 //  - each cage edge keeps its two ends' offsets together, which keeps a lobe smooth and in one piece;
 //  - each lobe keeps its volume against the skin (physics/volume.hpp), split at the midline, so one
 //    breast pressed doesn't swell the other;
-//  - an offset is at most 3 cm, and at most 0.5 cm into the body.
+//  - an offset is at most 3 cm, and at most 0.5 cm into the body;
+//  - what it meets while it moves (step 11, touch.hpp: props, people, its own limbs) is a plane per
+//    particle for the frame, which it stays in front of. A particle pressed may go 3 cm into the
+//    body, and its lobe bulges by the contact's share of the volume pushed in (target -(1 - beta) V
+//    rather than 0), as the still contact pass's dent does.
 // Damping acts on the velocity relative to the skin, so a lobe moving with its skin is neither damped
 // nor slowed. Substeps are 1/480 s whatever the frame rate, the remainder carried.
 //
-// Once the skin has been still for a second the damping ramps up; after three it is asleep: the
-// offsets are 0 and nothing is written until the skin moves again.
+// Once the skin has been still for a second the damping ramps up, and what presses the flesh lets go
+// over a quarter of a second: by then the still pass's dent has faded in under it (the skin sinks
+// into it, and a pressed particle keeps its place as it does). After three it is asleep: the offsets
+// are 0 and nothing is written until the skin moves again.
 //
 // One thread (the figure's owner) calls everything.
 
@@ -32,8 +38,12 @@
 #include <string>
 #include <vector>
 
+#include <functional>
+
 #include <figure/dforce/skin.hpp>
 #include <figure/morph/morph_set.hpp>
+#include <figure/physics/collide/triangle_set.hpp>
+#include <figure/physics/rigid/world.hpp>
 #include <figure/scene/graph.hpp>
 
 namespace fv::physics {
@@ -96,6 +106,15 @@ struct FleshInput
 };
 FleshModel buildFlesh(const FleshInput& in);
 
+// A plane a particle stays in front of for a frame: through `point` along `normal` (unit, out of what
+// it meets), less `allow` (cm) it may be in; in the targets' space.
+struct FleshContact
+{
+  uint32_t              particle = 0;
+  std::array<double, 3> point{}, normal{};
+  double                allow = 0;
+};
+
 // The solve on a model, as the tests drive it.
 class FleshSolver
 {
@@ -111,6 +130,11 @@ public:
   // starts at rest; the frame after takes the skin's velocity as it finds it. `reshaped`: the skin
   // moved because its shape did (a dial), which moves the lobes with it and isn't felt.
   void step(std::span<const float> targets, double seconds, bool reshaped = false);
+  // What the particles meet over the next step (it forgets them after), and the share of the volume
+  // they push in that bulges around the dent.
+  void setContacts(std::vector<FleshContact> contacts, double bulge);
+  // Per particle: pressed in the last step (its contact moved it, or its skin is in what it meets).
+  std::span<const uint8_t> pressed() const { return m_pressed; }
   // Starts again at rest on the next step.
   void reset() { m_started = false; }
   bool asleep() const { return m_asleep; }
@@ -128,7 +152,7 @@ public:
 
 private:
   void   surface(std::span<const float> targets);
-  void   substep(double h, double calm);
+  void   substep(double h, double calm, double hold);
   double omega(size_t lobe) const;
 
   FleshModel          m_model;
@@ -138,6 +162,9 @@ private:
   std::vector<double> m_u;       // the skin's velocity over the last frame, xyz per particle
   std::vector<double> m_an;      // per particle, xyz: the skinned surface's area times its normal
   std::vector<double> m_normal;  // per particle, xyz: its unit normal
+  std::vector<FleshContact> m_contacts;
+  double                    m_bulge = 0.7;
+  std::vector<uint8_t>      m_pressed;
   double              m_carry   = 0;
   double              m_still   = 0;  // how long the skin has been still (s)
   bool                m_started = false;
@@ -146,11 +173,37 @@ private:
 };
 
 // A figure's soft flesh: the solver on its body, driven from the figure's pose.
+// What the flesh meets, in the figure root's space (centimetres): touch.hpp.
+struct FleshColliders
+{
+  // props
+  std::vector<ColliderRef> sets;
+  struct Limb
+  {
+    Capsule now;
+    // this body's share of an overlap: another person's softness against its own (overlapShare)
+    double share = 1;
+    // the figure's own: its part of the body (contact.hpp's `part`) and its capsule at rest, in the
+    // body cage's space; -1 for another person's
+    int     part = -1;
+    Capsule rest;
+  };
+  std::vector<Limb> limbs;
+  // the share of the volume pushed in that bulges around the dent (ContactSettings::bulge)
+  double bulge = 0.7;
+};
+
+class FleshTouch;
+
 class Flesh
 {
 public:
-  // `bodyMesh` is the figure's body.
-  Flesh(const SceneGraph& scene, const morph::MorphSet& morphs, int bodyMesh);
+  // `bodyMesh` is the figure's body; `root` its root node, the space what it meets is in.
+  Flesh(const SceneGraph& scene, const morph::MorphSet& morphs, int bodyMesh, int root = -1);
+  ~Flesh();
+
+  // What it meets while it moves, in the root's space (touch.hpp); asked each frame it is awake.
+  std::function<FleshColliders()> colliders;
 
   // Whether the body has lobes to move.
   bool                 valid() const { return m_solver && !m_solver->model().vertex.empty(); }
@@ -173,7 +226,9 @@ public:
 private:
   const SceneGraph&            m_scene;
   const morph::MorphSet&       m_morphs;
-  int                          m_bodyMesh;
+  int                          m_bodyMesh, m_root;
+  std::unique_ptr<FleshTouch>  m_touch;
+  std::vector<float>           m_targets;  // last frame's
   FleshSettings                m_settings;
   std::unique_ptr<FleshSolver> m_solver;
   dforce::CageSkin             m_skin;

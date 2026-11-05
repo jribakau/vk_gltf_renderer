@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <optional>
 
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
@@ -29,10 +28,7 @@ constexpr double kClosedDepth = 8;
 // Laplacian steps on the correction a round, and rounds of smoothing and pushing out again.
 constexpr int kSmooth = 3;
 constexpr int kRounds = 2;
-// How far apart along the skin two parts' vertices are at least, cm, for one to press on the other:
-// nearer, both are the skin of the joint between them (or of the parts beside it), which bends with
-// DAZ's corrective shapes and isn't contact.
-constexpr float kApart = 5;
+constexpr float kApart = kPartsApart;
 
 // A collider placed for this pass: queried in its own space, or, when its matrix stretches it
 // unevenly, as a copy carried into the body's.
@@ -126,10 +122,10 @@ struct Self
   // by the other half); below 0 before
   std::vector<double> keep;
 
-  Self(const ContactInput& in, const CageGraph& posed)
+  Self(const ContactInput& in)
       : positions(in.body)
       , parts(in.parts)
-      , fromEdge(in.parts.size(), kApart)
+      , fromEdge(partEdges(in.rest.size() == in.body.size() ? in.rest : in.body, in.polyStart, in.polyVerts, in.tris, in.parts).fromEdge)
       , keep(in.parts.size(), -1.0)
   {
     pieces.resize(size_t(*std::max_element(parts.begin(), parts.end())) + 1);
@@ -151,21 +147,6 @@ struct Self
         piece.near.add(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]);
       piece.near = piece.near.grown(kDepth);
     }
-    std::optional<CageGraph> unposed;
-    if(in.rest.size() == in.body.size())
-      unposed.emplace(in.rest, in.polyStart, in.polyVerts, in.tris);
-    const CageGraph&      graph = unposed ? *unposed : posed;
-    std::vector<uint32_t> edge;
-    for(size_t v = 0; v < graph.size(); v++)
-      for(uint32_t u : graph.next(v))
-        if(parts[u] != parts[v])
-        {
-          edge.push_back(uint32_t(v));
-          break;
-        }
-    // an edge between parts joins two vertices on edges, both at 0, so the distances stay in their part
-    for(const auto& [v, d] : graph.within(edge, kApart, [](uint32_t) { return true; }))
-      fromEdge[v] = d;
   }
 
   // Where vertex v, at p, is inside another part as the pass started: behind the closest face of a
@@ -377,7 +358,7 @@ ContactResult resolveContacts(const ContactInput& in)
   for(size_t v = 0; v < n; v++)
     for(int a = 0; a < 3; a++)
       normals[v * 3 + a] = graph.normal(v)[a];
-  const std::unique_ptr<Self>      self = pressed ? std::make_unique<Self>(in, graph) : nullptr;
+  const std::unique_ptr<Self>      self = pressed ? std::make_unique<Self>(in) : nullptr;
   std::vector<double>              target;
   std::vector<uint8_t>             hit;
   std::vector<std::vector<double>> keep;
@@ -547,6 +528,34 @@ std::vector<uint8_t> bodyParts(const SceneGraph& scene, const Mesh& mesh)
   return out;
 }
 
+PartEdges partEdges(std::span<const float> positions, std::span<const int32_t> polyStart, std::span<const int32_t> polyVerts,
+                    std::span<const uint32_t> tris, std::span<const uint8_t> parts, float reach)
+{
+  PartEdges out;
+  out.fromEdge.assign(parts.size(), reach);
+  if(parts.empty() || positions.size() != parts.size() * 3)
+    return out;
+  out.joined.assign(size_t(*std::max_element(parts.begin(), parts.end())) + 1, 0);
+  const CageGraph       graph(positions, polyStart, polyVerts, tris);
+  std::vector<uint32_t> edge;
+  for(size_t v = 0; v < graph.size(); v++)
+  {
+    bool on = false;
+    for(uint32_t u : graph.next(v))
+      if(parts[u] != parts[v])
+      {
+        on = true;
+        out.joined[parts[v]] |= 1u << parts[u];
+      }
+    if(on)
+      edge.push_back(uint32_t(v));
+  }
+  // an edge between parts joins two vertices on edges, both at 0, so the distances stay in their part
+  for(const auto& [v, d] : graph.within(edge, reach, [](uint32_t) { return true; }))
+    out.fromEdge[v] = d;
+  return out;
+}
+
 std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root,
                                            const std::string& without)
 {
@@ -622,6 +631,8 @@ bool Contact::set(const ContactSettings& s)
   {
     m_pass.cancel();
     m_patches = 0;
+    m_weight = m_aim = 0;
+    m_fadeIn         = false;
     return was && m_writer.off(m_morphs);
   }
   if(!was)
@@ -701,17 +712,38 @@ bool Contact::apply(const Landed* landed)
   {
     // nothing near the body: whatever was dented shows as it is
     m_patches = 0;
+    m_weight  = 1;
     if(body.geo && m_morphs.cpuTarget(m_writer.name, m_bodyMesh))
       wrote = m_writer.write(m_morphs, *body.geo, std::vector<float>(body.geo->cagePositions.size(), 0.f));
   }
   else if(body.geo && body.geo->cagePositions.size() == landed->delta.size())
   {
     m_patches = landed->patches;
-    wrote     = m_writer.write(m_morphs, *body.geo, landed->delta);
+    // after a hold it fades in from where the fade out left it; otherwise (a prop moved, a slider) at once
+    if(!m_fadeIn)
+      m_weight = 1;
+    wrote = m_writer.write(m_morphs, *body.geo, landed->delta, m_weight);
   }
+  m_aim    = 1;
+  m_fadeIn = false;
   if(m_patches != before)
     m_pass.bump();
   return wrote;
+}
+
+bool Contact::fade()
+{
+  // a hitch doesn't skip the fade
+  const auto   now = std::chrono::steady_clock::now();
+  const double dt  = std::min(std::chrono::duration<double>(now - m_at).count(), 0.1);
+  m_at             = now;
+  if(m_weight == m_aim)
+    return false;
+  m_weight = m_aim > m_weight ? std::min(m_aim, m_weight + dt / kFade) : std::max(m_aim, m_weight - dt / kFade);
+  if(!m_writer.weigh(m_morphs, m_weight))
+    return false;
+  m_morphs.flush();
+  return true;
 }
 
 bool Contact::pump()
@@ -720,20 +752,24 @@ bool Contact::pump()
     return false;
   if(driven && driven())
   {
-    if(m_held)
-      return false;
-    m_held = true;
-    m_pass.cancel();
-    m_pass.bump();
-    return m_writer.off(m_morphs);
+    if(!m_held)
+    {
+      m_held = true;
+      m_aim  = 0;
+      m_pass.cancel();
+      m_pass.bump();
+    }
+    return fade();
   }
   if(m_held)
   {
-    // paused: a pass on the pose it stopped at
-    m_held = false;
+    // paused: a pass on the pose it stopped at, which fades in
+    m_held   = false;
+    m_fadeIn = true;
     m_pass.bump();
     m_pass.poke();
   }
+  const bool faded = fade();
   return m_pass.pump(
       [this] {
         auto job = prepare();
@@ -767,7 +803,7 @@ bool Contact::pump()
           return out;
         });
       },
-      [this](const Landed* landed) { return apply(landed); });
+      [this](const Landed* landed) { return apply(landed); }) || faded;
 }
 
 }  // namespace fv::physics

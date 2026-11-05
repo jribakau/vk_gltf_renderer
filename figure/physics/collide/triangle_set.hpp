@@ -8,6 +8,7 @@
 // crossings of a ray say it instead.
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -74,12 +75,16 @@ public:
 
   const TriangleSet& get() const;
   const Box&         bounds() const { return m_bounds; }
+  // Made already: get() costs nothing. What asks every frame on the application thread (the soft
+  // flesh) leaves one that isn't to a pass on the pool.
+  bool made() const { return m_made.load(std::memory_order_acquire); }
 
 private:
   std::function<std::vector<std::pair<std::vector<float>, std::vector<uint32_t>>>()> m_read;
   Box                                                                                m_bounds;
   mutable std::once_flag                                                             m_once;
   mutable std::shared_ptr<const TriangleSet>                                         m_set;
+  mutable std::atomic<bool>                                                          m_made{false};
 };
 
 // What a pass meets: triangles in their own space and the matrix that places them in the body's root
