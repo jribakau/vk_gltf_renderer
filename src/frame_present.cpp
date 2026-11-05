@@ -132,10 +132,11 @@ struct FramePresent::Impl
   std::atomic<bool>     hdrFrames{false};
   DisplayHdr            display;  // under statusMutex
 
-  // HTTP thread: runs `work` on the application thread and returns what it returns.
-  std::string run(std::function<std::string()> work);
+  // HTTP thread: runs `work` on the application thread and returns what it returns. Work the thread
+  // has no time for within 10 s still runs when it comes back: `pending`, if given, says so.
+  std::string run(std::function<std::string()> work, bool* pending = nullptr);
   std::string attach(uintptr_t surface, uintptr_t window);
-  // Back to the stream alone; `why` is the error that ended presenting, if one did.
+  // Stops presenting; `why` is the error that ended it, if one did.
   void        detach(const std::string& why);
   void        setVisible(bool on);
   void        setStatus(const std::string& st, const std::string& err);
@@ -414,7 +415,7 @@ void FramePresent::onPostRender()
 
 //--------------------------------------------------------------------------------------------------
 
-std::string FramePresent::Impl::run(std::function<std::string()> work)
+std::string FramePresent::Impl::run(std::function<std::string()> work, bool* pending)
 {
   if(!running)
     return "the renderer is stopping";
@@ -426,7 +427,11 @@ std::string FramePresent::Impl::run(std::function<std::string()> work)
   }
   // the application thread takes it at its next update; a loading scene can hold that up a while
   if(result.wait_for(10s) != std::future_status::ready)
+  {
+    if(pending)
+      *pending = true;
     return "the renderer did not take the request in time";
+  }
   return result.get();
 }
 
@@ -542,8 +547,17 @@ void FramePresent::registerRoutes(httplib::Server& http)
       res.set_content("surface=<handle> is required", "text/plain");
       return;
     }
-    const std::string err = s.run([&s, surface, window] { return s.attach(surface, window); });
-    res.set_content("{\"ok\":" + std::string(err.empty() ? "true" : "false") + ",\"status\":" + s.statusJson() + "}", "application/json");
+    // what GET /present says until the attach lands (attach sets it then), so the app can wait for one
+    // the application thread has no time for yet
+    s.setStatus("attaching", "");
+    bool              pending = false;
+    const std::string err     = s.run([&s, surface, window] { return s.attach(surface, window); }, &pending);
+    // one that never ran (the renderer is stopping) leaves no status of its own
+    if(!err.empty() && !pending)
+      s.setStatus("detached", err);
+    res.set_content("{\"ok\":" + std::string(err.empty() ? "true" : "false") + ",\"pending\":" + (pending ? "true" : "false")
+                        + ",\"status\":" + s.statusJson() + "}",
+                    "application/json");
   });
   http.Post("/present/detach", [&s](const httplib::Request&, httplib::Response& res) {
     s.run([&s] {

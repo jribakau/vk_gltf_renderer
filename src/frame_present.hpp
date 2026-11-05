@@ -30,8 +30,13 @@
 //   POST /present/attach?surface=<handle>   the surface handle, duplicated into this process, and
 //        [&window=<hwnd>]                   the window it is in, for the display it is on (HDR).
 //                                           Answers {"ok":true,...} once the swapchain presents,
-//                                           or {"ok":false,"error":...}; the stream goes on as before
-//   POST /present/detach                    back to the stream alone
+//                                           or {"ok":false,...} with the status's error. One the
+//                                           application thread has no time for within 10 s (a start
+//                                           that builds the ray-tracing pipeline holds it a minute)
+//                                           answers {"ok":false,"pending":true,...}: it still runs when
+//                                           the thread comes back, and the status is "attaching" until
+//                                           then
+//   POST /present/detach                    stop presenting (the renderer is going)
 //   POST /present/visible?on=0|1            the window is minimized or hidden: skip presenting
 //   POST /present/view?w=&h=                the viewport's size in pixels: the swapchain's (DXGI
 //                                           stretches the frame over it, so a frame capped by Max
@@ -55,7 +60,8 @@
 //
 // While attached and visible the stream is told it has a local viewer (FrameStream::setLocalViewer):
 // it stops copying frames out for nobody, and the loop runs at the stream's rate. A failure while
-// presenting (a lost device) detaches and records the error; the app falls back to the stream.
+// presenting (a lost device) detaches and records the error; the app attaches again. The stream itself
+// is for the headless tools: the app shows no frames but these.
 //
 // HDR: while the display the window is on is in HDR mode (Windows' "Use HDR") and the renderer makes
 // HDR frames (presentHdr, hdr_output.hpp), the shared images and the swapchain are scRGB half floats;
