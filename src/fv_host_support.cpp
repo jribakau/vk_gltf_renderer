@@ -395,7 +395,8 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
       *final = flip;
     return cookedTexture(s, req, flip, false).image;
   }
-  // composed into a PNG beside the others made this way (composeImage recolours the iris)
+  // composed into a PNG beside the others made this way (composeImage has no iris recolour or skin tone:
+  // those are cooked, above)
   if(route == Fallback::eCompose)
   {
     std::error_code ec;
