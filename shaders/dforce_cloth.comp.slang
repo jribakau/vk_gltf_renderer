@@ -127,6 +127,8 @@ void integrateMain(uint3 tid: SV_DispatchThreadID)
     m.lam[k] = 0;
   if(k < m.numSoft)
     m.lamAtt[k] = 0;
+  if(k < m.numClusterEdges)
+    m.clusterLam[k] = 0;
 }
 
 // A vertex of partial strength is tethered to where the pose would put it: a distance-0 XPBD
@@ -184,6 +186,108 @@ void edgesMain(uint3 tid: SV_DispatchThreadID)
     m.x[ed.a] = m.x[ed.a] - n * (wa * dl);
   if(wb > 0)
     m.x[ed.b] = m.x[ed.b] + n * (wb * dl);
+}
+
+// A cluster's vertices for a sweep: xyz and the inverse mass.
+groupshared float4 clusterX[DFORCE_CLUSTER_LOCAL];
+
+// One XPBD distance row over the cluster's shared vertices, as edgesMain projects one over the model's.
+// Only the cluster's own vertices (local index under `owned`) move: a halo vertex, another cluster's
+// end of a crossing row, counts with its inverse mass and stays where it was read.
+void clusterRow(DforceModel m, uint r, float atScale, uint owned)
+{
+  DforceEdge ed = m.clusterEdges[r];
+  float4     pa = clusterX[ed.a], pb = clusterX[ed.b];
+  float      w  = pa.w + pb.w;
+  if(w <= 0)
+    return;
+  float3 d   = pb.xyz - pa.xyz;
+  float  len = length(d);
+  if(len < 1e-8)
+    return;
+  float alpha = ed.alpha;
+  if(ed.kind == DFORCE_EDGE_BEND && len < ed.rest * ed.ratio)
+    alpha = ed.buckle > 0 ? alpha / ed.buckle : 1e6;
+  float  C  = len - ed.rest;
+  float3 n  = d / len;
+  float  at = alpha * atScale;
+  float  lam = m.clusterLam[r];
+  float  dl  = (-C - at * lam) / (w + at);
+  if(ed.kind == DFORCE_EDGE_REACH)
+    dl = min(lam + dl, 0.0) - lam;
+  m.clusterLam[r] = lam + dl;
+  if(pa.w > 0 && uint(ed.a) < owned)
+    clusterX[ed.a].xyz = pa.xyz - n * (pa.w * dl);
+  if(pb.w > 0 && uint(ed.b) < owned)
+    clusterX[ed.b].xyz = pb.xyz + n * (pb.w * dl);
+}
+
+// One sweep of a cluster, a workgroup a cluster (physics-plan step 13a): its vertices into shared
+// memory, its colours one at a time between group barriers (the stretch rows', then the reach links'
+// for a sweep that holds length or the rest's for a full one), its tethers, and its own vertices back.
+// The rows that cross clusters run after it, a colour a dispatch, as edgesMain.
+[shader("compute")]
+[numthreads(DFORCE_CLUSTER_THREADS, 1, 1)]
+void clusterMain(uint3 group: SV_GroupID, uint3 local: SV_GroupThreadID)
+{
+  DforceModel m      = *pc.model;
+  uint        c      = group.x;
+  int         first  = m.clusterVertStart[c];
+  int         count  = m.clusterVertStart[c + 1] - first;
+  int         owned  = m.clusterOwned[c];
+  uint        t      = local.x;
+  for(int l = int(t); l < count; l += DFORCE_CLUSTER_THREADS)
+  {
+    int v       = m.clusterVerts[first + l];
+    // free vertices where the last sweep left them; pinned ones where the substep put them
+    float w     = m.inv[v];
+    clusterX[l] = float4(w > 0 ? pc.clusterSrc[v] : m.x[v], w);
+  }
+  GroupMemoryBarrierWithGroupSync();
+  float atScale = 1.0 / (pc.dt * pc.dt);
+  uint  colours = m.clusterColours;
+  uint  base    = c * colours;
+  uint  rest0   = m.clusterStretch + m.clusterReach;
+  for(uint k = 0; k < colours; k++)
+  {
+    // a sweep that holds length skips the rest's colours, a full one the reach links'
+    if(k >= m.clusterStretch && (pc.lengthOnly != 0 ? k >= rest0 : k < rest0))
+      continue;
+    int r0 = m.clusterColourStart[base + k], r1 = m.clusterColourStart[base + k + 1];
+    for(int r = r0 + int(t); r < r1; r += DFORCE_CLUSTER_THREADS)
+      clusterRow(m, uint(r), atScale, uint(owned));
+    GroupMemoryBarrierWithGroupSync();
+  }
+  // the tethers of partial strength: each writes its own vertex only
+  for(int s = m.clusterSoftStart[c] + int(t); s < m.clusterSoftStart[c + 1]; s += DFORCE_CLUSTER_THREADS)
+  {
+    uint2  ls     = m.clusterSoft[s];
+    int    v      = m.clusterVerts[first + int(ls.x)];
+    float4 p      = clusterX[ls.x];
+    float3 d      = p.xyz - kinematicAt(m, v, pc.t);
+    float  C      = length(d);
+    if(C < 1e-8)
+      continue;
+    float at = m.attAlpha[v] * atScale;
+    float dl = (-C - at * m.lamAtt[ls.y]) / (p.w + at);
+    m.lamAtt[ls.y] += dl;
+    clusterX[ls.x].xyz = p.xyz + d * (p.w * dl / C);
+  }
+  GroupMemoryBarrierWithGroupSync();
+  for(int l = int(t); l < owned; l += DFORCE_CLUSTER_THREADS)
+    pc.clusterDst[m.clusterVerts[first + l]] = clusterX[l].xyz;
+}
+
+// The free vertices back from x's twin, after an odd number of cluster sweeps.
+[shader("compute")]
+[numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
+void commitMain(uint3 tid: SV_DispatchThreadID)
+{
+  DforceModel m = *pc.model;
+  if(tid.x >= m.numFree)
+    return;
+  int i  = m.freeVerts[tid.x];
+  m.x[i] = pc.clusterSrc[i];
 }
 
 // The nearest face of a lower layer within `reach` of q, with the faces where the pose has them at

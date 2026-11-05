@@ -61,7 +61,38 @@ class Application;
 class DforceGpu final : public fv::dforce::ClothBackend
 {
 public:
-  DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, std::vector<fv::dforce::SettleMesh> meshes, const fv::dforce::SettleOptions& opts);
+  // How it runs, for the GPU cloth bench (src/tools/fv_cloth_bench.cpp, physics-plan step 13a); the app
+  // takes the defaults.
+  struct Options
+  {
+    // >0: the cluster solve, a workgroup a cluster of about this many free vertices, at most `clusterLocal`
+    // with the pinned ones its rows read (figure/physics/cloth/clusters.hpp); 0: a dispatch a colour
+    int  clusterSize  = 0;
+    int  clusterLocal = 2048;
+    // the rows that cross clusters: held by both clusters, each moving its own end (one dispatch a
+    // sweep in all), or after the clusters, a dispatch a colour of them
+    enum class Crossing
+    {
+      eHalo,
+      eColoured,
+    } crossing = Crossing::eHalo;
+    bool timestamps   = false;  // time each frame on the GPU (stats().gpuMs)
+  };
+  // What it has done so far.
+  struct Stats
+  {
+    int    frames = 0, dispatches = 0;
+    double gpuMs = 0, waitMs = 0;
+    // of gpuMs: the collision passes and the frame's recovery, and the holds on faces
+    double collideMs = 0, holdMs = 0;
+    // the cluster solve's shape (0 without it): clusters, colours a cluster runs, the rows that cross
+    // and their colours
+    int    clusters = 0, clusterColours = 0, crossingColours = 0, substeps = 0, mostLocal = 0;
+    size_t crossingRows = 0, haloRows = 0, rows = 0;
+  };
+
+  DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, std::vector<fv::dforce::SettleMesh> meshes, const fv::dforce::SettleOptions& opts,
+            const Options& gpu = {});
   ~DforceGpu() override;
   DforceGpu(const DforceGpu&)            = delete;
   DforceGpu& operator=(const DforceGpu&) = delete;
@@ -82,6 +113,8 @@ public:
 
   // It could not start, for whoever would say so: called on the owner's thread
   std::function<void()> onStartFailed;
+
+  Stats stats() const;
 
 private:
   // What was made on the pool, into buffers. `wait`: for it, if it isn't done; otherwise false until it is.

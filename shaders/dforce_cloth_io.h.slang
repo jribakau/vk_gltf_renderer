@@ -30,6 +30,10 @@
 NAMESPACE_SHADERIO_BEGIN()
 
 #define DFORCE_WORKGROUP_SIZE 256
+// The cluster solve (physics-plan step 13a, figure/physics/cloth/clusters.hpp): a workgroup a cluster,
+// holding its vertices (its own free ones and the pinned ghosts its rows read) in shared memory
+#define DFORCE_CLUSTER_THREADS 256
+#define DFORCE_CLUSTER_LOCAL 2048
 // kind: 0 stretch, 1 shear, 2 bend
 #define DFORCE_EDGE_BEND 2
 #define DFORCE_EDGE_REACH 3
@@ -82,7 +86,21 @@ struct DforceModel
   float*      attAlpha;   // each one's tether compliance, by vertex index (0 for the rest)
   float*      lamAtt;     // and its multiplier, by soft index
   int*        contact;    // the face each free vertex rests on (set by the last collision pass, or a recovery), or -1
-  uint        nv, numKinematic, numFree, numEdges, numTris, cellMask, numSoft, pad0;
+  // the cluster solve, when there is one: `edges` above are then only the rows that cross clusters.
+  // Cluster c's vertices are clusterVerts[clusterVertStart[c] ..], its own first (clusterOwned[c] of
+  // them); its colour k is clusterEdges[clusterColourStart[c * clusterColours + k] ..], each row's ends
+  // local indices into those vertices; its tethered vertices clusterSoft[clusterSoftStart[c] ..] (x the
+  // local index, y the soft index)
+  DforceEdge* clusterEdges;
+  float*      clusterLam;
+  int*        clusterVerts;
+  int*        clusterVertStart;
+  int*        clusterOwned;
+  int*        clusterColourStart;
+  uint2*      clusterSoft;
+  int*        clusterSoftStart;
+  uint        nv, numKinematic, numFree, numEdges, numTris, cellMask, numSoft, numClusterEdges;
+  uint        numClusters, clusterColours, clusterStretch, clusterReach;
   float       cellSize, depth, cap, maxSpeed, searchReach, recoverDepth;
 };
 
@@ -95,6 +113,11 @@ struct DforcePushConstant
   float        tFaces;                // where they were at the last collision pass
   float        extraDamping;
   uint         grip;                  // a hold that applies friction
+  uint         lengthOnly;            // a cluster sweep over the rows that hold length (else a full sweep)
+  // a cluster sweep reads the free vertices from one buffer and writes its own to the other (x and its
+  // twin, in turn), so what it reads of another cluster's is where that was at the sweep's start
+  float3*      clusterSrc;
+  float3*      clusterDst;
 };
 
 NAMESPACE_SHADERIO_END()

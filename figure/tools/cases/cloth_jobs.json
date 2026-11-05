@@ -1,0 +1,91 @@
+{
+  "about": "The GPU cloth bench's jobs (physics-plan step 13a): the She Is The Boss outfit and the ZK Kai Dress on Mirel, standing and in a long stride, and the dress standing at four strengths (the hem-by-strength table of docs/improvements.md, 'Cloth has a Keep shape slider'), each settled on the CPU island and written as a job (_out/jobs/<case>.job) for src/tools/fv_cloth_bench.cpp to replay on the GPU solvers. Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {
+      "load": "People/Genesis 9/Characters/Mirel.duf"
+    },
+    {
+      "wear": "People/Genesis 9/Clothing/Modu8/She Is The Boss/M8 SITB !Full Load.duf"
+    },
+    {
+      "dforce": "sitb_standing",
+      "job": "_out/jobs/sitb_standing.job"
+    },
+    {
+      "preset": "People/Genesis 9/Poses/3D Sugar/Lifestyle Walk/LW G9 Feminine 04 Long Strides.duf"
+    },
+    {
+      "dforce": "sitb_striding",
+      "job": "_out/jobs/sitb_striding.job"
+    },
+    {
+      "load": "People/Genesis 9/Characters/Mirel.duf"
+    },
+    {
+      "wear": "People/Genesis 9/Clothing/ZKuro/ZK Kai Dress/ZK Kai Dress.duf"
+    },
+    {
+      "dforce": "dress_standing",
+      "job": "_out/jobs/dress_standing.job"
+    },
+    {
+      "cloth": {
+        "item": "Kai Dress",
+        "on": true,
+        "strength": 1.0
+      }
+    },
+    {
+      "dforce": "dress_s10",
+      "job": "_out/jobs/dress_s10.job"
+    },
+    {
+      "cloth": {
+        "item": "Kai Dress",
+        "on": true,
+        "strength": 0.8
+      }
+    },
+    {
+      "dforce": "dress_s08",
+      "job": "_out/jobs/dress_s08.job"
+    },
+    {
+      "cloth": {
+        "item": "Kai Dress",
+        "on": true,
+        "strength": 0.6
+      }
+    },
+    {
+      "dforce": "dress_s06",
+      "job": "_out/jobs/dress_s06.job"
+    },
+    {
+      "cloth": {
+        "item": "Kai Dress",
+        "on": true,
+        "strength": 0.5
+      }
+    },
+    {
+      "dforce": "dress_s05",
+      "job": "_out/jobs/dress_s05.job"
+    },
+    {
+      "cloth": {
+        "item": "Kai Dress",
+        "on": true,
+        "strength": 1.0
+      }
+    },
+    {
+      "preset": "People/Genesis 9/Poses/3D Sugar/Lifestyle Walk/LW G9 Feminine 04 Long Strides.duf"
+    },
+    {
+      "dforce": "dress_striding",
+      "job": "_out/jobs/dress_striding.job"
+    }
+  ]
+}

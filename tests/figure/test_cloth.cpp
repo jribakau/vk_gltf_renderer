@@ -1,6 +1,7 @@
 // The cloth island and the grid it meets faces by (docs/physics-plan.md step 12). How cloth drapes is
 // tested through dForce's names in test_dforce.cpp, which build on the island; these cover what the
-// move made: the island's own interface, the seam dForce runs it through, and the shared grid.
+// move made: the island's own interface, the seam dForce runs it through, and the shared grid. And for
+// the GPU cloth bench (step 13a): the job file it replays, and the clusters the GPU solves in.
 
 #include <gtest/gtest.h>
 
@@ -10,8 +11,14 @@
 #include <set>
 #include <vector>
 
+#include <filesystem>
+#include <fstream>
+#include <map>
+
 #include <figure/dforce/solver.hpp>
+#include <figure/physics/cloth/clusters.hpp>
 #include <figure/physics/cloth/island.hpp>
+#include <figure/physics/cloth/job.hpp>
 #include <figure/physics/collide/tri_grid.hpp>
 
 namespace {
@@ -63,6 +70,144 @@ Surface strip(int n, const Mat4& bone)
   m.posed.resize(m.rest.size());
   physics::cloth::skin(m, m.bones, m.posed.data());
   return m;
+}
+
+// A sheet of n x n quads, 1 cm each, hanging in the xy plane: its top row pinned, the row under it
+// tethered at half strength, the rest free.
+Surface sheet(int n)
+{
+  Surface m;
+  for(int i = 0; i <= n; i++)
+    for(int j = 0; j <= n; j++)
+      m.rest.insert(m.rest.end(), {float(j), -float(i), 0.f});
+  m.posed    = m.rest;
+  const auto at = [&](int i, int j) { return uint32_t(i * (n + 1) + j); };
+  for(int i = 0; i < n; i++)
+    for(int j = 0; j < n; j++)
+    {
+      m.tris.insert(m.tris.end(), {at(i, j), at(i + 1, j), at(i, j + 1), at(i, j + 1), at(i + 1, j), at(i + 1, j + 1)});
+      m.polyVerts.insert(m.polyVerts.end(), {int32_t(at(i, j)), int32_t(at(i + 1, j)), int32_t(at(i + 1, j + 1)), int32_t(at(i, j + 1))});
+      m.polyStart.push_back(int32_t(m.polyVerts.size()));
+    }
+  const size_t v = m.rest.size() / 3;
+  m.kind         = Surface::Kind::eDynamic;
+  m.strength.assign(v, 1.f);
+  for(int j = 0; j <= n; j++)
+  {
+    m.strength[at(0, j)] = 0;
+    m.strength[at(1, j)] = 0.5f;
+  }
+  for(auto* f : {&m.stretch, &m.shear, &m.bend})
+    f->assign(v, 0.5f);
+  m.buckling.assign(v, 0.05f);
+  m.bucklingRatio.assign(v, 0.7f);
+  m.density.assign(v, 180.f);
+  m.contraction.assign(v, 1.f);
+  m.damping.assign(v, 0.1f);
+  m.friction.assign(v, 0.4f);
+  m.offset.assign(v, 0.2f);
+  m.layer.assign(v, 0);
+  m.selfCollide.assign(v, 0);
+  m.collide.assign(v, 1);
+  m.visible.assign(v, 1);
+  m.gravity = {0, -980, 0};
+  return m;
+}
+
+// What every cut must keep, halo or not: the free vertices split among the clusters, each row with a
+// free end run where it should be, and no colour writing a vertex twice.
+void expectAWholeCut(const physics::cloth::Model& model, const physics::cloth::Clusters& c, bool halo)
+{
+  using physics::cloth::DistanceKind;
+  ASSERT_GT(c.count(), 1);
+  std::vector<int> clusterOf(size_t(model.nv), -1);
+  for(int k = 0; k < c.count(); k++)
+    for(int l = 0; l < c.owned[size_t(k)]; l++)
+    {
+      const int v = c.verts[size_t(c.vertStart[size_t(k)] + l)];
+      EXPECT_GT(model.inv[size_t(v)], 0) << "an owned vertex is free";
+      EXPECT_EQ(clusterOf[size_t(v)], -1) << "vertex " << v << " in two clusters";
+      clusterOf[size_t(v)] = k;
+    }
+  for(int v : model.freeVerts)
+    EXPECT_GE(clusterOf[size_t(v)], 0) << "free vertex " << v << " in no cluster";
+  // the rows each cluster runs, by model row, and that no colour writes a vertex twice
+  std::map<int, int> held;
+  const int          colours = c.colours();
+  for(int k = 0; k < c.count(); k++)
+  {
+    const int first = c.vertStart[size_t(k)], owned = c.owned[size_t(k)];
+    for(int l = owned; l < c.vertStart[size_t(k) + 1] - first; l++)
+    {
+      const int v = c.verts[size_t(first + l)];
+      if(halo && model.inv[size_t(v)] > 0)
+        EXPECT_NE(clusterOf[size_t(v)], k) << "a halo vertex is another cluster's";
+      else
+        EXPECT_EQ(model.inv[size_t(v)], 0) << "a ghost is pinned";
+    }
+    for(int col = 0; col < colours; col++)
+    {
+      std::set<int> written;
+      for(int r = c.colourStart[size_t(k * colours + col)]; r < c.colourStart[size_t(k * colours + col + 1)]; r++)
+      {
+        const auto& row = c.rows[size_t(r)];
+        const auto& e   = model.edges[size_t(row.edge)];
+        EXPECT_EQ(c.verts[size_t(first + row.a)], e.a);
+        EXPECT_EQ(c.verts[size_t(first + row.b)], e.b);
+        const DistanceKind want = col < c.stretchColours ? DistanceKind::eStretch : col < c.stretchColours + c.reachColours ? DistanceKind::eReach : e.kind;
+        EXPECT_EQ(e.kind, want) << "a row in another group's colour";
+        if(col >= c.stretchColours + c.reachColours)
+          EXPECT_TRUE(e.kind == DistanceKind::eShear || e.kind == DistanceKind::eBend);
+        for(const int l : {int(row.a), int(row.b)})
+          if(l < owned)
+            EXPECT_TRUE(written.insert(l).second) << "cluster " << k << " colour " << col << " writes local " << l << " twice";
+        held[row.edge]++;
+      }
+    }
+  }
+  for(size_t r = 0; r < model.edges.size(); r++)
+  {
+    const auto& e  = model.edges[r];
+    const bool  fa = model.inv[size_t(e.a)] > 0, fb = model.inv[size_t(e.b)] > 0;
+    if(!fa && !fb)
+    {
+      EXPECT_EQ(held.count(int(r)), 0u);
+      continue;
+    }
+    const bool crosses = fa && fb && clusterOf[size_t(e.a)] != clusterOf[size_t(e.b)];
+    if(!crosses)
+      EXPECT_EQ(held[int(r)], 1) << "row " << r;
+    else if(halo)
+      EXPECT_EQ(held[int(r)], 2) << "a crossing row is held by both its clusters";
+    else
+      EXPECT_EQ(held.count(int(r)), 0u) << "a crossing row runs after the clusters";
+  }
+  // the crossing rows: each once, no colour writing a vertex twice
+  std::set<int> crossing;
+  for(size_t col = 0; col + 1 < c.crossingStart.size(); col++)
+  {
+    std::set<int> written;
+    for(int k = c.crossingStart[col]; k < c.crossingStart[col + 1]; k++)
+    {
+      const int r = c.crossing[size_t(k)];
+      EXPECT_TRUE(crossing.insert(r).second);
+      EXPECT_TRUE(written.insert(model.edges[size_t(r)].a).second);
+      EXPECT_TRUE(written.insert(model.edges[size_t(r)].b).second);
+    }
+  }
+  if(halo)
+    EXPECT_TRUE(crossing.empty());
+  // each tethered vertex once, by the cluster that owns it
+  std::set<int> soft;
+  for(int k = 0; k < c.count(); k++)
+    for(int s = c.softStart[size_t(k)]; s < c.softStart[size_t(k) + 1]; s++)
+    {
+      const auto [local, index] = c.soft[size_t(s)];
+      EXPECT_LT(int(local), c.owned[size_t(k)]);
+      EXPECT_EQ(c.verts[size_t(c.vertStart[size_t(k)] + local)], model.softVerts[size_t(index)]);
+      EXPECT_TRUE(soft.insert(index).second);
+    }
+  EXPECT_EQ(soft.size(), model.softVerts.size());
 }
 
 Mat4 shifted(double x)
@@ -181,4 +326,86 @@ TEST(TriGrid, aQueryReachesEveryFaceWhoseGrownBoxMeetsIt)
   physics::TriGrid none;
   none.build(faces, {}, at, at, pad);
   EXPECT_TRUE(none.empty());
+}
+
+TEST(ClothClusters, theCutSplitsTheFreeVerticesAndRunsEveryRowOnce)
+{
+  // a 40 cm sheet in clusters of about 200 free vertices: every free vertex in one, every row with a
+  // free end in the cluster of its free ends or among the crossing rows, each colour writing a vertex
+  // once, the clusters as compact as the patches they grow (few rows cross), and the same every time
+  const auto model = physics::cloth::Model::build({sheet(40)}, 0.15f);
+  const auto c     = physics::cloth::buildClusters(model, 200, 2048);
+  expectAWholeCut(model, c, false);
+  EXPECT_LE(c.mostLocal, 2048);
+  EXPECT_LT(double(c.crossing.size()), 0.25 * double(model.edges.size())) << "compact patches";
+  const auto again = physics::cloth::buildClusters(model, 200, 2048);
+  EXPECT_EQ(again.verts, c.verts);
+  EXPECT_EQ(again.colourStart, c.colourStart);
+  EXPECT_EQ(again.crossing, c.crossing);
+}
+
+TEST(ClothClusters, withAHaloACrossingRowIsHeldByBothItsClusters)
+{
+  const auto model = physics::cloth::Model::build({sheet(40)}, 0.15f);
+  const auto c     = physics::cloth::buildClusters(model, 200, 2048, true);
+  expectAWholeCut(model, c, true);
+  EXPECT_GT(c.haloRows, 0u);
+  // as many rows cross as without a halo, now held by the clusters
+  EXPECT_EQ(c.haloRows, physics::cloth::buildClusters(model, 200, 2048).crossing.size());
+}
+
+TEST(ClothClusters, aClusterStopsBeforeItsGhostsTakeItPastTheMost)
+{
+  // the sheet's pinned top row is ghosts to the clusters along it: none holds more than the most asked
+  const auto model = physics::cloth::Model::build({sheet(40)}, 0.15f);
+  const auto c     = physics::cloth::buildClusters(model, 2000, 300);
+  expectAWholeCut(model, c, false);
+  EXPECT_LE(c.mostLocal, 300);
+}
+
+TEST(ClothJob, aJobReadsBackAsItWasWritten)
+{
+  physics::cloth::Job job;
+  job.surfaces = {strip(3, shifted(2)), sheet(4)};
+  job.surfaces[1].kind = Surface::Kind::eAddon;
+  job.options.stretchSweeps = 3;
+  job.options.transition    = 0.5f;
+  job.options.recoverLost   = false;
+  job.drapes                = {{1, "the sheet"}};
+  const auto file           = std::filesystem::temp_directory_path() / "fv-cloth-job-test.job";
+  ASSERT_TRUE(physics::cloth::writeJob(file, job));
+  const auto back = physics::cloth::readJob(file);
+  ASSERT_TRUE(back.has_value());
+  ASSERT_EQ(back->surfaces.size(), 2u);
+  for(size_t k = 0; k < 2; k++)
+  {
+    const Surface &a = job.surfaces[k], &b = back->surfaces[k];
+    EXPECT_EQ(a.rest, b.rest);
+    EXPECT_EQ(a.posed, b.posed);
+    EXPECT_EQ(a.tris, b.tris);
+    EXPECT_EQ(a.polyVerts, b.polyVerts);
+    EXPECT_EQ(a.kind, b.kind);
+    EXPECT_EQ(a.strength, b.strength);
+    EXPECT_EQ(a.layer, b.layer);
+    EXPECT_EQ(a.gravity, b.gravity);
+    EXPECT_EQ(a.skinIndex, b.skinIndex);
+    EXPECT_EQ(a.skinWeight, b.skinWeight);
+    ASSERT_EQ(a.bones.size(), b.bones.size());
+    for(size_t i = 0; i < a.bones.size(); i++)
+      EXPECT_EQ(a.bones[i].e, b.bones[i].e);
+    EXPECT_EQ(a.toSpace.e, b.toSpace.e);
+  }
+  EXPECT_EQ(back->options.stretchSweeps, 3);
+  EXPECT_EQ(back->options.transition, 0.5f);
+  EXPECT_FALSE(back->options.recoverLost);
+  EXPECT_EQ(back->drapes, job.drapes);
+  // and it drapes the same as what it was written from, to the bit
+  EXPECT_EQ(physics::cloth::settle(job.surfaces, job.options), physics::cloth::settle(back->surfaces, back->options));
+
+  // a file that isn't a job isn't read
+  {
+    std::ofstream(file, std::ios::binary) << "not a cloth job";
+  }
+  EXPECT_FALSE(physics::cloth::readJob(file).has_value());
+  std::filesystem::remove(file);
 }

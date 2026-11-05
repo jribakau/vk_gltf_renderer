@@ -523,6 +523,29 @@ target_sources(${PROJECT_NAME} PRIVATE
   ${SHADER_SHARED_SLANG_FILES}
 )
 
+# The GPU cloth bench (src/tools/fv_cloth_bench.cpp, docs/physics-plan.md step 13a): a cloth job that
+# fv_parity wrote, settled on the CPU island and the GPU solvers, timed and judged. Headless, nothing of
+# the app; its own copy of the cloth shader, compiled with the renderer's flags.
+if(FV_DFORCE_GPU)
+  add_executable(fv_cloth_bench src/tools/fv_cloth_bench.cpp src/fv_dforce_gpu.cpp src/fv_dforce_gpu.hpp)
+  target_link_libraries(fv_cloth_bench PRIVATE fv_figure nvpro2::nvapp nvpro2::nvvk nvpro2::nvutils glm)
+  target_compile_definitions(fv_cloth_bench PRIVATE FV_DFORCE_GPU)
+  target_include_directories(fv_cloth_bench PRIVATE ${CMAKE_BINARY_DIR}/fv_cloth_bench ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src
+                                                    ${NVSHADERS_DIR})
+  compile_slang(
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/dforce_cloth.comp.slang"
+    "${CMAKE_BINARY_DIR}/fv_cloth_bench/_autogen"
+    HEADERS_VAR FV_CLOTH_BENCH_SHADERS
+    EXTRA_FLAGS ${SHADER_EXTRA_FLAGS}
+    DEBUG_LEVEL ${SHADER_DEBUG_LEVEL}
+    OPTIMIZATION_LEVEL ${SHADER_OPT_LEVEL}
+    CAPABILITIES ${SHADER_CAPABILITIES}
+  )
+  target_sources(fv_cloth_bench PRIVATE ${FV_CLOTH_BENCH_SHADERS})
+  set_target_properties(fv_cloth_bench PROPERTIES FOLDER "figure" RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/_bin/Release
+                                                  RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_SOURCE_DIR}/_bin/Debug)
+endif()
+
 
 #####################################################################################
 # OptiX headers (always downloaded; needed even when the denoiser is disabled

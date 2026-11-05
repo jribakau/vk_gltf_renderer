@@ -28,6 +28,7 @@
 
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
+#include <figure/physics/cloth/clusters.hpp>
 #include <glm/glm.hpp>
 #include <nvapp/application.hpp>
 #include <nvutils/logger.hpp>
@@ -88,8 +89,19 @@ struct DforceGpu::Impl
   nvapp::Application*      app   = nullptr;
   std::vector<SettleMesh>  meshes;
   SettleOptions            opts;
+  DforceGpu::Options       gpu;
   ClothModel               model;
   std::vector<Kinematic>   kin;
+  // the cluster solve's partition, when it runs (gpu.clusterSize > 0 and the model fits it)
+  fv::physics::cloth::Clusters        clusters;
+  std::vector<shaderio::DforceEdge>   clusterRows;
+  std::vector<glm::uvec2>             clusterSoft;
+  DforceGpu::Stats                    stats;
+  VkQueryPool                         queries   = VK_NULL_HANDLE;
+  double                              msPerTick = 0;
+  // the timestamps a frame wrote after its first two, in pairs around a phase, and which phase each is
+  static constexpr uint32_t kTimedPairs = 256;
+  std::vector<int>                    timedPhase;
 
   // edges sorted by colour, and where each colour starts; the stretch edges have the first colours
   // to themselves, so a sweep over them alone is those colours
@@ -101,11 +113,12 @@ struct DforceGpu::Impl
   std::vector<shaderio::DforceTri>  faces;
 
   VkPipelineLayout layout{};
-  VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{};
+  VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{}, clusterPipe{}, commitPipe{};
 
   // the model's buffers; `cells` and `items` grow with the grid
   nvvk::Buffer x, prev, vel, cprev, kinStart, kinEnd, kinematic, freeVerts, inv, dampRate, offset, friction, layer, collides, grav, edges,
-      lam, tris, cells, items, softVerts, attAlpha, lamAtt, contact, modelBuf, readback;
+      lam, tris, cells, items, softVerts, attAlpha, lamAtt, contact, modelBuf, readback, clusterEdgeBuf, clusterLamBuf, clusterVertBuf, clusterVertStartBuf,
+      clusterOwnedBuf, clusterColourBuf, clusterSoftBuf, clusterSoftStartBuf, xTwin;
   size_t cellCapacity = 0, itemCapacity = 0;
   bool   gridFailed = false;
 
@@ -211,6 +224,43 @@ bool DforceGpu::Impl::prepare()
     }
   }
 
+  // the cluster solve: the clusters' rows run in shared memory, the rows that cross them coloured as below
+  if(gpu.clusterSize > 0)
+  {
+    clusters = fv::physics::cloth::buildClusters(model, gpu.clusterSize, std::min(gpu.clusterLocal, DFORCE_CLUSTER_LOCAL),
+                                                 gpu.crossing == DforceGpu::Options::Crossing::eHalo);
+    if(clusters.count() == 0 || clusters.mostLocal > DFORCE_CLUSTER_LOCAL || clusters.mostLocal > 0xFFFF)
+    {
+      LOGW("dForce GPU: the cluster solve can't take this model (%d vertices in a cluster at most); a dispatch a colour instead\n", clusters.mostLocal);
+      clusters = {};
+    }
+  }
+  if(clusters.count() > 0)
+  {
+    for(const auto& row : clusters.rows)
+    {
+      const Edge& ed = model.edges[size_t(row.edge)];
+      clusterRows.push_back({int(row.a), int(row.b), ed.rest, ed.alpha, int(ed.kind), ed.ratio, ed.buckle, 0.f});
+    }
+    for(const auto& [l, s] : clusters.soft)
+      clusterSoft.push_back({uint32_t(l), uint32_t(s)});
+    // the rows that cross clusters, coloured (none with a halo: the clusters hold them)
+    colourStart.assign(clusters.crossingStart.begin(), clusters.crossingStart.end());
+    for(int e : clusters.crossing)
+    {
+      const Edge& ed = model.edges[size_t(e)];
+      sorted.push_back({ed.a, ed.b, ed.rest, ed.alpha, int(ed.kind), ed.ratio, ed.buckle, 0.f});
+    }
+    stretchColours = clusters.crossingStretch;
+    lengthColours  = clusters.crossingStretch + clusters.crossingReach;
+    stats.clusters        = clusters.count();
+    stats.clusterColours  = clusters.colours();
+    stats.crossingColours = int(colourStart.size()) - 1;
+    stats.crossingRows    = clusters.crossing.size();
+    stats.haloRows        = clusters.haloRows;
+    stats.mostLocal       = clusters.mostLocal;
+    stats.rows            = clusters.rows.size() + clusters.crossing.size();
+  }
   // greedy colouring: no two edges of a colour share a vertex, so a colour projects in parallel.
   // The stretch edges are coloured first, among themselves, so the sweeps over them alone (as the
   // CPU solver's stretchSweeps) are the first colours
@@ -248,26 +298,30 @@ bool DforceGpu::Impl::prepare()
     return true;
   };
   // stretch, reach links, the rest: a stretch sweep takes the first two, a full sweep all but the links
-  if(!colourKind([](EdgeKind k) { return k == EdgeKind::eStretch; }))
-    return false;
-  stretchColours = colours;
-  if(!colourKind([](EdgeKind k) { return k == EdgeKind::eReach; }))
-    return false;
-  lengthColours = colours;
-  if(!colourKind([](EdgeKind k) { return !holdsLength(k); }))
-    return false;
-  colourStart.assign(size_t(colours) + 1, 0);
-  for(int c = 0; c < colours; c++)
+  if(clusters.count() == 0)
   {
-    colourStart[size_t(c)] = int(sorted.size());
-    for(size_t e = 0; e < model.edges.size(); e++)
-      if(colourOf[e] == c)
-      {
-        const Edge& ed = model.edges[e];
-        sorted.push_back({ed.a, ed.b, ed.rest, ed.alpha, int(ed.kind), ed.ratio, ed.buckle, 0.f});
-      }
+    if(!colourKind([](EdgeKind k) { return k == EdgeKind::eStretch; }))
+      return false;
+    stretchColours = colours;
+    if(!colourKind([](EdgeKind k) { return k == EdgeKind::eReach; }))
+      return false;
+    lengthColours = colours;
+    if(!colourKind([](EdgeKind k) { return !holdsLength(k); }))
+      return false;
+    colourStart.assign(size_t(colours) + 1, 0);
+    for(int c = 0; c < colours; c++)
+    {
+      colourStart[size_t(c)] = int(sorted.size());
+      for(size_t e = 0; e < model.edges.size(); e++)
+        if(colourOf[e] == c)
+        {
+          const Edge& ed = model.edges[e];
+          sorted.push_back({ed.a, ed.b, ed.rest, ed.alpha, int(ed.kind), ed.ratio, ed.buckle, 0.f});
+        }
+    }
+    colourStart[size_t(colours)] = int(sorted.size());
+    stats.rows = sorted.size();
   }
-  colourStart[size_t(colours)] = int(sorted.size());
 
   for(int t : model.staticTris)
   {
@@ -331,6 +385,18 @@ bool DforceGpu::Impl::create()
   ok &= mapped(attAlpha, model.attAlpha);
   ok &= mapped(lamAtt, lamAttZero);
   ok &= mapped(contact, noContact);
+  if(clusters.count() > 0)
+  {
+    ok &= mapped(clusterEdgeBuf, clusterRows);
+    ok &= mapped(clusterLamBuf, std::vector<float>(std::max<size_t>(1, clusterRows.size()), 0.f));
+    ok &= mapped(clusterVertBuf, clusters.verts);
+    ok &= mapped(clusterVertStartBuf, clusters.vertStart);
+    ok &= mapped(clusterOwnedBuf, clusters.owned);
+    ok &= mapped(clusterColourBuf, clusters.colourStart);
+    ok &= mapped(clusterSoftBuf, clusterSoft.empty() ? std::vector<glm::uvec2>{glm::uvec2(0)} : clusterSoft);
+    ok &= mapped(clusterSoftStartBuf, clusters.softStart);
+    ok &= mapped(xTwin, xHost);
+  }
   ok &= mappedBytes(modelBuf, nullptr, sizeof(shaderio::DforceModel), VMA_MEMORY_USAGE_CPU_TO_GPU);
   ok &= mappedBytes(readback, nullptr, n * 3 * sizeof(float), VMA_MEMORY_USAGE_GPU_TO_CPU);
   if(!ok)
@@ -343,8 +409,17 @@ bool DforceGpu::Impl::create()
   NVVK_DBG_NAME(layout);
   if(!makePipeline("integrateMain", integratePipe) || !makePipeline("edgesMain", edgesPipe) || !makePipeline("attachMain", attachPipe)
      || !makePipeline("recoverMain", recoverPipe) || !makePipeline("holdMain", holdPipe) || !makePipeline("collideMain", collidePipe)
-     || !makePipeline("velocityMain", velocityPipe))
+     || !makePipeline("velocityMain", velocityPipe) || (clusters.count() > 0 && (!makePipeline("clusterMain", clusterPipe) || !makePipeline("commitMain", commitPipe))))
     return false;
+  if(gpu.timestamps)
+  {
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(alloc->getPhysicalDevice(), &props);
+    msPerTick = double(props.limits.timestampPeriod) * 1e-6;
+    const VkQueryPoolCreateInfo info{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 2 + 2 * kTimedPairs};
+    if(vkCreateQueryPool(alloc->getDevice(), &info, nullptr, &queries) != VK_SUCCESS)
+      queries = VK_NULL_HANDLE;
+  }
   LOGI("dForce GPU: %d vertices (%zu free, %zu soft), %zu edges in %d colours (%d stretch), %zu collision faces\n", model.nv,
        model.freeVerts.size(), model.softVerts.size(), sorted.size(), int(colourStart.size()) - 1, stretchColours, faces.size());
   sorted = {};
@@ -357,7 +432,12 @@ void DforceGpu::Impl::destroy()
   if(!alloc)
     return;
   VkDevice device = alloc->getDevice();
-  for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe})
+  if(queries)
+  {
+    vkDestroyQueryPool(device, queries, nullptr);
+    queries = VK_NULL_HANDLE;
+  }
+  for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe, &clusterPipe, &commitPipe})
     if(*p)
     {
       vkDestroyPipeline(device, *p, nullptr);
@@ -369,7 +449,9 @@ void DforceGpu::Impl::destroy()
     layout = VK_NULL_HANDLE;
   }
   for(nvvk::Buffer* b : {&x, &prev, &vel, &cprev, &kinStart, &kinEnd, &kinematic, &freeVerts, &inv, &dampRate, &offset, &friction, &layer,
-                         &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &contact, &modelBuf, &readback})
+                         &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &contact, &modelBuf, &readback,
+                         &clusterEdgeBuf, &clusterLamBuf, &clusterVertBuf, &clusterVertStartBuf, &clusterOwnedBuf, &clusterColourBuf, &clusterSoftBuf,
+                         &clusterSoftStartBuf, &xTwin})
     if(b->buffer != VK_NULL_HANDLE)
       alloc->destroyBuffer(*b);
 }
@@ -558,6 +640,22 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     m.cap          = kCap;
     m.maxSpeed     = kMaxSpeed;
     m.searchReach  = model.maxOffset + kSearch;
+    if(clusters.count() > 0)
+    {
+      m.clusterEdges       = reinterpret_cast<shaderio::DforceEdge*>(clusterEdgeBuf.address);
+      m.clusterLam         = reinterpret_cast<float*>(clusterLamBuf.address);
+      m.clusterVerts       = reinterpret_cast<int*>(clusterVertBuf.address);
+      m.clusterVertStart   = reinterpret_cast<int*>(clusterVertStartBuf.address);
+      m.clusterOwned       = reinterpret_cast<int*>(clusterOwnedBuf.address);
+      m.clusterColourStart = reinterpret_cast<int*>(clusterColourBuf.address);
+      m.clusterSoft        = reinterpret_cast<glm::uvec2*>(clusterSoftBuf.address);
+      m.clusterSoftStart   = reinterpret_cast<int*>(clusterSoftStartBuf.address);
+      m.numClusterEdges    = uint32_t(clusterRows.size());
+      m.numClusters        = uint32_t(clusters.count());
+      m.clusterColours     = uint32_t(clusters.colours());
+      m.clusterStretch     = uint32_t(clusters.stretchColours);
+      m.clusterReach       = uint32_t(clusters.reachColours);
+    }
     if(model.staticTris.empty() || !buildGrid(start, end, m))
     {
       if(!model.staticTris.empty() && !gridFailed)
@@ -579,6 +677,29 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
 
   const auto      frameStartTime = std::chrono::steady_clock::now();
   VkCommandBuffer cmd            = app->createTempCmdBuffer();
+  if(queries)
+  {
+    vkCmdResetQueryPool(cmd, queries, 0, 2 + 2 * kTimedPairs);
+    timedPhase.clear();
+    vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, queries, 0);
+  }
+  const auto dispatch = [this](VkCommandBuffer c, uint32_t x, uint32_t y, uint32_t z) {
+    stats.dispatches++;
+    vkCmdDispatch(c, x, y, z);
+  };
+  // a phase's dispatch between two timestamps (0 collision, 1 hold), while there are queries for it
+  const auto timed = [&](int phase, const auto& record) {
+    const bool time = queries && timedPhase.size() < kTimedPairs;
+    const uint32_t q = 2 + 2 * uint32_t(timedPhase.size());
+    if(time)
+    {
+      vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, queries, q);
+      timedPhase.push_back(phase);
+    }
+    record();
+    if(time)
+      vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, queries, q + 1);
+  };
   const auto      groups = [](uint32_t count) { return (count + DFORCE_WORKGROUP_SIZE - 1) / DFORCE_WORKGROUP_SIZE; };
   const auto      barrier = [&] {
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
@@ -596,43 +717,77 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       if(pc.edgeCount == 0)
         continue;
       vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-      vkCmdDispatch(cmd, groups(pc.edgeCount), 1, 1);
+      dispatch(cmd, groups(pc.edgeCount), 1, 1);
       barrier();
     }
   };
-  // one sweep, as the CPU solver's: every edge but the links, or those that hold length; then the tethers
+  // one sweep, as the CPU solver's: every edge but the links, or those that hold length; then the tethers.
+  // The cluster solve runs the clusters' rows and tethers first, a workgroup a cluster, then the rows
+  // that cross them
+  // which of x and its twin holds the free vertices: the cluster sweeps go back and forth between them
+  bool inTwin = false;
+  // the free vertices back in x, when an odd number of cluster sweeps left them in its twin
+  const auto home = [&] {
+    if(!inTwin)
+      return;
+    pc.clusterSrc = reinterpret_cast<glm::vec3*>(xTwin.address);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, commitPipe);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    dispatch(cmd, groups(m.numFree), 1, 1);
+    barrier();
+    inTwin = false;
+  };
   const auto sweep = [&](bool lengthOnly) {
+    if(clusters.count() > 0)
+    {
+      pc.lengthOnly = lengthOnly ? 1 : 0;
+      pc.clusterSrc = reinterpret_cast<glm::vec3*>(inTwin ? xTwin.address : x.address);
+      pc.clusterDst = reinterpret_cast<glm::vec3*>(inTwin ? x.address : xTwin.address);
+      inTwin        = !inTwin;
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, clusterPipe);
+      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+      dispatch(cmd, uint32_t(clusters.count()), 1, 1);
+      barrier();
+      // the crossing rows read and write x
+      if(colourStart.size() > 1)
+        home();
+    }
     colours(0, size_t(stretchColours));
     if(lengthOnly)
       colours(size_t(stretchColours), size_t(lengthColours));
     else
       colours(size_t(lengthColours), colourStart.size() - 1);
-    if(m.numSoft > 0)
+    if(m.numSoft > 0 && clusters.count() == 0)
     {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, attachPipe);
       vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-      vkCmdDispatch(cmd, groups(m.numSoft), 1, 1);
+      dispatch(cmd, groups(m.numSoft), 1, 1);
       barrier();
     }
   };
   // resting vertices held on their faces where the pose has them at pc.t
   const auto hold = [&](bool grip) {
+    home();
     if(m.numTris == 0 || (debug & 2))
       return;
     pc.grip = grip ? 1 : 0;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, holdPipe);
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    vkCmdDispatch(cmd, groups(m.numFree), 1, 1);
-    barrier();
+    timed(1, [&] {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, holdPipe);
+      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+      dispatch(cmd, groups(m.numFree), 1, 1);
+      barrier();
+    });
   };
   // the frame's start: cloth lost behind a face of a lower layer is put back, as on the CPU
   if(m.numTris > 0 && opts.recoverLost && !(debug & 1))
   {
     pc.t = 0;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, recoverPipe);
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    vkCmdDispatch(cmd, groups(m.numFree), 1, 1);
-    barrier();
+    timed(0, [&] {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, recoverPipe);
+      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+      dispatch(cmd, groups(m.numFree), 1, 1);
+      barrier();
+    });
   }
   for(int s = 0; s < steps; s++)
   {
@@ -640,7 +795,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     pc.tFaces = tFaces;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, integratePipe);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    vkCmdDispatch(cmd, groups(std::max({m.numKinematic, m.numFree, m.numEdges, m.numSoft})), 1, 1);
+    dispatch(cmd, groups(std::max({m.numKinematic, m.numFree, m.numEdges, m.numSoft, m.numClusterEdges})), 1, 1);
     barrier();
     for(int it = 0; it < std::max(1, opts.iterations); it++)
       sweep(false);
@@ -649,28 +804,50 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     hold(true);
     if(s == next && m.numTris > 0)
     {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, collidePipe);
-      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-      vkCmdDispatch(cmd, groups(m.numFree), 1, 1);
-      barrier();
+      timed(0, [&] {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, collidePipe);
+        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+        dispatch(cmd, groups(m.numFree), 1, 1);
+        barrier();
+      });
       // the pushes stretched edges; one more sweep shares them out before velocities are read
       sweep(false);
       hold(false);
       tFaces = pc.t;
       next += std::max(1, steps / passes);
     }
+    home();
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, velocityPipe);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    vkCmdDispatch(cmd, groups(m.numFree), 1, 1);
+    dispatch(cmd, groups(m.numFree), 1, 1);
     barrier();
   }
+  if(queries)
+    vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, queries, 1);
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT);
   const VkBufferCopy copy{.srcOffset = 0, .dstOffset = 0, .size = n * 3 * sizeof(float)};
   vkCmdCopyBuffer(cmd, x.buffer, readback.buffer, 1, &copy);
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_HOST_BIT);
   const auto waitStart = std::chrono::steady_clock::now();
   app->submitAndWaitTempCmdBuffer(cmd);
-  settleWait += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
+  const double waited = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
+  settleWait += waited;
+  stats.waitMs += waited;
+  stats.frames++;
+  stats.substeps = steps;
+  if(queries)
+  {
+    uint64_t ticks[2] = {0, 0};
+    if(vkGetQueryPoolResults(alloc->getDevice(), queries, 0, 2, sizeof ticks, ticks, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS)
+      stats.gpuMs += double(ticks[1] - ticks[0]) * msPerTick;
+    std::vector<uint64_t> pairs(timedPhase.size() * 2);
+    if(!pairs.empty()
+       && vkGetQueryPoolResults(alloc->getDevice(), queries, 2, uint32_t(pairs.size()), pairs.size() * sizeof(uint64_t), pairs.data(), sizeof(uint64_t),
+                                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT)
+              == VK_SUCCESS)
+      for(size_t k = 0; k < timedPhase.size(); k++)
+        (timedPhase[k] == 0 ? stats.collideMs : stats.holdMs) += double(pairs[2 * k + 1] - pairs[2 * k]) * msPerTick;
+  }
 
   std::vector<float> frameStart = std::move(xHost);
   xHost.resize(n * 3);
@@ -702,13 +879,15 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
   }
 }
 
-DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, std::vector<SettleMesh> meshes, const SettleOptions& opts)
+DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, std::vector<SettleMesh> meshes, const SettleOptions& opts,
+                     const Options& gpu)
     : m_impl(std::make_shared<Impl>())
 {
   m_impl->alloc  = alloc;
   m_impl->app    = app;
   m_impl->meshes = std::move(meshes);
   m_impl->opts   = opts;
+  m_impl->gpu    = gpu;
   if(alloc && app)
     m_prepared = fv::jobs::pool().submit([impl = m_impl] { return impl->prepare(); });
 }
@@ -837,6 +1016,11 @@ bool DforceGpu::settleSome(double seconds)
     LOGI("[fv-time] dforceGpuSettle %d frames %.1f ms of work, %.1f ms waiting on the GPU, %.1f ms in all (%.1f ms a frame, %d substeps)\n", s.settled, s.settleWork,
          s.settleWait, std::chrono::duration<double, std::milli>(end - s.settleStart).count(), s.settleWork / std::max(1, s.settled), s.substeps);
   return done;
+}
+
+DforceGpu::Stats DforceGpu::stats() const
+{
+  return m_impl->stats;
 }
 
 bool DforceGpu::failed() const

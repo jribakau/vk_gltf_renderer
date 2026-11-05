@@ -24,6 +24,7 @@
 // stretch, where it hangs against the skinned pose, and how much of it is through the body.
 // "frames": n holds for n frames instead of until still; "trace": true prints every frame;
 // "obj": dir writes the drapes and the posed body as OBJ files there (centimetres, figure space);
+// "job": file writes what the solver is given, for the GPU cloth bench (src/tools/fv_cloth_bench.cpp);
 // "apply": true also runs the driver's own path (the settle on the pool, the drape written as a
 // morph) and measures the drape read back through the skin, as the renderer gets it;
 // "colliders": false leaves worn items without a simulation modifier out of the simulation.
@@ -68,6 +69,8 @@
 #include <figure/dforce/dforce.hpp>
 #include <figure/dforce/skin.hpp>
 #include <figure/physics/cloth/island.hpp>
+#include <figure/physics/cloth/job.hpp>
+#include <figure/physics/cloth/report.hpp>
 #include <figure/dson/material_preset.hpp>
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
@@ -280,25 +283,7 @@ Json fitReport(const fv::Figure& fig)
   return items;
 }
 
-// The stretch rows of one simulated surface as a ratio of their rest length, sorted. A row between
-// two pinned vertices is the skin's doing, not the solver's, and is left out.
-std::vector<double> stretchRatios(const fv::physics::cloth::Model& model, size_t slot, size_t n, const std::vector<float>& out)
-{
-  const int           base = model.base[slot];
-  std::vector<double> ratio;
-  for(const fv::physics::cloth::Distance& e : model.edges)
-  {
-    if(e.kind != fv::physics::cloth::DistanceKind::eStretch || e.rest <= 0 || e.a < base || e.b < base || e.a >= base + int(n) || e.b >= base + int(n))
-      continue;
-    if(model.inv[size_t(e.a)] <= 0 && model.inv[size_t(e.b)] <= 0)
-      continue;
-    const size_t a = size_t(e.a - base) * 3, b = size_t(e.b - base) * 3;
-    const double dx = out[b] - out[a], dy = out[b + 1] - out[a + 1], dz = out[b + 2] - out[a + 2];
-    ratio.push_back(std::sqrt(dx * dx + dy * dy + dz * dz) / e.rest);
-  }
-  std::sort(ratio.begin(), ratio.end());
-  return ratio;
-}
+using fv::physics::cloth::stretchRatios;
 
 // How many vertices lie behind the body's closest face (pushOut's rule, within 3 cm), and how deep.
 Json insideReport(std::span<const float> body, std::span<const uint32_t> bodyTris, std::span<const float> item)
@@ -1449,6 +1434,17 @@ int main(int argc, char** argv)
         opts.stretchSweeps = step.value("stretchSweeps", opts.stretchSweeps);
         opts.substeps      = step.value("substeps", opts.substeps);
         opts.transition    = step.value("transition", opts.transition);
+        // the job as the solver takes it, for the GPU cloth bench to replay (physics-plan step 13a)
+        if(step.contains("job"))
+        {
+          fv::physics::cloth::Job job{p->bodies, opts, {}};
+          for(const auto& [mesh, slot] : p->drapes)
+            job.drapes.emplace_back(slot, scene.meshes[size_t(mesh)].name);
+          const auto file = root / pathOf(step["job"].get<std::string>().c_str());
+          std::filesystem::create_directories(file.parent_path());
+          if(!fv::physics::cloth::writeJob(file, job))
+            throw std::runtime_error("could not write the cloth job " + file.string());
+        }
         const auto           simStart = std::chrono::steady_clock::now();
         fv::physics::cloth::Island sim(p->bodies, opts);
         const bool           trace  = step.value("trace", false);
