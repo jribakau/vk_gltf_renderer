@@ -227,7 +227,7 @@ public:
   // ptLightReuseCap; updateLightReuse): the records, and what the last frame wrote into them
   bool         m_lightReuse{false};
   bool         m_lightReuseDlss{false};
-  float        m_lightReuseCap{20.0F};
+  float        m_lightReuseCap{4.0F};  // 20 sparkled under Ray Reconstruction: one bright record copied along the motion
   nvvk::Buffer m_lightReservoirs;
   VkDeviceSize m_lightReservoirsSize{0};
   bool         m_lightReuseParity{false};
@@ -286,6 +286,9 @@ public:
     bool dlssGuide = false;  // True when guide-buffer capture is compiled in (USE_GUIDE_SHADER: DLSS, OptiX or OIDN).
     nvvkgltf::SceneFeatureSet features{};  // only meaningful when `optimal == true`
     int dlssTransparency = 0;  // USE_DLSS_TRANSP the pipeline was specialized with (Dlss::TransparencyMode).
+    // True when the light samples' resampling and reuse are compiled in (USE_LIGHT_RIS: ptLightCandidates,
+    // ptLightReuse). Last, as makeVariantKey() fills the key in order.
+    bool lightRis = false;
 
     // Same SPIR-V: every shader macro matches. dlssTransparency is a pipeline specialization
     // constant, not a macro, so it is left out. dlss and dlssGuide are compared in every mode (they
@@ -294,7 +297,7 @@ public:
     bool sameShader(const VariantKey& o) const
     {
       return wireframe == o.wireframe && visualize == o.visualize && omm == o.omm && optimal == o.optimal
-             && dlss == o.dlss && dlssGuide == o.dlssGuide && (optimal ? (features == o.features) : true);
+             && dlss == o.dlss && dlssGuide == o.dlssGuide && lightRis == o.lightRis && (optimal ? (features == o.features) : true);
     }
     bool operator==(const VariantKey& o) const { return sameShader(o) && dlssTransparency == o.dlssTransparency; }
     // The fields sameShader() sees differ on, e.g. "omm 0->1, dlss 1->0", for the recompile log.

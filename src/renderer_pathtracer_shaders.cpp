@@ -1286,6 +1286,8 @@ PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) co
 #else
       0,
 #endif
+      // one variant for the DLSS frames and the still alike, so a camera start or stop stays a cached swap
+      m_lightCandidates > 1 || m_lightCandidatesDlss > 1 || m_lightReuse || m_lightReuseDlss,
   };
 }
 
@@ -1302,6 +1304,7 @@ std::string PathTracer::VariantKey::shaderDiff(const VariantKey& to) const
   add("optimal", optimal, to.optimal);
   add("dlss", dlss, to.dlss);
   add("dlssGuide", dlssGuide, to.dlssGuide);
+  add("lightRis", lightRis, to.lightRis);
   if(optimal && to.optimal && features != to.features)
     diff += std::string(diff.empty() ? "" : ", ") + "features [" + features.toString() + "] -> [" + to.features.toString() + "]";
   return diff.empty() ? "no shader field changed" : diff;
@@ -1486,6 +1489,9 @@ std::vector<std::pair<std::string, std::string>> PathTracer::variantMacros(const
       {"USE_VISUALIZE", std::to_string(key.visualize ? 1 : 0)},
       // Ray queries against a BLAS with an opacity micromap need an explicit opt-in (see gltf_pathtrace.slang).
       {"USE_OMM", std::to_string(key.omm ? 1 : 0)},
+      // The light samples' resampling and reuse (light_ris.h.slang): compiled in only when asked for, as
+      // the loop costs a frame even switched off
+      {"USE_LIGHT_RIS", std::to_string(key.lightRis ? 1 : 0)},
   };
   nvvkgltf::SceneFeatureSet guide;
   guide.set(nvvkgltf::SceneFeatureSet::eDlssGuide, key.dlssGuide);
@@ -1531,6 +1537,43 @@ void PathTracer::createSbt(Resources& resources, VkPipeline pipeline, VkShaderMo
 bool PathTracer::buildsOffTheFrame(Resources& resources, const PendingCompileWork& work)
 {
   const VariantKey wanted = makeVariantKey(resources);
+  // A variant with the light samples' resampling compiled in or out draws the image the other does (in
+  // expectation: both are unbiased), so either stands in while the other builds as a job, with no frame
+  // waiting on a Slang compile and the driver's pipeline (seconds, tens of them cold)
+  if(work.recompile && !work.stalePipeline && !(m_failedVariant && *m_failedVariant == wanted))
+  {
+    const auto otherRis = [&](const VariantKey& k) {
+      VariantKey same = k;
+      same.lightRis   = wanted.lightRis;
+      return k.lightRis != wanted.lightRis && same == wanted;
+    };
+    const bool rayQuery = m_renderTechnique == RenderTechnique::RayQuery;
+    bool       standIn  = false;
+    {
+      std::lock_guard<std::mutex> lock(m_compileMutex);
+      standIn = !m_compiledIsFallback && (rayQuery ? m_rqPipeline : m_rtxPipeline) != VK_NULL_HANDLE && otherRis(m_compiled);
+    }
+    if(!standIn)
+    {
+      std::optional<VariantKey> cached;
+      {
+        std::lock_guard<std::mutex> lock(m_compileMutex);
+        for(const VariantCacheEntry& e : m_variantCache)
+          if(otherRis(e.key) && e.useSER == m_pipelineUseSER && (rayQuery ? e.rqPipeline : e.rtxPipeline) != VK_NULL_HANDLE)
+          {
+            cached = e.key;
+            break;
+          }
+      }
+      standIn = cached && swapVariant(resources, *cached, /*gpuIdle=*/false);
+    }
+    if(standIn)
+    {
+      if(!m_variantJobs.job())
+        startVariantJob(resources, wanted);
+      return true;
+    }
+  }
   if(!work.recompile || work.stalePipeline || !wanted.optimal || !resources.gpuView().variantMayBuildOffFrame()
      || (m_failedVariant && *m_failedVariant == wanted))
     return false;

@@ -245,15 +245,17 @@ TEST(LightRis, MoreCandidatesLessNoise)
 TEST(LightReuse, ARecordSurvivesItsPacking)
 {
   LightReuseRecord r;
-  r.pos    = vec3(1.5f, -2.25f, 300.125f);
+  r.depth  = 300.125f;
   r.normal = normalize(vec3(0.3f, -0.8f, -0.5f));
+  r.target = 0.0625f;
   r.kind   = LIGHT_REUSE_EMISSIVE;
   r.index  = 123456789u & 0x3FFFFFFFu;
   r.uv     = vec2(0.25f, 0.7f);
   r.W      = 3.5e-3f;
   r.M      = 17.0f;
   LightReuseRecord u = lightReuseUnpack(lightReusePackA(r), lightReusePackB(r));
-  EXPECT_EQ(u.pos, r.pos);
+  EXPECT_EQ(u.depth, r.depth);
+  EXPECT_EQ(u.target, r.target);
   EXPECT_GT(dot(u.normal, r.normal), 0.99999f);
   EXPECT_EQ(u.kind, r.kind);
   EXPECT_EQ(u.index, r.index);
@@ -278,6 +280,32 @@ TEST(LightReuse, ABufferNoFrameWroteIsNoRecord)
   EXPECT_EQ(zero.M, 0.0f);
   const uint32_t nan = 0x7FC00000u;
   EXPECT_EQ(lightReuseUnpack(uvec4(0), uvec4(0, 0, nan, asuint(4.0f))).M, 0.0f);
+}
+
+TEST(LightReuse, ARecordWeighsNoMoreThanWhereItWasFound)
+{
+  LightReuseRecord r = lightReuseUnpack(uvec4(0), uvec4(0));
+  r.M                = 20.0f;
+  r.W                = 1.0f;
+  r.target           = 0.5f;
+  EXPECT_FLOAT_EQ(lightReuseEffectiveM(20.0f, r, 0.25f), 20.0f);  // dimmer here: as it was
+  EXPECT_FLOAT_EQ(lightReuseEffectiveM(20.0f, r, 5.0f), 2.0f);    // ten times brighter: a tenth of its M
+  // its weight then stays at what it was where it was found, however bright it looks here
+  for(float here : {1.0f, 10.0f, 1000.0f})
+  {
+    const float m = lightReuseEffectiveM(20.0f, r, here);
+    EXPECT_LE(lightReuseRecordWeight(r, here, 1.0f, m), 20.0f * r.target * r.W * 1.0001f) << here;
+  }
+}
+
+TEST(LightReuse, ASurfaceIsTheSameAtItsDepthAndNormal)
+{
+  LightReuseRecord r = lightReuseUnpack(uvec4(0), uvec4(0));
+  r.depth            = 10.0f;
+  r.normal           = vec3(0, 1, 0);
+  EXPECT_TRUE(lightReuseSameSurface(r, 10.15f, vec3(0, 1, 0)));
+  EXPECT_FALSE(lightReuseSameSurface(r, 10.5f, vec3(0, 1, 0)));                        // another surface behind
+  EXPECT_FALSE(lightReuseSameSurface(r, 10.0f, normalize(vec3(0.6f, 0.8f, 0.0f))));  // a turned one
 }
 
 TEST(LightReuse, TheRecordsHistoryIsCappedAndShared)

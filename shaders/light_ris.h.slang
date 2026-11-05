@@ -94,8 +94,9 @@ static const uint LIGHT_REUSE_ENVIRONMENT = 2u;  // uv: the world direction, oct
 
 struct LightReuseRecord
 {
-  float3 pos;     // the shading point the sample was shaded at
+  float  depth;   // the shading point's depth along the view, in the camera of the frame that wrote it
   float3 normal;  // its shading normal
+  float  target;  // the sample's target there (its unshadowed contribution, in the record's measure)
   uint   kind;    // LIGHT_REUSE_*
   uint   index;
   float2 uv;
@@ -151,7 +152,7 @@ float2 lightReuseUnpackUnorm2(uint p)
 // A record as the two uint4 it is kept in. The kind takes the index's top two bits.
 uint4 lightReusePackA(LightReuseRecord r)
 {
-  return uint4(asuint(r.pos.x), asuint(r.pos.y), asuint(r.pos.z), lightReusePackSnorm2(lightReuseOctEncode(r.normal)));
+  return uint4(asuint(r.depth), lightReusePackSnorm2(lightReuseOctEncode(r.normal)), asuint(r.target), 0u);
 }
 
 uint4 lightReusePackB(LightReuseRecord r)
@@ -163,8 +164,9 @@ uint4 lightReusePackB(LightReuseRecord r)
 LightReuseRecord lightReuseUnpack(uint4 a, uint4 b)
 {
   LightReuseRecord r;
-  r.pos    = float3(asfloat(a.x), asfloat(a.y), asfloat(a.z));
-  r.normal = lightReuseOctDecode(lightReuseUnpackSnorm2(a.w));
+  r.depth  = asfloat(a.x);
+  r.normal = lightReuseOctDecode(lightReuseUnpackSnorm2(a.y));
+  r.target = asfloat(a.z);
   r.kind   = b.x >> 30u;
   r.index  = b.x & 0x3FFFFFFFu;
   r.uv     = (r.kind == LIGHT_REUSE_ENVIRONMENT) ? lightReuseUnpackSnorm2(b.y) : lightReuseUnpackUnorm2(b.y);
@@ -178,13 +180,11 @@ LightReuseRecord lightReuseUnpack(uint4 a, uint4 b)
   return r;
 }
 
-// Whether a record's shading point is close enough to this one to stand in for it: within a few
-// per cent of its distance to the camera, and its normal near this one's
-bool lightReuseSameSurface(LightReuseRecord r, float3 pos, float3 normal, float cameraDistance)
+// Whether a record's shading point is close enough to this one to stand in for it: at its depth, in the
+// camera that wrote the record, within 2%, and its normal near this one's
+bool lightReuseSameSurface(LightReuseRecord r, float depth, float3 normal)
 {
-  const float3 d = r.pos - pos;
-  const float reach = 0.05F * cameraDistance;
-  return dot(d, d) <= reach * reach && dot(r.normal, normal) >= 0.9F;
+  return depth > 0.0F && abs(r.depth - depth) <= 0.02F * depth && dot(r.normal, normal) >= 0.9F;
 }
 
 // The M weights (Bitterli et al.'s), by what a candidate is: the record and the current candidates
@@ -198,6 +198,19 @@ bool lightReuseSameSurface(LightReuseRecord r, float3 pos, float3 normal, float 
 float lightReuseRecordM(LightReuseRecord r, float currentM, float cap)
 {
   return min(r.M, cap * currentM);
+}
+
+// The record's M, as much less as its sample looks brighter here than where it was found (its target
+// there over its target here, at most 1). W was made for that point: carried to one where the sample
+// gives several times more (a normal map's bump, the jitter across a lit edge), it made a firefly Ray
+// Reconstruction kept, a wall of them on 7TEST's moving view. With it the record weighs at most what it
+// did there. Biased where that happens (the balance heuristic's ratio, taken from the record's own
+// sample for every candidate), and not at all where the sample looks no brighter, as on a still's pixel.
+float lightReuseEffectiveM(float recordM, LightReuseRecord r, float recordTargetHere)
+{
+  if(!(recordTargetHere > r.target) || !(r.target > 0.0F))
+    return recordM;
+  return recordM * (r.target / recordTargetHere);
 }
 
 // A current candidate's M weight, `storable` if a record can hold it (LIGHT_REUSE_EMISSIVE, _ENVIRONMENT)

@@ -333,8 +333,8 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                 &m_lightTree, Persist::eNo);
   settings->add({.name            = "ptLightCandidates",
                  .help            = "PathTracer: Light samples a surface vertex of a still draws to keep the one it would gain "
-                                    "most from, unshadowed (resampled importance sampling, unbiased; 1: off). Only in a "
-                                    "shader built with USE_LIGHT_RIS 1 (gltf_pathtrace.slang)",
+                                    "most from, unshadowed (resampled importance sampling, unbiased; 1: off). Above 1 the path "
+                                    "tracer's variant with it compiled in builds the first time, while the other draws",
                  .callbackSuccess = reset},
                 &m_lightCandidates, Persist::eNo, 1, 16);
   settings->add({.name            = "ptLightCandidatesDlss",
@@ -348,8 +348,8 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                 &m_pushConst.lightCandidatesDepth, Persist::eNo, 0, 64);
   settings->add({.name            = "ptLightReuse",
                  .help            = "PathTracer: A still's first hit takes last frame's light sample at its pixel in as a "
-                                    "candidate, and keeps what it found lit (ReSTIR's temporal reuse). Only in a shader "
-                                    "built with USE_LIGHT_RIS 1",
+                                    "candidate, and keeps what it found lit (ReSTIR's temporal reuse). The path tracer's "
+                                    "variant with it compiled in builds the first time, while the other draws",
                  .callbackSuccess = reset},
                 &m_lightReuse, Persist::eNo);
   settings->add({.name            = "ptLightReuseDlss",
@@ -359,7 +359,8 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                 &m_lightReuseDlss, Persist::eNo);
   settings->add({.name            = "ptLightReuseCap",
                  .help            = "PathTracer: ptLightReuse: a pixel's record stands for at most this many times a frame's "
-                                    "own candidates (the history's length)",
+                                    "own candidates (the history's length). Above about 4 the moving view sparkles: a bright "
+                                    "record is copied along the motion, and Ray Reconstruction keeps the copies",
                  .callbackSuccess = reset},
                 &m_lightReuseCap, Persist::eNo, 1.0F, 1000.0F);
   settings->add({.name            = "ptGlassBounces",
