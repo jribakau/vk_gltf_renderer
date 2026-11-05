@@ -24,9 +24,14 @@
 // shaders/dforce_cloth.comp.slang. A frame is one command buffer: the kinematic vertices' start and
 // end positions and the body's collision grid go up (the host skins the kinematic vertices and
 // builds the grid, as the CPU solver does), the substeps are recorded, the positions come back.
-// It runs on the thread that owns the queue (ownerThreadOnly), submitted and waited on at once, so
-// a step costs the frame its GPU time; the proper pipelining into the renderer's frame is left
-// for when it has been measured.
+// A frame is submitted and waited on at once. On a queue of its own (useQueue: a second queue the
+// device gives, compute only on NVIDIA's) any thread may drive it, and the driver settles on the pool:
+// the thread that draws never waits on it, and the cloth's compute runs beside the renderer's frames
+// (physics-plan step 13b). Without one it runs on the thread that owns the renderer's queue
+// (ownerThreadOnly), and a step costs that frame its GPU time.
+//
+// It solves in clusters (figure/physics/cloth/clusters.hpp, physics-plan step 13a): a workgroup holds a
+// patch of the cloth in shared memory for a whole sweep, 10 dispatches a substep instead of about 145.
 //
 // Not done here: the cloth does not collide with itself, vertices keep no clearance budgets (every
 // free vertex looks around on every pass; the GPU has the threads for it), and the kinematic
@@ -43,7 +48,8 @@
 //
 // A frame that takes over 250 ms is logged with what it saw (such a frame is the one before a
 // device loss: Windows resets a GPU held for about two seconds). FV_DFORCE_GPU_DEBUG in the
-// environment leaves a kernel out, for bisecting one: 1 the recovery, 2 the hold.
+// environment leaves a kernel out, for bisecting one: 1 the recovery, 2 the hold; 4 solves a dispatch
+// a colour and 8 on the renderer's queue, as before step 13.
 
 #include <functional>
 #include <future>
@@ -67,7 +73,7 @@ public:
   {
     // >0: the cluster solve, a workgroup a cluster of about this many free vertices, at most `clusterLocal`
     // with the pinned ones its rows read (figure/physics/cloth/clusters.hpp); 0: a dispatch a colour
-    int  clusterSize  = 0;
+    int  clusterSize  = 1024;
     int  clusterLocal = 2048;
     // the rows that cross clusters: held by both clusters, each moving its own end (one dispatch a
     // sweep in all), or after the clusters, a dispatch a colour of them
@@ -105,7 +111,11 @@ public:
   bool  failed() const override;
   float lastMove() const override { return m_lastMove; }
   std::vector<std::vector<float>> positions() const override;
-  bool                            ownerThreadOnly() const override { return true; }
+  bool                            ownerThreadOnly() const override;
+
+  // The queue every simulation made after this runs on, when the device has one beside the renderer's;
+  // given once at start-up. Without it a simulation runs on the renderer's queue, on its thread.
+  static void useQueue(const nvvk::QueueInfo& queue);
 
   // False: there is no device to run on, and every call is a no-op. Otherwise whether it can start is known
   // later: failed() and onStartFailed.

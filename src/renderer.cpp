@@ -1582,6 +1582,7 @@ bool GltfRenderer::compileShaders()
 void GltfRenderer::resetFrame()
 {
   m_resources.frameCount = -1;
+  m_framesSinceChange    = 0;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1607,6 +1608,10 @@ bool GltfRenderer::updateFrameCounter()
   {
     return false;
   }
+  // a drape on its way (setStillPaused): what the still would refine is about to change
+  if(m_stillPaused && m_framesSinceChange >= kPausedStillFrames)
+    return false;
+  m_framesSinceChange++;
   // The DLSS frames of a hand-off delay are no part of the accumulation: the count waits at 1 (frame
   // 0 was DLSS's) so the frame bound cannot end the still before it begins. They draw all the same.
   if(m_resources.frameCount >= 1 && m_pathTracer.dlssHandoffDelayPending())

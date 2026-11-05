@@ -808,6 +808,8 @@ void FvHost::onUpdate()
   timePhase("frame: the rest");
   // a still begins once the scene's cooks are in, not again as each one lands
   s.renderer->setTexturesArriving(s.texturesCooking() > 0);
+  // and it waits for a drape the GPU's other queue is making, which needs the GPU more than it does
+  s.renderer->setStillPaused(s.drapingOnGpu());
   if(fv::timing::enabled())
     if(const std::string line = s.dialTiming.report(std::chrono::steady_clock::now()); !line.empty())
     {

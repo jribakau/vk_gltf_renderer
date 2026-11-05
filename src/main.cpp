@@ -53,6 +53,9 @@
 #include "frame_stream.hpp"
 #include "frame_present.hpp"
 #include "fv_host.hpp"
+#ifdef FV_DFORCE_GPU
+#include "fv_dforce_gpu.hpp"
+#endif
 #include <figure/dson/store.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include "fv_protocol.hpp"
@@ -333,8 +336,12 @@ auto main(int argc, char** argv) -> int
       {VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME, &bindingReportFeature, false},  // Optional: what each such address was bound to (gpu_crash_trail.hpp)
   };
 
-  // Only request the graphics queue
+  // The graphics queue, and with the GPU cloth solver a second for its compute, so a drape runs beside
+  // the frames (fv_dforce_gpu.hpp; compute only where the device has such a family)
   vkSetup.queues = {{VK_QUEUE_GRAPHICS_BIT}};
+#ifdef FV_DFORCE_GPU
+  vkSetup.queues.push_back(VK_QUEUE_COMPUTE_BIT);
+#endif
 
 #ifdef USE_OPTIX_DENOISER
   // Instance extensions
@@ -485,7 +492,18 @@ auto main(int argc, char** argv) -> int
 
   // Create the Vulkan context
   nvvk::Context vkContext;
+#ifdef FV_DFORCE_GPU
+  // a device with one queue: the cloth shares the renderer's
+  if(vkSetup.queues.size() > 1 && vkContext.init(vkSetup) != VK_SUCCESS)
+  {
+    LOGW("No second queue for the cloth solver; it shares the renderer's\n");
+    vkContext.deinit();
+    vkSetup.queues.resize(1);
+  }
+  if(!vkContext.getDevice() && vkContext.init(vkSetup) != VK_SUCCESS)
+#else
   if(vkContext.init(vkSetup) != VK_SUCCESS)
+#endif
   {
     LOGE("Failed to initialize Vulkan context!");
     return -1;
@@ -587,6 +605,10 @@ auto main(int argc, char** argv) -> int
   appInfo.device         = vkContext.getDevice();
   appInfo.physicalDevice = vkContext.getPhysicalDevice();
   appInfo.queues         = vkContext.getQueueInfos();
+#ifdef FV_DFORCE_GPU
+  if(vkContext.getQueueInfos().size() > 1)
+    DforceGpu::useQueue(vkContext.getQueueInfos()[1]);
+#endif
   appInfo.useMenu        = false;
   // Settings come from the defaults and the command line, so the same command line gives the same
   // image; --iniFile opts into a specific file (loaded below, once every settings handler registered).

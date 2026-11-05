@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include <figure/jobs/pool.hpp>
 #include <figure/physics/cloth/geometry.hpp>
 
 namespace fv::physics::cloth {
@@ -17,33 +18,37 @@ void skin(const Surface& m, const std::vector<Mat4>& bones, float* out)
   std::vector<Mat34> at(bones.size());
   for(size_t b = 0; b < bones.size(); b++)
     at[b] = Mat34::of(m.toSpace * bones[b]);
-  for(size_t v = 0; v < n; v++)
-  {
-    float blend[12] = {};
-    float wsum      = 0;
-    for(size_t j = 0; j < 4; j++)
+  // on the pool, each vertex its own: the same numbers on any number of threads (a body and a dress are
+  // 67k vertices, skinned twice a frame for the GPU solver)
+  jobs::parallelFor(n, 2048, [&](size_t begin, size_t end) {
+    for(size_t v = begin; v < end; v++)
     {
-      const float  w    = m.skinWeight[v * 4 + j];
-      const size_t bone = m.skinIndex[v * 4 + j];
-      if(w == 0 || bone >= at.size())
+      float blend[12] = {};
+      float wsum      = 0;
+      for(size_t j = 0; j < 4; j++)
+      {
+        const float  w    = m.skinWeight[v * 4 + j];
+        const size_t bone = m.skinIndex[v * 4 + j];
+        if(w == 0 || bone >= at.size())
+          continue;
+        wsum += w;
+        for(int c = 0; c < 12; c++)
+          blend[c] += at[bone].m[c] * w;
+      }
+      const float px = m.restLocal[v * 3], py = m.restLocal[v * 3 + 1], pz = m.restLocal[v * 3 + 2];
+      if(wsum <= 0)
+      {
+        const Vec3 p = m.toSpace.transformPoint({px, py, pz});
+        out[v * 3]     = float(p.x);
+        out[v * 3 + 1] = float(p.y);
+        out[v * 3 + 2] = float(p.z);
         continue;
-      wsum += w;
-      for(int c = 0; c < 12; c++)
-        blend[c] += at[bone].m[c] * w;
+      }
+      out[v * 3]     = blend[0] * px + blend[3] * py + blend[6] * pz + blend[9];
+      out[v * 3 + 1] = blend[1] * px + blend[4] * py + blend[7] * pz + blend[10];
+      out[v * 3 + 2] = blend[2] * px + blend[5] * py + blend[8] * pz + blend[11];
     }
-    const float px = m.restLocal[v * 3], py = m.restLocal[v * 3 + 1], pz = m.restLocal[v * 3 + 2];
-    if(wsum <= 0)
-    {
-      const Vec3 p = m.toSpace.transformPoint({px, py, pz});
-      out[v * 3]     = float(p.x);
-      out[v * 3 + 1] = float(p.y);
-      out[v * 3 + 2] = float(p.z);
-      continue;
-    }
-    out[v * 3]     = blend[0] * px + blend[3] * py + blend[6] * pz + blend[9];
-    out[v * 3 + 1] = blend[1] * px + blend[4] * py + blend[7] * pz + blend[10];
-    out[v * 3 + 2] = blend[2] * px + blend[5] * py + blend[8] * pz + blend[11];
-  }
+  });
 }
 
 Surface Surface::collider(std::vector<float> rest, std::vector<float> posed, std::vector<uint32_t> tris, int layer, float offset,

@@ -1011,6 +1011,8 @@ struct FvHost::Impl
   void takeLanded(Loaded& f);
   // Textures the scene's figures still have cooking (Loaded::cooking): render.status says it, and a still waits
   int texturesCooking() const;
+  // some figure's drape is on its way on the GPU solver
+  bool drapingOnGpu() const;
   // wardrobe: what a figure wears (fv_host.hpp commands wear, wardrobe.remove, wardrobe.visible)
   struct WearRequest
   {

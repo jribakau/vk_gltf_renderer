@@ -110,7 +110,10 @@ Dforce::Dforce(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int roo
 
 Dforce::~Dforce()
 {
-  // the pool keeps the snapshot it was given; only wait so a late result cannot outlive the owner
+  // the pool keeps the snapshot it was given; only wait so a late result cannot outlive the owner. Out
+  // of date first, so it ends within a frame: a GPU settle on the pool mustn't run on past its device
+  if(m_jobStale)
+    m_jobStale->store(true);
   if(m_job.valid())
     m_job.wait();
   if(m_liveStep.valid())
@@ -119,6 +122,11 @@ Dforce::~Dforce()
     m_hairStale->store(true);
   if(m_hairJob.valid())
     m_hairJob.wait();
+}
+
+bool Dforce::settlingOnGpu() const
+{
+  return m_settling || (m_jobOnGpu && m_job.valid());
 }
 
 std::vector<int> Dforce::dynamics() const
@@ -572,10 +580,26 @@ bool Dforce::pump()
       }
     }
   }
-  const auto onThePool = [this](std::shared_ptr<Job> job) {
-    // an edit since it began ends it within a frame: the new settle needn't wait for what would be dropped
-    m_jobStale = std::make_shared<std::atomic<bool>>(false);
-    m_job      = jobs::pool().submit([job, stale = m_jobStale] {
+  // A settle on the pool: on `sim` when there is one (the GPU solver on a queue of its own), else on the
+  // CPU, which also takes over when `sim` fails. An edit since it began ends it within a frame (`stale`):
+  // the new settle needn't wait for what would be dropped
+  const auto onThePool = [this](std::shared_ptr<Job> job, std::shared_ptr<std::atomic<bool>> stale, std::shared_ptr<ClothBackend> sim) {
+    m_jobStale = stale;
+    m_jobOnGpu = sim != nullptr;
+    m_job      = jobs::pool().submit([job, stale, sim]() mutable {
+      if(sim)
+      {
+        sim->settle();
+        const bool                      landed = !stale->load() && !sim->failed();
+        std::vector<std::vector<float>> out;
+        if(landed)
+          out = sim->positions();
+        // its device memory goes here, before the result is seen: whoever waits for it may then take the
+        // device down
+        sim.reset();
+        if(landed || stale->load())
+          return out;
+      }
       SettleOptions opts;
       opts.air       = kAir;
       opts.cancelled = [stale] { return stale->load(); };
@@ -597,7 +621,7 @@ bool Dforce::pump()
       m_settling.reset();
       m_version++;
       if(sim->failed())
-        onThePool(m_snapshot);
+        onThePool(m_snapshot, std::make_shared<std::atomic<bool>>(false), nullptr);
       else
       {
         wrote = apply(*m_snapshot, sim->positions()) || wrote;
@@ -622,12 +646,16 @@ bool Dforce::pump()
         {
           m_snapshot = job;
           m_jobGen   = m_gen;
+          // the GPU solver when there is one: in slices here when it must run on this thread, else on the
+          // pool as the CPU's settle runs, and this thread never waits on it
+          auto          stale = std::make_shared<std::atomic<bool>>(false);
           SettleOptions opts;
-          opts.air = kAir;
+          opts.air       = kAir;
+          opts.cancelled = [stale] { return stale->load(); };
           if(makeGpuSim)
             m_settling = makeGpuSim(job->bodies, opts);
-          if(!m_settling)
-            onThePool(job);
+          if(!m_settling || !m_settling->ownerThreadOnly())
+            onThePool(job, stale, std::exchange(m_settling, nullptr));
         }
         if(!job->hairs.empty())
         {

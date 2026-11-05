@@ -354,6 +354,58 @@ TEST(ClothClusters, withAHaloACrossingRowIsHeldByBothItsClusters)
   EXPECT_EQ(c.haloRows, physics::cloth::buildClusters(model, 200, 2048).crossing.size());
 }
 
+TEST(ClothClusters, smallPiecesShareACluster)
+{
+  // 100 cards of one quad each, as a cloth hair is many: they fill clusters together, not one each
+  Surface cards = sheet(1);
+  Surface one   = cards;
+  cards.rest.clear();
+  cards.tris.clear();
+  cards.polyVerts.clear();
+  cards.polyStart = {0};
+  for(auto* f : {&cards.strength, &cards.stretch, &cards.shear, &cards.bend, &cards.buckling, &cards.bucklingRatio, &cards.density, &cards.contraction,
+                 &cards.damping, &cards.friction, &cards.offset})
+    f->clear();
+  cards.layer.clear();
+  cards.selfCollide.clear();
+  cards.collide.clear();
+  cards.visible.clear();
+  for(int k = 0; k < 100; k++)
+  {
+    const uint32_t base = uint32_t(cards.rest.size() / 3);
+    for(size_t v = 0; v < one.rest.size() / 3; v++)
+    {
+      cards.rest.insert(cards.rest.end(), {one.rest[v * 3] + 3.f * float(k), one.rest[v * 3 + 1], one.rest[v * 3 + 2]});
+      // all free: a card's top isn't pinned here
+      cards.strength.push_back(1.f);
+      for(auto* f : {&cards.stretch, &cards.shear, &cards.bend})
+        f->push_back(0.5f);
+      cards.buckling.push_back(0.05f);
+      cards.bucklingRatio.push_back(0.7f);
+      cards.density.push_back(180.f);
+      cards.contraction.push_back(1.f);
+      cards.damping.push_back(0.1f);
+      cards.friction.push_back(0.4f);
+      cards.offset.push_back(0.2f);
+      cards.layer.push_back(0);
+      cards.selfCollide.push_back(0);
+      cards.collide.push_back(1);
+      cards.visible.push_back(1);
+    }
+    for(uint32_t t : one.tris)
+      cards.tris.push_back(base + t);
+    for(int32_t p : one.polyVerts)
+      cards.polyVerts.push_back(int32_t(base) + p);
+    cards.polyStart.push_back(int32_t(cards.polyVerts.size()));
+  }
+  cards.posed = cards.rest;
+  const auto model = physics::cloth::Model::build({cards}, 0.15f);
+  ASSERT_EQ(model.freeVerts.size(), 400u);
+  const auto c = physics::cloth::buildClusters(model, 128, 2048);
+  expectAWholeCut(model, c, false);
+  EXPECT_LE(c.count(), 4);
+}
+
 TEST(ClothClusters, aClusterStopsBeforeItsGhostsTakeItPastTheMost)
 {
   // the sheet's pinned top row is ghosts to the clusters along it: none holds more than the most asked

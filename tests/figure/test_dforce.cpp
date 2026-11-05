@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <atomic>
 #include <thread>
 
 #include <figure/dforce/dforce.hpp>
@@ -1716,6 +1717,56 @@ private:
   bool                            m_fails;
 };
 
+// A GPU solver on a queue of its own, as the renderer makes one where the device has a second queue: any
+// thread may run it, and its settle holds until `release` is set or the settle is out of date.
+class PooledSim final : public dforce::ClothBackend
+{
+public:
+  PooledSim(std::vector<dforce::SettleMesh> meshes, dforce::SettleOptions opts, bool fails)
+      : m_meshes(std::move(meshes))
+      , m_opts(std::move(opts))
+      , m_fails(fails)
+  {
+  }
+  void frame(float, float, float, float) override {}
+  void setTarget(size_t, const std::vector<fv::Mat4>&) override {}
+  void setGravity(const std::array<float, 3>&) override {}
+  void settle() override
+  {
+    ranOn = std::this_thread::get_id();
+    while(!release.load() && !(m_opts.cancelled && m_opts.cancelled()))
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    sawCancel = m_opts.cancelled && m_opts.cancelled();
+    done      = true;
+  }
+  bool  settleSome(double) override
+  {
+    ADD_FAILURE() << "a solver with a queue of its own settles on the pool, not in slices here";
+    return true;
+  }
+  bool  failed() const override { return m_fails; }
+  float lastMove() const override { return 0.f; }
+  bool  ownerThreadOnly() const override { return false; }
+  std::vector<std::vector<float>> positions() const override
+  {
+    std::vector<std::vector<float>> out;
+    for(const dforce::SettleMesh& m : m_meshes)
+    {
+      out.push_back(m.rest);
+      for(size_t v = 0; v < out.back().size() / 3; v++)
+        out.back()[v * 3 + 2] += 1.f;
+    }
+    return out;
+  }
+  std::atomic<bool> release{false}, done{false}, sawCancel{false};
+  std::thread::id   ranOn;
+
+private:
+  std::vector<dforce::SettleMesh> m_meshes;
+  dforce::SettleOptions           m_opts;
+  bool                            m_fails;
+};
+
 }  // namespace
 
 TEST(Dforce, aFrameTakesTheTimeItIsGivenAndGravityCanTurn)
@@ -1888,6 +1939,77 @@ TEST(Dforce, aSettleTheGpuCouldNotFinishGoesToTheCpu)
   EXPECT_FALSE(d.busy());
   // what the CPU's settle did with the veil, not the failed simulation's shift along z
   EXPECT_LT(lowestOf(v.scene.meshes[1].geo->position), lowestOf(before));
+}
+
+TEST(Dforce, aGpuSettleOnAQueueOfItsOwnRunsOnThePoolAndAnEditDropsIt)
+{
+  // the thread that draws never waits on it: pump() returns at once while it settles, the settle runs on
+  // another thread, and its drape is written when it lands. An edit meanwhile makes it out of date: it
+  // stops, and the settle the edit asks for is the one written
+  VeilScene                  v;
+  morph::MorphSet            morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce             d(v.scene, morphs, 0, v.rootNode);
+  std::vector<std::shared_ptr<PooledSim>> made;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions& opts) {
+    made.push_back(std::make_shared<PooledSim>(std::move(meshes), opts, false));
+    return made.back();
+  };
+  d.resimulate();
+  EXPECT_FALSE(d.settlingOnGpu());
+  ASSERT_FALSE(d.pump());
+  ASSERT_EQ(made.size(), 1u);
+  EXPECT_TRUE(d.settlingOnGpu()) << "the still waits for it";
+  for(int i = 0; i < 20; i++)
+  {
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(d.pump());
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(20)) << "pump waited on the settle";
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(d.busy());
+  // an edit: the first settle is dropped, a new one made once it has gone
+  d.resimulate();
+  for(int i = 0; i < 2000 && made.size() < 2; i++)
+  {
+    d.pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_EQ(made.size(), 2u);
+  EXPECT_TRUE(made[0]->done.load());
+  EXPECT_TRUE(made[0]->sawCancel.load());
+  EXPECT_NE(made[0]->ranOn, std::this_thread::get_id());
+  made[1]->release = true;
+  const auto before = v.scene.meshes[1].geo->position;
+  ASSERT_TRUE(pumpUntilWritten(d));
+  EXPECT_FALSE(d.busy());
+  EXPECT_FALSE(d.settlingOnGpu());
+  EXPECT_NE(made[1]->ranOn, std::this_thread::get_id());
+  // the solver's drape, its one shift of every vertex, not the CPU's
+  const auto& after = v.scene.meshes[1].geo->position;
+  ASSERT_EQ(after.size(), before.size());
+  float shift[3] = {after[0] - before[0], after[1] - before[1], after[2] - before[2]};
+  EXPECT_GT(std::sqrt(shift[0] * shift[0] + shift[1] * shift[1] + shift[2] * shift[2]), 0.5f);
+  float worst = 0;
+  for(size_t k = 0; k < after.size(); k++)
+    worst = std::max(worst, std::fabs(after[k] - before[k] - shift[k % 3]));
+  EXPECT_LT(worst, 1e-3f) << "every vertex moved alike";
+}
+
+TEST(Dforce, aGpuSettleOnThePoolThatFailsGoesToTheCpuInTheSameJob)
+{
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions& opts) {
+    auto s     = std::make_shared<PooledSim>(std::move(meshes), opts, true);
+    s->release = true;
+    return s;
+  };
+  const auto before = v.scene.meshes[1].geo->position;
+  d.resimulate();
+  ASSERT_TRUE(pumpUntilWritten(d));
+  EXPECT_FALSE(d.busy());
+  EXPECT_LT(lowestOf(v.scene.meshes[1].geo->position), lowestOf(before)) << "what the CPU's settle did with the veil";
 }
 
 TEST(Dforce, gravityFollowsAllThePlacementHas)

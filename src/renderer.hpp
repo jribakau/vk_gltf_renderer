@@ -312,6 +312,7 @@ public:
   void setDetailSink(std::function<void(uint64_t item, bool up)> sink) override { m_detailSink = std::move(sink); }
   void holdTextures(bool held) override { m_texturesHeld = held; }
   void setTexturesArriving(bool arriving) override { m_pathTracer.setStillWaits(arriving); }
+  void setStillPaused(bool paused) override { m_stillPaused = paused; }
 
   // The tonemapped output and its size, for the headless frame stream (src/frame_stream.hpp). The
   // image is in VK_IMAGE_LAYOUT_GENERAL once onRender() has recorded the frame.
@@ -533,6 +534,11 @@ private:
   void updateHdrImages();
 
   bool                      m_editable{false};
+  // setStillPaused, and the frames drawn since the view or the scene last changed: a paused still stops
+  // after kPausedStillFrames of them (enough for DLSS to settle on the view)
+  bool                      m_stillPaused{false};
+  int                       m_framesSinceChange{0};
+  static constexpr int      kPausedStillFrames = 8;
   bool                      m_streamHost{false};  // see setStreamHost()
   bool                      m_prevPositionsStale{false};        // copies skipped while DLSS was off
   // Polls m_pendingClickResult's frame semaphore and, once signaled, calls m_rayPicker.getResult()

@@ -119,6 +119,10 @@ public:
   // still doesn't begin until they are in, DLSS drawing the view meanwhile, so it isn't restarted as
   // each lands. Application thread, every frame.
   virtual void setTexturesArriving(bool arriving) = 0;
+  // A drape is on its way on the GPU's other queue (physics-plan step 13b): the still stops refining a
+  // few frames after the last change, so the cloth has the GPU, and begins when the drape lands. A move of
+  // the view draws as ever. Application thread, every frame.
+  virtual void setStillPaused(bool paused) = 0;
   // what is shown, where it is now (world space)
   virtual nvutils::Bbox visibleSceneBounds() = 0;
 

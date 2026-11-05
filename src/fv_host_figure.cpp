@@ -327,6 +327,14 @@ int FvHost::Impl::texturesCooking() const
   return n;
 }
 
+bool FvHost::Impl::drapingOnGpu() const
+{
+  for(const auto& p : props)
+    if(p->figure && p->figure->dforce && p->figure->dforce->settlingOnGpu())
+      return true;
+  return false;
+}
+
 void FvHost::Impl::takeLanded(Loaded& f)
 {
   std::vector<std::pair<fv::build::TextureRequest, fv::build::TextureImage>> landed;
@@ -406,7 +414,8 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
     f->dforce      = std::make_unique<fv::dforce::Dforce>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
     f->dforce->playing = [this] { return renderer->editAnimationControl().play; };
 #ifdef FV_DFORCE_GPU
-    // the GPU solver, for a settle and for mode "gpu": made and stepped on the application thread
+    // the GPU solver, for a settle and for mode "gpu": on a queue of its own it settles and steps on the
+    // pool, else on the application thread
     f->dforce->makeGpuSim = [this](std::vector<fv::dforce::SettleMesh> meshes, const fv::dforce::SettleOptions& opts)
         -> std::shared_ptr<fv::dforce::ClothBackend> {
       if(!app)

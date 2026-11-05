@@ -6,8 +6,9 @@
 // - Settle (the default): one settle for the pose, scheduled once the pose or shape stops changing.
 //   A newer pose, morph or wear bumps the generation, and a finished job applies only if it is still
 //   that generation.
-//   With `makeGpuSim` it runs on the renderer's compute solver instead, made on the pool and then a slice a frame in pump(), so
-//   the app stays usable and an edit drops it at once; if that solver fails, the job goes to the pool.
+//   With `makeGpuSim` it runs on the renderer's compute solver instead: on the pool too when that solver has a queue of its own,
+//   else made on the pool and then a slice a frame in pump(), so the app stays usable and an edit drops it at once; if that
+//   solver fails, the job goes to the CPU on the pool.
 // - Live: the simulation keeps its state and takes the figure's bones every frame, stepping once on
 //   the pool and writing the drape the frame after, so the cloth follows a drag or a playing clip.
 //   It starts with a settle, and builds itself again (after a short wait) when a dial changes a rest
@@ -89,6 +90,8 @@ public:
   bool enabled() const { return m_enabled; }
   Mode mode() const { return m_mode; }
   // A settle is waiting out its debounce or running (in live mode: the simulation is being built).
+  // A settle runs on the GPU solver: the still has little to gain from the GPU meanwhile.
+  bool settlingOnGpu() const;
   bool busy() const;
 
   // Schedules a settle once the pose or shape stops changing; drops one that is running. In live
@@ -168,6 +171,7 @@ private:
   std::shared_ptr<ClothBackend>                  m_settling;
   bool                                           m_skippedPlaying = false;  // an edit came while a clip played
   std::shared_ptr<std::atomic<bool>>             m_jobStale;                // m_job's: an edit has made it out of date
+  bool                                           m_jobOnGpu = false;        // m_job runs on the GPU solver
   uint64_t                                       m_jobGen = 0;
   // strand hair's settle, on the pool beside the cloth's: the positions per hair of its snapshot
   std::shared_ptr<Job>                           m_hairSnapshot;

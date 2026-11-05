@@ -80,7 +80,9 @@ Clusters buildClusters(const Model& model, int size, int mostLocal, bool halo)
     }
   // the clusters: patches grown breadth first over the surface, each closed at `size` owned or before its
   // ghosts would take it past `mostLocal`, the next grown from where the last stopped. Compact patches cut
-  // fewer rows than runs of the vertex order: runs of 1024 cut a quarter of the Kai Dress's rows
+  // fewer rows than runs of the vertex order: runs of 1024 cut a quarter of the Kai Dress's rows. A piece
+  // the patch has all of (a card of a hair) leaves it open for the next, so many small ones share a
+  // workgroup rather than each taking one
   std::vector<int>  clusterOf(nv, -1);
   std::vector<int>  ghostOf(nv, -1);  // the cluster a pinned vertex is a ghost of, while that cluster is built
   std::vector<int>  ghosts;
@@ -136,6 +138,8 @@ Clusters buildClusters(const Model& model, int size, int mostLocal, bool halo)
       if(!owned.empty() && (int(owned.size()) >= size || int(owned.size() + ghosts.size()) + 1 + fresh > mostLocal))
         break;
       owned.push_back(v);
+      // taken now: a cluster left open for the next piece mustn't take it again
+      clusterOf[size_t(v)] = out.count();
       for(int g : pinnedNear[size_t(v)])
         if(ghostOf[size_t(g)] != out.count())
         {
@@ -150,12 +154,15 @@ Clusters buildClusters(const Model& model, int size, int mostLocal, bool halo)
         }
     }
     // what was queued and not taken goes back, and the next patch grows from it: the first of it on top
+    const bool full = head < queue.size();
     for(size_t k = queue.size(); k-- > head;)
       frontier.push_back(queue[k]);
     for(int v : queue)
       queued[size_t(v)] = 0;
-    close();
+    if(full)
+      close();
   }
+  close();
 
   // each row to the cluster of its free ends, or to the crossing rows when they lie in two
   std::vector<std::vector<int>> rowsOf(size_t(out.count()) * 3);

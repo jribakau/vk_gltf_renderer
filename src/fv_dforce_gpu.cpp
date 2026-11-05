@@ -34,6 +34,7 @@
 #include <nvutils/logger.hpp>
 #include <nvvk/barriers.hpp>
 #include <nvvk/check_error.hpp>
+#include <nvvk/commands.hpp>
 #include <nvvk/debug_util.hpp>
 
 #include "shaders/dforce_cloth_io.h.slang"
@@ -56,6 +57,9 @@ constexpr int   kMinCollisionPasses = 4;
 constexpr float kPassSpacing      = 0.5f * kDepth;
 constexpr float kSearch           = 0.5f;
 constexpr float kRecoverDepth     = 3.f;
+
+// the queue simulations run on, when there is one of their own (DforceGpu::useQueue)
+nvvk::QueueInfo s_queue{};
 
 constexpr VkBufferUsageFlags2 kUsage = VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
                                        | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT;
@@ -90,6 +94,9 @@ struct DforceGpu::Impl
   std::vector<SettleMesh>  meshes;
   SettleOptions            opts;
   DforceGpu::Options       gpu;
+  // a queue of its own and the pool its commands come from, or none: the renderer's, through `app`
+  nvvk::QueueInfo          queue{};
+  VkCommandPool            commandPool = VK_NULL_HANDLE;
   ClothModel               model;
   std::vector<Kinematic>   kin;
   // the cluster solve's partition, when it runs (gpu.clusterSize > 0 and the model fits it)
@@ -402,6 +409,12 @@ bool DforceGpu::Impl::create()
   if(!ok)
     return false;
 
+  if(queue.queue)
+  {
+    commandPool = nvvk::createTransientCommandPool(alloc->getDevice(), queue.familyIndex);
+    if(!commandPool)
+      return false;
+  }
   VkPushConstantRange        pushRange{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = sizeof(shaderio::DforcePushConstant)};
   VkPipelineLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1, .pPushConstantRanges = &pushRange};
   if(vkCreatePipelineLayout(alloc->getDevice(), &layoutInfo, nullptr, &layout) != VK_SUCCESS)
@@ -422,6 +435,11 @@ bool DforceGpu::Impl::create()
   }
   LOGI("dForce GPU: %d vertices (%zu free, %zu soft), %zu edges in %d colours (%d stretch), %zu collision faces\n", model.nv,
        model.freeVerts.size(), model.softVerts.size(), sorted.size(), int(colourStart.size()) - 1, stretchColours, faces.size());
+  LOGI("dForce GPU: %s, on %s\n", clusters.count() ? "the cluster solve" : "a dispatch a colour",
+       queue.queue ? "a queue of its own (settles on the pool)" : "the renderer's queue (settles on its thread)");
+  if(clusters.count())
+    LOGI("dForce GPU: %d clusters of up to %d vertices, %d colours each, %zu rows held by two\n", clusters.count(), clusters.mostLocal,
+         clusters.colours(), clusters.haloRows);
   sorted = {};
   faces  = {};
   return true;
@@ -436,6 +454,11 @@ void DforceGpu::Impl::destroy()
   {
     vkDestroyQueryPool(device, queries, nullptr);
     queries = VK_NULL_HANDLE;
+  }
+  if(commandPool)
+  {
+    vkDestroyCommandPool(device, commandPool, nullptr);
+    commandPool = VK_NULL_HANDLE;
   }
   for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe, &clusterPipe, &commitPipe})
     if(*p)
@@ -676,7 +699,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
   float       tFaces = 0;
 
   const auto      frameStartTime = std::chrono::steady_clock::now();
-  VkCommandBuffer cmd            = app->createTempCmdBuffer();
+  VkCommandBuffer cmd            = commandPool ? nvvk::createSingleTimeCommands(alloc->getDevice(), commandPool) : app->createTempCmdBuffer();
   if(queries)
   {
     vkCmdResetQueryPool(cmd, queries, 0, 2 + 2 * kTimedPairs);
@@ -829,7 +852,12 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
   vkCmdCopyBuffer(cmd, x.buffer, readback.buffer, 1, &copy);
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_HOST_BIT);
   const auto waitStart = std::chrono::steady_clock::now();
-  app->submitAndWaitTempCmdBuffer(cmd);
+  if(commandPool)
+  {
+    NVVK_CHECK(nvvk::endSingleTimeCommands(cmd, alloc->getDevice(), commandPool, queue.queue));
+  }
+  else
+    app->submitAndWaitTempCmdBuffer(cmd);
   const double waited = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
   settleWait += waited;
   stats.waitMs += waited;
@@ -888,6 +916,18 @@ DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, st
   m_impl->meshes = std::move(meshes);
   m_impl->opts   = opts;
   m_impl->gpu    = gpu;
+  m_impl->queue  = s_queue;
+  // FV_DFORCE_GPU_DEBUG's bits 4 and 8: a dispatch a colour, and the renderer's queue, as before step 13
+  // (for an A/B against the cluster solve on a queue of its own)
+#pragma warning(suppress : 4996)  // getenv: read once a simulation
+  if(const char* env = std::getenv("FV_DFORCE_GPU_DEBUG"); env && *env)
+  {
+    const int bits = std::atoi(env);
+    if(bits & 4)
+      m_impl->gpu.clusterSize = 0;
+    if(bits & 8)
+      m_impl->queue = {};
+  }
   if(alloc && app)
     m_prepared = fv::jobs::pool().submit([impl = m_impl] { return impl->prepare(); });
 }
@@ -1001,6 +1041,12 @@ bool DforceGpu::settleSome(double seconds)
   bool done = s.broken;
   while(!done)
   {
+    // an edit has made it out of date: what it has is dropped
+    if(s.opts.cancelled && s.opts.cancelled())
+    {
+      done = true;
+      break;
+    }
     if(s.settled < frames)
       frame(float(s.settled) / float(frames), float(s.settled + 1) / float(frames));
     else
@@ -1016,6 +1062,16 @@ bool DforceGpu::settleSome(double seconds)
     LOGI("[fv-time] dforceGpuSettle %d frames %.1f ms of work, %.1f ms waiting on the GPU, %.1f ms in all (%.1f ms a frame, %d substeps)\n", s.settled, s.settleWork,
          s.settleWait, std::chrono::duration<double, std::milli>(end - s.settleStart).count(), s.settleWork / std::max(1, s.settled), s.substeps);
   return done;
+}
+
+bool DforceGpu::ownerThreadOnly() const
+{
+  return !m_impl->queue.queue;
+}
+
+void DforceGpu::useQueue(const nvvk::QueueInfo& queue)
+{
+  s_queue = queue;
 }
 
 DforceGpu::Stats DforceGpu::stats() const

@@ -83,6 +83,8 @@ public:
   bool               texturesHeld = false;
   void               setTexturesArriving(bool arriving) override { texturesArriving = arriving; }
   bool               texturesArriving = false;
+  void               setStillPaused(bool paused) override { stillPaused = paused; }
+  bool               stillPaused = false;
   nvutils::Bbox      visibleSceneBounds() override
   {
     const auto b = m_scene.bounds();
