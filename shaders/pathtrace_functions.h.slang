@@ -48,6 +48,16 @@ struct DirectLight
   float     distance;         // Distance to the light
   float     pdf;              // Probability of sampling this light
   LightPick pick;             // What the pick gave each light at this vertex, for the BSDF side's MIS
+  // What the sample was, as a pixel's record keeps it from frame to frame (light_ris.h.slang): the
+  // emissive triangle and the point's barycentrics, or the environment's direction; LIGHT_REUSE_NONE
+  // for a punctual light. `toMeasure` turns the solid-angle pdf into the record's measure (the emitter's
+  // area: its cosine over the squared distance; 1 for a direction)
+#if USE_LIGHT_RIS
+  uint   reuseKind;
+  uint   reuseIndex;
+  float2 reuseUv;
+  float  toMeasure;
+#endif
 };
 
 static const float MIN_TRANSMISSION = 0.01f;  // Minimum shadow transmission factor for transparent materials
@@ -776,6 +786,10 @@ struct EmissiveSample
   float  distance;   // shadow-ray TMax (stops just short of the emitter surface)
   float3 radiance;   // emitted radiance at the sampled point (a textured emitter's texel)
   float  pdf;        // solid-angle pdf of the sample; 0 when the sample is invalid
+#if USE_LIGHT_RIS
+  float2 bary;    // the point's barycentrics b1, b2 (b0 = 1 - b1 - b2)
+  float  toArea;  // the emitter's cosine over the squared distance: solid angle to area
+#endif
 };
 
 // The radiance material `materialIndex` was picked by among the emitters: emissiveFactor (strength
@@ -843,7 +857,11 @@ bool emissiveTreeOn()
 // or its group's).
 EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, float2 u, float totalWeight)
 {
+#if USE_LIGHT_RIS
+  EmissiveSample es = {float3(0, 0, 1), 0.0, float3(0), 0.0, float2(0.0), 0.0};
+#else
   EmissiveSample es = {float3(0, 0, 1), 0.0, float3(0), 0.0};
+#endif
 
   EmissiveTriangle    et   = pushConst.gltfScene.emissiveTriangles[emissiveIndex];
   GltfRenderNode      node = pushConst.gltfScene.renderNodes[et.renderNodeID];
@@ -886,6 +904,10 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
     return es;
 
   es.direction = dir;
+#if USE_LIGHT_RIS
+  es.bary   = float2(b1, b2);
+  es.toArea = cosLight / dist2;
+#endif
   // Stop short of the emitter by no more than the rounding of the sampled point (as a hit's offset,
   // HitState::offsetDistance) and of the shadow ray's end, shadingPos + dir * distance, so the ray
   // does not hit the emitter itself. The fixed centimetre it stopped short by let light through an
@@ -998,6 +1020,12 @@ void sampleLights(in float3       pos,
   directLight.pdf             = 0.0f;
   directLight.distance        = INFINITE;
   directLight.radianceOverPdf = float3(0.0f);
+#if USE_LIGHT_RIS
+  directLight.reuseKind  = LIGHT_REUSE_NONE;
+  directLight.reuseIndex = 0u;
+  directLight.reuseUv    = float2(0.0F);
+  directLight.toMeasure  = 1.0F;
+#endif
 
   const bool         bothSides = isVolumeSample || lightsFromBothSides;
   const LightPickSet set       = lightPickSet(pos, normal, /*cull=*/!bothSides);
@@ -1026,6 +1054,12 @@ void sampleLights(in float3       pos,
       // es.pdf already includes the power-weighted selection; fold in the emissive share.
       directLight.pdf             = set.pick.emissive * es.pdf;  // left as 0 otherwise -> caller skips NEE
       directLight.radianceOverPdf = es.radiance / directLight.pdf;
+#if USE_LIGHT_RIS
+      directLight.reuseKind  = LIGHT_REUSE_EMISSIVE;
+      directLight.reuseIndex = uint(tri);
+      directLight.reuseUv    = es.bary;
+      directLight.toMeasure  = es.toArea;
+#endif
     }
     return;
   }
@@ -1058,6 +1092,10 @@ void sampleLights(in float3       pos,
       directLight.pdf             = set.pick.env * envPdf;  // left as 0 otherwise -> caller skips NEE
       directLight.radianceOverPdf = radiance_pdf.xyz * pushConst.frameInfo->envIntensity / directLight.pdf;
       directLight.direction       = quatRotate(pushConst.frameInfo->envRotation, directLight.direction);
+#if USE_LIGHT_RIS
+      directLight.reuseKind = LIGHT_REUSE_ENVIRONMENT;
+      directLight.reuseUv   = lightReuseOctEncode(directLight.direction);
+#endif
     }
     return;
   }
@@ -1128,6 +1166,12 @@ void sampleLights(in float3       pos,
       {
         directLight.pdf             = set.restShare * groupShare * walk.prob * es.pdf;
         directLight.radianceOverPdf = es.radiance / directLight.pdf;
+#if USE_LIGHT_RIS
+        directLight.reuseKind  = LIGHT_REUSE_EMISSIVE;
+        directLight.reuseIndex = uint(tri);
+        directLight.reuseUv    = es.bary;
+        directLight.toMeasure  = es.toArea;
+#endif
       }
       return;
     }
@@ -1232,6 +1276,129 @@ float computeSkySunHitMisWeight(float lastSamplePdf, LightPick pick)
 {
   return misPowerWeight(lastSamplePdf, skySunNeePdf(pick));
 }
+
+#if USE_LIGHT_RIS
+// The solid-angle pdf with which sampleLights, at the vertex `pick` was made at, draws a point of
+// emissive triangle `et` that it sees at `cosLight` and `dist2`: its cut node's share and the walk
+// down to its leaf (or the one table's share), its weight among its leaf's (or all), over the solid
+// angle of the point's area. computeEmitterHitMisWeight's pdf, for a point it did not hit.
+float emissiveTriangleNeePdf(LightPick pick, EmissiveTriangle et, float cosLight, float dist2)
+{
+  if(!(cosLight > 1e-6F))
+    return 0.0F;
+  const float defensive = emitterDefensiveLuminance(et.radiance);
+  if(emissiveTreeOn() && punctualLightCount() <= LIGHT_PICK_MAX_LIGHTS)
+  {
+    const int leaf = emissiveLeafOf(et.renderNodeID);
+    if(leaf < 0)
+      return 0.0F;
+    const bool             cull  = any(pick.normal != float3(0.0F));
+    const EmissiveTreeWalk climb = emissiveTreeClimb(pushConst.gltfScene.emissiveGroups, leaf, pick.pos, pick.normal, cull);
+    const LightPickSet     set   = lightPickSet(pick.pos, pick.normal, cull);
+    const float            share = set.restShare * climb.prob
+                        * lightPickProbability(emissiveGroupPickEstimate(climb.leaf, pick.pos, pick.normal, cull), set.total, set.candidates);
+    const float weight = pushConst.gltfScene.emissiveGroups[leaf].weight;
+    return (weight > 0.0F) ? share * defensive * dist2 / (weight * cosLight) : 0.0F;
+  }
+  const float total = pushConst.gltfScene.emissiveTotalWeight;
+  return (total > 0.0F) ? pick.emissive * defensive * dist2 / (total * cosLight) : 0.0F;
+}
+
+// A pixel's record of last frame (light_ris.h.slang) as a light sample at this vertex: the direction
+// and the shadow ray's length to it, what it sends in the record's measure (radiance times the
+// emitter's cosine over the squared distance for a point of an emitter, radiance for a direction), and
+// the solid-angle pdf sampleLights would draw it with here, for its MIS weight. pdf 0: it gives this
+// vertex nothing (gone, behind the surface, facing away), and only its M is left.
+struct ReusedLight
+{
+  float3 direction;
+  float  distance;
+  float3 radiance;  // in the record's measure
+  float  pdf;       // solid angle, as sampleLights'
+};
+
+ReusedLight evaluateReusedLight(LightReuseRecord r, float3 pos, float3 normal, LightPick pick, bool bothSides, bool compensatedEnv)
+{
+  ReusedLight l;
+  l.direction = float3(0.0F, 0.0F, 1.0F);
+  l.distance  = INFINITE;
+  l.radiance  = float3(0.0F);
+  l.pdf       = 0.0F;
+  if(r.kind == LIGHT_REUSE_EMISSIVE)
+  {
+    if(r.index >= uint(pushConst.gltfScene.numEmissiveTriangles))
+      return l;
+    // as sampleEmissiveTriangle places and shades its point, at the record's barycentrics
+    EmissiveTriangle    et   = pushConst.gltfScene.emissiveTriangles[r.index];
+    GltfRenderNode      node = pushConst.gltfScene.renderNodes[et.renderNodeID];
+    GltfRenderPrimitive prim = pushConst.gltfScene.renderPrimitives[et.renderPrimID];
+    uint3               idx  = getTriangleIndices(prim, int(et.triangleID));
+    const float3        o0   = getVertexPosition(prim, idx.x);
+    const float3        o1   = getVertexPosition(prim, idx.y);
+    const float3        o2   = getVertexPosition(prim, idx.z);
+    const float3        bary = float3(1.0F - r.uv.x - r.uv.y, r.uv.x, r.uv.y);
+    const float3 lightPos    = mul(float4(o0 * bary.x + o1 * bary.y + o2 * bary.z, 1.0), node.objectToWorld).xyz;
+    const float3 toLight     = lightPos - pos;
+    const float  dist2       = dot(toLight, toLight);
+    if(dist2 <= 1e-12F)
+      return l;
+    const float  dist = sqrt(dist2);
+    const float3 dir  = toLight / dist;
+    if(!bothSides && dot(dir, normal) <= 0.0F)
+      return l;
+    const float3 we1     = mul(float4(o1 - o0, 0.0), node.objectToWorld).xyz;
+    const float3 we2     = mul(float4(o2 - o0, 0.0), node.objectToWorld).xyz;
+    const float3 ng      = cross(we1, we2);
+    const float  twoArea = length(ng);
+    if(twoArea <= 1e-12F)
+      return l;
+    const float3 lightN   = ng / twoArea;
+    float        cosLight = dot(lightN, -dir);
+    if(et.doubleSided != 0)
+      cosLight = abs(cosLight);
+    if(cosLight <= 1e-6F)
+      return l;
+    const float3 we3          = we2 - we1;
+    const float  triangleSize = sqrt(max(dot(we1, we1), max(dot(we2, we2), dot(we3, we3))));
+    const float  surfaceError = triangleOffsetDistance(o0, o1, o2, bary, node.objectToWorld, lightN, triangleSize)
+                               + roundingGamma(8) * (dot(abs(lightN), abs(pos)) + dist);
+    float3                   radiance   = et.radiance;
+    GltfShadeMaterial*       materials  = pushConst.gltfScene->materials;
+    const int                materialID = max(0, node.materialID);
+    if(isTexturePresent(materials[materialID].emissiveTexture))
+    {
+      const GltfTextureInfo texInfo = pushConst.gltfScene->textureInfos[materials[materialID].emissiveTexture];
+      radiance = max(materials[materialID].emissiveFactor, float3(0.0F)) * sampleShadowTexture(prim, texInfo, idx, bary).rgb;
+    }
+    radiance *= bsdfCoatEmission(materials[materialID].clearcoatFactor, materials[materialID].clearcoatRoughness,
+                                 materials[materialID].pbrBaseColorFactor.rgb, materials[materialID].pbrMetallicFactor,
+                                 materials[materialID].scatterStrengthFactor > 0.0F ? 0.0F : materials[materialID].transmissionFactor,
+                                 materials[materialID].pbrRoughnessFactor * materials[materialID].pbrRoughnessFactor, cosLight);
+    radiance *= getOpacity(node, prim, int(et.triangleID), bary, mul(float4(dir, 0.0F), node.worldToObject).xyz);
+    l.direction = dir;
+    l.distance  = max(dist - surfaceError / cosLight, 0.5F * dist);
+    l.radiance  = radiance * (cosLight / dist2);
+    l.pdf       = emissiveTriangleNeePdf(pick, et, cosLight, dist2);
+    return l;
+  }
+  if(r.kind == LIGHT_REUSE_ENVIRONMENT)
+  {
+    const float3 dir = lightReuseOctDecode(r.uv);
+    if(!bothSides && dot(dir, normal) <= 0.0F)
+      return l;
+    float3 envColor;
+    float  envPdf;
+    sampleEnvironment(dir, pushConst.frameInfo, envColor, envPdf);
+    if(compensatedEnv)
+      envPdf = environmentCompensatedPdfAt(dir, pushConst.frameInfo);
+    l.direction = dir;
+    l.radiance  = envColor;
+    l.pdf       = pick.env * envPdf;
+    return l;
+  }
+  return l;
+}
+#endif
 
 //-----------------------------------------------------------------------
 // Infinite plane and shadow catcher
@@ -2055,6 +2222,9 @@ struct BounceScratch
   bool   fibre               = false;         // This vertex was a fibre's, within the budget or past it
   bool   glassEvent          = false;         // This vertex was clear glass and spent the glass budget, not a surface bounce
   bool   waterEvent          = false;         // This vertex was the water's surface and spent its budget, not a surface bounce
+#if USE_LIGHT_RIS
+  bool lightReuseWritten = false;  // This vertex wrote the pixel's record: its W goes to 0 if the shadow ray is blocked
+#endif
 };
 
 // The glass's own budget (PathtracePushConstant::glassBudget, the host's ptGlassBounces): events on clear

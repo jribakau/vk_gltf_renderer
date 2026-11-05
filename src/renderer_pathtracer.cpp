@@ -346,6 +346,22 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "camera's (0: all of them)",
                  .callbackSuccess = reset},
                 &m_pushConst.lightCandidatesDepth, Persist::eNo, 0, 64);
+  settings->add({.name            = "ptLightReuse",
+                 .help            = "PathTracer: A still's first hit takes last frame's light sample at its pixel in as a "
+                                    "candidate, and keeps what it found lit (ReSTIR's temporal reuse). Only in a shader "
+                                    "built with USE_LIGHT_RIS 1",
+                 .callbackSuccess = reset},
+                &m_lightReuse, Persist::eNo);
+  settings->add({.name            = "ptLightReuseDlss",
+                 .help            = "PathTracer: ptLightReuse on DLSS frames, last frame's sample found where the surface "
+                                    "was on screen",
+                 .callbackSuccess = reset},
+                &m_lightReuseDlss, Persist::eNo);
+  settings->add({.name            = "ptLightReuseCap",
+                 .help            = "PathTracer: ptLightReuse: a pixel's record stands for at most this many times a frame's "
+                                    "own candidates (the history's length)",
+                 .callbackSuccess = reset},
+                &m_lightReuseCap, Persist::eNo, 1.0F, 1000.0F);
   settings->add({.name            = "ptGlassBounces",
                  .help            = "PathTracer: Events on clear glass (smooth, transmissive, nothing scattering inside) a path "
                                     "takes before they count as surface bounces; 0: every one counts",
@@ -467,6 +483,7 @@ void PathTracer::onDetach(Resources& resources)
   resources.allocator.destroyBuffer(m_sbtBuffer);
   resources.allocator.destroyBuffer(m_depthCopyBuffer);
   resources.allocator.destroyBuffer(m_cameraMediumBuffer);
+  resources.allocator.destroyBuffer(m_lightReservoirs);
   resources.allocator.destroyBuffer(m_adaptiveActiveBuffer);
   m_adaptiveCounts.clear();
   resources.allocator.destroyBuffer(m_hitCounts);
@@ -695,6 +712,11 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   // has no camera medium to find (setupPushConstant leaves the pointer null)
   if(resources.frameCount == 0 && pushConst.cameraMedium != nullptr)
     probeCameraMedium(cmd, pushConst);
+
+  // Last frame's light records (ePtLightReuse) are read and this frame's written by the trace below
+  if(pushConst.lightReservoirs != nullptr)
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR);
 
   // Tracing the rays: Ray Query or Ray Tracing
   {
@@ -1326,6 +1348,53 @@ void PathTracer::denoiseDlss(VkCommandBuffer cmd, Resources& resources, bool sel
 #endif
 }
 
+//--------------------------------------------------------------------------------------------------
+// The light records a pixel's first hit keeps from frame to frame (ptLightReuse, light_ris.h.slang):
+// two halves, one read and one written, swapped each frame. The buffer only grows (a DLSS frame's input
+// is smaller than a still's), and goes when neither setting asks for it. Last frame's records are
+// read only when it wrote them for this view: the same size, the same kind of frame, and for a still,
+// the same accumulation.
+void PathTracer::updateLightReuse(Resources& resources, VkExtent2D size, bool useDlss)
+{
+  m_pushConst.lightReservoirs = nullptr;
+  m_pushConst.lightReuseCap   = m_lightReuseCap;
+  const bool on               = useDlss ? m_lightReuseDlss : m_lightReuse;
+  if(!on)
+  {
+    m_lightReuseLastOn = false;
+    if(!m_lightReuse && !m_lightReuseDlss && m_lightReservoirs.buffer != VK_NULL_HANDLE)
+    {
+      NVVK_CHECK(vkQueueWaitIdle(resources.app->getQueue(0).queue));  // the last frame may still write it
+      resources.allocator.destroyBuffer(m_lightReservoirs);
+      m_lightReservoirsSize = 0;
+    }
+    return;
+  }
+  const VkDeviceSize need = VkDeviceSize(size.width) * size.height * 2 * 2 * sizeof(glm::uvec4);
+  if(need == 0)
+    return;
+  if(m_lightReservoirsSize < need)
+  {
+    NVVK_CHECK(vkQueueWaitIdle(resources.app->getQueue(0).queue));
+    resources.allocator.destroyBuffer(m_lightReservoirs);
+    NVVK_CHECK(resources.allocator.createBuffer(m_lightReservoirs, need,
+                                                VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT));
+    NVVK_DBG_NAME(m_lightReservoirs.buffer);
+    m_lightReservoirsSize = need;
+    m_lightReuseLastOn    = false;  // nothing written in it yet
+  }
+  const bool history = m_lightReuseLastOn && m_lightReuseLastSize.width == size.width && m_lightReuseLastSize.height == size.height
+                       && m_lightReuseLastDlss == useDlss && (useDlss || resources.frameCount > 0);
+  m_pushConst.flags |= shaderio::ePtLightReuse | (history ? shaderio::ePtLightReuseHistory : 0)
+                       | (m_lightReuseParity ? shaderio::ePtLightReuseParity : 0);
+  m_pushConst.lightReservoirs = (glm::uvec4*)m_lightReservoirs.address;
+  // the next frame reads the half this one writes
+  m_lightReuseParity   = !m_lightReuseParity;
+  m_lightReuseLastOn   = true;
+  m_lightReuseLastSize = size;
+  m_lightReuseLastDlss = useDlss;
+}
+
 shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderingSize)
 {
   // Current frame count, can be overridden by DLSS
@@ -1400,6 +1469,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.maxDepth   = sample_schedule::frameMaxDepth(m_maxDepth, m_maxDepthDlss, useDlss);
   m_pushConst.hairBudget = useDlss ? m_hairBouncesDlss : m_hairBounces;
   m_pushConst.lightCandidates = useDlss ? m_lightCandidatesDlss : m_lightCandidates;
+  updateLightReuse(resources, renderingSize, useDlss);
   m_pushConst.hairRouletteDlss = m_hairRouletteDlss;
   m_pushConst.hairRouletteFrom = m_hairRouletteFrom;
   m_pushConst.hairCutDlss      = m_hairCutDlss;

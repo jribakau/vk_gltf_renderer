@@ -223,6 +223,17 @@ public:
   // still's, and the DLSS frames'. 1: the one sample it traces, as before
   int m_lightCandidates{1};
   int m_lightCandidatesDlss{1};
+  // The first hit's light sample reused from frame to frame (ptLightReuse, ptLightReuseDlss,
+  // ptLightReuseCap; updateLightReuse): the records, and what the last frame wrote into them
+  bool         m_lightReuse{false};
+  bool         m_lightReuseDlss{false};
+  float        m_lightReuseCap{20.0F};
+  nvvk::Buffer m_lightReservoirs;
+  VkDeviceSize m_lightReservoirsSize{0};
+  bool         m_lightReuseParity{false};
+  bool         m_lightReuseLastOn{false};
+  bool         m_lightReuseLastDlss{false};
+  VkExtent2D   m_lightReuseLastSize{0, 0};
   // DLSS frames: past ptHairRouletteFrom fibre events a path continues at most with ptHairRouletteDlss
   float m_hairRouletteDlss{1.0F};
   int   m_hairRouletteFrom{1};
@@ -548,6 +559,7 @@ private:
   bool               prepareFrame(Resources& resources);  // false: skip this frame (async build started)
   void               ensureShadersAndPipelines(Resources& resources);
   void               startAsyncCompile(Resources& resources);
+  void               updateLightReuse(Resources& resources, VkExtent2D size, bool useDlss);
   void               updateStatistics(Resources& resources);
   // Bind the selected technique's pipeline and descriptors once per frame (false: it has no
   // pipeline), then launch it over `size`, once per launch; the caller times each launch.

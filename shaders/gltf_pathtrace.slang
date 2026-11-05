@@ -145,6 +145,10 @@ static uint g_sobolIndex    = 0u;  // the pixel's sample index: the accumulation
 static uint g_sobolPixel    = 0u;  // the pixel's scramble, the same in every frame
 static uint g_sobolDecision = 0u;
 static bool g_hitToCount    = false;  // the pixel counts, and its first hit is still to come (pushConst.hitSignal)
+#if USE_LIGHT_RIS
+static int2 g_reusePixel       = int2(0);  // ePtLightReuse: the pixel whose record its first hit reads and writes...
+static bool g_reuseFirstSample = true;     // ...its frame's first sample, which reads last frame's record (the rest, this frame's)
+#endif
 
 void beginSobolSample(uint index)
 {
@@ -202,8 +206,16 @@ bool frontFaceLeavesMedium(VolumeMedium medium, GltfShadeMaterial* material, boo
 // asks for it: switched off, its loop still cost a still frame 0.8% (7TEST, 272.0 against 269.7 ms,
 // 2026-11-05), and switched on it bought too little without the shadows in the weights (the candidate
 // stage of ReSTIR; its reuse is what would): docs/improvements.md, "Light samples chosen among candidates".
-#ifndef USE_LIGHT_RIS
-#define USE_LIGHT_RIS 0
+// USE_LIGHT_RIS itself (default 0) is light_ris.h.slang's, which pathtrace_functions.h.slang includes.
+
+#if USE_LIGHT_RIS
+// Pixel `p`'s record in lightReservoirs: in its first or its second half (ePtLightReuseParity), two uint4 a pixel
+uint lightReuseSlot(int2 p, bool secondHalf)
+{
+  const uint width  = pushConst.renderSize.x;
+  const uint pixels = width * pushConst.renderSize.y;
+  return ((secondHalf ? pixels : 0u) + uint(p.y) * width + uint(p.x)) * 2u;
+}
 #endif
 
 // How many light samples a surface vertex draws to keep one of (light_ris.h.slang): the host's count at
@@ -897,12 +909,51 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // Every candidate shares the pick (the same point and normal), so pt.lightPick holds for all.
     float            risScale   = 1.0F;
 #if USE_LIGHT_RIS
-    const int        candidates = lightCandidatesHere(hairOn, pt.surfaceDepth);
+    // The camera's first surface keeps its kept sample from frame to frame (ePtLightReuse): last
+    // frame's record at this pixel (reprojected under DLSS) is one more candidate, re-weighed here, and
+    // what this vertex shades is written for the next frame, its W zeroed below if it was shadowed.
+    const bool reuseHere = firstRay && !hairOn && hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuse)
+                           && pushConst.lightReservoirs != nullptr;
+    const int        candidates = reuseHere ? clamp(pushConst.lightCandidates, 1, LIGHT_RIS_MAX_CANDIDATES) : lightCandidatesHere(hairOn, pt.surfaceDepth);
     BsdfEvaluateData keptEval   = {};
-    if(candidates > 1)
+    if(candidates > 1 || reuseHere)
     {
+      // Last frame's record at this pixel, or what this frame's earlier sample of it wrote: read first,
+      // as its M sets every candidate's M weight (light_ris.h.slang)
+      const bool       secondHalf = hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuseParity);
+      LightReuseRecord record;
+      record.M      = 0.0F;
+      float recordM = 0.0F;
+      if(reuseHere)
+      {
+        int2   readPixel = g_reusePixel;
+        float3 recordPos = hit.pos;  // where this point was when the record was written
+#if USE_DLSS_SHADER
+        if(g_reuseFirstSample && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+        {
+          // where the surface was on screen last frame, as its motion vector has it
+          recordPos             = pt.firstHitPosPrev;
+          const float4 prevClip = mul(float4(pt.firstHitPosPrev, 1.0F), frameInfo->prevMVP);
+          readPixel             = (prevClip.w > 0.0F) ? int2(floor((prevClip.xy / prevClip.w * 0.5F + 0.5F) * float2(pushConst.renderSize))) : int2(-1);
+        }
+#endif
+        const bool inside = all(readPixel >= int2(0)) && all(readPixel < int2(pushConst.renderSize));
+        if(inside && (!g_reuseFirstSample || hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuseHistory)))
+        {
+          const uint slot = lightReuseSlot(readPixel, g_reuseFirstSample ? !secondHalf : secondHalf);
+          record          = lightReuseUnpack(pushConst.lightReservoirs[slot], pushConst.lightReservoirs[slot + 1]);
+          const float cameraDistance = length(hit.pos - frameInfo->viewInv[3].xyz);
+          // a record of another surface (an edge the jitter crossed, a disocclusion) is none: that depends
+          // on the geometry, not on what was drawn, so dropping it keeps the M weights whole
+          if(!lightReuseSameSurface(record, recordPos, hit.nrm, cameraDistance))
+            record.M = 0.0F;
+        }
+        recordM = lightReuseRecordM(record, float(candidates), pushConst.lightReuseCap);
+      }
+
       LightReservoir reservoir = lightReservoirEmpty();
       DirectLight    kept      = directLight;
+      float          keptShare = 1.0F;
       for(int c = 0; c < candidates; c++)
       {
         DirectLight candidate = directLight;
@@ -921,16 +972,75 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
             weight = luminance(pt.throughput * candidate.radianceOverPdf * mis * (candidateEval.bsdf_diffuse + candidateEval.bsdf_glossy));
           }
         }
-        reservoir = lightReservoirAdd(reservoir, weight, rand(seed));
+        // without reuse every candidate's M weight is the same, and lightReservoirScale divides by the count
+        const float share = reuseHere ? lightReuseCandidateShare(candidate.reuseKind != LIGHT_REUSE_NONE, float(candidates), recordM) : 1.0F;
+        reservoir = lightReservoirAdd(reservoir, share * weight, rand(seed));
         if(reservoir.keptLast)
         {
-          kept     = candidate;
-          keptEval = candidateEval;
+          kept      = candidate;
+          keptEval  = candidateEval;
+          keptShare = share;
         }
       }
       // None weighed anything: the scale is 0, and the sample below adds nothing and traces no ray
-      risScale    = lightReservoirScale(reservoir);
       directLight = kept;
+      if(!reuseHere)
+        risScale = lightReservoirScale(reservoir);
+      else
+      {
+        // the record as one more candidate, re-weighed here
+        float            recordTarget = 0.0F;
+        ReusedLight      reused       = {};
+        BsdfEvaluateData reusedEval   = {};
+        if(recordM > 0.0F && record.W > 0.0F)
+        {
+          reused = evaluateReusedLight(record, hit.pos, hit.nrm, directLight.pick, bothSides, /*compensatedEnv=*/!lastVertex);
+          if(any(reused.radiance > 0.0F))
+          {
+            reusedEval = evaluateSurfaceForLight(pbrMat, -ray.Direction, reused.direction, lobeMixture, exitFresnelEta, seed);
+            if(reusedEval.pdf > 0.0F)
+            {
+              const float mis = lastVertex ? 1.0F : misPowerWeight(reused.pdf, reusedEval.pdf);
+              recordTarget = luminance(pt.throughput * reused.radiance * mis * (reusedEval.bsdf_diffuse + reusedEval.bsdf_glossy));
+            }
+          }
+        }
+        reservoir = lightReservoirAdd(reservoir, lightReuseRecordWeight(record, recordTarget, float(candidates), recordM), rand(seed));
+        // What multiplies the kept sample's estimate: the M-weighted sum over its own unweighted weight.
+        // A current candidate's record W is that per solid angle and per the record's measure.
+        float measureOverScale = directLight.pdf * directLight.toMeasure;
+        if(reservoir.keptLast)
+        {
+          directLight.direction       = reused.direction;
+          directLight.distance        = reused.distance;
+          directLight.radianceOverPdf = reused.radiance;  // in the record's measure, W taking the pdf's place
+          directLight.pdf             = (lastVertex && !(reused.pdf > 0.0F)) ? 1e-30F : reused.pdf;  // weight 1 there
+          directLight.reuseKind       = record.kind;
+          directLight.reuseIndex      = record.index;
+          directLight.reuseUv         = record.uv;
+          keptEval                    = reusedEval;
+          risScale                    = reservoir.weightSum / recordTarget;
+          measureOverScale            = 1.0F;
+        }
+        else
+          risScale = (reservoir.kept > 0.0F) ? reservoir.weightSum * keptShare / reservoir.kept : 0.0F;
+
+        // The record for the next frame (and this frame's next sample of the pixel): M whatever was
+        // drawn; W 0 for what a record cannot hold or what weighed nothing, and if the shadow ray below
+        // finds the sample shadowed
+        LightReuseRecord next;
+        next.pos    = hit.pos;
+        next.normal = hit.nrm;
+        next.kind   = directLight.reuseKind;
+        next.index  = directLight.reuseIndex;
+        next.uv     = directLight.reuseUv;
+        next.W      = (next.kind != LIGHT_REUSE_NONE && directLight.pdf != DIRAC && measureOverScale > 0.0F) ? risScale / measureOverScale : 0.0F;
+        next.M      = float(candidates) + recordM;
+        const uint slot                     = lightReuseSlot(g_reusePixel, secondHalf);
+        pushConst.lightReservoirs[slot]     = lightReusePackA(next);
+        pushConst.lightReservoirs[slot + 1] = lightReusePackB(next);
+        bounce.lightReuseWritten            = next.W > 0.0F;
+      }
     }
 #endif
 
@@ -1315,6 +1425,11 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       shadowRay.TMax      = bounce.shadowRayDist;
       float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, bounce.shadowRayInside, bounce.shadowRayExtinction);
       addRadiance(pt, bounce.contribution * shadowFactor, bounce.indirect);
+#if USE_LIGHT_RIS
+      // what the pixel carries to the next frame is what it found lit (light_ris.h.slang)
+      if(bounce.lightReuseWritten && all(shadowFactor <= float3(0.0F)))
+        pushConst.lightReservoirs[lightReuseSlot(g_reusePixel, hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuseParity)) + 1].z = 0u;
+#endif
     }
 
     //-----------------------------------------------------------------------
@@ -1542,6 +1657,15 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   if(adaptiveStop && accumulating && WaveActiveAllTrue(outImages[int(OutputImage::eConvergence)][int2(samplePos)].y > 0.0F))
     return;
 
+#if USE_LIGHT_RIS
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuse) && pushConst.lightReservoirs != nullptr)
+  {
+    g_reusePixel       = int2(samplePos);
+    g_reuseFirstSample = true;
+    pushConst.lightReservoirs[lightReuseSlot(g_reusePixel, hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuseParity)) + 1] = uint4(0u);
+  }
+#endif
+
   // Initialize the random number
   // pushConst.seed selects another sequence (0: the default one), e.g. for a reference independent of a test render
   uint seed = xxhash32(uint3(uint2(samplePos.xy), uint(pushConst.frameCount) + uint(pushConst.seed) * 0x9E3779B9u));
@@ -1591,6 +1715,9 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   // on, the frames after DLSS's frame 0 get Auto SPP's or ptSamples' count.
   for(int s = 1; s < pushConst.numSamples; s++)
   {
+#if USE_LIGHT_RIS
+    g_reuseFirstSample = false;
+#endif
     beginSobolSample(uint(pushConst.totalSamples + s));
     subpixelJitter = gaussianSubpixelJitter(seed);  // the same pixel filter as the first sample
     sampleResult   = samplePixel(raytracer, seed, samplePos, subpixelJitter, imageSize, pushConst.frameInfo->projInv,

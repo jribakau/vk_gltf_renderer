@@ -324,6 +324,9 @@ enum PathtracerFlags
   ePtWalkGuiding         = 1 << 21,  // A scatter walk entered from a surface draws half its steps towards it (Dwivedi guiding, unbiased)
   ePtLightTree           = 1 << 22,  // The emitters' light tree is picked among the lights by distance (light_tree.h.slang); off: the one table by power
   ePtWriteNrMask         = 1 << 23,  // A DLSS frame writes the per-material DLSS-NR mask (eNrMask): only while DLSS-NR runs
+  ePtLightReuse          = 1 << 24,  // The first hit's light sample takes the last frame's in as a candidate (lightReservoirs)
+  ePtLightReuseHistory   = 1 << 25,  // ...which the last frame wrote for this view: read it (else start afresh)
+  ePtLightReuseParity    = 1 << 26,  // ...this frame writes the second half of lightReservoirs and reads the first
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per
@@ -373,6 +376,8 @@ struct PathtracePushConstant
   int             hitSignalSlots    = 0;        // hitSignal's materials; keeps the pointers 8-byte aligned
   int             lightCandidates      = 1;     // Light samples a surface vertex draws to keep one of (light_ris.h.slang; 1: the one it traces)...
   int             lightCandidatesDepth = 0;     // ...at its first this many surface vertices (0: at all of them); two fields keep the pointers aligned
+  float           lightReuseCap        = 20.0F; // ePtLightReuse: a record stands for at most this many times the frame's own candidates...
+  int             lightReusePad        = 0;     // ...(and keeps the pointers 8-byte aligned)
   uint*           hitSignal;                    // first hits counted per material slot and bin (hit_signal.h.slang; null: not counting)
   uint*           adaptiveActive;               // ePtAdaptiveStop: the frame counts the pixels still sampling here (null: not counted)
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)
@@ -380,6 +385,7 @@ struct PathtracePushConstant
   float4x4*       prevRenderNodeObjectToWorld;  // #DLSS instance motion: previous-frame objectToWorld per render node
   float3**        prevVertexPositions;  // #DLSS deformation motion: previous-frame positions per render primitive (null entry = none)
   CameraMedium*   cameraMedium;                 // The medium camera paths start in; null when the scene has none
+  uint4*          lightReservoirs;              // ePtLightReuse: two halves of renderSize records, two uint4 a pixel (light_ris.h.slang)
 };
 
 // OptiX: copy of the images to the linear buffers it reads (optix_image_to_buffer.slang)
