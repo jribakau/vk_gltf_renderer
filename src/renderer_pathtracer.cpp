@@ -1102,7 +1102,11 @@ void PathTracer::updateAdaptiveSampling(Resources& resources)
     return;
 
   // Another pipeline renders the frames (Rendering Pipeline, SER, Optimize Shader, a shader reload):
-  // its cost per sample differs, so the count is found again, which also shows the change in throughput
+  // its cost per sample differs, so the count is found again, which also shows the change in throughput.
+  // A variant swap counts too, so every still DLSS hands off to a denoiser starts the search over. Keep it:
+  // the search settles once and never checks again, and a frame's samples are one dispatch, so a count
+  // found on a light view, kept for a hair close-up, would be a frame of seconds (past the 2 s GPU timeout).
+  // The climb costs about half a second at a few percent less throughput (2026-11-05, from the app's log).
   const uint64_t pipelineKey = (uint64_t(m_pipelineGeneration.load()) << 1) | uint64_t(m_renderTechnique);
   if(pipelineKey != m_adaptivePipelineKey)
   {
@@ -1117,7 +1121,8 @@ void PathTracer::updateAdaptiveSampling(Resources& resources)
   m_lastAdaptiveFrameTime = now;
 
   // Reset samples when frame count resets to 0 (scene change, etc.), so the first frames after a change
-  // stay responsive. The throughput search keeps what it found: it serves runs nobody interacts with.
+  // stay responsive. The throughput search keeps what it found across these resets; in the app the
+  // variant swap above has already started it over for each still.
   if(resources.frameCount == 0 || m_handoffFrame)
   {
     m_accumulationFrames = 0;
