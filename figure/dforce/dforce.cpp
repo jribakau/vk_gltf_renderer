@@ -7,6 +7,7 @@
 #include <figure/dforce/solver.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
+#include <figure/physics/cloth/coarse.hpp>
 
 namespace fv::dforce {
 
@@ -32,6 +33,9 @@ constexpr double kSettleSlice = 0.05;
 constexpr float kLiveMinStep = 1.f / 60.f, kLiveMaxStep = 1.f / 30.f;
 // How far gravity must turn to matter, cm/s^2 on any axis: about a twentieth of a degree.
 constexpr float kGravityChange = 1.f;
+// A collider much finer than the cloth meets it as a coarse copy (physics/cloth/coarse.hpp), with
+// faces about as wide as the cloth's and at most this share of their width off its surface.
+constexpr float kCoarseError = 0.25f;
 
 // Whether the node of every mesh is shown: not taken off, not hidden, nor anything above it.
 std::vector<bool> shownNodes(const SceneGraph& scene)
@@ -52,6 +56,27 @@ bool sameGravity(const std::array<float, 3>& a, const std::array<float, 3>& b)
     if(std::fabs(a[size_t(k)] - b[size_t(k)]) > kGravityChange)
       return false;
   return true;
+}
+
+// What a coarse copy of a collider is made from: its rest cage, its faces and which collide, and the
+// cloth's edge and error it is made for (FNV-1a over their bytes).
+uint64_t shapeKey(const SettleMesh& s, float edge, float maxError)
+{
+  uint64_t   h   = 1469598103934665603ull;
+  const auto mix = [&](const void* data, size_t bytes) {
+    const auto* b = static_cast<const unsigned char*>(data);
+    for(size_t i = 0; i < bytes; i++)
+    {
+      h ^= b[i];
+      h *= 1099511628211ull;
+    }
+  };
+  mix(s.rest.data(), s.rest.size() * sizeof(float));
+  mix(s.tris.data(), s.tris.size() * sizeof(uint32_t));
+  mix(s.collide.data(), s.collide.size());
+  mix(&edge, sizeof edge);
+  mix(&maxError, sizeof maxError);
+  return h;
 }
 
 bool samePose(const std::vector<Mat4>& a, const std::vector<Mat4>& b)
@@ -78,6 +103,8 @@ struct Dforce::Job
   std::vector<SettleMesh> bodies;
   // the mesh each body is, for reading its bones again; -1 when it has no skin
   std::vector<int> slotMesh;
+  // a coarse copy's vertices of its mesh's cage, per slot (physics/cloth/coarse.hpp); empty: all of them
+  std::vector<std::vector<uint32_t>> slotKeep;
   struct Drape
   {
     int                mesh = -1;
@@ -378,9 +405,11 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
   const std::array<float, 3> gravity = currentGravity();
 
   // the body is always a collider, in the same space as the cloth, and under every cloth layer
+  size_t bodySlot = SIZE_MAX;
   if(m_bodyMesh >= 0 && size_t(m_bodyMesh) < m_scene.meshes.size())
     if(auto body = skinCage(m_bodyMesh, nullptr))
     {
+      bodySlot      = job->bodies.size();
       const Mat4 to = toSpace(m_bodyMesh);
       SettleMesh collider = SettleMesh::collider(transformPoints(to, body->rest), transformPoints(to, body->posed),
                                                  m_scene.meshes[size_t(m_bodyMesh)].geo->dsonTris, kBodyLayer, 0.2f, 0.4f);
@@ -504,6 +533,60 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     consider(mesh);
   if(job->drapes.empty() && job->hairs.empty())
     return nullptr;
+
+  // What's worn much finer than the cloth (a necklace's 150k triangles of chain under a neckline, lace)
+  // is met as a coarse copy, as fine as the cloth; not the body, the cage already, where a gap shows most
+  job->slotKeep.resize(job->bodies.size());
+  std::map<uint64_t, std::optional<physics::cloth::Coarse>> copies;
+  if(coarseColliders && !job->drapes.empty())
+  {
+    timing::Scope t("dforce: coarse colliders", 1);
+    double        sum = 0;
+    size_t        faces = 0;
+    for(const Job::Drape& d : job->drapes)
+    {
+      const SettleMesh& s = job->bodies[d.slot];
+      sum += double(physics::cloth::meanEdge(s)) * double(s.tris.size() / 3);
+      faces += s.tris.size() / 3;
+    }
+    const float edge = faces ? float(sum / double(faces)) : 0.f;
+    for(size_t slot = 0; slot < job->bodies.size(); slot++)
+    {
+      if(slot == bodySlot)
+        continue;
+      const size_t   had = job->bodies[slot].tris.size() / 3;
+      const uint64_t key = shapeKey(job->bodies[slot], edge, kCoarseError * edge);
+      std::optional<physics::cloth::Coarse> c;
+      if(const auto made = m_coarse.find(key); made != m_coarse.end())
+      {
+        // made for this shape before: the same copy, of the collider as it is posed now
+        if(made->second)
+          c = physics::cloth::sameCopy(job->bodies[slot], *made->second);
+        copies[key] = made->second;
+        if(!c)
+          continue;
+      }
+      else
+      {
+        c           = physics::cloth::coarsen(job->bodies[slot], edge, kCoarseError * edge);
+        copies[key] = c;
+        if(!c)
+          continue;
+        if(timing::enabled())
+        {
+          const int   mesh = job->slotMesh[slot];
+          std::string name = mesh >= 0 ? m_scene.meshes[size_t(mesh)].name : std::to_string(slot);
+          timing::line("dforce: " + name + " collides as " + std::to_string(c->surface.tris.size() / 3) + " of its "
+                       + std::to_string(had) + " faces, " + std::to_string(c->error) + " cm off (the cloth's edges "
+                       + std::to_string(edge) + " cm)");
+        }
+      }
+      job->bodies[slot]   = std::move(c->surface);
+      job->slotKeep[slot] = std::move(c->keep);
+    }
+  }
+  // only what this job has is kept: a shape changed or taken off goes
+  m_coarse = std::move(copies);
   return job;
 }
 
@@ -736,6 +819,9 @@ bool Dforce::pumpLive()
         continue;
       const auto         drape = std::find_if(m_liveJob->drapes.begin(), m_liveJob->drapes.end(), [&](const Job::Drape& d) { return d.slot == slot; });
       std::vector<float> rest  = liveRest(mesh, drape != m_liveJob->drapes.end());
+      // a coarse copy skins only what it kept
+      if(const auto& keep = m_liveJob->slotKeep[slot]; !keep.empty() && rest.size() > size_t(keep.back()) * 3 + 2)
+        rest = physics::cloth::keepOf(rest, keep, 3);
       if(rest.size() != m_liveJob->bodies[slot].restLocal.size())
         continue;
       if(drape != m_liveJob->drapes.end())

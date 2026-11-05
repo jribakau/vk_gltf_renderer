@@ -3005,3 +3005,119 @@ TEST(Dforce, aLateLiveStepCarriesTheClothThroughWhatItCannotSimulate)
   EXPECT_EQ(sim->carried.size(), 1u);
   EXPECT_EQ(sim->starts.back(), 0.f);
 }
+
+TEST(Dforce, aWornItemMuchFinerThanTheClothIsMetAsACoarseCopyThatLiveReshapesInPlace)
+{
+  // A belt of 3,200 faces (a 6 cm square in quads of 0.15 cm) between a body and a veil of 1 cm quads,
+  // all skinned to one bone. The veil meets a coarse copy of the belt; in live mode the belt's
+  // corrective (1 cm up) reaches the veil through the copy without a rebuild, as through the belt
+  fv::SceneGraph scene;
+  const int      rootNode = scene.add(fv::Node{});
+  fv::Node       boneNode;
+  boneNode.kind  = fv::NodeKind::eBone;
+  const int bone = scene.add(boneNode, rootNode);
+  Grid      belt = grid(40, 1.5f);
+  for(size_t v = 0; v < belt.pos.size() / 3; v++)
+  {
+    belt.pos[v * 3] *= 0.15f;
+    belt.pos[v * 3 + 2] *= 0.15f;
+  }
+  const auto skinned = [&](fv::Mesh m) {
+    const size_t n = m.geo->cagePositions.size() / 3;
+    m.bones        = {bone};
+    m.boneInverses = {fv::Mat4{}};
+    for(size_t v = 0; v <= n; v++)
+      m.cageSkin.start.push_back(int32_t(v));
+    m.cageSkin.bone.assign(n, 0);
+    m.cageSkin.weight.assign(n, 1.f);
+    return m;
+  };
+  scene.meshes.push_back(skinned(sceneMesh(grid(8, 0), false)));
+  scene.meshes.push_back(skinned(sceneMesh(belt, false)));
+  scene.meshes.push_back(skinned(sceneMesh(grid(4, 3), true)));
+  scene.materials.push_back({});
+  for(int i = 0; i < 3; i++)
+  {
+    fv::Node n;
+    n.kind = fv::NodeKind::eMesh;
+    n.mesh = i;
+    scene.add(n, rootNode);
+  }
+  morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(scene, morphs, 0, rootNode);
+
+  // the copy, and the belt as it is for an A/B
+  const auto beltFaces = [&] {
+    const auto p = d.prepared();
+    for(size_t slot = 0; p && slot < p->slotMesh.size(); slot++)
+      if(p->slotMesh[slot] == 1)
+        return p->bodies[slot].tris.size() / 3;
+    return size_t(0);
+  };
+  const size_t coarse = beltFaces();
+  d.coarseColliders   = false;
+  EXPECT_EQ(beltFaces(), 3200u);
+  d.coarseColliders = true;
+  EXPECT_GT(coarse, 0u);
+  EXPECT_LT(coarse, 400u);
+
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(dforce::Mode::eLive);
+  int        frame     = 0;
+  const auto clipFrame = [&] {
+    scene.nodes[size_t(bone)].position.x = 0.02 * std::sin(0.1 * frame++);
+    now += std::chrono::microseconds(16667);
+    morphs.flush();
+    d.changed({0, 1, 2}, true);
+    const bool wrote = d.pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return wrote;
+  };
+  bool wrote = false;
+  for(int i = 0; i < 6000 && !wrote; i++)
+    wrote = clipFrame();
+  ASSERT_TRUE(wrote) << "live never began";
+  for(int i = 0; i < 200; i++)
+    clipFrame();
+  const auto lowest = [&] {
+    morphs.flush();
+    const auto& pos = scene.meshes[2].geo->position;
+    float       y   = 1e9f;
+    for(size_t v = 0; v < pos.size() / 3; v++)
+      y = std::min(y, pos[v * 3 + 1]);
+    return y;
+  };
+  const float before = lowest();
+  EXPECT_GT(before, 1.5f) << "the veil lies on the belt";
+  EXPECT_LT(before, 2.2f) << "the veil lies on the belt";
+
+  // the belt's corrective, 1 cm up over a hundred frames
+  {
+    mesh::CageDeltas up;
+    const auto&      cage = scene.meshes[1].geo->cagePositions;
+    for(size_t v = 0; v < cage.size() / 3; v++)
+    {
+      up.verts.push_back(int32_t(v));
+      up.deltas.insert(up.deltas.end(), {0.f, 1.f, 0.f});
+    }
+    morph::ChannelOptions opts;
+    opts.hidden = true;
+    opts.value  = 0.0;
+    morphs.addTarget("corrective", 1, std::make_shared<const mesh::RenderTarget>(mesh::target(*scene.meshes[1].geo, up)), opts);
+  }
+  int busy = 0;
+  for(int i = 1; i <= 100; i++)
+  {
+    morphs.set("corrective", i / 100.0);
+    clipFrame();
+    busy += d.busy() ? 1 : 0;
+  }
+  for(int i = 0; i < 300; i++)
+  {
+    clipFrame();
+    busy += d.busy() ? 1 : 0;
+  }
+  EXPECT_EQ(busy, 0) << "the simulation was built again";
+  EXPECT_NEAR(lowest() - before, 1.f, 0.3f) << "the veil rose with the belt's copy";
+}

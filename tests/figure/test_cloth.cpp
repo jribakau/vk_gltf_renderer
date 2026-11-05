@@ -18,6 +18,7 @@
 
 #include <figure/dforce/solver.hpp>
 #include <figure/physics/cloth/clusters.hpp>
+#include <figure/physics/cloth/coarse.hpp>
 #include <figure/physics/cloth/island.hpp>
 #include <figure/physics/cloth/job.hpp>
 #include <figure/physics/cloth/report.hpp>
@@ -648,4 +649,192 @@ TEST(SweepGrid, everyFaceIsInEveryCellItsSweepMeetsInAscendingOrder)
           EXPECT_TRUE(std::binary_search(grid.items.begin() + c->start, grid.items.begin() + c->start + c->count, int32_t(f)));
         }
   }
+}
+
+namespace {
+
+// A sphere of radius `r` about the origin as a collider: `rings` bands from pole to pole of 2 x `rings`
+// quads each, cut in two, with a skin of four influences whose values tell each vertex apart.
+Surface sphere(float r, int rings)
+{
+  std::vector<float>    pos;
+  std::vector<uint32_t> tris;
+  const int             segments = rings * 2;
+  const double          pi       = 3.14159265358979323846;
+  pos.insert(pos.end(), {0.f, r, 0.f});
+  for(int i = 1; i < rings; i++)
+    for(int j = 0; j < segments; j++)
+    {
+      const double theta = pi * i / rings, phi = 2 * pi * j / segments;
+      pos.insert(pos.end(), {float(r * std::sin(theta) * std::cos(phi)), float(r * std::cos(theta)), float(r * std::sin(theta) * std::sin(phi))});
+    }
+  pos.insert(pos.end(), {0.f, -r, 0.f});
+  const uint32_t south = uint32_t(pos.size() / 3 - 1);
+  const auto     at    = [&](int i, int j) { return uint32_t(1 + (i - 1) * segments + (j % segments)); };
+  for(int j = 0; j < segments; j++)
+  {
+    tris.insert(tris.end(), {0, at(1, j + 1), at(1, j)});
+    tris.insert(tris.end(), {south, at(rings - 1, j), at(rings - 1, j + 1)});
+  }
+  for(int i = 1; i + 1 < rings; i++)
+    for(int j = 0; j < segments; j++)
+      tris.insert(tris.end(), {at(i, j), at(i, j + 1), at(i + 1, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1)});
+  Surface      s = Surface::collider(pos, pos, tris, 0, 0.2f, 0.4f);
+  const size_t n = s.vertexCount();
+  for(size_t v = 0; v < n; v++)
+  {
+    s.friction[v] = 0.3f + 1e-5f * float(v);
+    s.skinIndex.insert(s.skinIndex.end(), {0, 0, 0, 0});
+    s.skinWeight.insert(s.skinWeight.end(), {1.f, 0.f, 0.f, float(v)});
+  }
+  s.restLocal = pos;
+  s.bones     = {Mat4{}};
+  return s;
+}
+
+}  // namespace
+
+TEST(ClothCoarse, aColliderFinerThanTheClothBecomesACopyAsFineAsItWithinItsError)
+{
+  // A necklace's links under a dress: a sphere of 3 cm in 14k faces with sides of about 0.16 cm, met by
+  // cloth whose sides are a centimetre long
+  const Surface fine = sphere(3.f, 60);
+  ASSERT_GT(fine.tris.size() / 3, 14000u);
+  const auto c = physics::cloth::coarsen(fine, 1.f, 0.25f);
+  ASSERT_TRUE(c);
+  const Surface& s = c->surface;
+  // about as many faces as sides of a centimetre take to cover it: 4 pi 3^2 / (sqrt(3)/4) = 261
+  EXPECT_LT(s.tris.size() / 3, 600u);
+  EXPECT_GT(s.tris.size() / 3, 100u);
+  // its vertices are the ones it says it kept, with all they carry
+  ASSERT_EQ(s.vertexCount(), c->keep.size());
+  EXPECT_LT(c->keep.size(), fine.vertexCount() / 10);
+  EXPECT_TRUE(std::is_sorted(c->keep.begin(), c->keep.end()));
+  EXPECT_TRUE(s.skinned());
+  EXPECT_EQ(s.kind, Surface::Kind::eCollider);
+  for(size_t i = 0; i < c->keep.size(); i++)
+  {
+    const size_t v = c->keep[i];
+    for(size_t k = 0; k < 3; k++)
+    {
+      EXPECT_EQ(s.rest[i * 3 + k], fine.rest[v * 3 + k]);
+      EXPECT_EQ(s.posed[i * 3 + k], fine.posed[v * 3 + k]);
+      EXPECT_EQ(s.restLocal[i * 3 + k], fine.restLocal[v * 3 + k]);
+    }
+    EXPECT_EQ(s.friction[i], fine.friction[v]);
+    EXPECT_EQ(s.skinWeight[i * 4 + 3], fine.skinWeight[v * 4 + 3]);
+  }
+  for(uint32_t t : s.tris)
+    EXPECT_LT(t, s.vertexCount());
+  // within its error of the sphere, measured and within twice what was asked, which goes on its offset:
+  // the cloth keeps out of the original
+  EXPECT_GT(c->error, 0.f);
+  EXPECT_LE(c->error, 0.5f);
+  for(float o : s.offset)
+    EXPECT_FLOAT_EQ(o, 0.2f + c->error);
+  double sunk = 0;
+  for(size_t t = 0; t + 2 < s.tris.size(); t += 3)
+  {
+    double centre[3] = {};
+    for(size_t k = 0; k < 3; k++)
+      for(size_t a = 0; a < 3; a++)
+        centre[a] += s.rest[size_t(s.tris[t + k]) * 3 + a] / 3;
+    sunk = std::max(sunk, 3.0 - std::sqrt(centre[0] * centre[0] + centre[1] * centre[1] + centre[2] * centre[2]));
+  }
+  EXPECT_LE(sunk, c->error + 0.02) << "a face lies further under the sphere than the error it gave";
+}
+
+TEST(ClothCoarse, aChainOfSmallLinksIsCopiedThoughNoLinkCanBeSimplifiedAlone)
+{
+  // A necklace's chain: 100 closed links of 2.8 mm, 528 faces each, one every 2.5 mm. A simplifier that
+  // keeps each piece's shape keeps most of their faces; the copy joins them
+  std::vector<float>    pos;
+  std::vector<uint32_t> tris;
+  const Surface         link = sphere(0.14f, 12);
+  for(int k = 0; k < 100; k++)
+  {
+    const uint32_t base = uint32_t(pos.size() / 3);
+    for(size_t v = 0; v < link.vertexCount(); v++)
+      pos.insert(pos.end(), {link.rest[v * 3] + 0.25f * float(k), link.rest[v * 3 + 1], link.rest[v * 3 + 2]});
+    for(uint32_t t : link.tris)
+      tris.push_back(base + t);
+  }
+  const Surface chain = Surface::collider(pos, pos, tris, 0, 0.2f, 0.4f);
+  ASSERT_EQ(chain.tris.size() / 3, 52800u);
+  const auto c = physics::cloth::coarsen(chain, 1.f, 0.25f);
+  ASSERT_TRUE(c);
+  EXPECT_LT(c->surface.tris.size() / 3, 5000u);
+  EXPECT_GT(c->surface.tris.size() / 3, 0u);
+  EXPECT_LE(c->error, 0.5f);
+  for(float o : c->surface.offset)
+    EXPECT_FLOAT_EQ(o, 0.2f + c->error);
+  // the copy runs the chain's whole length
+  float lo = 1e9f, hi = -1e9f;
+  for(size_t v = 0; v < c->surface.vertexCount(); v++)
+  {
+    lo = std::min(lo, c->surface.rest[v * 3]);
+    hi = std::max(hi, c->surface.rest[v * 3]);
+  }
+  EXPECT_LT(lo, 0.f);
+  EXPECT_GT(hi, 24.75f);
+}
+
+TEST(ClothCoarse, aColliderAsFineAsTheClothOrClothItselfStaysAsItIs)
+{
+  // 8 bands: sides of about 1.2 cm, as the cloth's
+  EXPECT_FALSE(physics::cloth::coarsen(sphere(3.f, 8), 1.f, 0.25f));
+  // cloth isn't copied, however fine
+  Surface cloth = sphere(3.f, 60);
+  cloth.kind    = Surface::Kind::eDynamic;
+  EXPECT_FALSE(physics::cloth::coarsen(cloth, 1.f, 0.25f));
+  // nor for cloth with no faces to measure
+  EXPECT_FALSE(physics::cloth::coarsen(sphere(3.f, 60), 0.f, 0.25f));
+}
+
+TEST(ClothCoarse, onlyTheFacesThatCollideAreCopied)
+{
+  // the upper half doesn't collide (DAZ's Collide off on a surface): none of it is in the copy
+  Surface fine = sphere(3.f, 60);
+  for(size_t v = 0; v < fine.vertexCount(); v++)
+    fine.collide[v] = fine.rest[v * 3 + 1] > 0.5f ? 0 : 1;
+  const auto c = physics::cloth::coarsen(fine, 1.f, 0.25f);
+  ASSERT_TRUE(c);
+  for(size_t i = 0; i < c->keep.size(); i++)
+  {
+    EXPECT_LE(c->surface.rest[i * 3 + 1], 0.5f) << i;
+    EXPECT_EQ(c->surface.collide[i], 1) << i;
+  }
+}
+
+TEST(ClothCoarse, theMeanEdgeIsTheFacesSides)
+{
+  // two right triangles of legs 1: sides 1, 1 and sqrt(2) each
+  Surface s = Surface::collider({0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1}, {0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1}, {0, 1, 2, 0, 2, 3}, 0, 0.2f, 0.4f);
+  EXPECT_NEAR(physics::cloth::meanEdge(s), (2 + std::sqrt(2.0)) / 3, 1e-6);
+  s.tris.clear();
+  EXPECT_EQ(physics::cloth::meanEdge(s), 0.f);
+}
+
+TEST(ClothCoarse, theSameCopyOfAColliderPosedAnewKeepsItsFacesAndTakesThePose)
+{
+  // a rebuild for the same shape reuses the copy, of the collider as it is posed now
+  const Surface fine = sphere(3.f, 60);
+  const auto    c    = physics::cloth::coarsen(fine, 1.f, 0.25f);
+  ASSERT_TRUE(c);
+  Surface moved = fine;
+  for(size_t v = 0; v < moved.vertexCount(); v++)
+    moved.posed[v * 3 + 1] += 1.f;
+  moved.bones = {compose(Vec3{0, 1, 0}, Quat{}, Vec3{1, 1, 1})};
+  const auto same = physics::cloth::sameCopy(moved, *c);
+  ASSERT_TRUE(same);
+  EXPECT_EQ(same->keep, c->keep);
+  EXPECT_EQ(same->surface.tris, c->surface.tris);
+  EXPECT_EQ(same->surface.rest, c->surface.rest);
+  EXPECT_EQ(same->surface.offset, c->surface.offset);
+  EXPECT_EQ(same->error, c->error);
+  ASSERT_EQ(same->surface.bones.size(), 1u);
+  for(size_t i = 0; i < same->keep.size(); i++)
+    EXPECT_EQ(same->surface.posed[i * 3 + 1], fine.posed[size_t(same->keep[i]) * 3 + 1] + 1.f);
+  // nor for a collider without those vertices
+  EXPECT_FALSE(physics::cloth::sameCopy(sphere(3.f, 8), *c));
 }

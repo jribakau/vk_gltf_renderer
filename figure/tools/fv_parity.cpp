@@ -1315,9 +1315,18 @@ int main(int argc, char** argv)
           };
         else
           d.collidesWith = [](int) { return false; };
+        // what's worn much finer than the cloth meets it as a coarse copy; "coarse": false, as it is
+        d.coarseColliders = step.value("coarse", true);
         auto p = d.prepared();
         if(!p)
           throw std::runtime_error("nothing worn drapes");
+        {
+          size_t colliderFaces = 0;
+          for(const auto& b : p->bodies)
+            if(b.kind == fv::physics::cloth::Surface::Kind::eCollider)
+              colliderFaces += b.tris.size() / 3;
+          std::cout << "dforce " << label << " colliders: " << colliderFaces << " faces" << std::endl;
+        }
         // strand hair: where it ends up against where it started, and a sample of it to look at
         if(!p->hairs.empty())
         {
@@ -1516,6 +1525,24 @@ int main(int argc, char** argv)
         }
         if(objDir)
           writeObj(*objDir / (fileSafe(label) + "_body.obj"), out[0], p->bodies[0]);
+        // each drape against every worn collider as it is, not its coarse copy: its vertices that ended on
+        // the other side of it than they began (a dress through the underwear it met as a copy)
+        if(step.value("through", true))
+        {
+          d.coarseColliders = false;
+          const auto full   = d.prepared();
+          d.coarseColliders = step.value("coarse", true);
+          for(size_t i = 0; full && i < p->drapes.size(); i++)
+          {
+            const int slot    = p->drapes[i].second;
+            Json      through = Json::object();
+            for(size_t k = 1; k < full->bodies.size(); k++)
+              if(full->bodies[k].kind == fv::physics::cloth::Surface::Kind::eCollider)
+                through[full->slotMesh[k] >= 0 ? meshName(full->slotMesh[k]) : std::to_string(k)] =
+                    fv::physics::cloth::wrongSide(p->bodies[size_t(slot)], out[size_t(slot)], full->bodies[k], full->bodies[k].posed);
+            items[i]["through"] = through;
+          }
+        }
         std::cerr << "dforce " << label << ": " << items.dump() << "\n";
         Json dump = {{"dforce", items}, {"substeps", sim.substepsPerFrame()}, {"transition", r(sim.transitionSeconds())}, {"ms", r(simMs)}};
         if(step.value("apply", false))
@@ -1719,7 +1746,9 @@ int main(int argc, char** argv)
     std::cerr << "[step] total " << std::fixed << std::setprecision(1)
               << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - caseStart).count() << " ms\n"
               << std::defaultfloat;
-    std::filesystem::create_directories(outPath.parent_path());
+    // a bare file name has no folder to make (create_directories("") throws)
+    if(!outPath.parent_path().empty())
+      std::filesystem::create_directories(outPath.parent_path());
     std::ofstream o(outPath);
     o << Json{{"case", casePath.stem().u8string()}, {"dumps", dumps}}.dump();
     if(loaded)

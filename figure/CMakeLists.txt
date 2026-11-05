@@ -7,8 +7,9 @@ add_library(fv_figure STATIC ${FV_FIGURE_SOURCES})
 target_compile_features(fv_figure PUBLIC cxx_std_20)
 cmake_path(GET CMAKE_CURRENT_SOURCE_DIR PARENT_PATH FV_FIGURE_ROOT)
 target_include_directories(fv_figure PUBLIC ${FV_FIGURE_ROOT})
-# tinygltf for the glTF model it builds and for nlohmann::json (<tinygltf/json.hpp>)
-target_link_libraries(fv_figure PUBLIC glm tinygltf PRIVATE zlib)
+# tinygltf for the glTF model it builds and for nlohmann::json (<tinygltf/json.hpp>); meshoptimizer for
+# the coarse copies of colliders the cloth meets (physics/cloth/coarse.cpp)
+target_link_libraries(fv_figure PUBLIC glm tinygltf PRIVATE zlib meshoptimizer)
 set_property(TARGET fv_figure PROPERTY FOLDER "figure")
 # The bind cache's key (wardrobe/bind_cache.cpp): xxHash as zstd ships it, and the hash of the binding
 # code (bind.cpp and the closest-point search it runs on), so a change to it is another key. Those

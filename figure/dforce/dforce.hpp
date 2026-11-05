@@ -31,12 +31,14 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
 #include <figure/dforce/strands.hpp>
+#include <figure/physics/cloth/coarse.hpp>
 #include <figure/math/xform.hpp>
 #include <figure/morph/morph_set.hpp>
 #include <figure/scene/graph.hpp>
@@ -85,6 +87,9 @@ public:
   // Whether a shown mesh with no simulation modifier is a collider the cloth meets (a belt, a bra,
   // shoes): DAZ collides with every visible object. Unset: every one.
   std::function<bool(int mesh)> collidesWith;
+  // A collider much finer than the cloth (a necklace's links, lace) is met as a coarse copy of it, as
+  // fine as the cloth (physics/cloth/coarse.hpp); off, as it is, for an A/B.
+  bool coarseColliders = true;
 
   // Whether anything worn would be draped.
   bool active() const;
@@ -208,6 +213,10 @@ private:
   bool                                           m_liveRestMoved = false;
   std::set<int> m_draped;
   int           m_version = 0;
+  // the coarse copies of colliders the last job made, by the shape each was made from (its rest cage,
+  // faces, and the cloth's edge): a rebuild for the same shapes doesn't simplify them again (188 ms on
+  // a necklace, underwear and boots). None: one that isn't copied
+  mutable std::map<uint64_t, std::optional<physics::cloth::Coarse>> m_coarse;
 };
 
 }  // namespace fv::dforce
