@@ -54,6 +54,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -66,7 +67,7 @@
 #include <figure/dson/store.hpp>
 #include <figure/dforce/dforce.hpp>
 #include <figure/dforce/skin.hpp>
-#include <figure/dforce/solver.hpp>
+#include <figure/physics/cloth/island.hpp>
 #include <figure/dson/material_preset.hpp>
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
@@ -104,6 +105,26 @@ std::filesystem::path pathOf(const char* utf8)
 double r(double v)
 {
   return std::floor(v * 1e6 + 0.5) / 1e6;
+}
+
+// The bits of a float array (FNV-1a, 64 bits, hex): two drapes with the same hash came out the same to
+// the bit, which a move of the solver's code must keep (physics-plan step 12, gate G1).
+std::string bitsOf(const std::vector<float>& v)
+{
+  uint64_t h = 1469598103934665603ull;
+  for(const float f : v)
+  {
+    uint32_t u;
+    std::memcpy(&u, &f, sizeof u);
+    for(int k = 0; k < 4; k++)
+    {
+      h ^= (u >> (8 * k)) & 0xFF;
+      h *= 1099511628211ull;
+    }
+  }
+  char buf[17];
+  std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(h));
+  return buf;
 }
 
 Json dumpScene(const fv::SceneGraph& scene, int root, const fv::morph::MorphSet* morphs)
@@ -259,15 +280,15 @@ Json fitReport(const fv::Figure& fig)
   return items;
 }
 
-// The stretch edges of one simulated mesh as a ratio of their rest length, sorted. An edge between
+// The stretch rows of one simulated surface as a ratio of their rest length, sorted. A row between
 // two pinned vertices is the skin's doing, not the solver's, and is left out.
-std::vector<double> stretchRatios(const fv::dforce::ClothModel& model, size_t slot, size_t n, const std::vector<float>& out)
+std::vector<double> stretchRatios(const fv::physics::cloth::Model& model, size_t slot, size_t n, const std::vector<float>& out)
 {
   const int           base = model.base[slot];
   std::vector<double> ratio;
-  for(const fv::dforce::Edge& e : model.edges)
+  for(const fv::physics::cloth::Distance& e : model.edges)
   {
-    if(e.kind != fv::dforce::EdgeKind::eStretch || e.rest <= 0 || e.a < base || e.b < base || e.a >= base + int(n) || e.b >= base + int(n))
+    if(e.kind != fv::physics::cloth::DistanceKind::eStretch || e.rest <= 0 || e.a < base || e.b < base || e.a >= base + int(n) || e.b >= base + int(n))
       continue;
     if(model.inv[size_t(e.a)] <= 0 && model.inv[size_t(e.b)] <= 0)
       continue;
@@ -524,8 +545,8 @@ Json tightReport(fv::Figure& fig, const std::string& what, float amount)
 // positions in the job's space, `bodyNow` the body collider where the pose left it. A vertex is
 // "inside" when the body's closest face has it behind, as the wardrobe collider counts it
 // (pushOut's rule, within 3 cm); the signed distances are along that face's normal.
-Json drapeReport(const fv::dforce::ClothModel& model, size_t slot, const fv::dforce::SettleMesh& mesh, const std::vector<float>& out,
-                 const fv::dforce::SettleMesh& body, const std::vector<float>& bodyNow)
+Json drapeReport(const fv::physics::cloth::Model& model, size_t slot, const fv::physics::cloth::Surface& mesh, const std::vector<float>& out,
+                 const fv::physics::cloth::Surface& body, const std::vector<float>& bodyNow)
 {
   const int    base   = model.base[slot];
   const size_t n      = mesh.vertexCount();
@@ -613,14 +634,15 @@ Json drapeReport(const fv::dforce::ClothModel& model, size_t slot, const fv::dfo
           {"bodyMedian", pct(depth, 0.5)},
           {"hemDropCm", r(double(minPosed - minOut))},
           {"box", box(out)},
-          {"boxPosed", box(mesh.posed)}};
+          {"boxPosed", box(mesh.posed)},
+          {"bits", bitsOf(out)}};
 }
 
 // A drape's per-vertex and per-edge detail beside its OBJ, for a script to find where it went
 // wrong: each vertex's strength and signed depth against the body (null when it bound to no face),
 // and every stretch edge with its rest length.
-void writeSidecar(const std::filesystem::path& file, const fv::dforce::ClothModel& model, size_t slot, const fv::dforce::SettleMesh& mesh,
-                  const std::vector<float>& out, const fv::dforce::SettleMesh& body, const std::vector<float>& bodyNow)
+void writeSidecar(const std::filesystem::path& file, const fv::physics::cloth::Model& model, size_t slot, const fv::physics::cloth::Surface& mesh,
+                  const std::vector<float>& out, const fv::physics::cloth::Surface& body, const std::vector<float>& bodyNow)
 {
   const int    base = model.base[slot];
   const size_t n    = mesh.vertexCount();
@@ -651,8 +673,8 @@ void writeSidecar(const std::filesystem::path& file, const fv::dforce::ClothMode
     else
       depth.push_back(r(((out[k] - s[0]) * nx + (out[k + 1] - s[1]) * ny + (out[k + 2] - s[2]) * nz) / len));
   }
-  for(const fv::dforce::Edge& e : model.edges)
-    if(e.kind == fv::dforce::EdgeKind::eStretch && e.a >= base && e.b >= base && e.a < base + int(n) && e.b < base + int(n)
+  for(const fv::physics::cloth::Distance& e : model.edges)
+    if(e.kind == fv::physics::cloth::DistanceKind::eStretch && e.a >= base && e.b >= base && e.a < base + int(n) && e.b < base + int(n)
        && (model.inv[size_t(e.a)] > 0 || model.inv[size_t(e.b)] > 0))
       edges.push_back(Json::array({e.a - base, e.b - base, r(e.rest)}));
   std::ofstream o(file);
@@ -660,7 +682,7 @@ void writeSidecar(const std::filesystem::path& file, const fv::dforce::ClothMode
 }
 
 // A mesh as an OBJ: its polygons when it has them, else its triangles.
-void writeObj(const std::filesystem::path& file, const std::vector<float>& pos, const fv::dforce::SettleMesh& mesh)
+void writeObj(const std::filesystem::path& file, const std::vector<float>& pos, const fv::physics::cloth::Surface& mesh)
 {
   std::filesystem::create_directories(file.parent_path());
   std::ofstream o(file);
@@ -1414,21 +1436,21 @@ int main(int argc, char** argv)
         }
         // experiments: the cloth's own faces left out of its collisions
         if(!step.value("selfCollide", true))
-          for(fv::dforce::SettleMesh& m : p->bodies)
+          for(fv::physics::cloth::Surface& m : p->bodies)
             std::fill(m.selfCollide.begin(), m.selfCollide.end(), uint8_t(0));
-        if(p->bodies.empty() || p->bodies[0].kind != fv::dforce::SettleMesh::Kind::eCollider)
+        if(p->bodies.empty() || p->bodies[0].kind != fv::physics::cloth::Surface::Kind::eCollider)
           throw std::runtime_error("the body is not the first collider");
         const std::optional<std::filesystem::path> objDir =
             step.contains("obj") ? std::optional<std::filesystem::path>(root / pathOf(step["obj"].get<std::string>().c_str())) : std::nullopt;
         const auto meshName = [&](int mesh) { return fileSafe(scene.meshes[size_t(mesh)].name); };
-        fv::dforce::SettleOptions opts;
+        fv::physics::cloth::Options opts;
         opts.air        = 0.15f;
         opts.iterations    = step.value("iterations", opts.iterations);
         opts.stretchSweeps = step.value("stretchSweeps", opts.stretchSweeps);
         opts.substeps      = step.value("substeps", opts.substeps);
         opts.transition    = step.value("transition", opts.transition);
         const auto           simStart = std::chrono::steady_clock::now();
-        fv::dforce::ClothSim sim(p->bodies, opts);
+        fv::physics::cloth::Island sim(p->bodies, opts);
         const bool           trace  = step.value("trace", false);
         const int            frames = step.value("frames", 0);
         if(frames > 0 || trace)
@@ -1489,7 +1511,7 @@ int main(int argc, char** argv)
           items.push_back(report);
           if(objDir)
           {
-            const fv::dforce::SettleMesh& sm = p->bodies[size_t(slot)];
+            const fv::physics::cloth::Surface& sm = p->bodies[size_t(slot)];
             writeObj(*objDir / (fileSafe(label) + "_" + meshName(mesh) + ".obj"), out[size_t(slot)], sm);
             writeObj(*objDir / (fileSafe(label) + "_" + meshName(mesh) + "_rest.obj"), sm.rest, sm);
             writeObj(*objDir / (fileSafe(label) + "_" + meshName(mesh) + "_posed.obj"), sm.posed, sm);

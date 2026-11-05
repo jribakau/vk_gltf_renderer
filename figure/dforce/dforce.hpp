@@ -39,11 +39,16 @@
 #include <figure/morph/morph_set.hpp>
 #include <figure/scene/graph.hpp>
 
+namespace fv::physics::cloth {
+struct Surface;
+struct Options;
+}  // namespace fv::physics::cloth
+
 namespace fv::dforce {
 
 class ClothBackend;
-struct SettleMesh;
-struct SettleOptions;
+using SettleMesh    = physics::cloth::Surface;
+using SettleOptions = physics::cloth::Options;
 
 // The hidden channel a mesh's drape is stored as.
 std::string channelOf(int mesh);
