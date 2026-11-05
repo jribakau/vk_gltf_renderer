@@ -20,6 +20,11 @@ void ClothSim::setTarget(size_t mesh, const std::vector<Mat4>& bones)
     targetSet();
 }
 
+bool ClothSim::setRest(size_t mesh, std::vector<float> restLocal)
+{
+  return m_island.setRest(mesh, std::move(restLocal));
+}
+
 void ClothSim::setGravity(const std::array<float, 3>& gravity)
 {
   m_island.setGravity(gravity);

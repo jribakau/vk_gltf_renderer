@@ -11,8 +11,9 @@
 //   solver fails, the job goes to the CPU on the pool.
 // - Live: the simulation keeps its state and takes the figure's bones every frame, stepping once on
 //   the pool and writing the drape the frame after, so the cloth follows a drag or a playing clip.
-//   It starts with a settle, and builds itself again (after a short wait) when a dial changes a rest
-//   shape or something is worn or taken off.
+//   It starts with a settle, and builds itself again (after a short wait) when a dial changes a cloth's
+//   rest shape or something is worn or taken off. A rest shape the pose moves (its correctives, every
+//   frame of a clip) or a collider's (a dent, a dial on the body) is taken in place by the next step.
 // - Live on the GPU: the same, on a simulation the host provides through `makeGpuSim` (the
 //   renderer's compute solver). One that must stay on its thread is stepped in pump() itself, so
 //   its drape is written the same frame.
@@ -98,7 +99,8 @@ public:
   // mode, rebuilds the simulation once things stop changing.
   void poke();
   // Something the figure shows changed: nodes (bones) moved, or these meshes' vertices did. Pokes
-  // (live: a moved bone is read next frame, a changed mesh rebuilds).
+  // (live: a moved bone is read next frame; a mesh changed with them, the pose's correctives, or a
+  // collider's, is read in place by the next step; a cloth's own changed with nothing moving rebuilds).
   // The host reports what it flushed before pump() writes a drape, so a drape is never its own cause.
   void changed(const std::vector<int>& meshes, bool nodesMoved);
   // Runs now, still dropping the result if a newer edit arrives while it runs.
@@ -142,6 +144,10 @@ private:
   std::vector<int>     dynamics() const;
   std::shared_ptr<Job> prepare(uint64_t generation) const;
   bool                 apply(const Job& job, const std::vector<std::vector<float>>& positions);
+  // A job's drapes from its positions: each one's cage deltas, in job.drapes' order. Any thread.
+  static std::vector<std::vector<float>> deltasOf(const Job& job, const std::vector<std::vector<float>>& positions);
+  // Writes them, but not on an item taken off meanwhile. True when it wrote.
+  bool writeDeltas(const Job& job, const std::vector<std::vector<float>>& deltas);
   // The bones of a job's skinned meshes as the figure has them now, per slot (empty: unskinned).
   std::vector<std::vector<Mat4>> currentBones(const Job& job) const;
   // Holds this drape on a mesh: cage deltas, xyz per cage vertex. True when written.
@@ -150,6 +156,8 @@ private:
   // World down, in cm/s^2, in the job's space.
   std::array<float, 3> currentGravity() const;
   bool                           pumpLive();
+  // Live: a mesh's rest cage as the simulation skins it, in its own space: a drape's without its drape.
+  std::vector<float>             liveRest(int mesh, bool drape) const;
 
   SceneGraph&      m_scene;
   morph::MorphSet& m_morphs;
@@ -181,7 +189,8 @@ private:
   std::future<std::vector<std::vector<float>>>   m_hairJob;
   std::shared_ptr<std::atomic<bool>>             m_hairStale;
   uint64_t                                       m_hairGen = 0;
-  // live: the simulation, what it was built from, the step in flight and the bones it was given
+  // live: the simulation, what it was built from, the step in flight (its drapes' deltas, made on the
+  // pool) and the bones it was given
   std::shared_ptr<ClothBackend>                  m_live;
   std::shared_ptr<Job>                           m_liveJob;
   std::future<std::vector<std::vector<float>>>   m_liveStep;
@@ -193,6 +202,10 @@ private:
   std::chrono::steady_clock::time_point          m_liveLast;
   float                                          m_liveStill = 0;
   uint64_t                                       m_liveGen      = 0;
+  // live: meshes whose rest shapes moved since the last step (correctives, a dent), and whether the next
+  // step has a moved rest shape to take though no bone moved
+  std::set<int>                                  m_liveReshaped;
+  bool                                           m_liveRestMoved = false;
   std::set<int> m_draped;
   int           m_version = 0;
 };

@@ -93,6 +93,11 @@ public:
   // from, so the next frame(0, 1) sweeps them to the new target. Surfaces not given keep theirs. False
   // when this surface isn't skinned with as many bones, and nothing changed.
   bool setTarget(size_t surface, const std::vector<Mat4>& bones);
+  // Live: a skinned surface's rest cage moved in its mesh's space (`Surface::restLocal`) by what the
+  // pose drives, its correctives, or by a dent: what its kinematic vertices are skinned from from the
+  // next frame. The rows keep the lengths they were built with. False when this surface isn't skinned
+  // or the size differs, and nothing changed.
+  bool setRest(size_t surface, std::vector<float> restLocal);
   // Which way is down and how hard, cm/s^2 in the job's space.
   void setGravity(const std::array<float, 3>& gravity);
   // The pose transition over its frames, then the hold until the cloth is still (or `maxHold`).

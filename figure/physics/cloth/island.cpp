@@ -758,6 +758,15 @@ bool Island::setTarget(size_t surface, const std::vector<Mat4>& bones)
   return true;
 }
 
+bool Island::setRest(size_t surface, std::vector<float> restLocal)
+{
+  State& s = *m_state;
+  if(surface >= s.kin.size() || !s.kin[surface].skinned || restLocal.size() != s.meshes[surface].restLocal.size())
+    return false;
+  s.meshes[surface].restLocal = std::move(restLocal);
+  return true;
+}
+
 float Island::lastMove() const
 {
   return m_state->lastMove;

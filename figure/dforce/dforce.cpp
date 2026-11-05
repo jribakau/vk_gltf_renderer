@@ -24,9 +24,12 @@ constexpr float kLiveFree = 1.f, kLiveCalming = 1.f, kLiveHold = 3.f;
 // How much of a frame a settle on the GPU may take, seconds: the app stays usable while it runs.
 constexpr double kSettleSlice = 0.05;
 // A live step is as long as the time since the last one, within these, seconds: a slow frame doesn't
-// make slow motion, down to the rate below which a step's substeps would stop holding the cloth
-// together (then it slows instead), and frames faster than the shortest wait for each other.
-constexpr float kLiveMinStep = 1.f / 60.f, kLiveMaxStep = 1.f / 20.f;
+// make slow motion, and frames faster than the shortest wait for each other. Longer than the longest,
+// the GPU's simulation is carried with the pose through the rest (ClothBackend::carry), the CPU's slows.
+// A step's collision passes grow with its length, and so does each one's grid: past about 45 ms a step
+// on the GPU beside the path tracer took longer than it simulated, so the next was longer still (a walk
+// held at the 1/20 s this was, half its steps late); below it they shorten, to a frame or two.
+constexpr float kLiveMinStep = 1.f / 60.f, kLiveMaxStep = 1.f / 30.f;
 // How far gravity must turn to matter, cm/s^2 on any axis: about a twentieth of a degree.
 constexpr float kGravityChange = 1.f;
 
@@ -202,9 +205,23 @@ void Dforce::changed(const std::vector<int>& meshes, bool nodesMoved)
 {
   if(m_mode != Mode::eSettle)
   {
-    // bones are read again next frame; a changed mesh is a new rest shape, so the simulation is
-    // built again once the dial stops
-    if(!meshes.empty())
+    // Bones are read again next frame. A mesh changed with them is the pose's correctives (under a clip,
+    // every frame), and a collider's change is its pose too (a dent, a dial on the body): the next step
+    // skins from the new rest shape in place. A cloth's own shape changed with nothing moving is a dial:
+    // the simulation is built again once it stops. The pose never puts off a build that is due (it
+    // reads the shapes as they are then), so one starts while a clip plays
+    bool rebuild = false;
+    for(int mesh : meshes)
+    {
+      const bool slot  = m_live && m_liveJob && mesh >= 0
+                        && std::find(m_liveJob->slotMesh.begin(), m_liveJob->slotMesh.end(), mesh) != m_liveJob->slotMesh.end();
+      const bool drape = slot && std::any_of(m_liveJob->drapes.begin(), m_liveJob->drapes.end(), [&](const Job::Drape& d) { return d.mesh == mesh; });
+      if(slot && (nodesMoved || !drape))
+        m_liveReshaped.insert(mesh);
+      else if(!nodesMoved)
+        rebuild = true;
+    }
+    if(rebuild)
       poke();
     return;
   }
@@ -698,10 +715,47 @@ bool Dforce::pump()
 bool Dforce::pumpLive()
 {
   bool wrote = false;
+  // a frame the step is still running through: counted, so a slow step shows as frames without cloth
+  if(m_liveStep.valid() && m_liveStep.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+  {
+    timing::accumulate("dforce: live, a frame its step was still running", 0);
+    return false;
+  }
+  // Rest shapes the pose or a dent moved since the last step, read as the figure's pump left them, while
+  // the simulation is between steps: what it skins from next, and a drape's what its delta is taken
+  // against (the step that landed is written against it too: the mesh is drawn from it now)
+  // a drape's deltas from the step that landed were taken against its rest as it was: by how much it moved
+  std::vector<std::pair<size_t, std::vector<float>>> shifts;
+  if(m_live && m_liveJob && !m_liveReshaped.empty())
+  {
+    timing::Accum t("dforce: live, the rest shapes read");
+    for(size_t slot = 0; slot < m_liveJob->slotMesh.size(); slot++)
+    {
+      const int mesh = m_liveJob->slotMesh[slot];
+      if(mesh < 0 || !m_liveReshaped.count(mesh))
+        continue;
+      const auto         drape = std::find_if(m_liveJob->drapes.begin(), m_liveJob->drapes.end(), [&](const Job::Drape& d) { return d.slot == slot; });
+      std::vector<float> rest  = liveRest(mesh, drape != m_liveJob->drapes.end());
+      if(rest.size() != m_liveJob->bodies[slot].restLocal.size())
+        continue;
+      if(drape != m_liveJob->drapes.end())
+      {
+        if(m_liveStep.valid())
+        {
+          std::vector<float> shift(rest.size());
+          for(size_t i = 0; i < rest.size() && i < drape->rest.size(); i++)
+            shift[i] = drape->rest[i] - rest[i];
+          shifts.emplace_back(size_t(drape - m_liveJob->drapes.begin()), std::move(shift));
+        }
+        drape->rest = rest;
+      }
+      m_liveJob->bodies[slot].restLocal = rest;
+      m_liveRestMoved = m_live->setRest(slot, std::move(rest)) || m_liveRestMoved;
+    }
+    m_liveReshaped.clear();
+  }
   if(m_liveStep.valid())
   {
-    if(m_liveStep.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-      return false;
     std::vector<std::vector<float>> positions;
     try
     {
@@ -717,7 +771,15 @@ bool Dforce::pumpLive()
       m_version++;
     }
     if(m_liveGen == m_gen && m_enabled && m_liveJob && m_live && !positions.empty())
-      wrote = apply(*m_liveJob, positions);
+    {
+      // `positions` are the drapes' deltas here
+      for(auto& [k, shift] : shifts)
+        if(k < positions.size() && positions[k].size() == shift.size())
+          for(size_t i = 0; i < shift.size(); i++)
+            positions[k][i] += shift[i];
+      timing::Accum t("dforce: live, the drape written");
+      wrote = writeDeltas(*m_liveJob, positions);
+    }
   }
   if(!m_enabled)
     return wrote;
@@ -727,6 +789,9 @@ bool Dforce::pumpLive()
     m_scheduled = false;
     m_live.reset();
     m_liveJob.reset();
+    // the new job reads every shape as it is now
+    m_liveReshaped.clear();
+    m_liveRestMoved = false;
     if(!active())
       return wrote;
     m_liveJob = prepare(m_gen);
@@ -759,9 +824,9 @@ bool Dforce::pumpLive()
       wrote          = apply(*m_liveJob, sim->positions()) || wrote;
       return wrote;
     }
-    m_liveStep = jobs::pool().submit([sim] {
+    m_liveStep = jobs::pool().submit([sim, job = m_liveJob] {
       sim->settle();
-      return sim->positions();
+      return deltasOf(*job, sim->positions());
     });
     return wrote;
   }
@@ -769,8 +834,10 @@ bool Dforce::pumpLive()
     return wrote;
   // the pose now, and which way is down; a pose that stands still needs no step once the cloth is at
   // rest, or has had as long as a settle gives it: a few vertices caught in a fold may never be
+  std::optional<timing::Accum> posing(std::in_place, "dforce: live, the pose read");
   auto bones = currentBones(*m_liveJob);
-  bool moved = false;
+  // a rest shape moved (a dent, the correctives) wakes it as a bone does
+  bool moved = m_liveRestMoved;
   for(size_t slot = 0; slot < bones.size(); slot++)
     moved = moved || !samePose(bones[slot], m_liveBones[slot]);
   const std::array<float, 3> gravity = currentGravity();
@@ -788,6 +855,11 @@ bool Dforce::pumpLive()
   if(elapsed < kLiveMinStep)
     return wrote;
   const float seconds = std::min(elapsed, kLiveMaxStep);
+  // Longer than a step may simulate (a slow frame, or the settle that began it): the pose has gone on
+  // meanwhile. The cloth is carried with it through the time it can't simulate, where the simulation
+  // can (the GPU's), and sweeps only the last step's worth: a sweep through all of it was dearer, so the
+  // next step came later still (a walk once live had settled: steps of 0.4 to 1.2 s)
+  const float late = elapsed > kLiveMaxStep ? 1.f - kLiveMaxStep / elapsed : 0.f;
   m_liveLast          = now;
   for(size_t slot = 0; slot < bones.size(); slot++)
     if(!samePose(bones[slot], m_liveBones[slot]))
@@ -805,20 +877,49 @@ bool Dforce::pumpLive()
   for(Job::Drape& d : m_liveJob->drapes)
     if(m_liveJob->slotMesh[d.slot] >= 0)
       d.pose = currentSkin(m_scene, worlds, nodeOf, d.mesh);
+  posing.reset();
   m_liveBones  = std::move(bones);
   m_liveMoving = moved || turned;
+  m_liveRestMoved = false;
   auto        sim     = m_live;
   const float damping = moved ? 0.f : kLiveRestDamping * std::clamp((m_liveStill - kLiveFree) / kLiveCalming, 0.f, 1.f);
   if(sim->ownerThreadOnly())
   {
-    sim->step(damping, seconds);
+    {
+      timing::Accum t("dforce: live, the step");
+      sim->step(damping, seconds, late);
+    }
+    timing::Accum t("dforce: live, the drape written");
     return apply(*m_liveJob, sim->positions()) || wrote;
   }
-  m_liveStep = jobs::pool().submit([sim, damping, seconds] {
-    sim->step(damping, seconds);
-    return sim->positions();
+  // the drapes' deltas are made there too: the job's drapes are only touched here between steps
+  m_liveStep = jobs::pool().submit([sim, damping, seconds, late, job = m_liveJob] {
+    timing::Accum t("dforce: live, the step");
+    sim->step(damping, seconds, late);
+    return deltasOf(*job, sim->positions());
   });
   return wrote;
+}
+
+std::vector<float> Dforce::liveRest(int mesh, bool drape) const
+{
+  // the morph set's kept cage, and a drape's own target taken back out of it (as prepare's skinCage
+  // leaves it out), rather than every target summed again
+  std::vector<float> rest = m_morphs.morphedCage(mesh);
+  if(!drape)
+    return rest;
+  const auto   own = m_morphs.cpuTarget(channelOf(mesh), mesh);
+  const double w   = own ? m_morphs.weightOf(channelOf(mesh)) : 0.0;
+  if(own && w != 0)
+    for(size_t i = 0; i < own->cageIndices.size(); i++)
+    {
+      const size_t v = own->cageIndices[i];
+      if(v * 3 + 2 >= rest.size())
+        continue;
+      for(size_t c = 0; c < 3; c++)
+        rest[v * 3 + c] -= float(own->cageDeltas[i * 3 + c] * w);
+    }
+  return rest;
 }
 
 bool Dforce::writeDrape(int mesh, const std::vector<float>& delta)
@@ -851,25 +952,41 @@ bool Dforce::writeDrape(int mesh, const std::vector<float>& delta)
   return true;
 }
 
-bool Dforce::apply(const Job& job, const std::vector<std::vector<float>>& positions)
+std::vector<std::vector<float>> Dforce::deltasOf(const Job& job, const std::vector<std::vector<float>>& positions)
+{
+  timing::Accum                   t("dforce: the drapes' deltas");
+  std::vector<std::vector<float>> out(job.drapes.size());
+  for(size_t k = 0; k < job.drapes.size(); k++)
+  {
+    const Job::Drape& d = job.drapes[k];
+    if(d.slot < positions.size())
+      out[k] = drapeDelta(d.rest, transformPoints(d.back, positions[d.slot]), d.skin, d.pose);
+  }
+  return out;
+}
+
+bool Dforce::writeDeltas(const Job& job, const std::vector<std::vector<float>>& deltas)
 {
   bool wrote = false;
   // an item taken off while this ran is not draped
   const std::vector<int> live = dynamics();
-  for(const Job::Drape& d : job.drapes)
+  for(size_t k = 0; k < job.drapes.size() && k < deltas.size(); k++)
   {
-    if(d.slot >= positions.size() || d.mesh < 0 || size_t(d.mesh) >= m_scene.meshes.size()
-       || std::find(live.begin(), live.end(), d.mesh) == live.end())
+    const Job::Drape& d = job.drapes[k];
+    if(deltas[k].empty() || d.mesh < 0 || size_t(d.mesh) >= m_scene.meshes.size()
+       || std::find(live.begin(), live.end(), d.mesh) == live.end() || !m_scene.meshes[size_t(d.mesh)].geo)
       continue;
-    const Mesh& m = m_scene.meshes[size_t(d.mesh)];
-    if(!m.geo)
-      continue;
-    const auto local = transformPoints(d.back, positions[d.slot]);
-    wrote            = writeDrape(d.mesh, drapeDelta(d.rest, local, d.skin, d.pose)) || wrote;
+    timing::Accum t(m_mode == Mode::eSettle ? "dforce: a drape's morph" : "dforce: live, a drape's morph");
+    wrote = writeDrape(d.mesh, deltas[k]) || wrote;
   }
   if(wrote && m_mode == Mode::eSettle)
     m_version++;
   return wrote;
+}
+
+bool Dforce::apply(const Job& job, const std::vector<std::vector<float>>& positions)
+{
+  return writeDeltas(job, deltasOf(job, positions));
 }
 
 }  // namespace fv::dforce

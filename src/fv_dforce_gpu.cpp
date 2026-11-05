@@ -213,6 +213,8 @@ struct DforceGpu::Impl
   // the pose a frame that held still was last given (negative: none): the next at the same place needs
   // neither the skin nor the collision grid again
   float                 heldAt = -1;
+  // live: simulated time a step was given that its whole substeps didn't take, carried to the next
+  float                 liveCarry = 0;
   shaderio::DforceModel shaderModel{};
   // a settle under way, and what it has cost
   int    settled    = 0;
@@ -241,7 +243,10 @@ struct DforceGpu::Impl
   // ---- a frame
   void kinematicAt(float t, std::vector<float>& out);
   bool buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::DforceModel& m);
-  void frame(float t0, float t1, float extraDamping, float seconds = 0);
+  // `steps` substeps in `seconds`; 0, 0: a frame of opts.frameDt in `substeps`
+  void frame(float t0, float t1, float extraDamping, float seconds = 0, int steps = 0);
+  // the cloth carried with the pose to fraction t of the sweep (DforceGpu::carry)
+  void carry(float t);
 };
 
 bool DforceGpu::Impl::mappedBytes(nvvk::Buffer& buf, const void* data, size_t bytes, VmaMemoryUsage usage)
@@ -533,9 +538,10 @@ void DforceGpu::Impl::resetState()
   if(contact.mapping)
     std::memset(contact.mapping, 0xFF, size_t(contact.bufferSize));
   std::memcpy(grav.mapping, model.grav.data(), model.grav.size() * sizeof(float));
-  heldAt   = -1;
-  lastMove = 0;
-  settled  = 0;
+  heldAt    = -1;
+  lastMove  = 0;
+  settled   = 0;
+  liveCarry = 0;
   // the run's counts start over; the cut's shape stays
   stats.frames     = 0;
   stats.dispatches = 0;
@@ -629,7 +635,7 @@ bool DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vect
   return true;
 }
 
-void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds)
+void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds, int stepCount)
 {
   const size_t n = size_t(model.nv);
   shaderio::DforceModel& m             = shaderModel;
@@ -644,6 +650,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     kinematicAt(t0, start);
     kinematicAt(t1, end);
     stats.skinMs += msSince(skinStart);
+    fv::timing::accumulate("dforceGpu: a frame's skin on the host", msSince(skinStart));
     for(int i : model.kinematicVerts)
     {
       const float dx = end[size_t(i) * 3] - start[size_t(i) * 3], dy = end[size_t(i) * 3 + 1] - start[size_t(i) * 3 + 1],
@@ -708,6 +715,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     const auto gridStart = std::chrono::steady_clock::now();
     const bool grid      = !model.staticTris.empty() && buildGrid(start, end, m);
     stats.gridMs += msSince(gridStart);
+    fv::timing::accumulate("dforceGpu: a frame's collision grid on the host", msSince(gridStart));
     if(!grid)
     {
       if(!model.staticTris.empty() && !gridFailed)
@@ -721,10 +729,13 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     std::memcpy(modelBuf.mapping, &m, sizeof(m));
   }
 
-  const int   steps  = substeps;
+  const int   steps  = stepCount > 0 ? stepCount : substeps;
   const float dt     = (seconds > 0 ? seconds : opts.frameDt) / float(steps);
-  const int   passes = std::min(steps, std::max(collisions, int(std::ceil(std::max(lastMove, kinematicMove) / kPassSpacing))));
+  // the collision passes a frame of `substeps` takes at least, in proportion for a live step's share of one
+  const int   least  = stepCount > 0 ? std::max(1, int(std::lround(float(collisions) * float(steps) / float(substeps)))) : collisions;
+  const int   passes = std::min(steps, std::max(least, int(std::ceil(std::max(lastMove, kinematicMove) / kPassSpacing))));
   int         next   = steps - 1 - (passes - 1) * (steps / passes);
+  fv::timing::accumulate("dforceGpu: a frame's collision passes", double(passes));
   float       tFaces = 0;
 
   const auto      frameStartTime = std::chrono::steady_clock::now();
@@ -890,20 +901,31 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
   const double waited = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
   settleWait += waited;
   stats.waitMs += waited;
+  fv::timing::accumulate("dforceGpu: a frame's wait on the GPU", waited);
   stats.frames++;
   stats.substeps = steps;
   if(queries)
   {
     uint64_t ticks[2] = {0, 0};
     if(vkGetQueryPoolResults(alloc->getDevice(), queries, 0, 2, sizeof ticks, ticks, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS)
+    {
       stats.gpuMs += double(ticks[1] - ticks[0]) * msPerTick;
+      fv::timing::accumulate("dforceGpu: a frame on the GPU", double(ticks[1] - ticks[0]) * msPerTick);
+    }
     std::vector<uint64_t> pairs(timedPhase.size() * 2);
     if(!pairs.empty()
        && vkGetQueryPoolResults(alloc->getDevice(), queries, 2, uint32_t(pairs.size()), pairs.size() * sizeof(uint64_t), pairs.data(), sizeof(uint64_t),
                                 VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT)
               == VK_SUCCESS)
+    {
+      double phaseMs[2] = {0, 0};
       for(size_t k = 0; k < timedPhase.size(); k++)
-        (timedPhase[k] == 0 ? stats.collideMs : stats.holdMs) += double(pairs[2 * k + 1] - pairs[2 * k]) * msPerTick;
+        phaseMs[timedPhase[k] == 0 ? 0 : 1] += double(pairs[2 * k + 1] - pairs[2 * k]) * msPerTick;
+      stats.collideMs += phaseMs[0];
+      stats.holdMs += phaseMs[1];
+      fv::timing::accumulate("dforceGpu: a frame's collision passes on the GPU", phaseMs[0]);
+      fv::timing::accumulate("dforceGpu: a frame's holds on the GPU", phaseMs[1]);
+    }
   }
 
   std::vector<float> frameStart = std::move(xHost);
@@ -947,7 +969,8 @@ DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, st
   m_impl->gpu    = gpu;
   m_impl->queue  = s_queue;
   // FV_DFORCE_GPU_DEBUG's bits 4 and 8: a dispatch a colour, and the renderer's queue, as before step 13
-  // (for an A/B against the cluster solve on a queue of its own)
+  // (for an A/B against the cluster solve on a queue of its own); 32: each frame timed on the GPU (the
+  // [fv-time] "a frame on the GPU" lines, against the wait for it)
 #pragma warning(suppress : 4996)  // getenv: read once a simulation
   if(const char* env = std::getenv("FV_DFORCE_GPU_DEBUG"); env && *env)
   {
@@ -956,6 +979,8 @@ DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, st
       m_impl->gpu.clusterSize = 0;
     if(bits & 8)
       m_impl->queue = {};
+    if(bits & 32)
+      m_impl->gpu.timestamps = true;
   }
   if(alloc && app)
     m_prepared = fv::jobs::pool().submit([impl = m_impl] { return impl->prepare(); });
@@ -1015,6 +1040,25 @@ void DforceGpu::frame(float t0, float t1, float extraDamping, float seconds)
 {
   if(!started(true) || m_impl->broken)
     return;
+  if(seconds > 0)
+  {
+    Impl& s = *m_impl;
+    // Live: substeps as long as a settle's (a frame of frameDt in `substeps`), as many as the time it is
+    // given takes, the rest of it carried to the next step, so the cloth is as stiff at any frame rate;
+    // and one frame, never pieces. A frame's own passes (the recovery, the collisions, the hold) cost as
+    // much as its substeps, and beside the path tracer a frame on the GPU takes 4-5 times as long as
+    // alone: in pieces a step fell behind the clip, the pose then jumped further by the next, which went
+    // in more pieces (a walk: a step 390 ms, then 154 with the substeps shared). One frame of 12 substeps
+    // at 60 frames a second sweeps a walking foot 2-3 cm, the colliders' substeps between
+    const float h     = s.opts.frameDt / float(std::max(1, s.substeps));
+    const float total = seconds + s.liveCarry;
+    const int   steps = std::max(1, int(std::floor(total / h)));
+    s.liveCarry       = std::max(0.f, total - float(steps) * h);
+    fv::timing::accumulate("dforceGpu: live substeps a step", double(steps));
+    s.frame(t0, t1, extraDamping, float(steps) * h, steps);
+    m_lastMove = m_impl->broken ? 0.f : m_impl->lastMove;
+    return;
+  }
   // a pose that jumps (a value typed, an undo) in one frame leaves behind what rests on it: a 15 degree
   // turn of the hip moves the shoulders 16 cm, and the top of a dress hanging from them fell 44. A drag
   // of the same turn over a second is fine. In pieces it costs a slow frame only when it happens
@@ -1034,7 +1078,9 @@ void DforceGpu::frame(float t0, float t1, float extraDamping, float seconds)
     }
   }
   const int   pieces = std::clamp(int(std::ceil(std::sqrt(farthest) / kJumpPerPiece)), 1, kMostPieces);
-  const float length = (seconds > 0 ? seconds : s.opts.frameDt) / float(pieces);
+  // how many frames a step takes: a fast pose goes in pieces (the mean is the pieces a step)
+  fv::timing::accumulate("dforceGpu: pieces a step", double(pieces));
+  const float length = s.opts.frameDt / float(pieces);
   for(int p = 0; p < pieces && !s.broken; p++)
     s.frame(t0 + (t1 - t0) * float(p) / float(pieces), t0 + (t1 - t0) * float(p + 1) / float(pieces), extraDamping, length);
   m_lastMove = m_impl->broken ? 0.f : m_impl->lastMove;
@@ -1052,6 +1098,91 @@ void DforceGpu::setTarget(size_t mesh, const std::vector<Mat4>& bones)
     s.kin[mesh].to[b] = poseOf(bones[b]);
   s.heldAt = -1;
   targetSet();
+}
+
+// Each vertex the pose doesn't place moved as its own skin moves between the sweep's start and t: its
+// blended bone matrix at t times the inverse of the one at the start, so a turned thigh turns the skirt on
+// it rather than sliding it. Its velocity is kept: a step a few milliseconds late is carried that much,
+// and a swinging hem goes on swinging.
+void DforceGpu::Impl::carry(float t)
+{
+  const size_t       n  = size_t(model.nv);
+  std::vector<float> to = xHost;
+  for(size_t mi = 0; mi < meshes.size(); mi++)
+  {
+    const SettleMesh& m = meshes[mi];
+    if(!kin[mi].skinned)
+      continue;
+    std::vector<Mat4> from(kin[mi].to.size()), at(kin[mi].to.size());
+    for(size_t b = 0; b < from.size(); b++)
+    {
+      from[b] = m.toSpace * sweepAt(kin[mi].from[b], kin[mi].to[b], 0);
+      at[b]   = m.toSpace * sweepAt(kin[mi].from[b], kin[mi].to[b], t);
+    }
+    const size_t o = size_t(model.base[mi]);
+    fv::jobs::parallelFor(m.vertexCount(), 1024, [&](size_t begin, size_t end) {
+      for(size_t v = begin; v < end; v++)
+      {
+        const size_t i = o + v;
+        if(!model.dynamic[i] || model.inv[i] <= 0)
+          continue;
+        Mat4  a, b;
+        float wsum = 0;
+        a.e.fill(0);
+        b.e.fill(0);
+        for(size_t j = 0; j < 4; j++)
+        {
+          const float  w    = m.skinWeight[v * 4 + j];
+          const size_t bone = m.skinIndex[v * 4 + j];
+          if(w == 0 || bone >= from.size())
+            continue;
+          wsum += w;
+          for(size_t c = 0; c < 16; c++)
+          {
+            a.e[c] += from[bone].e[c] * w;
+            b.e[c] += at[bone].e[c] * w;
+          }
+        }
+        if(wsum <= 0)
+          continue;
+        const Vec3 p = (b * inverse(a)).transformPoint({xHost[i * 3], xHost[i * 3 + 1], xHost[i * 3 + 2]});
+        if(!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+          continue;
+        to[i * 3]     = float(p.x);
+        to[i * 3 + 1] = float(p.y);
+        to[i * 3 + 2] = float(p.z);
+      }
+    });
+  }
+  // nothing is in flight between steps: the buffers are written as they lie
+  xHost = std::move(to);
+  for(nvvk::Buffer* buf : {&x, &prev, &cprev, &xTwin})
+    if(buf->mapping)
+      std::memcpy(buf->mapping, xHost.data(), n * 3 * sizeof(float));
+  heldAt = -1;
+}
+
+bool DforceGpu::carry(float t)
+{
+  if(!started(true) || m_impl->broken)
+    return false;
+  const auto start = std::chrono::steady_clock::now();
+  m_impl->carry(t);
+  fv::timing::accumulate("dforceGpu: a late step's carry", msSince(start));
+  return true;
+}
+
+bool DforceGpu::setRest(size_t mesh, std::vector<float> restLocal)
+{
+  if(!started(true))
+    return false;
+  Impl& s = *m_impl;
+  if(mesh >= s.kin.size() || !s.kin[mesh].skinned || restLocal.size() != s.meshes[mesh].restLocal.size())
+    return false;
+  s.meshes[mesh].restLocal = std::move(restLocal);
+  // a held frame skins nothing again: this one must
+  s.heldAt = -1;
+  return true;
 }
 
 void DforceGpu::settle()

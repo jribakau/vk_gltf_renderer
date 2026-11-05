@@ -1605,6 +1605,171 @@ TEST(Dforce, aLiveBoneMoveKeepsTheFiguresCentimetres)
 
 namespace {
 
+// A veil over a floor, both skinned to one bone: the bone moving is a pose, as a clip's frame is.
+struct SkinnedVeil
+{
+  fv::SceneGraph scene;
+  int            rootNode = -1, bone = -1;
+  SkinnedVeil()
+  {
+    rootNode = scene.add(fv::Node{});
+    fv::Node boneNode;
+    boneNode.kind   = fv::NodeKind::eBone;
+    bone            = scene.add(boneNode, rootNode);
+    const Grid body = grid(8, 0), veil = grid(4, 3);
+    const auto skinned = [&](fv::Mesh m) {
+      const size_t n = m.geo->cagePositions.size() / 3;
+      m.bones        = {bone};
+      m.boneInverses = {fv::Mat4{}};
+      for(size_t v = 0; v <= n; v++)
+        m.cageSkin.start.push_back(int32_t(v));
+      m.cageSkin.bone.assign(n, 0);
+      m.cageSkin.weight.assign(n, 1.f);
+      return m;
+    };
+    scene.meshes.push_back(skinned(sceneMesh(body, false)));
+    scene.meshes.push_back(skinned(sceneMesh(veil, true)));
+    scene.materials.push_back({});
+    for(int i = 0; i < 2; i++)
+    {
+      fv::Node n;
+      n.kind = fv::NodeKind::eMesh;
+      n.mesh = i;
+      scene.add(n, rootNode);
+    }
+  }
+};
+
+// A live GPU simulation as the driver sees it: where each frame's sweep sets out, how long it is, and
+// what it was carried through first.
+class LateSim final : public dforce::ClothBackend
+{
+public:
+  explicit LateSim(std::vector<dforce::SettleMesh> meshes)
+      : m_meshes(std::move(meshes))
+  {
+  }
+  void frame(float t0, float, float, float s) override
+  {
+    starts.push_back(t0);
+    seconds.push_back(s);
+  }
+  void setTarget(size_t, const std::vector<fv::Mat4>&) override { targetSet(); }
+  bool carry(float t) override
+  {
+    carried.push_back(t);
+    return true;
+  }
+  void  setGravity(const std::array<float, 3>&) override {}
+  void  settle() override {}
+  float lastMove() const override { return 1.f; }
+  bool  ownerThreadOnly() const override { return true; }
+  std::vector<std::vector<float>> positions() const override
+  {
+    std::vector<std::vector<float>> out;
+    for(const dforce::SettleMesh& m : m_meshes)
+      out.push_back(m.rest);
+    return out;
+  }
+  std::vector<float> starts, seconds, carried;
+
+private:
+  std::vector<dforce::SettleMesh> m_meshes;
+};
+
+}  // namespace
+
+TEST(Dforce, liveStartsUnderAPlayingClipAndTakesTheBodysCorrectivesInPlace)
+{
+  // Under a clip the figure's pump reports, every frame and with the bones, the meshes the pose's
+  // correctives moved. Live mode built its simulation again for every changed mesh, after a wait each
+  // change put off, so it never began while a clip played. Now it begins, and the body's new rest shape
+  // (a corrective lifting it 1 cm over a few frames) reaches the cloth lying on it without a rebuild
+  SkinnedVeil     v;
+  fv::SceneGraph& scene    = v.scene;
+  const int       rootNode = v.rootNode, bone = v.bone;
+  morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(scene, morphs, 0, rootNode);
+  // a frame of a sixtieth of a second each pump, so each pump can step
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(dforce::Mode::eLive);
+
+  // a clip's frame: the bone sways and the correctives move both meshes, reported with the bones
+  int        frame     = 0;
+  const auto clipFrame = [&] {
+    scene.nodes[size_t(bone)].position.x = 0.02 * std::sin(0.1 * frame++);
+    now += std::chrono::microseconds(16667);
+    morphs.flush();
+    d.changed({0, 1}, true);
+    const bool wrote = d.pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return wrote;
+  };
+  bool wrote = false;
+  for(int i = 0; i < 6000 && !wrote; i++)
+    wrote = clipFrame();
+  ASSERT_TRUE(wrote) << "live never began under the clip";
+  int busy = 0;
+  for(int i = 0; i < 200; i++)
+    {
+      clipFrame();
+      busy += d.busy() ? 1 : 0;
+    }
+  EXPECT_EQ(busy, 0);
+
+  const auto lowest = [&] {
+    morphs.flush();
+    const auto& pos = scene.meshes[1].geo->position;
+    float       y   = 1e9f;
+    for(size_t v = 0; v < pos.size() / 3; v++)
+      y = std::min(y, pos[v * 3 + 1]);
+    return y;
+  };
+  const float before = lowest();
+  ASSERT_LT(before, 1.f) << "the veil lies on the body";
+
+  // the corrective, 1 cm up over a hundred frames
+  {
+    mesh::CageDeltas up;
+    const auto&      cage = scene.meshes[0].geo->cagePositions;
+    for(size_t v = 0; v < cage.size() / 3; v++)
+    {
+      up.verts.push_back(int32_t(v));
+      up.deltas.insert(up.deltas.end(), {0.f, 1.f, 0.f});
+    }
+    morph::ChannelOptions opts;
+    opts.hidden = true;
+    opts.value  = 0.0;
+    morphs.addTarget("corrective", 0, std::make_shared<const mesh::RenderTarget>(mesh::target(*scene.meshes[0].geo, up)), opts);
+  }
+  for(int i = 1; i <= 100; i++)
+  {
+    morphs.set("corrective", i / 100.0);
+    {
+      clipFrame();
+      busy += d.busy() ? 1 : 0;
+    }
+  }
+  for(int i = 0; i < 300; i++)
+    {
+      clipFrame();
+      busy += d.busy() ? 1 : 0;
+    }
+  EXPECT_EQ(busy, 0) << "the simulation was built again";
+  EXPECT_FALSE(d.busy());
+  EXPECT_GT(lowest(), before + 0.8f) << "the veil rose with the body";
+
+  // a dent on the body, nothing else moving: in place as well
+  d.changed({0}, false);
+  EXPECT_FALSE(d.busy());
+  // a dial on the cloth itself, nothing else moving: built again
+  d.changed({1}, false);
+  EXPECT_TRUE(d.busy());
+}
+
+namespace {
+
 // A veil over a floor, as liveModeDrapesThenStepsOnlyWhileSomethingMoves has them.
 struct VeilScene
 {
@@ -2188,9 +2353,9 @@ TEST(Dforce, aLiveStepKeepsTheClockAtAnyFrameRate)
   // a frame of 30 ms
   after(30);
   EXPECT_NEAR(sim->seconds.back(), 0.03f, 1e-3f);
-  // a very slow one slows the cloth rather than taking a step its substeps can't hold together
+  // a very slow one slows the cloth (the GPU's is carried through the rest, aLateLiveStepCarries...)
   after(200);
-  EXPECT_FLOAT_EQ(sim->seconds.back(), 1.f / 20.f);
+  EXPECT_FLOAT_EQ(sim->seconds.back(), 1.f / 30.f);
   // at 360 fps the frames add up to a step, and in all of them the time simulated is the time gone by
   const size_t steps = sim->seconds.size();
   float        simulated = 0;
@@ -2797,4 +2962,46 @@ TEST(Dforce, theGpuSolverIsKeptBetweenSettlesAndGoesWhenDforceIsTurnedOff)
   // turned off: the kept one goes, its device memory with it
   d.setEnabled(false);
   EXPECT_EQ(made[1].use_count(), 1);
+}
+
+TEST(Dforce, aLateLiveStepCarriesTheClothThroughWhatItCannotSimulate)
+{
+  // A step that comes later than a step may simulate (1/30 s): the settle that began live, or a slow
+  // frame. The pose has gone on meanwhile; a sweep through all of it in one frame was dearer the later it
+  // came, so the next came later still. Now the cloth is carried with the pose through the time it
+  // can't simulate and the frame sweeps the last thirtieth of a second
+  SkinnedVeil     v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  std::shared_ptr<LateSim> sim;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions&) {
+    sim = std::make_shared<LateSim>(std::move(meshes));
+    return sim;
+  };
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(dforce::Mode::eLiveGpu);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  ASSERT_TRUE(sim);
+  const auto after = [&](int ms) {
+    now += std::chrono::milliseconds(ms);
+    v.scene.nodes[size_t(v.bone)].position.x += 0.1;
+    d.pump();
+  };
+  // in time: swept from where it was, nothing carried
+  after(20);
+  ASSERT_FALSE(sim->starts.empty());
+  EXPECT_EQ(sim->starts.back(), 0.f);
+  EXPECT_NEAR(sim->seconds.back(), 0.02f, 1e-3f);
+  EXPECT_TRUE(sim->carried.empty());
+  // a second late: carried 30/31 of the way, the rest swept in a thirtieth of a second
+  after(1000);
+  ASSERT_EQ(sim->carried.size(), 1u);
+  EXPECT_NEAR(sim->carried.back(), 1.f - 1.f / 30.f, 1e-3f);
+  EXPECT_NEAR(sim->starts.back(), 1.f - 1.f / 30.f, 1e-3f);
+  EXPECT_FLOAT_EQ(sim->seconds.back(), 1.f / 30.f);
+  // and in time again after it
+  after(17);
+  EXPECT_EQ(sim->carried.size(), 1u);
+  EXPECT_EQ(sim->starts.back(), 0.f);
 }

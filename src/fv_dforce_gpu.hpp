@@ -116,6 +116,8 @@ public:
 
   void  frame(float t0, float t1, float extraDamping = 0, float seconds = 0) override;
   void  setTarget(size_t mesh, const std::vector<fv::Mat4>& bones) override;
+  bool  setRest(size_t mesh, std::vector<float> restLocal) override;
+  bool  carry(float t) override;
   void  setGravity(const std::array<float, 3>& gravity) override;
   void  settle() override;
   bool  settleSome(double seconds) override;
