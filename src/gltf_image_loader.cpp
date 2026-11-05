@@ -32,6 +32,7 @@
 #include <limits>
 
 #include <stb/stb_image.h>
+#include <turbojpeg.h>
 #include <webp/decode.h>
 #include "nvimageformats/nv_dds.h"
 #include "nvimageformats/nv_ktx.h"
@@ -216,6 +217,51 @@ bool loadWebp(LoadedImageData& out, const void* data, size_t byteLength, bool sr
   return true;
 }
 
+// A JPEG at 1/downscale of its size, as libjpeg-turbo's IDCT makes it: RGBA, or one channel for a
+// grey one, as loadStb gives them. False for anything else, a CMYK one included (stb reads it).
+bool loadJpegScaled(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint32_t downscale, uint64_t imageIDForLog)
+{
+  const auto* bytes = static_cast<const unsigned char*>(data);
+  if((downscale != 2 && downscale != 4 && downscale != 8) || byteLength < 3 || bytes[0] != 0xFF || bytes[1] != 0xD8 || bytes[2] != 0xFF)
+    return false;
+  const tjhandle tj = tj3Init(TJINIT_DECOMPRESS);
+  if(!tj)
+    return false;
+  struct Destroy
+  {
+    tjhandle tj;
+    ~Destroy() { tj3Destroy(tj); }
+  } destroy{tj};
+  if(tj3DecompressHeader(tj, bytes, byteLength) != 0)
+    return false;
+  const int colorspace = tj3Get(tj, TJPARAM_COLORSPACE);
+  if(colorspace == TJCS_CMYK || colorspace == TJCS_YCCK)
+    return false;
+  const tjscalingfactor factor{1, int(downscale)};
+  if(tj3SetScalingFactor(tj, factor) != 0)
+    return false;
+  const bool grey     = colorspace == TJCS_GRAY;
+  const int  channels = grey ? 1 : 4;
+  const int  w = TJSCALED(tj3Get(tj, TJPARAM_JPEGWIDTH), factor), h = TJSCALED(tj3Get(tj, TJPARAM_JPEGHEIGHT), factor);
+  if(w <= 0 || h <= 0)
+    return false;
+  std::vector<char> texels(size_t(w) * size_t(h) * size_t(channels));
+  // a warning (a damaged stream it read past) still leaves the image
+  if(tj3Decompress8(tj, bytes, byteLength, reinterpret_cast<unsigned char*>(texels.data()), w * channels, grey ? TJPF_GRAY : TJPF_RGBA) != 0
+     && tj3GetErrorCode(tj) != TJERR_WARNING)
+  {
+    LOGW("Image %" PRIu64 ": %s\n", imageIDForLog, tj3GetErrorStr(tj));
+    return false;
+  }
+  out.format = grey ? VK_FORMAT_R8_UNORM : srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+  if(grey)
+    out.componentMapping = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE};
+  out.size = VkExtent2D{uint32_t(w), uint32_t(h)};
+  out.mipData.clear();
+  out.mipData.push_back(std::move(texels));
+  return true;
+}
+
 bool loadStb(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog)
 {
   if(byteLength > static_cast<size_t>(std::numeric_limits<int>::max()))
@@ -302,7 +348,7 @@ std::optional<rs::ImageChain> readImageChain(const void* data, size_t byteLength
   return chain;
 }
 
-bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog, uint32_t maxExtent)
+bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog, uint32_t maxExtent, uint32_t downscale)
 {
   out = LoadedImageData{};
 
@@ -318,6 +364,9 @@ bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, b
     return true;
   if(loadWebp(out, data, byteLength, srgb, imageIDForLog))
     return true;
+  if(downscale > 1 && loadJpegScaled(out, data, byteLength, srgb, downscale, imageIDForLog))
+    return true;
+  out = LoadedImageData{};
   if(loadStb(out, data, byteLength, srgb, imageIDForLog))
     return true;
 

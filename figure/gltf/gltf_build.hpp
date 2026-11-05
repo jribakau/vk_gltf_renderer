@@ -36,6 +36,9 @@ struct TextureImage
   bool flipped = false;
   // a normal map as the source holds it, green not inverted: the material says so (FV_texture_flip_green)
   bool flipGreen = false;
+  // shown only until its cook lands (a cold cache's source), so it may be decoded smaller
+  // (rs::TextureRecord::standIn)
+  bool standIn = false;
 };
 
 struct BuildOptions

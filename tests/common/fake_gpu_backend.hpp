@@ -117,8 +117,8 @@ public:
   uint64_t     bufferSize(BufferHandle buffer) const override;
   void         upload(BufferHandle dst, uint64_t offset, std::span<const std::byte> bytes) override;
   void copyBuffer(BufferHandle src, uint64_t srcOffset, BufferHandle dst, uint64_t dstOffset, uint64_t size) override;
-  // "decodes" what it is given: width and height as the source says, two channels for two
-  // components, less the levels source.maxExtent leaves out; a source with nothing in it, or a uri
+  // "decodes" what it is given: width and height as the source says (a "mips" one over its downscale),
+  // two channels for two components, less the levels source.maxExtent leaves out; a source with nothing in it, or a uri
   // starting "missing", can't be read, and one starting "nomem" finds no GPU memory
   ImageHandle createImage(const ImageSource& source, ImageInfo& info) override;
   void dropPrefetch(const std::string& uri, bool) override { droppedPrefetches.push_back(uri); }

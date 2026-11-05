@@ -107,7 +107,8 @@ VulkanGpuBackend::VulkanGpuBackend(const Info& info)
   m_msPerTick        = double(props.properties.limits.timestampPeriod) * 1e-6;
   m_decodes          = std::make_unique<ImageDecodePool>(
       [takePrefetched = info.takePrefetched](const ImageSource& source, nvvkgltf::LoadedImageData& loaded, bool& prefetched) {
-        if(takePrefetched && source.pixels.empty() && source.bytes.empty() && !source.uri.empty())
+        // a stand-in is decoded smaller than anything decoded ahead
+        if(takePrefetched && source.pixels.empty() && source.bytes.empty() && !source.uri.empty() && source.downscale == 1)
           if(std::optional<nvvkgltf::LoadedImageData> taken = takePrefetched(nvutils::pathFromUtf8(source.uri), source.srgb))
           {
             loaded = std::move(*taken);
@@ -530,12 +531,12 @@ static bool decodeSource(const ImageSource& source, nvvkgltf::LoadedImageData& l
   if(!source.pixels.empty())
     return fromPixels(source, loaded);
   if(!source.bytes.empty())
-    return nvvkgltf::loadFromMemory(loaded, source.bytes.data(), source.bytes.size(), source.srgb, 0, source.maxExtent);
+    return nvvkgltf::loadFromMemory(loaded, source.bytes.data(), source.bytes.size(), source.srgb, 0, source.maxExtent, source.downscale);
   if(source.uri.empty())
     return false;
   nvutils::FileReadMapping file;
   if(file.open(nvutils::pathFromUtf8(source.uri)))
-    return nvvkgltf::loadFromMemory(loaded, file.data(), file.size(), source.srgb, 0, source.maxExtent);
+    return nvvkgltf::loadFromMemory(loaded, file.data(), file.size(), source.srgb, 0, source.maxExtent, source.downscale);
   LOGW("Image '%s' (%s) could not be opened\n", source.name.c_str(), source.uri.c_str());
   return false;
 }

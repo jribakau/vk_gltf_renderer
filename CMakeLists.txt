@@ -337,6 +337,15 @@ ExternalProject_Add(libjpeg_turbo
 add_dependencies(${PROJECT_NAME} libjpeg_turbo)
 target_include_directories(${PROJECT_NAME} PRIVATE ${LIBJPEG_TURBO_SOURCE_DIR}/src)
 target_link_libraries(${PROJECT_NAME} PRIVATE ${TURBOJPEG_LIBRARY})
+# src/gltf_image_loader.cpp decodes a stand-in JPEG smaller with it (loadJpegScaled), and the tests and
+# benchmarks compile that file too; they are made before this point (add_subdirectory(tests) above)
+foreach(_jpeg_user ${PROJECT_NAME}_tests ${PROJECT_NAME}_benchmarks)
+  if(TARGET ${_jpeg_user})
+    add_dependencies(${_jpeg_user} libjpeg_turbo)
+    target_include_directories(${_jpeg_user} PRIVATE ${LIBJPEG_TURBO_SOURCE_DIR}/src)
+    target_link_libraries(${_jpeg_user} PRIVATE ${TURBOJPEG_LIBRARY})
+  endif()
+endforeach()
 
 add_project_definitions(${PROJECT_NAME})
 

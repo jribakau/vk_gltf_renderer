@@ -425,6 +425,9 @@ std::vector<std::optional<fv::build::TextureImage>> resolveTextures(const HostSe
         if(lib)
           found[i] = fallbackTexture(s, *lib, req, cooker, true, &final);
         missed[i] = final ? 0 : 1;
+        // shown until its cook lands, so decoded smaller
+        if(found[i] && missed[i])
+          found[i]->standIn = true;
       }
     }
   });

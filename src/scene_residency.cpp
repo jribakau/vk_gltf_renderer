@@ -146,7 +146,7 @@ std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb)
   const auto hashOf = [](const std::vector<unsigned char>& v) {
     return uint64_t(std::hash<std::string_view>{}(std::string_view(reinterpret_cast<const char*>(v.data()), v.size())));
   };
-  TextureKey key{.srgb = srgb};
+  TextureKey key{.srgb = srgb, .standIn = record.standIn};
   if(!record.bytes.empty())
   {
     key.size = record.bytes.size();
@@ -1123,7 +1123,8 @@ ImageSource imageSourceOf(const TextureRecord& record, bool srgb, uint32_t maxEx
           .bits      = record.bits,
           .srgb      = srgb,
           .name      = record.name,
-          .maxExtent = maxExtent};
+          .maxExtent = maxExtent,
+          .downscale = record.standIn ? 2u : 1u};
 }
 }  // namespace
 

@@ -819,6 +819,38 @@ TEST(FigureFeed, ATexturesRecordHoldsItsFilesPathNotItsUri)
   fs::remove_all(dir);
 }
 
+// A cold cache's source, shown until its cook lands, is a stand-in in its record (the residency decodes it
+// smaller); the cook that takes its place is not
+TEST(FigureFeed, AStandInsRecordSaysSoAndItsCooksDoesNot)
+{
+  const auto              f      = loadBox("People/Test/Box Figure PBRSkin.duf");
+  const fv::SceneGraph&   scene  = f->loaded.scene;
+  bool                    landed = false;
+  fv::build::BuildOptions options;
+  options.texturesFlipped = true;
+  options.texture         = [&](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
+    const std::string uri = (kLibrary / req.rel).generic_string();
+    if(landed)
+      return fv::build::TextureImage{.uri = uri + ".ktx2", .mimeType = "image/ktx2", .flipped = true};
+    return fv::build::TextureImage{.uri = uri, .mimeType = "image/png", .standIn = true};
+  };
+  rs::RetainedScene store;
+  fv::FigureFeed    feed(store, {.build = options});
+  feed.sync(scene, f->loaded.root);
+  const auto standIns = [&] {
+    size_t n = 0;
+    for(const rs::TextureRef& ref : *feed.textures())
+      if(const rs::TextureRecord* t = store.texture(ref.texture); t && t->standIn)
+        n++;
+    return n;
+  };
+  ASSERT_GT(feed.textures()->size(), 0u);
+  EXPECT_EQ(standIns(), feed.textures()->size());
+  landed = true;
+  EXPECT_TRUE(feed.retexture(fv::build::textureRequests(scene, options.skin)));
+  EXPECT_EQ(standIns(), 0u);
+}
+
 // A figure on a cold texture cache is built for the cooked images and shows each missing one's source
 // until its cook lands: the source's slots sample it with V turned over, and the cook takes its
 // place in every table that held it (the materials keep their indices), the turn goes, and the

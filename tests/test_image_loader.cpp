@@ -28,6 +28,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <turbojpeg.h>
 #include <webp/encode.h>
 
 #include "gltf_image_loader.hpp"
@@ -227,6 +228,78 @@ TEST(ImageLoader, KtxKeepsAGreyMapsSwizzle)
   EXPECT_EQ(out.componentMapping.g, VK_COMPONENT_SWIZZLE_R);
   EXPECT_EQ(out.componentMapping.b, VK_COMPONENT_SWIZZLE_ONE);
   EXPECT_EQ(out.componentMapping.a, VK_COMPONENT_SWIZZLE_ONE);
+}
+
+namespace {
+
+// A w x h JPEG of a smooth ramp: x in red, y in blue, green mid; or grey
+std::vector<uint8_t> encodeJpeg(int w, int h, bool grey)
+{
+  const int            channels = grey ? 1 : 3;
+  std::vector<uint8_t> px(size_t(w) * h * channels);
+  for(int y = 0; y < h; y++)
+    for(int x = 0; x < w; x++)
+      for(int c = 0; c < channels; c++)
+        px[(size_t(y) * w + x) * channels + c] = uint8_t(c == 1 ? 128 : c == 0 ? x * 255 / (w - 1) : y * 255 / (h - 1));
+  tjhandle tj = tj3Init(TJINIT_COMPRESS);
+  tj3Set(tj, TJPARAM_QUALITY, 95);
+  tj3Set(tj, TJPARAM_SUBSAMP, grey ? TJSAMP_GRAY : TJSAMP_444);
+  unsigned char* jpeg = nullptr;
+  size_t         size = 0;
+  EXPECT_EQ(tj3Compress8(tj, px.data(), w, 0, h, grey ? TJPF_GRAY : TJPF_RGB, &jpeg, &size), 0) << tj3GetErrorStr(tj);
+  std::vector<uint8_t> file(jpeg, jpeg + size);
+  tj3Free(jpeg);
+  tj3Destroy(tj);
+  return file;
+}
+
+}  // namespace
+
+// A stand-in JPEG decodes at a fraction of its size in the IDCT itself, as RGBA in the colour space asked
+// for, each texel the ramp where its four were; whole when not asked
+TEST(ImageLoader, JpegDecodesAtAFractionOfItsSize)
+{
+  const std::vector<uint8_t> jpeg = encodeJpeg(64, 48, false);
+  nvvkgltf::LoadedImageData  out;
+  ASSERT_TRUE(nvvkgltf::loadFromMemory(out, jpeg.data(), jpeg.size(), true, 0, 0, 2));
+  EXPECT_EQ(out.size.width, 32u);
+  EXPECT_EQ(out.size.height, 24u);
+  EXPECT_EQ(out.format, VK_FORMAT_R8G8B8A8_SRGB);
+  ASSERT_EQ(out.mipData.size(), 1u);
+  ASSERT_EQ(out.mipData[0].size(), size_t(32) * 24 * 4);
+  const auto texel = [&](int x, int y, int c) { return int(uint8_t(out.mipData[0][(size_t(y) * 32 + x) * 4 + c])); };
+  for(const auto& [x, y] : {std::pair{0, 0}, std::pair{16, 12}, std::pair{31, 23}})
+  {
+    EXPECT_NEAR(texel(x, y, 0), (2 * x + 0.5) * 255 / 63, 6) << x << "," << y;
+    EXPECT_NEAR(texel(x, y, 1), 128, 6);
+    EXPECT_NEAR(texel(x, y, 2), (2 * y + 0.5) * 255 / 47, 6) << x << "," << y;
+    EXPECT_EQ(texel(x, y, 3), 255);
+  }
+  ASSERT_TRUE(nvvkgltf::loadFromMemory(out, jpeg.data(), jpeg.size(), false, 0, 0, 4));
+  EXPECT_EQ(out.size.width, 16u);
+  EXPECT_EQ(out.format, VK_FORMAT_R8G8B8A8_UNORM);
+  ASSERT_TRUE(nvvkgltf::loadFromMemory(out, jpeg.data(), jpeg.size(), true));
+  EXPECT_EQ(out.size.width, 64u);
+  EXPECT_EQ(out.size.height, 48u);
+}
+
+// A grey JPEG comes as one channel read as grey, as stb gives it; a format that can't decode smaller
+// (WebP, for now) comes whole
+TEST(ImageLoader, AGreyJpegStaysOneChannelAndOtherFormatsComeWhole)
+{
+  const std::vector<uint8_t> jpeg = encodeJpeg(64, 48, true);
+  nvvkgltf::LoadedImageData  out;
+  ASSERT_TRUE(nvvkgltf::loadFromMemory(out, jpeg.data(), jpeg.size(), false, 0, 0, 2));
+  EXPECT_EQ(out.size.width, 32u);
+  EXPECT_EQ(out.format, VK_FORMAT_R8_UNORM);
+  ASSERT_EQ(out.mipData[0].size(), size_t(32) * 24);
+  EXPECT_EQ(out.componentMapping.g, VK_COMPONENT_SWIZZLE_R);
+  EXPECT_EQ(out.componentMapping.a, VK_COMPONENT_SWIZZLE_ONE);
+
+  const std::vector<uint8_t> webp = encodeLossless(makePixels());
+  ASSERT_TRUE(nvvkgltf::loadFromMemory(out, webp.data(), webp.size(), false, 0, 0, 2));
+  EXPECT_EQ(out.size.width, uint32_t(kWidth));
+  EXPECT_EQ(out.size.height, uint32_t(kHeight));
 }
 
 // Decoding ahead is only ahead of time: past its budget nothing more is decoded, and what nobody takes goes

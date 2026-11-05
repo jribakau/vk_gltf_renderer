@@ -145,6 +145,7 @@ rs::TextureRecord textureRecord(const mat::TextureRequest& req, const build::Tex
   t.name     = req.rel.substr(req.rel.find_last_of('/') + 1);
   t.uri      = tinygltf::utils::decodePathFromUri(image.uri);
   t.mimeType = image.mimeType;
+  t.standIn  = image.standIn;
   if(image.mimeType == "image/ktx2")
     t.sourceExtension = "KHR_texture_basisu";
   return t;

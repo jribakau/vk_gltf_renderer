@@ -45,8 +45,11 @@ struct LoadedImageData
 // imageIDForLog: used only for log messages (e.g. "image 3").
 // maxExtent: the levels above this long edge are left out (rs::levelsToSkip), where the image stores
 // levels; a KTX file doesn't inflate them. 0: no limit.
+// downscale: 2, 4 or 8 decodes a JPEG at that fraction of its size, in the decode itself (libjpeg-turbo's
+// scaled IDCT), which is quicker than the whole; other formats, and other values, decode whole.
 // Returns true if decoding succeeded and out is filled; false on failure or unsupported format.
-[[nodiscard]] bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog = 0, uint32_t maxExtent = 0);
+[[nodiscard]] bool loadFromMemory(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog = 0, uint32_t maxExtent = 0,
+                                  uint32_t downscale = 1);
 
 // The levels above a long edge of `maxExtent` left out of an image already decoded (a prefetch)
 void trimLevels(LoadedImageData& image, uint32_t maxExtent);

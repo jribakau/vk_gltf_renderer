@@ -87,6 +87,8 @@ struct ImageSource
   bool                           srgb = false;  // sampled as colour
   std::string                    name;
   uint32_t                       maxExtent = 0;  // the stored levels above this long edge are left out; 0: none
+  // decoded at 1/downscale of its size where its format allows (a JPEG): a stand-in for a cook
+  uint32_t downscale = 1;
 };
 
 // A source with its own copy of the bytes and pixels: what a decode away from the render thread reads,

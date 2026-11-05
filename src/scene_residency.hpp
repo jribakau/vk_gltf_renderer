@@ -144,6 +144,7 @@ struct TextureKey
   uint64_t    hash                                 = 0;
   bool        srgb                                 = false;
   uint32_t    maxExtent                            = 0;  // decoded under Max texture size at this value
+  bool        standIn                              = false;  // TextureRecord::standIn: decoded smaller
   auto        operator<=>(const TextureKey&) const = default;
 };
 std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb);

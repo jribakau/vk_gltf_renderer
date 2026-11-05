@@ -164,7 +164,8 @@ void FvHost::Impl::prefetchImages(const std::vector<fv::build::TextureRequest>& 
   try
   {
     sideBySide(found.size(), 8, [&](size_t i) {
-      if(found[i] && !found[i]->uri.empty())
+      // a stand-in is decoded smaller, where it is made (ImageSource::downscale)
+      if(found[i] && !found[i]->uri.empty() && !found[i]->standIn)
         renderer->prefetchImage(pathOf(found[i]->uri), requests[i].srgb);
     });
   }

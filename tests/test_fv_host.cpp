@@ -2956,6 +2956,9 @@ TEST(FvHost, ADerivedMapOnAColdCacheWaitsForItsCookAsOneTexel)
   EXPECT_EQ(count(waiting, flat), 1) << ::testing::PrintToString(waiting.images);
   EXPECT_EQ(count(waiting, composed), 0);
   EXPECT_TRUE(rig.renderer.texturesArriving);
+  // the colour map's source and the texel are stand-ins: decoded where they are made, the source at
+  // half its size, not ahead
+  EXPECT_EQ(rig.renderer.prefetches.load(), 0);
 
   cooker.open();
   const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);

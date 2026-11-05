@@ -350,6 +350,10 @@ struct TextureRecord
   int                        component = 0, bits = 8;
   // the extension that names it as a source (KHR_texture_basisu, EXT_texture_webp), "" for core
   std::string sourceExtension;
+  // Shown only until its cook lands, which takes its place (a cold texture cache's source): decoded at
+  // half its size where its format allows (a JPEG), at what its cook will cost, and another image than
+  // the same file at its whole size
+  bool standIn = false;
 };
 
 // What a material's texture indices name: entry i of its table is the glTF texture i of the file it

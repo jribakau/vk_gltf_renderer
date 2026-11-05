@@ -266,9 +266,11 @@ ImageHandle FakeGpuBackend::createImage(const ImageSource& source, ImageInfo& in
     info.outOfMemory = true;
     return {};
   }
-  const uint32_t width = uint32_t(std::max(source.width, 1)), height = uint32_t(std::max(source.height, 1));
-  // "mips": no levels in its file, so it is decoded whole, and made on the GPU
+  // "mips": no levels in its file, so it is decoded whole, and made on the GPU, at 1/downscale of its
+  // size as a JPEG is
   const bool     made  = source.uri.rfind("mips", 0) == 0;
+  const uint32_t scale = made ? std::max(source.downscale, 1u) : 1u;
+  const uint32_t width = std::max(uint32_t(std::max(source.width, 1)) / scale, 1u), height = std::max(uint32_t(std::max(source.height, 1)) / scale, 1u);
   uint32_t       skip  = made ? 0 : levelsToSkip(width, height, 32, source.maxExtent);
   info.width      = levelExtent(width, skip);
   info.height     = levelExtent(height, skip);

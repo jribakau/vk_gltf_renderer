@@ -1935,6 +1935,28 @@ TEST(RetainedResidency, WhatIsKeptFullComesDownLast)
   EXPECT_LT(gpu.imageInfo(residency.image(kept, true)).width, 2048u);
 }
 
+// A stand-in, shown until its cook lands, is decoded at half its size, and is another image than the
+// same file at its whole size
+TEST(RetainedResidency, AStandInIsDecodedAtHalfItsSize)
+{
+  RetainedScene scene;
+  TextureRecord standIn = chainTexture("mips_a", 1024);
+  standIn.standIn       = true;
+  const TextureId half  = scene.addTexture(standIn);
+  const TextureId whole = scene.addTexture(chainTexture("mips_a", 1024));
+  auto            table = std::make_shared<TextureTable>();
+  table->push_back({half, {}});
+  table->push_back({whole, {}});
+  drawn(scene, "e", scene.addMesh(gridMesh(2, 0.f, 2)), {coloured(scene, table, 0), coloured(scene, table, 1)});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.textureGraceBytes = 1 << 20});
+  residency.replace(scene);
+  EXPECT_EQ(gpu.imageInfo(residency.image(half, true)).width, 512u);
+  EXPECT_EQ(gpu.imageInfo(residency.image(whole, true)).width, 1024u);
+  drain(gpu);
+  expectClean(scene, residency, gpu);
+}
+
 // An image with no stored levels (a PNG, kept whole) comes down by the levels the GPU made, and comes back all at once
 TEST(RetainedResidency, AnImageWithNoStoredLevelsComesDownToo)
 {
