@@ -258,6 +258,8 @@ void Dforce::cancel()
     m_version++;
   m_scheduled = false;
   m_settling.reset();
+  // a settle on the pool keeps its own hold on it, and lets it go when it ends
+  m_gpuSim.reset();
   // a live step in flight is dropped when it lands; the simulation goes
   m_live.reset();
   m_liveJob.reset();
@@ -549,6 +551,9 @@ bool Dforce::pump()
     const uint64_t gen = m_jobGen;
     auto           job = std::move(m_snapshot);
     m_version++;
+    // one that failed isn't kept: the next settle makes another
+    if(m_gpuSim && m_gpuSim->failed())
+      m_gpuSim.reset();
     if(gen == m_gen && m_enabled && job && !positions.empty())
       wrote = apply(*job, positions);
   }
@@ -594,7 +599,8 @@ bool Dforce::pump()
         std::vector<std::vector<float>> out;
         if(landed)
           out = sim->positions();
-        // its device memory goes here, before the result is seen: whoever waits for it may then take the
+        // the driver keeps it for the next settle; if it has let it go meanwhile (dForce turned off), its
+        // device memory goes here, before the result is seen: whoever waits for it may then take the
         // device down
         sim.reset();
         if(landed || stale->load())
@@ -642,6 +648,8 @@ bool Dforce::pump()
       if(job)
       {
         m_settleGravity = currentGravity();
+        if(job->drapes.empty())
+          m_gpuSim.reset();
         if(!job->drapes.empty())
         {
           m_snapshot = job;
@@ -653,7 +661,12 @@ bool Dforce::pump()
           opts.air       = kAir;
           opts.cancelled = [stale] { return stale->load(); };
           if(makeGpuSim)
-            m_settling = makeGpuSim(job->bodies, opts);
+          {
+            // the one the last settle ran on, for the same garments and shapes, keeps its model and buffers
+            if(!m_gpuSim || !m_gpuSim->restart(job->bodies, opts))
+              m_gpuSim = makeGpuSim(job->bodies, opts);
+            m_settling = m_gpuSim;
+          }
           if(!m_settling || !m_settling->ownerThreadOnly())
             onThePool(job, stale, std::exchange(m_settling, nullptr));
         }

@@ -461,3 +461,42 @@ TEST(ClothJob, aJobReadsBackAsItWasWritten)
   EXPECT_FALSE(physics::cloth::readJob(file).has_value());
   std::filesystem::remove(file);
 }
+
+TEST(ClothSurface, sameButPoseLooksPastThePoseAlone)
+{
+  // a kept GPU simulation keeps its model for a surface that is the same but for its pose: the target
+  // cage, the bones' matrices and gravity may change, nothing a model is built from may
+  const Surface a = strip(3, Mat4{});
+  Surface       b = strip(3, shifted(2));
+  b.gravity       = {0, 0, -980};
+  EXPECT_NE(a.posed, b.posed);
+  EXPECT_TRUE(physics::cloth::sameButPose(a, b));
+  EXPECT_TRUE(physics::cloth::sameButPose(a, a));
+  const auto differs = [&](const auto& change) {
+    Surface c = a;
+    change(c);
+    return !physics::cloth::sameButPose(a, c);
+  };
+  EXPECT_TRUE(differs([](Surface& c) { c.rest[4] += 0.01f; })) << "a dial turned";
+  EXPECT_TRUE(differs([](Surface& c) { c.strength[3] = 0.5f; }));
+  EXPECT_TRUE(differs([](Surface& c) { c.offset[0] = 0.3f; }));
+  EXPECT_TRUE(differs([](Surface& c) { c.layer[1] = 2; }));
+  EXPECT_TRUE(differs([](Surface& c) { c.visible[2] = 0; })) << "a surface hidden";
+  EXPECT_TRUE(differs([](Surface& c) { c.kind = Surface::Kind::eAddon; }));
+  EXPECT_TRUE(differs([](Surface& c) { c.tris.pop_back(); }));
+  EXPECT_TRUE(differs([](Surface& c) { c.skinWeight[0] = 0.5f; }));
+  EXPECT_TRUE(differs([](Surface& c) { c.bones.push_back(Mat4{}); })) << "another rig";
+  EXPECT_TRUE(differs([](Surface& c) { c.toSpace = shifted(1); })) << "another space";
+  // a collider's rest cage may count as its pose (a body's contact dents), a cloth's never
+  Surface body = a, dented = a;
+  body.kind = dented.kind = Surface::Kind::eCollider;
+  dented.rest[4] += 0.2f;
+  dented.restLocal[4] += 0.2f;
+  EXPECT_FALSE(physics::cloth::sameButPose(body, dented));
+  EXPECT_EQ(physics::cloth::poseFreeDifference(body, dented, true), nullptr);
+  Surface cloth = a;
+  cloth.rest[4] += 0.2f;
+  EXPECT_STREQ(physics::cloth::poseFreeDifference(a, cloth, true), "rest");
+  dented.rest.pop_back();
+  EXPECT_NE(physics::cloth::poseFreeDifference(body, dented, true), nullptr) << "another size is another mesh";
+}

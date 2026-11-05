@@ -169,6 +169,9 @@ private:
   std::future<std::vector<std::vector<float>>>   m_job;
   // a settle on the GPU, a slice a frame on this thread; m_snapshot is its job
   std::shared_ptr<ClothBackend>                  m_settling;
+  // the GPU solver of the last settle, kept for the next (ClothBackend::restart): for the same garments
+  // and shapes it keeps its model and buffers. It goes when dForce is turned off or the mode changes
+  std::shared_ptr<ClothBackend>                  m_gpuSim;
   bool                                           m_skippedPlaying = false;  // an edit came while a clip played
   std::shared_ptr<std::atomic<bool>>             m_jobStale;                // m_job's: an edit has made it out of date
   bool                                           m_jobOnGpu = false;        // m_job runs on the GPU solver

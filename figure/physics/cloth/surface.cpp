@@ -51,6 +51,55 @@ void skin(const Surface& m, const std::vector<Mat4>& bones, float* out)
   });
 }
 
+const char* poseFreeDifference(const Surface& a, const Surface& b, bool colliderRest)
+{
+#define FV_DIFFERS(field)                                                                                                    \
+  if(!(a.field == b.field))                                                                                                  \
+    return #field;
+  FV_DIFFERS(kind)
+  const bool restIsPose = colliderRest && a.kind == Surface::Kind::eCollider;
+  if(restIsPose)
+  {
+    FV_DIFFERS(rest.size())
+    FV_DIFFERS(restLocal.size())
+  }
+  else
+  {
+    FV_DIFFERS(rest)
+    FV_DIFFERS(restLocal)
+  }
+  FV_DIFFERS(posed.size())
+  FV_DIFFERS(tris)
+  FV_DIFFERS(polyStart)
+  FV_DIFFERS(polyVerts)
+  FV_DIFFERS(strength)
+  FV_DIFFERS(stretch)
+  FV_DIFFERS(shear)
+  FV_DIFFERS(bend)
+  FV_DIFFERS(buckling)
+  FV_DIFFERS(bucklingRatio)
+  FV_DIFFERS(density)
+  FV_DIFFERS(contraction)
+  FV_DIFFERS(damping)
+  FV_DIFFERS(friction)
+  FV_DIFFERS(offset)
+  FV_DIFFERS(layer)
+  FV_DIFFERS(selfCollide)
+  FV_DIFFERS(collide)
+  FV_DIFFERS(visible)
+  FV_DIFFERS(skinIndex)
+  FV_DIFFERS(skinWeight)
+  FV_DIFFERS(bones.size())
+  FV_DIFFERS(toSpace.e)
+#undef FV_DIFFERS
+  return nullptr;
+}
+
+bool sameButPose(const Surface& a, const Surface& b)
+{
+  return poseFreeDifference(a, b) == nullptr;
+}
+
 Surface Surface::collider(std::vector<float> rest, std::vector<float> posed, std::vector<uint32_t> tris, int layer, float offset,
                           float friction, const std::vector<uint8_t>& collide)
 {

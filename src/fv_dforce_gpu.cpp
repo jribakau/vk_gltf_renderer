@@ -81,6 +81,75 @@ struct Kinematic
   std::vector<BonePose> from, to;
 };
 
+// What a simulation needs of the device whatever its model: the pipeline layout, the kernels, and the
+// command pool of its queue when it has one of its own. Made at its first start and kept through its
+// restarts, so a model of other shapes (a dial turned) doesn't make them again.
+struct Kernels
+{
+  VkDevice         device      = VK_NULL_HANDLE;
+  VkCommandPool    commandPool = VK_NULL_HANDLE;
+  VkPipelineLayout layout      = VK_NULL_HANDLE;
+  VkPipeline       integrate{}, edges{}, attach{}, recover{}, hold{}, collide{}, velocity{}, cluster{}, commit{};
+
+  Kernels() = default;
+  Kernels(const Kernels&)            = delete;
+  Kernels& operator=(const Kernels&) = delete;
+  ~Kernels()
+  {
+    if(!device)
+      return;
+    for(VkPipeline p : {integrate, edges, attach, recover, hold, collide, velocity, cluster, commit})
+      if(p)
+        vkDestroyPipeline(device, p, nullptr);
+    if(layout)
+      vkDestroyPipelineLayout(device, layout, nullptr);
+    if(commandPool)
+      vkDestroyCommandPool(device, commandPool, nullptr);
+  }
+
+  bool make(VkDevice dev, const nvvk::QueueInfo& queue)
+  {
+    device = dev;
+    if(queue.queue)
+    {
+      commandPool = nvvk::createTransientCommandPool(device, queue.familyIndex);
+      if(!commandPool)
+        return false;
+    }
+    VkPushConstantRange        pushRange{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = sizeof(shaderio::DforcePushConstant)};
+    VkPipelineLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1, .pPushConstantRanges = &pushRange};
+    if(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &layout) != VK_SUCCESS)
+      return false;
+    NVVK_DBG_NAME(layout);
+    const auto pipe = [&](const char* entry, VkPipeline& out) {
+      VkShaderModuleCreateInfo    shaderInfo{.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                             .codeSize = dforce_cloth_comp_slang_sizeInBytes,
+                                             .pCode    = dforce_cloth_comp_slang};
+      VkComputePipelineCreateInfo pipeInfo{.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                           .stage  = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                      .pNext = &shaderInfo,
+                                                      .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                      .pName = entry},
+                                           .layout = layout};
+      if(vkCreateComputePipelines(device, nullptr, 1, &pipeInfo, nullptr, &out) != VK_SUCCESS)
+      {
+        LOGE("dForce GPU: could not create the %s pipeline\n", entry);
+        return false;
+      }
+      NVVK_DBG_NAME(out);
+      return true;
+    };
+    return pipe("integrateMain", integrate) && pipe("edgesMain", edges) && pipe("attachMain", attach) && pipe("recoverMain", recover)
+           && pipe("holdMain", hold) && pipe("collideMain", collide) && pipe("velocityMain", velocity) && pipe("clusterMain", cluster)
+           && pipe("commitMain", commit);
+  }
+};
+
+double msSince(std::chrono::steady_clock::time_point t)
+{
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+}
+
 }  // namespace
 
 // A frame in which the pose moves anything further than this, cm, goes in pieces, at most so many.
@@ -97,6 +166,8 @@ struct DforceGpu::Impl
   // a queue of its own and the pool its commands come from, or none: the renderer's, through `app`
   nvvk::QueueInfo          queue{};
   VkCommandPool            commandPool = VK_NULL_HANDLE;
+  // the kernels and the command pool, kept through restarts; the handles below are theirs
+  std::shared_ptr<Kernels> kernels;
   ClothModel               model;
   std::vector<Kinematic>   kin;
   // the cluster solve's partition, when it runs (gpu.clusterSize > 0 and the model fits it)
@@ -131,6 +202,11 @@ struct DforceGpu::Impl
 
   // host copies: every position (the kinematic ones kept where the last frame ended them)
   std::vector<float> xHost;
+  // the start (the rest shape, separated from the body), for a restart; and a restart whose state is
+  // still to go back to it, on the owner's thread, and whose start is to be made again first (a
+  // collider's rest cage changed: a body's contact dents)
+  std::vector<float> xStart;
+  bool               resetPending = false, startPending = false;
   int                substeps   = kMinSubsteps;
   int                collisions = kMinCollisionPasses;
   float              transition = kMinTransition;
@@ -151,8 +227,10 @@ struct DforceGpu::Impl
   int debug = 0;
 
   // ---- setup
-  bool prepare();  // any thread: touches nothing but the model
-  bool create();   // the owner's thread
+  bool prepare();      // any thread: touches nothing but the model
+  void posePrepare();  // prepare()'s parts a restart makes again: the bones' sweep, the transition
+  bool create();       // the owner's thread
+  void resetState();   // the owner's thread, for a restart: the state back to the start
   void destroy();
   template <class T>
   bool mapped(nvvk::Buffer& buf, const std::vector<T>& data, VmaMemoryUsage usage = VMA_MEMORY_USAGE_CPU_TO_GPU)
@@ -160,7 +238,6 @@ struct DforceGpu::Impl
     return mappedBytes(buf, data.data(), data.size() * sizeof(T), usage);
   }
   bool mappedBytes(nvvk::Buffer& buf, const void* data, size_t bytes, VmaMemoryUsage usage);
-  bool makePipeline(const char* entry, VkPipeline& out);
 
   // ---- a frame
   void kinematicAt(float t, std::vector<float>& out);
@@ -189,26 +266,6 @@ bool DforceGpu::Impl::mappedBytes(nvvk::Buffer& buf, const void* data, size_t by
   return true;
 }
 
-bool DforceGpu::Impl::makePipeline(const char* entry, VkPipeline& out)
-{
-  VkShaderModuleCreateInfo shaderInfo{.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                      .codeSize = dforce_cloth_comp_slang_sizeInBytes,
-                                      .pCode    = dforce_cloth_comp_slang};
-  VkComputePipelineCreateInfo pipeInfo{.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                       .stage  = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                  .pNext = &shaderInfo,
-                                                  .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                  .pName = entry},
-                                       .layout = layout};
-  if(vkCreateComputePipelines(alloc->getDevice(), nullptr, 1, &pipeInfo, nullptr, &out) != VK_SUCCESS)
-  {
-    LOGE("dForce GPU: could not create the %s pipeline\n", entry);
-    return false;
-  }
-  NVVK_DBG_NAME(out);
-  return true;
-}
-
 bool DforceGpu::Impl::prepare()
 {
   model = ClothModel::build(meshes, opts.air, opts.reachLinks);
@@ -217,19 +274,6 @@ bool DforceGpu::Impl::prepare()
 #pragma warning(suppress : 4996)  // getenv: read once, at start-up
   if(const char* env = std::getenv("FV_DFORCE_GPU_DEBUG"); env && *env)
     debug = std::atoi(env);
-
-  // the pose's hold on each mesh, swept from the memorized pose to the target it came with
-  kin.resize(meshes.size());
-  for(size_t mi = 0; mi < meshes.size(); mi++)
-  {
-    kin[mi].skinned = meshes[mi].skinned();
-    if(kin[mi].skinned)
-    {
-      for(const Mat4& b : meshes[mi].bones)
-        kin[mi].to.push_back(poseOf(b));
-      kin[mi].from.assign(meshes[mi].bones.size(), poseOf(Mat4{}));
-    }
-  }
 
   // the cluster solve: the clusters' rows run in shared memory, the rows that cross them coloured as below
   if(gpu.clusterSize > 0)
@@ -339,7 +383,25 @@ bool DforceGpu::Impl::prepare()
   // the start: the rest shape, with what overlaps the body moved out of it, as the CPU solver starts
   xHost = model.rest;
   separateStart(model, xHost);
+  xStart = xHost;
+  posePrepare();
+  return true;
+}
 
+void DforceGpu::Impl::posePrepare()
+{
+  // the pose's hold on each mesh, swept from the memorized pose to the target it came with
+  kin.assign(meshes.size(), Kinematic{});
+  for(size_t mi = 0; mi < meshes.size(); mi++)
+  {
+    kin[mi].skinned = meshes[mi].skinned();
+    if(kin[mi].skinned)
+    {
+      for(const Mat4& b : meshes[mi].bones)
+        kin[mi].to.push_back(poseOf(b));
+      kin[mi].from.assign(meshes[mi].bones.size(), poseOf(Mat4{}));
+    }
+  }
   // the transition's length and the frame's substeps, from how far the pose moves what it holds
   float maxMove = 0;
   for(int i : model.kinematicVerts)
@@ -353,12 +415,11 @@ bool DforceGpu::Impl::prepare()
   const int byMotion   = int(std::ceil(maxMove / float(frames) / kPassSpacing));
   substeps             = opts.substeps > 0 ? std::min(240, opts.substeps) : std::min(kMaxSubsteps, std::max(kMinSubsteps, byMotion));
   collisions           = std::min(substeps, std::max(kMinCollisionPasses, byMotion));
-  return true;
 }
 
 bool DforceGpu::Impl::create()
 {
-  fv::timing::Scope  t("dforce: buffers and pipelines");
+  fv::timing::Scope  t("dforce: buffers and kernels");
   const size_t       n = size_t(model.nv);
   std::vector<float> zeros(n * 3, 0.f);
   std::vector<float> lamZero(std::max<size_t>(1, sorted.size()), 0.f);
@@ -409,21 +470,25 @@ bool DforceGpu::Impl::create()
   if(!ok)
     return false;
 
-  if(queue.queue)
+  if(!kernels)
   {
-    commandPool = nvvk::createTransientCommandPool(alloc->getDevice(), queue.familyIndex);
-    if(!commandPool)
+    fv::timing::Scope tk("dforce: kernels");
+    auto              k = std::make_shared<Kernels>();
+    if(!k->make(alloc->getDevice(), queue))
       return false;
+    kernels = std::move(k);
   }
-  VkPushConstantRange        pushRange{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = sizeof(shaderio::DforcePushConstant)};
-  VkPipelineLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1, .pPushConstantRanges = &pushRange};
-  if(vkCreatePipelineLayout(alloc->getDevice(), &layoutInfo, nullptr, &layout) != VK_SUCCESS)
-    return false;
-  NVVK_DBG_NAME(layout);
-  if(!makePipeline("integrateMain", integratePipe) || !makePipeline("edgesMain", edgesPipe) || !makePipeline("attachMain", attachPipe)
-     || !makePipeline("recoverMain", recoverPipe) || !makePipeline("holdMain", holdPipe) || !makePipeline("collideMain", collidePipe)
-     || !makePipeline("velocityMain", velocityPipe) || (clusters.count() > 0 && (!makePipeline("clusterMain", clusterPipe) || !makePipeline("commitMain", commitPipe))))
-    return false;
+  commandPool   = kernels->commandPool;
+  layout        = kernels->layout;
+  integratePipe = kernels->integrate;
+  edgesPipe     = kernels->edges;
+  attachPipe    = kernels->attach;
+  recoverPipe   = kernels->recover;
+  holdPipe      = kernels->hold;
+  collidePipe   = kernels->collide;
+  velocityPipe  = kernels->velocity;
+  clusterPipe   = kernels->cluster;
+  commitPipe    = kernels->commit;
   if(gpu.timestamps)
   {
     VkPhysicalDeviceProperties props{};
@@ -445,6 +510,38 @@ bool DforceGpu::Impl::create()
   return true;
 }
 
+void DforceGpu::Impl::resetState()
+{
+  if(startPending)
+  {
+    // as prepare() makes it: the rest shape, with what overlaps the body moved out of it
+    xStart = model.rest;
+    separateStart(model, xStart);
+    startPending = false;
+  }
+  resetPending = false;
+  xHost        = xStart;
+  // nothing is in flight between settles: the buffers are written as they lie
+  const size_t bytes = xStart.size() * sizeof(float);
+  for(nvvk::Buffer* b : {&x, &prev, &cprev, &kinStart, &kinEnd, &xTwin})
+    if(b->mapping)
+      std::memcpy(b->mapping, xStart.data(), bytes);
+  for(nvvk::Buffer* b : {&vel, &lam, &lamAtt, &clusterLamBuf})
+    if(b->mapping)
+      std::memset(b->mapping, 0, size_t(b->bufferSize));
+  // -1 everywhere: no face under any vertex
+  if(contact.mapping)
+    std::memset(contact.mapping, 0xFF, size_t(contact.bufferSize));
+  std::memcpy(grav.mapping, model.grav.data(), model.grav.size() * sizeof(float));
+  heldAt   = -1;
+  lastMove = 0;
+  settled  = 0;
+  // the run's counts start over; the cut's shape stays
+  stats.frames     = 0;
+  stats.dispatches = 0;
+  stats.gpuMs = stats.waitMs = stats.collideMs = stats.holdMs = stats.skinMs = stats.gridMs = 0;
+}
+
 void DforceGpu::Impl::destroy()
 {
   if(!alloc)
@@ -455,22 +552,12 @@ void DforceGpu::Impl::destroy()
     vkDestroyQueryPool(device, queries, nullptr);
     queries = VK_NULL_HANDLE;
   }
-  if(commandPool)
-  {
-    vkDestroyCommandPool(device, commandPool, nullptr);
-    commandPool = VK_NULL_HANDLE;
-  }
+  // the kernels' handles are theirs: they go with the last simulation that holds them
+  commandPool = VK_NULL_HANDLE;
+  layout      = VK_NULL_HANDLE;
   for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe, &clusterPipe, &commitPipe})
-    if(*p)
-    {
-      vkDestroyPipeline(device, *p, nullptr);
-      *p = VK_NULL_HANDLE;
-    }
-  if(layout)
-  {
-    vkDestroyPipelineLayout(device, layout, nullptr);
-    layout = VK_NULL_HANDLE;
-  }
+    *p = VK_NULL_HANDLE;
+  kernels.reset();
   for(nvvk::Buffer* b : {&x, &prev, &vel, &cprev, &kinStart, &kinEnd, &kinematic, &freeVerts, &inv, &dampRate, &offset, &friction, &layer,
                          &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &contact, &modelBuf, &readback,
                          &clusterEdgeBuf, &clusterLamBuf, &clusterVertBuf, &clusterVertStartBuf, &clusterOwnedBuf, &clusterColourBuf, &clusterSoftBuf,
@@ -616,8 +703,10 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
   {
     // where the pose takes what it holds by the end of the frame
     std::vector<float> start = xHost, end = xHost;
+    const auto         skinStart = std::chrono::steady_clock::now();
     kinematicAt(t0, start);
     kinematicAt(t1, end);
+    stats.skinMs += msSince(skinStart);
     for(int i : model.kinematicVerts)
     {
       const float dx = end[size_t(i) * 3] - start[size_t(i) * 3], dy = end[size_t(i) * 3 + 1] - start[size_t(i) * 3 + 1],
@@ -679,7 +768,10 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       m.clusterStretch     = uint32_t(clusters.stretchColours);
       m.clusterReach       = uint32_t(clusters.reachColours);
     }
-    if(model.staticTris.empty() || !buildGrid(start, end, m))
+    const auto gridStart = std::chrono::steady_clock::now();
+    const bool grid      = !model.staticTris.empty() && buildGrid(start, end, m);
+    stats.gridMs += msSince(gridStart);
+    if(!grid)
     {
       if(!model.staticTris.empty() && !gridFailed)
         LOGE("dForce GPU: the collision grid's buffers could not be made; the cloth collides with nothing\n");
@@ -934,15 +1026,22 @@ DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, st
 
 DforceGpu::~DforceGpu()
 {
-  // still on the pool: it has made nothing of the device's, and lets go of the rest when it ends
+  // still on the pool: it has made no buffers, and lets go of the rest when it ends; the kernels a
+  // restart handed it go here, not on the pool after the device
   if(!m_prepared.valid())
     m_impl->destroy();
+  else
+    m_impl->kernels.reset();
 }
 
 bool DforceGpu::started(bool wait)
 {
   if(!m_prepared.valid())
+  {
+    if(m_valid && m_impl->resetPending)
+      m_impl->resetState();
     return m_valid;
+  }
   if(!wait && m_prepared.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
     return false;
   bool ok = false;
@@ -987,8 +1086,10 @@ void DforceGpu::frame(float t0, float t1, float extraDamping, float seconds)
   if(t0 != t1)
   {
     std::vector<float> from = s.xHost, to = s.xHost;
+    const auto         skinStart = std::chrono::steady_clock::now();
     s.kinematicAt(t0, from);
     s.kinematicAt(t1, to);
+    s.stats.skinMs += msSince(skinStart);
     for(int i : s.model.kinematicVerts)
     {
       const float dx = to[size_t(i) * 3] - from[size_t(i) * 3], dy = to[size_t(i) * 3 + 1] - from[size_t(i) * 3 + 1], dz = to[size_t(i) * 3 + 2] - from[size_t(i) * 3 + 2];
@@ -1059,14 +1160,71 @@ bool DforceGpu::settleSome(double seconds)
   const auto end = std::chrono::steady_clock::now();
   s.settleWork += std::chrono::duration<double, std::milli>(end - start).count();
   if(done)
-    LOGI("[fv-time] dforceGpuSettle %d frames %.1f ms of work, %.1f ms waiting on the GPU, %.1f ms in all (%.1f ms a frame, %d substeps)\n", s.settled, s.settleWork,
-         s.settleWait, std::chrono::duration<double, std::milli>(end - s.settleStart).count(), s.settleWork / std::max(1, s.settled), s.substeps);
+    LOGI("[fv-time] dforceGpuSettle %d frames %.1f ms of work, %.1f ms waiting on the GPU, %.1f ms in all (%.1f ms a frame, %d substeps; on the host %.1f ms skinning, %.1f the collision grid)\n",
+         s.settled, s.settleWork, s.settleWait, std::chrono::duration<double, std::milli>(end - s.settleStart).count(), s.settleWork / std::max(1, s.settled),
+         s.substeps, s.stats.skinMs, s.stats.gridMs);
   return done;
 }
 
 bool DforceGpu::ownerThreadOnly() const
 {
   return !m_impl->queue.queue;
+}
+
+bool DforceGpu::restart(std::vector<SettleMesh> meshes, const SettleOptions& opts)
+{
+  // FV_DFORCE_GPU_DEBUG's bit 16: a new simulation for every settle, as before this was kept (an A/B)
+  if(failed() || (m_impl->debug & 16))
+    return false;
+  Impl& s    = *m_impl;
+  bool  same = !m_prepared.valid() && m_valid && meshes.size() == s.meshes.size() && opts.air == s.opts.air && opts.reachLinks == s.opts.reachLinks;
+  for(size_t mi = 0; same && mi < meshes.size(); mi++)
+    if(const char* what = fv::physics::cloth::poseFreeDifference(meshes[mi], s.meshes[mi], true))
+    {
+      LOGI("dForce GPU: the model is made again: mesh %zu's %s changed\n", mi, what);
+      same = false;
+    }
+  m_lastMove = 0;
+  if(same)
+  {
+    // the model's parts of the pose: the posed cage, which way is down, and a collider's rest cage (the
+    // start is made again from it); the rest is as it was
+    for(size_t mi = 0; mi < meshes.size(); mi++)
+    {
+      const SettleMesh& m = meshes[mi];
+      const size_t      o = size_t(s.model.base[mi]);
+      std::copy(m.posed.begin(), m.posed.end(), s.model.posed.begin() + long(o * 3));
+      for(size_t v = 0; v < m.vertexCount(); v++)
+        std::copy(m.gravity.begin(), m.gravity.end(), s.model.grav.begin() + long((o + v) * 3));
+      if(m.rest != s.meshes[mi].rest)
+      {
+        std::copy(m.rest.begin(), m.rest.end(), s.model.rest.begin() + long(o * 3));
+        s.startPending = true;
+      }
+    }
+    s.meshes = std::move(meshes);
+    s.opts   = opts;
+    s.posePrepare();
+    // the buffers on the owner's thread, as the settle starts
+    s.resetPending = true;
+    return true;
+  }
+  // other shapes or settings: a model made again on the pool, with the kernels this one made. What it
+  // had of the device goes now: nothing is in flight between settles
+  auto fresh     = std::make_shared<Impl>();
+  fresh->alloc   = s.alloc;
+  fresh->app     = s.app;
+  fresh->gpu     = s.gpu;
+  fresh->queue   = s.queue;
+  fresh->kernels = std::move(s.kernels);
+  fresh->meshes  = std::move(meshes);
+  fresh->opts    = opts;
+  if(!m_prepared.valid())
+    s.destroy();
+  m_impl     = std::move(fresh);
+  m_valid    = false;
+  m_prepared = fv::jobs::pool().submit([impl = m_impl] { return impl->prepare(); });
+  return true;
 }
 
 void DforceGpu::useQueue(const nvvk::QueueInfo& queue)

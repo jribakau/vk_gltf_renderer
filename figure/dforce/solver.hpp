@@ -58,6 +58,10 @@ public:
   virtual std::vector<std::vector<float>> positions() const = 0;
   // True when it must be driven on the thread that made it (a GPU queue), never on the pool.
   virtual bool ownerThreadOnly() const { return false; }
+  // A settle again, from the start, on what it has: for these meshes (their new pose, gravity) and
+  // options (a new settle's cancel). One that can't (the CPU's, one that failed) says false, and a new
+  // simulation is made instead. Never while it runs.
+  virtual bool restart(std::vector<SettleMesh> /*meshes*/, const SettleOptions& /*opts*/) { return false; }
   // Live: one frame. After a setTarget the pose sweeps from the one it reached to the new target
   // (0 to 1); otherwise it holds where the last sweep ended (1), as a settle's hold frames do. A
   // sweep from 0 on every frame would set the colliders and the pinned cloth out from the pose

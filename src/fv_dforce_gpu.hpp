@@ -46,10 +46,17 @@
 // 340,000 vertices take seconds. The buffers and pipelines come on the owner's thread once that is done, at the first
 // call that needs them, and until then settleSome() says it isn't done and costs nothing.
 //
+// The driver keeps a figure's simulation between settles (restart, physics-plan step 13b): for the same garments,
+// shapes and settings, only the pose and gravity new, it keeps its model, its buffers and its kernels and puts the
+// state back to the start, so a pose edit's drape begins at once instead of half a second later. A body's new rest
+// cage (its contact dents change with the pose) goes into the model as it is, and the start is made again from it.
+// Other shapes (a dial turned) make the model again on the pool, with the kernels kept.
+//
 // A frame that takes over 250 ms is logged with what it saw (such a frame is the one before a
 // device loss: Windows resets a GPU held for about two seconds). FV_DFORCE_GPU_DEBUG in the
 // environment leaves a kernel out, for bisecting one: 1 the recovery, 2 the hold; 4 solves a dispatch
-// a colour and 8 on the renderer's queue, as before step 13.
+// a colour and 8 on the renderer's queue, as before step 13; 16 makes a new simulation for every settle,
+// as before the driver kept one.
 
 #include <functional>
 #include <future>
@@ -91,6 +98,8 @@ public:
     double gpuMs = 0, waitMs = 0;
     // of gpuMs: the collision passes and the frame's recovery, and the holds on faces
     double collideMs = 0, holdMs = 0;
+    // on the host, each frame: the kinematic vertices skinned, and the collision grid built
+    double skinMs = 0, gridMs = 0;
     // the cluster solve's shape (0 without it): clusters, colours a cluster runs, the rows that cross
     // and their colours
     int    clusters = 0, clusterColours = 0, crossingColours = 0, substeps = 0, mostLocal = 0;
@@ -112,6 +121,8 @@ public:
   float lastMove() const override { return m_lastMove; }
   std::vector<std::vector<float>> positions() const override;
   bool                            ownerThreadOnly() const override;
+  // ClothBackend's: true unless it failed. The same shapes keep the model; others make it again on the pool.
+  bool                            restart(std::vector<fv::dforce::SettleMesh> meshes, const fv::dforce::SettleOptions& opts) override;
 
   // The queue every simulation made after this runs on, when the device has one beside the renderer's;
   // given once at start-up. Without it a simulation runs on the renderer's queue, on its thread.

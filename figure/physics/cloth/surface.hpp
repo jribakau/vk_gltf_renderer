@@ -65,6 +65,17 @@ constexpr int kBodyLayer = -0x8000;
 // dress keeps the dress outside, by the side each started on.
 constexpr int kPlainLayer = 0;
 
+// The same surface but for its pose: everything a cloth model is built from (the rest cage, the polygons,
+// the settings per vertex, the skin and its space) is equal, and only `posed`, the bones' matrices (not
+// how many) and `gravity` may differ. A simulation kept between settles keeps its model for such a
+// surface (ClothBackend::restart). A field added to Surface that the model reads goes in here too.
+bool sameButPose(const Surface& a, const Surface& b);
+// The first of those that differs ("rest", "strength", ...), or null when none does: for the log. With
+// `colliderRest`, a collider's rest cage (`rest`, `restLocal`, of the same size) counts as its pose too:
+// a model holds nothing of it but its copy (the start, and the push out of the body, read it), and a
+// body's contact dents change it with every pose.
+const char* poseFreeDifference(const Surface& a, const Surface& b, bool colliderRest = false);
+
 // A skinned surface's vertices at these bones (its skin matrices in the mesh's space), in the job's
 // space; an unskinned one gives its `posed`. `out` is xyz per vertex. Four influences, linearly: the
 // body cloth meets is dForce's own, for parity, until physics-plan step 13c.

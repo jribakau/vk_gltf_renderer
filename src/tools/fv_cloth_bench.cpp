@@ -11,6 +11,11 @@
 //
 // --analyse prints how each cluster size cuts the model (clusters, colours, the rows that cross) and
 // runs nothing. Every number goes to out.json too.
+//
+// Each GPU run settles the job twice on one simulation, the second time through restart (physics-plan
+// step 13b: it keeps its model, buffers and kernels): "restart" says how long that took and whether its
+// drape is the first's to the bit. Then once more with the body dented (its rest cage moved in, as a
+// contact pass does), set against a new simulation of that job: "dented" says whether the two agree.
 
 // the allocator's implementation, as renderer.cpp compiles it for the renderer
 #define VMA_IMPLEMENTATION
@@ -310,6 +315,8 @@ int main(int argc, char** argv)
                                {"collideMsPerFrame", r4(s.collideMs / std::max(1, s.frames))},
                                {"holdMsPerFrame", r4(s.holdMs / std::max(1, s.frames))},
                                {"waitMsPerFrame", r4(s.waitMs / std::max(1, s.frames))},
+                               {"skinMsPerFrame", r4(s.skinMs / std::max(1, s.frames))},
+                               {"gridMsPerFrame", r4(s.gridMs / std::max(1, s.frames))},
                                {"dispatchesPerFrame", r4(double(s.dispatches) / std::max(1, s.frames))},
                                {"dispatchesPerSubstep", r4(double(s.dispatches) / std::max(1, s.frames * std::max(1, s.substeps)))},
                                {"rows", s.rows}};
@@ -317,6 +324,39 @@ int main(int argc, char** argv)
             report["cut"] = {{"clusters", s.clusters},         {"clusterColours", s.clusterColours}, {"crossingRows", s.crossingRows},
                              {"crossingColours", s.crossingColours}, {"haloRows", s.haloRows},           {"mostLocal", s.mostLocal}};
           report["drapes"] = judge(*job, model, pos, cpu.empty() ? nullptr : &cpu);
+          // the same job again on the same simulation, which keeps what it made and starts over
+          const auto t1   = std::chrono::steady_clock::now();
+          const bool kept = sim.restart(job->surfaces, job->options);
+          sim.settle();
+          const double again = since(t1);
+          const auto   pos2  = sim.positions();
+          report["restart"]  = {{"kept", kept}, {"settleMs", r4(again)}, {"frames", sim.stats().frames}, {"sameDrape", !sim.failed() && pos2 == pos}};
+          // the body dented: every seventh vertex of its rest cage 2 mm in along z, its target skinned again
+          cloth::Job dented = *job;
+          for(cloth::Surface& m : dented.surfaces)
+          {
+            if(m.kind != cloth::Surface::Kind::eCollider || !m.skinned())
+              continue;
+            for(size_t v = 0; v < m.vertexCount(); v += 7)
+            {
+              m.restLocal[v * 3 + 2] -= 0.2f;
+              const fv::Vec3 p = m.toSpace.transformPoint({m.restLocal[v * 3], m.restLocal[v * 3 + 1], m.restLocal[v * 3 + 2]});
+              m.rest[v * 3]     = float(p.x);
+              m.rest[v * 3 + 1] = float(p.y);
+              m.rest[v * 3 + 2] = float(p.z);
+            }
+            cloth::skin(m, m.bones, m.posed.data());
+            break;
+          }
+          const auto t2 = std::chrono::steady_clock::now();
+          sim.restart(dented.surfaces, dented.options);
+          sim.settle();
+          const double dentedMs = since(t2);
+          const auto   pos3     = sim.positions();
+          DforceGpu    fresh(&alloc, &app, dented.surfaces, dented.options, gpu);
+          fresh.settle();
+          report["dented"] = {{"settleMs", r4(dentedMs)}, {"sameAsNew", !sim.failed() && !fresh.failed() && pos3 == fresh.positions()},
+                              {"movedFromUndented", pos3 != pos}};
           const std::string key = clustered ? name + std::to_string(size) : name;
           runs[key]             = report;
           std::cout << key << " " << report.dump() << std::endl;

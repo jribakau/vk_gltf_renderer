@@ -1747,6 +1747,19 @@ public:
   bool  failed() const override { return m_fails; }
   float lastMove() const override { return 0.f; }
   bool  ownerThreadOnly() const override { return false; }
+  // as the GPU solver's when `restartable`: it takes the new meshes and options and settles again
+  bool restart(std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions& opts) override
+  {
+    if(!restartable)
+      return false;
+    m_meshes = std::move(meshes);
+    m_opts   = opts;
+    done     = false;
+    restarts++;
+    return true;
+  }
+  bool              restartable = false;
+  std::atomic<int>  restarts{0};
   std::vector<std::vector<float>> positions() const override
   {
     std::vector<std::vector<float>> out;
@@ -1754,7 +1767,7 @@ public:
     {
       out.push_back(m.rest);
       for(size_t v = 0; v < out.back().size() / 3; v++)
-        out.back()[v * 3 + 2] += 1.f;
+        out.back()[v * 3 + 2] += 1.f + float(restarts.load());  // each settle its own drape
     }
     return out;
   }
@@ -1906,7 +1919,8 @@ TEST(Dforce, aSettleOnTheGpuGoesInSlicesAndAnEditDropsItAtOnce)
   EXPECT_TRUE(d.busy());
   EXPECT_TRUE(d.pump());
   EXPECT_FALSE(d.busy());
-  EXPECT_TRUE(sim.expired());
+  // kept for the next settle (ClothBackend::restart); this one can't start again, so the next makes another
+  EXPECT_FALSE(sim.expired());
 
   // an edit partway: the old settle goes on the next frame, and the new one doesn't wait for it to finish
   d.resimulate();
@@ -2747,4 +2761,40 @@ TEST(DforceStrands, aHairStandingOutIsNotStyledAndOneThatHangsIs)
   ASSERT_TRUE(fan && hanging);
   EXPECT_FALSE(fan->strandStyled);
   EXPECT_TRUE(hanging->strandStyled);
+}
+
+TEST(Dforce, theGpuSolverIsKeptBetweenSettlesAndGoesWhenDforceIsTurnedOff)
+{
+  // a figure's second settle runs on the solver the first ran on (ClothBackend::restart): for the same
+  // garments it keeps its model and buffers, and the drape begins at once. Turned off, it goes
+  VeilScene                               v;
+  morph::MorphSet                         morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce                          d(v.scene, morphs, 0, v.rootNode);
+  std::vector<std::shared_ptr<PooledSim>> made;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions& opts) {
+    made.push_back(std::make_shared<PooledSim>(std::move(meshes), opts, false));
+    made.back()->restartable = true;
+    made.back()->release     = true;
+    return made.back();
+  };
+  d.resimulate();
+  ASSERT_TRUE(pumpUntilWritten(d));
+  ASSERT_EQ(made.size(), 1u);
+  for(int edit = 0; edit < 2; edit++)
+  {
+    d.resimulate();
+    ASSERT_TRUE(pumpUntilWritten(d));
+  }
+  EXPECT_EQ(made.size(), 1u) << "no new solver for the same garments";
+  EXPECT_EQ(made[0]->restarts.load(), 2);
+  EXPECT_FALSE(d.busy());
+  // one that can't start again (another shape, as the GPU solver's own check would say) is replaced
+  made[0]->restartable = false;
+  d.resimulate();
+  ASSERT_TRUE(pumpUntilWritten(d));
+  ASSERT_EQ(made.size(), 2u);
+  EXPECT_EQ(made[0].use_count(), 1) << "the old one let go";
+  // turned off: the kept one goes, its device memory with it
+  d.setEnabled(false);
+  EXPECT_EQ(made[1].use_count(), 1);
 }
