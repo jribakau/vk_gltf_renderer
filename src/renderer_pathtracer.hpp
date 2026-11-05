@@ -219,6 +219,10 @@ public:
   // and the DLSS frames', fewer, since white hair keeps its energy through every one.
   int m_hairBounces{16};
   int m_hairBouncesDlss{4};
+  // Light samples a surface vertex draws to keep one of (PathtracePushConstant::lightCandidates): the
+  // still's, and the DLSS frames'. 1: the one sample it traces, as before
+  int m_lightCandidates{1};
+  int m_lightCandidatesDlss{1};
   // DLSS frames: past ptHairRouletteFrom fibre events a path continues at most with ptHairRouletteDlss
   float m_hairRouletteDlss{1.0F};
   int   m_hairRouletteFrom{1};

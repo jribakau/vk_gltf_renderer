@@ -198,6 +198,49 @@ bool frontFaceLeavesMedium(VolumeMedium medium, GltfShadeMaterial* material, boo
 }
 #endif
 
+// The light sample's resampling (light_ris.h.slang, ptLightCandidates) is compiled in only where a build
+// asks for it: switched off, its loop still cost a still frame 0.8% (7TEST, 272.0 against 269.7 ms,
+// 2026-11-05), and switched on it bought too little without the shadows in the weights (the candidate
+// stage of ReSTIR; its reuse is what would): docs/improvements.md, "Light samples chosen among candidates".
+#ifndef USE_LIGHT_RIS
+#define USE_LIGHT_RIS 0
+#endif
+
+// How many light samples a surface vertex draws to keep one of (light_ris.h.slang): the host's count at
+// the path's first lightCandidatesDepth surface vertices, 1 elsewhere and on a fibre, whose BSDF costs
+// three times a surface's to evaluate and whose light mostly comes through the lock anyway.
+int lightCandidatesHere(bool fibre, int surfaceDepth)
+{
+#if USE_LIGHT_RIS
+  if(fibre || pushConst.lightCandidates <= 1)
+    return 1;
+  if(pushConst.lightCandidatesDepth > 0 && surfaceDepth >= pushConst.lightCandidatesDepth)
+    return 1;
+  return min(pushConst.lightCandidates, LIGHT_RIS_MAX_CANDIDATES);
+#else
+  return 1;
+#endif
+}
+
+#if USE_LIGHT_RIS
+// What a surface does with light from `toLight`: the BSDF next-event estimation below evaluates (every lobe
+// with `allLobes`), with the diffuse exit's Fresnel. `k1` faces the incoming ray.
+BsdfEvaluateData evaluateSurfaceForLight(PbrMaterial pbrMat, float3 k1, float3 toLight, bool allLobes, float exitFresnelEta, inout uint seed)
+{
+  BsdfEvaluateData evalData;
+  evalData.k1 = k1;
+  evalData.k2 = toLight;
+  evalData.xi = float3(rand(seed), rand(seed), rand(seed));
+  if(allLobes)
+    bsdfEvaluateAll(evalData, pbrMat);
+  else
+    bsdfEvaluate(evalData, pbrMat);
+  if(exitFresnelEta > 0.0F)
+    evalData.bsdf_diffuse *= diffuseExitFresnelWeight(dot(pbrMat.N, toLight), exitFresnelEta);
+  return evalData;
+}
+#endif
+
 PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout uint seed, inout PathTracerState pt, inout BounceScratch bounce)
 {
   {
@@ -848,10 +891,53 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // The BSDF ray sampled below is weighed against this vertex's pick when it reaches a light
     pt.lightPick = directLight.pick;
 
+    // Several candidates, one kept (light_ris.h.slang): the first is the sample above, the rest drawn
+    // the same way from the seed. Each is weighed by its unshadowed estimate at this vertex, its BSDF
+    // evaluated here and kept with it, so the kept one's estimate below is the one it was weighed by.
+    // Every candidate shares the pick (the same point and normal), so pt.lightPick holds for all.
+    float            risScale   = 1.0F;
+#if USE_LIGHT_RIS
+    const int        candidates = lightCandidatesHere(hairOn, pt.surfaceDepth);
+    BsdfEvaluateData keptEval   = {};
+    if(candidates > 1)
+    {
+      LightReservoir reservoir = lightReservoirEmpty();
+      DirectLight    kept      = directLight;
+      for(int c = 0; c < candidates; c++)
+      {
+        DirectLight candidate = directLight;
+        if(c > 0)
+          sampleLights(hit.pos, hit.nrm, ray.Direction, seed, candidate, /*isVolumeSample=*/false,
+                       /*lightsFromBothSides=*/bothSides, /*compensatedEnv=*/!lastVertex);
+        BsdfEvaluateData candidateEval = {};
+        float weight      = 0.0F;
+        if((dot(candidate.direction, hit.nrm) > 0.0f || bothSides) && candidate.pdf != 0.0f)
+        {
+          const bool candidateAllLobes = lobeMixture || (candidate.pdf == DIRAC && hasFlag(pushConst.flags, PathtracerFlags::ePtLobeSumPunctual));
+          candidateEval = evaluateSurfaceForLight(pbrMat, -ray.Direction, candidate.direction, candidateAllLobes, exitFresnelEta, seed);
+          if(candidateEval.pdf > 0.0F)
+          {
+            const float mis = (candidate.pdf == DIRAC || lastVertex) ? 1.0F : misPowerWeight(candidate.pdf, candidateEval.pdf);
+            weight = luminance(pt.throughput * candidate.radianceOverPdf * mis * (candidateEval.bsdf_diffuse + candidateEval.bsdf_glossy));
+          }
+        }
+        reservoir = lightReservoirAdd(reservoir, weight, rand(seed));
+        if(reservoir.keptLast)
+        {
+          kept     = candidate;
+          keptEval = candidateEval;
+        }
+      }
+      // None weighed anything: the scale is 0, and the sample below adds nothing and traces no ray
+      risScale    = lightReservoirScale(reservoir);
+      directLight = kept;
+    }
+#endif
+
     // This checks if the light could contribute, but doesn't send a next event estimation (NEE) shadow ray yet.
     // The actual test and contribution are delayed to minimize per-bounce state.
     bounce.nextEventValid = (dot(directLight.direction, hit.nrm) > 0.0f || bothSides)
-                            && directLight.pdf != 0.0f;
+                            && directLight.pdf != 0.0f && risScale > 0.0F;
 
     //-----------------------------------------------------------------------
     // Evaluating the BSDF for the light
@@ -860,31 +946,38 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     {
       // Evaluating the BSDF at the hit point for the light
       BsdfEvaluateData evalData;
-      evalData.k1 = -ray.Direction;
-      evalData.k2 = directLight.direction;
-      evalData.xi = float3(rand(seed), rand(seed), rand(seed));
       // Every lobe for a punctual light (no BSDF ray reaches it; its weight is 1 whatever the pdf), and
       // for every light when MIS weighs against the lobe mixture on both sides (bsdfSampleCore below).
       const bool allLobes = lobeMixture || (directLight.pdf == DIRAC && hasFlag(pushConst.flags, PathtracerFlags::ePtLobeSumPunctual));
-#if GLTF_USE_HAIR
-      if(hairOn)
-      {
-        hairBsdfEvaluate(evalData, hairHit);  // already the whole fibre BSDF, with its mixture pdf
-        // A cut path's light sample also stands for the light the lock would have scattered on to it:
-        // its colour, spread over the sphere (hairCutTail)
-        if(hairCut)
-          evalData.bsdf_diffuse += pushConst.hairCutTail * (0.25F * M_1_PI) * hairLockColor(hairHit);
-      }
+#if USE_LIGHT_RIS
+      if(candidates > 1)
+        evalData = keptEval;  // evaluated as it was weighed, never a fibre (lightCandidatesHere)
       else
 #endif
-      if(allLobes)
-        bsdfEvaluateAll(evalData, pbrMat);
-      else
-        bsdfEvaluate(evalData, pbrMat);
-      // bsdfEvaluateSimple(evalData, pbrMat);
+      {
+        evalData.k1 = -ray.Direction;
+        evalData.k2 = directLight.direction;
+        evalData.xi = float3(rand(seed), rand(seed), rand(seed));
+#if GLTF_USE_HAIR
+        if(hairOn)
+        {
+          hairBsdfEvaluate(evalData, hairHit);  // already the whole fibre BSDF, with its mixture pdf
+          // A cut path's light sample also stands for the light the lock would have scattered on to it:
+          // its colour, spread over the sphere (hairCutTail)
+          if(hairCut)
+            evalData.bsdf_diffuse += pushConst.hairCutTail * (0.25F * M_1_PI) * hairLockColor(hairHit);
+        }
+        else
+#endif
+        if(allLobes)
+          bsdfEvaluateAll(evalData, pbrMat);
+        else
+          bsdfEvaluate(evalData, pbrMat);
+        // bsdfEvaluateSimple(evalData, pbrMat);
 
-      if(exitFresnelEta > 0.0F)
-        evalData.bsdf_diffuse *= diffuseExitFresnelWeight(dot(pbrMat.N, directLight.direction), exitFresnelEta);
+        if(exitFresnelEta > 0.0F)
+          evalData.bsdf_diffuse *= diffuseExitFresnelWeight(dot(pbrMat.N, directLight.direction), exitFresnelEta);
+      }
 
       // Some lobe can scatter toward the light (in every mode): the shadow ray is worth tracing
       if(evalData.pdf > 0.0)
@@ -893,8 +986,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // 1 at the last vertex (above).
         const float mis_weight = (directLight.pdf == DIRAC || lastVertex) ? 1.0F : misPowerWeight(directLight.pdf, evalData.pdf);
 
-        // sample weight
-        const float3 w = pt.throughput * directLight.radianceOverPdf * mis_weight;
+        // sample weight; a kept candidate's scaled by the candidates' mean weight over its own
+        const float3 w = pt.throughput * directLight.radianceOverPdf * mis_weight * risScale;
         bounce.contribution += w * evalData.bsdf_diffuse;
         bounce.contribution += w * evalData.bsdf_glossy;
         // Classed by the path before this vertex, as the sample below is about to change it

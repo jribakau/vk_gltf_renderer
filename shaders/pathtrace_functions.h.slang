@@ -13,6 +13,7 @@
 #include "sky_background.h.slang"
 #include "ground.h.slang"
 #include "light_pick.h.slang"
+#include "light_ris.h.slang"
 #include "walk_guide.h.slang"
 #include "light_tree.h.slang"
 

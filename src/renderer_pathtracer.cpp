@@ -331,6 +331,21 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "tree over them); off: by power alone, wherever they are",
                  .callbackSuccess = reset},
                 &m_lightTree, Persist::eNo);
+  settings->add({.name            = "ptLightCandidates",
+                 .help            = "PathTracer: Light samples a surface vertex of a still draws to keep the one it would gain "
+                                    "most from, unshadowed (resampled importance sampling, unbiased; 1: off). Only in a "
+                                    "shader built with USE_LIGHT_RIS 1 (gltf_pathtrace.slang)",
+                 .callbackSuccess = reset},
+                &m_lightCandidates, Persist::eNo, 1, 16);
+  settings->add({.name            = "ptLightCandidatesDlss",
+                 .help            = "PathTracer: ptLightCandidates on DLSS frames",
+                 .callbackSuccess = reset},
+                &m_lightCandidatesDlss, Persist::eNo, 1, 16);
+  settings->add({.name            = "ptLightCandidatesDepth",
+                 .help            = "PathTracer: the surface vertices of a path that resample their light sample, from the "
+                                    "camera's (0: all of them)",
+                 .callbackSuccess = reset},
+                &m_pushConst.lightCandidatesDepth, Persist::eNo, 0, 64);
   settings->add({.name            = "ptGlassBounces",
                  .help            = "PathTracer: Events on clear glass (smooth, transmissive, nothing scattering inside) a path "
                                     "takes before they count as surface bounces; 0: every one counts",
@@ -1384,6 +1399,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= (m_regularize == 2 || (m_regularize == 1 && useDlss)) ? shaderio::ePtRegularize : 0;
   m_pushConst.maxDepth   = sample_schedule::frameMaxDepth(m_maxDepth, m_maxDepthDlss, useDlss);
   m_pushConst.hairBudget = useDlss ? m_hairBouncesDlss : m_hairBounces;
+  m_pushConst.lightCandidates = useDlss ? m_lightCandidatesDlss : m_lightCandidates;
   m_pushConst.hairRouletteDlss = m_hairRouletteDlss;
   m_pushConst.hairRouletteFrom = m_hairRouletteFrom;
   m_pushConst.hairCutDlss      = m_hairCutDlss;

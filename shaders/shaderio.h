@@ -371,6 +371,8 @@ struct PathtracePushConstant
   float4          adaptiveRelax[3];
   float           adaptiveRelaxBase = 0.0f;
   int             hitSignalSlots    = 0;        // hitSignal's materials; keeps the pointers 8-byte aligned
+  int             lightCandidates      = 1;     // Light samples a surface vertex draws to keep one of (light_ris.h.slang; 1: the one it traces)...
+  int             lightCandidatesDepth = 0;     // ...at its first this many surface vertices (0: at all of them); two fields keep the pointers aligned
   uint*           hitSignal;                    // first hits counted per material slot and bin (hit_signal.h.slang; null: not counting)
   uint*           adaptiveActive;               // ePtAdaptiveStop: the frame counts the pixels still sampling here (null: not counted)
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)
