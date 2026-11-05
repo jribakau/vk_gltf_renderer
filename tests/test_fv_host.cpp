@@ -2876,7 +2876,8 @@ TEST(FvHost, AFigureOnAColdCacheCooksWhatItCanOnlyShowCookedOnce)
   const Sampled      landed = sampled(scene);
   ASSERT_GE(landed.images.size(), 2u);
   EXPECT_EQ(landed.turned, 0);
-  EXPECT_EQ(std::count_if(landed.images.begin(), landed.images.end(), [](const std::string& uri) { return uri.ends_with("-up.ktx2"); }), std::ptrdiff_t(landed.images.size()));
+  EXPECT_EQ(std::count_if(landed.images.begin(), landed.images.end(), [](const std::string& uri) { return uri.ends_with("-up.ktx2"); }), std::ptrdiff_t(landed.images.size()))
+      << ::testing::PrintToString(landed.images);
   EXPECT_GT(cooker.composedCooks.load(), 0);
   EXPECT_EQ(cooker.unflippedCooks.load(), 0);
 }
@@ -2926,6 +2927,48 @@ TEST(FvHost, AStillWaitsForTheTexturesStillCooking)
   }
   EXPECT_FALSE(rig.renderer.texturesArriving);
   EXPECT_EQ(cooking(), 0);
+}
+
+// A derived map on a cold cache (a metal mask, into glTF's channels) stands in as one white texel
+// until its cook lands, and the cook takes that texel's slot: nothing is composed for it at full size.
+// Every map waiting so shares the one texel's file
+TEST(FvHost, ADerivedMapOnAColdCacheWaitsForItsCookAsOneTexel)
+{
+  FakeCooker cooker;
+  HostRig    rig;
+  const fs::path root = fs::temp_directory_path() / "fv-host-metal-map";
+  fs::create_directories(root / "People");
+  Json duf = Json::parse(std::ifstream(fs::path(FV_TEST_DATA) / "daz-library/People/Test/Box Figure PBRSkin.duf"));
+  duf["scene"]["materials"][0]["extra"][0]["channels"] = Json::array(
+      {{{"channel", {{"id", "Diffuse Color"}, {"type", "color"}, {"current_value", {1, 1, 1}}, {"image_file", "/Runtime/Textures/Test/BoxSkin_D.png"}}}},
+       {{"channel", {{"id", "Metallic Weight"}, {"type", "float"}, {"current_value", 1}, {"image_file", "/Runtime/Textures/Test/BoxMakeup_Mask.png"}}}}});
+  std::ofstream(root / "People/Box Metal.duf") << duf.dump();
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"texServer", cooker.url()},
+                                         {"libraryRoots", {(fs::path(FV_TEST_DATA) / "daz-library").generic_string(), root.generic_string()}}})
+                  .value("ok", false));
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Box Metal.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  rs::RetainedScene& scene    = rig.renderer.hostScene();
+  const auto         count    = [](const Sampled& s, auto&& is) { return std::count_if(s.images.begin(), s.images.end(), is); };
+  const auto         flat     = [](const std::string& uri) { return uri.find("flat-white.png") != std::string::npos; };
+  const auto         composed = [](const std::string& uri) { return uri.find("fv-composed") != std::string::npos && uri.find("flat-") == std::string::npos; };
+  const Sampled      waiting  = sampled(scene);
+  EXPECT_EQ(count(waiting, flat), 1) << ::testing::PrintToString(waiting.images);
+  EXPECT_EQ(count(waiting, composed), 0);
+  EXPECT_TRUE(rig.renderer.texturesArriving);
+
+  cooker.open();
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while(rig.renderer.texturesArriving && std::chrono::steady_clock::now() < end)
+  {
+    rig.host->onUpdate();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_FALSE(rig.renderer.texturesArriving);
+  const Sampled landed = sampled(scene);
+  EXPECT_EQ(count(landed, flat), 0);
+  EXPECT_EQ(count(landed, [](const std::string& uri) { return uri.ends_with("-up.ktx2"); }), std::ptrdiff_t(landed.images.size()));
+  EXPECT_EQ(landed.turned, 0);
 }
 
 // Cooks for a figure that has left the scene keep no still waiting

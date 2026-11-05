@@ -588,7 +588,9 @@ std::optional<fv::build::TextureImage> sourceTexture(const fv::dson::Library& li
 // A texture without waiting for the cooker: the source image as it is, where that shows the right
 // thing. A normal map keeps its green (the material tells the renderer to flip it) and loses the
 // bump blended onto it. A roughness map (its grey into glTF's channels) and a height map (turned
-// into a normal map) are composed here: without them skin loses its sheen and its pores. A cutout
+// into a normal map) are composed here without a cooker or with Original textures; with the cooker
+// they stand in as one texel until their cooks land (a few seconds without skin's sheen and pores,
+// where a still waits). A cutout
 // alone changes the picture too much: it, makeup and an iris colour (and formats the renderer cannot
 // read) are cooked, unflipped, and waited for; without a cooker, or with Original textures (only
 // what the renderer cannot read is cooked then), they are composed here too (fv_textures.hpp).

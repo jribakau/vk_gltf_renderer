@@ -328,6 +328,65 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
   return {.image = fv::build::TextureImage{uriOfPath(res->body), "image/ktx2", flip}};
 }
 
+namespace {
+
+// The fallbacks composed here (Original textures, or no cooker) and the cooks' one-texel stand-ins, in
+// the temporary folder. The first time it is asked for in a run, the composed ones are trimmed to
+// kComposedCapBytes, the least recently used first (one reused is touched): each cold load used to
+// leave its derived maps here at full size, never read again once cooked.
+constexpr uint64_t kComposedCapBytes = 2ull << 30;
+
+const std::filesystem::path& composedFolder()
+{
+  static const std::filesystem::path dir = [] {
+    std::error_code       ec;
+    std::filesystem::path d = std::filesystem::temp_directory_path(ec) / "fv-composed";
+    std::filesystem::create_directories(d, ec);
+    if(const uint64_t removed = fv::textures::trimFolder(d, kComposedCapBytes, L"flat-"))
+      LOGI("[fv] composed textures: %.2f GB of the least used removed\n", double(removed) / 1e9);
+    return d;
+  }();
+  return dir;
+}
+
+// One texel as a PNG: white, which leaves the material's factors as they are, and a flat normal
+constexpr uint8_t kFlatWhitePng[] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+    0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xff, 0xff, 0x3f, 0x00, 0x05, 0xfe, 0x02, 0xfe, 0x33,
+    0x12, 0x95, 0x14, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
+constexpr uint8_t kFlatNormalPng[] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+    0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x68, 0x68, 0xf8, 0x0f, 0x00, 0x03, 0x83, 0x02, 0x00, 0x3e,
+    0x58, 0x28, 0x25, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
+
+// A derived map's stand-in until its cook lands (Fallback::eFlat). One texel, but a texture: the
+// material has the slot the cook goes into, as FigureFeed::retexture fills only a slot it has.
+std::optional<fv::build::TextureImage> flatTexture(bool normal, bool flip)
+{
+  const std::filesystem::path file = composedFolder() / (normal ? "flat-normal.png" : "flat-white.png");
+  std::error_code             ec;
+  if(!std::filesystem::exists(file, ec))
+  {
+    static std::mutex writing;
+    std::lock_guard   lock(writing);
+    const auto        tmp = file.string() + "." + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    {
+      std::ofstream out(std::filesystem::path(tmp), std::ios::binary);
+      out.write(reinterpret_cast<const char*>(normal ? kFlatNormalPng : kFlatWhitePng), std::streamsize(sizeof kFlatWhitePng));
+    }
+    // another run may have placed it meanwhile: either one will do
+    std::filesystem::rename(tmp, file, ec);
+    std::filesystem::remove(tmp, ec);
+  }
+  if(!std::filesystem::exists(file, ec))
+    return std::nullopt;
+  return fv::build::TextureImage{uriOfPath(utf8Of(file)), "image/png", flip};
+}
+
+}  // namespace
+
 void cookAll(const HostSettings&                                                                  s,
              std::vector<fv::build::TextureRequest>                                               requests,
              const std::function<void(const fv::build::TextureRequest&, fv::build::TextureImage)>& landed)
@@ -346,6 +405,7 @@ std::vector<std::optional<fv::build::TextureImage>> resolveTextures(const HostSe
                                                                     std::vector<fv::build::TextureRequest>&       uncooked)
 {
   const bool                                          cooker = !s.texServer.empty() && !s.rootId.empty();
+  composedFolder();  // trimmed on the first load of a run, a warm one too
   std::vector<std::optional<fv::build::TextureImage>> found(requests.size());
   std::vector<uint8_t>                                missed(requests.size(), 0);
   sideBySide(requests.size(), 8, [&](size_t i) {
@@ -397,11 +457,14 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
       *final = flip;
     return cookedTexture(s, req, flip, false).image;
   }
-  // composed into a PNG beside the others made this way (composeImage recolours the iris)
+  // a source that isn't there has no stand-in, as it would have nothing composed
+  if(route == Fallback::eFlat)
+    return lib.find(normRel(req.rel)) ? flatTexture(req.channels == "bn", flip) : std::nullopt;
+  // composed into a PNG beside the others made this way
   if(route == Fallback::eCompose)
   {
     std::error_code ec;
-    const auto      dir = std::filesystem::temp_directory_path(ec) / "fv-composed";
+    const auto&     dir = composedFolder();
     // named by the request and by where its sources are, their size and their time (FNV-1a, the
     // same from build to build): a texture edited in place, or the same relative path in another
     // library, composes again instead of showing the old picture
@@ -471,6 +534,8 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
         return derived ? std::nullopt : sourceTexture(lib, req);
       }
     }
+    else
+      std::filesystem::last_write_time(file, std::filesystem::file_time_type::clock::now(), ec);  // used: kept by the trim
     return fv::build::TextureImage{uriOfPath(utf8Of(file)), "image/png", false};
   }
   if(route == Fallback::eNone)
