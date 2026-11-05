@@ -159,6 +159,14 @@ TEST(Procedural, AnAmountOnSkinLowersToTheLayerWithItsTileAtItsSize)
   EXPECT_EQ(height.channels, "bn");
   EXPECT_FALSE(height.srgb);
   EXPECT_FLOAT_EQ(height.bumpHeight, fv::mat::kSweatRelief);
+  // the shader reads its mips' lengths (Toksvig), so it is cooked whole, not as BC5's X and Y; no
+  // other map of the surface asks for that, and the ask is a request of its own
+  EXPECT_TRUE(height.normalLength);
+  for(size_t i = 0; i < lowered.requests.size(); i++)
+    EXPECT_EQ(lowered.requests[i].normalLength, i == size_t(l.normalMap.index)) << lowered.requests[i].rel;
+  fv::mat::TextureRequest plainHeight = height;
+  plainHeight.normalLength            = false;
+  EXPECT_NE(fv::mat::requestKey(height), fv::mat::requestKey(plainHeight));
   const fv::mat::TextureRequest& cover = lowered.requests.at(size_t(l.coverMap.index));
   EXPECT_EQ(cover.rel, fv::mat::kSweatCoverMap);
   EXPECT_FALSE(cover.srgb);

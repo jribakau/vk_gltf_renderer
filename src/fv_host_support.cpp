@@ -257,6 +257,8 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
                     + "&flip=" + (flip ? "1" : "0");
   if(req.normal)
     url += "&nm=1";
+  if(req.normalLength)
+    url += "&nl=1";
   if(!req.channels.empty())
     url += "&ch=" + req.channels;
   // a source in a query value: <rootId>/<path>, percent-encoded

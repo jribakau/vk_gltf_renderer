@@ -836,6 +836,8 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       height.srgb       = false;
       height.channels   = "bn";
       height.bumpHeight = def->relief;
+      // its mips' lengths are the beads' roughness far off (Toksvig), which BC5 would drop
+      height.normalLength = true;
       l.normalMap = b.info(std::move(height), 1.f, tiling);
       l.coverMap  = b.plain(def->coverMap, false, std::nullopt, tiling);
     }

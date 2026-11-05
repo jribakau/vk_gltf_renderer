@@ -79,6 +79,9 @@ struct TextureRequest
   std::string rel;
   bool        srgb   = true;
   bool        normal = false;  // a normal map: compressed more carefully
+  // A normal map whose length the shader reads (the droplets' Toksvig: a mip's averaged normals are
+  // short where they vary). The cooker keeps it in BC7, where other normal maps cook to BC5's X and Y.
+  bool        normalLength = false;
   std::string alphaRel;        // a cutout map folded into alpha; empty: none
   bool        alphaFromAlpha = false;  // the cutout is that map's alpha channel, not its grey (green)
   // "ng": a normal map with green inverted (glTF's convention for meshes without tangents);
