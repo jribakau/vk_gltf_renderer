@@ -42,6 +42,7 @@
 
 #include <figure/physics/hair/strands.hpp>
 #include <figure/physics/cloth/coarse.hpp>
+#include <figure/physics/cloth/ride.hpp>
 #include <figure/math/xform.hpp>
 #include <figure/morph/morph_set.hpp>
 #include <figure/scene/graph.hpp>
@@ -166,10 +167,14 @@ private:
   bool                 apply(const Job& job, const std::vector<std::vector<float>>& positions);
   // A job's drapes from its positions: each one's cage deltas, in job.drapes' order. Any thread. `rests` and
   // `poses`, drape by drape, in place of the job's: what a live step's deltas are taken against and read
-  // back through, as they were when it began (the job's change as the next one does).
+  // back through, as they were when it began (the job's change as the next one does). `rides`: each drape
+  // bound where it lies to the body where the job left it (physics/cloth/ride.hpp), for Live to carry it
+  // between steps; with `hints`, the last rides, each vertex is found again on the face it had.
   static std::vector<std::vector<float>> deltasOf(const Job& job, const std::vector<std::vector<float>>& positions,
                                                   const std::vector<std::vector<float>>* rests = nullptr,
-                                                  const std::vector<SkinPose>*           poses = nullptr);
+                                                  const std::vector<SkinPose>*           poses = nullptr,
+                                                  std::vector<cloth::Ride>*              rides = nullptr,
+                                                  const std::vector<cloth::Ride>*        hints = nullptr);
   // Writes them, but not on an item taken off meanwhile. True when it wrote.
   bool writeDeltas(const Job& job, const std::vector<std::vector<float>>& deltas);
   // The bones of a job's skinned meshes as the figure has them now, per slot (empty: unskinned).
@@ -188,6 +193,17 @@ private:
   bool                           easeLive(std::chrono::steady_clock::time_point now);
   // Live: a mesh's rest cage as the simulation skins it, in its own space: a drape's without its drape.
   std::vector<float>             liveRest(int mesh, bool drape) const;
+  // Live: nothing shown any more (the simulation let go or made again): no ease, no ride.
+  void                           forgetShown();
+  // Live: the body's bones now, as its slot is skinned (empty: no body, or none skinned).
+  std::vector<Mat4>              liveBodyBones() const;
+  // Live: what each drape shows, the body at `bones`: `eased` (the deltas the ease gives, `a` of the way
+  // from what was shown as the last step landed to that step's), its riding vertices carried by their
+  // faces from as far along between those.
+  std::vector<std::vector<float>> rideLive(const std::vector<std::vector<float>>& eased, float a, const std::vector<Mat4>& bones) const;
+  // Live: the offsets on each ride's faces, the body at `bones`, of where `shown` (deltas) puts its
+  // riding vertices: where the ease sets out from.
+  void                           rideFrom(const std::vector<std::vector<float>>& shown, const std::vector<Mat4>& bones);
 
   SceneGraph&      m_scene;
   morph::MorphSet& m_morphs;
@@ -227,14 +243,22 @@ private:
   // the drapes are made from them. The next step begins while the last one's drapes are made, so a light
   // copy, whose drapes take as long as its step, steps every frame rather than every other. At most two are
   // in flight: one stepping, one making its drapes. A run of a job since made again lands and is dropped
+  // A run's drapes: each one's deltas, and where it rides the body (physics/cloth/ride.hpp)
+  struct LiveDrapes
+  {
+    std::vector<std::vector<float>> deltas;
+    std::vector<cloth::Ride>        rides;
+  };
   struct LiveRun
   {
     std::future<void>                                      stepped;
-    std::future<std::vector<std::vector<float>>>           drapes;
+    std::future<LiveDrapes>                                drapes;
     std::shared_ptr<Job>                                   job;
     // what its deltas are taken against: each drape's rest as the step began (the job's moves on with
     // the next step's), so the drapes are shifted by as much as the rest moved since
     std::shared_ptr<const std::vector<std::vector<float>>> rests;
+    // the body's bones it was simulated at, which its rides were bound at
+    std::vector<Mat4>                                      bodyBones;
     std::chrono::steady_clock::time_point                  began;
     // the settle that began live: written at once, and the drape no longer busy
     bool                                                   settle = false;
@@ -262,6 +286,15 @@ private:
   std::vector<std::vector<float>>                m_easeTo, m_easeFrom, m_shown;
   std::chrono::steady_clock::time_point          m_easeStart;
   float                                          m_easeFor = 0;
+  // live: what is shown near the body rides it until the next step lands (physics/cloth/ride.hpp). Each
+  // drape's ride from the last landed run, and the offsets on its faces of what was shown as that landed
+  // (where the ease sets out); the body's bones that run met, then, and as last written. The rides are
+  // shared with the next step's bind on the pool, which finds each vertex again on its face, and every
+  // kLiveRebind-th step looks afresh (m_liveBinds counts them)
+  std::shared_ptr<const std::vector<cloth::Ride>> m_rides;
+  std::vector<std::vector<float>>                m_rideFrom;
+  std::vector<Mat4>                              m_rideBones, m_rideLanded, m_rideWritten;
+  int                                            m_liveBinds = 0;
   std::set<int> m_draped;
   int           m_version = 0;
   // the coarse copies of colliders the last job made, by the shape each was made from (its rest cage,

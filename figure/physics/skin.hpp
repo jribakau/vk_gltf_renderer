@@ -108,5 +108,9 @@ std::vector<float> skinLocal(std::span<const float> rest, const CageSkin& skin, 
 // Cage deltas whose skinning approximates `simulated` (mesh-local, same space as skinLocal). A
 // vertex whose blended 3x3 is singular keeps a zero delta.
 std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<float>& simulated, const CageSkin& skin, const SkinPose& pose);
+// The same for some of the vertices alone: `simulated` and the deltas are xyz per vertex listed (Live's
+// drape where it rides the body, every frame the figure moves).
+std::vector<float> drapeDelta(std::span<const float> rest, std::span<const float> simulated, const CageSkin& skin, const SkinPose& pose,
+                              std::span<const uint32_t> vertices);
 
 }  // namespace fv::physics

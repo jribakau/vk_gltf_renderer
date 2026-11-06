@@ -22,6 +22,7 @@
 #include <figure/physics/cloth/island.hpp>
 #include <figure/physics/cloth/job.hpp>
 #include <figure/physics/cloth/report.hpp>
+#include <figure/physics/cloth/ride.hpp>
 #include <figure/physics/collide/tri_grid.hpp>
 #include <figure/physics/collide/sweep_grid.hpp>
 #include <figure/physics/skin.hpp>
@@ -601,6 +602,97 @@ TEST(ClothSurface, withoutTheDrawnSkinTheFourBlendLinearlyAsBefore)
     EXPECT_EQ(out[v * 3], blend[0] * px + blend[3] * py + blend[6] * pz + blend[9]);
     EXPECT_EQ(out[v * 3 + 1], blend[1] * px + blend[4] * py + blend[7] * pz + blend[10]);
     EXPECT_EQ(out[v * 3 + 2], blend[2] * px + blend[5] * py + blend[8] * pz + blend[11]);
+  }
+}
+
+// Live's drape between steps rides the body near it (physics/cloth/ride.hpp): a vertex 1 cm over a face
+// is carried with the face as it turns and moves, rigidly, and one 5.5 cm off rides half, its weight
+// fading from 3 cm to 8; one further off, or held to its skin, rides nothing
+TEST(ClothRide, aVertexNearTheBodyTurnsAndMovesWithItsFace)
+{
+  const double             pi   = std::acos(-1.0);
+  const std::vector<float> rest = {-5, 0, -5, 5, 0, -5, 5, 0, 5, -5, 0, 5};
+  const Surface            body = Surface::collider(rest, rest, {0, 3, 2, 0, 2, 1}, 0, 0.2f, 0.4f);
+  // 1 cm up, 5.5 cm up, 9 cm up, and 1 cm up but held
+  const std::vector<float>   drape = {1, 1, 2, -2, 5.5f, 0, 0, 9, 0, 2, 1, -1};
+  const std::vector<uint8_t> held  = {0, 0, 0, 1};
+  const physics::cloth::Ride ride  = physics::cloth::bindRide(body, rest, drape, held);
+  ASSERT_EQ(ride.vertices, (std::vector<uint32_t>{0, 1}));
+  EXPECT_NEAR(ride.weight[0], 1.f, 1e-6f);
+  EXPECT_NEAR(ride.weight[1], 0.5f, 1e-6f);
+  // the body a quarter turn about x and moved
+  const Mat4         T = compose(Vec3{3, 4, 5}, quatFromEuler(pi / 2, 0, 0, "XYZ"), Vec3{1, 1, 1});
+  std::vector<float> corners;
+  for(uint32_t c : ride.corners)
+  {
+    const Vec3 p = T.transformPoint({rest[c * 3], rest[c * 3 + 1], rest[c * 3 + 2]});
+    corners.insert(corners.end(), {float(p.x), float(p.y), float(p.z)});
+  }
+  const std::vector<float> at = physics::cloth::rideAt(ride, corners, ride.local);
+  std::vector<float>       moved;
+  for(size_t i = 0; i < ride.vertices.size(); i++)
+  {
+    const uint32_t v = ride.vertices[i];
+    const Vec3     p = T.transformPoint({drape[v * 3], drape[v * 3 + 1], drape[v * 3 + 2]});
+    moved.insert(moved.end(), {float(p.x), float(p.y), float(p.z)});
+    for(size_t c = 0; c < 3; c++)
+      EXPECT_NEAR(at[i * 3 + c], moved[i * 3 + c], 1e-4f) << v << " " << c;
+  }
+  // and what rideLocal makes of where they are there, rideAt puts back
+  const std::vector<float> again = physics::cloth::rideAt(ride, corners, physics::cloth::rideLocal(ride, corners, moved));
+  for(size_t i = 0; i < again.size(); i++)
+    EXPECT_NEAR(again[i], moved[i], 1e-4f) << i;
+}
+
+// Between full binds a step's drape is found again on the faces the last ride had: a fresh search was 12 ms
+// of a 15 ms bind on the Witch Dress. A vertex keeps its face, wherever on it it now lies nearest, one the
+// last ride didn't have isn't looked for, and one gone past the band rides nothing
+TEST(ClothRide, aHintFindsEachVertexAgainOnItsFaceAndLooksForNoOther)
+{
+  const std::vector<float>   rest = {-5, 0, -5, 5, 0, -5, 5, 0, 5, -5, 0, 5};
+  const Surface              body = Surface::collider(rest, rest, {0, 3, 2, 0, 2, 1}, 0, 0.2f, 0.4f);
+  const std::vector<float>   then = {1, 1, 2, -2, 2, 1, 0, 9, 0};
+  const physics::cloth::Ride last = physics::cloth::bindRide(body, rest, then, {});
+  ASSERT_EQ(last.vertices, (std::vector<uint32_t>{0, 1}));
+  // the first slid along, the second rose past the band, the third came down near the body
+  const std::vector<float>   now  = {1.5f, 2, 2, -2, 8.5f, 1, 0, 1, 0};
+  const physics::cloth::Ride ride = physics::cloth::bindRide(body, rest, now, {}, &last);
+  ASSERT_EQ(ride.vertices, (std::vector<uint32_t>{0}));
+  EXPECT_EQ(ride.face[0], last.face[0]);
+  EXPECT_NEAR(ride.weight[0], 1.f, 1e-6f);
+  // it rides from where it is now
+  std::vector<float> corners;
+  for(uint32_t c : ride.corners)
+    corners.insert(corners.end(), {rest[c * 3], rest[c * 3 + 1], rest[c * 3 + 2]});
+  const std::vector<float> at = physics::cloth::rideAt(ride, corners, ride.local);
+  for(size_t c = 0; c < 3; c++)
+    EXPECT_NEAR(at[c], now[c], 1e-5f) << c;
+  // a full bind finds the third
+  EXPECT_EQ(physics::cloth::bindRide(body, rest, now, {}).vertices, (std::vector<uint32_t>{0, 2}));
+}
+
+// The body's corners a ride needs, as the body's skin has them at a pose
+TEST(ClothRide, itsCornersAreWhereTheBodysSkinHasThem)
+{
+  const double             pi   = std::acos(-1.0);
+  const std::vector<float> rest = {-5, 0, -5, 5, 0, -5, 5, 0, 5, -5, 0, 5};
+  mesh::SkinInput          in;
+  in.start  = {0, 1, 2, 3, 4};
+  in.bone   = {0, 0, 0, 0};
+  in.weight = {1.f, 1.f, 1.f, 1.f};
+  Surface body = twoBoneCollider(rest, in, {Mat4{}}, Mat4{}, true);
+  body.tris    = {0, 3, 2, 0, 2, 1};
+  const physics::cloth::Ride ride = physics::cloth::bindRide(body, rest, {1, 1, 2}, {});
+  ASSERT_EQ(ride.vertices.size(), 1u);
+  const std::vector<Mat4>            bones = {compose(Vec3{0, 2, 0}, quatFromEuler(0, pi / 3, 0, "XYZ"), Vec3{1, 1, 1})};
+  const physics::cloth::SurfaceSkin skin(body, bones);
+  const std::vector<float>           corners = physics::cloth::rideCorners(ride, skin);
+  for(size_t c = 0; c < ride.corners.size(); c++)
+  {
+    const Vec3 p = bones[0].transformPoint({rest[ride.corners[c] * 3], rest[ride.corners[c] * 3 + 1], rest[ride.corners[c] * 3 + 2]});
+    EXPECT_NEAR(corners[c * 3], p.x, 1e-4);
+    EXPECT_NEAR(corners[c * 3 + 1], p.y, 1e-4);
+    EXPECT_NEAR(corners[c * 3 + 2], p.z, 1e-4);
   }
 }
 

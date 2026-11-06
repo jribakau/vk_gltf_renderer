@@ -745,6 +745,40 @@ int main(int argc, char** argv)
     Json                                dumps = Json::object();
     int                                 stepNo = 0;
     const auto                          caseStart = std::chrono::steady_clock::now();
+    // {"clip": rel, "time": s[, "ahead": s, "dt": s]}: a DAZ animation's pose at that time, set as the
+    // player sets it (the bones, then the dials); with "ahead", each channel carried on linearly from
+    // its value "dt" before, as a guess at where the pose will be that long after
+    std::map<std::string, fv::pose::PoseClip> clips;
+    const auto                                poseAtClip = [&](const Json& s) {
+      if(!loaded || !loaded->pose)
+        throw std::runtime_error("clip before a figure loads");
+      const std::string rel = s.at("clip").get<std::string>();
+      auto              it  = clips.find(rel);
+      if(it == clips.end())
+        it = clips.emplace(rel, loaded->loadPoseClip(store->load(rel)->json, rel)).first;
+      const fv::pose::PoseClip& clip  = it->second;
+      const float               t     = s.value("time", 0.f);
+      const float               ahead = s.value("ahead", 0.f);
+      const float               dt    = s.value("dt", 1.f / 60.f);
+      std::vector<fv::pose::ChannelValue>         bones;
+      std::vector<std::pair<std::string, double>> dials;
+      for(const fv::pose::PoseClip::Channel& ch : clip.channels)
+      {
+        double v = fv::pose::sample(ch, t);
+        if(ahead != 0.f && dt > 0.f)
+          v += (v - fv::pose::sample(ch, t - dt)) * double(ahead / dt);
+        if(ch.target.kind == fv::pose::PresetTarget::Kind::eBone)
+          bones.push_back({ch.target.bone, ch.target.channel, ch.target.axis, v});
+        else if(ch.target.kind == fv::pose::PresetTarget::Kind::eDial)
+          dials.emplace_back(ch.target.name, v);
+      }
+      if(!bones.empty())
+        loaded->pose->setMany(bones);
+      if(loaded->morphs && !dials.empty())
+        loaded->morphs->setMany(dials);
+      loaded->settle();
+      return clip.duration;
+    };
     for(const Json& step : c.at("steps"))
     {
       for(const std::string& line : fv::timing::takeSummary())
@@ -871,6 +905,11 @@ int main(int argc, char** argv)
         if(!loaded)
           throw std::runtime_error("fit before a figure loads");
         dumps[step["fit"].get<std::string>()] = {{"fit", fitReport(*loaded)}};
+      }
+      else if(step.contains("clip"))
+      {
+        const float duration = poseAtClip(step);
+        std::cerr << "clip " << step["clip"].get<std::string>() << " at " << step.value("time", 0.f) << " s of " << duration << "\n";
       }
       else if(step.contains("retarget"))
       {
@@ -1704,6 +1743,114 @@ int main(int argc, char** argv)
           std::cerr << "dforce " << label << " applied: " << applied.dump() << "\n";
           dump["applied"] = applied;
         }
+        // {"then": {"clip": ...} or a list of them}: the drape as Live shows it a moment on, before the
+        // next step lands: its deltas were taken at this pose and are drawn at that one, so each vertex
+        // is carried there by its own skin (rest + delta skinned anew), against the body there
+        const Json thens = !step.contains("then") ? Json::array() : step["then"].is_array() ? step["then"] : Json::array({step["then"]});
+        Json       thenReports = Json::array();
+        for(size_t k = 0; k < thens.size(); k++)
+        {
+          poseAtClip(thens[k]);
+          const auto later = d.prepared();
+          if(!later || later->bodies.size() != p->bodies.size())
+            throw std::runtime_error("the pose after the settle prepares another job");
+          const std::string tag  = fileSafe(label) + "_then" + std::to_string(k) + "_";
+          Json              then = Json::array();
+          for(size_t di = 0; di < p->drapes.size(); di++)
+          {
+            const auto [mesh, slot]                = p->drapes[di];
+            const fv::physics::cloth::Surface& was = p->bodies[size_t(slot)];
+            const fv::physics::cloth::Surface& now = later->bodies[size_t(slot)];
+            if(was.vertexCount() != now.vertexCount())
+              throw std::runtime_error("the drape's surface changed with the pose");
+            const fv::physics::cloth::SurfaceSkin from(was, was.bones), to(now, now.bones);
+            const std::vector<float>&         at = out[size_t(slot)];
+            std::vector<float>                shown(at);
+            for(size_t v = 0; v < was.vertexCount(); v++)
+            {
+              fv::Mat4 a, b;
+              if(!from.matrix(v, a) || !to.matrix(v, b))
+                continue;
+              const fv::Vec3 p3 = (b * fv::inverse(a)).transformPoint(fv::Vec3{at[v * 3], at[v * 3 + 1], at[v * 3 + 2]});
+              shown[v * 3]      = float(p3.x);
+              shown[v * 3 + 1]  = float(p3.y);
+              shown[v * 3 + 2]  = float(p3.z);
+            }
+            Json report = {{"mesh", scene.meshes[size_t(mesh)].name},
+                           {"insideDrawn", fv::physics::cloth::insideBody(later->bodies[0], later->bodies[0].posed, shown)}};
+            // Live's ride (physics/cloth/ride.hpp), as the app draws the drape between steps: what lies near
+            // the body carried with it from this pose to that one, the rest by its own skin. Not for a light
+            // copy, whose cloth rides on it (out[slot] is the copy)
+            if(!(di < p->light.size() && p->light[di]))
+            {
+              using Clock    = std::chrono::steady_clock;
+              const size_t n = was.vertexCount();
+              std::vector<uint8_t> held(n, 0);
+              for(size_t v = 0; v < n; v++)
+                held[v] = !(v < was.strength.size() && was.strength[v] > 1e-4f) || (was.visible.size() == n && !was.visible[v]);
+              const auto                       bindStart = Clock::now();
+              const fv::physics::cloth::Ride   ride      = fv::physics::cloth::bindRide(p->bodies[0], out[0], at, held);
+              const double                     bindMs    = std::chrono::duration<double, std::milli>(Clock::now() - bindStart).count();
+              // a frame's work, the best of five: the body's corners, where the faces carry the drape from
+              // the ease's two ends, and back through the drape's own skin as drawn there
+              const fv::physics::cloth::SurfaceSkin bodySkin(later->bodies[0], later->bodies[0].bones);
+              const fv::Mesh&                       sm     = scene.meshes[size_t(mesh)];
+              const fv::physics::CageSkin           cs     = fv::physics::cageSkin(sm.cageSkin);
+              const auto                            worlds = scene.worlds();
+              const fv::physics::SkinPose           pose   = fv::physics::currentSkin(scene, worlds, fv::physics::nodeOfMesh(scene), mesh);
+              const std::vector<float>              rest   = loaded->morphs->morphedCage(mesh);
+              const fv::Mat4                        back   = fv::inverse(was.toSpace);
+              std::vector<float>                    rode;
+              double                                frameMs = INFINITY;
+              for(int r = 0; r < 5; r++)
+              {
+                const auto               start   = Clock::now();
+                const std::vector<float> corners = fv::physics::cloth::rideCorners(ride, bodySkin);
+                rode                             = fv::physics::cloth::rideAt(ride, corners, ride.local);
+                const std::vector<float> from    = fv::physics::cloth::rideAt(ride, corners, ride.local);
+                std::vector<float>       local(rode.size());
+                for(size_t i = 0; i < ride.vertices.size(); i++)
+                {
+                  const fv::Vec3 q  = back.transformPoint(fv::Vec3{(rode[i * 3] + from[i * 3]) * 0.5, (rode[i * 3 + 1] + from[i * 3 + 1]) * 0.5, (rode[i * 3 + 2] + from[i * 3 + 2]) * 0.5});
+                  local[i * 3]      = float(q.x);
+                  local[i * 3 + 1]  = float(q.y);
+                  local[i * 3 + 2]  = float(q.z);
+                }
+                const std::vector<float> deltas = fv::physics::drapeDelta(rest, local, cs, pose, ride.vertices);
+                frameMs = std::min(frameMs, std::chrono::duration<double, std::milli>(Clock::now() - start).count());
+              }
+              std::vector<float> ridden(shown);
+              for(size_t i = 0; i < ride.vertices.size(); i++)
+              {
+                const size_t v = ride.vertices[i];
+                for(size_t c = 0; c < 3; c++)
+                  ridden[v * 3 + c] += (rode[i * 3 + c] - ridden[v * 3 + c]) * ride.weight[i];
+              }
+              // the next step's bind between full ones: each vertex found again on its face there
+              const auto                     rebindStart = Clock::now();
+              const fv::physics::cloth::Ride again       = fv::physics::cloth::bindRide(later->bodies[0], later->bodies[0].posed, ridden, held, &ride);
+              const double                   rebindMs    = std::chrono::duration<double, std::milli>(Clock::now() - rebindStart).count();
+              report["riding"] = {{"insideDrawn", fv::physics::cloth::insideBody(later->bodies[0], later->bodies[0].posed, ridden)},
+                                  {"vertices", ride.vertices.size()},
+                                  {"corners", ride.corners.size()},
+                                  {"bindMs", bindMs},
+                                  {"rebindMs", rebindMs},
+                                  {"rebound", again.vertices.size()},
+                                  {"frameMs", frameMs}};
+              if(objDir)
+                writeObj(*objDir / (tag + meshName(mesh) + "_ridden.obj"), ridden, was);
+            }
+            then.push_back(report);
+            if(objDir)
+              writeObj(*objDir / (tag + meshName(mesh) + ".obj"), shown, was);
+          }
+          if(objDir)
+            writeObj(*objDir / (tag + "body.obj"), later->bodies[0].posed, later->bodies[0]);
+          std::cerr << "dforce " << label << " then " << k << ": " << then.dump() << "\n";
+          thenReports.push_back(then);
+        }
+        if(!thens.empty())
+          dump["then"] = thenReports;
         dumps[label] = dump;
       }
       else if(step.contains("dump"))

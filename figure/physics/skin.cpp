@@ -369,6 +369,41 @@ std::vector<float> skinLocal(std::span<const float> rest, const CageSkin& skin, 
   return out;
 }
 
+namespace {
+
+// Vertex v's delta whose skin puts it at `at` (mesh-local), into `out`: false where its blended 3x3 is
+// singular (the delta stays 0).
+bool deltaOf(const SkinBlend& blend, size_t v, std::span<const float> rest, const float* at, float* out)
+{
+  std::array<double, 16> m;
+  const double           wsum = blend.vertex(v, m);
+  const double           x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
+  double                 sx, sy, sz;
+  std::array<double, 9>  m3{1, 0, 0, 0, 1, 0, 0, 0, 1};
+  if(wsum <= 0)
+  {
+    sx = x;
+    sy = y;
+    sz = z;
+  }
+  else
+  {
+    sx = m[0] * x + m[4] * y + m[8] * z + m[12];
+    sy = m[1] * x + m[5] * y + m[9] * z + m[13];
+    sz = m[2] * x + m[6] * y + m[10] * z + m[14];
+    m3 = {m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]};
+  }
+  std::array<double, 3> d;
+  if(!invertBlend({at[0] - sx, at[1] - sy, at[2] - sz}, m3, d))
+    return false;
+  out[0] = float(d[0]);
+  out[1] = float(d[1]);
+  out[2] = float(d[2]);
+  return true;
+}
+
+}  // namespace
+
 std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<float>& simulated, const CageSkin& skin, const SkinPose& pose)
 {
   const size_t       n   = rest.size() / 3;
@@ -378,33 +413,25 @@ std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<
   // each vertex on its own, on the pool: a light copy's whole dress (the Kai Dress's 42,687 vertices)
   // took 16.6 ms of a live step on one thread with the riding
   jobs::parallelFor(n, 2048, [&](size_t begin, size_t end) {
-    std::array<double, 16> m;
     for(size_t v = begin; v < end; v++)
-    {
-      const double          wsum = blend.vertex(v, m);
-      const double          x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
-      double                sx, sy, sz;
-      std::array<double, 9> m3{1, 0, 0, 0, 1, 0, 0, 0, 1};
-      if(wsum <= 0)
-      {
-        sx = x;
-        sy = y;
-        sz = z;
-      }
-      else
-      {
-        sx = m[0] * x + m[4] * y + m[8] * z + m[12];
-        sy = m[1] * x + m[5] * y + m[9] * z + m[13];
-        sz = m[2] * x + m[6] * y + m[10] * z + m[14];
-        m3 = {m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]};
-      }
-      std::array<double, 3> d;
-      if(!invertBlend({simulated[v * 3] - sx, simulated[v * 3 + 1] - sy, simulated[v * 3 + 2] - sz}, m3, d))
-        continue;
-      out[v * 3]     = float(d[0]);
-      out[v * 3 + 1] = float(d[1]);
-      out[v * 3 + 2] = float(d[2]);
-    }
+      deltaOf(blend, v, rest, &simulated[v * 3], &out[v * 3]);
+  });
+  return out;
+}
+
+std::vector<float> drapeDelta(std::span<const float> rest, std::span<const float> simulated, const CageSkin& skin, const SkinPose& pose,
+                              std::span<const uint32_t> vertices)
+{
+  const size_t       n = rest.size() / 3;
+  const auto         S = skinMatrices(pose);
+  const SkinBlend    blend(S, SkinView::of(skin));
+  std::vector<float> out(vertices.size() * 3, 0.f);
+  if(simulated.size() != vertices.size() * 3)
+    return out;
+  jobs::parallelFor(vertices.size(), 2048, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+      if(vertices[i] < n)
+        deltaOf(blend, vertices[i], rest, &simulated[i * 3], &out[i * 3]);
   });
   return out;
 }

@@ -2497,6 +2497,174 @@ TEST(Dforce, aLiveStepIsEasedInOverAsLongAsItTookNotAtOnce)
   EXPECT_NEAR(lifted(), 3.f, 1e-4f);
 }
 
+namespace {
+
+// A body on one bone and a veil 1 cm over it on another that never moves: the veil's own skin doesn't
+// follow the body, as a dress's weights, spread over both thighs and the hip, don't follow a thigh.
+struct TwoBoneVeil
+{
+  fv::SceneGraph scene;
+  int            rootNode = -1, bodyBone = -1, veilBone = -1;
+  TwoBoneVeil()
+  {
+    rootNode = scene.add(fv::Node{});
+    fv::Node boneNode;
+    boneNode.kind = fv::NodeKind::eBone;
+    bodyBone      = scene.add(boneNode, rootNode);
+    veilBone      = scene.add(boneNode, rootNode);
+    const auto skinned = [&](fv::Mesh m, int bone) {
+      const size_t n = m.geo->cagePositions.size() / 3;
+      m.bones        = {bone};
+      m.boneInverses = {fv::Mat4{}};
+      for(size_t v = 0; v <= n; v++)
+        m.cageSkin.start.push_back(int32_t(v));
+      m.cageSkin.bone.assign(n, 0);
+      m.cageSkin.weight.assign(n, 1.f);
+      return m;
+    };
+    scene.meshes.push_back(skinned(sceneMesh(grid(8, 0), false), bodyBone));
+    scene.meshes.push_back(skinned(sceneMesh(grid(4, 1), true), veilBone));
+    scene.materials.push_back({});
+    for(int i = 0; i < 2; i++)
+    {
+      fv::Node n;
+      n.kind = fv::NodeKind::eMesh;
+      n.mesh = i;
+      scene.add(n, rootNode);
+    }
+  }
+};
+
+// A live simulation that keeps the cloth as far over the body as it was made, wherever the body's target
+// takes it: each step's drape is right for the pose it met, so what shows between steps is how it rides.
+// A step waits to be let go, as SteppingSim's.
+class RidingSim final : public physics::cloth::Backend
+{
+public:
+  explicit RidingSim(std::vector<physics::cloth::Surface> meshes)
+      : m_meshes(std::move(meshes))
+      , m_bones(m_meshes.size())
+  {
+  }
+  void frame(float, float, float, float) override
+  {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while(!open.load() && !go.load() && std::chrono::steady_clock::now() < until)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    go = false;
+    steps++;
+  }
+  void setTarget(size_t slot, const std::vector<fv::Mat4>& bones) override
+  {
+    if(slot < m_bones.size())
+      m_bones[slot] = bones;
+  }
+  void  setGravity(const std::array<float, 3>&) override {}
+  void  settle() override {}
+  float lastMove() const override { return 1.f; }
+  bool  ownerThreadOnly() const override { return false; }
+  std::vector<std::vector<float>> positions() const override
+  {
+    // the body (slot 0) where its target puts it, and the cloth raised by as much
+    std::vector<std::vector<float>> out;
+    float                           lift = 0;
+    for(size_t k = 0; k < m_meshes.size(); k++)
+    {
+      const physics::cloth::Surface& m  = m_meshes[k];
+      std::vector<float>             at = m.posed;
+      if(k == 0 && !m_bones[k].empty())
+      {
+        physics::cloth::skin(m, m_bones[k], at.data());
+        lift = at[1] - m.posed[1];
+      }
+      out.push_back(std::move(at));
+    }
+    for(size_t k = 1; k < out.size(); k++)
+      if(m_meshes[k].kind != physics::cloth::Surface::Kind::eCollider)
+        for(size_t v = 0; v < out[k].size() / 3; v++)
+          out[k][v * 3 + 1] += lift;
+    return out;
+  }
+  std::atomic<bool> go{false}, open{false};
+  std::atomic<int>  steps{0};
+
+private:
+  std::vector<physics::cloth::Surface> m_meshes;
+  std::vector<std::vector<fv::Mat4>>   m_bones;
+};
+
+}  // namespace
+
+TEST(Dforce, aLiveDrapeNearTheBodyRidesItUntilTheNextStepLands)
+{
+  // A live step's drape is drawn for a few frames after the pose it was simulated at, and it was drawn
+  // by the garment's own skin: where that doesn't follow the body (a dress over a thigh swinging
+  // forward), the body came through it until the next step landed. In 10TEST's walk the Charming Witch
+  // Dress, settled and drawn 50 ms on, had 800 of its vertices inside the body, against 36 settled. Now
+  // what lies near the body rides it, from the pose its step met to the one shown, and from where it was
+  // shown when the step landed through the ease
+  TwoBoneVeil     v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  physics::Cloth  d(v.scene, morphs, 0, v.rootNode);
+  std::shared_ptr<RidingSim> sim;
+  d.makeGpuSim = [&](std::vector<physics::cloth::Surface> meshes, const physics::cloth::Options&) {
+    sim = std::make_shared<RidingSim>(std::move(meshes));
+    return sim;
+  };
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(physics::ClothMode::eLiveGpu);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  ASSERT_TRUE(sim);
+  struct Open
+  {
+    std::shared_ptr<RidingSim>& sim;
+    ~Open() { sim->open = true; }
+  } open{sim};
+  // the veil's bone stays where it is, so the veil is drawn where its cage is
+  float      body    = 0;
+  const auto overBody = [&] {
+    morphs.flush();
+    return lowestOf(v.scene.meshes[1].geo->position) - body;
+  };
+  ASSERT_NEAR(overBody(), 1.f, 1e-4f);
+  const auto frame = [&](float rise) {
+    body += rise;
+    v.scene.nodes[size_t(v.bodyBone)].position.y = body;
+    now += std::chrono::milliseconds(20);
+    d.pump();
+  };
+  const auto letGo = [&](int step) {
+    sim->go = true;
+    for(int i = 0; i < 5000 && sim->steps.load() < step; i++)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    ASSERT_EQ(sim->steps.load(), step);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  };
+
+  // the body rises half a centimetre a frame, while the step that set out for the first of those is held
+  for(int i = 0; i < 4; i++)
+  {
+    frame(0.5f);
+    EXPECT_NEAR(overBody(), 1.f, 1e-3f) << "the body came through the veil before the next step landed, frame " << i;
+  }
+  // that step lands: simulated with the body half a centimetre up, carried with it to where it is now, as
+  // the next one sets out from here
+  letGo(1);
+  for(int i = 0; i < 6; i++)
+  {
+    frame(0.f);
+    EXPECT_NEAR(overBody(), 1.f, 1e-3f) << "after the step landed, frame " << i;
+  }
+  // the next, from the body as it is: the veil where the step put it
+  letGo(2);
+  for(int i = 0; i < 6; i++)
+  {
+    frame(0.f);
+    EXPECT_NEAR(overBody(), 1.f, 1e-3f) << "after the second step landed, frame " << i;
+  }
+}
+
 TEST(Dforce, aLiveStepBeginsWhileTheLastOnesDrapesAreMade)
 {
   // A light copy's drapes are made from it on the pool in about as long as its step takes on the GPU

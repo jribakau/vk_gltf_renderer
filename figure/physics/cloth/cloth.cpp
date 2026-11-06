@@ -34,6 +34,9 @@ constexpr float kLiveMinStep = 1.f / 60.f, kLiveMaxStep = 1.f / 30.f;
 // A landed step's drape is eased in over as long as the step took, but no longer than this: a step
 // that came late (a rebuild, a slow frame) would leave the cloth that far behind
 constexpr float kLiveEaseMost = 0.1f;
+// Live: a step's drapes are bound to the body afresh every this many steps (about four times a second
+// walking), and between, each vertex is found again on the face it had (physics/cloth/ride.hpp)
+constexpr int kLiveRebind = 8;
 // How far gravity must turn to matter, cm/s^2 on any axis: about a twentieth of a degree.
 constexpr float kGravityChange = 1.f;
 // A collider much finer than the cloth meets it as a coarse copy (physics/cloth/coarse.hpp), with
@@ -319,8 +322,7 @@ void Cloth::cancel()
   m_live.reset();
   m_liveJob.reset();
   m_liveSettling = false;
-  m_easeFor      = 0;
-  m_shown.clear();
+  forgetShown();
 }
 
 void Cloth::setEnabled(bool on)
@@ -905,17 +907,18 @@ bool Cloth::pumpLive()
   }
   while(!m_liveRuns.empty() && m_liveRuns.front().drapes.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
   {
-    LiveRun                         run = std::move(m_liveRuns.front());
-    std::vector<std::vector<float>> deltas;
+    LiveRun    run = std::move(m_liveRuns.front());
+    LiveDrapes landed;
     m_liveRuns.pop_front();
     try
     {
-      deltas = run.drapes.get();
+      landed = run.drapes.get();
     }
     catch(const std::exception&)
     {
-      deltas.clear();
+      landed = {};
     }
+    std::vector<std::vector<float>>& deltas = landed.deltas;
     // one of a simulation since made again, or let go: dropped
     if(!m_liveJob || run.job != m_liveJob)
       continue;
@@ -936,22 +939,35 @@ bool Cloth::pumpLive()
         for(size_t i = 0; i < now.size(); i++)
           deltas[k][i] += then[i] - now[i];
     }
+    // what lies near the body rides it from here until the next lands, from the pose this one met
+    m_rides     = std::make_shared<const std::vector<cloth::Ride>>(std::move(landed.rides));
+    m_rideBones = run.bodyBones;
     if(run.settle || m_shown.size() != deltas.size())
     {
-      // the settle that began live, at once, as a settle's drape is
+      // the settle that began live, at once, as a settle's drape is (and as it was simulated: the next
+      // frame carries what rides from the pose it met to the one shown)
       timing::Accum t("dforce: live, the drape written");
-      wrote     = writeDeltas(*m_liveJob, deltas) || wrote;
-      m_shown   = std::move(deltas);
-      m_easeFor = 0;
+      wrote        = writeDeltas(*m_liveJob, deltas) || wrote;
+      m_easeFrom   = deltas;
+      m_easeTo     = deltas;
+      m_shown      = std::move(deltas);
+      m_easeFor    = 0;
+      m_rideFrom.clear();
+      m_rideLanded = m_rideWritten = run.bodyBones;
     }
     else
     {
       // eased in from what is shown, over as long as since the last landed (or since it began, if it came
-      // after): the next one lands about as long after
+      // after): the next one lands about as long after. Where it rides, it sets out from where it is shown
       m_easeFrom  = m_shown;
       m_easeTo    = std::move(deltas);
       m_easeStart = frameAt;
       m_easeFor   = std::clamp(std::chrono::duration<float>(frameAt - std::max(run.began, m_liveLanded)).count(), kLiveMinStep, kLiveEaseMost);
+      if(!m_rides->empty())
+      {
+        m_rideLanded = liveBodyBones();
+        rideFrom(m_easeFrom, m_rideLanded);
+      }
     }
     m_liveLanded = frameAt;
   }
@@ -969,8 +985,7 @@ bool Cloth::pumpLive()
     m_scheduled = false;
     m_live.reset();
     m_liveJob.reset();
-    m_easeFor = 0;
-    m_shown.clear();
+    forgetShown();
     // the new job reads every shape as it is now
     m_liveReshaped.clear();
     m_liveRestMoved = false;
@@ -1102,10 +1117,18 @@ void Cloth::launchLive(std::shared_ptr<cloth::Backend> sim, std::function<void(c
     rests->push_back(d.rest);
     poses->push_back(d.pose);
   }
-  run.rests    = rests;
+  run.rests = rests;
+  if(m_liveJob->bodySlot < m_liveBones.size())
+    run.bodyBones = m_liveBones[m_liveJob->bodySlot];
+  // where its drapes ride the body: each vertex found again on the face it had, but afresh every
+  // kLiveRebind-th step, the settle's, and when nothing rides yet
+  std::shared_ptr<const std::vector<cloth::Ride>> hints;
+  if(!settle && m_rides && m_rides->size() == m_liveJob->drapes.size() && m_liveBinds % kLiveRebind != 0)
+    hints = m_rides;
+  m_liveBinds++;
   auto stepped = std::make_shared<std::promise<void>>();
   run.stepped  = stepped->get_future();
-  run.drapes   = jobs::pool().submit([sim = std::move(sim), advance = std::move(advance), stepped, job = m_liveJob, rests, poses, hook = beforeLiveDrapes] {
+  run.drapes   = jobs::pool().submit([sim = std::move(sim), advance = std::move(advance), stepped, job = m_liveJob, rests, poses, hints, hook = beforeLiveDrapes] {
     std::vector<std::vector<float>> positions;
     try
     {
@@ -1121,31 +1144,41 @@ void Cloth::launchLive(std::shared_ptr<cloth::Backend> sim, std::function<void(c
     stepped->set_value();
     if(hook)
       hook();
+    LiveDrapes out;
     if(positions.empty())
-      return std::vector<std::vector<float>>{};
-    return deltasOf(*job, positions, rests.get(), poses.get());
+      return out;
+    out.deltas = deltasOf(*job, positions, rests.get(), poses.get(), &out.rides, hints.get());
+    return out;
   });
   m_liveRuns.push_back(std::move(run));
 }
 
 bool Cloth::easeLive(std::chrono::steady_clock::time_point now)
 {
-  if(m_easeFor <= 0)
+  if(m_easeFor <= 0 && (!m_rides || m_rides->empty()))
     return false;
   if(!m_liveJob || m_liveGen != m_gen || !m_enabled)
   {
     m_easeFor = 0;
     return false;
   }
-  const float a = std::clamp(std::chrono::duration<float>(now - m_easeStart).count() / m_easeFor, 0.f, 1.f);
-  if(a <= 0)
+  const float a      = m_easeFor > 0 ? std::clamp(std::chrono::duration<float>(now - m_easeStart).count() / m_easeFor, 0.f, 1.f) : 1.f;
+  const bool  easing = m_easeFor > 0 && a > 0;
+  // The body as it is now. What rides it is carried from the pose its step met, and from where it was
+  // shown as that step landed, to this one; when the body is where both were, it is where the ease has
+  // it. Nothing to write when there is no ease and the body is as it was last written
+  std::vector<Mat4> bones;
+  if(m_rides && !m_rides->empty())
+    bones = liveBodyBones();
+  const bool moved = !bones.empty() && !samePose(bones, m_rideWritten);
+  if(!easing && !moved)
     return false;
-  m_shown.resize(m_easeTo.size());
+  std::vector<std::vector<float>> eased(m_easeTo.size());
   for(size_t k = 0; k < m_easeTo.size(); k++)
   {
     const std::vector<float>& to   = m_easeTo[k];
     const std::vector<float>& from = k < m_easeFrom.size() ? m_easeFrom[k] : to;
-    std::vector<float>&       at   = m_shown[k];
+    std::vector<float>&       at   = eased[k];
     if(from.size() != to.size() || a >= 1)
     {
       at = to;
@@ -1155,10 +1188,119 @@ bool Cloth::easeLive(std::chrono::steady_clock::time_point now)
     for(size_t i = 0; i < to.size(); i++)
       at[i] = from[i] + (to[i] - from[i]) * a;
   }
+  if(!bones.empty() && !(samePose(bones, m_rideBones) && samePose(bones, m_rideLanded)))
+    eased = rideLive(eased, a, bones);
+  m_shown = std::move(eased);
+  if(!bones.empty())
+    m_rideWritten = std::move(bones);
   if(a >= 1)
     m_easeFor = 0;
   timing::Accum t("dforce: live, the drape eased");
   return writeDeltas(*m_liveJob, m_shown);
+}
+
+void Cloth::forgetShown()
+{
+  m_easeFor = 0;
+  m_easeTo.clear();
+  m_easeFrom.clear();
+  m_shown.clear();
+  m_rides.reset();
+  m_liveBinds = 0;
+  m_rideFrom.clear();
+  m_rideBones.clear();
+  m_rideLanded.clear();
+  m_rideWritten.clear();
+}
+
+std::vector<Mat4> Cloth::liveBodyBones() const
+{
+  if(!m_liveJob || m_liveJob->bodySlot >= m_liveJob->slotMesh.size())
+    return {};
+  const int mesh = m_liveJob->slotMesh[m_liveJob->bodySlot];
+  if(mesh < 0 || size_t(mesh) >= m_scene.meshes.size() || !m_scene.meshes[size_t(mesh)].skinned())
+    return {};
+  // as currentBones has a slot's
+  return skinMatrices(currentSkin(m_scene, m_scene.worlds(), nodeOfMesh(m_scene), mesh));
+}
+
+std::vector<std::vector<float>> Cloth::rideLive(const std::vector<std::vector<float>>& eased, float a, const std::vector<Mat4>& bones) const
+{
+  std::vector<std::vector<float>> out = eased;
+  const Job&                      job = *m_liveJob;
+  if(job.bodySlot >= job.bodies.size())
+    return out;
+  timing::Accum            t("dforce: live, the drape rode the body");
+  const cloth::SurfaceSkin body(job.bodies[job.bodySlot], bones);
+  const auto               worlds = m_scene.worlds();
+  const auto               nodeOf = nodeOfMesh(m_scene);
+  for(size_t k = 0; m_rides && k < job.drapes.size() && k < m_rides->size() && k < out.size(); k++)
+  {
+    const cloth::Ride& ride = (*m_rides)[k];
+    const Job::Drape&  d    = job.drapes[k];
+    if(ride.empty() || d.mesh < 0 || out[k].size() != d.rest.size())
+      continue;
+    // where its faces carry it now, as far from where it was shown as the step landed to where the step
+    // has it as the ease is
+    const std::vector<float> corners = cloth::rideCorners(ride, body);
+    std::vector<float>       at      = cloth::rideAt(ride, corners, ride.local);
+    if(a < 1 && k < m_rideFrom.size() && m_rideFrom[k].size() == at.size())
+    {
+      const std::vector<float> from = cloth::rideAt(ride, corners, m_rideFrom[k]);
+      for(size_t i = 0; i < at.size(); i++)
+        at[i] = from[i] + (at[i] - from[i]) * a;
+    }
+    // back through its skin as it is drawn now, and as much as each rides
+    for(size_t i = 0; i < ride.vertices.size(); i++)
+    {
+      const Vec3 p  = d.back.transformPoint({at[i * 3], at[i * 3 + 1], at[i * 3 + 2]});
+      at[i * 3]     = float(p.x);
+      at[i * 3 + 1] = float(p.y);
+      at[i * 3 + 2] = float(p.z);
+    }
+    const std::vector<float> rode = drapeDelta(d.rest, at, d.skin, currentSkin(m_scene, worlds, nodeOf, d.mesh), ride.vertices);
+    std::vector<float>&      delta = out[k];
+    for(size_t i = 0; i < ride.vertices.size(); i++)
+    {
+      const size_t v = ride.vertices[i];
+      const float  w = ride.weight[i];
+      for(size_t c = 0; c < 3; c++)
+        delta[v * 3 + c] += (rode[i * 3 + c] - delta[v * 3 + c]) * w;
+    }
+  }
+  return out;
+}
+
+void Cloth::rideFrom(const std::vector<std::vector<float>>& shown, const std::vector<Mat4>& bones)
+{
+  m_rideFrom.assign(m_rides ? m_rides->size() : 0, {});
+  const Job& job = *m_liveJob;
+  if(bones.empty() || job.bodySlot >= job.bodies.size())
+    return;
+  const cloth::SurfaceSkin body(job.bodies[job.bodySlot], bones);
+  const auto               worlds = m_scene.worlds();
+  const auto               nodeOf = nodeOfMesh(m_scene);
+  for(size_t k = 0; m_rides && k < job.drapes.size() && k < m_rides->size(); k++)
+  {
+    const cloth::Ride& ride = (*m_rides)[k];
+    const Job::Drape&  d    = job.drapes[k];
+    if(ride.empty() || d.mesh < 0 || k >= shown.size() || shown[k].size() != d.rest.size())
+      continue;
+    // where it is drawn now: its rest with what is shown, through its skin as drawn now, in the job's space
+    std::vector<float> cage = d.rest;
+    for(size_t i = 0; i < cage.size(); i++)
+      cage[i] += shown[k][i];
+    std::vector<float> at = skinLocal(cage, d.skin, currentSkin(m_scene, worlds, nodeOf, d.mesh), ride.vertices);
+    const Mat4         to = inverse(d.back);
+    for(size_t i = 0; i < ride.vertices.size(); i++)
+    {
+      const Vec3 p  = to.transformPoint({at[i * 3], at[i * 3 + 1], at[i * 3 + 2]});
+      at[i * 3]     = float(p.x);
+      at[i * 3 + 1] = float(p.y);
+      at[i * 3 + 2] = float(p.z);
+    }
+    m_rideFrom[k] = cloth::rideLocal(ride, cloth::rideCorners(ride, body), at);
+  }
 }
 
 std::vector<float> Cloth::liveRest(int mesh, bool drape) const
@@ -1213,10 +1355,22 @@ bool Cloth::writeDrape(int mesh, const std::vector<float>& delta)
 }
 
 std::vector<std::vector<float>> Cloth::deltasOf(const Job& job, const std::vector<std::vector<float>>& positions,
-                                                 const std::vector<std::vector<float>>* rests, const std::vector<SkinPose>* poses)
+                                                 const std::vector<std::vector<float>>* rests, const std::vector<SkinPose>* poses,
+                                                 std::vector<cloth::Ride>* rides, const std::vector<cloth::Ride>* hints)
 {
   timing::Accum                   t("dforce: the drapes' deltas");
   std::vector<std::vector<float>> out(job.drapes.size());
+  if(rides)
+    rides->assign(job.drapes.size(), {});
+  const bool bodied = job.bodySlot < positions.size() && job.bodySlot < job.bodies.size();
+  // where a drape lies, on the body where the job left it
+  const auto bind = [&](size_t k, const std::vector<float>& at, const std::vector<uint8_t>& held) {
+    if(!rides || !bodied)
+      return;
+    const cloth::Ride* hint = hints && k < hints->size() ? &(*hints)[k] : nullptr;
+    timing::Accum      bound(hint ? "dforce: a live drape found again on the body it rides" : "dforce: a live drape bound to the body it rides");
+    (*rides)[k] = cloth::bindRide(job.bodies[job.bodySlot], positions[job.bodySlot], at, held, hint);
+  };
   for(size_t k = 0; k < job.drapes.size(); k++)
   {
     const Job::Drape&         d    = job.drapes[k];
@@ -1227,6 +1381,16 @@ std::vector<std::vector<float>> Cloth::deltasOf(const Job& job, const std::vecto
     if(!d.light)
     {
       out[k] = drapeDelta(rest, transformPoints(d.back, positions[d.slot]), d.skin, pose);
+      if(rides && d.slot < job.bodies.size())
+      {
+        // held to its skin: no strength, or left out of the simulation (as the model has it)
+        const cloth::Surface& s = job.bodies[d.slot];
+        const size_t          n = s.vertexCount();
+        std::vector<uint8_t>  held(n, 0);
+        for(size_t v = 0; v < n; v++)
+          held[v] = !(v < s.strength.size() && s.strength[v] > 1e-4f) || (s.visible.size() == n && !s.visible[v]);
+        bind(k, positions[d.slot], held);
+      }
       continue;
     }
     // a light copy's cloth rides on it, out of the body where the copy's faces cross a curve of it, and
@@ -1249,6 +1413,7 @@ std::vector<std::vector<float>> Cloth::deltasOf(const Job& job, const std::vecto
     for(size_t v = 0; v < held.size() && v * 3 + 2 < out[k].size(); v++)
       if(held[v])
         out[k][v * 3] = out[k][v * 3 + 1] = out[k][v * 3 + 2] = 0.f;
+    bind(k, at, held);
   }
   return out;
 }
