@@ -1185,12 +1185,27 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
   // ---- meshes, one per geometry of each node, in file order
   std::unordered_map<std::string, int> materialCache;
   int                                  built = 0;
+  // Copies of a prop the scene sets alike draw one mesh, built, stored and traced once (a club's 22
+  // ceiling lights): a plain node's geometry, under its UV set, level and materials, takes the mesh an
+  // earlier node made of it. Not a figure's, a wear's, a skinned or simulated one, a strand hair, a
+  // shell or a shell's source, nor one a scene dial sits on, whose shape is its own. A Surface edit
+  // reaches every copy as it did, since copies alike already shared their materials; an item taken off
+  // lets go of the mesh only once no shown node draws it (liveMeshes).
+  std::unordered_set<std::string> dialed;  // the nodes and geometry instances a scene dial sits on
+  for(const SceneDial& d : out.morphs.dials)
+    dialed.insert(d.owner);
+  std::unordered_set<std::string> shellSources;
+  for(const MeshJob& job : jobs)
+    if(job.shell)
+      shellSources.insert(job.shell->source);
+  std::unordered_map<std::string, int> sharedMesh;  // what a copy is alike in -> the mesh
   for(const MeshJob& job : jobs)
   {
     std::vector<int>  made;
     std::vector<Mesh>    pending;
     std::vector<MeshRef> pendingRefs;
     std::vector<ItemPart> pendingParts;
+    std::vector<std::string> pendingShare;  // empty for a mesh of its own
     try
     {
       const Json* geos = get(job.node, "geometries");
@@ -1435,6 +1450,22 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           }
           pendingParts.push_back(std::move(part));
         }
+        {
+          const std::string nodeId = getString(job.node, "id");
+          const ItemPart&   part   = pendingParts.back();
+          // a scene's prop hanging from its figure is an item too (the club's lights on its walls): one
+          // with nothing of its own to fit may share, a wear's parts never do
+          const bool plainItem = job.item < 0 || (!options.attach && !part.graft && !part.rigidity && !part.smoothing);
+          std::string share;
+          if(!job.shell && plainItem && job.rig < 0 && !meshOut.skinned() && !meshOut.dforce && !meshOut.geo->ribbon
+             && !dialed.count(nodeId) && !dialed.count(gid) && !shellSources.count(nodeId))
+          {
+            share = geometryKey(*gres) + "|" + uvUri + "|" + std::to_string(level);
+            for(int mi : meshOut.materials)
+              share += "|" + std::to_string(mi);
+          }
+          pendingShare.push_back(std::move(share));
+        }
         pending.push_back(std::move(meshOut));
       }
       // a node whose build fails adds none of its meshes
@@ -1446,7 +1477,17 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
         meshNode.kind = NodeKind::eMesh;
         // the node's own mesh only: its children (a strand hair conforming to a hidden growth cap) stay
         meshNode.visible = !hiddenNode(job.node);
+        if(!pendingShare[pi].empty())
+          if(auto had = sharedMesh.find(pendingShare[pi]); had != sharedMesh.end())
+          {
+            // a copy: the earlier node's mesh, which the morph context and the item tables already have
+            meshNode.mesh = had->second;
+            made.push_back(scene.add(std::move(meshNode)));
+            continue;
+          }
         meshNode.mesh    = int(scene.meshes.size());
+        if(!pendingShare[pi].empty())
+          sharedMesh.emplace(pendingShare[pi], meshNode.mesh);
         pendingRefs[pi].mesh = meshNode.mesh;
         pendingParts[pi].mesh = meshNode.mesh;
         if(job.item >= 0)

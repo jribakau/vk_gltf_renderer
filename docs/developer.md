@@ -617,6 +617,18 @@ inflated to look, so other maps cost nothing; the chain the planner reads (`read
 leaving it nothing to lower or raise, and a light's mean reads the block (`imageMeanLuminance`). The cache
 is read as it is: nothing recooks. Count a cache with `ImageLoader.DISABLED_CountConstantMapsInACache`.
 
+Copies of a prop the scene sets alike draw one `fv::Mesh`, as DAZ Studio instances do, so the feed makes one
+record and the residency one BLAS for all of them, each copy a TLAS row of its own (`loadDson`'s `sharedMesh`). A
+copy is alike in its geometry, UV set, level and materials (the indices `materialKey` already shared). A figure's,
+a wear's, a skinned or simulated mesh, a strand hair, a shell or its source, and a node a scene dial sits on keep
+their own. A prop on the scene's figure is an item of it (the night club is a figure, its lights hang from its
+walls, which are bones), and shares when its part has no graft, rigidity or smoothing. Such an item lists the
+shared mesh, and taking it off frees the mesh only once no shown node draws it (`liveMeshes`). On the night
+club, 103 of 158 mesh nodes are copies, 2.18M of the 3.52M triangles drawn; the 14 meshes still repeating a
+geometry differ (eight artworks with eight pictures). Count a scene with `SceneLoad.DISABLED_CountSharedMeshesInAScene`.
+Code that places a mesh by its node must take the node: `physics::nodeOfMesh` gives only the first, so a body
+meets each copy through `posedNodeCages`.
+
 A commit either finishes or takes off what it merged (`commitWear`'s `TakeOff`), so a failed allocation
 anywhere in it leaves the figure whole; a test fails each allocation of a wear in turn. Workers report what
 they let escape (`FvWorkers::onError`, `sideBySide`), and a figure's part of the frame reports it and goes on.

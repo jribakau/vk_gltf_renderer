@@ -119,6 +119,10 @@ PartEdges partEdges(std::span<const float> positions, std::span<const int32_t> p
 // `without` is a hidden channel left out: a person's own dent, when it is met by another body.
 std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root,
                                            const std::string& without = {});
+// The same for mesh nodes, each where it stands: a mesh several nodes draw (copies of a prop, DAZ
+// instances) once for each of them.
+std::vector<std::vector<float>> posedNodeCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> nodes, int root,
+                                               const std::string& without = {});
 
 // A body's share of its overlap with another person's: its softness against theirs, half each when
 // both are 0, all of it when the other doesn't dent (off, or null).

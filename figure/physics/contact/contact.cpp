@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
+#include <utility>
 
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
@@ -556,28 +558,59 @@ PartEdges partEdges(std::span<const float> positions, std::span<const int32_t> p
   return out;
 }
 
-std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root,
-                                           const std::string& without)
+namespace {
+
+// Each (mesh, node) asked: the mesh's cage morphed and posed, made once however many nodes draw it,
+// placed where the node stands (-1: at the root).
+std::vector<std::vector<float>> posedAt(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const std::pair<int, int>> asked,
+                                        int root, const std::string& without)
 {
-  std::vector<std::vector<float>> out(meshes.size());
+  std::vector<std::vector<float>> out(asked.size());
   const auto worlds    = scene.worlds();
   const auto nodeOf    = physics::nodeOfMesh(scene);
   const Mat4 rootWorld = root >= 0 && size_t(root) < worlds.size() ? worlds[size_t(root)] : Mat4{};
-  for(size_t k = 0; k < meshes.size(); k++)
+  std::unordered_map<int, std::vector<float>> posedOf;
+  for(size_t k = 0; k < asked.size(); k++)
   {
-    const int mesh = meshes[k];
+    const auto [mesh, node] = asked[k];
     if(mesh < 0 || size_t(mesh) >= scene.meshes.size())
       continue;
     const Mesh& m = scene.meshes[size_t(mesh)];
     if(!m.geo || m.geo->cagePositions.empty())
       continue;
-    std::vector<float> posed = cageWithout(morphs, mesh, without);
-    if(m.skinned() && m.cageSkin.start.size() == posed.size() / 3 + 1)
-      posed = physics::skinLocal(posed, physics::cageSkin(m.cageSkin), physics::currentSkin(scene, worlds, nodeOf, mesh));
-    const int node = nodeOf[size_t(mesh)];
-    out[k]         = physics::transformPoints(inverse(rootWorld) * (node >= 0 ? worlds[size_t(node)] : Mat4{}), posed);
+    auto at = posedOf.find(mesh);
+    if(at == posedOf.end())
+    {
+      std::vector<float> posed = cageWithout(morphs, mesh, without);
+      if(m.skinned() && m.cageSkin.start.size() == posed.size() / 3 + 1)
+        posed = physics::skinLocal(posed, physics::cageSkin(m.cageSkin), physics::currentSkin(scene, worlds, nodeOf, mesh));
+      at = posedOf.emplace(mesh, std::move(posed)).first;
+    }
+    out[k] = physics::transformPoints(inverse(rootWorld) * (node >= 0 ? worlds[size_t(node)] : Mat4{}), at->second);
   }
   return out;
+}
+
+}  // namespace
+
+std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> meshes, int root,
+                                           const std::string& without)
+{
+  // each where its first node stands
+  const auto                       nodeOf = physics::nodeOfMesh(scene);
+  std::vector<std::pair<int, int>> asked;
+  for(int mesh : meshes)
+    asked.emplace_back(mesh, mesh >= 0 && size_t(mesh) < nodeOf.size() ? nodeOf[size_t(mesh)] : -1);
+  return posedAt(scene, morphs, asked, root, without);
+}
+
+std::vector<std::vector<float>> posedNodeCages(const SceneGraph& scene, const morph::MorphSet& morphs, std::span<const int> nodes, int root,
+                                               const std::string& without)
+{
+  std::vector<std::pair<int, int>> asked;
+  for(int node : nodes)
+    asked.emplace_back(node >= 0 && size_t(node) < scene.nodes.size() ? scene.nodes[size_t(node)].mesh : -1, node);
+  return posedAt(scene, morphs, asked, root, without);
 }
 
 // What a pass needs and where its result goes, taken on the owning thread.

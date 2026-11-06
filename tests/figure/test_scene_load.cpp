@@ -8,6 +8,7 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +17,8 @@
 #include <figure/dson/store.hpp>
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/gltf/gltf_check.hpp>
+#include <figure/morph/morph_set.hpp>
+#include <figure/physics/contact/contact.hpp>
 
 namespace {
 
@@ -83,7 +86,17 @@ struct Instance
   std::string parent;
 };
 
-void writeScene(const fs::path& root, const std::vector<Json>& props, const std::vector<Instance>& instances)
+// Another scene node of a prop writeProp wrote: `id`, with its geometry instance `gid`.
+Json propCopy(const std::string& name, const std::string& id, const std::string& gid, double x, double y, double z)
+{
+  Json n     = propNode(name, gid, x, y, z);
+  n["id"]    = id;
+  n["label"] = id;
+  return n;
+}
+
+// `more` goes into the scene beside its nodes: its materials, its modifiers.
+void writeScene(const fs::path& root, const std::vector<Json>& props, const std::vector<Instance>& instances, const Json& more = Json::object())
 {
   Json nodes = Json::array(), library = Json::array();
   for(const Json& p : props)
@@ -101,8 +114,11 @@ void writeScene(const fs::path& root, const std::vector<Json>& props, const std:
       n["parent"] = "#" + in.parent;
     nodes.push_back(n);
   }
+  Json scene{{"nodes", nodes}};
+  for(auto it = more.begin(); it != more.end(); ++it)
+    scene[it.key()] = it.value();
   writeFile(root / "Scenes/Room.duf",
-            Json{{"file_version", "0.6.0.0"}, {"asset_info", {{"id", "/Scenes/Room.duf"}}}, {"node_library", library}, {"scene", {{"nodes", nodes}}}}.dump());
+            Json{{"file_version", "0.6.0.0"}, {"asset_info", {{"id", "/Scenes/Room.duf"}}}, {"node_library", library}, {"scene", scene}}.dump());
 }
 
 fv::dson::LoadResult loadRoom(const fs::path& root)
@@ -295,6 +311,143 @@ TEST_F(SceneInstances, TheGltfDrawsOneMeshFromEveryNodeThatShowsIt)
     drawing += n.mesh == 0;
   EXPECT_EQ(drawing, 3);
   EXPECT_EQ(built.model.buffers.size(), 1u);
+}
+
+// The mesh nodes in node order, and whether each is shown.
+std::pair<std::vector<int>, std::vector<bool>> meshNodes(const fv::dson::LoadResult& r)
+{
+  std::pair<std::vector<int>, std::vector<bool>> out;
+  for(size_t n = 0; n < r.scene.nodes.size(); n++)
+    if(r.scene.nodes[n].kind == fv::NodeKind::eMesh)
+    {
+      out.first.push_back(int(n));
+      out.second.push_back(r.scene.nodes[n].visible);
+    }
+  return out;
+}
+
+// Copies of a prop the scene sets alike (a club's 22 ceiling lights) draw one mesh, so it is built,
+// stored and traced once: each copy stands where it does and is shown or hidden by itself, and a
+// body meets each copy where it stands.
+TEST_F(SceneInstances, CopiesOfAPropTheSceneSetsAlikeDrawOneMesh)
+{
+  Json hidden     = propCopy("Floor", "Floor3", "geometry-2", 200, 0, 0);
+  hidden["extra"] = Json::array({{{"type", "studio_node_channels"},
+                                  {"channels", Json::array({{{"channel", {{"id", "Visible"}, {"type", "bool"}, {"current_value", false}}}}})}}});
+  writeScene(root, {propNode("Floor", "geometry", 10, 0, 0), propCopy("Floor", "Floor2", "geometry-1", 100, 0, 0), hidden}, {});
+  const auto r = loadRoom(root);
+  ASSERT_EQ(r.scene.meshes.size(), 1u);
+  EXPECT_EQ(drawnAt(r, "Floor"), (At{{10, 0, 0}, {100, 0, 0}, {200, 0, 0}}));
+  EXPECT_EQ(r.morphs.meshes.size(), 1u);
+  const auto [nodes, shown] = meshNodes(r);
+  EXPECT_EQ(shown, (std::vector<bool>{true, true, false}));
+
+  fv::morph::MorphSet morphs{[&](int m) { return r.scene.meshes[size_t(m)].geo.get(); }};
+  const auto          cages = fv::physics::posedNodeCages(r.scene, morphs, nodes, r.root);
+  ASSERT_EQ(cages.size(), 3u);
+  for(size_t k = 0; k < cages.size(); k++)
+  {
+    ASSERT_EQ(cages[k].size(), 12u);
+    EXPECT_NEAR(cages[k][0], (std::array{10.f, 100.f, 200.f})[k], 1e-4f);  // the quad's first corner, at the copy's origin
+    EXPECT_NEAR(cages[k][3], cages[k][0] + 1, 1e-4f);
+  }
+  // by mesh, where the first copy stands, as before
+  const auto byMesh = fv::physics::posedCages(r.scene, morphs, std::vector<int>{0}, r.root);
+  ASSERT_EQ(byMesh.size(), 1u);
+  ASSERT_EQ(byMesh[0].size(), 12u);
+  EXPECT_NEAR(byMesh[0][0], 10.f, 1e-4f);
+}
+
+// A scene's props hanging from its figure are items of it (the club is a figure, and its lights hang
+// from its walls, which are bones): plain ones share as other props do, each item listing the mesh.
+TEST_F(SceneInstances, CopiesHangingFromTheScenesFigureShareToo)
+{
+  const std::string box = "/data/Test/Box%20Figure/Box%20Figure.dsf";
+  const Json        figure{{"id", "BoxFigure"}, {"url", box + "#BoxFigure"}, {"label", "Box Figure"},
+                           {"geometries", Json::array({{{"id", "BoxFigure-1"}, {"url", box + "#BoxFigure-1"}}})}};
+  const Json        hip{{"id", "hip"}, {"url", box + "#hip"}, {"parent", "#BoxFigure"}};
+  Json              a = propCopy("Floor", "LightA", "geometry", 10, 0, 0);
+  Json              b = propCopy("Floor", "LightB", "geometry-1", 100, 0, 0);
+  a["parent"] = b["parent"] = "#hip";
+  writeScene(root, {figure, hip, a, b}, {});
+  fv::dson::Store store(std::make_shared<fv::dson::Library>(std::vector<fs::path>{root, fs::path(FV_TEST_DATA) / "daz-library"}));
+  const auto      r = fv::dson::loadDson(store, "Scenes/Room.duf");
+  ASSERT_GE(r.mainRig, 0);
+  ASSERT_EQ(r.items.size(), 2u);
+  const int floor = meshIndex(r, "Floor");
+  ASSERT_GE(floor, 0);
+  EXPECT_EQ(r.items[0].meshes, std::vector<int>{floor});
+  EXPECT_EQ(r.items[1].meshes, std::vector<int>{floor});
+  EXPECT_EQ(drawnAt(r, "Floor").size(), 2u);
+  EXPECT_EQ(r.parts.size(), 1u);  // a part per mesh
+}
+
+// A copy the scene sets apart keeps a mesh of its own: another UV set, other surface settings, a
+// morph dial on it. Another copy set like the first still draws the first's.
+TEST_F(SceneInstances, ACopyTheSceneSetsApartHasItsOwnMesh)
+{
+  const Json more{
+      {"materials",
+       Json::array({{{"id", "Surface Floor-1"}, {"geometry", "#geometry-1"}, {"groups", Json::array({"Surface Floor"})}, {"uv_set", "/data/T/Shelf/uv.dsf#default"}},
+                    {{"id", "Surface Floor-2"},
+                     {"geometry", "#geometry-2"},
+                     {"groups", Json::array({"Surface Floor"})},
+                     {"diffuse", {{"channel", {{"id", "Color"}, {"type", "color"}, {"current_value", Json::array({1, 0, 0})}}}}}}})},
+      {"modifiers",
+       Json::array({{{"id", "Bend-1"}, {"url", "/data/T/Floor/Bend.dsf#Bend"}, {"parent", "#Floor3"}, {"channel", {{"id", "value"}, {"current_value", 0.5}}}}})}};
+  writeScene(root,
+             {propNode("Floor", "geometry", 10, 0, 0), propCopy("Floor", "OtherUv", "geometry-1", 100, 0, 0),
+              propCopy("Floor", "Red", "geometry-2", 200, 0, 0), propCopy("Floor", "Floor3", "geometry-3", 300, 0, 0),
+              propCopy("Floor", "Alike", "geometry-4", 400, 0, 0)},
+             {}, more);
+  const auto r = loadRoom(root);
+  ASSERT_EQ(r.scene.meshes.size(), 4u);
+  EXPECT_EQ(r.morphs.meshes.size(), 4u);
+  const auto [nodes, shown] = meshNodes(r);
+  ASSERT_EQ(nodes.size(), 5u);
+  std::vector<int> mesh;
+  for(int n : nodes)
+    mesh.push_back(r.scene.nodes[size_t(n)].mesh);
+  EXPECT_EQ(mesh, (std::vector<int>{0, 1, 2, 3, 0}));
+  EXPECT_NE(r.scene.meshes[1].geo->uv, r.scene.meshes[0].geo->uv);
+  EXPECT_NE(r.scene.meshes[2].materials, r.scene.meshes[0].materials);
+  EXPECT_EQ(r.scene.meshes[3].materials, r.scene.meshes[0].materials);
+}
+
+// How many of a scene file's mesh nodes draw a mesh another node drew first, and the triangles that no
+// longer build or take memory twice. FV_SCENE_COUNT=<library folder>|<scene file in it>, e.g.
+// F:/Games/Projects/3d/assets/daz|Environments/STZ_Night_club_2/STZ_Night_club_2(Full_Scene).duf
+TEST(SceneLoad, DISABLED_CountSharedMeshesInAScene)
+{
+#pragma warning(suppress : 4996)  // getenv
+  const char* env = std::getenv("FV_SCENE_COUNT");
+  if(!env || std::string(env).find('|') == std::string::npos)
+    GTEST_SKIP() << "set FV_SCENE_COUNT=<library>|<scene>";
+  const std::string arg = env;
+  const size_t      bar = arg.find('|');
+  fv::dson::Store   store(std::make_shared<fv::dson::Library>(std::vector<fs::path>{fs::path(arg.substr(0, bar))}));
+  const auto        r = fv::dson::loadDson(store, arg.substr(bar + 1));
+  std::vector<int>  drawers(r.scene.meshes.size());
+  for(const fv::Node& n : r.scene.nodes)
+    if(n.kind == fv::NodeKind::eMesh && n.mesh >= 0)
+      drawers[size_t(n.mesh)]++;
+  size_t nodes = 0, copies = 0, triangles = 0, copiedTriangles = 0;
+  for(size_t m = 0; m < drawers.size(); m++)
+  {
+    const size_t tris = r.scene.meshes[m].geo ? r.scene.meshes[m].geo->fullIndex.size() / 3 : 0;
+    nodes += size_t(drawers[m]);
+    copies += size_t(std::max(drawers[m] - 1, 0));
+    triangles += tris * size_t(drawers[m]);
+    copiedTriangles += tris * size_t(std::max(drawers[m] - 1, 0));
+  }
+  printf("%zu mesh nodes draw %zu meshes: %zu are copies, %zu of %zu drawn triangles\n", nodes, r.scene.meshes.size(), copies, copiedTriangles,
+         triangles);
+  // meshes of a geometry another mesh was made of too: copies the scene set apart, or that can't share
+  std::map<std::string, int> ofGeometry;
+  size_t                     apart = 0;
+  for(const fv::dson::MeshRef& ref : r.morphs.meshes)
+    apart += ofGeometry[ref.geometryKey]++ > 0;
+  printf("%zu meshes repeat a geometry another mesh has\n", apart);
 }
 
 // A wear's meshes built ahead by its prefetch, while the figure it goes on still loads, are the

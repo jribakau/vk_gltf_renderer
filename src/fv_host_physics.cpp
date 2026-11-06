@@ -140,15 +140,16 @@ const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& FvHost::
   prop.contactSets.clear();
   const fv::SceneGraph& scene = prop.fig->loaded.scene;
   const int             body  = prop.contact ? prop.contact->bodyMesh() : -1;
-  std::vector<int>      meshes;
+  // by node: copies of a prop drawing one mesh are each met where they stand
+  std::vector<int>      nodes;
   for(size_t n = 0; n < scene.nodes.size(); n++)
     if(scene.nodes[n].mesh >= 0 && (body < 0 || scene.nodes[n].mesh == body) && drawn(scene, int(n)))
-      meshes.push_back(scene.nodes[n].mesh);
+      nodes.push_back(int(n));
   std::vector<std::vector<float>> posed =
-      fv::physics::posedCages(scene, *prop.fig->morphs, meshes, prop.fig->loaded.root, body >= 0 ? fv::physics::contactChannelOf(body) : std::string());
-  for(size_t k = 0; k < meshes.size(); k++)
+      fv::physics::posedNodeCages(scene, *prop.fig->morphs, nodes, prop.fig->loaded.root, body >= 0 ? fv::physics::contactChannelOf(body) : std::string());
+  for(size_t k = 0; k < nodes.size(); k++)
   {
-    const auto& geo = scene.meshes[size_t(meshes[k])].geo;
+    const auto& geo = scene.meshes[size_t(scene.nodes[size_t(nodes[k])].mesh)].geo;
     if(posed[k].empty() || !geo || geo->dsonTris.empty())
       continue;
     const fv::physics::Box bounds = fv::physics::boundsOf(posed[k]);
