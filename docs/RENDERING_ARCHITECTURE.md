@@ -127,8 +127,10 @@ Host — build the emitter list (`rs::Residency`, with `buildEmissiveTable` in `
 3. For each triangle of that primitive, store a **reference** — render node, primitive, triangle
    index — plus the selection **radiance** (not baked vertices, so the shader reads live
    geometry/transforms). A textured emitter's light sample reads the texel at its point; the pdf, and
-   a BSDF hit's MIS weight (`emitterSelectionRadiance`), use the selection radiance, which is what
-   picked it.
+   a BSDF hit's MIS weight (`emitterSelectionRadiance`, which reads the table's copy through the
+   render node's leaf, never the material row), use the selection radiance, which is what picked it.
+   A texture that lands later with a different mean changes the row, and the residency rebuilds the
+   table in that sync (`m_relitSlots`).
 4. Compute the triangle's **world-space area** (verts × node transform) and give it a **selection
    weight = area × luminance** (see the defensive tweak below). Build a **Vose alias table** from the
    weights (`aliasProb` / `aliasIndex` per triangle) for O(1) GPU selection, plus the totals

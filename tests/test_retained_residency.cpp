@@ -2453,6 +2453,48 @@ TEST(RetainedResidency, IesLightsNameTheirProfiles)
 // An emitter's vertex writes (a dial drag) leave the table's areas as they were until the writes
 // stop for emissiveSettleFrames, then one rebuild takes the last ones; a non-emitter's writes don't
 // touch it, and any other emitter change rebuilds at once
+// An emissive texture that lands after the table was built gives its emitter the weight of its mean:
+// the light samples and a BSDF ray's MIS weight must read the same one (I6). Unknown until then, the
+// mean counts as 1; a texture that lands again with the same mean leaves the table as it was.
+TEST(RetainedResidency, AnEmissiveTextureThatLandsLateReweighsItsEmitter)
+{
+  RetainedScene   scene;
+  const TextureId mask  = scene.addTexture(chainTexture("chain_sign_mean=0.25", 64));
+  auto            table = std::make_shared<TextureTable>();
+  table->push_back({mask, {}});
+  MaterialRecord sign;
+  sign.payload.name              = "sign";
+  sign.payload.emissive          = {2, 2, 2};
+  sign.payload.emissiveMap.index = 0;
+  sign.textures                  = table;
+  const MaterialId signMaterial  = scene.addMaterial(std::move(sign));
+  drawn(scene, "sign", scene.addMesh(gridMesh(2, 0.f)), {signMaterial});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  gpu.holdDecodes(true);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu, "decoding: ");
+  const float unknown = residency.emissiveTotalWeight();
+  ASSERT_GT(unknown, 0.f);
+
+  gpu.holdDecodes(false);
+  gpu.beginFrame();
+  EXPECT_TRUE(residency.sync(scene).changed);
+  ASSERT_TRUE(residency.image(mask, true));
+  expectClean(scene, residency, gpu, "landed: ");
+  EXPECT_NEAR(residency.emissiveTotalWeight(), 0.25f * unknown, 1e-4f * unknown) << "one emitter: its weight is its own luminance";
+  for(int frame = 0; frame < 3; frame++)
+  {
+    gpu.beginFrame();
+    residency.sync(scene);
+  }
+  gpu.beginFrame();
+  EXPECT_FALSE(residency.sync(scene).changed) << "nothing moved since";
+  drain(gpu);
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
 TEST(RetainedResidency, AnEmittersVertexWritesRebuildTheTableOnceTheyStop)
 {
   RetainedScene scene;

@@ -82,4 +82,11 @@ inline float emissiveLuminance(const glm::vec3& radiance)
   return 0.2126f * radiance.x + 0.7152f * radiance.y + 0.0722f * radiance.z;
 }
 
+// What a material is weighed by among the emitters: its emissive factor (strength included) times
+// its emissive texture's mean (emissiveLightScale). An Emitter's radiance; black: it doesn't emit.
+inline glm::vec3 emitterSelectionRadiance(const shaderio::GltfShadeMaterial& shade)
+{
+  return glm::max(shade.emissiveFactor, glm::vec3(0.0f)) * shade.emissiveLightScale;
+}
+
 }  // namespace nvvkgltf

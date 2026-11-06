@@ -834,6 +834,7 @@ private:
   BufferHandle                                         m_materialTable, m_textureInfoTable;
   std::set<uint32_t>                                   m_dirtyMaterials;         // material slots to convert
   std::set<uint32_t>                                   m_slotsFollowed;          // material slots whose textures moved slot: the same picture
+  std::set<uint32_t>                                   m_relitSlots;             // material slots whose emitter weight changed in writeMaterials
   std::shared_ptr<nvutils::IDPool>                     m_textureInfoPool;        // spans; entry 0 held
   std::vector<shaderio::GltfTextureInfo>               m_textureInfos;           // the table's contents
   bool                                                 m_spansRepacked = false;  // this write

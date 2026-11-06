@@ -792,15 +792,6 @@ struct EmissiveSample
 #endif
 };
 
-// The radiance material `materialIndex` was picked by among the emitters: emissiveFactor (strength
-// included) times its emissive texture's mean (emissiveLightScale), as the scene's uploadEmissiveTriangles
-// stored it. Not what it emits at any one point of a textured emitter; what the pick's pdf is made of.
-float3 emitterSelectionRadiance(int materialIndex)
-{
-  GltfShadeMaterial* materials = pushConst.gltfScene->materials;
-  return max(materials[materialIndex].emissiveFactor, float3(0.0F)) * materials[materialIndex].emissiveLightScale;
-}
-
 // Select an emissive triangle of [first, first + n) proportional to its selection weight in O(1) via
 // that range's Vose alias table. One uniform picks a bin; its fractional part chooses between that bin
 // and its alias.
@@ -843,6 +834,20 @@ int emissiveLeafOf(uint renderNodeID)
   if(renderNodeID >= uint(pushConst.gltfScene.numEmissiveLeafOfNode))
     return -1;
   return pushConst.gltfScene.emissiveLeafOfNode[renderNodeID];
+}
+
+// The radiance render node `renderNodeID` was picked by among the emitters, read from the emissive
+// table the light samples were drawn from: emissiveFactor (strength included) times its emissive
+// texture's mean (emissiveLightScale), as the table was built. Not the material row, which a texture
+// landing since may have changed before the table followed it; the two MIS sides must weigh with the
+// same number. Not what it emits at any one point of a textured emitter; what the pick's pdf is made
+// of. Black: not in the table, so only BSDF rays reach it.
+float3 emitterSelectionRadiance(uint renderNodeID)
+{
+  const int leaf = emissiveLeafOf(renderNodeID);
+  if(leaf < 0)
+    return float3(0.0F);
+  return pushConst.gltfScene.emissiveTriangles[pushConst.gltfScene.emissiveGroups[leaf].first].radiance;
 }
 
 // The light tree is a candidate in the light pick (ePtLightTree, and the scene has one); otherwise

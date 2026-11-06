@@ -275,6 +275,9 @@ ImageHandle FakeGpuBackend::createImage(const ImageSource& source, ImageInfo& in
   info.width      = levelExtent(width, skip);
   info.height     = levelExtent(height, skip);
   info.twoChannel = source.component == 2;
+  // "mean=<v>" anywhere in its name: its texels' mean luminance, as a decode measures it (unknown otherwise)
+  if(const size_t at = source.uri.find("mean="); at != std::string::npos)
+    info.meanLuminance = std::stof(source.uri.substr(at + 5));
   info.bytes      = uint64_t(info.width) * info.height * 4;
   info.storedLevels = source.uri.rfind("chain", 0) == 0;
   if(info.storedLevels || made)

@@ -287,6 +287,7 @@ void Residency::clear()
   m_materialTable = m_textureInfoTable = {};
   m_dirtyMaterials.clear();
   m_slotsFollowed.clear();
+  m_relitSlots.clear();
   m_heldMaterials.clear();
   m_textureInfoPool = poolFromOne(m_options.textureInfoLimit);
   m_textureInfos.assign(1, {});
@@ -2297,18 +2298,26 @@ void Residency::syncMaterials(RetainedScene& scene, const std::set<MaterialId>& 
 // The changed material slots converted, each into its own span of the texture-info table (a hole
 // as the default material), and uploaded: their rows and spans, or both tables whole when one had to
 // be made again (m_tablesMoved) or the spans were repacked. Notes whether a material's draw bits
-// changed (m_bitsChanged).
+// changed (m_bitsChanged), and the slots whose emitter weight changed (m_relitSlots): a texture that
+// landed with another mean than the one it stood in with.
 void Residency::writeMaterials(const RetainedScene& scene)
 {
   m_spansRepacked = false;
   m_shadeMaterials.resize(m_materialHighWater);
-  const std::set<uint32_t> dirty = std::exchange(m_dirtyMaterials, {});
+  const std::set<uint32_t>                dirty = std::exchange(m_dirtyMaterials, {});
+  std::vector<std::pair<uint32_t, glm::vec3>> lit;  // a repack moves no mean: the dirty slots are the ones to compare
   for(uint32_t s : dirty)
     if(s < m_materialHighWater)
+    {
+      lit.emplace_back(s, nvvkgltf::emitterSelectionRadiance(m_shadeMaterials[s]));
       convertMaterial(scene, s);
+    }
   if(m_spansRepacked)  // every live span moved: every row names its texture infos again
     for(uint32_t s = 0; s < m_materialHighWater; s++)
       convertMaterial(scene, s);
+  for(const auto& [s, before] : lit)
+    if(nvvkgltf::emitterSelectionRadiance(m_shadeMaterials[s]) != before)
+      m_relitSlots.insert(s);
 
   const auto table = [&](BufferHandle& buffer, uint64_t bytes, const char* name) {
     if(!buffer || m_gpu.bufferSize(buffer) < bytes)
@@ -3229,20 +3238,27 @@ SyncResult Residency::sync(RetainedScene& scene)
   // the emissive table: its emitters came, went, moved, were shown or hidden, or their materials
   // changed (any slot change counts, so an entry never names a renumbered slot), this frame. Their
   // vertex writes only mark it stale: one O(emissive triangles) build once they stop, not one a
-  // dial or drape frame, with the weights lagging meanwhile (the shader reads live geometry).
-  bool emitterMoved = false, emitterWritten = false;
+  // dial or drape frame, with the weights lagging meanwhile (the shader reads live geometry). A shown
+  // instance whose material's weight moved (a texture landed with its mean; it may start or stop
+  // emitting) counts too: the table holds the weights both sides of the MIS read.
+  bool emitterMoved = false, emitterWritten = false, emitterRelit = false;
   for(const std::optional<Instance>& inst : m_instances)
+  {
+    if(inst && inst->shown && m_relitSlots.count(inst->materialSlot))
+      emitterRelit = true;
     if(inst && emits(*inst))
     {
       emitterMoved |= changes.transforms.count(inst->entity) > 0;
       emitterWritten |= written.count(inst->mesh) > 0;
     }
+  }
+  m_relitSlots.clear();
   if(emitterWritten)
   {
     m_emissiveStale     = true;
     m_emitterWriteFrame = m_gpu.frame();
   }
-  if(fresh || materialsWritten || result.visibilityChanged || emitterMoved || (emissiveSettled && !emitterWritten))
+  if(fresh || materialsWritten || result.visibilityChanged || emitterMoved || emitterRelit || (emissiveSettled && !emitterWritten))
   {
     fv::timing::Accum time("emissive rebuild");
     syncEmissive(scene);
@@ -3790,8 +3806,7 @@ bool Residency::emits(const Instance& inst) const
 {
   if(!inst.shown || inst.materialSlot >= m_shadeMaterials.size())
     return false;
-  const shaderio::GltfShadeMaterial& shade = m_shadeMaterials[inst.materialSlot];
-  return nvvkgltf::emissiveLuminance(glm::max(shade.emissiveFactor, glm::vec3(0.0f)) * shade.emissiveLightScale) > 0.f;
+  return nvvkgltf::emissiveLuminance(nvvkgltf::emitterSelectionRadiance(m_shadeMaterials[inst.materialSlot])) > 0.f;
 }
 
 // The profiles' samples end to end, which a light's iesProfile indexes by kIesProfileSampleCount
@@ -3820,8 +3835,7 @@ void Residency::syncEmissive(const RetainedScene& scene)
     const std::optional<Instance>& inst = m_instances[s];
     if(!inst || !inst->shown || inst->materialSlot >= m_shadeMaterials.size())
       continue;
-    const shaderio::GltfShadeMaterial& shade = m_shadeMaterials[inst->materialSlot];
-    const glm::vec3   radiance = glm::max(shade.emissiveFactor, glm::vec3(0.0f)) * shade.emissiveLightScale;
+    const glm::vec3   radiance = nvvkgltf::emitterSelectionRadiance(m_shadeMaterials[inst->materialSlot]);
     const MeshRecord* record   = scene.mesh(inst->mesh);
     if(nvvkgltf::emissiveLuminance(radiance) <= 0.f || !record)
       continue;

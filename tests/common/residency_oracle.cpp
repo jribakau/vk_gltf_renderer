@@ -742,7 +742,7 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     const MaterialRecord*              mat    = scene.material(inst->material);
     if(!shade || !record || !mat)
       continue;
-    const glm::vec3 radiance = glm::max(shade->emissiveFactor, glm::vec3(0.f)) * shade->emissiveLightScale;
+    const glm::vec3 radiance = nvvkgltf::emitterSelectionRadiance(*shade);
     if(nvvkgltf::emissiveLuminance(radiance) <= 0.f)
       continue;
     const Submesh& run = record->submeshes[inst->submesh];

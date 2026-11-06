@@ -224,8 +224,9 @@ struct GltfShadeMaterial
   int   doubleSided       = 0;
   // An emitter's weight among the light samples is emissiveFactor (strength included) times this:
   // the emissive texture's mean luminance (from the decoded image), 1 without a texture or
-  // where the mean is unknown, 0 for an all-black texture (not a light). The path tracer's hit side
-  // reads it to recover the pick the light sample made (emitterSelectionRadiance).
+  // where the mean is unknown, 0 for an all-black texture (not a light). The emissive table copies it
+  // when it is built (rs::Residency rebuilds it when this changes), and the path tracer's hit side
+  // reads the table's copy to recover the pick the light sample made (emitterSelectionRadiance).
   float emissiveLightScale = 1;
   // 1: the cutout is a fabric's weave, whose gaps close as the surface turns away from the ray
   // (wovenOpacity); 0: the opacity is the same from every direction, as glTF has it
