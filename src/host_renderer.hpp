@@ -229,4 +229,14 @@ public:
   [[nodiscard]] virtual bool loadHdrEnvironment(EnvImage&& image, const std::filesystem::path& name) = 0;
   // the current sky into a model an export writes
   virtual void writeEnvironmentSky(tinygltf::Model& outModel, const std::filesystem::path& destination) const = 0;
+  // What the physical sky's clouds leave of its light, as its last full bake measured it, for the
+  // camera's meter: `sky`, the sky's own light on a figure with the clouds against without; `sun`, the
+  // share of the sun that gets past them. 1 and 1 under a clear sky. Application thread.
+  struct SkyCloudLight
+  {
+    float sky = 1.0F;
+    float sun = 1.0F;
+    bool  operator==(const SkyCloudLight&) const = default;
+  };
+  virtual SkyCloudLight skyCloudLight() const { return {}; }
 };

@@ -1264,8 +1264,12 @@ struct FvHost::Impl
   rs::EntityId sunEntity;
   rs::LightId  sunLight;
   float        autoGround = 0.0F;
+  // the physical sky's clouds as the renderer's last bake measured them, for the exposure
+  fv::lighting::CloudReading cloudReading;
 
   Json lightingTopic() const;
+  // a new reading of the clouds, after a bake: the exposure follows it. Every frame.
+  void followCloudReading();
   Json lightingSet(const Json& patch);
   void applyLighting(bool everything);
   void requestEnvironment();

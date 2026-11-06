@@ -85,7 +85,17 @@ struct EnvBakePushConstant
   // Which of SkyClouds' images holds them: 1 the preview, 0 the full image.
   int cloudPreview;
   int _pad1;
+
+  // PhysicalBruneton only: where the bake writes what the camera's meter reads of the clouds
+  // (EnvBaker::cloudLight), one float2 per cell of the sampling grid -- the light of the sky above
+  // the horizon on a figure standing on a floor, clear and with the clouds -- then one more, the
+  // sun's share past them (SkySunDisk::cloudShadow) and 1. Zero when the caller does not want it.
+  uint64_t meterAddress;
 };
+
+// The floor's reflectance the meter takes (the panel's default ground, 20% grey): the sky's light
+// on a figure is the sky itself and the floor's bounce of it (env_bake.slang).
+#define ENV_METER_FLOOR_ALBEDO 0.2F
 
 NAMESPACE_SHADERIO_END()
 

@@ -590,6 +590,20 @@ The shadow does not soften by any rule of its own. Behind a thin cloud the light
 from the bright patch of cloud round the sun, which is in the lighting field like the rest of the sky,
 so it lights the scene from a wider source than the disk.
 
+### What the camera's meter reads
+
+The Figure Viewer's exposure follows the physical sky's light by tables it measured under a clear
+sky (its `sunPath.ts`); for the clouds it takes what each commit measures. The bake sums, beside
+the alias table's importance, the sky above the horizon twice -- clear and with the clouds -- as the
+light it puts on a figure standing on a floor: every direction alike, as a ball's mean, and the
+floor's bounce of it by the cosine (`meterWeight`, the floor at 20%). With the sun's share past the
+clouds it lands in a small host-visible buffer (`meterAddress`) that `EnvBaker::commit` reads once
+its submit has waited (`EnvBaker::cloudLight`). The host weighs the two by the clear day's split
+the app sends -- of the light on the figure, the sky's share and the sun's at this sun
+(`tonemap.skyShare`) -- and gives back what the clouds took (`fv::lighting::cloudExposure`): an
+overcast stratus deck at 50° leaves the sky 0.69 of its light and the sun none, about 2.3 stops.
+A preview bake leaves the reading as it was, so the exposure catches up when the sky settles.
+
 ### The cloud image
 
 The layers are marched once per bake into the **cloud image** (`kCloudImageSize`, RGBA16F, with a

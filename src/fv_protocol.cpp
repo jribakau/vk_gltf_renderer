@@ -62,7 +62,9 @@ namespace {
 // 33: clouds.type "altocumulus".
 // 34: the clouds in three tiers: clouds.mid (altocumulus) and clouds.high (cirrus); clouds.type is
 // the low tier's, and "altocumulus" is no longer one of them.
-constexpr int kProtocolVersion = 34;
+// 35: the exposure follows the clouds: tonemap.followClouds and tonemap.skyShare, and the read-only
+// tonemap.cloudLight, what the clouds leave of the light.
+constexpr int kProtocolVersion = 35;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

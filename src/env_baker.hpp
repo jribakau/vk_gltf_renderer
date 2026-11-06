@@ -120,6 +120,19 @@ public:
   // hands this address to its background passes rather than a number. Zero before init().
   VkDeviceAddress sunDiskAddress() const { return m_sunDiskBuf.address; }
 
+  // What the physical sky's clouds leave of its light, for the camera's meter, as the last commit
+  // measured it: `sky`, the light of the sky above the horizon on a figure standing on a floor, with
+  // the clouds against without them (env_bake.slang meterWeight); `sun`, the share of the sun that
+  // gets past them (SkySunDisk::cloudShadow). 1 and 1 under a clear sky, and from any other sky. A
+  // preview bake leaves it as it was: it is read back only where the commit waits anyway.
+  struct CloudLight
+  {
+    float sky = 1.0F;
+    float sun = 1.0F;
+    bool  operator==(const CloudLight&) const = default;
+  };
+  CloudLight cloudLight() const { return m_cloudLight; }
+
   // The parameter block the shader reads. Fill it, then call `preview()` or `commit()`; the
   // contents are uploaded as part of the dispatch.
   shaderio::SkyOmiParameters&       skyParams() { return m_skyParams; }
@@ -156,6 +169,7 @@ private:
   void createPipeline(Resources& res);
   void destroyResources(Resources& res);
   void recordBake(VkCommandBuffer cmd, bool preview);
+  void readCloudLight(Resources& res);
 
   bool       m_initialized{false};
   bool       m_needsCommit{true};
@@ -179,7 +193,8 @@ private:
   nvvk::Buffer m_importanceBuf;  // One float per kEnvSamplingGrid cell: sum of solidAngle(row) * max(rgb)
   nvvk::Buffer m_skyParamsBuf;   // Device-local SkyOmiParameters, updated in the command buffer per bake
   nvvk::Buffer m_sunDiskBuf;     // Device-local; written by the bake, read by the background passes
-
+  nvvk::Buffer m_meterBuf;       // Host-visible: the meter's sums per cell and the sun's share (env_bake_io's meterAddress)
+  CloudLight   m_cloudLight;     // what the last commit read from it
 
   VkPipeline           m_pipeline{VK_NULL_HANDLE};
   VkPipelineLayout     m_pipelineLayout{VK_NULL_HANDLE};

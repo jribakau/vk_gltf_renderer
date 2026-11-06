@@ -117,11 +117,14 @@ float3 evalSkyGradient(float3 dir)
 // OMI `physical`: Bruneton (2008) precomputed atmospheric scattering, evaluated from SkyBruneton's
 // LUTs -- the only evaluator here that reads textures, which is why set 1 exists. The body is
 // shared with the path tracer's per-ray background; see sky_bruneton_radiance.h.slang.
-float3 evalSkyBruneton(float3 dir)
+// `clear` is the same sky without its clouds, for the meter: above the horizon nothing else of it
+// depends on them (below, the ground's sunlit share does, and the meter does not read the ground).
+float3 evalSkyBruneton(float3 dir, out float3 clear)
 {
   const float  r   = g_atmosphere.bottomRadius + pc.observerAltitude;
   const float3 sky = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r,
                                              dir, pc.sunDirection, pc.sunlitGround);
+  clear = sky;
   // The clouds over it, above the horizon: below, the ground is in the way.
   const float horizonMu = brunetonHorizonMu(g_atmosphere, r);
   if(pc.clouds == 0 || dir.y <= horizonMu)
@@ -173,6 +176,10 @@ void publishSunDisk()
   out->sunlitGround     = pc.sunlitGround;
   out->cloudPreview     = pc.cloudPreview;
 
+  // and for the meter, after its cells
+  if(pc.meterAddress != 0)
+    ((float2*)pc.meterAddress)[pc.gridSize.x * pc.gridSize.y] = float2(cloudShadow, 1.0F);
+
   // Where the observer stood, so a per-ray evaluation of the sky stands there too and its horizon
   // meets the one baked into the lighting environment.
   out->observerRadius = r;
@@ -181,8 +188,24 @@ void publishSunDisk()
 
 // -- Entry point ------------------------------------------------------------------------------
 
-// One importance value per texel of this workgroup, for the per-cell sum below.
-groupshared float s_importance[HDR_WORKGROUP_SIZE * HDR_WORKGROUP_SIZE];
+// One importance value per texel of this workgroup, for the per-cell sum below, and the meter's
+// pair (clear, with the clouds).
+groupshared float  s_importance[HDR_WORKGROUP_SIZE * HDR_WORKGROUP_SIZE];
+groupshared float2 s_meter[HDR_WORKGROUP_SIZE * HDR_WORKGROUP_SIZE];
+
+// What a texel of the sky above the horizon gives the meter: the light on a figure standing on a
+// floor, from the luminance `l` toward `dir` over `area` -- the sky on the figure (a ball's mean,
+// every direction alike) and the floor's bounce of the sky's light, which falls on it by the cosine
+// (2 * albedo * cos, the floor's radiance over the lower half). Below the horizon the floor is in the
+// way. Only the ratio of the two sums is read (EnvBaker::cloudLight), so the units are the sky's.
+float meterWeight(float3 dir, float area)
+{
+  return dir.y > 0.0F ? area * (1.0F + 2.0F * ENV_METER_FLOOR_ALBEDO * dir.y) : 0.0F;
+}
+float luminanceOf(float3 c)
+{
+  return dot(c, float3(0.2126F, 0.7152F, 0.0722F));
+}
 
 [shader("compute")]
 [numthreads(HDR_WORKGROUP_SIZE, HDR_WORKGROUP_SIZE, 1)]
@@ -192,7 +215,8 @@ void main(uint3 threadIdx: SV_DispatchThreadID, uint3 localIdx: SV_GroupThreadID
   // is, at kEnvBakeSize) contributes nothing.
   const bool inside = all(threadIdx.xy < pc.imageSize);
 
-  float importance = 0.0F;
+  float  importance = 0.0F;
+  float2 meter      = float2(0.0F);
   if(inside)
   {
     const float2 pixelCenter = float2(threadIdx.xy) + float2(0.5F);
@@ -200,6 +224,7 @@ void main(uint3 threadIdx: SV_DispatchThreadID, uint3 localIdx: SV_GroupThreadID
     const float3 dir         = latlongToDir(uv);
 
     float3 color;
+    float3 clear = float3(0.0F);
     switch(pc.skyType)
     {
       case SkyType::ePlain:
@@ -209,7 +234,7 @@ void main(uint3 threadIdx: SV_DispatchThreadID, uint3 localIdx: SV_GroupThreadID
         color = evalSkyGradient(dir);
         break;
       case SkyType::ePhysicalBruneton:
-        color = evalSkyBruneton(dir);
+        color = evalSkyBruneton(dir, clear);
         break;
       default:
         color = float3(0.0F);
@@ -228,24 +253,35 @@ void main(uint3 threadIdx: SV_DispatchThreadID, uint3 localIdx: SV_GroupThreadID
     const float area    = texelSolidAngle(threadIdx.y, pc.imageSize.x, pc.imageSize.y);
     const float maxChan = max(color.r, max(color.g, color.b));
     importance          = area * maxChan;
+    if(pc.skyType == SkyType::ePhysicalBruneton)
+      meter = meterWeight(dir, area) * float2(luminanceOf(clear), luminanceOf(color));
   }
 
   // Sum the importance per cell of the sampling grid, which is what the alias table is built over.
   // A cell's texels all sit in one workgroup -- the block divides the workgroup, which EnvBaker
   // checks at compile time -- so the sum stays in shared memory: one thread per cell adds its
   // block and writes the cell. No atomics, so no float-atomic extension, and a deterministic sum.
+  // The meter's pair is summed alongside.
   s_importance[localIdx.y * HDR_WORKGROUP_SIZE + localIdx.x] = importance;
+  s_meter[localIdx.y * HDR_WORKGROUP_SIZE + localIdx.x]      = meter;
   GroupMemoryBarrierWithGroupSync();
 
   const uint2 block = pc.imageSize / pc.gridSize;  // texels per cell
   if(inside && all(localIdx.xy % block == 0))
   {
-    float sum = 0.0F;
+    float  sum      = 0.0F;
+    float2 meterSum = float2(0.0F);
     for(uint y = 0; y < block.y; ++y)
       for(uint x = 0; x < block.x; ++x)
-        sum += s_importance[(localIdx.y + y) * HDR_WORKGROUP_SIZE + localIdx.x + x];
+      {
+        const uint i = (localIdx.y + y) * HDR_WORKGROUP_SIZE + localIdx.x + x;
+        sum += s_importance[i];
+        meterSum += s_meter[i];
+      }
 
     const uint2 cell                              = threadIdx.xy / block;
     g_importance[cell.y * pc.gridSize.x + cell.x] = sum;
+    if(pc.meterAddress != 0)
+      ((float2*)pc.meterAddress)[cell.y * pc.gridSize.x + cell.x] = meterSum;
   }
 }

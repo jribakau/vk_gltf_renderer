@@ -296,6 +296,12 @@ public:
   /// is the file it came from, or empty for a generated image (kept in memory then, so leaving a
   /// baked sky can restore it). False for an invalid image. Application thread only.
   [[nodiscard]] bool loadHdrEnvironment(EnvImage&& image, const std::filesystem::path& name) override;
+  /// The physical sky's clouds as its last commit measured them for the meter (EnvBaker::cloudLight).
+  SkyCloudLight skyCloudLight() const override
+  {
+    const EnvBaker::CloudLight c = m_envBaker.cloudLight();
+    return {.sky = c.sky, .sun = c.sun};
+  }
   /// Scene bounds as loaded (world space), or an empty box with no scene.
   [[nodiscard]] nvutils::Bbox sceneBounds() const;
   [[nodiscard]] bool loadSceneFile(const std::filesystem::path& filename);

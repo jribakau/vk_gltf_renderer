@@ -816,6 +816,15 @@ void FvHost::onUpdate()
   s.renderer->setTexturesArriving(s.texturesCooking() > 0);
   // and it waits for a drape the GPU's other queue is making, which needs the GPU more than it does
   s.renderer->setStillPaused(s.drapingOnGpu());
+  // the exposure follows what a new bake of the sky measured of its clouds
+  try
+  {
+    s.followCloudReading();
+  }
+  catch(const std::exception& e)
+  {
+    s.noticeNowAndThen(std::string("lighting: ") + e.what());
+  }
   if(fv::timing::enabled())
     if(const std::string line = s.dialTiming.report(std::chrono::steady_clock::now()); !line.empty())
     {

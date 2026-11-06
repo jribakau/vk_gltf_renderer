@@ -331,6 +331,52 @@ TEST(FvLighting, CloudsAreClearUntilSetAndReachTheRenderer)
   EXPECT_THROW(L::applyPatch(s, {{"clouds", {{"type", "cirrus"}}}}), std::invalid_argument);
 }
 
+// The exposure follows the clouds where the app's camera meters (protocol 35): what they take from the
+// light given back, by the sky's share of a clear day's light and the share of the sun past them
+TEST(FvLighting, TheExposureFollowsTheClouds)
+{
+  L::State s;
+  s.env.source       = "sky";
+  s.tonemap.exposure = 2.0;
+  const L::CloudReading overcast{.sky = 0.5, .sun = 0.0};
+  // an app from before it doesn't follow them: the exposure is its own
+  EXPECT_EQ(L::rendererParams(s, {}, overcast)["tmExposure"], 2.0);
+  s = L::applyPatch(s, {{"tonemap", {{"followClouds", true}, {"skyShare", 0.4}}}});
+  // the sky gives 40% of a clear day's light, now at half of it, and the sun none: a fifth is left
+  EXPECT_DOUBLE_EQ(L::cloudLight(s, overcast), 0.2);
+  const Json p = L::rendererParams(s, {}, overcast);
+  EXPECT_DOUBLE_EQ(p["tmExposure"].get<double>(), 2.0 / 0.2);
+  // the firefly clamp goes with the exposure the camera takes
+  EXPECT_DOUBLE_EQ(p["ptFireflyClamp"].get<double>(), 16.0 / (2.0 / 0.2));
+  // a clear sky takes nothing; the sun out between clouds that brighten the sky stops it down a little
+  EXPECT_DOUBLE_EQ(L::rendererParams(s, {}, {})["tmExposure"].get<double>(), 2.0);
+  EXPECT_LT(L::cloudExposure(s, {.sky = 1.5, .sun = 1.0}), 1.0);
+  EXPECT_GT(L::cloudExposure(s, {.sky = 1.5, .sun = 1.0}), 0.8);
+  // the sun behind a thin veil: most of the light is the sun's, so most of the change
+  EXPECT_DOUBLE_EQ(L::cloudLight(s, {.sky = 1.0, .sun = 0.5}), 0.4 + 0.6 * 0.5);
+  // a deck that takes everything: ten stops at most
+  EXPECT_DOUBLE_EQ(L::cloudExposure(s, {.sky = 0.0, .sun = 0.0}), 1000.0);
+  // the sun off: the sky is all the light there is (the app sends a share of 1), so the shadow is nothing
+  EXPECT_DOUBLE_EQ(L::cloudLight(L::applyPatch(s, {{"tonemap", {{"skyShare", 1.0}}}}), {.sky = 0.6, .sun = 0.0}), 0.6);
+  // a manual camera doesn't follow: the light changes, the exposure doesn't
+  EXPECT_EQ(L::cloudExposure(L::applyPatch(s, {{"tonemap", {{"followClouds", false}}}}), overcast), 1.0);
+  // another environment has no clouds
+  L::State hdr = s;
+  hdr.env.source = "hdr";
+  EXPECT_EQ(L::cloudLight(hdr, overcast), 1.0);
+  EXPECT_EQ(L::cloudExposure(hdr, overcast), 1.0);
+  // in the topic, clamped, and the topic with its read-only reading replays as a patch
+  EXPECT_EQ(L::toJson(s)["tonemap"]["followClouds"], true);
+  EXPECT_EQ(L::toJson(s)["tonemap"]["skyShare"], 0.4);
+  EXPECT_EQ(L::applyPatch(s, {{"tonemap", {{"skyShare", 3}}}}).tonemap.skyShare, 1.0);
+  Json topic                     = L::toJson(s);
+  topic["tonemap"]["cloudLight"] = 0.2;
+  const L::State back            = L::applyPatch(L::State{}, topic);
+  EXPECT_TRUE(back.tonemap.followClouds);
+  EXPECT_EQ(back.tonemap.skyShare, 0.4);
+  EXPECT_THROW(L::applyPatch(s, {{"tonemap", {{"followClouds", 1}}}}), std::invalid_argument);
+}
+
 // A body of water: the ground's water mode, its depth and waves; a floor's wet layer goes with it
 TEST(FvLighting, TheWaterModeIsABodyOfWater)
 {

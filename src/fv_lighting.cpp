@@ -268,6 +268,12 @@ void patchTonemap(Tonemap& t, const Json& p)
       field(t.temperature, d.temperature, v, [&](const Json& x) { return number(x, key, 2000.0, 15000.0); });
     else if(k == "tint")
       field(t.tint, d.tint, v, [&](const Json& x) { return number(x, key, -0.03, 0.03); });
+    else if(k == "followClouds")
+      field(t.followClouds, d.followClouds, v, [&](const Json& x) { return boolean(x, key); });
+    else if(k == "skyShare")
+      field(t.skyShare, d.skyShare, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "cloudLight")
+      continue;  // read-only, the host's
     else
       reject("unknown key " + key);
   }
@@ -320,7 +326,9 @@ Json toJson(const State& s)
         {"saturation", t.saturation},
         {"vignette", t.vignette},
         {"temperature", t.temperature},
-        {"tint", t.tint}}},
+        {"tint", t.tint},
+        {"followClouds", t.followClouds},
+        {"skyShare", t.skyShare}}},
   };
 }
 
@@ -510,6 +518,22 @@ double tmExposure(const std::string& method, double exposure)
   return method == "aces" ? exposure / 0.6 : exposure;
 }
 
+double cloudLight(const State& s, const CloudReading& clouds)
+{
+  if(s.env.source != "sky")
+    return 1.0;
+  const double share = std::clamp(s.tonemap.skyShare, 0.0, 1.0);
+  const double light = share * clouds.sky + (1.0 - share) * clouds.sun;
+  // 1/1000, ten stops: the darkest a deck could make the day, which the exposure's own range bounds
+  // anyway; 4, where nothing a cloud does to the light reaches
+  return std::clamp(light, 1e-3, 4.0);
+}
+
+double cloudExposure(const State& s, const CloudReading& clouds)
+{
+  return s.tonemap.followClouds ? 1.0 / cloudLight(s, clouds) : 1.0;
+}
+
 // The path tracer scales each contribution of indirect light (light that reached the path after a
 // diffuse or glossy bounce) down by its largest channel, before exposure, when it passes the firefly
 // clamp (ptFireflyClampMode 1, the renderer's default); direct light, catchlights included, is never
@@ -610,13 +634,15 @@ static int cloudType(const std::string& type)
   return type == "stratocumulus" ? 1 : type == "stratus" ? 2 : 0;
 }
 
-Json rendererParams(const State& s, glm::uvec2 envSize)
+Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clouds)
 {
   const Env&     e = s.env;
   const Tonemap& t = s.tonemap;
   const Ground&  g = s.ground;
   const auto     vec3 = [](const glm::vec3& c) { return Json::array({c.x, c.y, c.z}); };
   const glm::vec4 rot = envRotation(e.rotation);
+  // what the camera takes: the app's exposure, and what the clouds take from the light given back
+  const double exposure = tmExposure(t.method, t.exposure) * cloudExposure(s, clouds);
 
   int envSystem = 1;  // studio and hdr are both a lat-long image
   if(e.source == "sky")
@@ -645,7 +671,7 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       {"tmActive", 1},
       {"tmAutoExposure", 0},
       {"tmMethod", tmMethod(t.method)},
-      {"tmExposure", tmExposure(t.method, t.exposure)},
+      {"tmExposure", exposure},
       {"tmContrast", t.contrast},
       {"tmSaturation", t.saturation},
       {"tmVignette", t.vignette},
@@ -653,8 +679,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       {"tmTint", t.tint},
       // the renderer recalibrates this on every load, so the host drops it from what it has applied
       // after a load or an environment change and sends it again
-      {"ptFireflyClamp", kFireflyClamp / tmExposure(t.method, t.exposure)},
-      {"ptFireflyClampStill", kFireflyClampStill / tmExposure(t.method, t.exposure)},
+      {"ptFireflyClamp", kFireflyClamp / exposure},
+      {"ptFireflyClampStill", kFireflyClampStill / exposure},
       {"useInfinitePlane", g.mode != "off"},
       {"isShadowCatcher", g.mode == "catcher"},
       {"infinitePlaneBaseColor", vec3(linearColor(g.color))},

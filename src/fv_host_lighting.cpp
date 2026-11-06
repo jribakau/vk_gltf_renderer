@@ -37,7 +37,20 @@ Json FvHost::Impl::lightingTopic() const
   }
   else
     t["env"]["sun"] = nullptr;
+  // what the clouds leave of the light, for the camera's meter to show; rounded, so a re-bake that
+  // measures what it did doesn't send a patch
+  t["tonemap"]["cloudLight"] = std::round(fv::lighting::cloudLight(lighting, cloudReading) * 1000.0) / 1000.0;
   return t;
+}
+
+void FvHost::Impl::followCloudReading()
+{
+  const HostRenderer::SkyCloudLight r = renderer->skyCloudLight();
+  const fv::lighting::CloudReading  now{.sky = r.sky, .sun = r.sun};
+  if(now == cloudReading)
+    return;
+  cloudReading = now;
+  applyLighting(false);
 }
 
 void FvHost::Impl::publishLighting()
@@ -75,7 +88,7 @@ void FvHost::Impl::applyLighting(bool everything)
     requestEnvironment();
   }
 
-  Json params                     = fv::lighting::rendererParams(lighting, envSize);
+  Json params                     = fv::lighting::rendererParams(lighting, envSize, cloudReading);
   params["infinitePlaneDistance"] = lighting.ground.autoHeight ? double(autoGround) : lighting.ground.height;
   if(const auto still = appliedParams.find("ptFireflyClampStill"); still != appliedParams.end() && still->is_number())
     params["ptFireflyClampStill"] = fv::lighting::stillFireflyClamp(params["ptFireflyClampStill"].get<double>(), still->get<double>());

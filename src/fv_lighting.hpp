@@ -35,7 +35,11 @@
 //            darkness, fade, water (0 dry to 1 a sheet of it, on a floor), depth (metres, of the
 //            water mode's body of water), waves (on it, 0 still to 1), ripples (on either, 0 still to 1)
 //   tonemap: method aces|agx|neutral|filmic, exposure, contrast, saturation, vignette,
-//            temperature (Kelvin), tint (Duv)
+//            temperature (Kelvin), tint (Duv), followClouds (the exposure opens up for what the
+//            physical sky's clouds take from the light, as the meter measures it at each bake: the
+//            app's camera metering), skyShare (of a clear sky's light on the figure, the share the
+//            sky gives rather than the sun, at this sun: the app's measured tables, sunPath.ts);
+//            read-only, cloudLight (the light the clouds leave the figure, against a clear sky's)
 //
 // Colours are "#rrggbb" in sRGB, as the panel shows them. A patch from before protocol 17 (a kept
 // scene's) may also carry sun.shadows and a shadow section, the raster view's shadow map: they are
@@ -113,6 +117,18 @@ struct Tonemap
   double      vignette    = 0.0;
   double      temperature = 6500.0;
   double      tint        = 0.0;
+  bool        followClouds = false;  // off for an app from before protocol 35, which doesn't send it
+  double      skyShare     = 1.0;
+};
+
+// What the physical sky's clouds leave of its light, as the renderer's last full bake measured it
+// (EnvBaker::cloudLight): `sky`, the sky's own light on a figure, with the clouds against without;
+// `sun`, the share of the sun that gets past them. 1 and 1 under a clear sky.
+struct CloudReading
+{
+  double sky = 1.0;
+  double sun = 1.0;
+  bool   operator==(const CloudReading&) const = default;
 };
 
 struct State
@@ -170,6 +186,15 @@ double hdrBlur(double blurriness, uint32_t width, uint32_t height);
 // The renderer's exposure for the panel's: three's ACES divides by 0.6 first (tmExposure).
 double tmExposure(const std::string& method, double exposure);
 
+// The light the physical sky's clouds leave a figure, against a clear sky's at the same sun: the
+// sky's share of a clear day's (tonemap.skyShare) as the sky now gives it, and the sun's as much of it
+// as gets through. 1 for every other environment.
+double cloudLight(const State& s, const CloudReading& clouds);
+
+// What the exposure is multiplied by for the clouds: the light they take, given back, when the
+// camera follows them (tonemap.followClouds); else 1.
+double cloudExposure(const State& s, const CloudReading& clouds);
+
 // The renderer's tmMethod for a tone-map name.
 int tmMethod(const std::string& method);
 
@@ -188,8 +213,9 @@ std::vector<float> studioImage(uint32_t width = 512, uint32_t height = 256);
 
 // The registered renderer parameters `s` sets, by name, for nvmcp's setParameters. `envSize` is
 // the environment image's size, which hdrBlur depends on. Ground height is the host's (auto needs
-// the scene), so it isn't here.
-Json rendererParams(const State& s, glm::uvec2 envSize);
+// the scene), so it isn't here. `clouds`, the renderer's last reading of the physical sky's clouds,
+// for the exposure (cloudExposure).
+Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clouds = {});
 
 // The still's firefly clamp to send, given the one the exposure asks for (rendererParams'
 // ptFireflyClampStill) and the one the renderer has: the one it has while it is within 4x of the one

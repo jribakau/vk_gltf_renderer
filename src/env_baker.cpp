@@ -110,6 +110,14 @@ void EnvBaker::init(Resources& res, VkDescriptorSetLayout brunetonSetLayout, VkD
     NVVK_CHECK(nvvk::endSingleTimeCommands(cmd, m_device, m_transientCmdPool, res.app->getQueue(0).queue));
   }
 
+  // Host-visible and mapped: the bake writes it (a quarter of a megabyte, once a bake) and the host
+  // reads it after the commit's wait. A preview bake writes it too, which nobody reads: the next
+  // commit writes it again before the host does.
+  NVVK_CHECK(res.allocator.createBuffer(m_meterBuf, (VkDeviceSize(kEnvSamplingGrid.width) * kEnvSamplingGrid.height + 1) * sizeof(glm::vec2),
+                                        VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
+                                        VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT));
+  NVVK_DBG_NAME(m_meterBuf.buffer);
+
   m_initialized = true;
 }
 
@@ -123,6 +131,7 @@ void EnvBaker::deinit(Resources& res)
   destroyResources(res);
   res.allocator.destroyBuffer(m_skyParamsBuf);
   res.allocator.destroyBuffer(m_sunDiskBuf);
+  res.allocator.destroyBuffer(m_meterBuf);
 
   vkDestroyPipeline(m_device, m_pipeline, nullptr);
   vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
@@ -287,6 +296,7 @@ void EnvBaker::recordBake(VkCommandBuffer cmd, bool preview)
   push.clouds           = (physical && m_clouds->hasClouds()) ? 1 : 0;
   push.sunlitGround     = physical ? cloudSunlitGround(m_clouds->settings()) : 1.0F;
   push.cloudPreview     = (physical && m_clouds->showingPreview()) ? 1 : 0;
+  push.meterAddress     = physical ? m_meterBuf.address : 0;
 
   // One pipeline for every sky: env_bake.slang switches on pc.skyType. Set 1 carries the LUTs only
   // the Bruneton case reads, and is bound regardless -- SkyBruneton precomputes at startup, so it
@@ -306,6 +316,30 @@ void EnvBaker::recordBake(VkCommandBuffer cmd, bool preview)
   // orders against the dispatch above, blits the chain, and restores every level to that same
   // layout -- so the GENERAL-everywhere contract holds with no extra barriers of our own.
   nvvk::cmdGenerateMipmaps(cmd, m_colorImage.image, m_size, m_mipLevels, /*layerCount*/ 1, VK_IMAGE_LAYOUT_GENERAL);
+}
+
+//--------------------------------------------------------------------------------------------------
+// What the commit's bake measured of the clouds for the camera's meter (cloudLight): the sky's two
+// sums over the grid, clear and clouded, and the sun's share the bake wrote after them. Read once the
+// bake's submit has waited; a clear sky's are 1 exactly, without a read.
+//
+void EnvBaker::readCloudLight(Resources& res)
+{
+  if(m_skyType != shaderio::SkyType::ePhysicalBruneton || !m_clouds->hasClouds())
+  {
+    m_cloudLight = {};
+    return;
+  }
+  NVVK_CHECK(vmaInvalidateAllocation(res.allocator, m_meterBuf.allocation, 0, VK_WHOLE_SIZE));
+  const size_t     cells = size_t(kEnvSamplingGrid.width) * kEnvSamplingGrid.height;
+  const glm::vec2* meter = reinterpret_cast<const glm::vec2*>(m_meterBuf.mapping);
+  double           clear = 0.0, clouded = 0.0;
+  for(size_t i = 0; i < cells; ++i)
+  {
+    clear += meter[i].x;
+    clouded += meter[i].y;
+  }
+  m_cloudLight = {.sky = clear > 0.0 ? float(clouded / clear) : 1.0F, .sun = std::clamp(meter[cells].x, 0.0F, 1.0F)};
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -388,6 +422,7 @@ void EnvBaker::commit(Resources& res)
     nvvk::endSingleTimeCommands(cmd, m_device, m_transientCmdPool, queueInfo.queue);
   }
   timings.bakeMs = mark(stage);
+  readCloudLight(res);
 
   // -- Alias table + PDF into alpha ----------------------------------------------------------
   // Rebinds the HdrIbl `eHdr` descriptor to our image and `eImpSamples` to the freshly built
@@ -396,7 +431,8 @@ void EnvBaker::commit(Resources& res)
   timings.aliasMs = mark(stage);
 
   timings.totalMs = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
-  LOGI("EnvBaker::commit %.2f ms (bake %.2f, alias+pdf %.2f)\n", timings.totalMs, timings.bakeMs, timings.aliasMs);
+  LOGI("EnvBaker::commit %.2f ms (bake %.2f, alias+pdf %.2f); the clouds leave the sky's light %.3f, the sun %.3f\n",
+       timings.totalMs, timings.bakeMs, timings.aliasMs, m_cloudLight.sky, m_cloudLight.sun);
 
   m_needsCommit = false;
 }
