@@ -443,10 +443,12 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
 
   float cosTheta = abs(dot(rayDirection, normal));
 #if GLTF_USE_IOR
-  float fresnel = schlickFresnel(mat.ior, cosTheta);
+  const float ior = mat.ior;
 #else
-  float fresnel = schlickFresnel(1.5F, cosTheta);
+  const float ior = 1.5F;
 #endif
+  // A pane reflects at both its faces (FV_materials_pane), as its BSDF does (plate_fresnel)
+  float fresnel = (mat.plate > 0.0F && thickness <= 0.0) ? plate_fresnel(ior, cosTheta) : schlickFresnel(ior, cosTheta);
   // What the surface reflects, as the BSDF has it: KHR_materials_specular weighs Fresnel (a cornea
   // under the eye's tear film reflects none), and a clearcoat and second lobe reflect their shares over that.
 #if GLTF_USE_SPECULAR

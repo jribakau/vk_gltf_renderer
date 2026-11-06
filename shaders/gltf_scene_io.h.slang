@@ -251,7 +251,9 @@ struct GltfShadeMaterial
   // FV_materials_eye: the index of the chamber behind a tear film, which a ray entering through the
   // surface's front face bends into (rayIntoEyeChamber); 0: it passes straight, as thin glass does
   float chamberIor  = 0;
-  float _chamberPad = 0;  // keeps the row a multiple of 8 with no padding: rows are compared byte by byte
+  // FV_materials_pane: 1 where a thin-walled surface is a pane, both its faces reflecting
+  // (PbrMaterial::plate, plate_fresnel); 0: one interface. Keeps the row a multiple of 8 with no padding.
+  float plate = 0;
 #endif
 
 #if MAT_EXT_VOLUME

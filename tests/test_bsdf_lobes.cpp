@@ -107,6 +107,14 @@ std::vector<Case> cases()
   darkCoat.clearcoat          = 1.0f;
   darkCoat.clearcoatRoughness = 0.15f;
   out.push_back({"dark coat", darkCoat});
+  // A window pane drawn as one surface: thin-walled glass reflecting at both faces (plate_fresnel)
+  PbrMaterial pane  = defaultPbrMaterial(vec3(0.9f), 0.0f, 0.3f, vec3(0, 0, 1), vec3(0, 0, 1));
+  pane.transmission = 1.0f;
+  pane.plate        = true;
+  out.push_back({"pane", pane});
+  PbrMaterial thinGlass = pane;
+  thinGlass.plate       = false;
+  out.push_back({"thin glass", thinGlass});
   return out;
 }
 
@@ -518,6 +526,77 @@ TEST(BsdfLobes, ARoughDielectricReflectsItsMicrofacetFresnel)
           microfacet += s.bsdf_over_pdf.x / N;
       }
       EXPECT_NEAR(carriedAt(mat, NoV).reflected.x, microfacet, 0.02 * microfacet + 2e-3) << roughness << ", " << NoV;
+    }
+}
+
+// A thin pane reflects at both faces: 2r / (1 + r) of one face's r per polarisation, 7.7% head-on for
+// glass where one face gives 4%, more at every angle, all of it at grazing.
+TEST(BsdfLobes, APaneReflectsAtBothFaces)
+{
+  EXPECT_NEAR(plate_fresnel(1.5f, 1.0f), 2.0f * 0.04f / 1.04f, 1e-5f);
+  for(float kh = 0.02f; kh <= 1.0f; kh += 0.07f)
+  {
+    const float one = ior_fresnel(1.5f, kh), two = plate_fresnel(1.5f, kh);
+    EXPECT_GT(two, one) << kh;
+    EXPECT_LE(two, 2.0f * one) << kh;
+  }
+  EXPECT_GT(plate_fresnel(1.5f, 1e-4f), 0.99f);
+  // a pane of a medium's wall is one interface
+  PbrMaterial wall = caseNamed("pane");
+  EXPECT_TRUE(bsdfIsPlate(wall));
+  wall.thickness = 0.01f;
+  EXPECT_FALSE(bsdfIsPlate(wall));
+}
+
+// A thin pane splits each microfacet's light by the pane's Fresnel: about twice one face's reflection
+// head-on, more at every angle, and what it reflects and transmits together is what one face's film
+// keeps: the pane moves light from transmission to reflection, it makes or loses none.
+TEST(BsdfLobes, APaneReflectsTwiceAndKeepsItsEnergy)
+{
+  for(float roughness : {0.05f, 0.3f})
+  {
+    PbrMaterial film  = defaultPbrMaterial(vec3(1.0f), 0.0f, roughness, vec3(0, 0, 1), vec3(0, 0, 1));
+    film.transmission = 1.0f;
+    PbrMaterial pane  = film;
+    pane.plate        = true;
+    for(float NoV : {1.0f, 0.5f, 0.2f})
+    {
+      const Carried one = carriedAt(film, NoV), two = carriedAt(pane, NoV);
+      EXPECT_GT(two.reflected.x, (NoV == 1.0f ? 1.7f : 1.05f) * one.reflected.x) << roughness << ", " << NoV;
+      EXPECT_LE(two.reflected.x + two.transmitted.x, 1.01f) << roughness << ", " << NoV;
+      EXPECT_NEAR(two.reflected.x + two.transmitted.x, one.reflected.x + one.transmitted.x, 0.01f) << roughness << ", " << NoV;
+    }
+    if(roughness == 0.05f)
+      EXPECT_NEAR(carriedAt(pane, 1.0f).reflected.x, 0.0769f, 0.004f);
+  }
+}
+
+// What a pane's lobe reflects is its GGX lobe weighed by each microfacet's pane Fresnel; the albedo
+// fit (ggxPlateAlbedo) is how often the lobe is picked, and what a base under it is charged. It comes
+// within 12% of the integral, low at middling views on rough panes; the one-face fit
+// (ggxDielectricAlbedo) is within 10% over the same grid (measured 2026-11-06). What a clear pane
+// reflects and transmits is exact either way (APaneReflectsTwiceAndKeepsItsEnergy).
+TEST(BsdfLobes, ThePaneAlbedoFitIsTheLobesIntegral)
+{
+  std::mt19937                          rng(37);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  for(float roughness : {0.05f, 0.2f, 0.4f, 0.7f, 1.0f})
+    for(float NoV : {0.05f, 0.15f, 0.5f, 1.0f})
+    {
+      PbrMaterial mat = defaultPbrMaterial(vec3(1.0f), 0.0f, roughness, vec3(0, 0, 1), vec3(0, 0, 1));
+      const vec3  k1  = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+      const int   N   = 100000;
+      double      microfacet = 0.0;
+      for(int i = 0; i < N; i++)
+      {
+        BsdfSampleData s;
+        s.k1 = k1;
+        s.xi = vec3(u(rng), u(rng), u(rng));
+        brdf_ggx_smith_sample(s, mat, LOBE_SPECULAR_REFLECTION, vec3(1.0f), BSDF_FRESNEL_PLATE, 1.5f);
+        if(s.event_type != BSDF_EVENT_ABSORB)
+          microfacet += s.bsdf_over_pdf.x / N;
+      }
+      EXPECT_NEAR(ggxPlateAlbedo(1.5f, roughness * roughness, NoV), microfacet, 0.13 * microfacet + 2e-3) << roughness << ", " << NoV;
     }
 }
 

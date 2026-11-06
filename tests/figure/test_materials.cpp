@@ -421,6 +421,23 @@ TEST(Materials, ThinWalledOffRefractsAsASolid)
   EXPECT_EQ(thickness(moisture, true), 0.0f);
 }
 
+// Thin Walled on is a pane drawn as one surface: it reflects at both its faces (FV_materials_pane). A
+// solid's face is one interface, and so are the eye's shells; a file for other tools leaves it out.
+TEST(Materials, AThinWalledPaneReflectsAtBothFaces)
+{
+  const auto pane  = surfaceOf("Window", kUberType, {{"Glossy Roughness", 0}, {"Refraction Weight", 1}, {"Refraction Index", 1.5}, {"Thin Walled", true}});
+  const auto glass = surfaceOf("Glass", kUberType, {{"Glossy Roughness", 0}, {"Refraction Weight", 1}, {"Refraction Index", 1.5}});
+  EXPECT_TRUE(fv::mat::lower(pane, {}, {}).material.pane);
+  EXPECT_FALSE(fv::mat::lower(glass, {}, {}).material.pane);
+  fv::mat::LowerOptions file;
+  file.forFile = true;
+  EXPECT_FALSE(fv::mat::lower(pane, {}, file).material.pane);
+  const auto moisture = fv::dson::parseSurface("Eye Moisture Left", channelsOf(kEyeMoisture));
+  EXPECT_FALSE(fv::mat::lower(moisture, {}, {}).material.pane);
+  const auto opaque = surfaceOf("Frame", kUberType, {{"Glossy Roughness", 0.3}, {"Thin Walled", true}});
+  EXPECT_FALSE(fv::mat::lower(opaque, {}, {}).material.pane);  // nothing refracts through it
+}
+
 // Frosted DAZ glass is lowered at the refracting cap, and the path tracer takes the cap for a clear
 // crossing, so shadow rays pass it and the bulb inside a frosted envelope gets light samples. Compared
 // as GGX alpha the cap was not one: 0.1f squared is just above 0.01f.

@@ -465,6 +465,7 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   {
     pbrMat.transmission *= getTexture(images, samplers, texInfos[material.transmissionTexture], state.tc, state.texGrad).r;
   }
+  pbrMat.plate = material.plate > 0.0F;  // FV_materials_pane; the BSDF reads it only where thin-walled (bsdfIsPlate)
 #endif
 
   // KHR_materials_scatter is applied after KHR_materials_diffuse_transmission below, because the

@@ -748,6 +748,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
                                         : dlssTraceClearGlass(pbrMat, hit, materialIndex >= 0 ? rayIntoEyeChamber(ray.Direction, pbrMat.N, hit, materials + materialIndex) : ray.Direction, ptIsInside(pt));
         float        ndotv   = saturate(dot(pbrMat.N, -ray.Direction));
         float        fresnel = schlickFresnel((pbrMat.ior2 > 0.0f) ? (pbrMat.ior2 / pbrMat.ior1) : 1.5f, ndotv);
+        if(bsdfIsPlate(pbrMat))
+          fresnel = 2.0F * fresnel / (1.0F + fresnel);  // a pane's two faces
         guideAlbedo          = dlssEnforceMinAlbedo(lerp(psr.albedo, pbrMat.baseColor.xyz, fresnel), specularAlbedo);
         if(psr.valid)
         {

@@ -61,6 +61,7 @@ Material everything()
   m.scatter      = Scatter{.strength = 0.6f, .strengthMap = slot(15), .multiscatterColor = {0.7f, 0.6f, 0.5f}, .multiscatterColorMap = slot(16), .anisotropy = -0.5f};
   m.scatterDistance = Rgb{0.003f, 0.002f, 0.001f};
   m.chamberIor      = 1.336f;
+  m.pane            = true;
   m.anisotropy      = Anisotropy{.strength = 0.5f, .rotation = 1.25f, .map = slot(17)};
   m.iridescence     = Iridescence{.factor = 0.5f, .ior = 1.4f, .thicknessMinimum = 150, .thicknessMaximum = 350, .map = slot(18), .thicknessMap = slot(19)};
   m.dispersion      = 0.5f;

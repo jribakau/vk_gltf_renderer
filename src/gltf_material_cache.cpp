@@ -140,6 +140,7 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const fv::mat::
   const Transmission transmission = srcMat.transmission.value_or(Transmission{});
   dstMat.transmissionFactor       = transmission.factor;
   dstMat.chamberIor               = srcMat.chamberIor.value_or(0.0f);
+  dstMat.plate                    = srcMat.pane ? 1.0f : 0.0f;
   handleTexture(dstMat.transmissionTexture, transmission.map);
 #endif
 

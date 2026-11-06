@@ -474,6 +474,21 @@ guides follow that ray. Rays leaving the eye go straight, so the eye needs no me
 internal reflection to lose light to, and a lit iris is as bright as without it; the cost is that the
 cornea focuses no caustic. A GLB export leaves it out. It has no Inspector section.
 
+### `FV_materials_pane`: thin-walled glass that is a pane
+
+A vendor extension written by Figure Viewer on a refracting surface DAZ marks Thin Walled: a pane drawn
+as one polygon. It has no fields. Such a surface reflects at both its faces, the light between them
+going back and forth (incoherently): per polarisation 2r/(1 + r) of one face's r (`plate_fresnel()` in
+`nvshaders/pbr_ggx_microfacet.h.slang`), 7.7% head-on for glass where one face gives 4%, 15% at 60
+degrees. It travels as `GltfShadeMaterial::plate` to `PbrMaterial::plate`, and every place that weighs
+a dielectric's reflection against its transmission reads it: the lobe weights' albedo
+(`ggxPlateAlbedo()`), each microfacet's Fresnel (`BSDF_FRESNEL_PLATE`), the transmission lobe, the shadow
+rays (`getShadowTransmission()`) and the clear-glass guide. Only where the surface is thin-walled
+(`bsdfIsPlate()`): a medium's wall is one interface. The eye's shells keep one interface, and so does a
+glTF file's thin-walled transmission, which the extension's absence leaves as KHR_materials_transmission
+defines it. A GLB export leaves it out. A pane modelled as a closed box with Thin Walled on counts four
+faces.
+
 ### `FV_materials_procedural`: sweat and the like over a surface
 
 A vendor extension written by Figure Viewer for a layer an edit puts over a figure's surface. A layer

@@ -678,6 +678,11 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     // with nothing behind it to see.
     if(tearFilm && shell != EyeShell::eMeniscus && !opts.forFile)
       out.chamberIor = kEyeChamberIor;
+    // Iray Uber's Thin Walled on: a pane drawn as one surface, which reflects at both its faces, 7.7%
+    // head-on where one face reflects 4% (plate_fresnel). The eye's shells and surfaces stay one
+    // interface; Thin Walled off is a solid's face, one interface too.
+    if(s.refraction->thinWalled && !tearFilm && shell == EyeShell::eNone && s.kind != Kind::eEye && !opts.forFile)
+      out.pane = true;
     // Iray Uber's Thin Walled off: the face of a closed solid, which refracts what is behind it, not a
     // film light goes straight through. The tint stays per crossing (a bottle doesn't darken across
     // its width); the solid absorbs along its depth only where the file measures it. The eye's shells
