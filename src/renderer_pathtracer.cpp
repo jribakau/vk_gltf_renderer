@@ -326,6 +326,14 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "it (Dwivedi guiding): the same image, sooner",
                  .callbackSuccess = reset},
                 &m_walkGuiding, Persist::eNo);
+  // What a skin map means to the walk under it (FV_materials_subsurface). Off, Chiang, Kutz and Burley's
+  // inversion: the walk's albedo averaged over the directions light comes from, so a refracting entry
+  // returns 6-15% less than the map face-on, most in blue. On, the albedo of a walk entered head-on.
+  settings->add({.name            = "ptSkinFaceOn",
+                 .help            = "PathTracer: Measured skin lit from the front comes back at its skin map; off: the map is "
+                                    "the skin's albedo averaged over directions, and face-on it returns 6-15% less",
+                 .callbackSuccess = reset},
+                &m_skinFaceOn, Persist::eNo);
   settings->add({.name            = "ptLightTree",
                  .help            = "PathTracer: Emissive meshes are picked by how near and how bright they are (a light "
                                     "tree over them); off: by power alone, wherever they are",
@@ -1497,6 +1505,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_lightsVisible ? shaderio::ePtLightsVisible : 0;
   m_pushConst.flags |= m_exitFresnel ? shaderio::ePtExitFresnel : 0;
   m_pushConst.flags |= m_walkGuiding ? shaderio::ePtWalkGuiding : 0;
+  m_pushConst.flags |= m_skinFaceOn ? shaderio::ePtSkinFaceOn : 0;
   m_pushConst.flags |= m_lightTree ? shaderio::ePtLightTree : 0;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;
   m_pushConst.flags |= (m_sampler == 1 && !useDlss) ? shaderio::ePtSobol : 0;

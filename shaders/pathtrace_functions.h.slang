@@ -2027,7 +2027,8 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     mesh.baseColorVertexMul = hit.color;
     mesh.masks              = hit.masks;
     mat    = evaluateMaterial(max(0, node.materialID), mesh, allImages, allSamplers, texInfos, materials,
-                              hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));
+                              hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin),
+                              hasFlag(pushConst.flags, PathtracerFlags::ePtSkinFaceOn));
     origin       = hit.pos;
     originNormal = hit.geonrm;
     originOffset = hit.offsetDistance;

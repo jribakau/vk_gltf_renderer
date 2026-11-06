@@ -9,7 +9,10 @@ multiple-scattering albedo A and inverted to a single-scattering albedo (Chiang,
 white environment with no specular layer, then, a thick slab's front face should come back at about
 A. With ptDiffuseEntry the walk is entered through a Lambertian lobe instead of by refraction (how
 Unreal's path tracer enters subsurface): the script renders both entries and prints how far each
-lands from A, per channel, and checks that the diffuse entry stays within 10% of it.
+lands from A, per channel, and checks that the diffuse entry stays within 10% of it. Entered by
+refraction, light goes in steeply and the inversion's direction average comes back 6-15% short
+face-on; with ptSkinFaceOn the inversion is the head-on one (shaders/skin_albedo.h.slang), checked
+within 2% of A.
 
 The script writes a glTF scene (a slab of skin-like medium filling the view, specular weight 0, no
 lights), renders it headless to a linear .hdr under `--envSystem 3` (plain colour, white), and reads
@@ -37,6 +40,7 @@ SLAB_HALF       = (3.0, 3.0, 0.5)  # far wider than the view, thick against the 
 BASE            = [0.8, 0.55, 0.45]  # a pale skin tone, as the multiple-scattering albedo
 SCATTER_DIST    = [0.00367, 0.00137, 0.00068]  # figure/materials kSkinScatterDistance, metres
 TOLERANCE       = 0.10
+FACE_ON_TOLERANCE = 0.02
 
 
 def skin_material():
@@ -79,11 +83,12 @@ def center_rgb(path):
     return [t / count for t in total]
 
 
-def render(exe, scene_path, output_path, technique, diffuse_entry, walk_guiding):
+def render(exe, scene_path, output_path, technique, diffuse_entry, walk_guiding, face_on):
     cmd = [str(exe), "--headless", "--size", str(IMAGE_SIZE), str(IMAGE_SIZE),
            "--scenefile", str(scene_path), "--envSystem", "3", "--plainColor", "1", "1", "1",
            "--ptTechnique", str(technique), "--ptVolumeDiffuseExit", "1",
            "--ptDiffuseEntry", "1" if diffuse_entry else "0", "--ptWalkGuiding", str(walk_guiding), "--ptMaxDepth", "20",
+           "--ptSkinFaceOn", "1" if face_on else "0",
            "--frames", "0", "--ptMaxSamples", str(SAMPLES), "--output", str(output_path)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0 or not Path(output_path).exists():
@@ -98,6 +103,7 @@ def main():
                         help="where the scene and images go")
     parser.add_argument("--walk-guiding", type=int, choices=(0, 1), default=1,
                         help="ptWalkGuiding: the walks' Dwivedi guiding (the result should not depend on it)")
+    parser.add_argument("--technique", choices=tuple(TECHNIQUES), help="render with this technique only")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -106,16 +112,22 @@ def main():
 
     failures = 0
     for technique_name, technique in TECHNIQUES.items():
-        for diffuse_entry in (False, True):
-            image = args.out / f"{technique_name}_{'diffuse' if diffuse_entry else 'refraction'}.hdr"
-            render(args.exe, scene_path, image, technique, diffuse_entry, args.walk_guiding)
+        if args.technique and technique_name != args.technique:
+            continue
+        for diffuse_entry, face_on in ((False, False), (True, False), (False, True)):
+            name  = "diffuse" if diffuse_entry else "refraction_face_on" if face_on else "refraction"
+            image = args.out / f"{technique_name}_{name}.hdr"
+            render(args.exe, scene_path, image, technique, diffuse_entry, args.walk_guiding, face_on)
             rgb   = center_rgb(image)
             ratio = [rgb[c] / BASE[c] for c in range(3)]
-            label = "diffuse entry   " if diffuse_entry else "refraction entry"
+            label = "diffuse entry     " if diffuse_entry else "refraction, face-on" if face_on else "refraction entry  "
             print(f"{technique_name:10s} {label}: rgb {', '.join(f'{v:.3f}' for v in rgb)}"
                   f"  / base: {', '.join(f'{r:.3f}' for r in ratio)}")
             if diffuse_entry and any(abs(r - 1.0) > TOLERANCE for r in ratio):
                 print(f"FAIL: {technique_name}: the diffuse entry's front face is not its colour within {TOLERANCE:.0%}")
+                failures += 1
+            if face_on and any(abs(r - 1.0) > FACE_ON_TOLERANCE for r in ratio):
+                print(f"FAIL: {technique_name}: with ptSkinFaceOn the front face is not its colour within {FACE_ON_TOLERANCE:.0%}")
                 failures += 1
     print("PASS" if failures == 0 else f"{failures} failure(s)")
     return 1 if failures else 0

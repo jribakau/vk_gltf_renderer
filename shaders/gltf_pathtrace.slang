@@ -597,7 +597,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       MeshState mesh    = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, ptIsInside(pt), texGrad);
       mesh.baseColorVertexMul = hit.color;
       mesh.masks              = hit.masks;
-      pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials, simplifyScatter);
+      pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials, simplifyScatter,
+                                                 hasFlag(pushConst.flags, PathtracerFlags::ePtSkinFaceOn));
       // Under the water, what is outside a surface is water, not air: submerged skin all but loses its
       // sheen, and glass bends less
       if(pt.inWater)
@@ -2027,7 +2028,8 @@ void probeCameraMedium(IRaytracer raytracer)
         mesh.masks              = hit.masks;
         // the thin preview has no medium to be inside of
         PbrMaterial mat = evaluateMaterial(max(0, node.materialID), mesh, allImages, allSamplers, texInfos, materials,
-                                           hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin));
+                                           hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin),
+                                           hasFlag(pushConst.flags, PathtracerFlags::ePtSkinFaceOn));
         const VolumeMedium medium = makeVolumeMedium(mat);
         result.inside             = 1;
         result.absorption         = float3(medium.absorption);

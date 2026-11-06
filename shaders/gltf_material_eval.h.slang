@@ -47,6 +47,7 @@ Design notes for the fork:
 #include "gltf_scene_io.h.slang"
 #include "gltf_eval_config.h"
 #include "thin_scatter.h.slang"
+#include "skin_albedo.h.slang"
 #if GLTF_USE_FLAKES
 #include "flake_noise.h.slang"
 #endif
@@ -170,21 +171,7 @@ float3 applyDetailNormal(float3 N, float3 T, float3 B, float3 d)
 }
 #endif
 
-#if GLTF_USE_SCATTER
-/*-------------------------------------------------------------------------------------------------
- * Convert multi-scatter albedo to single-scatter albedo (Kulla-Conty mapping).
- * Formula from the KHR_materials_scatter specification. The anisotropy g of the
- * Henyey-Greenstein phase function enters the denominator, so forward/backward
- * scattering media get the correct single-scatter albedo.
- * -------------------------------------------------------------------------------------------------*/
-float3 multiToSingleScatterAlbedo(float3 rho_ms, float g)
-{
-  float3 s = 4.09712 + 4.20863 * rho_ms - sqrt(9.59217 + 41.6808 * rho_ms + 17.7126 * rho_ms * rho_ms);
-  // g in (-1,1) and s in [0,1] keep the denominator strictly positive. Clamp the
-  // result to [0,1] so scatterCoefficient never exceeds the total extinction.
-  return clamp((1.0 - s * s) / (1.0 - g * s * s), float3(0.0), float3(1.0));
-}
-#endif
+// multiToSingleScatterAlbedo and faceOnSingleScatterAlbedo: skin_albedo.h.slang
 
 #if GLTF_USE_SPECULAR_GLOSSINESS
 /*-------------------------------------------------------------------------------------------------
@@ -226,7 +213,8 @@ float3 convertSGToMR(float3 diffuseColor, float3 specularColor, float glossiness
 // preview of a FV_materials_subsurface medium measures its scatter distance against
 static const float PREVIEW_BUMP_SCALE = 0.0005;
 
-PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos, bool scatterAsThin = false)
+PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos, bool scatterAsThin = false,
+                             bool skinFaceOn = false)
 {
   // Start from a fully-initialized material so that gating out any extension with MAT_EXT_*
   // cannot leave downstream BSDF reads undefined.
@@ -692,10 +680,12 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
         // distance over which light under the surface falls off (what Jensen et al. measured), so
         // with sigma_tr = sigma_t sqrt(3 (1 - alpha)) the extinction is
         // sigma_t = 1 / (d sqrt(3 (1 - alpha))). Isotropic, in reduced coefficients: tissue's
-        // forward scattering is folded into them, as the measurements are.
+        // forward scattering is folded into them, as the measurements are. A is the walk's albedo
+        // averaged over the directions light comes from, or with skinFaceOn (ePtSkinFaceOn) its
+        // albedo lit head-on, which is what a refracting entry returns face-on (skin_albedo.h.slang).
         const float3 A = clamp(pbrMat.baseColor, float3(1e-3), float3(0.999));
         g                   = 0.0;
-        singleScatterAlbedo = multiToSingleScatterAlbedo(A, g);
+        singleScatterAlbedo = skinFaceOn ? faceOnSingleScatterAlbedo(A) : multiToSingleScatterAlbedo(A, g);
         attenuationCoef     = 1.0 / (max(material.scatterDistance, float3(1e-7)) * sqrt(3.0 * max(1.0 - singleScatterAlbedo, float3(1e-6))));
         // as KHR_materials_volume, for makeVolumeMedium: the densest channel at exp(-1) over its own
         // distance, the rest nearer 1, clear of volumeExtinctionCoefficient's floor
@@ -818,9 +808,10 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   return pbrMat;
 }
 
-PbrMaterial evaluateMaterial(uint materialIndex, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos, GltfShadeMaterial* materials, bool scatterAsThin = false)
+PbrMaterial evaluateMaterial(uint materialIndex, MeshState state, Texture2D images[], SamplerState samplers[], GltfTextureInfo* texInfos, GltfShadeMaterial* materials, bool scatterAsThin = false,
+                             bool skinFaceOn = false)
 {
-  return evaluateMaterial(materials[materialIndex], state, images, samplers, texInfos, scatterAsThin);
+  return evaluateMaterial(materials[materialIndex], state, images, samplers, texInfos, scatterAsThin, skinFaceOn);
 }
 
 

@@ -337,6 +337,7 @@ enum PathtracerFlags
   ePtLightReuse          = 1 << 24,  // The first hit's light sample takes the last frame's in as a candidate (lightReservoirs)
   ePtLightReuseHistory   = 1 << 25,  // ...which the last frame wrote for this view: read it (else start afresh)
   ePtLightReuseParity    = 1 << 26,  // ...this frame writes the second half of lightReservoirs and reads the first
+  ePtSkinFaceOn          = 1 << 27,  // A medium made from its skin map (FV_materials_subsurface) returns the map lit head-on, not averaged over directions
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per
