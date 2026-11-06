@@ -2,7 +2,8 @@
 // compiled as C++: a clear sky comes back exactly, the cloud image's mapping inverts and crowds its
 // rows at the horizon, the layers are where they should be from every observer, the coverage runs
 // from none to all, the phase is normalised and the octaves carry light deep into a cloud, the noise
-// tiles, and the panel's cover shades as much of the land as it says.
+// tiles, each type is the cloud it says, and the panel's cover shades as much of the land as it
+// says under every type.
 
 // GLM as test_bsdf_lobes.cpp, the other file of this executable, sees it
 #undef GLM_FORCE_XYZW_ONLY
@@ -80,7 +81,8 @@ std::vector<Column> columns(int count, unsigned seed, const SkyCloudsParameters&
       }
     };
     band(p.minHeight, p.shadowTopHeight, 24);
-    band(p.minLayerHeights.z, p.maxLayerHeights.z, 4);
+    if(p.maxLayerHeights.z > p.minLayerHeights.z)
+      band(p.minLayerHeights.z, p.maxLayerHeights.z, 4);
   }
   return out;
 }
@@ -195,7 +197,7 @@ TEST(SkyClouds, TheLayerIsWhereItIsFromBelowInsideAndAbove)
 
 TEST(SkyClouds, TheDefaultLayersAreTakramsAndTheDepthScalesTheCumulus)
 {
-  const SkyCloudsParameters p = cloudDefaultParameters(0.5F, CLOUD_DEFAULT_THICKNESS);
+  const SkyCloudsParameters p = cloudDefaultParameters(0.5F, CLOUD_DEFAULT_THICKNESS, CLOUD_TYPE_CUMULUS);
   EXPECT_FLOAT_EQ(p.minLayerHeights.x, 0.75F);
   EXPECT_FLOAT_EQ(p.maxLayerHeights.x, 1.4F);
   EXPECT_FLOAT_EQ(p.maxLayerHeights.y, 2.2F);
@@ -206,7 +208,7 @@ TEST(SkyClouds, TheDefaultLayersAreTakramsAndTheDepthScalesTheCumulus)
   EXPECT_FALSE(cloudInsideIntervals(p, 1.5F));
   EXPECT_FALSE(cloudInsideIntervals(p, 7.7F));
 
-  const SkyCloudsParameters deep = cloudDefaultParameters(0.5F, 2.0F * CLOUD_DEFAULT_THICKNESS);
+  const SkyCloudsParameters deep = cloudDefaultParameters(0.5F, 2.0F * CLOUD_DEFAULT_THICKNESS, CLOUD_TYPE_CUMULUS);
   EXPECT_FLOAT_EQ(deep.maxLayerHeights.y - deep.minLayerHeights.y, 2.4F);
   EXPECT_FLOAT_EQ(deep.minLayerHeights.y, 1.0F);
   EXPECT_FLOAT_EQ(deep.maxLayerHeights.z, 8.0F);  // the high layer stays
@@ -226,35 +228,81 @@ TEST(SkyClouds, TheDefaultLayersAreTakramsAndTheDepthScalesTheCumulus)
 
 TEST(SkyClouds, CoverageRunsFromNoneToAll)
 {
-  const SkyCloudsParameters p = cloudDefaultParameters(0.0F, CLOUD_DEFAULT_THICKNESS);
-  for(float w = 0.0F; w <= 1.0F; w += 0.1F)
-    for(float h = 0.8F; h < 2.2F; h += 0.1F)
-    {
-      SkyCloudsParameters none = p;
-      none.coverage            = 0.0F;
-      EXPECT_FALSE(cloudWeatherHasDensity(none, cloudSampleWeather(none, float4(w), h))) << w << " " << h;
-      // rising with the coverage everywhere
-      float last = 0.0F;
-      for(float c = 0.0F; c <= 1.0F; c += 0.1F)
-      {
-        SkyCloudsParameters at = p;
-        at.coverage            = c;
-        const float4 d         = cloudSampleWeather(at, float4(w), h).density;
-        EXPECT_GE(d.x + d.y, last - 1e-6F);
-        last = d.x + d.y;
-      }
-    }
-  // The panel's cover maps onto it from the first clouds to a closed deck, rising
-  EXPECT_FLOAT_EQ(cloudCoverageFor(0.0F), CLOUD_COVERAGE_FOR_COVER[0]);
-  EXPECT_FLOAT_EQ(cloudCoverageFor(1.0F), CLOUD_COVERAGE_FOR_COVER[20]);
-  float last = -1.0F;
-  for(float cover = 0.0F; cover <= 1.0F; cover += 0.01F)
+  for(int type = 0; type < CLOUD_TYPE_COUNT; ++type)
   {
-    EXPECT_GT(cloudCoverageFor(cover), last);
-    last = cloudCoverageFor(cover);
+    const SkyCloudsParameters p = cloudDefaultParameters(0.0F, cloudDefaultThickness(type), type);
+    for(float w = 0.0F; w <= 1.0F; w += 0.1F)
+      for(float h = p.minHeight + 0.05F; h < p.shadowTopHeight; h += 0.05F)
+      {
+        SkyCloudsParameters none = p;
+        none.coverage            = 0.0F;
+        EXPECT_FALSE(cloudWeatherHasDensity(none, cloudSampleWeather(none, float4(w), h))) << type << " " << w << " " << h;
+        // rising with the coverage everywhere
+        float last = 0.0F;
+        for(float c = 0.0F; c <= 1.0F; c += 0.1F)
+        {
+          SkyCloudsParameters at = p;
+          at.coverage            = c;
+          const float4 d         = cloudSampleWeather(at, float4(w), h).density;
+          EXPECT_GE(d.x + d.y, last - 1e-6F) << type;
+          last = d.x + d.y;
+        }
+      }
+    // The panel's cover maps onto it from the first clouds to a closed deck, rising
+    EXPECT_FLOAT_EQ(cloudCoverageFor(0.0F, type), CLOUD_COVERAGE_FOR_COVER[type][0]);
+    EXPECT_FLOAT_EQ(cloudCoverageFor(1.0F, type), CLOUD_COVERAGE_FOR_COVER[type][20]);
+    float last = -1.0F;
+    for(float cover = 0.0F; cover <= 1.0F; cover += 0.01F)
+    {
+      EXPECT_GT(cloudCoverageFor(cover, type), last) << type;
+      last = cloudCoverageFor(cover, type);
+    }
   }
+  // a type out of range clamps to the nearest, never a read past the table
+  EXPECT_EQ(cloudCoverageFor(0.5F, 99), cloudCoverageFor(0.5F, CLOUD_TYPE_COUNT - 1));
+  EXPECT_EQ(cloudCoverageFor(0.5F, -1), cloudCoverageFor(0.5F, CLOUD_TYPE_CUMULUS));
   EXPECT_EQ(cloudSunlitAir(0.0F), 1.0F);
   EXPECT_EQ(cloudSunlitAir(1.0F), 0.0F);
+}
+
+// The stratiform types are single decks, low and flat: one band of the sky marched, no gap to step
+// over and no high layer, the billows marking stratus least, and Thickness their depth.
+TEST(SkyClouds, EachTypeIsTheCloudItSays)
+{
+  const SkyCloudsParameters cu = cloudDefaultParameters(0.5F, cloudDefaultThickness(CLOUD_TYPE_CUMULUS), CLOUD_TYPE_CUMULUS);
+  const SkyCloudsParameters sc =
+      cloudDefaultParameters(0.5F, cloudDefaultThickness(CLOUD_TYPE_STRATOCUMULUS), CLOUD_TYPE_STRATOCUMULUS);
+  const SkyCloudsParameters st = cloudDefaultParameters(0.5F, cloudDefaultThickness(CLOUD_TYPE_STRATUS), CLOUD_TYPE_STRATUS);
+  EXPECT_FLOAT_EQ(cloudDefaultThickness(CLOUD_TYPE_CUMULUS), CLOUD_DEFAULT_THICKNESS);
+
+  for(const SkyCloudsParameters* p : {&sc, &st})
+  {
+    EXPECT_FLOAT_EQ(p->minLayerHeights.x, p->minHeight);
+    EXPECT_FLOAT_EQ(p->maxLayerHeights.x, p->maxHeight);
+    EXPECT_FLOAT_EQ(p->shadowTopHeight, p->maxHeight);
+    EXPECT_EQ(p->densityScales.z, 0.0F);  // no high layer
+    EXPECT_EQ(p->densityScales.w, 0.0F);
+    for(float h = p->minHeight; h <= p->maxHeight; h += 0.05F)
+      EXPECT_FALSE(cloudInsideIntervals(*p, h)) << h;
+  }
+  // low: stratus under 1 km, stratocumulus under 2, both below cumulus's tops
+  EXPECT_LT(st.maxHeight, 1.0F);
+  EXPECT_LT(st.minHeight, sc.minHeight);
+  EXPECT_LT(sc.maxHeight, 2.0F);
+  EXPECT_LT(sc.maxHeight, cu.shadowTopHeight);
+  // flat: the billows cut cumulus most and stratus least, and stratus has no detail to erode it
+  EXPECT_GT(cu.shapeAmounts.x, sc.shapeAmounts.x);
+  EXPECT_GT(sc.shapeAmounts.x, st.shapeAmounts.x);
+  EXPECT_EQ(st.shapeDetailAmounts.x, 0.0F);
+  EXPECT_GT(st.coverageFilterWidths.x, cu.coverageFilterWidths.x);
+  EXPECT_LT(st.turbulenceDisplacement, cu.turbulenceDisplacement);
+
+  // Thickness is each deck's depth from its base
+  const SkyCloudsParameters deepSt = cloudDefaultParameters(0.5F, 1.0F, CLOUD_TYPE_STRATUS);
+  EXPECT_FLOAT_EQ(deepSt.minHeight, st.minHeight);
+  EXPECT_NEAR(deepSt.maxHeight - deepSt.minHeight, 1.0F, 1e-5F);
+  // and the cover means the same under each: takram's coverage differs by type
+  EXPECT_NE(cloudCoverageFor(0.5F, CLOUD_TYPE_STRATUS), cloudCoverageFor(0.5F, CLOUD_TYPE_CUMULUS));
 }
 
 TEST(SkyClouds, ThePhaseIsNormalisedAndScattersForward)
@@ -328,25 +376,48 @@ TEST(SkyClouds, TheNoiseTilesAndStaysInRange)
 // table was fitted on.
 TEST(SkyClouds, TheCoverShadesAsMuchOfTheLandAsItSays)
 {
-  const SkyCloudsParameters p    = cloudDefaultParameters(0.0F, CLOUD_DEFAULT_THICKNESS);
-  const std::vector<Column> cols = columns(600, 11, p);
-  for(const float cover : {0.02F, 0.1F, 0.3F, 0.5F, 0.7F, 0.9F, 1.0F})
+  for(int type = 0; type < CLOUD_TYPE_COUNT; ++type)
   {
-    const double shaded = shadedShare(cols, p, cloudCoverageFor(cover));
-    std::printf("[ cover %.2f ] shades %.3f of the land\n", cover, shaded);
-    EXPECT_NEAR(shaded, 1.0 - cloudSunlitAir(cover), 0.06) << cover;
+    const SkyCloudsParameters p    = cloudDefaultParameters(0.0F, cloudDefaultThickness(type), type);
+    const std::vector<Column> cols = columns(600, 11, p);
+    for(const float cover : {0.02F, 0.1F, 0.3F, 0.5F, 0.7F, 0.9F, 1.0F})
+    {
+      const double shaded = shadedShare(cols, p, cloudCoverageFor(cover, type));
+      std::printf("[ type %d cover %.2f ] shades %.3f of the land\n", type, cover, shaded);
+      EXPECT_NEAR(shaded, 1.0 - cloudSunlitAir(cover), 0.06) << type << " " << cover;
+    }
   }
 }
 
-// Not a test: what CLOUD_COVERAGE_FOR_COVER is fitted from. Prints the shaded share for takram's
-// coverage from 0 to 1; invert it at every 5% of cover (the table's knots) when the model changes.
+// Not a test: what CLOUD_COVERAGE_FOR_COVER is fitted from. For each type, the shaded share at
+// takram's coverage from 0 to 1, inverted at every 5% of cover: a row of the table, to paste when
+// the model changes. Its first knot is where the share passes 0.2% (the first clouds), its last
+// where it passes 99.8% (the deck closed). Other columns than the test above checks.
 TEST(SkyClouds, DISABLED_CoverageCurve)
 {
-  const SkyCloudsParameters p    = cloudDefaultParameters(0.0F, CLOUD_DEFAULT_THICKNESS);
-  const std::vector<Column> cols = columns(2500, 5, p);
-  for(int k = 0; k <= 40; ++k)
+  constexpr int kSteps = 400;
+  for(int type = 0; type < CLOUD_TYPE_COUNT; ++type)
   {
-    const float coverage = 0.025F * float(k);
-    std::printf("coverage %.3f shades %.4f\n", coverage, shadedShare(cols, p, coverage));
+    const SkyCloudsParameters p    = cloudDefaultParameters(0.0F, cloudDefaultThickness(type), type);
+    const std::vector<Column> cols = columns(2500, 5, p);
+    std::vector<double>       share(kSteps + 1);
+    for(int k = 0; k <= kSteps; ++k)
+      share[k] = shadedShare(cols, p, float(k) / float(kSteps));
+    // the coverage where the share first reaches `target`, between the grid's points
+    const auto coverageAt = [&](double target) {
+      for(int k = 1; k <= kSteps; ++k)
+        if(share[k] >= target)
+        {
+          const double t = (target - share[k - 1]) / std::max(share[k] - share[k - 1], 1e-9);
+          return (double(k - 1) + std::clamp(t, 0.0, 1.0)) / double(kSteps);
+        }
+      return 1.0;
+    };
+    std::printf("type %d: {", type);
+    for(int knot = 0; knot <= 20; ++knot)
+    {
+      const double target = knot == 0 ? 0.002 : knot == 20 ? 0.998 : 0.05 * knot;
+      std::printf("%.4fF%s", coverageAt(target), knot < 20 ? ", " : "}\n");
+    }
   }
 }

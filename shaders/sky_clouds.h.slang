@@ -214,67 +214,152 @@ inline float cloudMultipleScattering(float opticalDepth, float cosTheta, int oct
   return scattering;
 }
 
+// ---- the types the panel offers ------------------------------------------------------------------
+
+// Each a set of takram's layer parameters (cloudDefaultParameters) and its own cover table.
+static const int CLOUD_TYPE_CUMULUS       = 0;  // takram's default: heaped cumulus and a thin high layer
+static const int CLOUD_TYPE_STRATOCUMULUS = 1;  // a low deck of lumps and rolls, with gaps
+static const int CLOUD_TYPE_STRATUS       = 2;  // a low, flat, grey sheet: overcast
+static const int CLOUD_TYPE_COUNT         = 3;
+
+inline int cloudTypeIndex(int type)
+{
+  return clamp(type, 0, CLOUD_TYPE_COUNT - 1);
+}
+
+// Each type's depth from base to tops before the panel's Thickness moves it, in km: takram's
+// cumulus; stratocumulus and stratus as they are typically observed (a few hundred metres).
+inline float cloudDefaultThickness(int type)
+{
+  const int t = cloudTypeIndex(type);
+  return t == CLOUD_TYPE_STRATOCUMULUS ? 0.6F : t == CLOUD_TYPE_STRATUS ? 0.4F : 1.45F;
+}
+
 // ---- what the panel's cover means ------------------------------------------------------------------
 
 // takram's coverage for a cover on the panel: the share of the land the clouds shade with the sun
 // overhead, which is near enough the share of the sky overhead they hide, the way cloud cover is
-// reported. Measured by marching columns through the default layers (SkyClouds.DISABLED_CoverageCurve
-// in tests/test_sky_clouds.cpp, which re-fits this table when the model changes) and inverted, a
-// knot every 5%. Takram's own default of 0.3 shades about a quarter; by 0.65 the deck has closed.
-// The first knot is where the first clouds appear rather than 0: a cover of exactly 0 is no clouds,
-// and the bake does not run (SkyClouds::hasClouds).
-static const float CLOUD_COVERAGE_FOR_COVER[21] = {0.1000F, 0.2037F, 0.2385F, 0.2659F, 0.2880F, 0.3073F, 0.3247F,
-                                                   0.3404F, 0.3560F, 0.3716F, 0.3869F, 0.4020F, 0.4162F, 0.4306F,
-                                                   0.4457F, 0.4613F, 0.4774F, 0.4954F, 0.5152F, 0.5409F, 0.6500F};
+// reported. Measured by marching columns through each type's default layers
+// (SkyClouds.DISABLED_CoverageCurve in tests/test_sky_clouds.cpp prints these rows; re-fit them when
+// the model changes) and inverted, a knot every 5%. Takram's own default of 0.3 shades about a
+// quarter of the land under cumulus; by 0.65 the deck has closed. The first knot is where the first
+// clouds appear rather than 0: a cover of exactly 0 is no clouds, and the bake does not run
+// (SkyClouds::hasClouds). One row per type, in CLOUD_TYPE_* order.
+static const float CLOUD_COVERAGE_FOR_COVER[CLOUD_TYPE_COUNT][21] = {
+    {0.1000F, 0.2037F, 0.2385F, 0.2659F, 0.2880F, 0.3073F, 0.3247F, 0.3404F, 0.3560F, 0.3716F, 0.3869F,
+     0.4020F, 0.4162F, 0.4306F, 0.4457F, 0.4613F, 0.4774F, 0.4954F, 0.5152F, 0.5409F, 0.6500F},
+    {0.1146F, 0.1910F, 0.2172F, 0.2354F, 0.2498F, 0.2622F, 0.2732F, 0.2833F, 0.2929F, 0.3020F, 0.3109F,
+     0.3197F, 0.3284F, 0.3374F, 0.3467F, 0.3569F, 0.3681F, 0.3811F, 0.3973F, 0.4211F, 0.5009F},
+    {0.0459F, 0.0835F, 0.0970F, 0.1067F, 0.1145F, 0.1213F, 0.1273F, 0.1327F, 0.1378F, 0.1426F, 0.1473F,
+     0.1520F, 0.1568F, 0.1617F, 0.1669F, 0.1726F, 0.1790F, 0.1867F, 0.1967F, 0.2125F, 0.2771F},
+};
 
-inline float cloudCoverageFor(float cover)
+inline float cloudCoverageFor(float cover, int type)
 {
+  const int   t = cloudTypeIndex(type);
   const float x = clamp(cover, 0.0F, 1.0F) * 20.0F;
   const int   i = min(int(x), 19);
-  return lerp(CLOUD_COVERAGE_FOR_COVER[i], CLOUD_COVERAGE_FOR_COVER[i + 1], x - float(i));
+  return lerp(CLOUD_COVERAGE_FOR_COVER[t][i], CLOUD_COVERAGE_FOR_COVER[t][i + 1], x - float(i));
 }
 
-// takram's default layers (CloudLayers.DEFAULT) and medium (uniforms.ts, CloudsMaterial.ts), in km,
-// for a cover and a depth: a low cumulus layer from 750 m and a deeper one from 1 km, whose depths
-// `thicknessKm` scales from their 1.45 km together, and a thin high layer at 7.5 km; the fourth off.
-// At takram's 'high' quality preset; cloudWithQuality lowers it for a preview.
-static const float CLOUD_DEFAULT_THICKNESS = 1.45F;
+// takram's medium (uniforms.ts, CloudsMaterial.ts) and a type's layers, in km, for a cover and a
+// depth. At takram's 'high' quality preset; cloudWithQuality lowers it for a preview.
+//
+// - Cumulus is takram's default (CloudLayers.DEFAULT): a low cumulus layer from 750 m and a deeper
+//   one from 1 km, whose depths `thicknessKm` scales from their 1.45 km together, and a thin high
+//   layer at 7.5 km.
+// - Stratocumulus is one deck from 900 m, read through the two low weather channels at once, so the
+//   fields of both make one broad deck: billows still cut it into lumps and rolls (shape amount 0.8),
+//   with less of the detail's erosion than a cumulus and a softer edge to the weather's fields.
+// - Stratus is one deck from 500 m, after takram's own example of a fog layer: the billows barely
+//   mark it (shape amount 0.25), no detail, the widest edges to the weather's fields, density nearly
+//   even with height, and little turbulence, so it reads as a flat grey sheet.
+//
+// The fourth layer stays off in every type.
+static const float CLOUD_DEFAULT_THICKNESS = 1.45F;  // cumulus's (cloudDefaultThickness)
 
-inline SkyCloudsParameters cloudDefaultParameters(float cover, float thicknessKm)
+inline SkyCloudsParameters cloudDefaultParameters(float cover, float thicknessKm, int type)
 {
-  const float k = thicknessKm / CLOUD_DEFAULT_THICKNESS;
+  const int           t = cloudTypeIndex(type);
+  const float         k = thicknessKm / cloudDefaultThickness(t);
   SkyCloudsParameters p;
-  p.minLayerHeights      = float4(0.75F, 1.0F, 7.5F, 0.0F);
-  p.maxLayerHeights      = float4(0.75F + 0.65F * k, 1.0F + 1.2F * k, 8.0F, 0.0F);
-  p.densityScales        = float4(0.2F, 0.2F, 0.003F, 0.0F);
-  p.shapeAmounts         = float4(1.0F, 1.0F, 0.4F, 0.0F);
-  p.shapeDetailAmounts   = float4(1.0F, 1.0F, 0.0F, 0.0F);
-  p.weatherExponents     = float4(1.0F);
-  p.shapeAlteringBiases  = float4(0.35F);
-  p.coverageFilterWidths = float4(0.6F, 0.6F, 0.5F, 0.6F);
-  p.profileExpTerms      = float4(0.0F);
-  p.profileExponents     = float4(0.0F);
-  p.profileLinearTerms   = float4(0.75F);
-  p.profileConstantTerms = float4(0.25F);
-
-  // the one gap: from the cumulus tops to the high layer's base
-  const float cumulusTop = max(p.maxLayerHeights.x, p.maxLayerHeights.y);
-  p.minIntervalHeights   = float3(cumulusTop, 0.0F, 0.0F);
-  p.maxIntervalHeights   = float3(max(cumulusTop, p.minLayerHeights.z), 0.0F, 0.0F);
-  p.minHeight            = 0.75F;
-  p.maxHeight            = p.maxLayerHeights.z;
-  p.shadowTopHeight      = cumulusTop;
-
-  p.coverage               = cloudCoverageFor(cover);
-  p.weatherOffset          = float2(0.0F);
-  p.shapeOffset            = float3(0.0F);
-  p.scattering             = 1000.0F;  // 1/m
-  p.absorption             = 0.0F;
-  p.skyLightScale          = 1.0F;
-  p.groundBounceScale      = 1.0F;
-  p.powderScale            = 0.8F;
-  p.powderExponent         = 0.15F;  // 150 m
+  // takram's CloudLayer defaults, every layer off until the type turns it on
+  p.minLayerHeights        = float4(0.0F);
+  p.maxLayerHeights        = float4(0.0F);
+  p.densityScales          = float4(0.0F);
+  p.shapeAmounts           = float4(1.0F);
+  p.shapeDetailAmounts     = float4(1.0F);
+  p.weatherExponents       = float4(1.0F);
+  p.shapeAlteringBiases    = float4(0.35F);
+  p.coverageFilterWidths   = float4(0.6F);
+  p.profileExpTerms        = float4(0.0F);
+  p.profileExponents       = float4(0.0F);
+  p.profileLinearTerms     = float4(0.75F);
+  p.profileConstantTerms   = float4(0.25F);
+  p.minIntervalHeights     = float3(0.0F);  // no gaps to step over
+  p.maxIntervalHeights     = float3(0.0F);
   p.turbulenceDisplacement = 0.35F;  // 350 m
+
+  if(t == CLOUD_TYPE_STRATOCUMULUS)
+  {
+    const float base = 0.9F, top = base + 0.6F * k;
+    p.minLayerHeights        = float4(base, base, 0.0F, 0.0F);
+    p.maxLayerHeights        = float4(top, top, 0.0F, 0.0F);
+    p.densityScales          = float4(0.05F, 0.05F, 0.0F, 0.0F);
+    p.shapeAmounts           = float4(0.8F, 0.8F, 1.0F, 1.0F);
+    p.shapeDetailAmounts     = float4(0.5F, 0.5F, 1.0F, 1.0F);
+    p.shapeAlteringBiases    = float4(0.5F);
+    p.coverageFilterWidths   = float4(0.8F, 0.8F, 0.6F, 0.6F);
+    p.profileLinearTerms     = float4(0.5F);
+    p.profileConstantTerms   = float4(0.5F);
+    p.turbulenceDisplacement = 0.15F;
+    p.minHeight              = base;
+    p.maxHeight              = top;
+    p.shadowTopHeight        = top;
+  }
+  else if(t == CLOUD_TYPE_STRATUS)
+  {
+    const float base = 0.5F, top = base + 0.4F * k;
+    p.minLayerHeights        = float4(base, base, 0.0F, 0.0F);
+    p.maxLayerHeights        = float4(top, top, 0.0F, 0.0F);
+    p.densityScales          = float4(0.06F, 0.06F, 0.0F, 0.0F);
+    p.shapeAmounts           = float4(0.25F, 0.25F, 1.0F, 1.0F);
+    p.shapeDetailAmounts     = float4(0.0F, 0.0F, 1.0F, 1.0F);
+    p.shapeAlteringBiases    = float4(0.5F);
+    p.coverageFilterWidths   = float4(0.9F, 0.9F, 0.6F, 0.6F);
+    p.profileLinearTerms     = float4(0.3F);
+    p.profileConstantTerms   = float4(0.7F);
+    p.turbulenceDisplacement = 0.08F;
+    p.minHeight              = base;
+    p.maxHeight              = top;
+    p.shadowTopHeight        = top;
+  }
+  else
+  {
+    p.minLayerHeights      = float4(0.75F, 1.0F, 7.5F, 0.0F);
+    p.maxLayerHeights      = float4(0.75F + 0.65F * k, 1.0F + 1.2F * k, 8.0F, 0.0F);
+    p.densityScales        = float4(0.2F, 0.2F, 0.003F, 0.0F);
+    p.shapeAmounts         = float4(1.0F, 1.0F, 0.4F, 1.0F);
+    p.shapeDetailAmounts   = float4(1.0F, 1.0F, 0.0F, 1.0F);
+    p.coverageFilterWidths = float4(0.6F, 0.6F, 0.5F, 0.6F);
+    // the one gap: from the cumulus tops to the high layer's base
+    const float cumulusTop = max(p.maxLayerHeights.x, p.maxLayerHeights.y);
+    p.minIntervalHeights   = float3(cumulusTop, 0.0F, 0.0F);
+    p.maxIntervalHeights   = float3(max(cumulusTop, p.minLayerHeights.z), 0.0F, 0.0F);
+    p.minHeight            = 0.75F;
+    p.maxHeight            = p.maxLayerHeights.z;
+    p.shadowTopHeight      = cumulusTop;
+  }
+
+  p.coverage          = cloudCoverageFor(cover, t);
+  p.weatherOffset     = float2(0.0F);
+  p.shapeOffset       = float3(0.0F);
+  p.scattering        = 1000.0F;  // 1/m
+  p.absorption        = 0.0F;
+  p.skyLightScale     = 1.0F;
+  p.groundBounceScale = 1.0F;
+  p.powderScale       = 0.8F;
+  p.powderExponent    = 0.15F;  // 150 m
   // Takram averages the march's jitter over frames; a bake is one frame, so it averages it over
   // marches per texel instead. One leaves the jitter's crosshatch frozen in the image.
   p.samples = 8;

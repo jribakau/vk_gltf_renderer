@@ -621,10 +621,21 @@ the readers which image holds the clouds of the moment; the settle that follows 
 
 ### What is cloud
 
-Four layers, one to a channel of a weather map that tiles every ~100 km (`cloudDefaultParameters`):
-low cumulus from 750 m, deeper cumulus in larger fields from 1 km, and a thin streaky layer at 7.5 km;
-the fourth is off. The panel's **Thickness** scales the two cumulus layers' depth together from
-takram's 1.45 km. Coverage lowers each layer's threshold most at the height its clouds are widest,
+Up to four layers, one to a channel of a weather map that tiles every ~100 km. What they are is the
+panel's **Type** (`cloudType`, `CLOUD_TYPE_*`), each a set of takram's layer parameters
+(`cloudDefaultParameters`):
+
+| Type | Layers | What makes it look so |
+| --- | --- | --- |
+| Cumulus | takram's default: low cumulus from 750 m, deeper cumulus in larger fields from 1 km, a thin streaky layer at 7.5 km | the billows cut the weather's fields fully, the detail erodes the edges |
+| Stratocumulus | one deck from 900 m, 600 m deep, read through both low channels so their fields make one broad deck | the billows still cut it into lumps and rolls (shape amount 0.8), half the detail, softer field edges, half cumulus's density |
+| Stratus | one deck from 500 m, 400 m deep | after takram's fog layer: the billows barely mark it (0.25), no detail, the softest field edges, density nearly even with height, little turbulence |
+
+The panel's **Thickness** is the type's depth, put on at the type's own when the type is picked (a
+cumulus's 1.45 km would be a stratus ten times too deep); under cumulus it scales the two cumulus
+layers' depth together.
+
+In every type, coverage lowers each layer's threshold most at the height its clouds are widest,
 Perlin-Worley billows are cut from what the weather allows and rounded off toward the tops, finer
 Worley erodes the edges (fluffy above, wispy below), a curl-noise field shreds the bottoms, and a
 density profile per layer finishes it. The four noise textures tile and are generated once, at
@@ -633,11 +644,12 @@ overhead.
 
 **Coverage means the share of the land the clouds shade** with the sun overhead, which is near
 enough the share of the sky overhead they hide, the way cloud cover is reported. Takram's coverage is
-not that -- its default of 0.3 shades about a quarter, and by 0.65 the deck has closed -- so the
-panel's cover goes through a table measured by marching columns through the default layers and
-inverted (`CLOUD_COVERAGE_FOR_COVER`). `SkyClouds.DISABLED_CoverageCurve` in
-`tests/test_sky_clouds.cpp` prints the curve to re-fit it from when the model changes, and
-`SkyClouds.TheCoverShadesAsMuchOfTheLandAsItSays` holds it to within a few percent.
+not that -- under cumulus its default of 0.3 shades about a quarter, and by 0.65 the deck has
+closed; a stratus sheet has closed by 0.28 -- so the panel's cover goes through a table per type,
+measured by marching columns through the type's layers and inverted (`CLOUD_COVERAGE_FOR_COVER`).
+`SkyClouds.DISABLED_CoverageCurve` in `tests/test_sky_clouds.cpp` prints every type's row, ready
+to paste, when the model changes, and `SkyClouds.TheCoverShadesAsMuchOfTheLandAsItSays` holds each
+to within a few percent.
 
 ### How it is lit
 

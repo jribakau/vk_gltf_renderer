@@ -812,7 +812,10 @@ void GltfRenderer::updateBakerParameters()
 
   // The clouds bake with the sky, so they take their settings at the same moment.
   const Settings& s = m_resources.settings;
-  m_skyClouds.setSettings({.coverage = s.cloudCoverage, .thicknessKm = s.cloudThickness, .seed = uint32_t(std::max(s.cloudSeed, 0))});
+  m_skyClouds.setSettings({.coverage    = s.cloudCoverage,
+                         .thicknessKm = s.cloudThickness,
+                         .seed        = uint32_t(std::max(s.cloudSeed, 0)),
+                         .type        = s.cloudType});
 }
 
 //--------------------------------------------------------------------------------------------------

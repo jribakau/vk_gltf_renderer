@@ -237,8 +237,9 @@ struct Settings
   // The physical sky's clouds (SkyClouds): one layer, from clear to overcast. Viewer settings for
   // now -- no extension carries them yet -- and inert under any other environment.
   float cloudCoverage  = 0.0f;  // 0 clear .. 1 overcast
-  float cloudThickness = 1.45f;  // km: the cumulus layers' depth, base to the highest tops
+  float cloudThickness = 1.45f;  // km: the type's depth, base to the highest tops
   int   cloudSeed      = 0;     // which arrangement of the clouds
+  int   cloudType      = 0;     // 0 cumulus, 1 stratocumulus, 2 stratus (CLOUD_TYPE_*)
 
   // Authored sky parameters (glTF OMI_environment_sky). Defaults match the extension's own. When a
   // loaded scene carries the extension it overwrites these; they are the fallback for every scene

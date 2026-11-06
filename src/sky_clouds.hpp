@@ -41,8 +41,9 @@ static constexpr VkExtent2D kCloudPreviewSize{1024, 256};
 struct SkyCloudsSettings
 {
   float    coverage{0.0F};      // 0 clear .. 1 overcast: the share of the land they shade
-  float    thicknessKm{1.45F};  // the cumulus layers' depth, base to the highest tops
+  float    thicknessKm{1.45F};  // the type's depth, base to the highest tops (cloudDefaultThickness)
   uint32_t seed{0};             // which arrangement of the clouds
+  int      type{0};             // CLOUD_TYPE_* (sky_clouds.h.slang)
 
   bool operator==(const SkyCloudsSettings&) const = default;
 };

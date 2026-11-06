@@ -371,11 +371,15 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({.name = "cloudCoverage", .help = "Physical sky: cloud cover, 0 clear to 1 overcast", .callbackSuccess = invalidateAtmosphere},
                  &m_resources.settings.cloudCoverage, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({.name            = "cloudThickness",
-                  .help            = "Physical sky: the cumulus layers' depth from the base to the highest tops (km)",
+                  .help            = "Physical sky: the clouds' depth from the base to the highest tops (km)",
                   .callbackSuccess = invalidateAtmosphere},
                  &m_resources.settings.cloudThickness, Persist::eYes, 0.2F, 4.0F);
   m_settings.add({.name = "cloudSeed", .help = "Physical sky: which arrangement of the clouds", .callbackSuccess = invalidateAtmosphere},
                  &m_resources.settings.cloudSeed, Persist::eYes, 0, 1 << 20);
+  m_settings.add({.name            = "cloudType",
+                  .help            = "Physical sky: the kind of cloud [Cumulus:0, Stratocumulus:1, Stratus:2]",
+                  .callbackSuccess = invalidateAtmosphere},
+                 &m_resources.settings.cloudType, Persist::eYes, 0, 2);
 
   // A preset is an action, not a mode: its callback overwrites every field above and nothing reads
   // it back. That is also why it does not persist -- restoring it after the individual values

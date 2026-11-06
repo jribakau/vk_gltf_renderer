@@ -187,6 +187,8 @@ void patchClouds(Clouds& c, const Json& p)
       field(c.thickness, d.thickness, v, [&](const Json& x) { return number(x, key, 0.2, 4.0); });
     else if(k == "seed")
       field(c.seed, d.seed, v, [&](const Json& x) { return int(std::lround(number(x, key, 0.0, double(1 << 20)))); });
+    else if(k == "type")
+      field(c.type, d.type, v, [&](const Json& x) { return oneOf(x, key, {"cumulus", "stratocumulus", "stratus"}); });
     else
       reject("unknown key " + key);
   }
@@ -294,7 +296,7 @@ Json toJson(const State& s)
         {"elevation", u.elevation},
         {"color", u.color},
         {"softness", u.softness}}},
-      {"clouds", {{"coverage", c.coverage}, {"thickness", c.thickness}, {"seed", c.seed}}},
+      {"clouds", {{"coverage", c.coverage}, {"thickness", c.thickness}, {"seed", c.seed}, {"type", c.type}}},
       {"ground",
        {{"mode", g.mode},
         {"height", g.autoHeight ? Json("auto") : Json(g.height)},
@@ -626,6 +628,7 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       {"cloudCoverage", s.clouds.coverage},
       {"cloudThickness", s.clouds.thickness},
       {"cloudSeed", s.clouds.seed},
+      {"cloudType", s.clouds.type == "stratus" ? 2 : s.clouds.type == "stratocumulus" ? 1 : 0},
       {"tmActive", 1},
       {"tmAutoExposure", 0},
       {"tmMethod", tmMethod(t.method)},

@@ -311,6 +311,16 @@ TEST(FvLighting, CloudsAreClearUntilSetAndReachTheRenderer)
   EXPECT_EQ(p["cloudSeed"], 3);
   EXPECT_EQ(L::applyPatch(s, {{"clouds", nullptr}}).clouds.coverage, 0.0);
   EXPECT_THROW(L::applyPatch(s, {{"clouds", {{"wind", 1}}}}), std::invalid_argument);
+
+  // the kind of cloud: cumulus until set, by name, reaching the renderer as its CLOUD_TYPE_* index
+  EXPECT_EQ(s.clouds.type, "cumulus");
+  EXPECT_EQ(p["cloudType"], 0);
+  const L::State st = L::applyPatch(s, {{"clouds", {{"type", "stratus"}}}});
+  EXPECT_EQ(L::toJson(st)["clouds"]["type"], "stratus");
+  EXPECT_EQ(L::rendererParams(st, {})["cloudType"], 2);
+  EXPECT_EQ(L::rendererParams(L::applyPatch(s, {{"clouds", {{"type", "stratocumulus"}}}}), {})["cloudType"], 1);
+  EXPECT_EQ(st.clouds.coverage, 0.4);  // the rest of the clouds stay
+  EXPECT_THROW(L::applyPatch(s, {{"clouds", {{"type", "cirrus"}}}}), std::invalid_argument);
 }
 
 // A body of water: the ground's water mode, its depth and waves; a floor's wet layer goes with it

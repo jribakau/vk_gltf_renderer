@@ -58,7 +58,8 @@ namespace {
 // 29: self-contact: figure.contact's, the contact/<prop> topic's and the scene state's `self`.
 // 30: light cloth: dforce.light, the dforce/<prop> topic's and the scene state's `dforceLight`.
 // 31: clouds over the physical sky, the lighting's clouds section (coverage, thickness, seed).
-constexpr int kProtocolVersion = 31;
+// 32: the kind of cloud, the lighting's clouds.type (cumulus, stratocumulus, stratus).
+constexpr int kProtocolVersion = 32;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

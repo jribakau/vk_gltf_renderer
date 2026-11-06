@@ -187,7 +187,7 @@ float cloudSunlitGround(const SkyCloudsSettings& settings)
 shaderio::SkyCloudsParameters cloudBakeParameters(const SkyCloudsSettings& settings, bool preview)
 {
   shaderio::SkyCloudsParameters p =
-      shaderio::cloudWithQuality(shaderio::cloudDefaultParameters(settings.coverage, settings.thicknessKm), preview);
+      shaderio::cloudWithQuality(shaderio::cloudDefaultParameters(settings.coverage, settings.thicknessKm, settings.type), preview);
   // The arrangement moves the weather map under the observer, and the billows within it.
   const glm::vec2 offset = cloudSeedOffsetKm(settings.seed);
   p.weatherOffset        = offset;
