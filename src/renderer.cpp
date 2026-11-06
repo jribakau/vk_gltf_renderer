@@ -570,7 +570,9 @@ void GltfRenderer::onPostRender()
 // One rule for every way the viewport is saved (--output, --outputSamples, the screenshot
 // parameter): a .hdr file gets the linear rendered image, so it can be measured (a .pfm the same, every
 // bit of its floats, for a bit-exact comparison); an .exr the
-// linear image the screen is made from (saveExr); any other extension gets what the screen shows.
+// linear image the screen is made from (saveExr); any other extension gets what the screen shows,
+// opaque as the screen and the EXR are: the path tracer's alpha is whether the camera ray hit
+// something, and a PNG saved with it had the sky, the floor's fade and a cloud's edge see-through.
 void GltfRenderer::saveViewportImage(const std::filesystem::path& filename)
 {
   if(nvutils::extensionMatches(filename, ".exr"))
@@ -581,7 +583,8 @@ void GltfRenderer::saveViewportImage(const std::filesystem::path& filename)
   const Resources::ImageType imageType =
       nvutils::extensionMatches(filename, ".hdr") || nvutils::extensionMatches(filename, ".pfm") ? Resources::eImgRendered :
                                                                                                    Resources::eImgTonemapped;
-  m_app->saveImageToFile(m_resources.gBuffers.getColorImage(imageType), m_resources.gBuffers.getSize(), filename);
+  m_app->saveImageToFile(m_resources.gBuffers.getColorImage(imageType), m_resources.gBuffers.getSize(), filename, 100,
+                         VK_IMAGE_LAYOUT_GENERAL, /*opaque=*/imageType == Resources::eImgTonemapped);
 }
 
 // An EXR of what the frame was made from, for compositing and grading elsewhere: the denoised image the
