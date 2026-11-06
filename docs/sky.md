@@ -677,6 +677,19 @@ deep enough to reach the altocumulus makes one span of the two). The bake reads 
 only where its layers have cloud (`noiseAt`), so a point reads the volumes once almost everywhere.
 The ground's light reaches the bases of the lowest tier.
 
+**The land varies** on scales past the weather map's (`CloudVariety`). Takram's map repeats every
+100 km and the same billows at the same scale cut every cloud in it, so past the nearest few the sky
+is one texture, its repeats lining up in rows toward the horizon. The turbulence map (its curl in
+rgb, a slow variety noise in a) is read at three far coarser tilings: every 2,500 km it bends where
+the weather map is read, by up to 8 km in swirls some 200 km across; every 360 km it bends the
+billows, by 1 km in swirls some 30 km across; every 60 km it makes cloud thicker or thinner (density
+times 1 +- 0.3) and more or less eroded (the detail times 1 +- 0.6) in patches 15 and 5 km across.
+A bend moves things by a quarter of its swirls' size at most -- more folds the noise over on itself,
+which reads as smears -- and moves where the weather is read, not how much of it there is. The
+patches are smaller than the sky the observer sees, so that sky keeps about the cover the panel
+says (a cover moved in fields larger than it put a 60% sky at 80% where one stood, so it is not
+varied), and the cover tables are fitted with the variety in.
+
 In every kind, coverage lowers each layer's threshold most at the height its clouds are widest,
 Perlin-Worley billows are cut from what the weather allows and rounded off toward the tops, finer
 Worley erodes the edges (fluffy above, wispy below), a curl-noise field shreds the bottoms, and a
@@ -707,10 +720,20 @@ ground -- and by the sky's irradiance at its height. Takram's terms, all in the 
   the optical depth to the sun, so thick cloud keeps a glow deep inside, and the forward lobe gives
   the silver lining.
 - **The optical depth to the sun** from a short march at the point, for the shadow's edge, and a
-  long one out to a few kilometres for the other clouds and the far side of this one. Takram reads
-  the long part from a shadow map rendered each frame (`farSunOpticalDepth` replaces it).
-- **Sky light**, brighter toward each layer's top, and **ground bounce** onto the cloud bases: the
-  land lit by the sky and the open share of the sun, through the cloud below.
+  long one for the other clouds and the far side of this one, in steps doubling to 2 km and on at
+  that until the ray leaves the layers (`farSunOpticalDepth`, 16 steps: 27 km). Takram reads the long
+  part from a shadow map rendered each frame. A high sun leaves the layers within a few steps; a low
+  one runs through them for tens of kilometres, and a march that stopped a few kilometres out (as
+  this one did) let a sunset's light into every cloud, the clouds between them and the sun casting
+  none -- their bodies orange-brown where the sky's cooler light, all that reaches them, should be.
+- **Sky light** through the cloud above the point (`skyVisibility`): the optical depth up to the
+  layers' top, in steps doubling from 100 m, taken as diffuse light gets through a slab (two-stream,
+  `1 / (1 + 3/4 (1 - g) tau)`, g 0.85). Takram's is a gradient, a layer's base lit half as well as
+  its top whatever lies above it, which lit a deck's underside alike from end to end; here a thick
+  part goes dark and a thin one lets the light through, as overcast decks do (10-30% of the light
+  through), and a thin veil takes the whole sky's.
+- **Ground bounce** onto the cloud bases: the land lit by the sky and the open share of the sun,
+  through the cloud below.
 - **Beer-Powder**: thin edges darker, where light has not yet built up by scattering.
 
 The air between the observer and the clouds is the same march aerial perspective uses, to where the
@@ -743,6 +766,7 @@ waits, so these are wall-clock):
 | ... all three tiers: cumulus 0.3, altocumulus 0.3, cirrus 0.5 | 72 ms |
 | The same at one march a texel (the crosshatch) | 6.2 / 7.0 / 4.5 ms |
 | The whole commit (bake, alias table, PDF), cover 0.5 | 56 ms |
+| The bake at sunset (the sun 1° up), cumulus 0.4, altocumulus 0.4, cirrus 0.3, 8 marches a texel: before the long march toward the sun and the sky's light through the cloud / with them (the rows above are from before them, by day, where the march toward the sun leaves the layers within a few steps) | 73 / 143 ms |
 
 Overcast is the cheapest cover because every ray ends at the deck's near side, once transmittance
 falls below `minTransmittance`; scattered cloud marches the furthest. The cost is the marches a

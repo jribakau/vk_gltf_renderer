@@ -65,5 +65,7 @@ void turbulenceMain(uint3 id: SV_DispatchThreadID)
 {
   if(any(id.xy >= uint2(CLOUD_TURBULENCE_SIZE)))
     return;
-  g_turbulence[id.xy] = float4(cloudTurbulenceNoise((float2(id.xy) + 0.5F) / float(CLOUD_TURBULENCE_SIZE)), 1.0F);
+  // the curl in rgb, the variety map in a (cloudVarietyNoise)
+  const float2 p = (float2(id.xy) + 0.5F) / float(CLOUD_TURBULENCE_SIZE);
+  g_turbulence[id.xy] = float4(cloudTurbulenceNoise(p), cloudVarietyNoise(p));
 }

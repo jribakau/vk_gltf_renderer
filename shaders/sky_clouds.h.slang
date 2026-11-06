@@ -119,12 +119,87 @@ struct CloudWeather
 {
   float4 heightFraction;  // how far up each layer the point is
   float4 density;         // what the weather and the coverage allow in each
+  float4 variety;         // the land's variety here (CloudVariety): density and detail, times; the billows' bend, km
 };
+
+// ---- variety across the land ---------------------------------------------------------------------
+
+// Takram's weather is one map repeating every 100 km, and the same billows, at the same scale, cut
+// every cloud in it: past the nearest few the sky is one texture, and toward the horizon its repeats
+// line up in rows. Real weather varies on scales far past that. So the land has variety of its own,
+// from the turbulence map read at three far coarser tilings (its curl in rgb, cloudVarietyNoise in a):
+//
+//   systems, every CLOUD_SYSTEM_PERIOD   the weather map bent, in swirls some 200 km across
+//   regions, every CLOUD_REGION_PERIOD   the billows bent, in swirls some 30 km across
+//   local, every CLOUD_LOCAL_PERIOD      thicker cloud or thinner and eroded more or less, in patches
+//                                        some 15 km across and 5
+//
+// The bends move where the weather and the billows are read, not how much of them there is, so they
+// break the repeats without moving the cover. Each moves things by a quarter of its swirls' size at
+// most: more folds the noise over on itself, which reads as smears. The rest goes either way about
+// takram's, in patches
+// smaller than the sky the observer sees, so that sky has about the cover the panel says: a cover
+// moved in fields larger than it would put a 60% sky at 80% or 40% depending on where one stood (and
+// the cover tables are fitted with the variety in).
+static const float CLOUD_SYSTEM_PERIOD   = 2500.0F;  // km
+static const float CLOUD_REGION_PERIOD   = 360.0F;   // km
+static const float CLOUD_LOCAL_PERIOD    = 60.0F;    // km
+static const float CLOUD_VARIETY_DENSITY = 0.3F;     // density, times 1 either way of this
+static const float CLOUD_VARIETY_DETAIL  = 0.6F;     // the detail's erosion, likewise
+static const float CLOUD_WEATHER_WARP    = 8.0F;     // km the weather map is bent
+static const float CLOUD_SHAPE_WARP      = 1.0F;     // km the billows are bent
+
+struct CloudVariety
+{
+  float  density;      // times every layer's density
+  float  detail;       // times every layer's detail amount
+  float2 weatherWarp;  // km, where the weather map is read
+  float2 shapeWarp;    // km, where the billows are read
+};
+
+// The variety from the turbulence map's three readings at a point, at CLOUD_SYSTEM_PERIOD,
+// CLOUD_REGION_PERIOD and CLOUD_LOCAL_PERIOD (rgb the curl, a unit vector packed to 0..1; a the
+// variety noise, about 0.5). The bends take the curl's horizontal part.
+inline CloudVariety cloudVariety(float4 systems, float4 regions, float4 local)
+{
+  CloudVariety v;
+  v.density     = 1.0F + CLOUD_VARIETY_DENSITY * clamp((local.w - 0.5F) * 4.0F, -1.0F, 1.0F);
+  v.detail      = 1.0F + CLOUD_VARIETY_DETAIL * (local.y * 2.0F - 1.0F);
+  v.weatherWarp = float2(systems.x * 2.0F - 1.0F, systems.z * 2.0F - 1.0F) * CLOUD_WEATHER_WARP;
+  v.shapeWarp   = float2(regions.x * 2.0F - 1.0F, regions.z * 2.0F - 1.0F) * CLOUD_SHAPE_WARP;
+  return v;
+}
+
+// None: takram's weather as it is.
+inline CloudVariety cloudNoVariety()
+{
+  CloudVariety v;
+  v.density     = 1.0F;
+  v.detail      = 1.0F;
+  v.weatherWarp = float2(0.0F);
+  v.shapeWarp   = float2(0.0F);
+  return v;
+}
+
+// Where the turbulence map is read for the variety at a point on the land, `xz` in km (the weather's
+// arrangement included): the systems', the regions' and the local reading's.
+inline float2 cloudSystemUv(float2 xz)
+{
+  return xz / CLOUD_SYSTEM_PERIOD;
+}
+inline float2 cloudRegionUv(float2 xz)
+{
+  return xz / CLOUD_REGION_PERIOD + float2(0.53F, 0.19F);
+}
+inline float2 cloudLocalUv(float2 xz)
+{
+  return xz / CLOUD_LOCAL_PERIOD + float2(0.37F, 0.71F);
+}
 
 // The weather at a height, from the map's four channels there (`localWeather`, one per layer). The
 // coverage lowers each layer's threshold most at the height its clouds are widest (Skybolt's
-// modulation, as takram has it).
-inline CloudWeather cloudSampleWeather(SkyCloudsParameters p, float4 localWeather, float height)
+// modulation, as takram has it). The land's variety rides along, for the medium (cloudSampleMedia).
+inline CloudWeather cloudSampleVariedWeather(SkyCloudsParameters p, float4 localWeather, float height, CloudVariety v)
 {
   CloudWeather w;
   w.heightFraction = cloudSaturate4((float4(height) - p.minLayerHeights) / max(p.maxLayerHeights - p.minLayerHeights, float4(1e-6F)));
@@ -132,7 +207,13 @@ inline CloudWeather cloudSampleWeather(SkyCloudsParameters p, float4 localWeathe
   const float4 heightScale = cloudShapeAltering(w.heightFraction, p.shapeAlteringBiases);
   const float4 factor      = float4(1.0F) - p.coverages * heightScale;
   w.density = cloudSaturate4((lerp(weather, float4(1.0F), p.coverageFilterWidths) - factor) / max(p.coverageFilterWidths, float4(1e-6F)));
+  w.variety = float4(v.density, v.detail, v.shapeWarp.x, v.shapeWarp.y);
   return w;
+}
+
+inline CloudWeather cloudSampleWeather(SkyCloudsParameters p, float4 localWeather, float height)
+{
+  return cloudSampleVariedWeather(p, localWeather, height, cloudNoVariety());
 }
 
 inline bool cloudWeatherHasDensity(SkyCloudsParameters p, CloudWeather w)
@@ -165,12 +246,12 @@ inline CloudMedia cloudSampleMedia(SkyCloudsParameters p, CloudWeather w, float4
   if(withDetail)
   {
     const float4 fluffy   = lerp(pow(detail, float4(6.0F)), float4(1.0F) - detail, cloudSaturate4((w.heightFraction - 0.2F) / 0.2F));
-    const float4 modifier = fluffy * p.shapeDetailAmounts * 0.5F;
+    const float4 modifier = fluffy * p.shapeDetailAmounts * (w.variety.y * 0.5F);
     density               = cloudSaturate4((density * 2.0F - modifier) / max(float4(1.0F) - modifier, float4(1e-6F)));
   }
   const float4 profile = p.profileExpTerms * exp(p.profileExponents * w.heightFraction) + p.profileLinearTerms * w.heightFraction
                          + p.profileConstantTerms;
-  density = cloudSaturate4(density * p.densityScales * profile);
+  density = cloudSaturate4(density * p.densityScales * (profile * w.variety.x));
 
   CloudMedia  media;
   const float sum  = density.x + density.y + density.z + density.w;
@@ -266,16 +347,16 @@ inline float cloudDefaultThickness(int type)
 // clouds appear rather than 0: a cover of exactly 0 is no tier at all, and with no tier the bake does
 // not run (SkyClouds::hasClouds). One row per kind, in CLOUD_TYPE_* order.
 static const float CLOUD_COVERAGE_FOR_COVER[CLOUD_TYPE_COUNT][21] = {
-    {0.1157F, 0.2138F, 0.2518F, 0.2800F, 0.3028F, 0.3221F, 0.3398F, 0.3562F, 0.3729F, 0.3888F, 0.4042F,
-     0.4182F, 0.4318F, 0.4463F, 0.4606F, 0.4752F, 0.4906F, 0.5064F, 0.5235F, 0.5467F, 0.6103F},
-    {0.1146F, 0.1910F, 0.2172F, 0.2354F, 0.2498F, 0.2622F, 0.2732F, 0.2833F, 0.2929F, 0.3020F, 0.3109F,
-     0.3197F, 0.3284F, 0.3374F, 0.3467F, 0.3569F, 0.3681F, 0.3811F, 0.3973F, 0.4211F, 0.5009F},
-    {0.0459F, 0.0835F, 0.0970F, 0.1067F, 0.1145F, 0.1213F, 0.1273F, 0.1327F, 0.1378F, 0.1426F, 0.1473F,
-     0.1520F, 0.1568F, 0.1617F, 0.1669F, 0.1726F, 0.1790F, 0.1867F, 0.1967F, 0.2125F, 0.2771F},
-    {0.1788F, 0.3070F, 0.3550F, 0.3898F, 0.4192F, 0.4447F, 0.4675F, 0.4889F, 0.5091F, 0.5283F, 0.5468F,
-     0.5650F, 0.5834F, 0.6022F, 0.6219F, 0.6427F, 0.6654F, 0.6916F, 0.7240F, 0.7701F, 0.9550F},
-    {0.1275F, 0.2306F, 0.2801F, 0.3050F, 0.3278F, 0.3490F, 0.3683F, 0.3854F, 0.4038F, 0.4198F, 0.4353F,
-     0.4536F, 0.4688F, 0.4857F, 0.5040F, 0.5230F, 0.5443F, 0.5655F, 0.5918F, 0.6275F, 0.7450F},
+    {0.1189F, 0.2156F, 0.2530F, 0.2796F, 0.3018F, 0.3225F, 0.3404F, 0.3567F, 0.3725F, 0.3877F, 0.4025F,
+     0.4171F, 0.4315F, 0.4464F, 0.4613F, 0.4760F, 0.4908F, 0.5064F, 0.5235F, 0.5463F, 0.6127F},
+    {0.1191F, 0.1913F, 0.2167F, 0.2347F, 0.2492F, 0.2616F, 0.2727F, 0.2829F, 0.2924F, 0.3015F, 0.3104F,
+     0.3192F, 0.3281F, 0.3371F, 0.3466F, 0.3567F, 0.3679F, 0.3808F, 0.3969F, 0.4207F, 0.4991F},
+    {0.0465F, 0.0843F, 0.0979F, 0.1075F, 0.1153F, 0.1219F, 0.1278F, 0.1332F, 0.1382F, 0.1430F, 0.1477F,
+     0.1523F, 0.1571F, 0.1620F, 0.1673F, 0.1731F, 0.1796F, 0.1875F, 0.1978F, 0.2142F, 0.2818F},
+    {0.1843F, 0.3083F, 0.3553F, 0.3884F, 0.4152F, 0.4390F, 0.4610F, 0.4818F, 0.5018F, 0.5219F, 0.5416F,
+     0.5613F, 0.5811F, 0.6012F, 0.6219F, 0.6437F, 0.6672F, 0.6931F, 0.7248F, 0.7729F, 0.9661F},
+    {0.1250F, 0.2333F, 0.2720F, 0.3065F, 0.3286F, 0.3485F, 0.3656F, 0.3819F, 0.3970F, 0.4144F, 0.4313F,
+     0.4472F, 0.4632F, 0.4798F, 0.4958F, 0.5118F, 0.5352F, 0.5590F, 0.5884F, 0.6260F, 0.7550F},
 };
 
 // The share of what cirrus covers that it shades, on average (DISABLED_CoverageCurve prints it).
@@ -347,10 +428,14 @@ inline SkyCloudsParameters cloudNoLayers()
   p.groundIterations     = 3;
   p.minSecondaryStepSize = 0.1F;
   p.secondaryStepScale   = 2.0F;
-  p.farSunIterations     = 5;
+  p.farSunIterations     = 16;  // 3 km doubling, then 2 km steps: 27 km, a low sun's way out of a deck
   p.octaves              = 8;
   p.shapeDetail          = 1;
   p.turbulence           = 1;
+  p.skyIterations        = 5;  // 100 m doubling: 3.1 km, the way up through any tier
+  p._pad4                = 0;
+  p._pad5                = 0;
+  p._pad6                = 0;
   return p;
 }
 
@@ -573,7 +658,8 @@ inline SkyCloudsParameters cloudWithQuality(SkyCloudsParameters p, bool preview)
     p.minTransmittance = 1e-1F;
     p.groundIterations = 0;
     p.sunIterations    = 1;
-    p.farSunIterations = 3;
+    p.farSunIterations = 8;
+    p.skyIterations    = 3;
     p.shapeDetail      = 0;
     p.turbulence       = 0;
     p.samples          = 1;  // a drag's frames move on before the dither would show

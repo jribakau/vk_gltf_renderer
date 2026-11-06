@@ -352,6 +352,15 @@ inline float3 cloudPerlin3d(float3 point)
                 cloudPerlinNoise(float3(point.z, point.x, point.y) + float3(74.2F, -124.5F, 99.4F), frequency, 3));
 }
 
+// The variety map at `p` in the unit square, the turbulence map's fourth channel: slow gradient noise,
+// 0 to 1 about 0.5, from four cells across the tile down to thirty-two. Read at two scales (the
+// bake's varietyAt) it is where the weather runs to more cloud or less, and to thicker or thinner.
+inline float cloudVarietyNoise(float2 p)
+{
+  const float3 point = float3(p.x, p.y, 0.0F) + float3(0.31F, 0.67F, 0.13F);
+  return clamp(0.5F + 0.5F * cloudPerlinNoise(point, float3(4.0F, 4.0F, 1.0F), 4), 0.0F, 1.0F);
+}
+
 // The turbulence map at `p` in the unit square: a unit curl of gradient noise, packed to 0..1.
 inline float3 cloudTurbulenceNoise(float2 p)
 {

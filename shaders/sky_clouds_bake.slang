@@ -88,9 +88,20 @@ float2 weatherUv(float3 position)
   return (float2(position.x, position.z) + g_params.weatherOffset) / CLOUD_WEATHER_PERIOD;
 }
 
+// The land's variety at a point (cloudVariety): the turbulence map read at the three coarse tilings.
+CloudVariety varietyAt(float3 position)
+{
+  const float2 xz = float2(position.x, position.z) + g_params.weatherOffset;
+  return cloudVariety(g_turbulence.SampleLevel(cloudSystemUv(xz), 0.0F), g_turbulence.SampleLevel(cloudRegionUv(xz), 0.0F),
+                      g_turbulence.SampleLevel(cloudLocalUv(xz), 0.0F));
+}
+
+// The weather at a point, read where the land's variety bends the map to, and moved by it.
 CloudWeather weatherAt(float3 position, float height, float mipLevel)
 {
-  return cloudSampleWeather(g_params, g_weather.SampleLevel(weatherUv(position), mipLevel), height);
+  const CloudVariety v  = varietyAt(position);
+  const float2       uv = weatherUv(position) + v.weatherWarp / CLOUD_WEATHER_PERIOD;
+  return cloudSampleVariedWeather(g_params, g_weather.SampleLevel(uv, mipLevel), height, v);
 }
 
 // The two volumes at `q` for a layer, at its scale and its stretch along x: (shape, detail), the
@@ -109,7 +120,8 @@ float2 noiseAt(float3 q, float scale, float stretch, float distance, bool withDe
 // toward the sun reads only the shape, as takram's shadow map does.
 CloudMedia mediaAt(float3 position, float height, CloudWeather weather, float mipLevel, float distance, float jitter, bool far)
 {
-  float3 q = float3(position.x, height, position.z);
+  // the billows read where the land's variety bends them to (cloudVariety)
+  float3 q = float3(position.x + weather.variety.z, height, position.z + weather.variety.w);
   if(g_params.turbulence != 0 && !far)
   {
     const float2 uv = weatherUv(position) * (CLOUD_WEATHER_PERIOD / CLOUD_TURBULENCE_PERIOD);
@@ -170,27 +182,70 @@ float marchOpticalDepth(float3 origin, float3 dir, int maxIterations, float mipL
   return opticalDepth;
 }
 
-// The rest of the way to the sun, in steps doubling from 200 m to a few kilometres out: the other
-// clouds, and the far side of this one, that shade the point. What takram's beer shadow map gives
-// a frame; the shape alone, since it is what blocks the light at that range.
+// The far march's longest step, and the optical depth past which no octave of the light is left
+// worth carrying (the last of eight sees 1/128 of it, and its share is 1/128).
+static const float kFarSunMaxStep  = 2.0F;
+static const float kFarSunOpaque   = 200.0F;
+
+// The rest of the way to the sun, in steps doubling from 200 m to kFarSunMaxStep and on at that
+// until the ray leaves the layers: the other clouds, and the far side of this one, that shade the
+// point. What takram's beer shadow map gives a frame; the shape alone, since it is what blocks the
+// light at that range. A high sun leaves the layers within a few steps. A low one runs through them
+// for tens of km, and a march that stopped a few km out let a sunset's light into every cloud, the
+// clouds between them and the sun casting none: their bodies took the sun's orange where the sky's
+// cooler light, all that reaches them, should be.
 float farSunOpticalDepth(float3 origin, float3 dir, float start, float distance)
 {
   float t            = start;
   float stepSize     = 0.2F;
   float opticalDepth = 0.0F;
-  for(int i = 0; i < g_params.farSunIterations; ++i)
+  for(int i = 0; i < g_params.farSunIterations && opticalDepth < kFarSunOpaque; ++i)
   {
     const float3 p      = origin + dir * (t + 0.5F * stepSize);
     const float  height = length(p) - g_atmosphere.bottomRadius;
     if(height > g_params.maxHeight)
       break;  // above every layer: nothing more toward the sun
-    const CloudWeather weather = weatherAt(p, height, 1.0F);
-    if(cloudWeatherHasDensity(g_params, weather))
-      opticalDepth += mediaAt(p, height, weather, 1.0F, distance, 0.5F, true).extinction * stepSize;
+    if(!cloudInsideIntervals(g_params, height))
+    {
+      const CloudWeather weather = weatherAt(p, height, 1.0F);
+      if(cloudWeatherHasDensity(g_params, weather))
+        opticalDepth += mediaAt(p, height, weather, 1.0F, distance, 0.5F, true).extinction * stepSize;
+    }
+    t += stepSize;
+    stepSize = min(stepSize * 2.0F, kFarSunMaxStep);
+  }
+  return opticalDepth;
+}
+
+// How much of the sky's light reaches a point in the clouds: through the cloud above it, as diffuse
+// light gets through a slab -- two-stream, 1 / (1 + 3/4 (1 - g) tau), g 0.85 a droplet's -- over the
+// optical depth up to the layers' top in steps doubling from 100 m. Takram's in its place is a
+// gradient, a layer's base lit half as well as its top whatever lies above it: under a deck that
+// lit the whole underside alike, as flat as a painted ceiling, where a real one's thick parts go dark
+// and its thin ones let the light through. The shape alone, as the far march toward the sun reads.
+static const float kSkyDiffusion = 0.75F * (1.0F - 0.85F);
+
+float skyVisibility(float3 position, float3 up, float distance)
+{
+  float t            = 0.0F;
+  float stepSize     = 0.1F;
+  float opticalDepth = 0.0F;
+  for(int i = 0; i < g_params.skyIterations; ++i)
+  {
+    const float3 p      = position + up * (t + 0.5F * stepSize);
+    const float  height = length(p) - g_atmosphere.bottomRadius;
+    if(height > g_params.maxHeight)
+      break;
+    if(!cloudInsideIntervals(g_params, height))
+    {
+      const CloudWeather weather = weatherAt(p, height, 1.0F);
+      if(cloudWeatherHasDensity(g_params, weather))
+        opticalDepth += mediaAt(p, height, weather, 1.0F, distance, 0.5F, true).extinction * stepSize;
+    }
     t += stepSize;
     stepSize *= 2.0F;
   }
-  return opticalDepth;
+  return 1.0F / (1.0F + kSkyDiffusion * opticalDepth);
 }
 
 // Light from the ground under the clouds, bounced up into them (approximateRadianceFromGround): the
@@ -291,9 +346,8 @@ float4 marchClouds(float r0, float3 dir, float jitter)
       if(g_params.groundIterations > 0 && height < g_params.shadowTopHeight && mipLevel < 0.5F)
         radiance += radianceFromGround(position, normal, mipLevel, distance, jitter) * kInvFourPi * g_params.groundBounceScale;
 
-      // takram's crude sky gradient: brighter toward each layer's top. Better than none in the shadows.
-      const float skyGradient = dot(weather.heightFraction * 0.5F + 0.5F, media.weight);
-      radiance += skyIrradiance * kInvFourPi * skyGradient * g_params.skyLightScale;
+      // The sky's light, through the cloud above the point (skyVisibility)
+      radiance += skyIrradiance * kInvFourPi * skyVisibility(position, normal, distance) * g_params.skyLightScale;
 
       radiance *= media.scattering;
       // Beer-Powder: thin edges darker, where light has not yet built up by scattering

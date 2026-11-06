@@ -128,6 +128,10 @@ struct SkyCloudsParameters
   int   octaves;           // multiple-scattering octaves
   int   shapeDetail;       // 0 skips the detail noise
   int   turbulence;        // 0 skips the turbulence
+  int   skyIterations;     // the march up through the cloud for the sky's light (skyVisibility)
+  int   _pad4;
+  int   _pad5;
+  int   _pad6;
 };
 
 // What changes per bake: where the sun and the observer are, and which image it fills.

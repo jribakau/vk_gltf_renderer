@@ -46,14 +46,23 @@ float3 wrap01(float3 x)
   return x - floor(x);
 }
 
+// The turbulence map at a point of its tile, as the noise pass writes it: the curl and the variety.
+float4 turbulenceMap(float u, float v)
+{
+  const float2 p(wrap01(u), wrap01(v));
+  return float4(cloudTurbulenceNoise(p), cloudVarietyNoise(p));
+}
+
 // One column straight up from the ground, with what does not depend on the coverage read once: the
 // weather map over it and the two volumes at each height, as the bake reads them (sky_clouds_bake.slang
 // mediaAt) -- at the first layer's scale and at the fourth's -- the noise evaluated directly instead of
-// from its textures. The heights are the spans the march marches, the gaps between them left out.
-// Without the turbulence, which moves the billows about but not how many there are.
+// from its textures, the land's variety and its bends included. The heights are the spans the march
+// marches, the gaps between them left out. Without the turbulence, which moves the billows about but
+// not how many there are.
 struct Column
 {
   float4              weather;
+  CloudVariety        variety;
   std::vector<float>  heights;
   std::vector<float>  steps;  // km of column each height stands for
   std::vector<float4> shape;
@@ -67,13 +76,16 @@ std::vector<Column> columns(int count, unsigned seed, const SkyCloudsParameters&
   std::vector<Column>                   out(count);
   for(Column& c : out)
   {
-    const float x = spread(rng), z = spread(rng);
-    c.weather     = cloudWeatherNoise(float2(wrap01(x / CLOUD_WEATHER_PERIOD), wrap01(z / CLOUD_WEATHER_PERIOD)));
+    const float  x  = spread(rng), z = spread(rng);
+    const float2 xz = float2(x, z), sys = cloudSystemUv(xz), reg = cloudRegionUv(xz), loc = cloudLocalUv(xz);
+    c.variety       = cloudVariety(turbulenceMap(sys.x, sys.y), turbulenceMap(reg.x, reg.y), turbulenceMap(loc.x, loc.y));
+    c.weather       = cloudWeatherNoise(float2(wrap01((x + c.variety.weatherWarp.x) / CLOUD_WEATHER_PERIOD),
+                                               wrap01((z + c.variety.weatherWarp.y) / CLOUD_WEATHER_PERIOD)));
     const auto band = [&](float bottom, float top, int n) {
       for(int i = 0; i < n; ++i)
       {
         const float  h = bottom + (float(i) + 0.5F) / float(n) * (top - bottom);
-        const float3 q(x, h, z);
+        const float3 q(x + c.variety.shapeWarp.x, h, z + c.variety.shapeWarp.y);
         // as the bake's noiseAt: layer 1 shares layer 0's
         float4 shape(0.0F), detail(0.0F);
         for(int l : {0, 2, 3})
@@ -128,7 +140,7 @@ Shade shadeAt(const std::vector<Column>& cols, const SkyCloudsParameters& layers
     double depth = 0.0;
     for(size_t i = 0; i < c.heights.size(); ++i)
     {
-      const CloudWeather w = cloudSampleWeather(p, c.weather, c.heights[i]);
+      const CloudWeather w = cloudSampleVariedWeather(p, c.weather, c.heights[i], c.variety);
       if(cloudWeatherHasDensity(p, w))
         depth += cloudSampleMedia(p, w, c.shape[i], c.detail[i], true).extinction * c.steps[i];
     }
