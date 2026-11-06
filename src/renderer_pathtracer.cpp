@@ -224,8 +224,9 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                 &m_pushConst.numSamples, Persist::eYes, MIN_SAMPLES_PER_PIXEL, MAX_SAMPLES_PER_PIXEL);
   // A DLSS frame's samples go through its jittered position, so Ray Reconstruction's guides stay that
   // point's and the samples only take noise out of its light. The app sends more while the view is
-  // still under the DLSS refine, 1 when it moves; no reset, Ray Reconstruction keeps its history.
-  settings->add({.name = "ptSamplesDlss", .help = "PathTracer: DLSS frames: samples per pixel traced each frame, through the frame's jittered position"},
+  // still under the DLSS refine, 1 when it moves; no reset, Ray Reconstruction keeps its history. A
+  // frame traces them only once the view has held, and as many as fit a short frame (dlssFrameSamples).
+  settings->add({.name = "ptSamplesDlss", .help = "PathTracer: DLSS frames: samples per pixel traced each frame once the view has held still, through the frame's jittered position, as many as fit a 33 ms path trace"},
                 &m_samplesDlss, Persist::eNo, MIN_SAMPLES_PER_PIXEL, MAX_SAMPLES_PER_PIXEL);
   // An accumulation's frames clamp at ptFireflyClampStill when it is set, so a new ptFireflyClamp (the
   // host sends one with every exposure change) restarts only an accumulation that reads it; DLSS frames
@@ -689,6 +690,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
 
   // Handle adaptive sampling (SPP adjustment)
   updateAdaptiveSampling(resources);
+  updateDlssSamples(resources);
 
   // Finding the rendering size (needed before setupPushConstant so pixelAngle can be derived).
   VkExtent2D renderingSize = resources.gBuffers.getSize();
@@ -1226,6 +1228,33 @@ void PathTracer::updateAdaptiveSampling(Resources& resources)
 }
 
 
+//--------------------------------------------------------------------------------------------------
+// What dlssFrameSamples() reads: when the view last changed, and what a sample of the path trace costs
+void PathTracer::updateDlssSamples(const Resources& resources)
+{
+  if(resources.frameCount <= 0)
+    m_dlssViewChanged = std::chrono::steady_clock::now();
+  if(!m_profilerTimeline)
+    return;
+  // The profiler's time is of a frame some frames back: only frames that all traced one count give it
+  const int samples = m_recentFrameSamples.front();
+  if(samples <= 0 || std::any_of(m_recentFrameSamples.begin(), m_recentFrameSamples.end(), [&](int s) { return s != samples; }))
+    return;
+  nvutils::ProfilerTimeline::TimerInfo timerInfo;
+  static std::string                   apiName;  // unread, as updateAdaptiveSampling's
+  const std::string& timerName = (m_renderTechnique == RenderTechnique::RayQuery) ? kTimerPathTraceRq : kTimerPathTraceRtx;
+  if(m_profilerTimeline->getFrameTimerInfo(timerName, timerInfo, apiName) && timerInfo.gpu.last > 0.0)
+    m_dlssSampleMs = timerInfo.gpu.last / 1000.0 / double(samples);
+}
+
+// The samples this DLSS frame traces (sample_schedule::dlssFrameSamples)
+int PathTracer::dlssFrameSamples() const
+{
+  const double heldMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - m_dlssViewChanged).count();
+  return sample_schedule::dlssFrameSamples(m_samplesDlss, heldMs, m_dlssSampleMs, kDlssHoldMs, kDlssRefineTraceMs);
+}
+
+
 void PathTracer::updateStatistics(Resources& resources)
 {
 
@@ -1437,14 +1466,14 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
         static_cast<float>(glm::length(resources.cameraManip->getEye() - resources.cameraManip->getCenter()));
   }
 
-  // Samples per frame: the setting (ptSamples), Auto SPP's count, or with DLSS ptSamplesDlss (1 but
-  // for the DLSS refine of a still)
+  // Samples per frame: the setting (ptSamples), Auto SPP's count, or with DLSS dlssFrameSamples() (1
+  // but for the DLSS refine of a still that has held)
   int  samplesPerFrame = m_adaptiveSampling ? m_adaptiveSamples : m_pushConst.numSamples;
   bool useDlss         = false;
 #if defined(USE_DLSS)
   useDlss = getEffectiveDlssEnabled(resources);
   if(useDlss)
-    samplesPerFrame = m_samplesDlss;
+    samplesPerFrame = dlssFrameSamples();
 
   // Halton jitter and frame-index counter. GltfRenderer::renderFrame writes the frame info with a
   // zero jitter every frame; only a DLSS frame patches it.

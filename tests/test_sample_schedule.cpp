@@ -173,6 +173,24 @@ std::vector<int> climb(GpuMs gpuMs, double targetMs, int frames, int lag = 0)
 
 }  // namespace
 
+// A DLSS frame traces the host's count only once the view has held, and only as many as fit the budget
+TEST(SampleSchedule, DlssFramesTraceTheirSamplesOnceTheViewHolds)
+{
+  using sample_schedule::dlssFrameSamples;
+  // the moving view, and the frame a move lands on while a still refines: one
+  EXPECT_EQ(dlssFrameSamples(1, 1000.0, 5.0, 250.0, 33.0), 1);
+  EXPECT_EQ(dlssFrameSamples(4, 0.0, 5.0, 250.0, 33.0), 1);
+  EXPECT_EQ(dlssFrameSamples(4, 249.0, 5.0, 250.0, 33.0), 1);
+  // not measured yet: one
+  EXPECT_EQ(dlssFrameSamples(4, 1000.0, 0.0, 250.0, 33.0), 1);
+  // held: the host's count, as many as fit 33 ms of path trace
+  EXPECT_EQ(dlssFrameSamples(4, 250.0, 5.0, 250.0, 33.0), 4);
+  EXPECT_EQ(dlssFrameSamples(4, 1000.0, 14.0, 250.0, 33.0), 2);
+  EXPECT_EQ(dlssFrameSamples(16, 1000.0, 2.0, 250.0, 33.0), 16);
+  // a sample dearer than the budget: still one
+  EXPECT_EQ(dlssFrameSamples(4, 1000.0, 50.0, 250.0, 33.0), 1);
+}
+
 TEST(SampleSchedule, FrameRateClimbsByOneUntilTheTarget)
 {
   // 1 ms a sample, 30 ms target: one more each frame until 24 (24 ms is 0.8 x target), then held

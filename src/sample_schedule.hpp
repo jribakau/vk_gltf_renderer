@@ -30,6 +30,8 @@
 // ThroughputSearch:       Auto SPP's Throughput target, the samples per frame with the lowest frame
 //                         time per sample.
 // frameMaxDepth():        the bounces a frame's paths take: the still's, or the DLSS frames' cap below it.
+// dlssFrameSamples():     the samples a DLSS frame traces: the host's count once the view has held still,
+//                         as many of them as fit a short frame; 1 from the frame a change lands on.
 // accumulationComplete(): the cap is reached: the samples, or the frames of a view that has none; or
 //                         the adaptive stop found nearly every pixel done.
 //-------------------------------------------------------------------------------------------------------
@@ -82,6 +84,19 @@ inline bool accumulationComplete(int frameCount, int accumulated, int maxSamples
 inline int frameMaxDepth(int maxDepth, int maxDepthDlss, bool dlss)
 {
   return dlss && maxDepthDlss > 0 ? std::min(maxDepth, maxDepthDlss) : maxDepth;
+}
+
+// The samples a DLSS frame traces, `asked` the host's (ptSamplesDlss: more than 1 only while a still
+// refines with DLSS). 1 until the view has held still `holdMs` (`heldMs` since the last reset): the frame
+// a move lands on, and the frames of a drag between its inputs, trace one at once, before the host's own
+// 1 arrives a frame or two later. Then as many as fit `budgetMs` of path trace at `sampleMs` a sample
+// (0: not measured yet, 1), so a refining frame is never so long that the frame a drag starts on waits
+// long behind it.
+inline int dlssFrameSamples(int asked, double heldMs, double sampleMs, double holdMs, double budgetMs)
+{
+  if(asked <= 1 || heldMs < holdMs || !(sampleMs > 0.0))
+    return 1;
+  return std::clamp(int(budgetMs / sampleMs), 1, asked);
 }
 
 // Auto SPP's frame-rate targets, over one accumulation (restart() on every reset). From one sample per

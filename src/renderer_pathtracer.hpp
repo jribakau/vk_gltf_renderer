@@ -394,6 +394,8 @@ public:
 
   // Adaptive sampling for performance optimization
   void                                  updateAdaptiveSampling(Resources& resources);
+  void                                  updateDlssSamples(const Resources& resources);
+  int                                   dlssFrameSamples() const;
   void                                  restartAdaptiveSampling();
   sample_schedule::ThroughputSearch     m_throughputSearch;       // Auto SPP's Throughput target
   sample_schedule::FrameRateControl     m_frameRateControl;       // Auto SPP's frame-rate targets
@@ -434,7 +436,12 @@ public:
   bool                       m_adaptiveSampling{true};
   int m_adaptiveSamples{MIN_SAMPLES_PER_PIXEL};  // Auto SPP's samples per frame; ptSamples keeps the user's value
   int m_totalSamplesAccumulated{0};              // Track total samples separately
-  int m_samplesDlss{1};   // Samples per pixel a DLSS frame traces (ptSamplesDlss)
+  int m_samplesDlss{1};   // Samples per pixel a DLSS frame may trace (ptSamplesDlss; dlssFrameSamples)
+  std::chrono::steady_clock::time_point m_dlssViewChanged{};  // The last reset (a frame of count 0)
+  double m_dlssSampleMs{0.0};  // A sample's path-trace GPU time, from frames that all traced one count; 0: none yet
+  // The DLSS refine's frames: its samples once the view has held this long, as many as fit this much path trace
+  static constexpr double kDlssHoldMs        = 250.0;
+  static constexpr double kDlssRefineTraceMs = 33.0;
   int m_frameSamples{1};  // Samples per pixel traced this frame: ptSamples, fewer on a frame that ends on a stop
   // Samples traced by the last frames, as far back as the profiler's GPU times lag (Auto SPP)
   std::array<int, nvutils::ProfilerTimeline::MAX_FRAME_DELAY + 1> m_recentFrameSamples{};
@@ -483,10 +490,10 @@ public:
   bool keepOneAccumulationDenoiser(Resources& resources);
 
   // Samples per frame the next frame traces before it ends on a stop: Auto SPP's count, the
-  // setting (ptSamples), or 1 when DLSS renders every frame
+  // setting (ptSamples), or when DLSS renders every frame dlssFrameSamples()
   int samplesPerFrame() const
   {
-    return isDlssEveryFrame() ? 1 : (m_adaptiveSampling ? m_adaptiveSamples : m_pushConst.numSamples);
+    return isDlssEveryFrame() ? dlssFrameSamples() : (m_adaptiveSampling ? m_adaptiveSamples : m_pushConst.numSamples);
   }
 
   // DLSS-RR renders every frame, one sample each. Not with OptiX or OIDN also on: DLSS renders only

@@ -331,9 +331,13 @@ rotation moves the environment. See the `calculateMotionVector` overload comment
   a DLSS frame traces, all through the frame's one jittered position: the guides, written from the
   last sample, describe that point, so the extra samples take noise out of its light only. Under
   Ray Reconstruction a still's frame of 1 sample looked no better than a moving one; the app sends
-  more while a still refines with DLSS (Render › Refine with DLSS › Samples a frame, 4 by default)
+  more while a still refines with DLSS (Render â€º Refine with DLSS â€º Samples a frame, 4 by default)
   and 1 when the view moves, with no reset, so RR keeps its history. They count toward Max Samples:
-  128 at 4 a frame end after 32 frames.
+  128 at 4 a frame end after 32 frames. The renderer traces them only once the view has held still
+  for 250 ms, and only as many as fit 33 ms of path trace at the last measured cost of a sample
+  (`sample_schedule::dlssFrameSamples`): at first they were traced from the app's word alone, so
+  the frame a drag landed on was one of 4 samples, and so were the one or two after it until the
+  app's 1 arrived, and the drag's start lagged (asked 11-06).
 - **Switching DLSS off restarts the path tracer's accumulation.** DLSS frames count toward
   `maxFrames` and the accumulated-sample total like any other frame, and the result image holds the
   last 1-spp DLSS input. Every DLSS setting therefore resets the frame (the `resetAccumulation` hook
