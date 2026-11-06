@@ -33,6 +33,12 @@
 // It solves in clusters (figure/physics/cloth/clusters.hpp, physics-plan step 13a): a workgroup holds a
 // patch of the cloth in shared memory for a whole sweep, 10 dispatches a substep instead of about 145.
 //
+// A collision pass and a frame's recovery go a wave a vertex where the device's waves are 32 lanes (NVIDIA's):
+// each face's box where the pose has it is made first, and a vertex's lanes look at 32 of its faces at once
+// on those boxes, meeting the few it may touch one after another in the order a thread a vertex met them,
+// so the drape is the same to the bit (physics-plan step 13c). A thread a vertex walked its hundreds of
+// faces alone, and with a few thousand vertices most of the GPU stood idle.
+//
 // Not done here: the cloth does not collide with itself, vertices keep no clearance budgets (every
 // free vertex looks around on every pass; the GPU has the threads for it), and the kinematic
 // vertices move along straight lines within a frame (the host sweeps them along their bones
@@ -56,7 +62,7 @@
 // device loss: Windows resets a GPU held for about two seconds). FV_DFORCE_GPU_DEBUG in the
 // environment leaves a kernel out, for bisecting one: 1 the recovery, 2 the hold; 4 solves a dispatch
 // a colour and 8 on the renderer's queue, as before step 13; 16 makes a new simulation for every settle,
-// as before the driver kept one.
+// as before the driver kept one; 256 runs the collision passes and the recovery a thread a vertex.
 
 #include <functional>
 #include <future>
@@ -101,8 +107,8 @@ public:
   {
     int    frames = 0, dispatches = 0;
     double gpuMs = 0, waitMs = 0;
-    // of gpuMs: the collision passes and the frame's recovery, and the holds on faces
-    double collideMs = 0, holdMs = 0;
+    // of gpuMs: the collision passes and the frame's recovery (of which the recovery alone), and the holds on faces
+    double collideMs = 0, recoverMs = 0, holdMs = 0;
     // on the host, each frame: the kinematic vertices skinned, and the collision grid built (of which
     // the copy into its buffers), with its entries (a face once per cell its sweep meets) and slots
     double skinMs = 0, gridMs = 0, gridCopyMs = 0;

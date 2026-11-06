@@ -84,6 +84,10 @@ struct DforceModel
   DforceTri*  tris;  // the faces the pose moves (the body)
   DforceCell* cells;
   int*        items;
+  // each face's box where the pose has it at the pass under way (boxesMain), two a face: its least corner and its
+  // offset, its greatest and its layer; a little larger than the face's, so a face whose box misses is
+  // skipped before its corners are read
+  float4*     faceBox;
   // The cloth's own faces: a garment meets another's (and its own with Self Collide, `self`, which the host
   // leaves off for now; not those around a vertex: ring2, its stretch neighbours and theirs, sorted, from
   // ring2Start). Their grid is made from

@@ -424,6 +424,7 @@ int main(int argc, char** argv)
                                {"settleMs", r4(ms)},
                                {"gpuMsPerFrame", r4(s.gpuMs / std::max(1, s.frames))},
                                {"collideMsPerFrame", r4(s.collideMs / std::max(1, s.frames))},
+                               {"recoverMsPerFrame", r4(s.recoverMs / std::max(1, s.frames))},
                                {"holdMsPerFrame", r4(s.holdMs / std::max(1, s.frames))},
                                {"waitMsPerFrame", r4(s.waitMs / std::max(1, s.frames))},
                                {"skinMsPerFrame", r4(s.skinMs / std::max(1, s.frames))},

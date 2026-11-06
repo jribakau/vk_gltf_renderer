@@ -301,13 +301,17 @@ void commitMain(uint3 tid: SV_DispatchThreadID)
 }
 
 // The nearest face of a lower layer within `reach` of q, with the faces where the pose has them at
-// fraction t: its index (-1 for none), the signed distance along its normal, and that normal.
+// fraction t, whose boxes boxesMain made for it: its index (-1 for none), the signed distance along
+// its normal, and that normal.
 int nearestFace(DforceModel m, float3 q, float reach, int layer, float t, out float signedDist, out float3 normal)
 {
   int    best     = -1;
   float  bestDist = reach;
   signedDist      = 0;
   normal          = float3(0);
+  // how much further than the nearest so far a face's box may lie and still have its distance made: 0.1 mm
+  // and more far out, against closestOn's rounding of some 1e-5 cm at a figure's coordinates
+  float  slack    = 0.01 + (abs(q.x) + abs(q.y) + abs(q.z)) * 1e-6;
   float3 lo = q - reach, hi = q + reach;
   for(int ix = cellOf(lo.x, m.cellSize); ix <= cellOf(hi.x, m.cellSize); ix++)
     for(int iy = cellOf(lo.y, m.cellSize); iy <= cellOf(hi.y, m.cellSize); iy++)
@@ -323,11 +327,19 @@ int nearestFace(DforceModel m, float3 q, float reach, int layer, float t, out fl
             continue;
           for(int k = 0; k < cell.count; k++)
           {
-            int       f   = m.items[cell.start + k];
-            DforceTri tri = m.tris[f];
-            if(tri.layer >= layer)
+            int    f    = m.items[cell.start + k];
+            float4 box0 = m.faceBox[2 * f], box1 = m.faceBox[2 * f + 1];
+            if(asint(box1.w) >= layer)
               continue;
-            float3 a, b, c, n;
+            // a face whose box lies further off than the nearest so far can't be nearer: skipped before its
+            // corners are read. The slack is far over closestOn's rounding, so what is skipped would have
+            // lost the comparison below anyway, and the nearest is the same face
+            float3 out  = max(max(box0.xyz - q, q - box1.xyz), float3(0));
+            float  room = bestDist + slack;
+            if(dot(out, out) > room * room)
+              continue;
+            DforceTri tri = m.tris[f];
+            float3    a, b, c, n;
             faceAt(m, tri, t, a, b, c);
             if(!faceNormal(a, b, c, n))
               continue;
@@ -348,6 +360,27 @@ int nearestFace(DforceModel m, float3 q, float reach, int layer, float t, out fl
   return best;
 }
 
+// Before a collision pass and the frame's recovery: each face's box where the pose has it at pc.t, with its
+// offset and its layer, for the vertices to skip a face they are nowhere near before reading its corners.
+// A little larger than the face's (a thousandth of a cm, and more far out), so the corners made again
+// where a box passes, rounded as they may be, never lie outside it: what misses this box misses the
+// face's own, and every pass and recovery comes out as it would without it, to the bit.
+[shader("compute")]
+[numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
+void boxesMain(uint3 tid: SV_DispatchThreadID)
+{
+  DforceModel m = *pc.model;
+  if(tid.x >= m.numTris)
+    return;
+  DforceTri tri = m.tris[tid.x];
+  float3    a, b, c;
+  faceAt(m, tri, pc.t, a, b, c);
+  float3 lo    = min(a, min(b, c)), hi = max(a, max(b, c));
+  float3 slack = 0.001 + max(abs(lo), abs(hi)) * 1e-6;
+  m.faceBox[2 * tid.x]     = float4(lo - slack, tri.offset);
+  m.faceBox[2 * tid.x + 1] = float4(hi + slack, asfloat(tri.layer));
+}
+
 // At a frame's start: a free vertex touching nothing that lies behind the nearest face of a lower
 // layer within recoverDepth is put back outside it, and rests on that face from now on.
 [shader("compute")]
@@ -364,6 +397,106 @@ void recoverMain(uint3 tid: SV_DispatchThreadID)
   float3 n;
   int    t = nearestFace(m, m.x[i], m.recoverDepth, m.layer[i], pc.t, sd, n);
   if(t < 0 || sd >= 0)
+    return;
+  DforceTri tri = m.tris[t];
+  float     gap = max(tri.offset, m.offset[i]);
+  m.x[i]       = m.x[i] + n * (gap - sd);
+  m.cprev[i]   = m.x[i];
+  m.contact[i] = t;
+}
+
+// The collision pass and the recovery a wave a vertex (collideWaveMain, recoverWaveMain), where the device's
+// waves are 32 lanes (DforceGpu turns them on): a vertex met a cell's faces one after another on a thread
+// of its own, and with a few thousand vertices most of the GPU stood idle while each walked its hundreds
+// of faces (a light copy's pass cost as much as a dress five times its size). Its lanes now take 32 faces
+// at a time, in the order the thread met them, and what they decide is what it decided, to the bit.
+
+// nearestFace, the lanes of a wave sharing its faces. Each lane weighs a face of the next 32; the nearest of
+// them, the first of equally near ones, becomes the nearest so far if it is nearer, as one after another
+// they would. A lane skips a face its box puts further off than the nearest as the 32 began: that is no
+// nearer than the nearest when the thread came to it, so what it skips the thread skipped or passed over.
+int nearestFaceWave(DforceModel m, float3 q, float reach, int layer, float t, out float signedDist, out float3 normal)
+{
+  const uint lane     = WaveGetLaneIndex();
+  const int  lanes    = int(WaveGetLaneCount());
+  int        best     = -1;
+  float      bestDist = reach;
+  signedDist          = 0;
+  normal              = float3(0);
+  float  slack        = 0.01 + (abs(q.x) + abs(q.y) + abs(q.z)) * 1e-6;
+  float3 lo = q - reach, hi = q + reach;
+  for(int ix = cellOf(lo.x, m.cellSize); ix <= cellOf(hi.x, m.cellSize); ix++)
+    for(int iy = cellOf(lo.y, m.cellSize); iy <= cellOf(hi.y, m.cellSize); iy++)
+      for(int iz = cellOf(lo.z, m.cellSize); iz <= cellOf(hi.z, m.cellSize); iz++)
+      {
+        uint s = cellHash(ix, iy, iz) & m.cellMask;
+        for(uint probe = 0; probe <= m.cellMask; probe++)
+        {
+          DforceCell cell = m.cells[(s + probe) & m.cellMask];
+          if(cell.start < 0)
+            break;
+          if(cell.x != ix || cell.y != iy || cell.z != iz)
+            continue;
+          for(int first = 0; first < cell.count; first += lanes)
+          {
+            const int k    = first + int(lane);
+            int       f    = -1;
+            bool      near = false;
+            float     sd = 0, dist = 0;
+            float3    n = float3(0);
+            if(k < cell.count)
+            {
+              f           = m.items[cell.start + k];
+              float4 box0 = m.faceBox[2 * f], box1 = m.faceBox[2 * f + 1];
+              float3 out  = max(max(box0.xyz - q, q - box1.xyz), float3(0));
+              float  room = bestDist + slack;
+              if(asint(box1.w) < layer && dot(out, out) <= room * room)
+              {
+                DforceTri tri = m.tris[f];
+                float3    a, b, c;
+                faceAt(m, tri, t, a, b, c);
+                if(faceNormal(a, b, c, n))
+                {
+                  bool interior;
+                  closestOn(q, a, b, c, n, sd, dist, interior);
+                  near = dist < bestDist;
+                }
+              }
+            }
+            const float least   = WaveActiveMin(near ? dist : 3.0e38);
+            const uint  winners = WaveActiveBallot(near && dist == least).x;
+            if(winners != 0)
+            {
+              const uint j = firstbitlow(winners);
+              best         = WaveReadLaneAt(f, j);
+              bestDist     = least;
+              signedDist   = WaveReadLaneAt(sd, j);
+              normal       = WaveReadLaneAt(n, j);
+            }
+          }
+          break;
+        }
+      }
+  return best;
+}
+
+// recoverMain, a wave a vertex.
+[shader("compute")]
+[numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
+[require(spvGroupNonUniformBallot, spvGroupNonUniformShuffle)]
+void recoverWaveMain(uint3 tid: SV_DispatchThreadID)
+{
+  DforceModel m = *pc.model;
+  const uint  v = tid.x / WaveGetLaneCount();
+  if(v >= m.numFree)
+    return;
+  int i = m.freeVerts[v];
+  if(m.collides[i] == 0 || m.contact[i] >= 0)
+    return;
+  float  sd;
+  float3 n;
+  int    t = nearestFaceWave(m, m.x[i], m.recoverDepth, m.layer[i], pc.t, sd, n);
+  if(t < 0 || sd >= 0 || !WaveIsFirstLane())
     return;
   DforceTri tri = m.tris[t];
   float     gap = max(tri.offset, m.offset[i]);
@@ -560,21 +693,26 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
             continue;
           for(int k = 0; k < cell.count; k++)
           {
-            int       f   = m.items[cell.start + k];
+            int    f    = m.items[cell.start + k];
+            float4 box0 = m.faceBox[2 * f], box1 = m.faceBox[2 * f + 1];
+            // the vertex where it is now: an earlier face may have moved it. A face it is nowhere near is
+            // left on its box from boxesMain, a little larger than the face's own, before its corners are read
+            // (most of a cell's faces); what passes is tried on the face's own box as ever
+            float3 p    = m.x[i];
+            float  gap  = max(box0.w, off);
+            float  near = min(m.depth, gap + moved);
+            if(any(p < box0.xyz - near) || any(p > box1.xyz + near))
+              continue;
             DforceTri tri = m.tris[f];
             float3    a0, b0, c0, a1, b1, c1;
-            faceAt(m, tri, pc.tFaces, a0, b0, c0);
             faceAt(m, tri, pc.t, a1, b1, c1);
-            float3 n0, n1;
-            if(!faceNormal(a0, b0, c0, n0) || !faceNormal(a1, b1, c1, n1))
-              continue;
-            // the vertex where it is now: an earlier face may have moved it
-            float3 p    = m.x[i];
-            float  gap  = max(tri.offset, off);
-            float  near = min(m.depth, gap + moved);
             float3 blo  = min(a1, min(b1, c1)) - near;
             float3 bhi  = max(a1, max(b1, c1)) + near;
             if(any(p < blo) || any(p > bhi))
+              continue;
+            faceAt(m, tri, pc.tFaces, a0, b0, c0);
+            float3 n0, n1;
+            if(!faceNormal(a0, b0, c0, n0) || !faceNormal(a1, b1, c1, n1))
               continue;
             float wasSigned, wasDist;
             bool  wasInterior;
@@ -622,6 +760,147 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
         }
       }
   m.cprev[i]   = m.x[i];
+  m.contact[i] = resting;
+}
+
+// One of the pose's faces against a free vertex at p, as collideMain meets each in turn (it is that loop's
+// body): p pushed out to the face's side and its slide shed, prev moved with it, and the face it rests on
+// noted. True when it moved p.
+bool meetFace(DforceModel m, int f, float3 was, float moved, int layer, float off, float fri, inout float3 p, inout float3 prev, inout int resting)
+{
+  DforceTri tri  = m.tris[f];
+  float     gap  = max(tri.offset, off);
+  float     near = min(m.depth, gap + moved);
+  float3    a0, b0, c0, a1, b1, c1;
+  faceAt(m, tri, pc.t, a1, b1, c1);
+  float3 blo = min(a1, min(b1, c1)) - near;
+  float3 bhi = max(a1, max(b1, c1)) + near;
+  if(any(p < blo) || any(p > bhi))
+    return false;
+  faceAt(m, tri, pc.tFaces, a0, b0, c0);
+  float3 n0, n1;
+  if(!faceNormal(a0, b0, c0, n0) || !faceNormal(a1, b1, c1, n1))
+    return false;
+  float wasSigned, wasDist;
+  bool  wasInterior;
+  closestOn(was, a0, b0, c0, n0, wasSigned, wasDist, wasInterior);
+  int direction;
+  if(layer > tri.layer)
+  {
+    if(wasSigned < -0.05)
+      return false;
+    direction = 1;
+  }
+  else if(layer < tri.layer)
+  {
+    if(wasSigned > 0.05)
+      return false;
+    direction = -1;
+  }
+  else
+    direction = wasSigned >= 0 ? 1 : -1;
+  float nowSigned, nowDist;
+  bool  nowInterior;
+  closestOn(p, a1, b1, c1, n1, nowSigned, nowDist, nowInterior);
+  if(nowInterior && nowDist <= gap + near)
+    resting = f;
+  float target = float(direction) * gap;
+  if(direction > 0 ? nowSigned >= target : nowSigned <= target)
+    return false;
+  if(nowDist > m.depth)
+    return false;
+  // past the edge, not under the face
+  if(abs(nowSigned) < 0.6 * nowDist)
+    return false;
+  float  push  = min(abs(target - nowSigned), m.cap);
+  float  along = target - nowSigned > 0 ? 1.0 : -1.0;
+  p            = p + n1 * (push * along);
+  // friction sheds the slide of this substep; the contact absorbs the motion along the normal
+  float3 d  = p - prev;
+  float  dn = dot(d, n1);
+  float  fr = clamp((tri.friction + fri) * 0.5, 0.0, 0.95);
+  p         = p - (d - n1 * dn) * fr;
+  prev      = p - (d - n1 * dn) * (1 - fr);
+  return true;
+}
+
+// Whether p may meet face f, by its box from boxesMain: what misses it, meetFace leaves as it is.
+bool mayMeet(DforceModel m, int f, float3 p, float off, float moved)
+{
+  float4 box0 = m.faceBox[2 * f], box1 = m.faceBox[2 * f + 1];
+  float  near = min(m.depth, max(box0.w, off) + moved);
+  return !(any(p < box0.xyz - near) || any(p > box1.xyz + near));
+}
+
+// collideMain over the pose's faces, a wave a vertex: its lanes look at the next 32 faces at once, each on
+// its box, and those it may meet are met one after another in their order, on every lane alike, as the
+// thread met them. A push moves the vertex: the faces after it among the 32 are looked at again from there.
+// A garment meeting another's faces (numClothTris) runs collideMain.
+[shader("compute")]
+[numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
+[require(spvGroupNonUniformBallot, spvGroupNonUniformShuffle)]
+void collideWaveMain(uint3 tid: SV_DispatchThreadID)
+{
+  DforceModel m     = *pc.model;
+  const uint  lane  = WaveGetLaneIndex();
+  const int   lanes = int(WaveGetLaneCount());
+  const uint  v     = tid.x / uint(lanes);
+  if(v >= m.numFree)
+    return;
+  int i = m.freeVerts[v];
+  if(m.collides[i] == 0)
+    return;
+  float3 x0    = m.x[i];
+  float3 was   = m.cprev[i];
+  float  moved = length(x0 - was);
+  float  reach = m.searchReach;
+  if(moved > m.depth)
+  {
+    was   = x0;
+    moved = 0;
+  }
+  float3 lo      = min(x0, was) - reach;
+  float3 hi      = max(x0, was) + reach;
+  int    layer   = m.layer[i];
+  float  off     = m.offset[i];
+  float  fri     = m.friction[i];
+  int    resting = -1;
+  float3 p       = x0;
+  float3 prev    = m.prev[i];
+  for(int ix = cellOf(lo.x, m.cellSize); ix <= cellOf(hi.x, m.cellSize); ix++)
+    for(int iy = cellOf(lo.y, m.cellSize); iy <= cellOf(hi.y, m.cellSize); iy++)
+      for(int iz = cellOf(lo.z, m.cellSize); iz <= cellOf(hi.z, m.cellSize); iz++)
+      {
+        uint s = cellHash(ix, iy, iz) & m.cellMask;
+        for(uint probe = 0; probe <= m.cellMask; probe++)
+        {
+          DforceCell cell = m.cells[(s + probe) & m.cellMask];
+          if(cell.start < 0)
+            break;
+          if(cell.x != ix || cell.y != iy || cell.z != iz)
+            continue;
+          for(int first = 0; first < cell.count; first += lanes)
+          {
+            const int k    = first + int(lane);
+            const int f    = k < cell.count ? m.items[cell.start + k] : -1;
+            uint      them = WaveActiveBallot(f >= 0 && mayMeet(m, f, p, off, moved)).x;
+            while(them != 0)
+            {
+              const uint j = firstbitlow(them);
+              // the faces up to j are done
+              them &= ~((2u << j) - 1u);
+              if(meetFace(m, WaveReadLaneAt(f, j), was, moved, layer, off, fri, p, prev, resting))
+                them = WaveActiveBallot(f >= 0 && lane > j && mayMeet(m, f, p, off, moved)).x;
+            }
+          }
+          break;
+        }
+      }
+  if(!WaveIsFirstLane())
+    return;
+  m.x[i]       = p;
+  m.prev[i]    = prev;
+  m.cprev[i]   = p;
   m.contact[i] = resting;
 }
 

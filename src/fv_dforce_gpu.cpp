@@ -85,7 +85,11 @@ struct Kernels
   VkDevice         device      = VK_NULL_HANDLE;
   VkCommandPool    commandPool = VK_NULL_HANDLE;
   VkPipelineLayout layout      = VK_NULL_HANDLE;
-  VkPipeline       integrate{}, edges{}, attach{}, recover{}, hold{}, collide{}, velocity{}, cluster{}, commit{}, snap{};
+  VkPipeline       integrate{}, edges{}, attach{}, recover{}, hold{}, collide{}, velocity{}, cluster{}, commit{}, snap{}, boxes{}, collideWave{},
+      recoverWave{};
+  // the lanes of the device's waves, when the collision pass and the recovery go a wave a vertex
+  // (collideWaveMain, recoverWaveMain: 32, with the ballots, shuffles and least they need); 0: a thread a vertex
+  uint32_t waveLanes = 0;
 
   Kernels() = default;
   Kernels(const Kernels&)            = delete;
@@ -94,7 +98,7 @@ struct Kernels
   {
     if(!device)
       return;
-    for(VkPipeline p : {integrate, edges, attach, recover, hold, collide, velocity, cluster, commit, snap})
+    for(VkPipeline p : {integrate, edges, attach, recover, hold, collide, velocity, cluster, commit, snap, boxes, collideWave, recoverWave})
       if(p)
         vkDestroyPipeline(device, p, nullptr);
     if(layout)
@@ -103,9 +107,18 @@ struct Kernels
       vkDestroyCommandPool(device, commandPool, nullptr);
   }
 
-  bool make(VkDevice dev, const nvvk::QueueInfo& queue)
+  bool make(VkDevice dev, VkPhysicalDevice physical, const nvvk::QueueInfo& queue)
   {
     device = dev;
+    {
+      VkPhysicalDeviceSubgroupProperties subgroup{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+      VkPhysicalDeviceProperties2        props{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &subgroup};
+      vkGetPhysicalDeviceProperties2(physical, &props);
+      const VkSubgroupFeatureFlags needs = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT
+                                           | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+      if(subgroup.subgroupSize == 32 && (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) && (subgroup.supportedOperations & needs) == needs)
+        waveLanes = 32;
+    }
     if(queue.queue)
     {
       commandPool = nvvk::createTransientCommandPool(device, queue.familyIndex);
@@ -137,7 +150,8 @@ struct Kernels
     };
     return pipe("integrateMain", integrate) && pipe("edgesMain", edges) && pipe("attachMain", attach) && pipe("recoverMain", recover)
            && pipe("holdMain", hold) && pipe("collideMain", collide) && pipe("velocityMain", velocity) && pipe("clusterMain", cluster)
-           && pipe("commitMain", commit) && pipe("snapMain", snap);
+           && pipe("commitMain", commit) && pipe("snapMain", snap) && pipe("boxesMain", boxes)
+           && (waveLanes == 0 || (pipe("collideWaveMain", collideWave) && pipe("recoverWaveMain", recoverWave)));
   }
 };
 
@@ -188,7 +202,9 @@ struct DforceGpu::Impl
 
   VkPipelineLayout layout{};
   VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{}, clusterPipe{}, commitPipe{},
-      snapPipe{};
+      snapPipe{}, boxesPipe{}, collideWavePipe{}, recoverWavePipe{};
+  // the kernels' waveLanes, unless FV_DFORCE_GPU_DEBUG's 256 asks for a thread a vertex
+  uint32_t waveLanes = 0;
 
   // the static faces' corners, three a face, and the grid made from them each frame (its buffers kept)
   std::vector<int32_t>     faceCorners;
@@ -202,7 +218,7 @@ struct DforceGpu::Impl
   nvvk::Buffer x, prev, vel, cprev, kinStart, kinEnd, kinematic, freeVerts, inv, dampRate, offset, friction, layer, collides, grav, edges,
       lam, tris, cells, items, softVerts, attAlpha, lamAtt, contact, modelBuf, readback, clusterEdgeBuf, clusterLamBuf, clusterVertBuf, clusterVertStartBuf,
       clusterOwnedBuf, clusterColourBuf, clusterSoftBuf, clusterSoftStartBuf, xTwin, clothTris, clothCells, clothItems, meshOf, ring2Start, ring2,
-      frameStart, snap, cprevSnap;
+      frameStart, snap, cprevSnap, faceBox;
   size_t cellCapacity = 0, itemCapacity = 0, clothCellCapacity = 0, clothItemCapacity = 0;
   bool   gridFailed = false;
 
@@ -231,7 +247,7 @@ struct DforceGpu::Impl
   // simulation stops, so one bad step cannot take the device down with it
   bool broken = false;
   // FV_DFORCE_GPU_DEBUG, bits: 1 leaves the recovery out, 2 the hold between passes; for finding
-  // which kernel a device loss comes from
+  // which kernel a device loss comes from. 256: the collision passes and the recovery a thread a vertex
   int debug = 0;
 
   // ---- setup
@@ -495,6 +511,13 @@ bool DforceGpu::Impl::create()
   ok &= mapped(edges, sorted);
   ok &= mapped(lam, lamZero);
   ok &= mapped(tris, faces);
+  // written and read by the kernels alone, so on the device
+  if(ok && !faces.empty())
+  {
+    ok = alloc->createBuffer(faceBox, faces.size() * 2 * sizeof(glm::vec4), kUsage, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE) == VK_SUCCESS;
+    if(ok)
+      NVVK_DBG_NAME(faceBox.buffer);
+  }
   ok &= mapped(softVerts, model.softVerts.empty() ? std::vector<int>{0} : model.softVerts);
   ok &= mapped(attAlpha, model.attAlpha);
   ok &= mapped(lamAtt, lamAttZero);
@@ -530,7 +553,7 @@ bool DforceGpu::Impl::create()
   {
     fv::timing::Scope tk("dforce: kernels");
     auto              k = std::make_shared<Kernels>();
-    if(!k->make(alloc->getDevice(), queue))
+    if(!k->make(alloc->getDevice(), alloc->getPhysicalDevice(), queue))
       return false;
     kernels = std::move(k);
   }
@@ -546,6 +569,10 @@ bool DforceGpu::Impl::create()
   clusterPipe   = kernels->cluster;
   commitPipe    = kernels->commit;
   snapPipe      = kernels->snap;
+  boxesPipe     = kernels->boxes;
+  collideWavePipe = kernels->collideWave;
+  recoverWavePipe = kernels->recoverWave;
+  waveLanes       = (debug & 256) ? 0 : kernels->waveLanes;
   if(gpu.timestamps)
   {
     VkPhysicalDeviceProperties props{};
@@ -600,7 +627,7 @@ void DforceGpu::Impl::resetState()
   // the run's counts start over; the cut's shape stays
   stats.frames     = 0;
   stats.dispatches = 0;
-  stats.gpuMs = stats.waitMs = stats.collideMs = stats.holdMs = stats.skinMs = stats.gridMs = stats.gridCopyMs = 0;
+  stats.gpuMs = stats.waitMs = stats.collideMs = stats.recoverMs = stats.holdMs = stats.skinMs = stats.gridMs = stats.gridCopyMs = 0;
   stats.gridEntries = stats.gridSlots = 0;
 }
 
@@ -617,14 +644,15 @@ void DforceGpu::Impl::destroy()
   // the kernels' handles are theirs: they go with the last simulation that holds them
   commandPool = VK_NULL_HANDLE;
   layout      = VK_NULL_HANDLE;
-  for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe, &clusterPipe, &commitPipe, &snapPipe})
+  for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe, &clusterPipe, &commitPipe, &snapPipe,
+                       &boxesPipe, &collideWavePipe, &recoverWavePipe})
     *p = VK_NULL_HANDLE;
   kernels.reset();
   for(nvvk::Buffer* b : {&x, &prev, &vel, &cprev, &kinStart, &kinEnd, &kinematic, &freeVerts, &inv, &dampRate, &offset, &friction, &layer,
                          &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &contact, &modelBuf, &readback,
                          &clusterEdgeBuf, &clusterLamBuf, &clusterVertBuf, &clusterVertStartBuf, &clusterOwnedBuf, &clusterColourBuf, &clusterSoftBuf,
                          &clusterSoftStartBuf, &xTwin, &clothTris, &clothCells, &clothItems, &meshOf, &ring2Start, &ring2, &frameStart, &snap,
-                         &cprevSnap})
+                         &cprevSnap, &faceBox})
     if(b->buffer != VK_NULL_HANDLE)
       alloc->destroyBuffer(*b);
 }
@@ -761,6 +789,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     m.attAlpha     = reinterpret_cast<float*>(attAlpha.address);
     m.lamAtt       = reinterpret_cast<float*>(lamAtt.address);
     m.contact      = reinterpret_cast<int*>(contact.address);
+    m.faceBox      = reinterpret_cast<glm::vec4*>(faceBox.address);
     m.recoverDepth = kRecoverDepth;
     m.nv           = uint32_t(n);
     m.numKinematic = uint32_t(model.kinematicVerts.size());
@@ -847,7 +876,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     stats.dispatches++;
     vkCmdDispatch(c, x, y, z);
   };
-  // a phase's dispatch between two timestamps (0 collision, 1 hold), while there are queries for it
+  // a phase's dispatch between two timestamps (0 collision, 1 hold, 2 the frame's recovery), while there are queries for it
   const auto timed = [&](int phase, const auto& record) {
     const bool time = queries && timedPhase.size() < kTimedPairs;
     const uint32_t q = 2 + 2 * uint32_t(timedPhase.size());
@@ -938,14 +967,22 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       barrier();
     });
   };
+  // each face's box where the pose has it at pc.t, for the collision pass or the recovery that follows
+  const auto boxes = [&] {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, boxesPipe);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    dispatch(cmd, groups(m.numTris), 1, 1);
+    barrier();
+  };
   // the frame's start: cloth lost behind a face of a lower layer is put back, as on the CPU
   if(m.numTris > 0 && opts.recoverLost && !(debug & 1))
   {
     pc.t = 0;
-    timed(0, [&] {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, recoverPipe);
+    timed(2, [&] {
+      boxes();
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, waveLanes ? recoverWavePipe : recoverPipe);
       vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-      dispatch(cmd, groups(m.numFree), 1, 1);
+      dispatch(cmd, groups(m.numFree * std::max(1u, waveLanes)), 1, 1);
       barrier();
     });
   }
@@ -974,9 +1011,13 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
           dispatch(cmd, groups(m.nv), 1, 1);
           barrier();
         }
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, collidePipe);
+        if(m.numTris > 0)
+          boxes();
+        // a wave a vertex, unless a garment meets another's faces (collideMain alone does)
+        const bool wave = waveLanes && m.numTris > 0 && m.numClothTris == 0;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, wave ? collideWavePipe : collidePipe);
         vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-        dispatch(cmd, groups(m.numFree), 1, 1);
+        dispatch(cmd, groups(m.numFree * (wave ? waveLanes : 1u)), 1, 1);
         barrier();
       });
       // the pushes stretched edges; one more sweep shares them out before velocities are read
@@ -1024,11 +1065,13 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
                                 VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT)
               == VK_SUCCESS)
     {
-      double phaseMs[2] = {0, 0};
+      double phaseMs[3] = {0, 0, 0};
       for(size_t k = 0; k < timedPhase.size(); k++)
-        phaseMs[timedPhase[k] == 0 ? 0 : 1] += double(pairs[2 * k + 1] - pairs[2 * k]) * msPerTick;
-      stats.collideMs += phaseMs[0];
+        phaseMs[std::clamp(timedPhase[k], 0, 2)] += double(pairs[2 * k + 1] - pairs[2 * k]) * msPerTick;
+      stats.collideMs += phaseMs[0] + phaseMs[2];
+      stats.recoverMs += phaseMs[2];
       stats.holdMs += phaseMs[1];
+      fv::timing::accumulate("dforceGpu: a frame's recovery on the GPU", phaseMs[2]);
       fv::timing::accumulate("dforceGpu: a frame's collision passes on the GPU", phaseMs[0]);
       fv::timing::accumulate("dforceGpu: a frame's holds on the GPU", phaseMs[1]);
     }
