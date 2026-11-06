@@ -64,6 +64,8 @@
 #include "sky_bruneton_functions.h.slang"
 #include "sky_bruneton_io.h.slang"
 #include "sky_bruneton_radiance.h.slang"
+#include "sky_clouds.h.slang"
+#include "sky_clouds_io.h.slang"
 
 // clang-format off
 [[vk::binding(EnvBakeBindings::eEnvBakeColor, 0)]]      RWTexture2D<float4>                   g_colorImage;
@@ -77,6 +79,10 @@
 [[vk::binding(2, 1)]] Sampler3D<float4>                       g_singleMie;
 [[vk::binding(3, 1)]] Sampler2D<float3>                       g_irradiance;
 [[vk::binding(4, 1)]] ConstantBuffer<SkyAtmosphereParameters> g_atmosphere;
+
+// Set 2 is SkyClouds' runtime set: the cloud image, baked just before this pass in the same command
+// buffer. Read by the PhysicalBruneton case alone, and only when pc.clouds says it holds any.
+[[vk::binding(CLOUD_IMAGE_BINDING, 2)]] Sampler2D<float4>       g_clouds;
 
 [[vk::push_constant]]                                    ConstantBuffer<EnvBakePushConstant>  pc;
 // clang-format on
@@ -105,8 +111,14 @@ float3 evalSkyGradient(float3 dir)
 // shared with the path tracer's per-ray background; see sky_bruneton_radiance.h.slang.
 float3 evalSkyBruneton(float3 dir)
 {
-  return evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance,
-                                 g_atmosphere.bottomRadius + pc.observerAltitude, dir, pc.sunDirection);
+  const float  r   = g_atmosphere.bottomRadius + pc.observerAltitude;
+  const float3 sky = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r,
+                                             dir, pc.sunDirection, pc.sunlitGround);
+  // The clouds over it, above the horizon: below, the ground is in the way.
+  const float horizonMu = brunetonHorizonMu(g_atmosphere, r);
+  if(pc.clouds == 0 || dir.y <= horizonMu)
+    return sky;
+  return composeClouds(sky, g_clouds.SampleLevel(cloudImageUv(dir, asin(horizonMu)), 0.0F));
 }
 
 // Publish the solar disk the physical sky's image deliberately does not contain.
@@ -132,15 +144,25 @@ void publishSunDisk()
   // spectrum is not the sky's. See SUN_SPECTRAL_TO_LUMINANCE.
   const float3 solarRadiance = g_atmosphere.solarIrradiance / (M_PI * g_atmosphere.sunAngularRadius * g_atmosphere.sunAngularRadius);
 
-  out->radiance         = solarRadiance * toSun * SUN_RADIANCE_TO_LUMINANCE;
-  out->cosAngularRadius = cos(g_atmosphere.sunAngularRadius);
-  out->angularRadius    = g_atmosphere.sunAngularRadius;
-
   // Where the ground begins, from this observer. Below it the planet is in the way, so whoever
   // draws the disk can stop at the same line the baked image does -- which is what lets a sun
   // set behind the horizon instead of sitting on top of it.
-  const float sinHorizon = g_atmosphere.bottomRadius / r;
-  out->horizonMu         = -sqrt(max(1.0F - sinHorizon * sinHorizon, 0.0F));
+  const float horizonMu = brunetonHorizonMu(g_atmosphere, r);
+
+  // The clouds between the observer and the sun: the whole scene's shadow, one number, since the
+  // scene is metres across and the clouds kilometres up (sky_clouds.h.slang). It is the cloud
+  // image's own transmittance toward the sun, so the disk dims exactly as the clouds drawn over it
+  // say, and the light NEE samples with it.
+  float cloudShadow = 1.0F;
+  if(pc.clouds != 0 && pc.sunDirection.y > horizonMu)
+    cloudShadow = g_clouds.SampleLevel(cloudImageUv(pc.sunDirection, asin(horizonMu)), 0.0F).w;
+
+  out->radiance         = solarRadiance * toSun * SUN_RADIANCE_TO_LUMINANCE * cloudShadow;
+  out->cosAngularRadius = cos(g_atmosphere.sunAngularRadius);
+  out->angularRadius    = g_atmosphere.sunAngularRadius;
+  out->horizonMu        = horizonMu;
+  out->cloudShadow      = cloudShadow;
+  out->sunlitGround     = pc.sunlitGround;
 
   // Where the observer stood, so a per-ray evaluation of the sky stands there too and its horizon
   // meets the one baked into the lighting environment.

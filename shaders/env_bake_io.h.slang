@@ -76,6 +76,12 @@ struct EnvBakePushConstant
   // The alias table's sampling grid (kEnvSamplingGrid). The bake sums its importance per cell of
   // this grid rather than writing one value per texel -- see the reduction in env_bake.slang.
   uint2 gridSize;
+
+  // PhysicalBruneton only: 1 when the cloud image (set 2, SkyClouds) holds clouds to compose over
+  // the sky, and the share of the distant ground they leave sunlit (cloudSunlitAir). 0 and 1 for a
+  // clear sky, which then bakes exactly as it did before there were clouds.
+  int   clouds;
+  float sunlitGround;
 };
 
 NAMESPACE_SHADERIO_END()

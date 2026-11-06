@@ -58,6 +58,7 @@
 
 #include "env_baker.hpp"
 #include "resources.hpp"
+#include "sky_clouds.hpp"
 
 #include "_autogen/env_bake.slang.h"
 
@@ -66,11 +67,12 @@
 // transient command pool commit() submits through. No lat-long image yet -- that waits for
 // setResolution(), because its size is a user-facing setting.
 //
-void EnvBaker::init(Resources& res, VkDescriptorSetLayout brunetonSetLayout, VkDescriptorSet brunetonSet)
+void EnvBaker::init(Resources& res, VkDescriptorSetLayout brunetonSetLayout, VkDescriptorSet brunetonSet, SkyClouds& clouds)
 {
   assert(!m_initialized && "init called twice");
   m_brunetonSetLayout = brunetonSetLayout;
   m_brunetonSet       = brunetonSet;
+  m_clouds            = &clouds;
   m_device            = res.allocator.getDevice();
 
   const VkCommandPoolCreateInfo poolInfo{
@@ -92,13 +94,13 @@ void EnvBaker::init(Resources& res, VkDescriptorSetLayout brunetonSetLayout, VkD
 
   // Device-local, and addressed rather than bound: the bake writes it and the background passes
   // read it every frame, which is why it stays device-local rather than becoming host-visible --
-  // the per-ray read is the hot path and BAR memory would make it slower. The host copy it needs
-  // for the firefly clamp is taken by a 32-byte readback on commit instead, hence TRANSFER_SRC.
-  // Zeroed at creation so a background pass that runs before the first bake draws no disk instead
-  // of a random one.
+  // the per-ray read is the hot path and BAR memory would make it slower. The host never reads it:
+  // the firefly clamp takes the sun above the atmosphere, which the host computes itself
+  // (GltfRenderer::skySunIlluminanceAboveAtmosphere). Zeroed at creation so a background pass that
+  // runs before the first bake draws no disk instead of a random one.
   NVVK_CHECK(res.allocator.createBuffer(m_sunDiskBuf, sizeof(shaderio::SkySunDisk),
                                         VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT
-                                            | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
+                                            | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
                                         VMA_MEMORY_USAGE_AUTO));
   NVVK_DBG_NAME(m_sunDiskBuf.buffer);
   {
@@ -153,9 +155,10 @@ void EnvBaker::createPipeline(Resources& res)
       .offset     = 0,
       .size       = sizeof(shaderio::EnvBakePushConstant),
   };
-  // Set 0 is ours; set 1 is SkyBruneton's LUTs, which only the PhysicalBruneton case of the shader
-  // samples. One pipeline reads both, so both are always bound.
-  NVVK_CHECK(nvvk::createPipelineLayout(m_device, &m_pipelineLayout, {m_descriptorPack.getLayout(), m_brunetonSetLayout}, {pushRange}));
+  // Set 0 is ours; set 1 is SkyBruneton's LUTs and set 2 SkyClouds' image, which only the
+  // PhysicalBruneton case of the shader samples. One pipeline reads all three, so all are always bound.
+  NVVK_CHECK(nvvk::createPipelineLayout(m_device, &m_pipelineLayout,
+                                        {m_descriptorPack.getLayout(), m_brunetonSetLayout, m_clouds->getDescriptorSetLayout()}, {pushRange}));
   NVVK_DBG_NAME(m_pipelineLayout);
 
   VkShaderModuleCreateInfo moduleInfo{
@@ -260,8 +263,14 @@ void EnvBaker::destroyResources(Resources& res)
 // Record the color bake plus the mip chain. Shared by preview() and commit() so the two cannot
 // produce different images from the same parameters.
 //
-void EnvBaker::recordBake(VkCommandBuffer cmd)
+void EnvBaker::recordBake(VkCommandBuffer cmd, bool preview)
 {
+  // The physical sky's clouds first: the bake composes them over the sky, and publishes the sun's
+  // shadow from them. SkyClouds puts the barriers either side of its own pass.
+  const bool physical = m_skyType == shaderio::SkyType::ePhysicalBruneton;
+  if(physical)
+    m_clouds->record(cmd, m_sunDirection, m_observerAltitude, preview);
+
   // Behind a barrier that waits for any earlier bake still reading the buffer.
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0, VK_ACCESS_2_TRANSFER_WRITE_BIT);
   vkCmdUpdateBuffer(cmd, m_skyParamsBuf.buffer, 0, sizeof(m_skyParams), &m_skyParams);
@@ -275,6 +284,8 @@ void EnvBaker::recordBake(VkCommandBuffer cmd)
   push.observerAltitude = m_observerAltitude;
   push.sunDiskAddress   = m_sunDiskBuf.address;
   push.gridSize         = {kEnvSamplingGrid.width, kEnvSamplingGrid.height};
+  push.clouds           = (physical && m_clouds->hasClouds()) ? 1 : 0;
+  push.sunlitGround     = physical ? cloudSunlitGround(m_clouds->parameters()) : 1.0F;
 
   // One pipeline for every sky: env_bake.slang switches on pc.skyType. Set 1 carries the LUTs only
   // the Bruneton case reads, and is bound regardless -- SkyBruneton precomputes at startup, so it
@@ -282,6 +293,8 @@ void EnvBaker::recordBake(VkCommandBuffer cmd)
   // not.
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_descriptorPack.getSetPtr(), 0, nullptr);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1, &m_brunetonSet, 0, nullptr);
+  const VkDescriptorSet cloudSet = m_clouds->getDescriptorSet();
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 2, 1, &cloudSet, 0, nullptr);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
   vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
 
@@ -310,7 +323,7 @@ void EnvBaker::preview(VkCommandBuffer cmd, Resources& res)
   if(m_needsCommit)
     return;  // HdrIbl descriptors do not point at our image yet; nothing would be read.
 
-  recordBake(cmd);
+  recordBake(cmd, /*preview*/ true);
 
   // The bake also rewrote the sun-disk buffer, which the path tracer later in this same command
   // buffer reads through frameInfo->sunDisk. The mip barrier
@@ -370,7 +383,7 @@ void EnvBaker::commit(Resources& res)
     const VkImageSubresourceRange fullRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, m_mipLevels, 0, 1};
     nvvk::cmdImageMemoryBarrier(cmd, {m_colorImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, fullRange});
 
-    recordBake(cmd);
+    recordBake(cmd, /*preview*/ false);
     nvvk::endSingleTimeCommands(cmd, m_device, m_transientCmdPool, queueInfo.queue);
   }
   timings.bakeMs = mark(stage);

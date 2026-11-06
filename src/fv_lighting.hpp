@@ -27,6 +27,8 @@
 //   env:     source studio|hdr|sky|plain|none, path, intensity, rotation (degrees about +Y),
 //            background environment|blurred|color, blur (three's blurriness), color, plainColor, skyPreset
 //   sun:     enabled, intensity, azimuth, elevation (degrees), color, softness
+//   clouds:  coverage (0 clear to 1 overcast: the share of the land they shade), thickness (km from
+//            the base to the highest tops), seed (which arrangement). The physical sky's only
 //   ground:  mode floor|water|catcher|off, height ("auto" or world units), color, roughness,
 //            darkness, fade, water (0 dry to 1 a sheet of it, on a floor), depth (metres, of the
 //            water mode's body of water), waves (on it, 0 still to 1), ripples (on either, 0 still to 1)
@@ -73,6 +75,13 @@ struct Sun
   double      softness  = 3.0;
 };
 
+struct Clouds
+{
+  double coverage  = 0.0;
+  double thickness = 1.2;
+  int    seed      = 0;
+};
+
 struct Ground
 {
   std::string mode = "floor";
@@ -105,6 +114,7 @@ struct State
 {
   Env     env;
   Sun     sun;
+  Clouds  clouds;
   Ground  ground;
   Tonemap tonemap;
 };

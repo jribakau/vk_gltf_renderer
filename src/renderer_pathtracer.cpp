@@ -1269,6 +1269,7 @@ bool PathTracer::bindTechnique(VkCommandBuffer cmd, Resources& resources)
   const VkDescriptorSet hdrDescSet = resources.hdrIbl.getDescriptorSet();
   vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 2, 1, &hdrDescSet, 0, nullptr);
   vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 3, 1, &resources.skyLutDescriptorSet, 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 4, 1, &resources.skyCloudDescriptorSet, 0, nullptr);
   pushDescriptorSet(cmd, resources, bindPoint);
   return true;
 }

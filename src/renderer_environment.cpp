@@ -809,6 +809,10 @@ void GltfRenderer::updateBakerParameters()
   m_envBaker.skyParams() = buildSkyOmiParameters();
   m_envBaker.setSkyType(shaderio::SkyType(bakeSkyType(m_resources.settings.envSystem)));
   m_envBaker.setSunDirection(sunInEnvironmentFrame());
+
+  // The clouds bake with the sky, so they take their settings at the same moment.
+  const Settings& s = m_resources.settings;
+  m_skyClouds.setParameters({.coverage = s.cloudCoverage, .thicknessKm = s.cloudThickness, .seed = uint32_t(std::max(s.cloudSeed, 0))});
 }
 
 //--------------------------------------------------------------------------------------------------

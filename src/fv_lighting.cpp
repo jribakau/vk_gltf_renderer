@@ -172,6 +172,26 @@ void patchSun(Sun& s, const Json& p)
   }
 }
 
+void patchClouds(Clouds& c, const Json& p)
+{
+  const Clouds d;
+  for(auto it = p.begin(); it != p.end(); ++it)
+  {
+    const std::string& k   = it.key();
+    const Json&        v   = it.value();
+    const std::string  key = "clouds." + k;
+    if(k == "coverage")
+      field(c.coverage, d.coverage, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "thickness")
+      // the renderer's cloudThickness: a thin stratus sheet to a towering cumulus
+      field(c.thickness, d.thickness, v, [&](const Json& x) { return number(x, key, 0.2, 4.0); });
+    else if(k == "seed")
+      field(c.seed, d.seed, v, [&](const Json& x) { return int(std::lround(number(x, key, 0.0, double(1 << 20)))); });
+    else
+      reject("unknown key " + key);
+  }
+}
+
 void patchGround(Ground& g, const Json& p)
 {
   const Ground d;
@@ -253,6 +273,7 @@ Json toJson(const State& s)
 {
   const Env&     e = s.env;
   const Sun&     u = s.sun;
+  const Clouds&  c = s.clouds;
   const Ground&  g = s.ground;
   const Tonemap& t = s.tonemap;
   return {
@@ -273,6 +294,7 @@ Json toJson(const State& s)
         {"elevation", u.elevation},
         {"color", u.color},
         {"softness", u.softness}}},
+      {"clouds", {{"coverage", c.coverage}, {"thickness", c.thickness}, {"seed", c.seed}}},
       {"ground",
        {{"mode", g.mode},
         {"height", g.autoHeight ? Json("auto") : Json(g.height)},
@@ -312,6 +334,8 @@ State applyPatch(const State& s, const Json& patch)
     {
       // the raster view's shadow map, from before protocol 17
     }
+    else if(k == "clouds")
+      reset ? void(out.clouds = Clouds{}) : patchClouds(out.clouds, section(patch, "clouds"));
     else if(k == "ground")
       reset ? void(out.ground = Ground{}) : patchGround(out.ground, section(patch, "ground"));
     else if(k == "tonemap")
@@ -598,6 +622,10 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       {"solidBackgroundColor", vec3(linearColor(e.color))},
       {"plainColor", vec3(linearColor(e.plainColor))},
       {"atmoPreset", e.skyPreset},
+      // the physical sky's; every other environment leaves them be
+      {"cloudCoverage", s.clouds.coverage},
+      {"cloudThickness", s.clouds.thickness},
+      {"cloudSeed", s.clouds.seed},
       {"tmActive", 1},
       {"tmAutoExposure", 0},
       {"tmMethod", tmMethod(t.method)},

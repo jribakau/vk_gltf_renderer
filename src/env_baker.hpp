@@ -31,6 +31,7 @@
 #include "shaders/shaderio.h"
 
 struct Resources;
+class SkyClouds;
 
 // Lat-long size an analytic sky is baked into. Fixed rather than a setting, because nothing a user
 // would choose it for depends on it any more: sampling quality comes from kEnvSamplingGrid below,
@@ -94,7 +95,10 @@ public:
   // becomes set 1 of the one pipeline layout and is bound on every dispatch -- see recordBake.
   //
   // Passing the layout at init means SkyBruneton has to be initialised first.
-  void init(Resources& res, VkDescriptorSetLayout brunetonSetLayout, VkDescriptorSet brunetonSet);
+  //
+  // `clouds` is the physical sky's cloud layer: the bake records its pass first and composes its
+  // image over the sky, through its runtime set at set 2. Initialised first too, and outlives this.
+  void init(Resources& res, VkDescriptorSetLayout brunetonSetLayout, VkDescriptorSet brunetonSet, SkyClouds& clouds);
   void deinit(Resources& res);
 
   // Allocates (or reallocates) the lat-long image and importance buffer. A resolution change
@@ -151,7 +155,7 @@ public:
 private:
   void createPipeline(Resources& res);
   void destroyResources(Resources& res);
-  void recordBake(VkCommandBuffer cmd);
+  void recordBake(VkCommandBuffer cmd, bool preview);
 
   bool       m_initialized{false};
   bool       m_needsCommit{true};
@@ -167,6 +171,7 @@ private:
   // Set and layout borrowed from SkyBruneton; this class does not own them.
   VkDescriptorSetLayout m_brunetonSetLayout{VK_NULL_HANDLE};
   VkDescriptorSet       m_brunetonSet{VK_NULL_HANDLE};
+  SkyClouds*            m_clouds{nullptr};  // borrowed likewise
 
   // Both are handed to HdrIbl by reference and must outlive every environment refresh; HdrIbl
   // never takes ownership of either.

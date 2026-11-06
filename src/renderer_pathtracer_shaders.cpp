@@ -451,13 +451,14 @@ void PathTracer::startAsyncCompile(Resources& resources)
 void PathTracer::createPipeline(Resources& resources)
 {
   SCOPED_TIMER(__FUNCTION__);
-  // Set 3 is the physical sky's scattering LUTs, read by aerial perspective. Always in the layout,
-  // even for a scene that never selects that sky: a pipeline layout is built once and the
-  // environment changes at runtime, so making the layout depend on it would mean rebuilding the
-  // pipeline every time someone switched to an HDR.
+  // Set 3 is the physical sky's scattering LUTs, read by aerial perspective and the visible sky,
+  // and set 4 its cloud image. Always in the layout, even for a scene that never selects that sky:
+  // a pipeline layout is built once and the environment changes at runtime, so making the layout
+  // depend on it would mean rebuilding the pipeline every time someone switched to an HDR.
   std::vector<VkDescriptorSetLayout> descriptorSetLayouts{resources.descriptorSetLayout[0], resources.descriptorSetLayout[1],
                                                           resources.hdrIbl.getDescriptorSetLayout(),
-                                                          resources.skyLutDescriptorSetLayout};
+                                                          resources.skyLutDescriptorSetLayout,
+                                                          resources.skyCloudDescriptorSetLayout};
 
   // Creating the pipeline layout
   static_assert(sizeof(shaderio::PathtracePushConstant) <= 256, "the push constants Vulkan guarantees on NVIDIA");

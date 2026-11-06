@@ -67,6 +67,8 @@ static bool doDebug = false;
 #include "aerial_perspective.h.slang"
 #include "aperture.h.slang"
 #include "sky_bruneton_radiance.h.slang"
+#include "sky_clouds.h.slang"
+#include "sky_clouds_io.h.slang"
 
 // NVSHADERS are under: https://github.com/nvpro-samples/nvpro_core2/tree/main/nvshaders
 #include "nvshaders/functions.h.slang"
@@ -109,6 +111,11 @@ static bool doDebug = false;
 [[vk::binding(3, 3)]] Sampler2D<float3>                       g_irradiance;
 [[vk::binding(4, 3)]] ConstantBuffer<SkyAtmosphereParameters> g_atmosphere;
 
+// Set 4 is SkyClouds' runtime set: the cloud image the physical sky's bake composed into the
+// lighting environment, composed here over what the camera and mirrors see. Clear, it is (0, 0, 0, 1)
+// everywhere, which gives the sky back unchanged.
+[[vk::binding(CLOUD_IMAGE_BINDING, 4)]] Sampler2D<float4>       g_clouds;
+
 // What a camera ray or a mirror bounce sees of the physical sky: its radiance, evaluated per ray
 // through the same function the bake uses, plus the solar disk. Per ray rather than read from the
 // baked image so what the camera sees does not depend on the bake resolution -- the horizon, where
@@ -119,8 +126,13 @@ float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
   const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
   // observerRadius is the bake's: selecting the physical sky commits a bake at the top of the frame,
   // before any frame that draws it is recorded (GltfRenderer::applyPendingEnvironmentRefresh).
-  const float3 sky = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance,
-                                             frameInfo->sunDisk->observerRadius, dir, sunDir);
+  const SkySunDisk disk = *frameInfo->sunDisk;
+  float3           sky  = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance,
+                                                  disk.observerRadius, dir, sunDir, disk.sunlitGround);
+  // The clouds over it, as the bake composes them: above the horizon, from the same image. The disk
+  // goes on top, already dimmed by the clouds in front of it (SkySunDisk::cloudShadow).
+  if(dir.y > disk.horizonMu)
+    sky = composeClouds(sky, g_clouds.SampleLevel(cloudImageUv(dir, asin(disk.horizonMu)), 0.0F));
   return sky + evalSunDiskBackground(dir, frameInfo);
 }
 

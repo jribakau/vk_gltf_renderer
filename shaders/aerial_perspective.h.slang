@@ -246,6 +246,13 @@ AerialMarch evalAerialPerspective(float3                  worldPos,
   AerialMarch  march =
       marchAerialPerspective(atmosphere, transmittanceTexture, irradianceTexture, observer, displacement, sunDir, u);
 
+  // Under a cloud the air in the scene is in its shadow as well as the scene is: the same one
+  // number (SkySunDisk::cloudShadow), 1 under a clear sky.
+  const float cloudShadow = frameInfo->sunDisk->cloudShadow;
+  march.inScatter -= march.sunInScatter * (1.0F - cloudShadow);
+  march.sunInScatter *= cloudShadow;
+  march.sunEstimate *= cloudShadow;
+
   // The transmittance is dimensionless and needs no conversion; the in-scatter is spectral radiance
   // at three wavelengths and does, exactly as the bake converts what GetSkyRadiance hands it. Miss
   // this and the two halves disagree by orders of magnitude: distant surfaces dim correctly and

@@ -61,6 +61,7 @@
 #include "env_baker.hpp"
 #include "env_image_loader.hpp"
 #include "sky_bruneton.hpp"
+#include "sky_clouds.hpp"
 #include "sky_sun.hpp"
 #include "gltf_environment_sky.hpp"
 #include "camera_controls.hpp"
@@ -628,6 +629,7 @@ private:
   VisualHelpers m_visualHelpers;  // Grid + transform gizmo overlay
   EnvBaker      m_envBaker;       // Bakes analytic skies into the shared lighting environment
   SkyBruneton   m_skyBruneton;    // Precomputed atmospheric scattering LUTs
+  SkyClouds     m_skyClouds;      // The physical sky's cloud layer, baked ahead of the environment
   // Which environment the firefly clamp was last calibrated for, as an int so it can hold a
   // "none yet" sentinel. The clamp is a starting point the user is free to override, so it is
   // recalibrated when the environment changes *kind* and not on every re-bake.

@@ -138,6 +138,9 @@ src/
 │
 ├── sky_sun.cpp/hpp             # SkySun: who the sun is (renderer state, or a scene light marked
 │                               #   as the sky's) and every path that aims it
+├── sky_bruneton.cpp/hpp        # SkyBruneton: the physical sky's scattering LUTs and the passes that build them
+├── sky_clouds.cpp/hpp          # SkyClouds: the physical sky's cloud layer -- its noise, the cloud image and
+│                               #   the pass that bakes it ahead of the environment bake (docs/sky.md)
 ├── sun_position.cpp/hpp        # NOAA solar position: (place, UTC instant) -> bearing + altitude.
 │                               #   Pure, self-contained, nothing else links against it
 ├── frame_stream.cpp/hpp        # --stream: the headless run's rendered frames as MJPEG over HTTP, for a
@@ -205,7 +208,14 @@ shaders/
 ├── sky_omi_shaderio.h.slang    # SkyType + the per-type OMI_environment_sky parameter blocks
 ├── sky_gradient.h.slang        # OMI `gradient` evaluator (bands + sun), shared by bake and background
 ├── env_bake.slang              # Bakes any sky into the lat-long image + importance buffer; one
-│                               #   switch, with the physical case reading SkyBruneton's LUTs
+│                               #   switch, with the physical case reading SkyBruneton's LUTs and
+│                               #   composing SkyClouds' image over them
+├── sky_clouds.h.slang          # The clouds: the layer, what is cloud, how it is lit, the image's
+│                               #   mapping and composition (unit-tested as C++)
+├── sky_clouds_noise.h.slang    # The tiling noise they are cut from (unit-tested as C++)
+├── sky_clouds_noise.slang      # Writes that noise into its volumes, once
+├── sky_clouds_bake.slang       # Marches the layer into the cloud image for the fixed observer
+├── sky_clouds_io.h.slang       # Their bindings and push constant
 │
 │   # Local material fork (see "Material System" below)
 ├── gltf_material_config.h      # MAT_EXT_* compile-time feature flags
@@ -754,7 +764,8 @@ The environment is **two** fields, and which one a ray reads is the part that ha
   The physical sky's background is evaluated per ray in the path tracer too
   (`evalPhysicalSkyBackground` in `shaders/gltf_pathtrace.slang`), through the same function the
   bake uses (`shaders/sky_bruneton_radiance.h.slang`), plus the half-degree disk
-  (`evalSunDiskBackground` in the same header, fed by a radiance the bake publishes). What the
+  (`evalSunDiskBackground` in the same header, fed by a radiance the bake publishes), with the
+  clouds composed over it from their own image ([sky.md § Clouds](sky.md#clouds)). What the
   camera sees is then independent of the bake resolution — the horizon, where sky meets ground in a
   hard edge, is what a lat-long would otherwise smear.
 

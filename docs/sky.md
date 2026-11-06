@@ -424,7 +424,8 @@ which is a scene edit and is recorded like any other transform.
   physical sky: that is evaluated per ray from the LUTs, so the horizon stays sharp at any bake
   resolution. Rough bounces and next-event estimation still read the image; see
   `evalPhysicalSkyBackground` in `shaders/gltf_pathtrace.slang`.
-- **Per commit:** the bake, plus the alias table and PDF. The alias table is built on the CPU, but
+- **Per commit:** the bake (with the clouds' pass ahead of it -- see [Clouds](#clouds)), plus the
+  alias table and PDF. The alias table is built on the CPU, but
   over a fixed coarse sampling grid rather than the bake's texels, so it costs about as much as the
   bake itself. See `nvvk::HdrIbl::updateFromGpuImage`.
 - **Per atmosphere change:** the LUT precompute, on top of a commit. It is the largest single cost
@@ -562,12 +563,87 @@ Two things to know when reading the output:
 - A **seam** is coherent: it runs the length of a row or column. Compare the wrap column against
   any other adjacent pair; if they are the same magnitude, there is no seam.
 
-## Extending: volumetric clouds
+## Clouds
 
-Clouds are out of scope, but the architecture leaves a seam for them. The background pass writes an
-alpha channel that is currently constant and is reserved for a cloud transmittance term, and the
-lighting field is already a baked image that a cloud pass could modulate before the alias table is
-built. A cloud system would attach at those two points rather than inside the atmosphere model.
+One layer of cumulus over the physical sky, from clear to overcast: `SkyClouds`
+(`src/sky_clouds.*`), with what the clouds *are* in `shaders/sky_clouds.h.slang`. Physical sky only:
+a gradient is a painting and an HDR file already has the clouds it was photographed with.
+
+### One number for the sun
+
+A scene is metres across and the clouds are kilometres up, so the whole scene is in one cloud's
+shadow or in none. The sun's transmittance through the layer, from the observer toward the sun, is
+a single value the bake publishes with the disk (`SkySunDisk::cloudShadow`) and multiplies into the
+disk's radiance, so the sun light NEE samples, the disk the camera sees and the sun in a mirror all
+dim together. The air in the scene is in the same shadow: aerial perspective scales its sun share by
+it (`evalAerialPerspective`). Nothing is evaluated per pixel for it.
+
+The shadow does not soften by any rule of its own. Behind a thin cloud the light that is left comes
+from the bright patch of cloud round the sun, which is in the lighting field like the rest of the sky,
+so it lights the scene from a wider source than the disk.
+
+### The cloud image
+
+The layer is marched once per bake into the **cloud image** (`kCloudImageSize`, RGBA16F) for the
+fixed observer: for every direction above its horizon, what the clouds and the air in front of them
+add, and in alpha what is left of the sky behind. `composeClouds` is `sky * a + rgb`; a texel of
+`(0, 0, 0, 1)` gives the sky back exactly, so a sky without clouds bakes and draws bit for bit as it
+did before clouds existed. The image is cleared to that once when the cover goes to zero, and the
+pass does not run.
+
+It is read twice, through `SkyClouds`' runtime set: by the environment bake, which composes it into
+the **lighting field**, so an overcast sky lights the scene grey and the alias table follows; and by
+the path tracer's `evalPhysicalSkyBackground`, for what the camera and mirrors see. Its columns run
+round the horizon as the lat-long's do, its rows from the horizon to the zenith on a square root, so
+they crowd where the clouds do. What the camera sees of the clouds is this image, so its size is
+their sharpness on screen.
+
+The pass is recorded at the head of `EnvBaker::recordBake`, ahead of the bake that reads it, so the
+preview and the commit get it alike; a drag's preview takes fewer samples.
+
+### What is cloud, and how it is lit
+
+The usual real-time recipe (Schneider 2015, Hillaire's tileable noise): a 2D weather map says where
+over the land there may be cloud, Perlin-Worley billows are cut to it with rounded tops, and finer
+Worley noise erodes the edges. The three noise volumes tile and are generated once, at start-up
+(`sky_clouds_noise.slang`); the arrangement (`cloudSeed`) is only which stretch of them is overhead.
+
+**Coverage means the share of the land the clouds shade** with the sun overhead, which is near
+enough the share of the sky overhead they hide, the way cloud cover is reported. The weather level
+that gives each cover is measured by marching columns through the layer and inverted
+(`CLOUD_LEVEL_FOR_COVER`); `SkyClouds.DISABLED_CoverageCurve` in `tests/test_sky_clouds.cpp` prints
+the curve to re-fit it from when the noise or the density changes, and
+`SkyClouds.TheCoverageShadesAsMuchOfTheLandAsItSays` holds it to within a few percent.
+
+Each point of cloud is lit by the sunlight that reaches it through the atmosphere -- the
+transmittance table's, so clouds take a sunset's colour and stay lit after the sun has left the
+ground -- and by the sky's irradiance at its height. The sunlight arrives three ways (`cloudLight`):
+scattered once, through droplets' strongly forward phase (the silver lining); diffused through the
+cloud by many scatterings, thinning with depth as a conservative slab's transmission does, which is
+almost all of a cloud's brightness; and the sky's light diffused from above. The air between the
+observer and the clouds is the same march aerial perspective uses.
+
+Under the layer the distant ground and the haze in front of the clouds are lit by the sun only where
+it gets through: the open share of the land, `1 - cover` (`SkySunDisk::sunlitGround`).
+
+### What it leaves out
+
+- Moving clouds: the image is baked per sun and setting, and a wind would mean a bake, an alias
+  table and an accumulation restart every frame.
+- Shadows that move across the scene: one shadow for the whole scene, as above. A terrain kilometres
+  wide is the case that would want more.
+- More than one layer, cirrus, rain, light shafts through the air.
+- An observer above the clouds: the image covers what is above the observer's horizon.
+- Saving: the clouds are viewer settings (`cloud*` in `Settings`), not yet in `OMI_environment_sky`
+  or a `.sky.json`. The Figure Viewer keeps them in its own scene files.
+
+### Cost
+
+- **Start-up:** the noise, 1.6 ms on an RTX 4080; 2.4 MB for the volumes and 8 MB for the image,
+  allocated clouds or none, since the image is bound either way.
+- **Per bake with clouds:** a commit's bake went from ~0.4 to 2.1 ms at half cover (RTX 4080);
+  the preview takes about a third of the samples.
+- **Per frame:** one filtered fetch of the image per visible sky pixel.
 
 ## References
 

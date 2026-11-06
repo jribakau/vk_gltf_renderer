@@ -188,7 +188,15 @@ struct SkySunDisk
   // Distance of that observer from the planet's centre, in km. A per-ray evaluation of the sky has
   // to stand exactly where the bake stood -- see sky_bruneton_radiance.h.slang.
   float observerRadius;
-  float _pad;
+  // The clouds' (sky_clouds.h.slang), 1 and 1 without them. `cloudShadow` is the sun's transmittance
+  // through the layer from the observer: the scene's shadow, already in `radiance`, and what the air
+  // in the scene is lit by (aerial perspective). `sunlitGround` is the share of the distant land and
+  // haze under the layer the sun still reaches (cloudSunlitAir).
+  float cloudShadow;
+  float sunlitGround;
+  float _pad0;
+  float _pad1;
+  float _pad2;
 };
 
 struct SceneFrameInfo

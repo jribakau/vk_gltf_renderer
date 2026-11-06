@@ -39,8 +39,19 @@
 #include "sky_bruneton_functions.h.slang"
 #include "sky_bruneton_io.h.slang"
 
+// Cosine of the zenith angle at which the ground starts, for an observer `r` km from the planet's
+// centre: below it a ray ends on the planet. The bake publishes it (SkySunDisk::horizonMu), and the
+// cloud image starts its rows there.
+float brunetonHorizonMu(SkyAtmosphereParameters atmosphere, float r)
+{
+  const float sinHorizon = atmosphere.bottomRadius / r;
+  return -sqrt(max(1.0F - sinHorizon * sinHorizon, 0.0F));
+}
+
 // `dir` and `sunDirection` are unit vectors in the environment's frame. Returns luminance, in the
-// same units as the baked image.
+// same units as the baked image. `sunlitGround` is the share of the ground the sun reaches past the
+// clouds (SkySunDisk::sunlitGround), 1 under a clear sky; the clouds themselves are composed over
+// this by the caller (composeClouds in sky_clouds.h.slang).
 float3 evalBrunetonSkyRadiance(SkyAtmosphereParameters atmosphere,
                                Sampler2D<float3>       transmittanceTexture,
                                Sampler3D<float4>       scatteringTexture,
@@ -48,7 +59,8 @@ float3 evalBrunetonSkyRadiance(SkyAtmosphereParameters atmosphere,
                                Sampler2D<float3>       irradianceTexture,
                                float                   observerRadius,
                                float3                  dir,
-                               float3                  sunDirection)
+                               float3                  sunDirection,
+                               float                   sunlitGround)
 {
   const float3 observer = float3(0.0F, observerRadius, 0.0F);
 
@@ -85,8 +97,9 @@ float3 evalBrunetonSkyRadiance(SkyAtmosphereParameters atmosphere,
 
     // Lambertian: albedo/pi times the irradiance it receives. Each irradiance is converted with
     // the factors for its own spectrum, as upstream's GetSunAndSkyIlluminance does: sunlight with
-    // the sun's, skylight with the sky's.
-    const float3 groundIlluminance = sunIrradiance * SUN_RADIANCE_TO_LUMINANCE + skyIrradiance * SKY_RADIANCE_TO_LUMINANCE;
+    // the sun's, skylight with the sky's. Under clouds only the open share of the land is sunlit.
+    const float3 groundIlluminance =
+        sunIrradiance * (SUN_RADIANCE_TO_LUMINANCE * sunlitGround) + skyIrradiance * SKY_RADIANCE_TO_LUMINANCE;
     const float3 groundColor = atmosphere.groundAlbedo * (1.0F / M_PI) * groundIlluminance;
 
     color += groundColor * GetTransmittance(atmosphere, transmittanceTexture, observerRadius, mu, d, true);

@@ -24,7 +24,7 @@ C++20. Host and device share structs via `shaders/shaderio.h`.
 |---|---|
 | Understand overall architecture, app lifecycle, source map | [docs/developer.md](docs/developer.md) |
 | Scene data flow: retained scene → residency → GPU tables / BLAS / TLAS | [docs/RENDERING_ARCHITECTURE.md](docs/RENDERING_ARCHITECTURE.md) |
-| Sky models: physical atmosphere, gradient, units and calibration, the sun, glTF mapping | [docs/sky.md](docs/sky.md) |
+| Sky models: physical atmosphere, its clouds, gradient, units and calibration, the sun, glTF mapping | [docs/sky.md](docs/sky.md) |
 | Environment *pipeline*: the analytic bake, lighting vs background fields, preview/commit | [docs/developer.md](docs/developer.md) (§ Environment Lighting) |
 | MCP shader timing: enabling `--mcp`, the tool surface, measuring a change | [docs/mcp.md](docs/mcp.md) |
 | DLSS / OptiX / OIDN denoising, motion vectors, jitter/reset (incl. why animated meshes ghost) | [docs/denoising.md](docs/denoising.md) |
@@ -62,6 +62,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 - `src/env_baker.*`, `src/gltf_environment_sky.*` — the analytic sky bake (an authored or
   physical sky becomes the same lat-long image + alias table an HDR file would) and
   `OMI_environment_sky` load/save.
+- `src/sky_clouds.*` — the physical sky's cloud layer: tiling noise, the cloud image the bake and
+  the path tracer compose over the sky, and the pass that bakes it (`shaders/sky_clouds*.slang`).
 - `src/sky_bruneton.*` — the Bruneton precomputed-atmospheric-scattering LUTs and the six compute
   passes that build them. The only physical sky; the older MDL one was deleted from this repo (it
   stays in `nvpro_core2` for other samples).

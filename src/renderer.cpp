@@ -56,6 +56,8 @@
 #include "_autogen/tonemapper.slang.h"
 #include "_autogen/env_write_pdf.slang.h"
 #include "_autogen/sky_bruneton_precompute.slang.h"
+#include "_autogen/sky_clouds_bake.slang.h"
+#include "_autogen/sky_clouds_noise.slang.h"
 
 //
 #include <nvaftermath/aftermath.hpp>
@@ -230,16 +232,24 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_skyBruneton.setParameters(buildAtmosphereParameters());
   m_skyBruneton.precompute(m_resources);
 
-  // After SkyBruneton: EnvBaker takes its descriptor-set layout to build a pipeline layout that
-  // covers both producers.
-  m_envBaker.init(m_resources, m_skyBruneton.getDescriptorSetLayout(), m_skyBruneton.getDescriptorSet());
+  // The clouds light themselves through the atmosphere's tables, so after SkyBruneton; their noise
+  // is generated here, once.
+  m_skyClouds.init(m_resources,
+                   SkyClouds::Shaders{.noise = std::span(sky_clouds_noise_slang), .bake = std::span(sky_clouds_bake_slang)},
+                   m_skyBruneton.getDescriptorSetLayout(), m_skyBruneton.getDescriptorSet());
+
+  // After SkyBruneton and SkyClouds: EnvBaker takes their descriptor-set layouts to build a pipeline
+  // layout that covers every producer.
+  m_envBaker.init(m_resources, m_skyBruneton.getDescriptorSetLayout(), m_skyBruneton.getDescriptorSet(), m_skyClouds);
   m_envBaker.setResolution(m_resources, kEnvBakeSize);
 
   // Publish the same set to the two renderers, which read the tables directly for aerial
   // perspective. Here rather than in each of them: they build their pipeline layouts from
   // Resources, and neither needs to know which class owns the LUTs.
-  m_resources.skyLutDescriptorSetLayout = m_skyBruneton.getDescriptorSetLayout();
-  m_resources.skyLutDescriptorSet       = m_skyBruneton.getDescriptorSet();
+  m_resources.skyLutDescriptorSetLayout   = m_skyBruneton.getDescriptorSetLayout();
+  m_resources.skyLutDescriptorSet         = m_skyBruneton.getDescriptorSet();
+  m_resources.skyCloudDescriptorSetLayout = m_skyClouds.getDescriptorSetLayout();
+  m_resources.skyCloudDescriptorSet       = m_skyClouds.getDescriptorSet();
 
   // ===== Profiling & Performance =====
   {
@@ -1657,6 +1667,7 @@ void GltfRenderer::destroyResources()
   m_hdrOutput.deinit(m_resources);
   m_skyBruneton.deinit(m_resources);
   m_envBaker.deinit(m_resources);
+  m_skyClouds.deinit(m_resources);
 
   m_resources.tonemapper.deinit();
   m_resources.appMemoryTracker.untrack("GBuffers", m_resources.gBuffers, Resources::eImgCount);

@@ -295,6 +295,24 @@ TEST(FvLighting, WaterWetsAFloorOnly)
   EXPECT_EQ(L::applyPatch(s, {{"ground", {{"water", nullptr}}}}).ground.water, 0.0);
 }
 
+// Clouds: none by default (as a scene from before them), clamped to the renderer's ranges, reset by
+// null, and sent as its cloud settings
+TEST(FvLighting, CloudsAreClearUntilSetAndReachTheRenderer)
+{
+  EXPECT_EQ(L::rendererParams(L::State{}, {})["cloudCoverage"], 0.0);
+  L::State s = L::applyPatch(L::State{}, {{"clouds", {{"coverage", 0.4}, {"thickness", 9.0}, {"seed", 3.4}}}});
+  EXPECT_EQ(s.clouds.coverage, 0.4);
+  EXPECT_EQ(s.clouds.thickness, 4.0);
+  EXPECT_EQ(s.clouds.seed, 3);
+  EXPECT_EQ(L::toJson(s)["clouds"]["coverage"], 0.4);
+  const fv::Json p = L::rendererParams(s, {});
+  EXPECT_EQ(p["cloudCoverage"], 0.4);
+  EXPECT_EQ(p["cloudThickness"], 4.0);
+  EXPECT_EQ(p["cloudSeed"], 3);
+  EXPECT_EQ(L::applyPatch(s, {{"clouds", nullptr}}).clouds.coverage, 0.0);
+  EXPECT_THROW(L::applyPatch(s, {{"clouds", {{"wind", 1}}}}), std::invalid_argument);
+}
+
 // A body of water: the ground's water mode, its depth and waves; a floor's wet layer goes with it
 TEST(FvLighting, TheWaterModeIsABodyOfWater)
 {
