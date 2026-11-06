@@ -988,55 +988,148 @@ float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float sele
   return misPowerWeight(lastSamplePdf, emitterNeePdf);
 }
 
-// `normal` is used to reject punctual lights that sit below the surface's hemisphere: the pick
-// gives them nothing (lightPickSet), so their share goes to the lights that can reach the point.
-// `lightsFromBothSides` disables that rejection for shading points that receive light from the
-// back hemisphere as well: volume scattering events, and surfaces with a diffuse transmission
-// lobe (KHR_materials_diffuse_transmission, and the thin-walled mode of KHR_materials_scatter --
-// a backlit leaf or sheet of paper is exactly the case those describe).
-//
-// `directLight.pick` is what the pick gave each light a BSDF ray can also reach, which that ray's MIS
-// weight needs on the next bounce.
-//
-// `compensatedEnv`: a BSDF sample of this vertex is traced and weighed against this one, so the
-// environment is sampled from the MIS-compensated table (EnvCompensatedCell): its bright part, the
-// even rest left to the BSDF sample. Every other caller -- the last vertex, a volume scatter, the
-// shadow catcher -- has no such partner and samples the whole environment.
-void sampleLights(in float3       pos,
-                  float3          normal,
-                  in float3       worldRayDirection,
-                  inout uint      seed,
-                  out DirectLight directLight,
-                  in bool         isVolumeSample      = false,
-                  in bool         lightsFromBothSides = false,
-                  in bool         compensatedEnv      = false,
-                  in float4       xi                  = float4(-1.0F))
+// A light sample that is none: pdf 0, nothing to add
+DirectLight noDirectLight()
 {
-  // `xi`: the sample's random numbers (x picks the light, yz place the sample, w is the
-  // environment's third and the emitter triangle's pick), e.g. a Sobol point; negative: drawn from
-  // `seed`, in the order they are used
-  const bool given = xi.x >= 0.0F;
+  DirectLight directLight;
   directLight.direction       = float3(0.0f, 0.0f, 1.0f);
   directLight.pdf             = 0.0f;
   directLight.distance        = INFINITE;
   directLight.radianceOverPdf = float3(0.0f);
+  directLight.pick            = {0.0F, 0.0F, 0.0F, float3(0.0F), float3(0.0F)};
 #if USE_LIGHT_RIS
   directLight.reuseKind  = LIGHT_REUSE_NONE;
   directLight.reuseIndex = 0u;
   directLight.reuseUv    = float2(0.0F);
   directLight.toMeasure  = 1.0F;
 #endif
+  return directLight;
+}
 
-  const bool         bothSides = isVolumeSample || lightsFromBothSides;
-  const LightPickSet set       = lightPickSet(pos, normal, /*cull=*/!bothSides);
-  directLight.pick             = set.pick;
-  if(set.pick.emissive <= 0.0f && set.candidates == 0)
-    return;  // nothing can light this point
+// Where a draw `u` of the light pick lands (lightDrawOf): which kind of light, and which one
+static const int LIGHT_DRAW_NONE     = 0;  // nothing can light the point
+static const int LIGHT_DRAW_EMISSIVE = 1;  // the emissive triangles' table (no light tree)
+static const int LIGHT_DRAW_ENV      = 2;
+static const int LIGHT_DRAW_PUNCTUAL = 3;
+static const int LIGHT_DRAW_GROUP    = 4;  // a node of the light tree's cut
 
-  // rand() can return exactly 1.0; the walk below wants [0, 1)
-  float u = min(given ? xi.x : rand(seed), 0.99999994f);
+struct LightDraw
+{
+  int   kind;
+  int   index;  // the punctual light, or the cut's node
+  float share;  // its share of the rest (LightPickSet::restShare)
+  float rest;   // a node's: what is left of `u` in its share, in [0, 1), for the walk down the tree
+};
 
+// The walk over the punctual lights' and the cut's shares, kept between draws so that draws of
+// rising `u` from one pick (the haze's candidates, hazeCameraSegment) walk the lights once between
+// them: each goes on from where the last stopped. A fresh one for every draw that is on its own.
+struct LightDrawWalk
+{
+  float end;         // where the last light or node walked past ends, over the rest
+  float lastShare;   // the last light's share
+  float groupShare;  // the last node's
+  float groupStart;  // where the last node starts
+  int   light;       // the next punctual light to walk
+  int   group;       // the next node
+  int   lastLight;   // the last light walked past that can light the point; -1: none
+  int   lastGroup;   // likewise of the nodes
+};
+
+LightDrawWalk lightDrawWalk(LightPickSet set)
+{
+  LightDrawWalk w;
+  w.end        = set.restShare > 0.0F ? set.pick.env / set.restShare : 0.0F;  // past the environment's share
+  w.lastShare  = 0.0F;
+  w.groupShare = 0.0F;
+  w.groupStart = 0.0F;
+  w.light      = 0;
+  w.group      = 0;
+  w.lastLight  = -1;
+  w.lastGroup  = -1;
+  return w;
+}
+
+LightDraw lightDraw(int kind, int index, float share, float rest)
+{
+  LightDraw d;
+  d.kind  = kind;
+  d.index = index;
+  d.share = share;
+  d.rest  = rest;
+  return d;
+}
+
+// Where `u` in [0, 1) lands in the pick `set` scored at `pos` (lightPickSet), the walk going on from
+// `walk`: `u` no lower than the last draw's on it.
+LightDraw lightDrawOf(LightPickSet set, float3 pos, float3 normal, bool bothSides, float u, inout LightDrawWalk walk)
+{
   if(set.pick.emissive > 0.0f && (u < set.pick.emissive || set.candidates == 0))
+    return lightDraw(LIGHT_DRAW_EMISSIVE, -1, 0.0F, 0.0F);
+  u = min((u - set.pick.emissive) / set.restShare, 0.99999994f);  // the rest, stretched back over [0, 1)
+  if(u < set.pick.env / set.restShare)
+    return lightDraw(LIGHT_DRAW_ENV, -1, 0.0F, 0.0F);
+
+  // A punctual light: walk the lights' shares past the environment's to the one `u` falls in. The
+  // last light that can light the point catches what rounding leaves over.
+  if(walk.lastGroup < 0)
+  {
+    if(walk.lastLight >= 0 && u < walk.end)
+      return lightDraw(LIGHT_DRAW_PUNCTUAL, walk.lastLight, walk.lastShare, 0.0F);  // the last draw's light
+    const int numPunctual = punctualLightCount();
+    for(; walk.light < numPunctual; walk.light++)
+    {
+      const float p = punctualPickShare(set, set.uniform ? 1.0f : punctualPickEstimate(getPunctualLight(walk.light), pos, normal, !bothSides));
+      if(p <= 0.0f)
+        continue;
+      walk.lastLight = walk.light;
+      walk.lastShare = p;
+      walk.end += p;
+      if(u < walk.end)
+      {
+        walk.light++;
+        return lightDraw(LIGHT_DRAW_PUNCTUAL, walk.lastLight, p, 0.0F);
+      }
+    }
+  }
+  // A node of the light tree's cut past the lights (the last that can light the point catches what
+  // rounding leaves over), and what is left of `u` for the walk down from it
+  if(set.groups)
+  {
+    if(walk.lastGroup < 0 || !(u < walk.end))
+      for(; walk.group < pushConst.gltfScene.numEmissiveGroups; walk.group++)
+      {
+        const float p = lightPickProbability(emissiveGroupPickEstimate(walk.group, pos, normal, !bothSides), set.total, set.candidates);
+        if(p <= 0.0f)
+          continue;
+        walk.lastGroup  = walk.group;
+        walk.groupShare = p;
+        walk.groupStart = walk.end;
+        walk.end += p;
+        if(u < walk.end)
+        {
+          walk.group++;
+          break;
+        }
+      }
+    if(walk.lastGroup >= 0)
+      return lightDraw(LIGHT_DRAW_GROUP, walk.lastGroup, walk.groupShare,
+                       saturate((u - walk.groupStart) / walk.groupShare) * 0.99999994F);
+  }
+  if(walk.lastLight >= 0)
+    return lightDraw(LIGHT_DRAW_PUNCTUAL, walk.lastLight, walk.lastShare, 0.0F);
+  return lightDraw(LIGHT_DRAW_NONE, -1, 0.0F, 0.0F);
+}
+
+// sampleLights' sample of the light `draw` landed on (lightDrawOf), from the pick `set` scored at
+// `pos`; the sample's numbers come from `xi` or `seed` as there. `directLight` is filled in from
+// noDirectLight() and set.pick.
+void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal, inout uint seed, inout DirectLight directLight,
+                     bool isVolumeSample, bool bothSides, bool compensatedEnv, float4 xi)
+{
+  const bool given = xi.x >= 0.0F;
+
+  if(draw.kind == LIGHT_DRAW_EMISSIVE)
   {
     // Emissive triangle (area light): power-weighted selection, then divide by the solid-angle pdf.
     int            tri    = selectEmissiveTriangle(given ? xi.w : rand(seed));
@@ -1063,10 +1156,8 @@ void sampleLights(in float3       pos,
     }
     return;
   }
-  u = min((u - set.pick.emissive) / set.restShare, 0.99999994f);  // the rest, stretched back over [0, 1)
 
-  const float envShare = set.pick.env / set.restShare;
-  if(u < envShare)
+  if(draw.kind == LIGHT_DRAW_ENV)
   {
     // One environment representation, whatever the sky is. Every EnvSystem that reaches this point
     // is a lat-long image by now: the HDR file is one, and the analytic skies are baked into one
@@ -1100,87 +1191,40 @@ void sampleLights(in float3       pos,
     return;
   }
 
-  // A punctual light: walk the lights' shares past the environment's to the one `u` falls in. The
-  // last light that can light the point catches what rounding leaves over.
-  const int numPunctual = punctualLightCount();
-  float     cumulative  = envShare;
-  int       lightIndex  = -1;
-  float     share       = 0.0f;
-  bool      found       = false;
-  GltfLight light;
-  for(int i = 0; i < numPunctual; i++)
+  if(draw.kind == LIGHT_DRAW_GROUP)
   {
-    const GltfLight candidate = getPunctualLight(i);
-    const float     p = punctualPickShare(set, set.uniform ? 1.0f : punctualPickEstimate(candidate, pos, normal, !bothSides));
-    if(p <= 0.0f)
-      continue;
-    lightIndex = i;
-    share      = p;
-    light      = candidate;
-    cumulative += p;
-    if(u < cumulative)
-    {
-      found = true;
-      break;
-    }
-  }
-  // A node of the light tree's cut past the lights (the last that can light the point catches what
-  // rounding leaves over), then a leaf below it (what is left of `u` walks the tree), then a triangle
-  // of it by its own weight
-  if(!found && set.groups)
-  {
-    int   group      = -1;
-    float groupShare = 0.0f;
-    float groupStart = 0.0f;
-    for(int g = 0; g < pushConst.gltfScene.numEmissiveGroups; g++)
-    {
-      const float p = lightPickProbability(emissiveGroupPickEstimate(g, pos, normal, !bothSides), set.total, set.candidates);
-      if(p <= 0.0f)
-        continue;
-      group      = g;
-      groupShare = p;
-      groupStart = cumulative;
-      cumulative += p;
-      if(u < cumulative)
-        break;
-    }
-    EmissiveTreeWalk walk;
-    walk.leaf = -1;
-    if(group >= 0)
-      walk = emissiveTreeDescend(pushConst.gltfScene.emissiveGroups, group, pos, normal, !bothSides,
-                                 saturate((u - groupStart) / groupShare) * 0.99999994F);
-    if(walk.leaf >= 0)
-    {
-      const EmissiveGroup grp  = pushConst.gltfScene.emissiveGroups[walk.leaf];
-      const int           tri  = selectEmissiveTriangleIn(int(grp.first), int(grp.count), given ? xi.w : rand(seed));
-      float2              uTri = given ? xi.yz : float2(0.0F);
-      if(!given)
-      {
-        uTri.x = rand(seed);
-        uTri.y = rand(seed);
-      }
-      EmissiveSample es     = sampleEmissiveTriangle(tri, pos, uTri, grp.weight);
-      directLight.direction = es.direction;
-      directLight.distance  = es.distance;
-      if(es.pdf > 0.0)
-      {
-        directLight.pdf             = set.restShare * groupShare * walk.prob * es.pdf;
-        directLight.radianceOverPdf = es.radiance / directLight.pdf;
-#if USE_LIGHT_RIS
-        directLight.reuseKind  = LIGHT_REUSE_EMISSIVE;
-        directLight.reuseIndex = uint(tri);
-        directLight.reuseUv    = es.bary;
-        directLight.toMeasure  = es.toArea;
-#endif
-      }
-      return;
-    }
-    if(group >= 0)
+    const EmissiveTreeWalk walk = emissiveTreeDescend(pushConst.gltfScene.emissiveGroups, draw.index, pos, normal, !bothSides, draw.rest);
+    if(walk.leaf < 0)
       return;  // no leaf below the cut node can light the point: this sample takes nothing
-  }
-  if(lightIndex < 0)
+    const EmissiveGroup grp  = pushConst.gltfScene.emissiveGroups[walk.leaf];
+    const int           tri  = selectEmissiveTriangleIn(int(grp.first), int(grp.count), given ? xi.w : rand(seed));
+    float2              uTri = given ? xi.yz : float2(0.0F);
+    if(!given)
+    {
+      uTri.x = rand(seed);
+      uTri.y = rand(seed);
+    }
+    EmissiveSample es     = sampleEmissiveTriangle(tri, pos, uTri, grp.weight);
+    directLight.direction = es.direction;
+    directLight.distance  = es.distance;
+    if(es.pdf > 0.0)
+    {
+      directLight.pdf             = set.restShare * draw.share * walk.prob * es.pdf;
+      directLight.radianceOverPdf = es.radiance / directLight.pdf;
+#if USE_LIGHT_RIS
+      directLight.reuseKind  = LIGHT_REUSE_EMISSIVE;
+      directLight.reuseIndex = uint(tri);
+      directLight.reuseUv    = es.bary;
+      directLight.toMeasure  = es.toArea;
+#endif
+    }
     return;
-  const float selectionPdf = set.restShare * share;
+  }
+  if(draw.kind != LIGHT_DRAW_PUNCTUAL)
+    return;
+  const int       lightIndex   = draw.index;
+  const GltfLight light        = getPunctualLight(lightIndex);
+  const float     selectionPdf = set.restShare * draw.share;
 
   // singleLightContribution() drops any punctual light below the hemisphere of the normal it
   // is given. When the shading point is lit from both sides, hand it a normal pointing at the
@@ -1213,6 +1257,50 @@ void sampleLights(in float3       pos,
     directLight.pdf = selectionPdf * contrib.pdf;
   else
     directLight.pdf = DIRAC;
+}
+
+
+// `normal` is used to reject punctual lights that sit below the surface's hemisphere: the pick
+// gives them nothing (lightPickSet), so their share goes to the lights that can reach the point.
+// `lightsFromBothSides` disables that rejection for shading points that receive light from the
+// back hemisphere as well: volume scattering events, and surfaces with a diffuse transmission
+// lobe (KHR_materials_diffuse_transmission, and the thin-walled mode of KHR_materials_scatter --
+// a backlit leaf or sheet of paper is exactly the case those describe).
+//
+// `directLight.pick` is what the pick gave each light a BSDF ray can also reach, which that ray's MIS
+// weight needs on the next bounce.
+//
+// `compensatedEnv`: a BSDF sample of this vertex is traced and weighed against this one, so the
+// environment is sampled from the MIS-compensated table (EnvCompensatedCell): its bright part, the
+// even rest left to the BSDF sample. Every other caller -- the last vertex, a volume scatter, the
+// shadow catcher -- has no such partner and samples the whole environment.
+void sampleLights(in float3       pos,
+                  float3          normal,
+                  in float3       worldRayDirection,
+                  inout uint      seed,
+                  out DirectLight directLight,
+                  in bool         isVolumeSample      = false,
+                  in bool         lightsFromBothSides = false,
+                  in bool         compensatedEnv      = false,
+                  in float4       xi                  = float4(-1.0F))
+{
+  // `xi`: the sample's random numbers (x picks the light, yz place the sample, w is the
+  // environment's third and the emitter triangle's pick), e.g. a Sobol point; negative: drawn from
+  // `seed`, in the order they are used
+  const bool given = xi.x >= 0.0F;
+  directLight      = noDirectLight();
+
+  const bool         bothSides = isVolumeSample || lightsFromBothSides;
+  const LightPickSet set       = lightPickSet(pos, normal, /*cull=*/!bothSides);
+  directLight.pick             = set.pick;
+  if(set.pick.emissive <= 0.0f && set.candidates == 0)
+    return;  // nothing can light this point
+
+  // rand() can return exactly 1.0; the walk below wants [0, 1)
+  float u = min(given ? xi.x : rand(seed), 0.99999994f);
+  LightDrawWalk walk = lightDrawWalk(set);
+  sampleLightDraw(set, lightDrawOf(set, pos, normal, bothSides, u, walk), pos, normal, seed, directLight, isVolumeSample, bothSides,
+                  compensatedEnv, xi);
 }
 
 // The pdf with which sampleLights(), at the vertex `pick` was made at, draws a direction in the
@@ -1849,10 +1937,23 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
   float         phase     = 0.0F;
   float         air       = 0.0F;
   HazeReservoir reservoir = hazeReservoir();
+  // The lights are scored once at the point (lightPickSet, as sampleLights does for a volume sample)
+  // and every candidate is drawn from that scoring, the c-th from the c-th of `count` equal slices of
+  // it: stratified, so they spread over the lights, and the light weights stay what one draw gives (the
+  // slices together are the pick: unbiased with the same weights). Their draws rise with c, so one walk
+  // over the lights finds them all (LightDrawWalk). One candidate is sampleLights' own draw, number
+  // for number.
+  const LightPickSet set = lightPickSet(pos, dir, /*cull=*/false);
+  if(set.pick.emissive <= 0.0F && set.candidates == 0)
+    return result;  // nothing can light this point
+  LightDrawWalk walk = lightDrawWalk(set);
   for(int c = 0; c < count; c++)
   {
-    DirectLight candidate;
-    sampleLights(pos, dir, dir, seed, candidate, /*isVolumeSample=*/true);
+    DirectLight candidate = noDirectLight();
+    candidate.pick        = set.pick;
+    const float pick      = min((float(c) + rand(seed)) / float(count), 0.99999994F);
+    sampleLightDraw(set, lightDrawOf(set, pos, dir, /*bothSides=*/true, pick, walk), pos, dir, seed, candidate,
+                    /*isVolumeSample=*/true, /*bothSides=*/true, /*compensatedEnv=*/false, float4(-1.0F));
     // a spot whose cone misses the point gives nothing (as volumeScatterNEE), and weighs 0
     if(candidate.pdf == 0.0F || all(candidate.radianceOverPdf == 0.0F))
       continue;

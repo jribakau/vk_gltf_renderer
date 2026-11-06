@@ -222,7 +222,11 @@ pinhole's eye, as the aerial perspective).
   lights by power and distance alone, and at a glow of 0.7 the phase function sends 180 times more
   light on than back. A still's scatter point draws several light samples, keeps one with the chance
   its weight (its light over its pdf, the phase function toward it, the haze on the way) has of their
-  sum, and traces one shadow ray for it; the kept light counts for them all. A still also cuts the
+  sum, and traces one shadow ray for it; the kept light counts for them all. The lights are scored
+  once for them all and the c-th is drawn from the c-th of equal slices of that pick (stratified),
+  so their draws rise and one walk over the lights finds them all (`LightDrawWalk`, the walk
+  `sampleLights` also takes); on a night street of 30 lamps and 12 signs four cost 2.86 ms a sample
+  against one's 2.35 (3.52 with a scoring and a walk each) and haze off's 1.05. A still also cuts the
   haze's samples to the firefly clamp's level, as it does bounced light's. A moving frame keeps the
   pick's one sample and its clamp-free light, bit for bit, for Ray Reconstruction.
 - **Checked:** `tests/test_haze.cpp` holds the estimator to a point light's single scattering by

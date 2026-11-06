@@ -281,9 +281,8 @@ TEST(Haze, ALightKeptAmongCandidatesCountsForThemAll)
     l.pick /= total;
     exact += l.colour * l.phase * (l.seen ? 1.0F : 0.0F);
   }
-  // one draw of the pick: the light, and its light over its pdf
-  const auto draw = [&](std::mt19937& rng, vec3& overPdf) {
-    float u = u01(rng);
+  // one draw of the pick at `u`: the light, and its light over its pdf
+  const auto drawAt = [&](float u, vec3& overPdf) {
     for(size_t i = 0; i < lights.size(); i++)
     {
       if(u < lights[i].pick || i + 1 == lights.size())
@@ -296,10 +295,12 @@ TEST(Haze, ALightKeptAmongCandidatesCountsForThemAll)
     return 0;
   };
   const auto lum = [](vec3 c) { return 0.2126F * c.x + 0.7152F * c.y + 0.0722F * c.z; };
-  double noiseOfOne = 0;
+  double noiseOfOne = 0, noiseOfFour = 0;
+  // independent candidates, then the shader's: one scoring, the c-th from the c-th slice of it
+  for(const bool sliced : {false, true})
   for(const int count : {1, 2, 4, 8})
   {
-    std::mt19937 rng(100 + count);
+    std::mt19937 rng(100 + count + (sliced ? 50 : 0));
     const int    n = 400000;
     dvec3        sum(0.0), sum2(0.0);
     for(int k = 0; k < n; k++)
@@ -310,7 +311,8 @@ TEST(Haze, ALightKeptAmongCandidatesCountsForThemAll)
       for(int c = 0; c < count; c++)
       {
         vec3        overPdf;
-        const int   i = draw(rng, overPdf);
+        const float pick = sliced ? (float(c) + u01(rng)) / float(count) : u01(rng);
+        const int   i    = drawAt(pick, overPdf);
         const float w = lights[i].phase * lum(overPdf);
         const float u = hazeReservoirNeedsDraw(r, w) ? u01(rng) : 0.0F;
         r             = hazeReservoirTake(r, w, u);
@@ -328,13 +330,18 @@ TEST(Haze, ALightKeptAmongCandidatesCountsForThemAll)
     }
     const dvec3  mean  = sum / double(n);
     const double noise = std::sqrt(sum2.y / n - mean.y * mean.y) / mean.y;
-    if(count == 1)
+    if(count == 1 && !sliced)
       noiseOfOne = noise;
-    std::printf("%d candidates: one sample's noise over its mean %.3f\n", count, noise);
+    std::printf("%d candidates%s: one sample's noise over its mean %.3f\n", count, sliced ? ", sliced" : "", noise);
     for(int ch = 0; ch < 3; ch++)
-      EXPECT_NEAR(mean[ch] / exact[ch], 1.0, 0.01) << count << " candidates, channel " << ch;
-    if(count == 4)
+      EXPECT_NEAR(mean[ch] / exact[ch], 1.0, 0.01) << count << " candidates, channel " << ch << (sliced ? ", sliced" : "");
+    if(count == 4 && !sliced)
+    {
+      noiseOfFour = noise;
       EXPECT_LT(noise, 0.75 * noiseOfOne);
+    }
+    if(count == 4 && sliced)
+      EXPECT_LE(noise, 1.02 * noiseOfFour);  // the slices spread them: no noisier than independent draws
   }
   // nothing to keep: no light
   EXPECT_EQ(hazeReservoirWeight(hazeReservoir(), 4), 0.0F);
