@@ -184,6 +184,19 @@ SurfaceIndex::Hit SurfaceIndex::nearest(double px, double py, double pz, Accept&
           if(i < 0 || i >= nx)
             continue;
           const size_t c = (size_t(k) * ny + j) * nx + i;
+          // A cell whose box lies further off than the nearest found so far, or than maxDist2, holds no
+          // nearer triangle: a triangle's closest point lies in a cell it is filed in. A point near a
+          // dense surface (a body's 33k triangles in 3 cm cells) otherwise tried every face of the 27
+          // cells about it
+          if(r > 0)
+          {
+            const double gx  = std::max({0.0, minX + i * cell - px, px - (minX + (i + 1) * cell)});
+            const double gy  = std::max({0.0, minY + j * cell - py, py - (minY + (j + 1) * cell)});
+            const double gz  = std::max({0.0, minZ + k * cell - pz, pz - (minZ + (k + 1) * cell)});
+            const double gap = std::sqrt(gx * gx + gy * gy + gz * gz) - kWallSlack;
+            if(gap > 0 && gap * gap > std::min(best, maxDist2))
+              continue;
+          }
           for(uint32_t s = start[c], e = start[c + 1]; s < e; s++)
           {
             const uint32_t t = tris[s];

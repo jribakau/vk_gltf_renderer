@@ -4,6 +4,8 @@
 #include <array>
 #include <cmath>
 
+#include <figure/jobs/pool.hpp>
+
 namespace fv::dforce {
 
 namespace {
@@ -354,33 +356,37 @@ std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<
   const auto         S   = skinMatrices(pose);
   const auto         dqs = jointDqs(S, skin);
   std::vector<float> out(rest.size(), 0.f);
-  std::array<double, 16> m;
-  for(size_t v = 0; v < n; v++)
-  {
-    const double wsum = blend(S, dqs, skin, v, m);
-    const double x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
-    double       sx, sy, sz;
-    std::array<double, 9> m3{1, 0, 0, 0, 1, 0, 0, 0, 1};
-    if(wsum <= 0)
+  // each vertex on its own, on the pool: a light copy's whole dress (the Kai Dress's 42,687 vertices)
+  // took 16.6 ms of a live step on one thread with the riding
+  jobs::parallelFor(n, 2048, [&](size_t begin, size_t end) {
+    std::array<double, 16> m;
+    for(size_t v = begin; v < end; v++)
     {
-      sx = x;
-      sy = y;
-      sz = z;
+      const double          wsum = blend(S, dqs, skin, v, m);
+      const double          x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
+      double                sx, sy, sz;
+      std::array<double, 9> m3{1, 0, 0, 0, 1, 0, 0, 0, 1};
+      if(wsum <= 0)
+      {
+        sx = x;
+        sy = y;
+        sz = z;
+      }
+      else
+      {
+        sx = m[0] * x + m[4] * y + m[8] * z + m[12];
+        sy = m[1] * x + m[5] * y + m[9] * z + m[13];
+        sz = m[2] * x + m[6] * y + m[10] * z + m[14];
+        m3 = {m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]};
+      }
+      std::array<double, 3> d;
+      if(!invertBlend({simulated[v * 3] - sx, simulated[v * 3 + 1] - sy, simulated[v * 3 + 2] - sz}, m3, d))
+        continue;
+      out[v * 3]     = float(d[0]);
+      out[v * 3 + 1] = float(d[1]);
+      out[v * 3 + 2] = float(d[2]);
     }
-    else
-    {
-      sx = m[0] * x + m[4] * y + m[8] * z + m[12];
-      sy = m[1] * x + m[5] * y + m[9] * z + m[13];
-      sz = m[2] * x + m[6] * y + m[10] * z + m[14];
-      m3 = {m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]};
-    }
-    std::array<double, 3> d;
-    if(!invertBlend({simulated[v * 3] - sx, simulated[v * 3 + 1] - sy, simulated[v * 3 + 2] - sz}, m3, d))
-      continue;
-    out[v * 3]     = float(d[0]);
-    out[v * 3 + 1] = float(d[1]);
-    out[v * 3 + 2] = float(d[2]);
-  }
+  });
   return out;
 }
 

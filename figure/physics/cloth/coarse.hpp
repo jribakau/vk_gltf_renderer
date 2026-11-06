@@ -79,8 +79,10 @@ std::vector<float> ride(const CoarseCloth& c, const std::vector<float>& at);
 // The copy's vertices keep out of the body, but its faces span a body's curve (a hip, the bust) as
 // chords, and what rides on them can sink in. Each of `at` (xyz per vertex) closer to a face of `body`
 // at `bodyAt` than its offset, or behind it by up to `reach`, is moved out along the face to the offset;
-// the `held` ones (1 a vertex) stay. How many moved.
-size_t keepOut(std::vector<float>& at, const std::vector<uint8_t>& held, const Surface& body, const std::vector<float>& bodyAt, float reach = 2.f);
+// the `held` ones (1 a vertex) stay. How many moved. With the `copy` they ride on, its vertices at
+// `copyAt`, the same, looking only near the body for those whose face may put them near it.
+size_t keepOut(std::vector<float>& at, const std::vector<uint8_t>& held, const Surface& body, const std::vector<float>& bodyAt, float reach = 2.f,
+               const CoarseCloth* copy = nullptr, const std::vector<float>* copyAt = nullptr);
 
 // What `keep` takes of an array with `per` values a vertex (xyz: 3).
 template <typename T>

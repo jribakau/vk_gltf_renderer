@@ -934,7 +934,8 @@ std::vector<float> ride(const CoarseCloth& c, const std::vector<float>& at)
   return out;
 }
 
-size_t keepOut(std::vector<float>& at, const std::vector<uint8_t>& held, const Surface& body, const std::vector<float>& bodyAt, float reach)
+size_t keepOut(std::vector<float>& at, const std::vector<uint8_t>& held, const Surface& body, const std::vector<float>& bodyAt, float reach,
+               const CoarseCloth* copy, const std::vector<float>* copyAt)
 {
   const size_t nb = body.vertexCount(), n = at.size() / 3;
   if(bodyAt.size() != nb * 3 || body.tris.empty() || n == 0)
@@ -954,17 +955,107 @@ size_t keepOut(std::vector<float>& at, const std::vector<uint8_t>& held, const S
   const auto offsetOf = [&](uint32_t v) { return v < body.offset.size() && body.offset[v] > 0 ? body.offset[v] : 0.05f; };
   for(uint32_t v : tris)
     most = std::max(most, offsetOf(v));
+  // and of those, only the ones that come within reach of the cloth's box: what lies further off can't
+  // move a vertex (a dress's box leaves out the head, the hands and the feet)
+  {
+    float lo[3] = {INFINITY, INFINITY, INFINITY}, hi[3] = {-INFINITY, -INFINITY, -INFINITY};
+    for(size_t v = 0; v < n; v++)
+      if(!(v < held.size() && held[v]))
+        for(int k = 0; k < 3; k++)
+        {
+          lo[k] = std::min(lo[k], at[v * 3 + size_t(k)]);
+          hi[k] = std::max(hi[k], at[v * 3 + size_t(k)]);
+        }
+    const float           pad = reach + most;
+    std::vector<uint32_t> inBox;
+    inBox.reserve(tris.size());
+    for(size_t t = 0; t + 2 < tris.size(); t += 3)
+    {
+      bool apart = false;
+      for(int k = 0; k < 3 && !apart; k++)
+      {
+        const float a = bodyAt[size_t(tris[t]) * 3 + size_t(k)], b = bodyAt[size_t(tris[t + 1]) * 3 + size_t(k)], c = bodyAt[size_t(tris[t + 2]) * 3 + size_t(k)];
+        apart = std::max({a, b, c}) < lo[k] - pad || std::min({a, b, c}) > hi[k] + pad;
+      }
+      if(!apart)
+        inBox.insert(inBox.end(), {tris[t], tris[t + 1], tris[t + 2]});
+    }
+    tris = std::move(inBox);
+  }
   if(tris.empty())
     return 0;
   const SurfaceIndex  index(bodyAt, tris);
   const float*        q     = bodyAt.data();
-  const double        near2 = double(reach + most) * double(reach + most);
+  const double        near  = double(reach + most);
+  const double        near2 = near * near;
   std::atomic<size_t> moved{0};
+
+  // With the copy it rides on: a vertex is no nearer the body than a corner of its face is, less how far
+  // it is from that corner. Where that already puts it further off than `near`, its search could find
+  // nothing, and it isn't made: a dress hanging off the body (the Kai Dress's 42,687 vertices searched for
+  // took 9 ms of a live step). Each corner is looked for as far as its vertices need
+  std::vector<uint8_t> look;
+  if(copy && copyAt && copy->riding.face.size() == n && copyAt->size() == copy->surface.vertexCount() * 3)
+  {
+    const std::vector<uint32_t>& ct = copy->surface.tris;
+    const size_t                 nc = copy->surface.vertexCount();
+    const float*                 cp = copyAt->data();
+    const auto cornerOf = [&](size_t v, int k) -> int64_t {
+      const size_t f = copy->riding.face[v];
+      if(f * 3 + 2 >= ct.size() || ct[f * 3 + size_t(k)] >= nc)
+        return -1;
+      return int64_t(ct[f * 3 + size_t(k)]);
+    };
+    const auto apart = [&](size_t v, size_t c) {
+      return std::sqrt(double(at[v * 3] - cp[c * 3]) * double(at[v * 3] - cp[c * 3]) + double(at[v * 3 + 1] - cp[c * 3 + 1]) * double(at[v * 3 + 1] - cp[c * 3 + 1])
+                       + double(at[v * 3 + 2] - cp[c * 3 + 2]) * double(at[v * 3 + 2] - cp[c * 3 + 2]));
+    };
+    // how far each corner is looked for: `near` and the furthest of its face's vertices from it
+    std::vector<double> reachOf(nc, -1.0);
+    for(size_t v = 0; v < n; v++)
+      if(!(v < held.size() && held[v]))
+        for(int k = 0; k < 3; k++)
+          if(const int64_t c = cornerOf(v, k); c >= 0)
+            reachOf[size_t(c)] = std::max(reachOf[size_t(c)], near + apart(v, size_t(c)) + 0.01);
+    // each corner's distance from the body, or as far as it was looked for where nothing is nearer
+    std::vector<double> off(nc, 0.0);
+    jobs::parallelFor(nc, 256, [&](size_t begin, size_t end) {
+      for(size_t c = begin; c < end; c++)
+      {
+        if(reachOf[c] < 0)
+          continue;
+        Stamps&       stamps = threadStamps();
+        const int32_t id     = stamps.next(index.triangles());
+        const auto    hit    = index.search(cp[c * 3], cp[c * 3 + 1], cp[c * 3 + 2], 0, {}, reachOf[c] * reachOf[c], stamps.stamp, id);
+        off[c]               = hit.tri < 0 ? reachOf[c] : std::sqrt(hit.d2);
+      }
+    });
+    look.assign(n, 1);
+    jobs::parallelFor(n, 4096, [&](size_t begin, size_t end) {
+      for(size_t v = begin; v < end; v++)
+      {
+        double least = 0;
+        bool   every = true;
+        for(int k = 0; k < 3 && every; k++)
+        {
+          const int64_t c = cornerOf(v, k);
+          if(c < 0)
+            every = false;
+          else
+            least = std::max(least, off[size_t(c)] - apart(v, size_t(c)));
+        }
+        // a hair over, so rounding can't skip one the search would have found
+        if(every && least > near + 1e-4)
+          look[v] = 0;
+      }
+    });
+  }
+
   jobs::parallelFor(n, 2048, [&](size_t begin, size_t end) {
     size_t count = 0;
     for(size_t v = begin; v < end; v++)
     {
-      if(v < held.size() && held[v])
+      if((v < held.size() && held[v]) || (!look.empty() && !look[v]))
         continue;
       Stamps&       stamps = threadStamps();
       const int32_t id     = stamps.next(index.triangles());

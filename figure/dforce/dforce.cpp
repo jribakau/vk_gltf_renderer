@@ -1162,10 +1162,20 @@ std::vector<std::vector<float>> Dforce::deltasOf(const Job& job, const std::vect
     }
     // a light copy's cloth rides on it, out of the body where the copy's faces cross a curve of it, and
     // where it is held to its skin it stays, as the cloth would
-    std::vector<float> at = physics::cloth::ride(*d.light, positions[d.slot]);
+    std::vector<float> at;
+    {
+      timing::Accum ridden("dforce: a light drape ridden on its copy");
+      at = physics::cloth::ride(*d.light, positions[d.slot]);
+    }
     if(job.bodySlot < positions.size() && job.bodySlot < job.bodies.size())
-      physics::cloth::keepOut(at, d.light->riding.held, job.bodies[job.bodySlot], positions[job.bodySlot]);
-    out[k] = drapeDelta(d.rest, transformPoints(d.back, at), d.skin, d.pose);
+    {
+      timing::Accum kept("dforce: a light drape kept out of the body");
+      physics::cloth::keepOut(at, d.light->riding.held, job.bodies[job.bodySlot], positions[job.bodySlot], 2.f, d.light.get(), &positions[d.slot]);
+    }
+    {
+      timing::Accum skinned("dforce: a light drape's inverse skin");
+      out[k] = drapeDelta(d.rest, transformPoints(d.back, at), d.skin, d.pose);
+    }
     const auto& held = d.light->riding.held;
     for(size_t v = 0; v < held.size() && v * 3 + 2 < out[k].size(); v++)
       if(held[v])

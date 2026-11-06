@@ -1577,7 +1577,7 @@ int main(int argc, char** argv)
           const fv::physics::cloth::Surface&     fine = full->bodies[slot];
           const fv::physics::cloth::CoarseCloth& copy = *p->light[i];
           std::vector<float>                     at   = fv::physics::cloth::ride(copy, out[slot]);
-          const size_t kept = step.value("keepOut", true) ? fv::physics::cloth::keepOut(at, copy.riding.held, p->bodies[0], out[0]) : 0;
+          const size_t kept = step.value("keepOut", true) ? fv::physics::cloth::keepOut(at, copy.riding.held, p->bodies[0], out[0], 2.f, &copy, &out[slot]) : 0;
           for(size_t v = 0; v < copy.riding.held.size(); v++)
             if(copy.riding.held[v])
               for(size_t c = 0; c < 3; c++)

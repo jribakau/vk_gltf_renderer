@@ -686,6 +686,60 @@ TEST(Physics, surfaceIndexMatchesBruteForce)
   }
 }
 
+// Near a dense surface the search passes over cells further off than the nearest face it has found
+// (a light cloth kept out of a body's 33k faces): still the brute force's closest, within any reach.
+TEST(Physics, surfaceIndexNearADenseSurfaceMatchesBruteForce)
+{
+  // a wavy sheet 4 cm square in 40 x 40 quads, and points about it, within a few millimetres
+  std::mt19937                          rng(5);
+  std::uniform_real_distribution<float> across(-2.2f, 2.2f), above(-0.4f, 0.4f);
+  Soup                                  soup;
+  constexpr int                         n = 40;
+  for(int r = 0; r <= n; r++)
+    for(int c = 0; c <= n; c++)
+    {
+      const float x = 4.f * float(c) / n - 2.f, z = 4.f * float(r) / n - 2.f;
+      soup.positions.insert(soup.positions.end(), {x, 0.15f * std::sin(3.f * x) * std::cos(2.f * z), z});
+    }
+  for(uint32_t r = 0; r < n; r++)
+    for(uint32_t c = 0; c < n; c++)
+    {
+      const uint32_t a = r * (n + 1) + c, b = a + 1, d = a + n + 1, e = d + 1;
+      soup.tris.insert(soup.tris.end(), {a, b, e, a, e, d});
+    }
+  const SurfaceIndex index(soup.positions, soup.tris);
+  Stamps&            stamps = threadStamps();
+  const size_t       nt     = soup.tris.size() / 3;
+  std::vector<SurfaceIndex> one;
+  one.reserve(nt);
+  for(size_t t = 0; t < nt; t++)
+    one.emplace_back(soup.positions, std::span<const uint32_t>(soup.tris).subspan(t * 3, 3));
+  int found = 0, beyond = 0;
+  for(int q = 0; q < 300; q++)
+  {
+    const double p[3] = {across(rng), above(rng), across(rng)};
+    double       best = INFINITY;
+    for(size_t t = 0; t < nt; t++)
+      best = std::min(best, one[t].search(p[0], p[1], p[2], 0, {}, INFINITY, stamps.stamp, stamps.next(nt)).d2);
+    EXPECT_NEAR(index.search(p[0], p[1], p[2], 0, {}, INFINITY, stamps.stamp, stamps.next(nt)).d2, best, 1e-12);
+    // within a reach: the same where one is that close, none where not
+    const double reach2 = 0.2 * 0.2;
+    const auto   within = index.search(p[0], p[1], p[2], 0, {}, reach2, stamps.stamp, stamps.next(nt));
+    if(best <= reach2)
+    {
+      EXPECT_NEAR(within.d2, best, 1e-12);
+      found++;
+    }
+    else
+    {
+      EXPECT_LT(within.tri, 0);
+      beyond++;
+    }
+  }
+  EXPECT_GT(found, 50);
+  EXPECT_GT(beyond, 50);
+}
+
 // An edit while a pass runs lets its result land, then runs it again on what the edit left.
 TEST(Physics, aStillPassRunsAgainAfterAnEditDuringIt)
 {

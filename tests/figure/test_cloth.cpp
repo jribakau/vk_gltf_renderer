@@ -1132,3 +1132,33 @@ TEST(ClothLight, whatRidesIntoTheBodyIsMovedOutToItsOffset)
   EXPECT_EQ(at[0], 0.f);
   EXPECT_EQ(at[3], 1.f);
 }
+
+TEST(ClothLight, keepingOutWithTheCopyLooksOnlyNearTheBodyAndMovesTheSame)
+{
+  // A 15 cm sheet whose one corner dips 1.5 cm into a ball (radius 4) and whose far side lies well off it:
+  // looked for only where the copy's faces may put a vertex near the ball, every vertex ends where the
+  // search of every vertex puts it, to the bit (the Kai Dress's 42,687 searched took 9 ms of a live step)
+  const Surface fine = sheet(60, 15.f);
+  const auto    c    = physics::cloth::coarseCloth(fine, 2.f);
+  ASSERT_TRUE(c);
+  Surface            ball   = sphere(4.f, 24);
+  std::vector<float> ballAt = ball.posed;
+  for(size_t v = 0; v < ballAt.size() / 3; v++)
+  {
+    ballAt[v * 3] += 5.f;
+    ballAt[v * 3 + 1] -= 2.5f;
+    ballAt[v * 3 + 2] += 5.f;
+  }
+  // the copy where the cloth is, a little turned, so a vertex is off its face's plane
+  std::vector<float> copyAt = c->surface.rest;
+  for(size_t v = 0; v < copyAt.size() / 3; v++)
+    copyAt[v * 3 + 1] += 0.05f * copyAt[v * 3];
+  const std::vector<float> rode = physics::cloth::ride(*c, copyAt);
+  std::vector<float>       every = rode, near = rode;
+  const size_t             all   = physics::cloth::keepOut(every, c->riding.held, ball, ballAt);
+  const size_t             some  = physics::cloth::keepOut(near, c->riding.held, ball, ballAt, 2.f, &*c, &copyAt);
+  EXPECT_GT(all, 50u) << "the corner in the ball is moved out";
+  EXPECT_LT(all, rode.size() / 3 / 4) << "most of the sheet is off the ball";
+  EXPECT_EQ(some, all);
+  EXPECT_EQ(near, every);
+}
