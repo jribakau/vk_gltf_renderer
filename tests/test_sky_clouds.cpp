@@ -1,6 +1,6 @@
 // The physical sky's clouds (shaders/sky_clouds.h.slang and sky_clouds_noise.h.slang, takram's model)
 // compiled as C++: a clear sky comes back exactly, the cloud image's mapping inverts and crowds its
-// rows at the horizon, the layers are where they should be from every observer, the coverage runs
+// rows at the horizon, the view image's inverts and covers a camera's frame a texel a pixel, the layers are where they should be from every observer, the coverage runs
 // from none to all, the phase is normalised and the octaves carry light deep into a cloud, the noise
 // tiles, each kind is the cloud it says, the tiers lie over one another, and each tier's cover shades
 // (cirrus: veils) as much of the land as it says.
@@ -24,6 +24,9 @@ using namespace glm;
 using namespace shaderio;
 #include "../shaders/sky_clouds.h.slang"
 #include "../shaders/sky_clouds_noise.h.slang"
+#include "../src/sky_cloud_view.hpp"
+
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace {
 
@@ -197,6 +200,98 @@ TEST(SkyClouds, TheImageMappingInvertsAndSharesTheLatLongsAzimuth)
   // row 0 at the horizon, the last at the zenith
   EXPECT_NEAR(std::asin(cloudImageDir(float2(0.5F, 0.0F), minElevation).y), minElevation, 1e-5F);
   EXPECT_NEAR(cloudImageDir(float2(0.5F, 1.0F), minElevation).y, 1.0F, 1e-6F);
+}
+
+TEST(SkyClouds, TheViewImageMappingInverts)
+{
+  const float3 forward = normalize(float3(0.3F, 0.4F, -0.8F));
+  const float3 right   = normalize(cross(forward, float3(0.0F, 1.0F, 0.0F)));
+  const float3 up      = cross(right, forward);
+  for(float u = 0.01F; u < 1.0F; u += 0.07F)
+    for(float v = 0.02F; v < 1.0F; v += 0.09F)
+    {
+      const float3 dir = cloudViewDir(float2(u, v), right, 0.31F, up, 0.2F, forward);
+      EXPECT_NEAR(length(dir), 1.0F, 1e-5F);
+      const float3 back = cloudViewUv(dir, right, 0.31F, up, 0.2F, forward);
+      EXPECT_NEAR(back.x, u, 1e-4F);
+      EXPECT_NEAR(back.y, v, 1e-4F);
+      EXPECT_NEAR(back.z, std::max(std::abs(2.0F * u - 1.0F), std::abs(2.0F * v - 1.0F)), 1e-4F);
+    }
+  // v runs down: the top row looks up
+  EXPECT_GT(dot(cloudViewDir(float2(0.5F, 0.0F), right, 0.31F, up, 0.2F, forward), up), 0.0F);
+  // behind the image, and beside it, the sky image alone; inside, the view image alone, fading
+  // between over the outer part of it
+  EXPECT_EQ(cloudViewShare(cloudViewUv(-forward, right, 0.31F, up, 0.2F, forward).z), 0.0F);
+  EXPECT_EQ(cloudViewShare(cloudViewUv(normalize(forward + right), right, 0.31F, up, 0.2F, forward).z), 0.0F);
+  EXPECT_EQ(cloudViewShare(0.5F), 1.0F);
+  EXPECT_EQ(cloudViewShare(1.0F - CLOUD_VIEW_FADE), 1.0F);
+  EXPECT_NEAR(cloudViewShare(1.0F - 0.5F * CLOUD_VIEW_FADE), 0.5F, 1e-4F);
+}
+
+TEST(SkyClouds, TheViewImageCoversTheCamerasFrameATexelAPixel)
+{
+  // An 85 mm lens (16 degrees down a full frame's 24 mm) on a 2160 x 1395 viewport, looking past a
+  // figure and up a little, under an environment turned 40 degrees; the projection flipped as
+  // Vulkan's is.
+  const glm::uvec2 frame(2160, 1395);
+  glm::mat4        projection = glm::perspective(glm::radians(16.0F), float(frame.x) / float(frame.y), 0.1F, 1000.0F);
+  projection[1][1] *= -1.0F;
+  const glm::mat4 view = glm::lookAt(glm::vec3(0.3F, 1.5F, 3.0F), glm::vec3(0.0F, 1.9F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F));
+  const glm::quat env  = glm::angleAxis(glm::radians(40.0F), glm::vec3(0.0F, 1.0F, 0.0F));
+  const std::optional<SkyCloudView> image = cloudViewFor(view, projection, env, frame);
+  ASSERT_TRUE(image.has_value());
+  EXPECT_LE(image->size.x, uint32_t(CLOUD_VIEW_CAPACITY));
+  EXPECT_LE(image->size.y, uint32_t(CLOUD_VIEW_CAPACITY));
+
+  // A pixel's ray as getRay aims it (camera_ray.h.slang), in the environment's frame, as the path
+  // tracer looks it up, and where it falls in the view image's texels.
+  const glm::mat4 projectionInverse = glm::inverse(projection);
+  const glm::mat4 viewInverse       = glm::inverse(view);
+  const auto      texelOf           = [&](float x, float y) {
+    const glm::vec2 clip = glm::vec2(x, y) / glm::vec2(frame) * 2.0F - 1.0F;
+    glm::vec4       p    = projectionInverse * glm::vec4(clip, -1.0F, 1.0F);
+    p /= p.w;
+    const glm::vec3 world = glm::normalize(glm::vec3(viewInverse * p) - glm::vec3(viewInverse[3]));
+    const glm::vec3 dir   = glm::conjugate(env) * world;
+    const float3    uv    = cloudViewUv(dir, float3(image->right), image->right.w, float3(image->up), image->up.w, image->forward);
+    return glm::vec3(uv.x * float(image->size.x), uv.y * float(image->size.y), uv.z);
+  };
+  // every part of the frame, its corners too, in the view image wholly
+  for(float x = 0.0F; x <= float(frame.x); x += float(frame.x) / 8.0F)
+    for(float y = 0.0F; y <= float(frame.y); y += float(frame.y) / 8.0F)
+    {
+      const glm::vec3 t = texelOf(x, y);
+      EXPECT_LT(t.z, 1.0F / (1.0F + kCloudViewMargin) + 1e-3F) << x << ", " << y;
+      EXPECT_EQ(cloudViewShare(t.z), 1.0F) << x << ", " << y;
+    }
+  // about a texel a pixel, here a little under (the image's capacity), against the sky image's 7
+  for(const glm::vec2 at : {glm::vec2(1080.0F, 697.0F), glm::vec2(2.0F, 2.0F), glm::vec2(2150.0F, 1390.0F)})
+  {
+    const float across = glm::length(glm::vec2(texelOf(at.x + 1.0F, at.y)) - glm::vec2(texelOf(at.x, at.y)));
+    const float down   = glm::length(glm::vec2(texelOf(at.x, at.y + 1.0F)) - glm::vec2(texelOf(at.x, at.y)));
+    EXPECT_GT(across, 0.8F);
+    EXPECT_LT(across, 1.0F);
+    EXPECT_GT(down, 0.8F);
+    EXPECT_LT(down, 1.0F);
+  }
+  // the sky image's columns at this camera: 0.088 degrees, against a pixel's 16 / 1395
+  EXPECT_GT(360.0F / 4096.0F / (16.0F / float(frame.y)), 7.0F);
+
+  // A camera that has not moved asks for the same image; one turned a hair, for another.
+  EXPECT_TRUE(cloudViewFor(view, projection, env, frame) == image);
+  const glm::mat4 turned = glm::rotate(view, 1e-4F, glm::vec3(0.0F, 1.0F, 0.0F));
+  EXPECT_FALSE(cloudViewFor(turned, projection, env, frame) == image);
+}
+
+TEST(SkyClouds, AnOrthographicOrVeryWideCameraKeepsTheSkyImage)
+{
+  const glm::mat4 view = glm::lookAt(glm::vec3(0.0F, 1.5F, 3.0F), glm::vec3(0.0F, 1.5F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F));
+  const glm::quat env(1.0F, 0.0F, 0.0F, 0.0F);
+  EXPECT_FALSE(cloudViewFor(view, glm::ortho(-2.0F, 2.0F, -1.0F, 1.0F, 0.1F, 100.0F), env, {1920, 1080}).has_value());
+  EXPECT_FALSE(cloudViewFor(view, glm::perspective(glm::radians(120.0F), 1.0F, 0.1F, 100.0F), env, {1080, 1080}).has_value());
+  EXPECT_FALSE(cloudViewFor(view, glm::perspective(glm::radians(40.0F), 1.0F, 0.1F, 100.0F), env, {0, 0}).has_value());
+  // a 24 mm lens still has one
+  EXPECT_TRUE(cloudViewFor(view, glm::perspective(glm::radians(53.0F), 1.5F, 0.1F, 100.0F), env, {1920, 1280}).has_value());
 }
 
 TEST(SkyClouds, TheRowsCrowdAtTheHorizonWhereTheCloudsDo)

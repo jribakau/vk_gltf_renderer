@@ -243,7 +243,8 @@ HostStruct sceneFrameInfo()
     F(sunDisk), F(sunDirection), F(rendererSunLight), F(sunLightIndex), F(envSkyType), F(skyOmi),
     F(aerialPerspectiveScale), F(observerAltitudeKm), F(skySunIlluminance), F(envSamplingGridWidth),
     F(envSamplingGridHeight), F(groundFadeCenterX), F(groundFadeCenterZ), F(groundFadeRadius), F(skySunScale),
-    F(envPickEstimate), F(groundWater), F(groundRipples), F(waterDepth), F(waterWaves)
+    F(envPickEstimate), F(groundWater), F(groundRipples), F(waterDepth), F(waterWaves), F(cloudViewRight),
+    F(cloudViewUp), F(cloudViewForward), F(cloudViewUvScaleX), F(cloudViewUvScaleY)
   }};
 }
 

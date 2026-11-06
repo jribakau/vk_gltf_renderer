@@ -116,6 +116,7 @@ static bool doDebug = false;
 // everywhere, which gives the sky back unchanged.
 [[vk::binding(CLOUD_IMAGE_BINDING, 4)]]   Sampler2D<float4>     g_clouds;
 [[vk::binding(CLOUD_PREVIEW_BINDING, 4)]] Sampler2D<float4>     g_cloudsPreview;
+[[vk::binding(CLOUD_VIEW_BINDING, 4)]]    Sampler2D<float4>     g_cloudView;
 
 // What a camera ray or a mirror bounce sees of the physical sky: its radiance, evaluated per ray
 // through the same function the bake uses, plus the solar disk. Per ray rather than read from the
@@ -135,8 +136,22 @@ float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
   if(dir.y > disk.horizonMu)
   {
     // whichever image holds the clouds of the moment: the full one, or a drag's preview
-    const float2 uv = cloudImageUv(dir, asin(disk.horizonMu));
-    sky = composeClouds(sky, disk.cloudPreview != 0 ? g_cloudsPreview.SampleLevel(uv, 0.0F) : g_clouds.SampleLevel(uv, 0.0F));
+    const float2 uv     = cloudImageUv(dir, asin(disk.horizonMu));
+    float4       clouds = disk.cloudPreview != 0 ? g_cloudsPreview.SampleLevel(uv, 0.0F) : g_clouds.SampleLevel(uv, 0.0F);
+    // ... and where the camera looks, the view image, at the screen's resolution. The two hold the
+    // same clouds, the view's sharper; the texel composes linearly, so a blend of them is too.
+    if(frameInfo->cloudViewForward.w != 0.0F)
+    {
+      const float3 view  = cloudViewUv(dir, frameInfo->cloudViewRight.xyz, frameInfo->cloudViewRight.w, frameInfo->cloudViewUp.xyz,
+                                       frameInfo->cloudViewUp.w, frameInfo->cloudViewForward.xyz);
+      const float  share = cloudViewShare(view.z);
+      if(share > 0.0F)
+      {
+        const float2 viewUv = float2(view.x * frameInfo->cloudViewUvScaleX, view.y * frameInfo->cloudViewUvScaleY);
+        clouds              = lerp(clouds, g_cloudView.SampleLevel(viewUv, 0.0F), share);
+      }
+    }
+    sky = composeClouds(sky, clouds);
   }
   return sky + evalSunDiskBackground(dir, frameInfo);
 }

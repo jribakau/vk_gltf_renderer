@@ -1075,6 +1075,8 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   {
     resetFrame();
   }
+  if(updateCloudView(cmd))
+    resetFrame();  // the sky the still is of changed
   refreshSampleTargets();                    // --outputSamples: the stops this frame may end on
   bool frameChanged = updateFrameCounter();  // Check if the frame counter has changed
   // A shader variant built off the frame goes in only when a frame draws: one draws for it even with
@@ -1152,6 +1154,17 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
         .envPickEstimate       = 0.25F * m_resources.hdrIbl.getIntegral(),
     };
     fillGround(finfo);
+    // The clouds where the camera looks, while the view image holds the clouds of the moment: it
+    // looks where it was baked, which the camera may since have turned from (updateCloudView).
+    if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.viewCurrent())
+    {
+      const SkyCloudView& view = m_skyClouds.view();
+      finfo.cloudViewRight     = view.right;
+      finfo.cloudViewUp        = view.up;
+      finfo.cloudViewForward   = glm::vec4(view.forward, 1.0F);
+      finfo.cloudViewUvScaleX  = float(view.size.x) / float(CLOUD_VIEW_CAPACITY);
+      finfo.cloudViewUvScaleY  = float(view.size.y) / float(CLOUD_VIEW_CAPACITY);
+    }
     // Update the camera information
     m_prevMVP = finfo.viewProjMatrix;
 

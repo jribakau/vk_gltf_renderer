@@ -706,6 +706,37 @@ inline float3 cloudImageDir(float2 uv, float minElevation)
   return float3(cos(phi) * c, sin(e), sin(phi) * c);
 }
 
+// The view image (SkyClouds::recordView) holds the clouds where the camera looks, at the screen's
+// resolution: the sky image's columns are 0.09 degrees, several pixels each through a long lens,
+// and their edges smear over all of them. It is a perspective map about `forward`, in the
+// environment's frame: uv runs across the part of the image a bake fills, v downward, out to
+// `tanRight` and `tanUp`, the tangents of its half-width and half-height.
+inline float3 cloudViewDir(float2 uv, float3 right, float tanRight, float3 up, float tanUp, float3 forward)
+{
+  const float2 ndc = uv * 2.0F - 1.0F;
+  return normalize(forward + right * (ndc.x * tanRight) - up * (ndc.y * tanUp));
+}
+
+// ... and back: where a direction falls in it (x and y, the same uv), and how far out from its centre
+// (z: 0 there, 1 at the nearer edge, past 1 outside it or behind it).
+inline float3 cloudViewUv(float3 dir, float3 right, float tanRight, float3 up, float tanUp, float3 forward)
+{
+  const float z = dot(dir, forward);
+  if(z <= 1e-4F)
+    return float3(0.0F, 0.0F, 2.0F);
+  const float2 ndc = float2(dot(dir, right) / (z * tanRight), -dot(dir, up) / (z * tanUp));
+  return float3(ndc.x * 0.5F + 0.5F, ndc.y * 0.5F + 0.5F, max(abs(ndc.x), abs(ndc.y)));
+}
+
+// How much of the view image a direction takes, against the sky image's: all of it inside, fading to
+// none over the outer CLOUD_VIEW_FADE of its half-extent. The image reaches past the camera's own view
+// (SkyClouds' kViewMargin), so the fade is outside the frame until the camera moves.
+static const float CLOUD_VIEW_FADE = 0.06F;
+inline float cloudViewShare(float edge)
+{
+  return clamp((1.0F - edge) * (1.0F / CLOUD_VIEW_FADE), 0.0F, 1.0F);
+}
+
 // One texel of the image (see the top of the file).
 inline float4 cloudTexel(float3 cloudLightSeen, float cloudTransmittance, float3 airTransmittance, float3 airInFront)
 {

@@ -618,7 +618,7 @@ the **lighting field** two mips down, at its own resolution, so an overcast sky 
 and the alias table follows; and by the path tracer's `evalPhysicalSkyBackground`, for what the
 camera and mirrors see. Its columns run round the horizon as the lat-long's do, its rows from the
 horizon to the zenith on a square root, so they crowd where the clouds do. What the camera sees of
-the clouds is this image, so its size is their sharpness on screen.
+the clouds outside the view image (below) is this image, at its sharpness.
 
 Each texel averages several marches (`SkyCloudsParameters::samples`, 8). The march is jittered --
 where it starts within its step, how far the short marches toward the sun go, whether the detail
@@ -647,6 +647,42 @@ The pass is recorded at the head of `EnvBaker::recordBake`, ahead of the bake th
 drag's preview bakes a quarter-size **preview image** instead (`kCloudPreviewSize`) at takram's low
 quality preset with one march a texel (`cloudWithQuality`), and `SkySunDisk::cloudPreview` tells
 the readers which image holds the clouds of the moment; the settle that follows bakes the full one.
+
+### The view image
+
+The cloud image's columns are 0.088 degrees. Through an 85 mm lens on a view 1395 pixels high, a
+pixel is 0.0115 degrees, so a texel is 7.5 pixels, and the march's spread over the texel, the
+filter and the bilinear read smear each edge over about 20 pixels: the clouds look upscaled. So the
+part of the sky the camera looks at is baked a second time at the screen's resolution, into the
+**view image** (`SkyClouds::recordView`, `CLOUD_VIEW_CAPACITY` square, RGBA16F, one level):
+
+- **What it maps.** A perspective map about the camera's forward in the environment's frame
+  (`cloudViewDir`, `cloudViewUv` in `sky_clouds.h.slang`), 10% wider each way than the camera's
+  view (`kCloudViewMargin`), a texel a pixel up to the capacity: 2048 x 1323 for a 2160 x 1395 view,
+  0.86 texels a pixel. `cloudViewFor` (`src/sky_cloud_view.hpp`) builds it from the frame's view
+  and projection as `getRay` aims its rays, so every pixel of the frame lands inside it, which a
+  test holds. An orthographic camera, or one wider than about 110 degrees, keeps the cloud image.
+- **What it holds.** The same march, filter and clouds as the cloud image's last full bake, for the
+  view's directions: the noise's level follows a texel's angle (`noiseLod`), so the eddies the
+  cloud image averages away are marched here. 4 marches a texel rather than 8, since a texel is a
+  pixel. The raw march runs row after row through the cloud image's raw image (`rawTexel`), which
+  holds as many texels.
+- **When.** `GltfRenderer::updateCloudView`, once the camera has held still a frame, and again
+  whenever a bake of the sky moves `SkyClouds`' generation on; the still restarts. A drag's preview
+  turns it off. While the camera moves the view image keeps serving the directions it covers, and
+  `evalPhysicalSkyBackground` blends to the cloud image over the outer 6% of its half-extent
+  (`cloudViewShare`), outside the frame until the camera has turned; the two hold the same clouds,
+  so a blend of them is too. `SceneFrameInfo::cloudView*` say where it looks and whether it holds
+  the clouds of the moment.
+- **What it changes.** The clouds' edges sharpen by what resolution gave, which on a fair-weather
+  cumulus is modest: a cloud's edge is as soft as its density's rise from clear air, which is the
+  noise's, 50-100 m. Steepening that rise (`max(d, min(k d, t))` on the eroded density) crisps the
+  edges but fills in the thin parts and moves the cover; it was tried and left out. Mirrors see the
+  view image where they look into it. The lighting field keeps the cloud image.
+
+Measured against the cloud image at the same view (85 mm, cumulus 0.2, the sun 20 degrees up): the
+two agree within 0.12/255 on average over 16-pixel blocks, the gap at the edges they draw
+differently.
 
 ### What is cloud
 
@@ -767,16 +803,17 @@ waits, so these are wall-clock):
 | The same at one march a texel (the crosshatch) | 6.2 / 7.0 / 4.5 ms |
 | The whole commit (bake, alias table, PDF), cover 0.5 | 56 ms |
 | The bake at sunset (the sun 1° up), cumulus 0.4, altocumulus 0.4, cirrus 0.3, 8 marches a texel: before the long march toward the sun and the sky's light through the cloud / with them (the rows above are from before them, by day, where the march toward the sun leaves the layers within a few steps) | 73 / 143 ms |
+| The view image, 2048 × 1323 at 4 marches a texel, 85 mm looking 14° up: cumulus 0.2 with the sun 20° up / stratocumulus 0.6, altocumulus 0.3, cirrus 0.3 with the sun 2° up (the sky bake 145 ms there) | 16 / 49 ms |
 
 Overcast is the cheapest cover because every ray ends at the deck's near side, once transmittance
 falls below `minTransmittance`; scattered cloud marches the furthest. The cost is the marches a
 texel times the single march's, so `samples` is the dial: 4 would halve it and leave some grain.
-The settle pays it once, as a hitch of that length; the preview image has a sixteenth of the texels,
+The settle pays it once, as a hitch of that length, and the view image when the camera stops; the preview image has a sixteenth of the texels,
 one march each, at the low preset, so a drag's cloud pass is under a millisecond by that count (not
 measured on its own). Per frame the clouds cost one texture read in
 `evalPhysicalSkyBackground` and nothing in the lighting field, which is baked.
 
-Memory: the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the raw image the filter reads 32 MB, the preview 2 MB.
+Memory: the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the raw image the filter reads 32 MB, the view image 32 MB, the preview 2 MB.
 
 ## References
 

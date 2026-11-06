@@ -65,6 +65,15 @@ enum SkyCloudsNoiseBindings
 // the clouds of the moment).
 #define CLOUD_IMAGE_BINDING 0
 #define CLOUD_PREVIEW_BINDING 1
+// ... and the clouds where the camera looks, at the screen's resolution: the view image
+// (SkyClouds::recordView), a square of CLOUD_VIEW_CAPACITY texels a side of which a bake fills the
+// top-left part, clamped at its edges. SceneFrameInfo::cloudView* say where it looks and whether it
+// holds the clouds of the moment.
+#define CLOUD_VIEW_BINDING 2
+#define CLOUD_VIEW_CAPACITY 2048
+// The settled bake's raw march is an image of the sky image's size (SkyClouds::m_rawImage); a view
+// bake's, as many texels or fewer, runs through it row after row (rawTexel in sky_clouds_bake.slang).
+#define CLOUD_RAW_WIDTH 4096
 
 // The layers and the medium, as takram's CloudsEffect uniforms (packages/clouds/src/uniforms.ts),
 // in the atmosphere's kilometres. Four layers, one per channel of the weather map; a layer with no
@@ -142,6 +151,12 @@ struct SkyCloudsPushConstant
   float  sunlitAir;         // share of the air under the layers the sun reaches (cloudSunlitAir)
   float3 sunDirection;      // unit, the environment's frame, toward the sun
   float  texelAngle;        // radians a column of the image spans: its footprint at a distance
+  // A view bake's (SkyClouds::recordView): the environment-frame directions of the view image's
+  // right, up and forward (cloudViewDir), right's and up's .w the tangents of its half-width and
+  // half-height. Forward's .w is 1 for a view bake and 0 for the sky image or the preview.
+  float4 viewRight;
+  float4 viewUp;
+  float4 viewForward;
 };
 
 NAMESPACE_SHADERIO_END()

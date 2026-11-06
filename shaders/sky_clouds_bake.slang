@@ -267,6 +267,17 @@ float3 radianceFromGround(float3 position, float3 normal, float mipLevel, float 
 // whether the detail noise is read, which at the clouds' edges flips texel by texel. Takram's
 // frames each take another and average over time; here `sampleIndex` walks it along the golden
 // ratio, and main averages the samples in the texel.
+// Where in the raw image a texel's march goes. The sky image's, and the preview's, at its own place; a
+// view bake's (pc.viewForward.w), whose rows are another length, one after another through the raw
+// image's, which holds as many texels as the view image's capacity.
+uint2 rawTexel(uint2 texel)
+{
+  if(pc.viewForward.w == 0.0F)
+    return texel;
+  const uint i = texel.y * pc.imageSize.x + texel.x;
+  return uint2(i % CLOUD_RAW_WIDTH, i / CLOUD_RAW_WIDTH);
+}
+
 float stepJitter(uint2 pixel, int sampleIndex)
 {
   const float ign = frac(52.9829189F * frac(0.06711056F * float(pixel.x) + 0.00583715F * float(pixel.y)));
@@ -403,20 +414,23 @@ void main(uint3 id: SV_DispatchThreadID)
   // so the texel is the clouds averaged over it: edges smooth, not stepped, and the far clouds,
   // smaller than a texel, are not one point of them. The texel composes linearly (composeClouds),
   // so averaging texels averages what they draw. A sample below the horizon sees no cloud.
+  // A view bake maps the texel through the camera's view instead (cloudViewDir).
   const float horizonElevation = asin(horizonMu);
   const int   samples          = max(1, g_params.samples);
   const bool  anyTier          = any(g_params.densityScales > float4(0.0F));
+  const bool  view             = pc.viewForward.w != 0.0F;
   float4      texel            = float4(0.0F);
   for(int s = 0; s < samples; ++s)
   {
     const float2 offset = samples == 1 ? float2(0.5F) : frac(float2(0.5F) + float(s) * float2(0.754877666F, 0.569840291F));
-    const float3 dir    = cloudImageDir((float2(id.xy) + offset) / float2(pc.imageSize), horizonElevation);
+    const float2 uv     = (float2(id.xy) + offset) / float2(pc.imageSize);
+    const float3 dir = view ? cloudViewDir(uv, pc.viewRight.xyz, pc.viewRight.w, pc.viewUp.xyz, pc.viewUp.w, pc.viewForward.xyz) : cloudImageDir(uv, horizonElevation);
     if(anyTier && !RayIntersectsGround(g_atmosphere, r0, dir.y))
       texel += marchClouds(r0, dir, stepJitter(id.xy, s));
     else
       texel += float4(0.0F, 0.0F, 0.0F, 1.0F);
   }
-  g_out[id.xy] = texel / float(samples);
+  g_out[rawTexel(id.xy)] = texel / float(samples);
 }
 
 // How sharply the filter keeps neighbours of another transparency out: one 0.15 apart counts a third.
@@ -432,7 +446,7 @@ static const float kFilterAlphaSharpness = 50.0F;
 // the further its transparency is from the texel's own (kFilterAlphaSharpness), so the clouds'
 // edges against the sky stay a texel sharp; inside a cloud, where the transparency is the same, the
 // filter blurs a texel's light by a little under one. The texel composes linearly (composeClouds),
-// so the average of texels is what they draw.
+// so the average of texels is what they draw. A view bake's image ends at its sides as well.
 [shader("compute")]
 [numthreads(CLOUD_WORKGROUP_SIZE, CLOUD_WORKGROUP_SIZE, 1)]
 void filterMain(uint3 id: SV_DispatchThreadID)
@@ -440,15 +454,17 @@ void filterMain(uint3 id: SV_DispatchThreadID)
   if(any(id.xy >= pc.imageSize))
     return;
   const int2   size   = int2(pc.imageSize);
-  const float4 centre = g_out[id.xy];
+  const bool   view   = pc.viewForward.w != 0.0F;
+  const float4 centre = g_out[rawTexel(id.xy)];
   float4       sum    = float4(0.0F);
   float        weight = 0.0F;
   for(int dy = -1; dy <= 1; ++dy)
   {
     for(int dx = -1; dx <= 1; ++dx)
     {
-      const int2   q  = int2((int(id.x) + dx + size.x) % size.x, clamp(int(id.y) + dy, 0, size.y - 1));
-      const float4 v  = g_out[uint2(q)];
+      const int    x  = int(id.x) + dx;
+      const int2   q  = int2(view ? clamp(x, 0, size.x - 1) : (x + size.x) % size.x, clamp(int(id.y) + dy, 0, size.y - 1));
+      const float4 v  = g_out[rawTexel(uint2(q))];
       const float  da = v.w - centre.w;
       const float  w  = float((2 - abs(dx)) * (2 - abs(dy))) * exp(-da * da * kFilterAlphaSharpness);
       sum += v * w;

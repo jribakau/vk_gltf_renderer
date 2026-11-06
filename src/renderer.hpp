@@ -494,6 +494,10 @@ private:
   void onUIRender() override;
 
   bool updateFrameCounter();
+  // The physical sky's clouds where the camera looks, baked at the screen's resolution once the
+  // camera has held still a frame (SkyClouds::recordView). True when it baked: the still restarts.
+  bool updateCloudView(VkCommandBuffer cmd);
+  std::optional<SkyCloudView> m_lastWantedCloudView;  // the view the last frame's camera asked for
 
   void clearGbuffer(VkCommandBuffer cmd);
   // Drops the current scene. keepImagesForReuse retains file-backed GPU images (scenefile replace)

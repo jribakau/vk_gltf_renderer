@@ -28,14 +28,18 @@
 #include <nvvk/resources.hpp>
 
 #include "shaders/sky_clouds_io.h.slang"
+#include "sky_cloud_view.hpp"
 
 struct Resources;
 
 // The cloud image's size. Columns run round the horizon (0.09 degrees each), rows from the horizon
-// to the zenith, crowded at the horizon (sky_clouds.h.slang). What the camera sees of the clouds is
-// read from it, so this is their sharpness on screen. A drag's preview bakes a quarter of each.
+// to the zenith, crowded at the horizon (sky_clouds.h.slang). What the camera sees of the clouds
+// outside the view image is read from it, at this sharpness. A drag's preview bakes a quarter of each.
 static constexpr VkExtent2D kCloudImageSize{4096, 1024};
 static constexpr VkExtent2D kCloudPreviewSize{1024, 256};
+static_assert(kCloudImageSize.width == CLOUD_RAW_WIDTH, "a view bake runs its rows through the raw image's (rawTexel)");
+static_assert(uint64_t(CLOUD_VIEW_CAPACITY) * CLOUD_VIEW_CAPACITY <= uint64_t(kCloudImageSize.width) * kCloudImageSize.height,
+              "the raw image holds a full view bake");
 
 // The clouds as the panel sets them: three tiers over one another (cloudSkyParameters).
 struct SkyCloudsSettings
@@ -65,11 +69,14 @@ shaderio::SkyCloudsParameters cloudBakeParameters(const SkyCloudsSettings& setti
 // SkyClouds -- the physical sky's cloud layers.
 //
 // Owns the noise the clouds are cut from (generated once, at init), the cloud image (one bake of the
-// layers as the fixed observer sees them, for this sun), a quarter-size preview image for drags, and
+// layers as the fixed observer sees them, for this sun), a quarter-size preview image for drags, the
+// view image (the same clouds where the camera looks, at the screen's resolution: recordView), and
 // the pass that bakes them. EnvBaker records that pass ahead of its own, which composes the image
-// over the sky into the lighting environment; the path tracer composes it over what the camera sees.
-// Both read it through this class's runtime set, and SkySunDisk::cloudPreview says which image holds
-// the clouds of the moment. The model is takram's (shaders/sky_clouds*.slang).
+// over the sky into the lighting environment; the path tracer composes it, or the view image where
+// it covers, over what the camera sees. Both read them through this class's runtime set;
+// SkySunDisk::cloudPreview says which of the first two holds the clouds of the moment, and
+// SceneFrameInfo::cloudViewForward whether the view image does. The model is takram's
+// (shaders/sky_clouds*.slang).
 //
 // With no clouds the pass is not run: the full image is cleared once to (0, 0, 0, 1), which composes
 // to the sky exactly.
@@ -107,7 +114,20 @@ public:
   // Whether the preview image holds the clouds of the moment (the last record was a preview).
   bool showingPreview() const { return m_showingPreview; }
 
-  // The images, as combined image samplers at CLOUD_IMAGE_BINDING and CLOUD_PREVIEW_BINDING.
+  // The clouds where the camera looks, at the screen's resolution, into the view image: the last
+  // full bake's clouds, sun and observer, marched again for the view's directions only. Into the
+  // caller's command buffer, behind a barrier for frames still reading the view image and ahead of
+  // one for those that read this one. Only once the full image holds clouds (viewable).
+  void recordView(VkCommandBuffer cmd, const SkyCloudView& view);
+  // Whether a view bake would show anything: the full image holds clouds, not the preview.
+  bool viewable() const { return m_bakedClouds && !m_showingPreview; }
+  // The view image holds the clouds of the moment, looking where `view()` says.
+  bool viewCurrent() const { return viewable() && m_viewGeneration == m_generation; }
+  bool viewHolds(const SkyCloudView& view) const { return viewCurrent() && m_view == view; }
+  const SkyCloudView& view() const { return m_view; }
+
+  // The images, as combined image samplers at CLOUD_IMAGE_BINDING, CLOUD_PREVIEW_BINDING and
+  // CLOUD_VIEW_BINDING.
   VkDescriptorSetLayout getDescriptorSetLayout() const { return m_runtimePack.getLayout(); }
   VkDescriptorSet       getDescriptorSet() const { return m_runtimePack.getSet(0); }
 
@@ -121,6 +141,16 @@ private:
   SkyCloudsSettings m_settings{};
   bool              m_imageClear{false};      // the full image holds (0, 0, 0, 1), and no bake has run since
   bool              m_showingPreview{false};  // the last bake went to the preview image
+  // What the last full bake was of, which a view bake repeats: the settings, the sun and observer it
+  // took, and whether it had clouds. Each record moves the generation on; the view image holds the
+  // clouds of the one it was baked in.
+  SkyCloudsSettings m_bakedSettings{};
+  glm::vec3         m_bakedSun{0.0F, 1.0F, 0.0F};
+  float             m_bakedAltitude{0.0F};
+  bool              m_bakedClouds{false};
+  uint64_t          m_generation{0};
+  uint64_t          m_viewGeneration{~uint64_t(0)};
+  SkyCloudView      m_view{};
   uint32_t          m_imageMips{1};
   uint32_t          m_weatherMips{1};
   uint32_t          m_shapeMips{1};
@@ -133,6 +163,7 @@ private:
   nvvk::Image m_cloudImage;       // 2D RGBA16F, azimuth repeating, mipmapped; GENERAL for life
   nvvk::Image m_previewImage;     // the same, a quarter the size, one level
   nvvk::Image m_rawImage;         // the settled march before the filter (filterMain): full size, one level
+  nvvk::Image m_viewImage;        // the clouds in view (recordView): CLOUD_VIEW_CAPACITY square, one level, clamped
   // Storage writes need a view of one level; the images' own views span their chains for sampling.
   VkImageView m_shapeStorageView{VK_NULL_HANDLE};
   VkImageView m_detailStorageView{VK_NULL_HANDLE};
@@ -143,7 +174,7 @@ private:
 
   VkDescriptorSet      m_brunetonSet{VK_NULL_HANDLE};  // SkyBruneton's, borrowed
   nvvk::DescriptorPack m_noisePack;                    // the noise textures, as storage, for their one write
-  nvvk::DescriptorPack m_bakePack;                     // two sets: set 0 writes the full image, set 1 the preview
+  nvvk::DescriptorPack m_bakePack;                     // three sets: set 0 writes the full image, set 1 the preview, set 2 the view image
   nvvk::DescriptorPack m_runtimePack;                  // the images, for their readers
 
   VkPipelineLayout m_noiseLayout{VK_NULL_HANDLE};

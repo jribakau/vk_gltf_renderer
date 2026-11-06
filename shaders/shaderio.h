@@ -307,6 +307,17 @@ struct SceneFrameInfo
   // (Appended, per the note above.)
   float waterDepth = 0.0F;
   float waterWaves = 0.0F;
+
+  // The physical sky's clouds where the camera looks, at the screen's resolution: the view image at
+  // CLOUD_VIEW_BINDING (SkyClouds::recordView, cloudViewUv). Its right, up and forward in the
+  // environment's frame; right's and up's .w the tangents of its half-width and half-height, and
+  // forward's 1 while it holds the clouds of the moment, 0 while the sky image alone does. The bake
+  // fills this share of the image's texels across and down. (Appended, per the note above.)
+  float4 cloudViewRight    = {0.0F, 0.0F, 0.0F, 0.0F};
+  float4 cloudViewUp       = {0.0F, 0.0F, 0.0F, 0.0F};
+  float4 cloudViewForward  = {0.0F, 0.0F, 0.0F, 0.0F};
+  float  cloudViewUvScaleX = 1.0F;
+  float  cloudViewUvScaleY = 1.0F;
 };
 
 enum PathtracerFlags

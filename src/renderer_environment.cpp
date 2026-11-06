@@ -821,6 +821,29 @@ void GltfRenderer::updateBakerParameters()
 }
 
 //--------------------------------------------------------------------------------------------------
+// The physical sky's clouds where the camera looks, at the screen's resolution. The sky image's
+// texels are 7 pixels each through an 85 mm lens on a 1400-pixel-high view, so their edges smear.
+// Baked once the camera has held still a frame, and again whenever a bake of the sky leaves the view
+// image behind: 16 ms for a fair-weather cumulus in a 2160 x 1395 view, 49 ms for a sunset under
+// three tiers, against the sky bake's 145 (RTX 4080, 2026-11-06). While the camera moves, the view
+// image keeps serving the directions it covers, and the sky image the rest (cloudViewShare).
+//
+bool GltfRenderer::updateCloudView(VkCommandBuffer cmd)
+{
+  std::optional<SkyCloudView> wanted;
+  if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && !m_resources.settings.useSolidBackground && m_skyClouds.viewable())
+    wanted = cloudViewFor(m_cameraManip->getViewMatrix(), m_cameraManip->getPerspectiveMatrix(),
+                          m_resources.settings.envRotationQuat(),
+                          glm::uvec2(m_resources.gBuffers.getSize().width, m_resources.gBuffers.getSize().height));
+  const bool settled    = wanted.has_value() && wanted == m_lastWantedCloudView;
+  m_lastWantedCloudView = wanted;
+  if(!settled || m_skyClouds.viewHolds(*wanted))
+    return false;
+  m_skyClouds.recordView(cmd, *wanted);
+  return true;
+}
+
+//--------------------------------------------------------------------------------------------------
 // Rebuild the baked lighting environment from the current settings.
 //
 // This is the single point where an analytic sky becomes the environment the path tracer
