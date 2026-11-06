@@ -1140,6 +1140,58 @@ void tieMain(uint3 tid: SV_DispatchThreadID)
   m.x[t.vertex] = p + n * min(t.gap - sd, m.cap);
 }
 
+// Every free vertex out of the colliders' capsule floors (figure/physics/cloth/capsules.hpp), as the CPU
+// island's holdCapsules (cloth::capsulePush, geometry.hpp): a capsule has one inside, so a vertex in it is
+// pushed out to the radius whatever side the last pass found it on, by at most floorPush. After the
+// collisions and before the ties. Each writes its own vertex only; the axes are kinematic.
+[shader("compute")]
+[numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
+void capsuleMain(uint3 tid: SV_DispatchThreadID)
+{
+  ClothGpuModel m = *pc.model;
+  if(tid.x >= m.numFree)
+    return;
+  int i = m.freeVerts[tid.x];
+  if(m.collides[i] == 0)
+    return;
+  float3 p     = m.x[i];
+  float3 seed  = m.prev[i] - p;
+  bool   moved = false;
+  for(uint k = 0; k < m.numCapsules; k++)
+  {
+    ClothGpuCapsule c   = m.capsules[k];
+    float3          a   = kinematicAt(m, c.a, pc.t);
+    float3          b   = kinematicAt(m, c.b, pc.t);
+    float3          ab  = b - a;
+    float           ab2 = dot(ab, ab);
+    float           t   = ab2 > 1e-12 ? clamp(dot(p - a, ab) / ab2, 0.0, 1.0) : 0.0;
+    float3          q   = a + ab * t;
+    float3          d   = p - q;
+    float           len = length(d);
+    if(len >= c.radius)
+      continue;
+    if(len < 1e-5)
+    {
+      // across the axis, the way the seed points
+      float s = ab2 > 1e-12 ? dot(seed, ab) / ab2 : 0.0;
+      d       = seed - ab * s;
+      len     = length(d);
+      if(len < 1e-8)
+      {
+        d   = ab2 > 1e-12 && abs(ab.x) < 0.9 * sqrt(ab2) ? float3(1, 0, 0) : float3(0, 1, 0);
+        len = 1;
+      }
+      p     = q + d * (min(c.radius, m.floorPush) / len);
+      moved = true;
+      continue;
+    }
+    p     = p + d * (min(c.radius - len, m.floorPush) / len);
+    moved = true;
+  }
+  if(moved)
+    m.x[i] = p;
+}
+
 // Velocities from the substep's motion.
 [shader("compute")]
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]

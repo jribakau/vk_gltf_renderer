@@ -47,6 +47,14 @@ struct Face
   bool  self, dynamic;
 };
 
+// A capsule floor under a collider (Surface::Capsule, in the model's index space): its axis is two
+// kinematic vertices, posed with the rest, and no free vertex is left inside its radius.
+struct CapsuleRow
+{
+  int   a, b;
+  float radius;
+};
+
 // What a cloth island is made of, built once from the surfaces' rest shapes: every vertex of every
 // surface in one index space, the distance rows, the collision faces and who moves what. Shared by the
 // CPU island and the GPU solver, so both simulate the same cloth.
@@ -64,6 +72,8 @@ struct Model
   // block count is fixed (particles::kBlocks), so a drape is the same on any machine
   physics::particles::Blocks blocks;
   std::vector<Face>          tris;
+  // the capsule floors of the colliders, held every substep
+  std::vector<CapsuleRow>    capsules;
   // faces the pose moves and faces the cloth moves
   std::vector<int> staticTris, dynamicTris, allTris;
   // each vertex's neighbours over stretch edges, and the neighbours of those, sorted: a cloth does

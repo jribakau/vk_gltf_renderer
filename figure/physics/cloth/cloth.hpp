@@ -97,6 +97,9 @@ public:
   // A collider much finer than the cloth (a necklace's links, lace) is met as a coarse copy of it, as
   // fine as the cloth (physics/cloth/coarse.hpp); off, as it is, for an A/B.
   bool coarseColliders = true;
+  // The body's capsule floor (physics/cloth/capsules.hpp): capsules fitted inside the body that no cloth
+  // vertex is left in, whichever side the faces found it on. Off for an A/B (FV_DFORCE_NO_FLOOR).
+  bool capsuleFloor = true;
   // Light cloth: a cloth much finer than this simulates as a coarse copy of itself with faces this wide
   // (cm), its own vertices riding on it (physics/cloth/coarse.hpp's coarseCloth). Off: as it is. Read by
   // the next drape; setLight() also makes one (a tool sets the field alone)

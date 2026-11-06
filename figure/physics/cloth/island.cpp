@@ -132,6 +132,8 @@ struct Island::State : Model
   void collide(float kinematicStep);
   // Each tied vertex held to its face where the pose has it now (Island::setTies).
   void holdTies();
+  // Every free vertex out of the colliders' capsule floors (Model::capsules), whichever side it is on.
+  void holdCapsules();
   void carry(float t);
   void frame(float t0, float t1, float extraDamping, float seconds);
 };
@@ -702,6 +704,7 @@ void Island::State::frame(float t0, float t1, float extraDamping, float seconds)
       holdContacts(false);
       nextCollision += std::max(1, n / passes);
     }
+    holdCapsules();
     holdTies();
     for(int i : freeVerts)
       for(int k = 0; k < 3; k++)
@@ -748,6 +751,24 @@ void Island::State::holdTies()
       const float push = std::min(t.gap - now.signedDistance, kLeashPush);
       for(int c = 0; c < 3; c++)
         x[size_t(i) * 3 + size_t(c)] += n[size_t(c)] * push;
+    }
+  });
+}
+
+void Island::State::holdCapsules()
+{
+  if(capsules.empty())
+    return;
+  jobs::parallelFor(freeVerts.size(), 2048, [&](size_t begin, size_t end) {
+    for(size_t fi = begin; fi < end; fi++)
+    {
+      const int i = freeVerts[fi];
+      if(!collides[i])
+        continue;
+      float*      p    = &x[size_t(i) * 3];
+      const float seed[3] = {prev[size_t(i) * 3] - p[0], prev[size_t(i) * 3 + 1] - p[1], prev[size_t(i) * 3 + 2] - p[2]};
+      for(const CapsuleRow& c : capsules)
+        capsulePush(&x[size_t(c.a) * 3], &x[size_t(c.b) * 3], c.radius, seed, p);
     }
   });
 }

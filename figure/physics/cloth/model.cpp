@@ -344,6 +344,10 @@ Model Model::build(const std::vector<Surface>& meshes, float air, bool reachLink
         tris.push_back({int(mi), a, bb, c, lay, off > 0 ? off : 0.05f, fr, self, m.kind != Surface::Kind::eCollider});
     }
   }
+  for(size_t mi = 0; mi < meshes.size(); mi++)
+    for(const Surface::Capsule& c : meshes[mi].capsules)
+      if(c.a < meshes[mi].vertexCount() && c.b < meshes[mi].vertexCount() && c.radius > 0)
+        model.capsules.push_back({g(mi, int(c.a)), g(mi, int(c.b)), c.radius});
   attAlpha.assign(size_t(nv), 0.f);
   for(int i = 0; i < nv; i++)
   {

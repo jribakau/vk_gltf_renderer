@@ -74,6 +74,14 @@ struct ClothGpuTie
   int   face, pad0, pad1, pad2;
 };
 
+// A capsule floor under a collider (figure/physics/cloth/capsules.hpp, cloth::CapsuleRow): its axis is two
+// kinematic vertices, and no free vertex is left inside its radius (capsuleMain).
+struct ClothGpuCapsule
+{
+  int   a, b;
+  float radius, pad;
+};
+
 struct ClothGpuModel
 {
   float3* x;
@@ -135,10 +143,12 @@ struct ClothGpuModel
   int*        clusterSoftStart;
   ClothGpuTie* ties;  // live: the cloth tied to the body, held every substep (tieMain)
   int*        tieNext;  // the faces across each side of each of `tris` (three a face, -1: none), for a tie to follow
+  ClothGpuCapsule* capsules;  // the colliders' capsule floors, held every substep (capsuleMain)
   uint        nv, numKinematic, numFree, numEdges, numTris, cellMask, numSoft, numClusterEdges;
-  uint        numClothTris, clothCellMask, numTies, pad1;
+  uint        numClothTris, clothCellMask, numTies, numCapsules;
   uint        numClusters, clusterColours, clusterStretch, clusterReach;
   float       cellSize, depth, cap, maxSpeed, searchReach, recoverDepth;
+  float       floorPush, pad2;  // the most a capsule floor moves a vertex in one go (cloth::kFloorPush)
 };
 
 struct ClothGpuPushConstant

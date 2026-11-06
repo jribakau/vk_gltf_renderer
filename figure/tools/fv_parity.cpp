@@ -68,6 +68,7 @@
 #include <figure/dson/store.hpp>
 #include <figure/physics/cloth/backend.hpp>
 #include <figure/physics/cloth/cloth.hpp>
+#include <figure/physics/cloth/capsules.hpp>
 #include <figure/physics/cloth/leash.hpp>
 #include <figure/physics/skin.hpp>
 #include <figure/physics/cloth/island.hpp>
@@ -1346,6 +1347,10 @@ int main(int argc, char** argv)
         const int         body  = ctx.meshes[ctx.mainMeshes[0]].mesh;
         fv::SceneGraph&   scene = loaded->loaded.scene;
         fv::physics::Cloth d(scene, *loaded->morphs, body, loaded->loaded.root);
+        // FV_DFORCE_NO_FLOOR=1 leaves the body's capsule floor out, as the app's switch does, for an A/B
+#pragma warning(suppress : 4996)
+        if(const char* env = std::getenv("FV_DFORCE_NO_FLOOR"); env && *env && std::atoi(env) != 0)
+          d.capsuleFloor = false;
         // as the host sets it: the figure's shown clothing collides, its anatomy and hair do not
         if(step.value("colliders", true))
           d.collidesWith = [fig = loaded.get()](int mesh) {
@@ -1619,6 +1624,10 @@ int main(int argc, char** argv)
           // inside the body as drawn at the target pose (its posed cage is the drawn skin), whatever body
           // the job met
           report["insideDrawn"] = fv::physics::cloth::insideBody(p->bodies[0], p->bodies[0].posed, out[size_t(slot)]);
+          // and deep in it: inside a capsule floor fitted to the body (physics/cloth/capsules.hpp), whether or not the
+          // job has one, as insideBody counts only what lies within 3 cm of its nearest face
+          if(const auto floor = fv::physics::cloth::capsuleFloor(p->bodies[0]))
+            report["insideDeep"] = fv::physics::cloth::insideFloor(*floor, floor->posed, out[size_t(slot)]);
           items.push_back(report);
           if(objDir)
           {
@@ -1903,8 +1912,8 @@ int main(int argc, char** argv)
             };
             if(tie)
               retie(p->bodies, live.positions());
-            Json       inside    = Json::array();
-            size_t     most      = 0, total = 0;
+            Json       inside    = Json::array(), deep = Json::array();
+            size_t     most      = 0, total = 0, deepMost = 0, deepTotal = 0;
             // of what is inside after a step, by how it was tied as the step began: held (tied, with a
             // backstop), tied without one, and not tied (further than the ride's band, or held to its skin)
             size_t     wasHeld = 0, wasBare = 0, wasLoose = 0;
@@ -1951,6 +1960,18 @@ int main(int argc, char** argv)
               }
               live.step(0, seconds, late);
               const auto pos = live.positions();
+              // deep in the body after the step: inside a capsule floor fitted to it as posed now
+              const auto floorNow = cloth::capsuleFloor(now[0]);
+              Json       deepRow  = Json::array();
+              for(size_t di = 0; di < p->drapes.size(); di++)
+              {
+                const size_t slot = size_t(p->drapes[di].second);
+                const size_t d    = floorNow ? cloth::insideFloor(*floorNow, floorNow->posed, pos[slot]) : 0;
+                deepRow.push_back(d);
+                deepMost = std::max(deepMost, d);
+                deepTotal += d;
+              }
+              deep.push_back(deepRow);
               if(tie && !rides.empty())
               {
                 const auto         holdStart = Clock::now();
@@ -2032,7 +2053,7 @@ int main(int argc, char** argv)
               inside.push_back(row);
             }
             const double walkMs = std::chrono::duration<double, std::milli>(Clock::now() - walkStart).count();
-            walk[tie ? "tied" : "untied"] = {{"inside", inside}, {"most", most}, {"total", total}, {"ties", ties}, {"tiesAgain", ties2}, {"tieMs", tieMs},
+            walk[tie ? "tied" : "untied"] = {{"inside", inside}, {"most", most}, {"total", total}, {"deep", deep}, {"deepMost", deepMost}, {"deepTotal", deepTotal}, {"ties", ties}, {"tiesAgain", ties2}, {"tieMs", tieMs},
                                              {"retieMs", retieMs}, {"stepMs", walkMs / std::max<size_t>(1, poses.size())},
                                              {"insideWas", {{"held", wasHeld}, {"bare", wasBare}, {"loose", wasLoose}}},
                                              {"held", {{"pastReach", heldPast}, {"nearItsFace", heldNear}, {"elsewhere", heldFar}}}, {"insideAt", insideAt}, {"drawnHoldMs", drawnHoldMs}};

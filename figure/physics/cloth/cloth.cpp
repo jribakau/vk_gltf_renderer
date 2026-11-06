@@ -7,6 +7,7 @@
 #include <figure/physics/cloth/backend.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
+#include <figure/physics/cloth/capsules.hpp>
 #include <figure/physics/cloth/coarse.hpp>
 
 namespace fv::physics {
@@ -449,6 +450,19 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t) const
       attachSkin(collider, *body, to);
       job->bodies.push_back(std::move(collider));
       job->slotMesh.push_back(body->skinned ? m_bodyMesh : -1);
+      // and its capsule floor (physics/cloth/capsules.hpp): a collider of its own, posed with the body's
+      // bones through the body's slot mesh, that no cloth vertex is left inside whichever side it came from
+      if(capsuleFloor && body->skinned)
+      {
+        timing::Scope tf("dforce: the body's capsule floor");
+        if(auto floor = physics::cloth::capsuleFloor(job->bodies[bodySlot]))
+        {
+          if(timing::enabled())
+            timing::line("dforce: the body's capsule floor: " + std::to_string(floor->capsules.size()) + " capsules");
+          job->bodies.push_back(std::move(*floor));
+          job->slotMesh.push_back(m_bodyMesh);
+        }
+      }
     }
 
   const auto shown = shownNodes(m_scene);
@@ -624,7 +638,7 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t) const
     const float edge = faces ? float(sum / double(faces)) : 0.f;
     for(size_t slot = 0; slot < job->bodies.size(); slot++)
     {
-      if(slot == bodySlot)
+      if(slot == bodySlot || job->bodies[slot].tris.empty())
         continue;
       const size_t   had = job->bodies[slot].tris.size() / 3;
       const float    err = kCoarseError * std::min(edge, kCoarseErrorWidth);

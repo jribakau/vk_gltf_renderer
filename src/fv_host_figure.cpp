@@ -438,6 +438,10 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
           return true;
       return false;
     };
+    // FV_DFORCE_NO_FLOOR=1 leaves the body's capsule floor out (physics/cloth/capsules.hpp), for an A/B
+#pragma warning(suppress : 4996)
+    if(const char* env = std::getenv("FV_DFORCE_NO_FLOOR"); env && *env && std::atoi(env) != 0)
+      f->dforce->capsuleFloor = false;
     // Light cloth (physics/cloth/coarse.hpp) is the Wardrobe tab's switch (dforce.light), off at first;
     // FV_DFORCE_LIGHT=<the copy's faces' width, cm> turns it on for every figure at that width, to try one
 #pragma warning(suppress : 4996)  // getenv: read once a figure

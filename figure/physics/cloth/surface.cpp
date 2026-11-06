@@ -117,6 +117,8 @@ const char* poseFreeDifference(const Surface& a, const Surface& b, bool collider
   {
     FV_DIFFERS(rest.size())
     FV_DIFFERS(restLocal.size())
+    // a floor fitted to a dented cage differs by a dent's fraction of a millimetre: the model's stands
+    FV_DIFFERS(capsules.size())
   }
   else
   {
@@ -150,6 +152,8 @@ const char* poseFreeDifference(const Surface& a, const Surface& b, bool collider
   FV_DIFFERS(dualQuatShare)
   FV_DIFFERS(bones.size())
   FV_DIFFERS(toSpace.e)
+  if(!restIsPose)
+    FV_DIFFERS(capsules)
 #undef FV_DIFFERS
   return nullptr;
 }

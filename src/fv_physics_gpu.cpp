@@ -119,7 +119,7 @@ struct Kernels
   VkCommandPool    commandPool = VK_NULL_HANDLE;
   VkPipelineLayout layout      = VK_NULL_HANDLE;
   VkPipeline       integrate{}, edges{}, attach{}, recover{}, hold{}, collide{}, velocity{}, cluster{}, commit{}, snap{}, boxes{}, collideWave{},
-      recoverWave{}, tie{};
+      recoverWave{}, tie{}, capsule{};
   // the lanes of the device's waves, when the collision pass and the recovery go a wave a vertex
   // (collideWaveMain, recoverWaveMain: 32, with the ballots, shuffles and least they need); 0: a thread a vertex
   uint32_t waveLanes = 0;
@@ -131,7 +131,7 @@ struct Kernels
   {
     if(!device)
       return;
-    for(VkPipeline p : {integrate, edges, attach, recover, hold, collide, velocity, cluster, commit, snap, boxes, collideWave, recoverWave, tie})
+    for(VkPipeline p : {integrate, edges, attach, recover, hold, collide, velocity, cluster, commit, snap, boxes, collideWave, recoverWave, tie, capsule})
       if(p)
         vkDestroyPipeline(device, p, nullptr);
     if(layout)
@@ -184,6 +184,7 @@ struct Kernels
     return pipe("integrateMain", integrate) && pipe("edgesMain", edges) && pipe("attachMain", attach) && pipe("recoverMain", recover)
            && pipe("holdMain", hold) && pipe("collideMain", collide) && pipe("velocityMain", velocity) && pipe("clusterMain", cluster)
            && pipe("commitMain", commit) && pipe("snapMain", snap) && pipe("boxesMain", boxes) && pipe("tieMain", tie)
+           && pipe("capsuleMain", capsule)
            && (waveLanes == 0 || (pipe("collideWaveMain", collideWave) && pipe("recoverWaveMain", recoverWave)));
   }
 };
@@ -235,7 +236,7 @@ struct ClothGpu::Impl
 
   VkPipelineLayout layout{};
   VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{}, clusterPipe{}, commitPipe{},
-      snapPipe{}, boxesPipe{}, collideWavePipe{}, recoverWavePipe{}, tiePipe{};
+      snapPipe{}, boxesPipe{}, collideWavePipe{}, recoverWavePipe{}, tiePipe{}, capsulePipe{};
   // the kernels' waveLanes, unless FV_PHYSICS_GPU_DEBUG's 256 asks for a thread a vertex
   uint32_t waveLanes = 0;
 
@@ -251,7 +252,9 @@ struct ClothGpu::Impl
   nvvk::Buffer x, prev, vel, cprev, kinStart, kinEnd, kinematic, freeVerts, inv, dampRate, offset, friction, layer, collides, grav, edges,
       lam, tris, cells, items, softVerts, attAlpha, lamAtt, contact, modelBuf, readback, clusterEdgeBuf, clusterLamBuf, clusterVertBuf, clusterVertStartBuf,
       clusterOwnedBuf, clusterColourBuf, clusterSoftBuf, clusterSoftStartBuf, xTwin, clothTris, clothCells, clothItems, meshOf, ring2Start, ring2,
-      frameStart, snap, cprevSnap, faceBox, clothContact, tieBuf, tieNextBuf;
+      frameStart, snap, cprevSnap, faceBox, clothContact, tieBuf, tieNextBuf, capsuleBuf;
+  // the colliders' capsule floors (cloth::Model::capsules), as capsuleBuf has them
+  std::vector<shaderio::ClothGpuCapsule> capsuleRows;
   // live: the cloth tied to the body (ClothGpu::tie), as tieBuf has it, for a late step's carry
   std::vector<fv::physics::cloth::Tie> ties;
   // the body's faces as `tris` has them, by their corners, for a tie to find its own (made at the first tie)
@@ -569,6 +572,11 @@ bool ClothGpu::Impl::create()
   ok &= mapped(edges, sorted);
   ok &= mapped(lam, lamZero);
   ok &= mapped(tris, faces);
+  capsuleRows.clear();
+  for(const cloth::CapsuleRow& c : model.capsules)
+    capsuleRows.push_back({c.a, c.b, c.radius, 0.f});
+  if(!capsuleRows.empty())
+    ok &= mapped(capsuleBuf, capsuleRows);
   // written and read by the kernels alone, so on the device
   if(ok && !faces.empty())
   {
@@ -633,6 +641,7 @@ bool ClothGpu::Impl::create()
   collideWavePipe = kernels->collideWave;
   recoverWavePipe = kernels->recoverWave;
   tiePipe         = kernels->tie;
+  capsulePipe     = kernels->capsule;
   waveLanes       = (debug & 256) ? 0 : kernels->waveLanes;
   if(gpu.timestamps)
   {
@@ -712,14 +721,14 @@ void ClothGpu::Impl::destroy()
   commandPool = VK_NULL_HANDLE;
   layout      = VK_NULL_HANDLE;
   for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe, &clusterPipe, &commitPipe, &snapPipe,
-                       &boxesPipe, &collideWavePipe, &recoverWavePipe, &tiePipe})
+                       &boxesPipe, &collideWavePipe, &recoverWavePipe, &tiePipe, &capsulePipe})
     *p = VK_NULL_HANDLE;
   kernels.reset();
   for(nvvk::Buffer* b : {&x, &prev, &vel, &cprev, &kinStart, &kinEnd, &kinematic, &freeVerts, &inv, &dampRate, &offset, &friction, &layer,
                          &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &contact, &modelBuf, &readback,
                          &clusterEdgeBuf, &clusterLamBuf, &clusterVertBuf, &clusterVertStartBuf, &clusterOwnedBuf, &clusterColourBuf, &clusterSoftBuf,
                          &clusterSoftStartBuf, &xTwin, &clothTris, &clothCells, &clothItems, &meshOf, &ring2Start, &ring2, &frameStart, &snap,
-                         &cprevSnap, &faceBox, &clothContact, &tieBuf, &tieNextBuf})
+                         &cprevSnap, &faceBox, &clothContact, &tieBuf, &tieNextBuf, &capsuleBuf})
     if(b->buffer != VK_NULL_HANDLE)
       alloc->destroyBuffer(*b);
 }
@@ -916,6 +925,9 @@ void ClothGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds
     m.ties         = ties.empty() ? nullptr : reinterpret_cast<shaderio::ClothGpuTie*>(tieBuf.address);
     m.tieNext      = ties.empty() ? nullptr : reinterpret_cast<int*>(tieNextBuf.address);
     m.numTies      = uint32_t(ties.size());
+    m.capsules     = capsuleRows.empty() ? nullptr : reinterpret_cast<shaderio::ClothGpuCapsule*>(capsuleBuf.address);
+    m.numCapsules  = uint32_t(capsuleRows.size());
+    m.floorPush    = cloth::kFloorPush;
     m.nv           = uint32_t(n);
     m.numKinematic = uint32_t(model.kinematicVerts.size());
     m.numFree      = uint32_t(model.freeVerts.size());
@@ -1153,6 +1165,14 @@ void ClothGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds
       next += std::max(1, steps / passes);
     }
     home();
+    // out of the colliders' capsule floors, whichever side a vertex was found on
+    if(m.numCapsules > 0 && !(debug & 2))
+    {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, capsulePipe);
+      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+      dispatch(cmd, groups(m.numFree), 1, 1);
+      barrier();
+    }
     // the cloth tied to the body, last: held to its faces where the pose has them now
     if(m.numTies > 0)
     {

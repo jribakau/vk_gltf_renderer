@@ -86,4 +86,50 @@ inline Closest closest(float qx, float qy, float qz, const std::vector<float>& t
   return {dx * n[0] + dy * n[1] + dz * n[2], std::sqrt(dx * dx + dy * dy + dz * dz), over};
 }
 
+// The most a capsule floor moves a vertex in one go, cm, as the collisions' pushes are capped.
+constexpr float kFloorPush = 2.f;
+
+// p (xyz) pushed out of the capsule of axis a-b (xyz each) and `radius`, to the radius, by at most
+// kFloorPush: the capsule has one inside, so no side is read. On the axis, out across it the way
+// `seed` points. True when it moved.
+inline bool capsulePush(const float* a, const float* b, float radius, const float* seed, float* p)
+{
+  const float abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+  const float apx = p[0] - a[0], apy = p[1] - a[1], apz = p[2] - a[2];
+  const float ab2 = abx * abx + aby * aby + abz * abz;
+  float       t   = ab2 > 1e-12f ? (apx * abx + apy * aby + apz * abz) / ab2 : 0.f;
+  t               = std::min(1.f, std::max(0.f, t));
+  const float qx = a[0] + abx * t, qy = a[1] + aby * t, qz = a[2] + abz * t;
+  float       dx = p[0] - qx, dy = p[1] - qy, dz = p[2] - qz;
+  float       d  = std::sqrt(dx * dx + dy * dy + dz * dz);
+  if(d >= radius)
+    return false;
+  if(d < 1e-5f)
+  {
+    // across the axis, the way the seed points
+    const float s = ab2 > 1e-12f ? (seed[0] * abx + seed[1] * aby + seed[2] * abz) / ab2 : 0.f;
+    dx            = seed[0] - abx * s;
+    dy            = seed[1] - aby * s;
+    dz            = seed[2] - abz * s;
+    d             = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if(d < 1e-8f)
+    {
+      dx = ab2 > 1e-12f && std::fabs(abx) < 0.9f * std::sqrt(ab2) ? 1.f : 0.f;
+      dy = dx > 0 ? 0.f : 1.f;
+      dz = 0;
+      d  = 1;
+    }
+    const float push = std::min(radius, kFloorPush) / d;
+    p[0] = qx + dx * push;
+    p[1] = qy + dy * push;
+    p[2] = qz + dz * push;
+    return true;
+  }
+  const float push = std::min(radius - d, kFloorPush) / d;
+  p[0] += dx * push;
+  p[1] += dy * push;
+  p[2] += dz * push;
+  return true;
+}
+
 }  // namespace fv::physics::cloth

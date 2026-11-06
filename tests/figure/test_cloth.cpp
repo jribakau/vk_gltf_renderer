@@ -17,6 +17,7 @@
 #include <random>
 
 #include <figure/physics/cloth/backend.hpp>
+#include <figure/physics/cloth/capsules.hpp>
 #include <figure/physics/cloth/clusters.hpp>
 #include <figure/physics/cloth/coarse.hpp>
 #include <figure/physics/cloth/island.hpp>
@@ -437,6 +438,8 @@ TEST(ClothJob, aJobReadsBackAsItWasWritten)
       m.skinWeight8[v * 8] = 1;
     m.dualQuat = 0.25f;
     m.dualQuatShare.assign(n, 0.5f);
+    // and a capsule floor (version 3)
+    m.capsules = {{0, 2, 1.5f}, {1, 3, 2.f}};
   }
   job.options.stretchSweeps = 3;
   job.options.transition    = 0.5f;
@@ -464,6 +467,7 @@ TEST(ClothJob, aJobReadsBackAsItWasWritten)
     EXPECT_EQ(a.skinWeight8, b.skinWeight8);
     EXPECT_EQ(a.dualQuat, b.dualQuat);
     EXPECT_EQ(a.dualQuatShare, b.dualQuatShare);
+    EXPECT_EQ(a.capsules, b.capsules);
     ASSERT_EQ(a.bones.size(), b.bones.size());
     for(size_t i = 0; i < a.bones.size(); i++)
       EXPECT_EQ(a.bones[i].e, b.bones[i].e);
@@ -1534,4 +1538,209 @@ TEST(ClothLight, keepingOutWithTheCopyLooksOnlyNearTheBodyAndMovesTheSame)
   EXPECT_LT(all, rode.size() / 3 / 4) << "most of the sheet is off the ball";
   EXPECT_EQ(some, all);
   EXPECT_EQ(near, every);
+}
+
+namespace {
+
+// A limb as a collider: a tube along y from 0 to `len` cm, tapering from radius `r0` at the bottom to `r1`
+// at the top, closed by a vertex at each end, every vertex skinned to bone 0 alone (so a capsule floor
+// fitted to it is one bone's), with `rings` rings of `segments` vertices.
+Surface tube(float len, float r0, float r1, int rings = 16, int segments = 24)
+{
+  std::vector<float>    pos;
+  std::vector<uint32_t> tris;
+  const double          pi = 3.14159265358979323846;
+  for(int i = 0; i <= rings; i++)
+  {
+    const float y = len * float(i) / float(rings), r = r0 + (r1 - r0) * float(i) / float(rings);
+    for(int j = 0; j < segments; j++)
+    {
+      const double phi = 2 * pi * j / segments;
+      pos.insert(pos.end(), {float(r * std::cos(phi)), y, float(r * std::sin(phi))});
+    }
+  }
+  const uint32_t bottom = uint32_t(pos.size() / 3);
+  pos.insert(pos.end(), {0.f, 0.f, 0.f});
+  const uint32_t top = uint32_t(pos.size() / 3);
+  pos.insert(pos.end(), {0.f, len, 0.f});
+  const auto at = [&](int i, int j) { return uint32_t(i * segments + (j % segments)); };
+  // outward winding: seen from outside, counter-clockwise
+  for(int i = 0; i < rings; i++)
+    for(int j = 0; j < segments; j++)
+      tris.insert(tris.end(), {at(i, j), at(i + 1, j), at(i, j + 1), at(i, j + 1), at(i + 1, j), at(i + 1, j + 1)});
+  for(int j = 0; j < segments; j++)
+  {
+    tris.insert(tris.end(), {bottom, at(0, j), at(0, j + 1)});
+    tris.insert(tris.end(), {top, at(rings, j + 1), at(rings, j)});
+  }
+  Surface      s = Surface::collider(pos, pos, tris, physics::cloth::kBodyLayer, 0.2f, 0.4f);
+  const size_t n = s.vertexCount();
+  s.skinIndex.assign(n * 4, 0);
+  s.skinWeight.assign(n * 4, 0.f);
+  for(size_t v = 0; v < n; v++)
+    s.skinWeight[v * 4] = 1;
+  s.restLocal = pos;
+  s.bones     = {Mat4{}};
+  return s;
+}
+
+// A patch of cloth of `rows` x `cols` quads, 1 cm each, free, lying flat in the xz plane at height y about
+// the origin, pinned at nothing: what a limb's floor has to push out.
+Surface patch(int rows, int cols, float y)
+{
+  Surface m;
+  for(int i = 0; i <= rows; i++)
+    for(int j = 0; j <= cols; j++)
+      m.rest.insert(m.rest.end(), {float(j) - float(cols) / 2, y, float(i) - float(rows) / 2});
+  m.posed       = m.rest;
+  const auto at = [&](int i, int j) { return uint32_t(i * (cols + 1) + j); };
+  for(int i = 0; i < rows; i++)
+    for(int j = 0; j < cols; j++)
+    {
+      m.tris.insert(m.tris.end(), {at(i, j), at(i + 1, j), at(i, j + 1), at(i, j + 1), at(i + 1, j), at(i + 1, j + 1)});
+      m.polyVerts.insert(m.polyVerts.end(), {int32_t(at(i, j)), int32_t(at(i + 1, j)), int32_t(at(i + 1, j + 1)), int32_t(at(i, j + 1))});
+      m.polyStart.push_back(int32_t(m.polyVerts.size()));
+    }
+  const size_t v = m.rest.size() / 3;
+  m.kind         = Surface::Kind::eDynamic;
+  m.strength.assign(v, 1.f);
+  for(auto* f : {&m.stretch, &m.shear, &m.bend})
+    f->assign(v, 0.5f);
+  m.buckling.assign(v, 0.05f);
+  m.bucklingRatio.assign(v, 0.7f);
+  m.density.assign(v, 180.f);
+  m.contraction.assign(v, 1.f);
+  m.damping.assign(v, 0.1f);
+  m.friction.assign(v, 0.4f);
+  m.offset.assign(v, 0.2f);
+  m.layer.assign(v, 0);
+  m.selfCollide.assign(v, 0);
+  m.collide.assign(v, 1);
+  m.visible.assign(v, 1);
+  m.gravity = {0, 0, 0};
+  return m;
+}
+
+float axisDistance(const std::vector<float>& p, size_t v)
+{
+  return std::sqrt(p[v * 3] * p[v * 3] + p[v * 3 + 2] * p[v * 3 + 2]);
+}
+
+}  // namespace
+
+// The floor fitted to a tapering limb lies inside its skin everywhere, follows the taper in pieces, and
+// is as thick as the skin lets it: no vertex of the limb is in a capsule, every capsule's middle is on
+// the axis inside it, and the thickest one is nearly as thick as the limb's thin end allows its piece
+TEST(ClothCapsules, aFloorFittedToALimbLiesInsideItsSkinAndFollowsIt)
+{
+  const Surface limb  = tube(32.f, 6.f, 4.f);
+  const auto    floor = physics::cloth::capsuleFloor(limb);
+  ASSERT_TRUE(floor.has_value());
+  // pieces of 8 cm (the end pieces drawn in from the closed ends), each within the skin: none of the limb's
+  // vertices inside any capsule, and the axis floored from a quarter of the way up to three quarters
+  EXPECT_GE(floor->capsules.size(), 3u);
+  EXPECT_LE(floor->capsules.size(), 4u);
+  EXPECT_EQ(physics::cloth::insideFloor(*floor, floor->rest, limb.rest), 0u);
+  for(const float y : {8.f, 12.f, 16.f, 20.f, 24.f})
+    EXPECT_EQ(physics::cloth::insideFloor(*floor, floor->rest, {0.f, y, 0.f}), 1u) << "at " << y;
+  float thickest = 0;
+  for(const Surface::Capsule& c : floor->capsules)
+  {
+    EXPECT_GE(c.radius, physics::cloth::kFloorLeastRadius);
+    thickest = std::max(thickest, c.radius);
+    // its axis along the tube's, well inside
+    for(uint32_t e : {c.a, c.b})
+    {
+      EXPECT_LT(axisDistance(floor->rest, e), 0.5f);
+      EXPECT_GT(floor->rest[e * 3 + 1], 0.f);
+      EXPECT_LT(floor->rest[e * 3 + 1], 32.f);
+    }
+  }
+  // the bottom piece spans the radius 6 to 5.5 part of the taper: thicker than 4.5 cm, within the 0.3 margin
+  EXPECT_GT(thickest, 4.5f);
+  // its ends are the floor surface's own vertices, skinned to bone 0 alone, and it collides as the body
+  EXPECT_EQ(floor->vertexCount(), floor->capsules.size() * 2);
+  EXPECT_TRUE(floor->skinned());
+  EXPECT_TRUE(floor->tris.empty());
+  EXPECT_EQ(floor->layer[0], int16_t(physics::cloth::kBodyLayer));
+  // a vertex on the axis is inside; one outside the limb is not
+  EXPECT_EQ(physics::cloth::insideFloor(*floor, floor->rest, {0.f, 16.f, 0.f}), 1u);
+  EXPECT_EQ(physics::cloth::insideFloor(*floor, floor->rest, {9.f, 16.f, 0.f}), 0u);
+  // a limb too thin gives none (a finger); a cloud that isn't skinned gives none
+  EXPECT_FALSE(physics::cloth::capsuleFloor(tube(32.f, 1.f, 1.f)).has_value());
+  Surface bare = limb;
+  bare.bones.clear();
+  EXPECT_FALSE(physics::cloth::capsuleFloor(bare).has_value());
+}
+
+// The floor's ends move with their bone: posed at a turned bone they are the turned ends
+TEST(ClothCapsules, theFloorPosesWithItsBone)
+{
+  const Surface limb  = tube(32.f, 6.f, 4.f);
+  const auto    floor = physics::cloth::capsuleFloor(limb);
+  ASSERT_TRUE(floor.has_value());
+  // a quarter turn about z: y goes to -x
+  Mat4 turn;
+  turn.e[0] = 0;
+  turn.e[1] = 1;
+  turn.e[4] = -1;
+  turn.e[5] = 0;
+  std::vector<float> at(floor->rest.size());
+  physics::cloth::skin(*floor, {turn}, at.data());
+  for(size_t e = 0; e < floor->vertexCount(); e++)
+  {
+    const Vec3 p = turn.transformPoint({floor->rest[e * 3], floor->rest[e * 3 + 1], floor->rest[e * 3 + 2]});
+    EXPECT_NEAR(at[e * 3], float(p.x), 1e-4f);
+    EXPECT_NEAR(at[e * 3 + 1], float(p.y), 1e-4f);
+    EXPECT_NEAR(at[e * 3 + 2], float(p.z), 1e-4f);
+  }
+}
+
+// A limb that jumps through a patch of cloth in one substep (as a late step's carry or a fast shin does)
+// leaves it deep inside, on the axis, 4 cm and more behind the skin: past the 2 cm a collision pass pushes
+// back from and the 3 cm the recovery trusts, so the sided faces keep it in for good. With the floor it is
+// pushed out to the floor that substep, and from there the faces put it outside the skin
+TEST(ClothCapsules, clothALimbJumpsThroughIsPushedOutByTheFloorWhereTheFacesWouldKeepItIn)
+{
+  const Surface limb  = tube(32.f, 7.f, 5.f);
+  const auto    floor = physics::cloth::capsuleFloor(limb);
+  ASSERT_TRUE(floor.has_value());
+  Surface cloth = patch(2, 2, 16.f);  // 3 x 3 vertices, 1.4 cm from the axis at most
+  for(size_t v = 0; v < cloth.vertexCount(); v++)
+    cloth.rest[v * 3] += 8.f;  // beside the limb, a centimetre and more clear of it
+  cloth.posed = cloth.rest;
+  physics::cloth::Options opts;
+  opts.substeps    = 1;
+  opts.recoverLost = true;
+  for(const bool withFloor : {false, true})
+  {
+    std::vector<Surface> surfaces{limb, cloth};
+    if(withFloor)
+      surfaces.push_back(*floor);
+    Island island(surfaces, opts);
+    // the limb jumps 8 cm along x, its axis onto the cloth, in one substep; then holds a few frames
+    ASSERT_TRUE(island.setTarget(0, {shifted(8)}));
+    if(withFloor)
+      ASSERT_TRUE(island.setTarget(2, {shifted(8)}));
+    island.frame(0, 1);
+    for(int f = 0; f < 5; f++)
+      island.frame(1, 1);
+    const std::vector<float> at = island.positions()[1];
+    std::vector<float>       floorAt(floor->rest.size());
+    physics::cloth::skin(*floor, {shifted(8)}, floorAt.data());
+    size_t inFloor = physics::cloth::insideFloor(*floor, floorAt, at), inSkin = 0;
+    for(size_t v = 0; v < cloth.vertexCount(); v++)
+    {
+      const float dx = at[v * 3] - 8.f, dz = at[v * 3 + 2], y = at[v * 3 + 1];
+      if(y > 0 && y < 32 && std::sqrt(dx * dx + dz * dz) < 7.f - 2.f * (y / 32.f) - 0.05f)
+        inSkin++;
+    }
+    if(withFloor)
+    {
+      EXPECT_EQ(inFloor, 0u);
+      EXPECT_EQ(inSkin, 0u) << "the floor put it where the faces could finish";
+    }
+    else
+      EXPECT_EQ(inSkin, cloth.vertexCount()) << "the sided faces alone keep what a limb jumped through";
+  }
 }

@@ -48,6 +48,17 @@ struct Surface
   std::vector<Mat4>     bones;
   std::vector<float>    restLocal;
   Mat4                  toSpace;
+  // A capsule floor under a collider (physics/cloth/capsules.hpp): two of this surface's vertices as its
+  // axis, so the pose moves it as it moves them, and its radius, cm. A free vertex is never left inside
+  // one: it is pushed out to the radius every substep, whichever side it was found on, so a vertex carried
+  // or swept deep into a limb comes back out where the faces' sided collisions would keep it in.
+  struct Capsule
+  {
+    uint32_t a, b;
+    float    radius;
+    bool     operator==(const Capsule&) const = default;
+  };
+  std::vector<Capsule> capsules;
   // The skin as the drawn mesh's skin pass has it (physics::CageSkin): eight influences per vertex
   // where `skinIndex8` isn't empty, and the dual quaternion share mixed in, so the body the cloth
   // meets is the body drawn (physics-plan step 13c). All empty: the four above, linearly (a job file

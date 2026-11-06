@@ -11,8 +11,10 @@ namespace {
 
 // "FVCJOB" and a version: a file of another version isn't read. Version 2 adds the drawn skin
 // (Surface::skinIndex8 and the dual quaternion share); a version 1 file is read without it, its
-// surfaces skinned with the four as when it was written.
-constexpr char     kMagic[8]   = {'F', 'V', 'C', 'J', 'O', 'B', '0', '2'};
+// surfaces skinned with the four as when it was written. Version 3 adds a surface's capsule floor
+// (Surface::capsules); an older file is read without one.
+constexpr char     kMagic[8]   = {'F', 'V', 'C', 'J', 'O', 'B', '0', '3'};
+constexpr char     kMagicV2[8] = {'F', 'V', 'C', 'J', 'O', 'B', '0', '2'};
 constexpr char     kMagicV1[8] = {'F', 'V', 'C', 'J', 'O', 'B', '0', '1'};
 constexpr uint64_t kMostItems = uint64_t(1) << 32;
 
@@ -102,6 +104,8 @@ void surface(IO& io, S& m, int version)
     io.value(m.dualQuat);
     io.list(m.dualQuatShare);
   }
+  if(version >= 3)
+    io.list(m.capsules);
 }
 
 template <class IO, class O>
@@ -130,7 +134,7 @@ bool writeJob(const std::filesystem::path& file, const Job& job)
   o.write(kMagic, sizeof kMagic);
   w.value(uint64_t(job.surfaces.size()));
   for(const Surface& m : job.surfaces)
-    surface(w, m, 2);
+    surface(w, m, 3);
   options(w, job.options);
   w.value(uint64_t(job.drapes.size()));
   for(const auto& [slot, name] : job.drapes)
@@ -147,7 +151,10 @@ std::optional<Job> readJob(const std::filesystem::path& file)
   char          magic[sizeof kMagic]{};
   if(!in || !in.read(magic, sizeof magic))
     return std::nullopt;
-  const int version = std::memcmp(magic, kMagic, sizeof magic) == 0 ? 2 : std::memcmp(magic, kMagicV1, sizeof magic) == 0 ? 1 : 0;
+  const int version = std::memcmp(magic, kMagic, sizeof magic) == 0   ? 3
+                      : std::memcmp(magic, kMagicV2, sizeof magic) == 0 ? 2
+                      : std::memcmp(magic, kMagicV1, sizeof magic) == 0 ? 1
+                                                                        : 0;
   if(version == 0)
     return std::nullopt;
   Reader   r{in};
