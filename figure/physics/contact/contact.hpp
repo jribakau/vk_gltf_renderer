@@ -37,7 +37,7 @@
 #include <string>
 #include <vector>
 
-#include <figure/dforce/skin.hpp>
+#include <figure/physics/skin.hpp>
 #include <figure/morph/morph_set.hpp>
 #include <figure/physics/collide/triangle_set.hpp>
 #include <figure/physics/pass.hpp>

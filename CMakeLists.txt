@@ -63,7 +63,7 @@ option(USE_DLSSNR             "Enable DLSS Neural Rendering (beta; requires DLSS
 option(USE_OPTIX_DENOISER     "Enable OptiX denoiser as alternative to DLSS (requires CUDAToolkit)."  ON)
 option(USE_OIDN_DENOISER      "Enable the vk_oidn denoiser (Open Image Denoise on Vulkan; downloads its SDK package)." ON)
 option(USE_DRACO              "Enable Draco mesh compression when importing glTF."                    ON)
-option(FV_DFORCE_GPU          "Build the GPU dForce cloth solver (src/fv_dforce_gpu, shaders/dforce_cloth)."    ON)
+option(FV_PHYSICS_GPU         "Build the GPU cloth solver (src/fv_physics_gpu, shaders/physics_cloth)."         ON)
 option(USE_DEFAULT_SCENE      "Load a bundled default scene at startup."                              OFF)
 option(BUILD_TESTING          "Build unit tests and benchmarks (GoogleTest + Google Benchmark)."      OFF)
 
@@ -232,9 +232,9 @@ if(NOT NVPRO2_ENABLE_nvmcp)
 endif()
 
 # The experimental GPU cloth solver: its source and shader stay out of the build unless asked for;
-# the host (src/fv_host*) guards its integration points on FV_DFORCE_GPU.
-if(NOT FV_DFORCE_GPU)
-  list(FILTER EXE_SOURCES EXCLUDE REGEX "fv_dforce_gpu")
+# the host (src/fv_host*) guards its integration points on FV_PHYSICS_GPU.
+if(NOT FV_PHYSICS_GPU)
+  list(FILTER EXE_SOURCES EXCLUDE REGEX "fv_physics_gpu")
 endif()
 
 add_executable(${PROJECT_NAME} ${EXE_SOURCES})
@@ -353,8 +353,8 @@ if(USE_DEFAULT_SCENE)
   target_compile_definitions(${PROJECT_NAME} PRIVATE USE_DEFAULT_SCENE)
 endif()
 
-if(FV_DFORCE_GPU)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE FV_DFORCE_GPU)
+if(FV_PHYSICS_GPU)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE FV_PHYSICS_GPU)
 endif()
 
 # Generated headers (version.hpp, compiled Slang shaders) live under the build dir.
@@ -368,8 +368,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_BINARY_DIR}/${PROJECT
 # Collect local shaders (exclude header-only .h.slang files).
 file(GLOB_RECURSE _ALL_SLANG_FILES "shaders/*.slang")
 list(FILTER _ALL_SLANG_FILES EXCLUDE REGEX ".*\\.h\\.slang$")
-if(NOT FV_DFORCE_GPU)
-  list(FILTER _ALL_SLANG_FILES EXCLUDE REGEX "dforce_cloth")
+if(NOT FV_PHYSICS_GPU)
+  list(FILTER _ALL_SLANG_FILES EXCLUDE REGEX "physics_cloth")
 endif()
 set(SHADER_SRC_SLANG_FILES ${_ALL_SLANG_FILES})
 file(GLOB SHADER_H_FILES "shaders/*.h" "shaders/*.h.slang")
@@ -535,14 +535,14 @@ target_sources(${PROJECT_NAME} PRIVATE
 # The GPU cloth bench (src/tools/fv_cloth_bench.cpp, docs/physics-plan.md step 13a): a cloth job that
 # fv_parity wrote, settled on the CPU island and the GPU solvers, timed and judged. Headless, nothing of
 # the app; its own copy of the cloth shader, compiled with the renderer's flags.
-if(FV_DFORCE_GPU)
-  add_executable(fv_cloth_bench src/tools/fv_cloth_bench.cpp src/fv_dforce_gpu.cpp src/fv_dforce_gpu.hpp)
+if(FV_PHYSICS_GPU)
+  add_executable(fv_cloth_bench src/tools/fv_cloth_bench.cpp src/fv_physics_gpu.cpp src/fv_physics_gpu.hpp)
   target_link_libraries(fv_cloth_bench PRIVATE fv_figure nvpro2::nvapp nvpro2::nvvk nvpro2::nvutils glm)
-  target_compile_definitions(fv_cloth_bench PRIVATE FV_DFORCE_GPU)
+  target_compile_definitions(fv_cloth_bench PRIVATE FV_PHYSICS_GPU)
   target_include_directories(fv_cloth_bench PRIVATE ${CMAKE_BINARY_DIR}/fv_cloth_bench ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src
                                                     ${NVSHADERS_DIR})
   compile_slang(
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/dforce_cloth.comp.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/physics_cloth.comp.slang"
     "${CMAKE_BINARY_DIR}/fv_cloth_bench/_autogen"
     HEADERS_VAR FV_CLOTH_BENCH_SHADERS
     EXTRA_FLAGS ${SHADER_EXTRA_FLAGS}

@@ -11,7 +11,7 @@
 #include <regex>
 #include <utility>
 
-#include <figure/dforce/skin.hpp>
+#include <figure/physics/skin.hpp>
 #include <figure/dson/materials.hpp>
 #include <figure/dson/listing.hpp>
 #include <figure/gltf/gltf_build.hpp>
@@ -1292,10 +1292,10 @@ bool Figure::refreshTightHidden(bool collisionOn)
     w.tightChecked = true;
     timing::Scope t("tight: covered skin", 5);
     const auto worlds = scene.worlds();
-    const auto nodeOf = dforce::nodeOfMesh(scene);
+    const auto nodeOf = physics::nodeOfMesh(scene);
     const auto inRoot = [&](int mesh, const std::vector<float>& cage) {
       const Mat4 to = inverse(worlds[size_t(loaded.root)]) * (nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : Mat4{});
-      return dforce::transformPoints(to, cage);
+      return physics::transformPoints(to, cage);
     };
     const auto bodyCage = inRoot(body, morphs->morphedCage(body));
     for(const auto& [mesh, smoothing] : w.collision)

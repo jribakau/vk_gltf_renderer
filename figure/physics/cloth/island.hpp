@@ -2,7 +2,8 @@
 
 // A cloth island (docs/physics-plan.md step 12): a position-based settle of cloth surfaces, on the
 // particle core (physics/particles). One island holds every dynamic mesh and every collider of a job:
-// collision layers are sided constraints, not separate solves. dForce's ClothSim, moved here.
+// collision layers are sided constraints, not separate solves. The driver runs it as cloth::CpuBackend
+// (physics/cloth/backend.hpp).
 //
 // The cloth is simulated in frames of `frameDt`, each cut into substeps with one constraint sweep
 // per substep (small steps converge where many sweeps over a large step do not). Masses come from
@@ -40,7 +41,7 @@
 
 namespace fv::physics::cloth {
 
-// How a cloth island steps and settles. dForce's SettleOptions, moved here unchanged.
+// How a cloth island steps and settles.
 struct Options
 {
   // Air resistance, DAZ's 0.15

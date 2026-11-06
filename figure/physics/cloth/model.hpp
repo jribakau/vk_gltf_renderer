@@ -1,8 +1,8 @@
 #pragma once
 
 // The cloth island's build (docs/physics-plan.md step 12): from the surfaces, the particles, the
-// distance rows, the collision faces and the partition the sweeps run in. dForce's ClothModel, moved
-// here unchanged.
+// distance rows, the collision faces and the partition the sweeps run in, for the CPU island and the
+// GPU solver alike.
 
 #include <cstdint>
 #include <vector>

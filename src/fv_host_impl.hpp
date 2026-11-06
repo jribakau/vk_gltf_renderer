@@ -64,15 +64,15 @@
 #include <nvutils/parameter_registry.hpp>
 #include <nvutils/timers.hpp>
 
-#include <figure/dforce/dforce.hpp>
+#include <figure/physics/cloth/cloth.hpp>
 #include <figure/physics/contact/contact.hpp>
 #include <figure/physics/rig/figure_physics.hpp>
 #include <figure/physics/flesh/flesh.hpp>
 #include <figure/physics/rig/secondary.hpp>
 #include <figure/physics/vam/player.hpp>
 #include <figure/wardrobe/collider.hpp>
-#ifdef FV_DFORCE_GPU
-#include "fv_dforce_gpu.hpp"
+#ifdef FV_PHYSICS_GPU
+#include "fv_physics_gpu.hpp"
 #endif
 #include <figure/dson/eye_materials.hpp>
 #include <figure/dson/skin_materials.hpp>
@@ -186,7 +186,7 @@ struct Loaded
   std::string                 id;  // its prop's
   std::unique_ptr<fv::Figure> fig;
   // drapes the worn dynamic surfaces (it works on `fig`, so it goes first); null without a body
-  std::unique_ptr<fv::dforce::Dforce> dforce;
+  std::unique_ptr<fv::physics::Cloth> dforce;
   int                                 dforceVersion = -1;
   // keeps the worn conforming meshes out of the posed body (figure/wardrobe/collider.hpp); null without a body
   std::unique_ptr<fv::wardrobe::Collider> collider;
@@ -657,7 +657,7 @@ std::vector<int> itemIds(const Json& args);
 const fv::WornItem* wornItem(const fv::Figure& fig, int id);
 
 // A dForce mode by its name; "gpu" needs the build to have the GPU solver.
-fv::dforce::Mode dforceMode(const std::string& name);
+fv::physics::ClothMode dforceMode(const std::string& name);
 
 }  // namespace fvhost
 

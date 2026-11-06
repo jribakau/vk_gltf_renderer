@@ -963,13 +963,13 @@ void FvHost::Impl::publishDforce(Loaded& f, bool force)
 {
   if(!f.dforce)
     return;
-  const fv::dforce::Dforce& d = *f.dforce;
+  const fv::physics::Cloth& d = *f.dforce;
   if(!force && f.dforceVersion == d.version())
     return;
   f.dforceVersion = d.version();
   protocol->events().snapshot("dforce/" + f.id, {{"figure", f.id},
                                                  {"enabled", d.enabled()},
-                                                 {"mode", d.mode() == fv::dforce::Mode::eLive ? "live" : d.mode() == fv::dforce::Mode::eLiveGpu ? "gpu" : "settle"},
+                                                 {"mode", d.mode() == fv::physics::ClothMode::eLive ? "live" : d.mode() == fv::physics::ClothMode::eLiveGpu ? "gpu" : "settle"},
                                                  {"light", d.light()},
                                                  {"active", d.active()},
                                                  {"busy", d.busy()},
@@ -978,7 +978,7 @@ void FvHost::Impl::publishDforce(Loaded& f, bool force)
 
 // dforce.enable {prop, on}: cloth drapes (true) or shows the conforming shape (false);
 // dforce.mode {prop, mode}: "settle" (once the pose stops changing), "live" (every frame) or "gpu"
-// (every frame, on the experimental GPU solver, in a build with FV_DFORCE_GPU);
+// (every frame, on the experimental GPU solver, in a build with FV_PHYSICS_GPU);
 // dforce.light {prop, on}: the cloth simulates as a light copy of itself, its own vertices riding on it;
 // dforce.resimulate {prop} settles the cloth now.
 Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)

@@ -663,7 +663,7 @@ void FvHost::Impl::showFlesh(Loaded& f)
       // the item's posed space against the body's: their nodes' worlds, which DAZ's conforming items share
       if(nodeOf.empty())
       {
-        nodeOf = fv::dforce::nodeOfMesh(graph);
+        nodeOf = fv::physics::nodeOfMesh(graph);
         worlds = graph.worlds();
       }
       const int        bodyNode = nodeOf[size_t(bodyMesh)], itemNode = nodeOf[size_t(follow.mesh)];

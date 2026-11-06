@@ -58,7 +58,7 @@
 #include <nvvk/resource_allocator.hpp>
 #include <volk.h>
 
-#include "fv_dforce_gpu.hpp"
+#include "fv_physics_gpu.hpp"
 
 using fv::dson::Json;
 namespace cloth = fv::physics::cloth;
@@ -580,14 +580,14 @@ int main(int argc, char** argv)
       const bool clustered = name == "cluster" || name == "coloured";
       for(int size : clustered ? sizes : std::vector<int>{0})
       {
-        DforceGpu::Options gpu;
+        ClothGpu::Options gpu;
         gpu.clusterSize  = size;
         gpu.clusterLocal = local;
-        gpu.crossing     = name == "cluster" ? DforceGpu::Options::Crossing::eHalo : DforceGpu::Options::Crossing::eColoured;
+        gpu.crossing     = name == "cluster" ? ClothGpu::Options::Crossing::eHalo : ClothGpu::Options::Crossing::eColoured;
         gpu.timestamps   = true;
         const auto t0    = std::chrono::steady_clock::now();
         {
-          DforceGpu sim(&alloc, &app, job->surfaces, job->options, gpu);
+          ClothGpu sim(&alloc, &app, job->surfaces, job->options, gpu);
           if(trace)
           {
             // a frame at a time, and after each the cloth faces under the cloth's vertices
@@ -669,7 +669,7 @@ int main(int argc, char** argv)
           sim.settle();
           const double dentedMs = since(t2);
           const auto   pos3     = sim.positions();
-          DforceGpu    fresh(&alloc, &app, dented.surfaces, dented.options, gpu);
+          ClothGpu    fresh(&alloc, &app, dented.surfaces, dented.options, gpu);
           fresh.settle();
           report["dented"] = {{"settleMs", r4(dentedMs)}, {"sameAsNew", !sim.failed() && !fresh.failed() && pos3 == fresh.positions()},
                               {"movedFromUndented", pos3 != pos}};

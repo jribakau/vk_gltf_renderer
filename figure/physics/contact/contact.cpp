@@ -561,7 +561,7 @@ std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph:
 {
   std::vector<std::vector<float>> out(meshes.size());
   const auto worlds    = scene.worlds();
-  const auto nodeOf    = dforce::nodeOfMesh(scene);
+  const auto nodeOf    = physics::nodeOfMesh(scene);
   const Mat4 rootWorld = root >= 0 && size_t(root) < worlds.size() ? worlds[size_t(root)] : Mat4{};
   for(size_t k = 0; k < meshes.size(); k++)
   {
@@ -573,9 +573,9 @@ std::vector<std::vector<float>> posedCages(const SceneGraph& scene, const morph:
       continue;
     std::vector<float> posed = cageWithout(morphs, mesh, without);
     if(m.skinned() && m.cageSkin.start.size() == posed.size() / 3 + 1)
-      posed = dforce::skinLocal(posed, dforce::cageSkin(m.cageSkin), dforce::currentSkin(scene, worlds, nodeOf, mesh));
+      posed = physics::skinLocal(posed, physics::cageSkin(m.cageSkin), physics::currentSkin(scene, worlds, nodeOf, mesh));
     const int node = nodeOf[size_t(mesh)];
-    out[k]         = dforce::transformPoints(inverse(rootWorld) * (node >= 0 ? worlds[size_t(node)] : Mat4{}), posed);
+    out[k]         = physics::transformPoints(inverse(rootWorld) * (node >= 0 ? worlds[size_t(node)] : Mat4{}), posed);
   }
   return out;
 }
@@ -595,8 +595,8 @@ struct Contact::Job
   // for the write-back: the rest cage under the dent, its skin and pose in the mesh's space, and the way there
   std::vector<float> rest;
   bool               skinned = false;
-  dforce::CageSkin   skin;
-  dforce::SkinPose   pose;
+  physics::CageSkin   skin;
+  physics::SkinPose   pose;
   Mat4               back;
 };
 
@@ -678,7 +678,7 @@ std::shared_ptr<Contact::Job> Contact::prepare()
   job->rest = cageWithout(m_morphs, m_bodyMesh, m_writer.name);
 
   const auto worlds    = m_scene.worlds();
-  const auto nodeOf    = dforce::nodeOfMesh(m_scene);
+  const auto nodeOf    = physics::nodeOfMesh(m_scene);
   const Mat4 rootWorld = m_root >= 0 && size_t(m_root) < worlds.size() ? worlds[size_t(m_root)] : Mat4{};
   const int  node      = nodeOf[size_t(m_bodyMesh)];
   const Mat4 toSpace   = inverse(rootWorld) * (node >= 0 ? worlds[size_t(node)] : Mat4{});
@@ -686,16 +686,16 @@ std::shared_ptr<Contact::Job> Contact::prepare()
   std::vector<float> posed;
   if(job->skinned)
   {
-    job->skin = dforce::cageSkin(body.cageSkin);
-    job->pose = dforce::currentSkin(m_scene, worlds, nodeOf, m_bodyMesh);
-    posed     = dforce::skinLocal(job->rest, job->skin, job->pose);
+    job->skin = physics::cageSkin(body.cageSkin);
+    job->pose = physics::currentSkin(m_scene, worlds, nodeOf, m_bodyMesh);
+    posed     = physics::skinLocal(job->rest, job->skin, job->pose);
   }
   else
     posed = job->rest;
-  job->body      = dforce::transformPoints(toSpace, posed);
+  job->body      = physics::transformPoints(toSpace, posed);
   job->back      = inverse(toSpace);
   if(!job->parts.empty())
-    job->unposed = dforce::transformPoints(toSpace, job->rest);
+    job->unposed = physics::transformPoints(toSpace, job->rest);
   job->tris      = body.geo->dsonTris;
   job->polyStart = body.geo->cagePolyStart;
   job->polyVerts = body.geo->cagePolyVerts;
@@ -790,9 +790,9 @@ bool Contact::pump()
           const ContactResult r = resolveContacts(in);
           // back to the mesh's space, and to the cage deltas whose skinning gives it
           Landed     out;
-          const auto local = dforce::transformPoints(job->back, r.positions);
+          const auto local = physics::transformPoints(job->back, r.positions);
           if(job->skinned)
-            out.delta = dforce::drapeDelta(job->rest, local, job->skin, job->pose);
+            out.delta = physics::drapeDelta(job->rest, local, job->skin, job->pose);
           else
           {
             out.delta.resize(local.size());

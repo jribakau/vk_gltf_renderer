@@ -1,15 +1,15 @@
-#include <figure/dforce/dforce.hpp>
+#include <figure/physics/cloth/cloth.hpp>
 
 #include <algorithm>
 #include <cmath>
 
-#include <figure/dforce/skin.hpp>
-#include <figure/dforce/solver.hpp>
+#include <figure/physics/skin.hpp>
+#include <figure/physics/cloth/backend.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/physics/cloth/coarse.hpp>
 
-namespace fv::dforce {
+namespace fv::physics {
 
 namespace {
 
@@ -26,7 +26,7 @@ constexpr float kLiveFree = 1.f, kLiveCalming = 1.f, kLiveHold = 3.f;
 constexpr double kSettleSlice = 0.05;
 // A live step is as long as the time since the last one, within these, seconds: a slow frame doesn't
 // make slow motion, and frames faster than the shortest wait for each other. Longer than the longest,
-// the GPU's simulation is carried with the pose through the rest (ClothBackend::carry), the CPU's slows.
+// the GPU's simulation is carried with the pose through the rest (cloth::Backend::carry), the CPU's slows.
 // A step's collision passes grow with its length, and so does each one's grid: past about 45 ms a step
 // on the GPU beside the path tracer took longer than it simulated, so the next was longer still (a walk
 // held at the 1/20 s this was, half its steps late); below it they shorten, to a frame or two.
@@ -64,7 +64,7 @@ bool sameGravity(const std::array<float, 3>& a, const std::array<float, 3>& b)
 
 // What a coarse copy is made from: its rest cage, its faces and which collide, its strength and what is
 // in the simulation, and the edge and error it is made for (FNV-1a over their bytes).
-uint64_t shapeKey(const SettleMesh& s, float edge, float maxError)
+uint64_t shapeKey(const cloth::Surface& s, float edge, float maxError)
 {
   uint64_t   h   = 1469598103934665603ull;
   const auto mix = [&](const void* data, size_t bytes) {
@@ -98,15 +98,15 @@ bool samePose(const std::vector<Mat4>& a, const std::vector<Mat4>& b)
 
 }  // namespace
 
-std::string channelOf(int mesh)
+std::string clothChannel(int mesh)
 {
   return "dforce:" + std::to_string(mesh);
 }
 
 // What a settle needs and where each result goes, taken on the application thread.
-struct Dforce::Job
+struct Cloth::Job
 {
-  std::vector<SettleMesh> bodies;
+  std::vector<cloth::Surface> bodies;
   // the mesh each body is, for reading its bones again; -1 when it has no skin
   std::vector<int> slotMesh;
   // a coarse copy's vertices of its mesh's cage, per slot (physics/cloth/coarse.hpp); empty: all of them
@@ -130,7 +130,7 @@ struct Dforce::Job
   struct Hair
   {
     int                mesh = -1;
-    StrandSet          strands;
+    hair::StrandSet          strands;
     std::vector<float> rest;
     CageSkin           skin;
     SkinPose           pose;
@@ -139,7 +139,7 @@ struct Dforce::Job
   std::vector<Hair> hairs;
 };
 
-Dforce::Dforce(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int root)
+Cloth::Cloth(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int root)
     : m_scene(scene)
     , m_morphs(morphs)
     , m_bodyMesh(bodyMesh)
@@ -148,7 +148,7 @@ Dforce::Dforce(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int roo
   m_settleGravity = currentGravity();
 }
 
-Dforce::~Dforce()
+Cloth::~Cloth()
 {
   // the pool keeps the snapshot it was given; only wait so a late result cannot outlive the owner. Out
   // of date first, so it ends within a frame: a GPU settle on the pool mustn't run on past its device
@@ -165,12 +165,12 @@ Dforce::~Dforce()
     m_hairJob.wait();
 }
 
-bool Dforce::settlingOnGpu() const
+bool Cloth::settlingOnGpu() const
 {
   return m_settling || (m_jobOnGpu && m_job.valid());
 }
 
-std::vector<int> Dforce::dynamics() const
+std::vector<int> Cloth::dynamics() const
 {
   std::vector<int> out;
   const auto       shown = shownNodes(m_scene);
@@ -187,19 +187,19 @@ std::vector<int> Dforce::dynamics() const
   return out;
 }
 
-bool Dforce::active() const
+bool Cloth::active() const
 {
   return !dynamics().empty();
 }
 
-bool Dforce::busy() const
+bool Cloth::busy() const
 {
   return m_scheduled || m_job.valid() || m_hairJob.valid() || m_settling || m_liveSettling;
 }
 
 // What has stopped simulating (its switch off, frozen, hidden) goes back to the shape it conforms to:
 // no settle will come for it, and with nothing else draping none comes at all.
-void Dforce::dropStale()
+void Cloth::dropStale()
 {
   const std::vector<int>                      live = dynamics();
   std::vector<std::pair<std::string, double>> names;
@@ -210,8 +210,8 @@ void Dforce::dropStale()
       ++it;
       continue;
     }
-    if(m_morphs.has(channelOf(*it)))
-      names.emplace_back(channelOf(*it), 0.0);
+    if(m_morphs.has(clothChannel(*it)))
+      names.emplace_back(clothChannel(*it), 0.0);
     it = m_draped.erase(it);
     m_version++;
   }
@@ -219,12 +219,12 @@ void Dforce::dropStale()
     m_morphs.setMany(names);
 }
 
-void Dforce::poke()
+void Cloth::poke()
 {
   dropStale();
   if(!m_enabled || !active())
     return;
-  if(m_mode == Mode::eSettle && playing && playing())
+  if(m_mode == ClothMode::eSettle && playing && playing())
   {
     m_skippedPlaying = true;
     return;
@@ -239,9 +239,9 @@ void Dforce::poke()
   m_version++;
 }
 
-void Dforce::changed(const std::vector<int>& meshes, bool nodesMoved)
+void Cloth::changed(const std::vector<int>& meshes, bool nodesMoved)
 {
-  if(m_mode != Mode::eSettle)
+  if(m_mode != ClothMode::eSettle)
   {
     // Bones are read again next frame. A mesh changed with them is the pose's correctives (under a clip,
     // every frame), and a collider's change is its pose too (a dent, a dial on the body): the next step
@@ -267,19 +267,19 @@ void Dforce::changed(const std::vector<int>& meshes, bool nodesMoved)
     poke();
 }
 
-void Dforce::setPlacement(const Mat4& placed)
+void Cloth::setPlacement(const Mat4& placed)
 {
   m_placed = placed;
   if(m_skippedPlaying && !(playing && playing()))
   {
     // what changed while a clip played: the drape catches up now it has stopped
     m_skippedPlaying = false;
-    if(m_mode == Mode::eSettle)
+    if(m_mode == ClothMode::eSettle)
       poke();
   }
   // live reads it next frame. Against what the last settle was asked for, so a slow turn adds up; a
   // turn while a clip plays waits for it to stop, as the drape does
-  if(m_mode != Mode::eSettle || (playing && playing()))
+  if(m_mode != ClothMode::eSettle || (playing && playing()))
     return;
   const std::array<float, 3> now = currentGravity();
   if(!sameGravity(now, m_settleGravity))
@@ -289,7 +289,7 @@ void Dforce::setPlacement(const Mat4& placed)
   }
 }
 
-void Dforce::resimulate()
+void Cloth::resimulate()
 {
   m_enabled   = true;
   m_scheduled = true;
@@ -302,7 +302,7 @@ void Dforce::resimulate()
   m_version++;
 }
 
-void Dforce::cancel()
+void Cloth::cancel()
 {
   m_gen++;
   if(m_jobStale)
@@ -323,18 +323,18 @@ void Dforce::cancel()
   m_shown.clear();
 }
 
-void Dforce::setEnabled(bool on)
+void Cloth::setEnabled(bool on)
 {
   m_enabled = on;
   std::vector<std::pair<std::string, double>> names;
   for(auto it = m_draped.begin(); it != m_draped.end();)
   {
-    if(!m_morphs.has(channelOf(*it)))
+    if(!m_morphs.has(clothChannel(*it)))
     {
       it = m_draped.erase(it);
       continue;
     }
-    names.emplace_back(channelOf(*it), on ? 1.0 : 0.0);
+    names.emplace_back(clothChannel(*it), on ? 1.0 : 0.0);
     ++it;
   }
   if(!names.empty())
@@ -346,7 +346,7 @@ void Dforce::setEnabled(bool on)
   m_version++;
 }
 
-void Dforce::setMode(Mode mode)
+void Cloth::setMode(ClothMode mode)
 {
   if(mode == m_mode)
     return;
@@ -357,7 +357,7 @@ void Dforce::setMode(Mode mode)
     resimulate();
 }
 
-void Dforce::setLight(bool on)
+void Cloth::setLight(bool on)
 {
   if(on == lightCloth)
     return;
@@ -369,7 +369,7 @@ void Dforce::setLight(bool on)
     resimulate();
 }
 
-std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
+std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t) const
 {
   const std::vector<int> dyn = dynamics();
   if(dyn.empty())
@@ -388,7 +388,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
   // The skin as the solver takes it, so the pose transition turns the mesh's bones rather than
   // sliding its vertices along chords: the bones' skin matrices in the mesh's space, the rest cage
   // there, and the matrix into the job's space.
-  const auto attachSkin = [](SettleMesh& out, const Skinned& s, const Mat4& to) {
+  const auto attachSkin = [](cloth::Surface& out, const Skinned& s, const Mat4& to) {
     if(!s.skinned)
       return;
     out.skinIndex  = s.skin.index;
@@ -436,8 +436,8 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     {
       bodySlot      = job->bodies.size();
       const Mat4 to = toSpace(m_bodyMesh);
-      SettleMesh collider = SettleMesh::collider(transformPoints(to, body->rest), transformPoints(to, body->posed),
-                                                 m_scene.meshes[size_t(m_bodyMesh)].geo->dsonTris, kBodyLayer, 0.2f, 0.4f);
+      cloth::Surface collider = cloth::Surface::collider(transformPoints(to, body->rest), transformPoints(to, body->posed),
+                                                 m_scene.meshes[size_t(m_bodyMesh)].geo->dsonTris, cloth::kBodyLayer, 0.2f, 0.4f);
       attachSkin(collider, *body, to);
       job->bodies.push_back(std::move(collider));
       job->slotMesh.push_back(body->skinned ? m_bodyMesh : -1);
@@ -451,7 +451,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     if(m.dforce && m.dforce->simulatesStrands() && m.dforce->simulated())
     {
       const dson::DforceData& data = *m.dforce;
-      const auto own     = m_morphs.cpuTarget(channelOf(mesh), mesh);
+      const auto own     = m_morphs.cpuTarget(clothChannel(mesh), mesh);
       auto       skinned = skinCage(mesh, own.get());
       if(!skinned)
         return;
@@ -489,8 +489,8 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       if(!skinned)
         return;
       const Mat4 to       = toSpace(mesh);
-      SettleMesh collider = SettleMesh::collider(transformPoints(to, skinned->rest), transformPoints(to, skinned->posed), m.geo->dsonTris,
-                                                 kPlainLayer, 0.2f, 0.4f);
+      cloth::Surface collider = cloth::Surface::collider(transformPoints(to, skinned->rest), transformPoints(to, skinned->posed), m.geo->dsonTris,
+                                                 cloth::kPlainLayer, 0.2f, 0.4f);
       attachSkin(collider, *skinned, to);
       job->bodies.push_back(std::move(collider));
       job->slotMesh.push_back(skinned->skinned ? mesh : -1);
@@ -499,7 +499,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     const dson::DforceData& data = *m.dforce;
     if(data.strength.size() * 3 != m.geo->cagePositions.size())
       return;
-    const auto own      = m_morphs.cpuTarget(channelOf(mesh), mesh);
+    const auto own      = m_morphs.cpuTarget(clothChannel(mesh), mesh);
     auto       skinned  = skinCage(mesh, data.simulated() ? own.get() : nullptr);
     if(!skinned)
       return;
@@ -508,13 +508,13 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     auto       posed = transformPoints(to, skinned->posed);
     if(data.simulated())
     {
-      SettleMesh s;
+      cloth::Surface s;
       s.rest   = std::move(rest);
       s.posed  = std::move(posed);
       s.tris   = m.geo->dsonTris;
       s.polyStart = data.polyStart;
       s.polyVerts = data.polyVerts;
-      s.kind   = data.kind == dson::DforceKind::eAddon ? SettleMesh::Kind::eAddon : SettleMesh::Kind::eDynamic;
+      s.kind   = data.kind == dson::DforceKind::eAddon ? cloth::Surface::Kind::eAddon : cloth::Surface::Kind::eDynamic;
       s.strength = data.strength;
       s.stretch = data.stretch;
       s.shear = data.shear;
@@ -545,7 +545,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     }
     else if(data.visible)
     {
-      SettleMesh collider = SettleMesh::collider(std::move(rest), std::move(posed),
+      cloth::Surface collider = cloth::Surface::collider(std::move(rest), std::move(posed),
                                                  data.kind == dson::DforceKind::eAddon ? std::vector<uint32_t>{} : m.geo->dsonTris,
                                                  data.layer.empty() ? 0 : data.layer[0], data.offset.empty() ? 0.2f : data.offset[0],
                                                  data.friction.empty() ? 0.4f : data.friction[0], data.surfaceCollide);
@@ -569,7 +569,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     timing::Scope t("dforce: light cloth", 1);
     for(Job::Drape& d : job->drapes)
     {
-      SettleMesh&                                        s   = job->bodies[d.slot];
+      cloth::Surface&                                        s   = job->bodies[d.slot];
       const uint64_t                                     key = shapeKey(s, lightClothEdge, 0);
       std::shared_ptr<const physics::cloth::CoarseCloth> c;
       if(const auto made = m_light.find(key); made != m_light.end())
@@ -609,7 +609,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     size_t        faces = 0;
     for(const Job::Drape& d : job->drapes)
     {
-      const SettleMesh& s = job->bodies[d.slot];
+      const cloth::Surface& s = job->bodies[d.slot];
       sum += double(physics::cloth::meanEdge(s)) * double(s.tris.size() / 3);
       faces += s.tris.size() / 3;
     }
@@ -655,7 +655,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
   return job;
 }
 
-std::optional<Dforce::Prepared> Dforce::prepared() const
+std::optional<Cloth::Prepared> Cloth::prepared() const
 {
   const auto job = prepare(m_gen);
   if(!job)
@@ -673,7 +673,7 @@ std::optional<Dforce::Prepared> Dforce::prepared() const
   return p;
 }
 
-std::array<float, 3> Dforce::currentGravity() const
+std::array<float, 3> Cloth::currentGravity() const
 {
   const auto worlds    = m_scene.worlds();
   const Mat4 rootWorld = m_root >= 0 && size_t(m_root) < worlds.size() ? worlds[size_t(m_root)] : Mat4{};
@@ -685,7 +685,7 @@ std::array<float, 3> Dforce::currentGravity() const
   return {float(x * scale), float(y * scale), float(z * scale)};
 }
 
-std::vector<std::vector<Mat4>> Dforce::currentBones(const Job& job) const
+std::vector<std::vector<Mat4>> Cloth::currentBones(const Job& job) const
 {
   std::vector<std::vector<Mat4>> out(job.slotMesh.size());
   const auto                     worlds = m_scene.worlds();
@@ -700,9 +700,9 @@ std::vector<std::vector<Mat4>> Dforce::currentBones(const Job& job) const
   return out;
 }
 
-bool Dforce::pump()
+bool Cloth::pump()
 {
-  if(m_mode != Mode::eSettle)
+  if(m_mode != ClothMode::eSettle)
     return pumpLive();
   bool wrote = false;
   if(m_job.valid() && m_job.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
@@ -756,7 +756,7 @@ bool Dforce::pump()
   // A settle on the pool: on `sim` when there is one (the GPU solver on a queue of its own), else on the
   // CPU, which also takes over when `sim` fails. An edit since it began ends it within a frame (`stale`):
   // the new settle needn't wait for what would be dropped
-  const auto onThePool = [this](std::shared_ptr<Job> job, std::shared_ptr<std::atomic<bool>> stale, std::shared_ptr<ClothBackend> sim) {
+  const auto onThePool = [this](std::shared_ptr<Job> job, std::shared_ptr<std::atomic<bool>> stale, std::shared_ptr<cloth::Backend> sim) {
     m_jobStale = stale;
     m_jobOnGpu = sim != nullptr;
     m_job      = jobs::pool().submit([job, stale, sim]() mutable {
@@ -774,10 +774,10 @@ bool Dforce::pump()
         if(landed || stale->load())
           return out;
       }
-      SettleOptions opts;
+      cloth::Options opts;
       opts.air       = kAir;
       opts.cancelled = [stale] { return stale->load(); };
-      return settle(job->bodies, opts);
+      return cloth::settle(job->bodies, opts);
     });
   };
   if(m_settling)
@@ -825,7 +825,7 @@ bool Dforce::pump()
           // the GPU solver when there is one: in slices here when it must run on this thread, else on the
           // pool as the CPU's settle runs, and this thread never waits on it
           auto          stale = std::make_shared<std::atomic<bool>>(false);
-          SettleOptions opts;
+          cloth::Options opts;
           opts.air       = kAir;
           opts.cancelled = [stale] { return stale->load(); };
           if(makeGpuSim)
@@ -845,11 +845,11 @@ bool Dforce::pump()
           m_hairStale    = std::make_shared<std::atomic<bool>>(false);
           m_hairJob      = jobs::pool().submit([job, stale = m_hairStale] {
             timing::Scope t("dforce: hair settle");
-            StrandOptions opts;
+            hair::StrandOptions opts;
             opts.cancelled = [stale] { return stale->load(); };
             std::vector<std::vector<float>> out;
             for(const Job::Hair& h : job->hairs)
-              out.push_back(settleStrands(h.strands, job->bodies, opts));
+              out.push_back(hair::settle(h.strands, job->bodies, opts));
             return out;
           });
         }
@@ -864,7 +864,7 @@ bool Dforce::pump()
 // Live: the runs whose drapes are made are written, or eased in, in the order they began; then, once the
 // simulation is free (the drapes of the last step may still be on their way), unless it is to be built
 // again or nothing has moved, the figure's bones go to it and it steps once more.
-bool Dforce::pumpLive()
+bool Cloth::pumpLive()
 {
   const auto frameAt = clock ? clock() : std::chrono::steady_clock::now();
   // the last step's drapes a frame further in, every frame, whether or not the next has landed
@@ -976,12 +976,12 @@ bool Dforce::pumpLive()
       m_liveJob.reset();
     if(!m_liveJob)
       return wrote;
-    SettleOptions opts;
+    cloth::Options opts;
     opts.air = kAir;
-    if(m_mode == Mode::eLiveGpu && makeGpuSim)
+    if(m_mode == ClothMode::eLiveGpu && makeGpuSim)
       m_live = makeGpuSim(m_liveJob->bodies, opts);
     if(!m_live)
-      m_live = std::make_shared<ClothSim>(m_liveJob->bodies, opts);
+      m_live = std::make_shared<cloth::CpuBackend>(m_liveJob->bodies, opts);
     m_liveBones    = currentBones(*m_liveJob);
     m_liveGravity  = currentGravity();
     m_liveGen      = m_gen;
@@ -1000,7 +1000,7 @@ bool Dforce::pumpLive()
       wrote          = apply(*m_liveJob, sim->positions()) || wrote;
       return wrote;
     }
-    launchLive(sim, [](ClothBackend& s) { s.settle(); }, true);
+    launchLive(sim, [](cloth::Backend& s) { s.settle(); }, true);
     return wrote;
   }
   if(!m_live || m_scheduled)
@@ -1071,7 +1071,7 @@ bool Dforce::pumpLive()
   }
   launchLive(
       sim,
-      [damping, seconds, late](ClothBackend& s) {
+      [damping, seconds, late](cloth::Backend& s) {
         timing::Accum t("dforce: live, the step");
         s.step(damping, seconds, late);
       },
@@ -1079,7 +1079,7 @@ bool Dforce::pumpLive()
   return wrote;
 }
 
-void Dforce::launchLive(std::shared_ptr<ClothBackend> sim, std::function<void(ClothBackend&)> advance, bool settle)
+void Cloth::launchLive(std::shared_ptr<cloth::Backend> sim, std::function<void(cloth::Backend&)> advance, bool settle)
 {
   LiveRun run;
   run.job    = m_liveJob;
@@ -1122,7 +1122,7 @@ void Dforce::launchLive(std::shared_ptr<ClothBackend> sim, std::function<void(Cl
   m_liveRuns.push_back(std::move(run));
 }
 
-bool Dforce::easeLive(std::chrono::steady_clock::time_point now)
+bool Cloth::easeLive(std::chrono::steady_clock::time_point now)
 {
   if(m_easeFor <= 0)
     return false;
@@ -1155,15 +1155,15 @@ bool Dforce::easeLive(std::chrono::steady_clock::time_point now)
   return writeDeltas(*m_liveJob, m_shown);
 }
 
-std::vector<float> Dforce::liveRest(int mesh, bool drape) const
+std::vector<float> Cloth::liveRest(int mesh, bool drape) const
 {
   // the morph set's kept cage, and a drape's own target taken back out of it (as prepare's skinCage
   // leaves it out), rather than every target summed again
   std::vector<float> rest = m_morphs.morphedCage(mesh);
   if(!drape)
     return rest;
-  const auto   own = m_morphs.cpuTarget(channelOf(mesh), mesh);
-  const double w   = own ? m_morphs.weightOf(channelOf(mesh)) : 0.0;
+  const auto   own = m_morphs.cpuTarget(clothChannel(mesh), mesh);
+  const double w   = own ? m_morphs.weightOf(clothChannel(mesh)) : 0.0;
   if(own && w != 0)
     for(size_t i = 0; i < own->cageIndices.size(); i++)
     {
@@ -1176,7 +1176,7 @@ std::vector<float> Dforce::liveRest(int mesh, bool drape) const
   return rest;
 }
 
-bool Dforce::writeDrape(int mesh, const std::vector<float>& delta)
+bool Cloth::writeDrape(int mesh, const std::vector<float>& delta)
 {
   const Mesh& m = m_scene.meshes[size_t(mesh)];
   if(!m.geo)
@@ -1198,15 +1198,15 @@ bool Dforce::writeDrape(int mesh, const std::vector<float>& delta)
   opts.min    = 0.0;
   opts.max    = 1.0;
   // a target only goes on at a weight: one left at 0 would have this settle run for nothing
-  if(m_morphs.has(channelOf(mesh)))
-    m_morphs.setMany({{channelOf(mesh), 1.0}});
-  m_morphs.replaceCpuTarget(channelOf(mesh), mesh, std::move(target), opts);
+  if(m_morphs.has(clothChannel(mesh)))
+    m_morphs.setMany({{clothChannel(mesh), 1.0}});
+  m_morphs.replaceCpuTarget(clothChannel(mesh), mesh, std::move(target), opts);
   if(m_draped.insert(mesh).second)
     m_version++;
   return true;
 }
 
-std::vector<std::vector<float>> Dforce::deltasOf(const Job& job, const std::vector<std::vector<float>>& positions,
+std::vector<std::vector<float>> Cloth::deltasOf(const Job& job, const std::vector<std::vector<float>>& positions,
                                                  const std::vector<std::vector<float>>* rests, const std::vector<SkinPose>* poses)
 {
   timing::Accum                   t("dforce: the drapes' deltas");
@@ -1247,7 +1247,7 @@ std::vector<std::vector<float>> Dforce::deltasOf(const Job& job, const std::vect
   return out;
 }
 
-bool Dforce::writeDeltas(const Job& job, const std::vector<std::vector<float>>& deltas)
+bool Cloth::writeDeltas(const Job& job, const std::vector<std::vector<float>>& deltas)
 {
   bool wrote = false;
   // an item taken off while this ran is not draped
@@ -1258,17 +1258,17 @@ bool Dforce::writeDeltas(const Job& job, const std::vector<std::vector<float>>& 
     if(deltas[k].empty() || d.mesh < 0 || size_t(d.mesh) >= m_scene.meshes.size()
        || std::find(live.begin(), live.end(), d.mesh) == live.end() || !m_scene.meshes[size_t(d.mesh)].geo)
       continue;
-    timing::Accum t(m_mode == Mode::eSettle ? "dforce: a drape's morph" : "dforce: live, a drape's morph");
+    timing::Accum t(m_mode == ClothMode::eSettle ? "dforce: a drape's morph" : "dforce: live, a drape's morph");
     wrote = writeDrape(d.mesh, deltas[k]) || wrote;
   }
-  if(wrote && m_mode == Mode::eSettle)
+  if(wrote && m_mode == ClothMode::eSettle)
     m_version++;
   return wrote;
 }
 
-bool Dforce::apply(const Job& job, const std::vector<std::vector<float>>& positions)
+bool Cloth::apply(const Job& job, const std::vector<std::vector<float>>& positions)
 {
   return writeDeltas(job, deltasOf(job, positions));
 }
 
-}  // namespace fv::dforce
+}  // namespace fv::physics

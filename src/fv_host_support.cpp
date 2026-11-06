@@ -692,19 +692,19 @@ const fv::WornItem* wornItem(const fv::Figure& fig, int id)
   return it == fig.items.end() ? nullptr : &*it;
 }
 
-fv::dforce::Mode dforceMode(const std::string& name)
+fv::physics::ClothMode dforceMode(const std::string& name)
 {
   if(name == "live")
-    return fv::dforce::Mode::eLive;
+    return fv::physics::ClothMode::eLive;
   if(name == "gpu")
   {
-#ifdef FV_DFORCE_GPU
-    return fv::dforce::Mode::eLiveGpu;
+#ifdef FV_PHYSICS_GPU
+    return fv::physics::ClothMode::eLiveGpu;
 #else
-    throw std::runtime_error("this renderer was built without the GPU cloth solver (FV_DFORCE_GPU)");
+    throw std::runtime_error("this renderer was built without the GPU cloth solver (FV_PHYSICS_GPU)");
 #endif
   }
-  return fv::dforce::Mode::eSettle;
+  return fv::physics::ClothMode::eSettle;
 }
 
 }  // namespace fvhost

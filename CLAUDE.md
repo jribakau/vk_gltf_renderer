@@ -219,6 +219,6 @@ Key CMake options: `USE_DLSS`, `USE_OPTIX_DENOISER`, `USE_OIDN_DENOISER`, `USE_D
 `NVPRO2_ENABLE_nvmcp` (all `ON`; the last one adds the `--mcp` endpoint and fetches
 cpp-mcp at configure time — see [docs/mcp.md](docs/mcp.md)),
 `BUILD_TESTING` (`OFF` — turn on to build unit tests + benchmarks; `ctest` runs the
-unit tests, run the benchmark executable directly), `FV_DFORCE_GPU` (`ON` — the GPU dForce cloth solver, `src/fv_dforce_gpu*` and
-`shaders/dforce_cloth*.slang`, the app's "Live (GPU)" mode; a build without it says so in the
+unit tests, run the benchmark executable directly), `FV_PHYSICS_GPU` (`ON` — the GPU cloth solver, `src/fv_physics_gpu*` and
+`shaders/physics_cloth*.slang`, the app's "Live (GPU)" mode; a build without it says so in the
 protocol's `features` and the app hides the mode).

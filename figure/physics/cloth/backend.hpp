@@ -1,10 +1,9 @@
 #pragma once
 
-// dForce's cloth solver, which moved onto the physics core (docs/physics-plan.md step 12): the cloth
-// is a particle island (figure/physics/cloth/island.hpp, where the solver is described) built from
-// surfaces (figure/physics/cloth/surface.hpp). What stays here is the seam the dForce driver runs a
-// simulation through, the CPU island or the renderer's GPU solver, and the old names, until dForce is
-// retired (step 15).
+// The seam a cloth driver (physics::Cloth, physics/cloth/cloth.hpp) runs a simulation through: the CPU
+// island (CpuBackend, below: physics/cloth/island.hpp, where the solver is described) or the renderer's
+// GPU one (ClothGpu, src/fv_physics_gpu.hpp). Both are built from the same surfaces
+// (physics/cloth/surface.hpp) into the same model.
 
 #include <array>
 #include <cstddef>
@@ -12,34 +11,14 @@
 
 #include <figure/physics/cloth/island.hpp>
 
-namespace fv::dforce {
-
-using SettleMesh    = physics::cloth::Surface;
-using SettleOptions = physics::cloth::Options;
-using ClothModel    = physics::cloth::Model;
-using Edge          = physics::cloth::Distance;
-using EdgeKind      = physics::cloth::DistanceKind;
-using Tri           = physics::cloth::Face;
-using physics::BonePose;
-using physics::poseOf;
-using physics::sweepAt;
-using physics::cloth::holdsLength;
-using physics::cloth::kBodyLayer;
-using physics::cloth::kPlainLayer;
-using physics::cloth::separateStart;
-using physics::cloth::settle;
-
-inline void skinMesh(const SettleMesh& m, const std::vector<Mat4>& bones, float* out)
-{
-  physics::cloth::skin(m, bones, out);
-}
+namespace fv::physics::cloth {
 
 // A simulation, however it runs: the CPU island below, or a GPU one the renderer provides.
-class ClothBackend
+class Backend
 {
 public:
-  virtual ~ClothBackend() = default;
-  // `seconds` of simulated time; 0: SettleOptions::frameDt
+  virtual ~Backend() = default;
+  // `seconds` of simulated time; 0: Options::frameDt
   virtual void  frame(float t0, float t1, float extraDamping = 0, float seconds = 0) = 0;
   virtual void  setTarget(size_t mesh, const std::vector<Mat4>& bones) = 0;
   // Which way is down and how hard, cm/s^2 in the job's space: the figure was turned.
@@ -61,9 +40,9 @@ public:
   // A settle again, from the start, on what it has: for these meshes (their new pose, gravity) and
   // options (a new settle's cancel). One that can't (the CPU's, one that failed) says false, and a new
   // simulation is made instead. Never while it runs.
-  virtual bool restart(std::vector<SettleMesh> /*meshes*/, const SettleOptions& /*opts*/) { return false; }
+  virtual bool restart(std::vector<Surface> /*meshes*/, const Options& /*opts*/) { return false; }
   // Live: a skinned mesh's rest cage in its own space moved by what the pose drives (its correctives) or
-  // a dent, as physics::cloth::Island::setRest: what the next step skins it from. False when it can't
+  // a dent, as Island::setRest: what the next step skins it from. False when it can't
   // (not skinned, another size), and nothing changed. Never while it runs.
   virtual bool setRest(size_t /*mesh*/, std::vector<float> /*restLocal*/) { return false; }
   // Live: the cloth carried with the pose from where the next sweep sets out to fraction `t` of it, each
@@ -95,15 +74,15 @@ private:
 };
 
 // The CPU simulation: the cloth island behind the seam.
-class ClothSim final : public ClothBackend
+class CpuBackend final : public Backend
 {
 public:
-  ClothSim(std::vector<SettleMesh> meshes, const SettleOptions& opts = {});
-  ~ClothSim() override;
-  ClothSim(const ClothSim&)            = delete;
-  ClothSim& operator=(const ClothSim&) = delete;
+  CpuBackend(std::vector<Surface> meshes, const Options& opts = {});
+  ~CpuBackend() override;
+  CpuBackend(const CpuBackend&)            = delete;
+  CpuBackend& operator=(const CpuBackend&) = delete;
 
-  // As physics::cloth::Island's.
+  // As Island's.
   void  frame(float t0, float t1, float extraDamping = 0, float seconds = 0) override;
   void  setTarget(size_t mesh, const std::vector<Mat4>& bones) override;
   bool  setRest(size_t mesh, std::vector<float> restLocal) override;
@@ -114,10 +93,10 @@ public:
   int   substepsPerFrame() const;
   float transitionSeconds() const;
   std::vector<std::vector<float>> positions() const override;
-  const ClothModel&               model() const;
+  const Model&                    model() const;
 
 private:
-  physics::cloth::Island m_island;
+  Island m_island;
 };
 
-}  // namespace fv::dforce
+}  // namespace fv::physics::cloth

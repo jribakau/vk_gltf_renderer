@@ -5,7 +5,8 @@
 // on the node, and one studio/simulation_settings/dynamic_simulation per surface (its `groups` name
 // the material groups). The numbers live on those modifiers' studio_modifier_channels. Some
 // products also write the same names onto the material; those override the modifier when present.
-// A port of src/lib/loaders/dson/dforce.ts. The settle itself is dforce/solver.hpp.
+// A port of src/lib/loaders/dson/dforce.ts. The simulation itself is the physics core's cloth
+// (physics/cloth/cloth.hpp).
 
 #include <map>
 #include <memory>

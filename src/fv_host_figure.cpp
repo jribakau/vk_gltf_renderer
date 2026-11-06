@@ -411,16 +411,16 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
   if(f->fig->morphs && !f->fig->loaded.morphs.mainMeshes.empty())
   {
     const int body = f->fig->loaded.morphs.meshes[f->fig->loaded.morphs.mainMeshes[0]].mesh;
-    f->dforce      = std::make_unique<fv::dforce::Dforce>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
+    f->dforce      = std::make_unique<fv::physics::Cloth>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
     f->dforce->playing = [this] { return renderer->editAnimationControl().play; };
-#ifdef FV_DFORCE_GPU
+#ifdef FV_PHYSICS_GPU
     // the GPU solver, for a settle and for mode "gpu": on a queue of its own it settles and steps on the
     // pool, else on the application thread
-    f->dforce->makeGpuSim = [this](std::vector<fv::dforce::SettleMesh> meshes, const fv::dforce::SettleOptions& opts)
-        -> std::shared_ptr<fv::dforce::ClothBackend> {
+    f->dforce->makeGpuSim = [this](std::vector<fv::physics::cloth::Surface> meshes, const fv::physics::cloth::Options& opts)
+        -> std::shared_ptr<fv::physics::cloth::Backend> {
       if(!app)
         return nullptr;
-      auto sim = std::make_shared<DforceGpu>(renderer->deviceAllocator(), app, std::move(meshes), opts);
+      auto sim = std::make_shared<ClothGpu>(renderer->deviceAllocator(), app, std::move(meshes), opts);
       if(!sim->valid())
       {
         notice("dForce: the GPU solver could not start; simulating on the CPU");

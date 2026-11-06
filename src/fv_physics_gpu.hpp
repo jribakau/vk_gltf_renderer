@@ -19,9 +19,10 @@
 
 #pragma once
 
-// The dForce cloth solver on the GPU: experimental, built with FV_DFORCE_GPU. The same ClothModel
-// the CPU solver builds (figure/dforce/solver.hpp) as buffers, stepped by the compute kernels of
-// shaders/dforce_cloth.comp.slang. A frame is one command buffer: the kinematic vertices' start and
+// The cloth solver on the GPU, built with FV_PHYSICS_GPU: the physics core's cloth on the GPU, a
+// backend of the cloth driver's (physics/cloth/backend.hpp). The same cloth::Model the CPU island
+// builds (figure/physics/cloth/model.hpp) as buffers, stepped by the compute kernels of
+// shaders/physics_cloth.comp.slang. A frame is one command buffer: the kinematic vertices' start and
 // end positions and the body's collision grid go up (the host skins the kinematic vertices and
 // builds the grid, as the CPU solver does), the substeps are recorded, the positions come back.
 // A frame is submitted and waited on at once. On a queue of its own (useQueue: a second queue the
@@ -52,7 +53,7 @@
 // the stretch edges, the start separated from the body, the sweep after a collision pass, a vertex
 // lost behind a face of a lower layer put back at a frame's start and a resting vertex held on its
 // face every substep (recoverMain, holdMain), and a live step that holds the pose reached until a
-// new target comes (ClothBackend::step).
+// new target comes (cloth::Backend::step).
 //
 // What the frames needn't wait for is made on the pool: the model, the colours and the start, which on a hair of
 // 340,000 vertices take seconds. The buffers and pipelines come on the owner's thread once that is done, at the first
@@ -65,7 +66,7 @@
 // Other shapes (a dial turned) make the model again on the pool, with the kernels kept.
 //
 // A frame that takes over 250 ms is logged with what it saw (such a frame is the one before a
-// device loss: Windows resets a GPU held for about two seconds). FV_DFORCE_GPU_DEBUG in the
+// device loss: Windows resets a GPU held for about two seconds). FV_PHYSICS_GPU_DEBUG in the
 // environment leaves a kernel out, for bisecting one: 1 the recovery, 2 the hold; 4 solves a dispatch
 // a colour and 8 on the renderer's queue, as before step 13; 16 makes a new simulation for every settle,
 // as before the driver kept one; 256 runs the collision passes and the recovery a thread a vertex; 512 stops
@@ -78,13 +79,13 @@
 
 #include <nvvk/resource_allocator.hpp>
 
-#include <figure/dforce/solver.hpp>
+#include <figure/physics/cloth/backend.hpp>
 
 namespace nvapp {
 class Application;
 }
 
-class DforceGpu final : public fv::dforce::ClothBackend
+class ClothGpu final : public fv::physics::cloth::Backend
 {
 public:
   // How it runs, for the GPU cloth bench (src/tools/fv_cloth_bench.cpp, physics-plan step 13a); the app
@@ -104,7 +105,7 @@ public:
     } crossing = Crossing::eHalo;
     bool timestamps   = false;  // time each frame on the GPU (stats().gpuMs)
     // a garment meets another garment's faces, and its own where it collides with itself (Self Collide), as
-    // on the CPU island (physics-plan step 13d). FV_DFORCE_GPU_DEBUG's 64 leaves them out, 128 a garment's own
+    // on the CPU island (physics-plan step 13d). FV_PHYSICS_GPU_DEBUG's 64 leaves them out, 128 a garment's own
     bool clothCollide = true;
   };
   // What it has done so far.
@@ -128,11 +129,11 @@ public:
     size_t crossingRows = 0, haloRows = 0, rows = 0;
   };
 
-  DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, std::vector<fv::dforce::SettleMesh> meshes, const fv::dforce::SettleOptions& opts,
+  ClothGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, std::vector<fv::physics::cloth::Surface> meshes, const fv::physics::cloth::Options& opts,
             const Options& gpu = {});
-  ~DforceGpu() override;
-  DforceGpu(const DforceGpu&)            = delete;
-  DforceGpu& operator=(const DforceGpu&) = delete;
+  ~ClothGpu() override;
+  ClothGpu(const ClothGpu&)            = delete;
+  ClothGpu& operator=(const ClothGpu&) = delete;
 
   void  frame(float t0, float t1, float extraDamping = 0, float seconds = 0) override;
   void  setTarget(size_t mesh, const std::vector<fv::Mat4>& bones) override;
@@ -145,8 +146,8 @@ public:
   float lastMove() const override { return m_lastMove; }
   std::vector<std::vector<float>> positions() const override;
   bool                            ownerThreadOnly() const override;
-  // ClothBackend's: true unless it failed. The same shapes keep the model; others make it again on the pool.
-  bool                            restart(std::vector<fv::dforce::SettleMesh> meshes, const fv::dforce::SettleOptions& opts) override;
+  // cloth::Backend's: true unless it failed. The same shapes keep the model; others make it again on the pool.
+  bool                            restart(std::vector<fv::physics::cloth::Surface> meshes, const fv::physics::cloth::Options& opts) override;
 
   // The queue every simulation made after this runs on, when the device has one beside the renderer's;
   // given once at start-up. Without it a simulation runs on the renderer's queue, on its thread.

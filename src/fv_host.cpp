@@ -42,7 +42,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   // the figure library's phase timers (loads, wears, glTF builds) go to the log
   fv::timing::setSink([](const std::string& line) { LOGI("%s\n", line.c_str()); });
   // what this build has beyond the protocol, so the app offers only that
-#ifdef FV_DFORCE_GPU
+#ifdef FV_PHYSICS_GPU
   s.protocol->setFeatures({{"dforceGpu", true}});
 #else
   s.protocol->setFeatures({{"dforceGpu", false}});

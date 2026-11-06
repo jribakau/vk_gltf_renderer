@@ -40,7 +40,7 @@
 
 #include <functional>
 
-#include <figure/dforce/skin.hpp>
+#include <figure/physics/skin.hpp>
 #include <figure/morph/morph_set.hpp>
 #include <figure/physics/collide/triangle_set.hpp>
 #include <figure/physics/rigid/world.hpp>
@@ -231,7 +231,7 @@ private:
   std::vector<float>           m_targets;  // last frame's
   FleshSettings                m_settings;
   std::unique_ptr<FleshSolver> m_solver;
-  dforce::CageSkin             m_skin;
+  physics::CageSkin             m_skin;
   std::vector<float>           m_displacement;
   std::vector<float>           m_scratch;
   std::vector<float>           m_rest;  // the lobes' cage as the morphs had it last frame

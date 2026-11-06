@@ -10,7 +10,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-#include <figure/dforce/skin.hpp>
+#include <figure/physics/skin.hpp>
 #include <figure/physics/flesh/flesh.hpp>
 #include <figure/physics/contact/contact.hpp>
 #include <figure/physics/flesh/follow.hpp>
@@ -350,7 +350,7 @@ TEST(Soft, subsetSkinMatchesTheGpuSkinReference)
     m           = glm::rotate(m, glm::radians(20.f * float(j + 1)), glm::normalize(glm::vec3(1.f, float(j), 2.f)));
     joints.push_back(m);
   }
-  fv::dforce::SkinPose pose;
+  fv::physics::SkinPose pose;
   pose.bind = pose.bindInverse = fv::Mat4{};
   for(const glm::mat4& j : joints)
   {
@@ -360,7 +360,7 @@ TEST(Soft, subsetSkinMatchesTheGpuSkinReference)
         m.e[size_t(c * 4 + r)] = j[c][r];
     pose.bones.push_back(m);
   }
-  fv::dforce::CageSkin skin;
+  fv::physics::CageSkin skin;
   const int            n = 40;
   std::vector<float>   rest;
   for(int v = 0; v < n; v++)
@@ -385,7 +385,7 @@ TEST(Soft, subsetSkinMatchesTheGpuSkinReference)
   std::vector<uint32_t> some;
   for(uint32_t v = 1; v < uint32_t(n); v += 3)
     some.push_back(v);
-  const std::vector<float> cpu = fv::dforce::skinLocal(rest, skin, pose, some);
+  const std::vector<float> cpu = fv::physics::skinLocal(rest, skin, pose, some);
 
   std::vector<glm::mat3>         normalMats;
   std::vector<rs::JointDualQuat> dqs;

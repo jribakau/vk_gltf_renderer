@@ -23,7 +23,7 @@
 #include <cstring>
 #include <set>
 
-#include <figure/dforce/skin.hpp>
+#include <figure/physics/skin.hpp>
 #include <figure/materials/procedural.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
@@ -812,7 +812,7 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       // DAZ's order: the cage's own influences, as dForce and the collider skin the cage
       if(f.refine && m.skinned() && m.cageSkin.start.size() == r.cage.size() + 1)
       {
-        const dforce::CageSkin cs    = dforce::cageSkin(m.cageSkin);
+        const physics::CageSkin cs    = physics::cageSkin(m.cageSkin);
         const size_t           n     = r.cage.size();
         const bool             eight = cs.index8.size() == n * 8;
         const auto&            index = eight ? cs.index8 : cs.index;

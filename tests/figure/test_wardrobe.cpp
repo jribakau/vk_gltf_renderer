@@ -19,7 +19,7 @@
 #include <thread>
 #include <vector>
 
-#include <figure/dforce/skin.hpp>
+#include <figure/physics/skin.hpp>
 #include <figure/figure.hpp>
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/gltf/gltf_check.hpp>
@@ -387,7 +387,7 @@ TEST(Wardrobe, AConformingItemKeepsItsBindingForTheFlesh)
     EXPECT_NEAR(out[v * 3], 0, 1e-5) << v;
     EXPECT_NEAR(out[v * 3 + 1], 1, 1e-5) << v;
   }
-  const std::vector<int> nodeOf = fv::dforce::nodeOfMesh(scene);
+  const std::vector<int> nodeOf = fv::physics::nodeOfMesh(scene);
   const fv::Mat4         a = scene.world(nodeOf[size_t(body)]), b = scene.world(nodeOf[size_t(follow.mesh)]);
   for(size_t i = 0; i < 16; i++)
     EXPECT_NEAR(a.e[i], b.e[i], 1e-9) << i;

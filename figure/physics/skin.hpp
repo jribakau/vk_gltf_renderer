@@ -18,7 +18,7 @@
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/scene/graph.hpp>
 
-namespace fv::dforce {
+namespace fv::physics {
 
 // How a mesh is skinned: each bone's skin matrix (its world matrix times its inverse bind), and the
 // mesh's bind matrix and its inverse.
@@ -66,4 +66,4 @@ std::vector<float> skinLocal(std::span<const float> rest, const CageSkin& skin, 
 // vertex whose blended 3x3 is singular keeps a zero delta.
 std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<float>& simulated, const CageSkin& skin, const SkinPose& pose);
 
-}  // namespace fv::dforce
+}  // namespace fv::physics

@@ -2,8 +2,7 @@
 
 // What a cloth island is made of (docs/physics-plan.md step 12): a surface per mesh of the job, with
 // its cage at the memorized pose and at the target, its polygons, the simulation's settings per vertex,
-// and how it is skinned. A collider is a surface the cloth meets and doesn't move. dForce's SettleMesh,
-// moved here unchanged.
+// and how it is skinned. A collider is a surface the cloth meets and doesn't move.
 
 #include <array>
 #include <cstdint>
@@ -68,7 +67,7 @@ constexpr int kPlainLayer = 0;
 // The same surface but for its pose: everything a cloth model is built from (the rest cage, the polygons,
 // the settings per vertex, the skin and its space) is equal, and only `posed`, the bones' matrices (not
 // how many) and `gravity` may differ. A simulation kept between settles keeps its model for such a
-// surface (ClothBackend::restart). A field added to Surface that the model reads goes in here too.
+// surface (cloth::Backend::restart). A field added to Surface that the model reads goes in here too.
 bool sameButPose(const Surface& a, const Surface& b);
 // The first of those that differs ("rest", "strength", ...), or null when none does: for the log. With
 // `colliderRest`, a collider's rest cage (`rest`, `restLocal`, of the same size) counts as its pose too:

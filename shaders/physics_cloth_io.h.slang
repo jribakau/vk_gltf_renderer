@@ -17,9 +17,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// The dForce cloth solver on the GPU (shaders/dforce_cloth.comp.slang, src/fv_dforce_gpu.cpp): the
-// same model the CPU solver builds (figure/dforce/solver.hpp, ClothModel), as buffers. Everything
-// static sits behind one DforceModel the push constant points at; the push constant carries what
+// The cloth solver on the GPU (shaders/physics_cloth.comp.slang, src/fv_physics_gpu.cpp): the
+// same model the CPU island builds (figure/physics/cloth/model.hpp, cloth::Model), as buffers. Everything
+// static sits behind one ClothGpuModel the push constant points at; the push constant carries what
 // changes between dispatches.
 
 #ifndef DFORCE_CLOTH_IO_H
@@ -38,7 +38,7 @@ NAMESPACE_SHADERIO_BEGIN()
 #define DFORCE_EDGE_BEND 2
 #define DFORCE_EDGE_REACH 3
 
-struct DforceEdge
+struct ClothGpuEdge
 {
   int   a, b;
   float rest, alpha;
@@ -46,7 +46,7 @@ struct DforceEdge
   float ratio, buckle, pad;
 };
 
-struct DforceTri
+struct ClothGpuTri
 {
   int   a, b, c, layer;
   float offset, friction;
@@ -56,13 +56,13 @@ struct DforceTri
 
 // A cell of the collision grid, open-addressed by the hash of its coordinates: `start` is -1 while
 // the slot is empty, else where its faces begin in `items` and how many there are.
-struct DforceCell
+struct ClothGpuCell
 {
   int x, y, z, start;
   int count, pad0, pad1, pad2;
 };
 
-struct DforceModel
+struct ClothGpuModel
 {
   float3* x;
   float3* prev;
@@ -79,10 +79,10 @@ struct DforceModel
   int*    layer;
   int*    collides;
   float3* grav;
-  DforceEdge* edges;  // sorted by colour; no two edges of a colour share a vertex
+  ClothGpuEdge* edges;  // sorted by colour; no two edges of a colour share a vertex
   float*      lam;
-  DforceTri*  tris;  // the faces the pose moves (the body)
-  DforceCell* cells;
+  ClothGpuTri*  tris;  // the faces the pose moves (the body)
+  ClothGpuCell* cells;
   int*        items;
   // each face's box where the pose has it at the pass under way (boxesMain), two a face: its least corner and its
   // offset, its greatest and its layer; a little larger than the face's, so a face whose box misses is
@@ -94,8 +94,8 @@ struct DforceModel
   // where they were at the frame's start (`frameStart`, every vertex); a collision pass reads them from
   // `snap` and `cprevSnap`, the positions and the last pass's as the pass began, so what one vertex
   // finds doesn't hang on how far the others have got
-  DforceTri*  clothTris;
-  DforceCell* clothCells;
+  ClothGpuTri*  clothTris;
+  ClothGpuCell* clothCells;
   int*        clothItems;
   int*        meshOf;
   int*        ring2Start;
@@ -113,7 +113,7 @@ struct DforceModel
   // them); its colour k is clusterEdges[clusterColourStart[c * clusterColours + k] ..], each row's ends
   // local indices into those vertices; its tethered vertices clusterSoft[clusterSoftStart[c] ..] (x the
   // local index, y the soft index)
-  DforceEdge* clusterEdges;
+  ClothGpuEdge* clusterEdges;
   float*      clusterLam;
   int*        clusterVerts;
   int*        clusterVertStart;
@@ -127,9 +127,9 @@ struct DforceModel
   float       cellSize, depth, cap, maxSpeed, searchReach, recoverDepth;
 };
 
-struct DforcePushConstant
+struct ClothGpuPushConstant
 {
-  DforceModel* model;
+  ClothGpuModel* model;
   uint         edgeStart, edgeCount;  // this dispatch's colour
   float        dt;                    // the substep
   float        t;                     // where in the frame the kinematic vertices are at the substep's end

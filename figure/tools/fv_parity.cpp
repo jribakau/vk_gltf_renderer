@@ -66,8 +66,8 @@
 #include <unordered_map>
 
 #include <figure/dson/store.hpp>
-#include <figure/dforce/dforce.hpp>
-#include <figure/dforce/skin.hpp>
+#include <figure/physics/cloth/cloth.hpp>
+#include <figure/physics/skin.hpp>
 #include <figure/physics/cloth/island.hpp>
 #include <figure/physics/cloth/job.hpp>
 #include <figure/physics/cloth/report.hpp>
@@ -188,7 +188,7 @@ Json fitReport(const fv::Figure& fig)
 {
   const fv::SceneGraph& scene  = fig.loaded.scene;
   const auto            worlds = scene.worlds();
-  const std::vector<int> nodeOf = fv::dforce::nodeOfMesh(scene);
+  const std::vector<int> nodeOf = fv::physics::nodeOfMesh(scene);
   const auto& ctx = fig.loaded.morphs;
   if(ctx.mainMeshes.empty())
     throw std::runtime_error("fit without a figure body");
@@ -460,13 +460,13 @@ Json tightReport(fv::Figure& fig, const std::string& what, float amount)
   const auto posedCage = [&](int mesh) {
     const fv::SceneGraph& scene  = fig.loaded.scene;
     const auto            worlds = scene.worlds();
-    const auto            nodeOf = fv::dforce::nodeOfMesh(scene);
+    const auto            nodeOf = fv::physics::nodeOfMesh(scene);
     const fv::Mat4        to     = fv::inverse(worlds[size_t(fig.loaded.root)]) * worlds[size_t(nodeOf[size_t(mesh)])];
     const auto            rest   = fig.morphs->morphedCage(mesh);
     const fv::Mesh&       m      = scene.meshes[size_t(mesh)];
     if(!m.skinned() || m.cageSkin.start.size() != rest.size() / 3 + 1)
-      return fv::dforce::transformPoints(to, rest);
-    return fv::dforce::transformPoints(to, fv::dforce::skinLocal(rest, fv::dforce::cageSkin(m.cageSkin), fv::dforce::currentSkin(scene, worlds, nodeOf, mesh)));
+      return fv::physics::transformPoints(to, rest);
+    return fv::physics::transformPoints(to, fv::physics::skinLocal(rest, fv::physics::cageSkin(m.cageSkin), fv::physics::currentSkin(scene, worlds, nodeOf, mesh)));
   };
   const auto measure = [&](const char* name) {
     const auto bodyNow = posedCage(body);
@@ -1128,9 +1128,9 @@ int main(int argc, char** argv)
         std::vector<float>         scratch;
         const auto                 view   = loaded->morphs->morphedCageView(body, scratch);
         const auto                 worlds = scene.worlds();
-        const auto                 nodeOf = fv::dforce::nodeOfMesh(scene);
+        const auto                 nodeOf = fv::physics::nodeOfMesh(scene);
         const fv::Mat4             toRoot = inverse(worlds[size_t(root)]) * (nodeOf[size_t(body)] >= 0 ? worlds[size_t(nodeOf[size_t(body)])] : fv::Mat4{});
-        const std::vector<float>   rest   = fv::dforce::transformPoints(toRoot, std::vector<float>(view.begin(), view.end()));
+        const std::vector<float>   rest   = fv::physics::transformPoints(toRoot, std::vector<float>(view.begin(), view.end()));
         const std::vector<uint8_t> parts  = fv::physics::bodyParts(scene, m);
         const double prepareMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
         fv::physics::ContactInput in;
@@ -1259,7 +1259,7 @@ int main(int argc, char** argv)
             bodyOffsets[m.vertex[p] * 3ull + a] = float(d[a]);
           bodyMost = std::max(bodyMost, std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
         }
-        const std::vector<int> nodeOf = fv::dforce::nodeOfMesh(loaded->loaded.scene);
+        const std::vector<int> nodeOf = fv::physics::nodeOfMesh(loaded->loaded.scene);
         Json                   worn   = Json::array();
         for(const fv::WornItem& w : loaded->items)
           for(const fv::WornItem::Follow& follow : w.follows)
@@ -1304,7 +1304,7 @@ int main(int argc, char** argv)
         const std::string label = step["dforce"].get<std::string>();
         const int         body  = ctx.meshes[ctx.mainMeshes[0]].mesh;
         fv::SceneGraph&   scene = loaded->loaded.scene;
-        fv::dforce::Dforce d(scene, *loaded->morphs, body, loaded->loaded.root);
+        fv::physics::Cloth d(scene, *loaded->morphs, body, loaded->loaded.root);
         // as the host sets it: the figure's shown clothing collides, its anatomy and hair do not
         if(step.value("colliders", true))
           d.collidesWith = [fig = loaded.get()](int mesh) {
@@ -1341,7 +1341,7 @@ int main(int argc, char** argv)
           for(auto [mesh, strands] : p->hairs)
           {
             strands.volume = step.value("volume", strands.volume);
-            fv::dforce::StrandOptions hairOpts;
+            fv::physics::hair::StrandOptions hairOpts;
             hairOpts.spacing       = step.value("spacing", hairOpts.spacing);
             hairOpts.maxFrames     = step.value("frames", hairOpts.maxFrames);
             hairOpts.substeps      = step.value("substeps", hairOpts.substeps);
@@ -1350,7 +1350,7 @@ int main(int argc, char** argv)
               colliderTris += b.tris.size() / 3;
             std::cout << "hair colliders: " << p->bodies.size() << " meshes, " << colliderTris << " tris" << std::endl;
             const auto  hairStart  = std::chrono::steady_clock::now();
-            const auto  after      = fv::dforce::settleStrands(strands, p->bodies, hairOpts);
+            const auto  after      = fv::physics::hair::settle(strands, p->bodies, hairOpts);
             const double hairMs    = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hairStart).count();
             // what landing it costs: the move as the mesh's render target, every drawn hair
             fv::mesh::CageDeltas landed;
@@ -1648,7 +1648,7 @@ int main(int argc, char** argv)
             throw std::runtime_error("the driver wrote no drape");
           loaded->morphs->flush();
           const auto     worlds    = scene.worlds();
-          const auto     nodeOf    = fv::dforce::nodeOfMesh(scene);
+          const auto     nodeOf    = fv::physics::nodeOfMesh(scene);
           const fv::Mat4 fromWorld = inverse(worlds[size_t(loaded->loaded.root)]);
           Json           applied   = Json::array();
           for(const auto& [mesh, slot] : p->drapes)
@@ -1656,9 +1656,9 @@ int main(int argc, char** argv)
             const fv::Mesh&          m    = scene.meshes[size_t(mesh)];
             const std::vector<float> cage = loaded->morphs->morphedCage(mesh);
             const std::vector<float> posed =
-                m.skinned() ? fv::dforce::skinLocal(cage, fv::dforce::cageSkin(m.cageSkin), fv::dforce::currentSkin(scene, worlds, nodeOf, mesh)) : cage;
+                m.skinned() ? fv::physics::skinLocal(cage, fv::physics::cageSkin(m.cageSkin), fv::physics::currentSkin(scene, worlds, nodeOf, mesh)) : cage;
             const fv::Mat4 to = fromWorld * (nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : fv::Mat4{});
-            const auto     inSpace = fv::dforce::transformPoints(to, posed);
+            const auto     inSpace = fv::physics::transformPoints(to, posed);
             Json           report  = drapeReport(sim.model(), size_t(slot), p->bodies[size_t(slot)], inSpace, p->bodies[0], out[0]);
             report["mesh"]         = m.name;
             applied.push_back(report);

@@ -1,7 +1,9 @@
 #pragma once
 
-// dForce on the figure: drapes the worn dynamic surfaces and writes the drape back as a hidden
-// morph. Two ways of running:
+// Cloth on the figure (physics-plan step 15: what was dForce's driver): drapes the worn surfaces DAZ's
+// dForce settings make dynamic, on the physics core's cloth island or the renderer's GPU solver, and
+// writes the drape back as a hidden morph. The wire, the scene file and the channels keep the name
+// "dforce": they name DAZ's content, not this solver. Two ways of running:
 //
 // - Settle (the default): one settle for the pose, scheduled once the pose or shape stops changing.
 //   A newer pose, morph or wear bumps the generation, and a finished job applies only if it is still
@@ -38,7 +40,7 @@
 #include <string>
 #include <vector>
 
-#include <figure/dforce/strands.hpp>
+#include <figure/physics/hair/strands.hpp>
 #include <figure/physics/cloth/coarse.hpp>
 #include <figure/math/xform.hpp>
 #include <figure/morph/morph_set.hpp>
@@ -47,20 +49,17 @@
 namespace fv::physics::cloth {
 struct Surface;
 struct Options;
+class Backend;
 }  // namespace fv::physics::cloth
 
-namespace fv::dforce {
+namespace fv::physics {
 
 struct SkinPose;
 
-class ClothBackend;
-using SettleMesh    = physics::cloth::Surface;
-using SettleOptions = physics::cloth::Options;
-
 // The hidden channel a mesh's drape is stored as.
-std::string channelOf(int mesh);
+std::string clothChannel(int mesh);
 
-enum class Mode
+enum class ClothMode
 {
   eSettle,
   eLive,
@@ -68,15 +67,15 @@ enum class Mode
 };
 
 // Makes a simulation for live mode on the GPU; null when the build has none (live then runs on the CPU).
-using MakeSim = std::function<std::shared_ptr<ClothBackend>(std::vector<SettleMesh>, const SettleOptions&)>;
+using MakeClothSim = std::function<std::shared_ptr<cloth::Backend>(std::vector<cloth::Surface>, const cloth::Options&)>;
 
-class Dforce
+class Cloth
 {
 public:
   // `bodyMesh` is the figure's body (always a collider, under every cloth layer); -1 without one.
   // `root` is the figure's root node: the settle runs in its space (centimetres, the figure upright).
-  Dforce(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int root);
-  ~Dforce();
+  Cloth(SceneGraph& scene, morph::MorphSet& morphs, int bodyMesh, int root);
+  ~Cloth();
 
   // True while a clip is playing: in settle mode the last drape stays until playback stops.
   std::function<bool()> playing;
@@ -89,7 +88,7 @@ public:
   // for the next; unset: nothing. For a test, to hold them.
   std::function<void()> beforeLiveDrapes;
   // The GPU simulation, when the renderer offers one.
-  MakeSim makeGpuSim;
+  MakeClothSim makeGpuSim;
   // Whether a shown mesh with no simulation modifier is a collider the cloth meets (a belt, a bra,
   // shoes): DAZ collides with every visible object. Unset: every one.
   std::function<bool(int mesh)> collidesWith;
@@ -108,7 +107,7 @@ public:
   // Whether anything worn would be draped.
   bool active() const;
   bool enabled() const { return m_enabled; }
-  Mode mode() const { return m_mode; }
+  ClothMode mode() const { return m_mode; }
   // A settle is waiting out its debounce or running (in live mode: the simulation is being built).
   // A settle runs on the GPU solver: the still has little to gain from the GPU meanwhile.
   bool settlingOnGpu() const;
@@ -131,7 +130,7 @@ public:
   void setEnabled(bool on);
   // Settle or live; switching to live starts with a settle. Live on the GPU without `makeGpuSim`
   // runs on the CPU.
-  void setMode(Mode mode);
+  void setMode(ClothMode mode);
   // Drops a pending or running settle (live: the simulation).
   void cancel();
 
@@ -150,11 +149,11 @@ public:
   // the job's space, slot by slot, and which slots are drapes (mesh, slot). None when nothing drapes.
   struct Prepared
   {
-    std::vector<SettleMesh>          bodies;
+    std::vector<cloth::Surface>          bodies;
     std::vector<int>                 slotMesh;
     std::vector<std::pair<int, int>> drapes;
     // strand hair that falls: its mesh and its strands, against `bodies`
-    std::vector<std::pair<int, StrandSet>> hairs;
+    std::vector<std::pair<int, hair::StrandSet>> hairs;
     // per drape: its light copy, which is in `bodies` in its place (null: the cloth itself)
     std::vector<std::shared_ptr<const physics::cloth::CoarseCloth>> light;
   };
@@ -183,7 +182,7 @@ private:
   bool                           pumpLive();
   // Live: `advance` (a step, or the settle that begins live) run on `sim` on the pool, then its drapes made
   // from where it left the cloth, as a run at the back of m_liveRuns.
-  void                           launchLive(std::shared_ptr<ClothBackend> sim, std::function<void(ClothBackend&)> advance, bool settle);
+  void                           launchLive(std::shared_ptr<cloth::Backend> sim, std::function<void(cloth::Backend&)> advance, bool settle);
   // Live: the drapes a frame further from what was shown when the last step landed toward that step's.
   // True when it wrote.
   bool                           easeLive(std::chrono::steady_clock::time_point now);
@@ -199,7 +198,7 @@ private:
   std::array<float, 3> m_settleGravity{0, 0, 0};
 
   bool                                  m_enabled   = true;
-  Mode                                  m_mode      = Mode::eSettle;
+  ClothMode                                  m_mode      = ClothMode::eSettle;
   bool                                  m_scheduled = false;
   std::chrono::steady_clock::time_point m_due;
   uint64_t                              m_gen = 0;
@@ -207,10 +206,10 @@ private:
   std::shared_ptr<Job>                           m_snapshot;
   std::future<std::vector<std::vector<float>>>   m_job;
   // a settle on the GPU, a slice a frame on this thread; m_snapshot is its job
-  std::shared_ptr<ClothBackend>                  m_settling;
-  // the GPU solver of the last settle, kept for the next (ClothBackend::restart): for the same garments
+  std::shared_ptr<cloth::Backend>                  m_settling;
+  // the GPU solver of the last settle, kept for the next (cloth::Backend::restart): for the same garments
   // and shapes it keeps its model and buffers. It goes when dForce is turned off or the mode changes
-  std::shared_ptr<ClothBackend>                  m_gpuSim;
+  std::shared_ptr<cloth::Backend>                  m_gpuSim;
   bool                                           m_skippedPlaying = false;  // an edit came while a clip played
   std::shared_ptr<std::atomic<bool>>             m_jobStale;                // m_job's: an edit has made it out of date
   bool                                           m_jobOnGpu = false;        // m_job runs on the GPU solver
@@ -221,7 +220,7 @@ private:
   std::shared_ptr<std::atomic<bool>>             m_hairStale;
   uint64_t                                       m_hairGen = 0;
   // live: the simulation, what it was built from, and the bones it was given
-  std::shared_ptr<ClothBackend>                  m_live;
+  std::shared_ptr<cloth::Backend>                  m_live;
   std::shared_ptr<Job>                           m_liveJob;
   // Live: the steps in flight, in the order they began, each the step and then its drapes' deltas on the
   // pool: `stepped` is ready once the simulation is free for the next (its positions taken), `drapes` once
@@ -273,4 +272,4 @@ private:
   mutable std::map<uint64_t, std::shared_ptr<const physics::cloth::CoarseCloth>> m_light;
 };
 
-}  // namespace fv::dforce
+}  // namespace fv::physics

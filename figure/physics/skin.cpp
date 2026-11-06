@@ -1,4 +1,4 @@
-#include <figure/dforce/skin.hpp>
+#include <figure/physics/skin.hpp>
 
 #include <algorithm>
 #include <array>
@@ -6,7 +6,7 @@
 
 #include <figure/jobs/pool.hpp>
 
-namespace fv::dforce {
+namespace fv::physics {
 
 namespace {
 
@@ -390,4 +390,4 @@ std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<
   return out;
 }
 
-}  // namespace fv::dforce
+}  // namespace fv::physics

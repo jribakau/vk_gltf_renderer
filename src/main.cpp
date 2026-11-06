@@ -53,8 +53,8 @@
 #include "frame_stream.hpp"
 #include "frame_present.hpp"
 #include "fv_host.hpp"
-#ifdef FV_DFORCE_GPU
-#include "fv_dforce_gpu.hpp"
+#ifdef FV_PHYSICS_GPU
+#include "fv_physics_gpu.hpp"
 #endif
 #include <figure/dson/store.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
@@ -337,9 +337,9 @@ auto main(int argc, char** argv) -> int
   };
 
   // The graphics queue, and with the GPU cloth solver a second for its compute, so a drape runs beside
-  // the frames (fv_dforce_gpu.hpp; compute only where the device has such a family)
+  // the frames (fv_physics_gpu.hpp; compute only where the device has such a family)
   vkSetup.queues = {{VK_QUEUE_GRAPHICS_BIT}};
-#ifdef FV_DFORCE_GPU
+#ifdef FV_PHYSICS_GPU
   vkSetup.queues.push_back(VK_QUEUE_COMPUTE_BIT);
 #endif
 
@@ -492,7 +492,7 @@ auto main(int argc, char** argv) -> int
 
   // Create the Vulkan context
   nvvk::Context vkContext;
-#ifdef FV_DFORCE_GPU
+#ifdef FV_PHYSICS_GPU
   // a device with one queue: the cloth shares the renderer's
   if(vkSetup.queues.size() > 1 && vkContext.init(vkSetup) != VK_SUCCESS)
   {
@@ -605,9 +605,9 @@ auto main(int argc, char** argv) -> int
   appInfo.device         = vkContext.getDevice();
   appInfo.physicalDevice = vkContext.getPhysicalDevice();
   appInfo.queues         = vkContext.getQueueInfos();
-#ifdef FV_DFORCE_GPU
+#ifdef FV_PHYSICS_GPU
   if(vkContext.getQueueInfos().size() > 1)
-    DforceGpu::useQueue(vkContext.getQueueInfos()[1]);
+    ClothGpu::useQueue(vkContext.getQueueInfos()[1]);
 #endif
   appInfo.useMenu        = false;
   // Settings come from the defaults and the command line, so the same command line gives the same

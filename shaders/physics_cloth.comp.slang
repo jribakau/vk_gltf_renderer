@@ -19,9 +19,9 @@
 
 // The dForce cloth solver on the GPU: one substep is integrate, one dispatch per colour of edges
 // (then the stretch colours again, a few times), the tethers of partial strength, a collision pass
-// on some substeps, then velocities. The host (src/fv_dforce_gpu.cpp) records the substeps of a
+// on some substeps, then velocities. The host (src/fv_physics_gpu.cpp) records the substeps of a
 // frame and reads the positions back. The physics follows the CPU solver
-// (figure/dforce/solver.cpp): XPBD with small steps, kinematic vertices swept through the frame,
+// (figure/physics/cloth/backend.cpp): XPBD with small steps, kinematic vertices swept through the frame,
 // the side of a face read from the vertex's last pass, contacts absorbing normal motion.
 // Differences: every free vertex looks for faces on every pass, a cloth's own faces are looked for
 // from where they were at the frame's start (the CPU's grid of them is made every fourth pass), and
@@ -30,19 +30,19 @@
 // a lower layer is put back at the frame's start (recoverMain), and one resting on a face is held
 // outside it every substep (holdMain).
 
-#include "dforce_cloth_io.h.slang"
+#include "physics_cloth_io.h.slang"
 
 [[vk::push_constant]]
-ConstantBuffer<DforcePushConstant> pc;
+ConstantBuffer<ClothGpuPushConstant> pc;
 
 // Positions of a vertex the pose moves, at fraction t of the frame.
-float3 kinematicAt(DforceModel m, int v, float t)
+float3 kinematicAt(ClothGpuModel m, int v, float t)
 {
   return lerp(m.kinStart[v], m.kinEnd[v], t);
 }
 
 // A face's corners at fraction t: its vertices are kinematic.
-void faceAt(DforceModel m, DforceTri tri, float t, out float3 a, out float3 b, out float3 c)
+void faceAt(ClothGpuModel m, ClothGpuTri tri, float t, out float3 a, out float3 b, out float3 c)
 {
   a = kinematicAt(m, tri.a, t);
   b = kinematicAt(m, tri.b, t);
@@ -111,7 +111,7 @@ int cellOf(float p, float cellSize)
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void integrateMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m = *pc.model;
+  ClothGpuModel m = *pc.model;
   uint        k = tid.x;
   if(k < m.numKinematic)
   {
@@ -147,7 +147,7 @@ void integrateMain(uint3 tid: SV_DispatchThreadID)
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void attachMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m = *pc.model;
+  ClothGpuModel m = *pc.model;
   if(tid.x >= m.numSoft)
     return;
   int    i      = m.softVerts[tid.x];
@@ -170,9 +170,9 @@ void edgesMain(uint3 tid: SV_DispatchThreadID)
 {
   if(tid.x >= pc.edgeCount)
     return;
-  DforceModel m  = *pc.model;
+  ClothGpuModel m  = *pc.model;
   uint        e  = pc.edgeStart + tid.x;
-  DforceEdge  ed = m.edges[e];
+  ClothGpuEdge  ed = m.edges[e];
   float       wa = m.inv[ed.a], wb = m.inv[ed.b];
   float       w  = wa + wb;
   if(w <= 0)
@@ -204,9 +204,9 @@ groupshared float4 clusterX[DFORCE_CLUSTER_LOCAL];
 // One XPBD distance row over the cluster's shared vertices, as edgesMain projects one over the model's.
 // Only the cluster's own vertices (local index under `owned`) move: a halo vertex, another cluster's
 // end of a crossing row, counts with its inverse mass and stays where it was read.
-void clusterRow(DforceModel m, uint r, float atScale, uint owned)
+void clusterRow(ClothGpuModel m, uint r, float atScale, uint owned)
 {
-  DforceEdge ed = m.clusterEdges[r];
+  ClothGpuEdge ed = m.clusterEdges[r];
   float4     pa = clusterX[ed.a], pb = clusterX[ed.b];
   float      w  = pa.w + pb.w;
   if(w <= 0)
@@ -240,7 +240,7 @@ void clusterRow(DforceModel m, uint r, float atScale, uint owned)
 [numthreads(DFORCE_CLUSTER_THREADS, 1, 1)]
 void clusterMain(uint3 group: SV_GroupID, uint3 local: SV_GroupThreadID)
 {
-  DforceModel m      = *pc.model;
+  ClothGpuModel m      = *pc.model;
   uint        c      = group.x;
   int         first  = m.clusterVertStart[c];
   int         count  = m.clusterVertStart[c + 1] - first;
@@ -293,7 +293,7 @@ void clusterMain(uint3 group: SV_GroupID, uint3 local: SV_GroupThreadID)
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void commitMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m = *pc.model;
+  ClothGpuModel m = *pc.model;
   if(tid.x >= m.numFree)
     return;
   int i  = m.freeVerts[tid.x];
@@ -303,7 +303,7 @@ void commitMain(uint3 tid: SV_DispatchThreadID)
 // The nearest face of a lower layer within `reach` of q, with the faces where the pose has them at
 // fraction t, whose boxes boxesMain made for it: its index (-1 for none), the signed distance along
 // its normal, and that normal.
-int nearestFace(DforceModel m, float3 q, float reach, int layer, float t, out float signedDist, out float3 normal)
+int nearestFace(ClothGpuModel m, float3 q, float reach, int layer, float t, out float signedDist, out float3 normal)
 {
   int    best     = -1;
   float  bestDist = reach;
@@ -320,7 +320,7 @@ int nearestFace(DforceModel m, float3 q, float reach, int layer, float t, out fl
         uint s = cellHash(ix, iy, iz) & m.cellMask;
         for(uint probe = 0; probe <= m.cellMask; probe++)
         {
-          DforceCell cell = m.cells[(s + probe) & m.cellMask];
+          ClothGpuCell cell = m.cells[(s + probe) & m.cellMask];
           if(cell.start < 0)
             break;
           if(cell.x != ix || cell.y != iy || cell.z != iz)
@@ -338,7 +338,7 @@ int nearestFace(DforceModel m, float3 q, float reach, int layer, float t, out fl
             float  room = bestDist + slack;
             if(dot(out, out) > room * room)
               continue;
-            DforceTri tri = m.tris[f];
+            ClothGpuTri tri = m.tris[f];
             float3    a, b, c, n;
             faceAt(m, tri, t, a, b, c);
             if(!faceNormal(a, b, c, n))
@@ -369,10 +369,10 @@ int nearestFace(DforceModel m, float3 q, float reach, int layer, float t, out fl
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void boxesMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m = *pc.model;
+  ClothGpuModel m = *pc.model;
   if(tid.x >= m.numTris)
     return;
-  DforceTri tri = m.tris[tid.x];
+  ClothGpuTri tri = m.tris[tid.x];
   float3    a, b, c;
   faceAt(m, tri, pc.t, a, b, c);
   float3 lo    = min(a, min(b, c)), hi = max(a, max(b, c));
@@ -387,7 +387,7 @@ void boxesMain(uint3 tid: SV_DispatchThreadID)
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void recoverMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m = *pc.model;
+  ClothGpuModel m = *pc.model;
   if(tid.x >= m.numFree)
     return;
   int i = m.freeVerts[tid.x];
@@ -398,7 +398,7 @@ void recoverMain(uint3 tid: SV_DispatchThreadID)
   int    t = nearestFace(m, m.x[i], m.recoverDepth, m.layer[i], pc.t, sd, n);
   if(t < 0 || sd >= 0)
     return;
-  DforceTri tri = m.tris[t];
+  ClothGpuTri tri = m.tris[t];
   float     gap = max(tri.offset, m.offset[i]);
   m.x[i]       = m.x[i] + n * (gap - sd);
   m.cprev[i]   = m.x[i];
@@ -406,7 +406,7 @@ void recoverMain(uint3 tid: SV_DispatchThreadID)
 }
 
 // The collision pass and the recovery a wave a vertex (collideWaveMain, recoverWaveMain), where the device's
-// waves are 32 lanes (DforceGpu turns them on): a vertex met a cell's faces one after another on a thread
+// waves are 32 lanes (ClothGpu turns them on): a vertex met a cell's faces one after another on a thread
 // of its own, and with a few thousand vertices most of the GPU stood idle while each walked its hundreds
 // of faces (a light copy's pass cost as much as a dress five times its size). Its lanes now take 32 faces
 // at a time, in the order the thread met them, and what they decide is what it decided, to the bit.
@@ -415,7 +415,7 @@ void recoverMain(uint3 tid: SV_DispatchThreadID)
 // them, the first of equally near ones, becomes the nearest so far if it is nearer, as one after another
 // they would. A lane skips a face its box puts further off than the nearest as the 32 began: that is no
 // nearer than the nearest when the thread came to it, so what it skips the thread skipped or passed over.
-int nearestFaceWave(DforceModel m, float3 q, float reach, int layer, float t, out float signedDist, out float3 normal)
+int nearestFaceWave(ClothGpuModel m, float3 q, float reach, int layer, float t, out float signedDist, out float3 normal)
 {
   const uint lane     = WaveGetLaneIndex();
   const int  lanes    = int(WaveGetLaneCount());
@@ -432,7 +432,7 @@ int nearestFaceWave(DforceModel m, float3 q, float reach, int layer, float t, ou
         uint s = cellHash(ix, iy, iz) & m.cellMask;
         for(uint probe = 0; probe <= m.cellMask; probe++)
         {
-          DforceCell cell = m.cells[(s + probe) & m.cellMask];
+          ClothGpuCell cell = m.cells[(s + probe) & m.cellMask];
           if(cell.start < 0)
             break;
           if(cell.x != ix || cell.y != iy || cell.z != iz)
@@ -452,7 +452,7 @@ int nearestFaceWave(DforceModel m, float3 q, float reach, int layer, float t, ou
               float  room = bestDist + slack;
               if(asint(box1.w) < layer && dot(out, out) <= room * room)
               {
-                DforceTri tri = m.tris[f];
+                ClothGpuTri tri = m.tris[f];
                 float3    a, b, c;
                 faceAt(m, tri, t, a, b, c);
                 if(faceNormal(a, b, c, n))
@@ -486,7 +486,7 @@ int nearestFaceWave(DforceModel m, float3 q, float reach, int layer, float t, ou
 [require(spvGroupNonUniformBallot, spvGroupNonUniformShuffle)]
 void recoverWaveMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m = *pc.model;
+  ClothGpuModel m = *pc.model;
   const uint  v = tid.x / WaveGetLaneCount();
   if(v >= m.numFree)
     return;
@@ -498,7 +498,7 @@ void recoverWaveMain(uint3 tid: SV_DispatchThreadID)
   int    t = nearestFaceWave(m, m.x[i], m.recoverDepth, m.layer[i], pc.t, sd, n);
   if(t < 0 || sd >= 0 || !WaveIsFirstLane())
     return;
-  DforceTri tri = m.tris[t];
+  ClothGpuTri tri = m.tris[t];
   float     gap = max(tri.offset, m.offset[i]);
   m.x[i]       = m.x[i] + n * (gap - sd);
   m.cprev[i]   = m.x[i];
@@ -511,14 +511,14 @@ void recoverWaveMain(uint3 tid: SV_DispatchThreadID)
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void holdMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m = *pc.model;
+  ClothGpuModel m = *pc.model;
   if(tid.x >= m.numFree)
     return;
   int i = m.freeVerts[tid.x];
   int t = m.contact[i];
   if(t < 0)
     return;
-  DforceTri tri = m.tris[t];
+  ClothGpuTri tri = m.tris[t];
   float3    a, b, c, n;
   faceAt(m, tri, pc.t, a, b, c);
   if(!faceNormal(a, b, c, n))
@@ -559,9 +559,9 @@ void holdMain(uint3 tid: SV_DispatchThreadID)
 // Whether free vertex i may meet cloth face f, by the face's box where its corners are as the pass began:
 // not its own face, not one of its own mesh's unless that meets itself and the face is past the two rings
 // about it, and within reach of p.
-bool clothMayMeet(DforceModel m, int f, int i, int own, float3 p, float off, float moved)
+bool clothMayMeet(ClothGpuModel m, int f, int i, int own, float3 p, float off, float moved)
 {
-  DforceTri tri = m.clothTris[f];
+  ClothGpuTri tri = m.clothTris[f];
   if(tri.a == i || tri.b == i || tri.c == i)
     return false;
   if(tri.mesh == own && (tri.self == 0 || nearInCloth(m, i, tri.a) || nearInCloth(m, i, tri.b) || nearInCloth(m, i, tri.c)))
@@ -577,10 +577,10 @@ bool clothMayMeet(DforceModel m, int f, int i, int own, float3 p, float off, flo
 // a side is trusted only where the vertex lay over or under the face at its last pass: one beside it, past
 // an edge, has none, and was pushed through (a walk, two layers sliding by each other). `resting`: the
 // vertex is over the face and close enough to rest on it. True when it moved p.
-bool meetClothFace(DforceModel m, int f, float3 was, float moved, int layer, float off, float fri, inout float3 p, inout float3 prev, out bool resting)
+bool meetClothFace(ClothGpuModel m, int f, float3 was, float moved, int layer, float off, float fri, inout float3 p, inout float3 prev, out bool resting)
 {
   resting       = false;
-  DforceTri tri = m.clothTris[f];
+  ClothGpuTri tri = m.clothTris[f];
   float3    a1 = clothCornerNow(m, tri.a), b1 = clothCornerNow(m, tri.b), c1 = clothCornerNow(m, tri.c);
   float3    n1;
   if(!faceNormal(a1, b1, c1, n1))
@@ -640,7 +640,7 @@ bool meetClothFace(DforceModel m, int f, float3 was, float moved, int layer, flo
 // The cloth face a vertex rested on at its last pass, met again (every pass, while it stays over it: it
 // keeps two layers apart between the passes that look around, and pushes the same way each time, where
 // a different face each pass jammed a crumpled dress). -1 once it has left it.
-int keepClothContact(DforceModel m, int i, float3 was, float moved, int layer, float off, float fri, inout float3 p, inout float3 prev)
+int keepClothContact(ClothGpuModel m, int i, float3 was, float moved, int layer, float off, float fri, inout float3 p, inout float3 prev)
 {
   int f = m.clothContact[i];
   if(f < 0)
@@ -653,7 +653,7 @@ int keepClothContact(DforceModel m, int i, float3 was, float moved, int layer, f
 // The cells a vertex looks in for cloth faces: the cloth's faces are filed where they were at the frame's
 // start (`frameStart`), so it looks between where it was then and where it is; one that has gone further
 // than a pass recovers from, where it was then.
-void clothCells(DforceModel m, int i, float3 p, out float3 lo, out float3 hi)
+void clothCells(ClothGpuModel m, int i, float3 p, out float3 lo, out float3 hi)
 {
   float3 v0    = m.frameStart[i];
   float  reach = m.searchReach;
@@ -668,7 +668,7 @@ void clothCells(DforceModel m, int i, float3 p, out float3 lo, out float3 hi)
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void collideMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m = *pc.model;
+  ClothGpuModel m = *pc.model;
   if(tid.x >= m.numFree)
     return;
   int i = m.freeVerts[tid.x];
@@ -715,7 +715,7 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
             uint s = cellHash(ix, iy, iz) & m.clothCellMask;
             for(uint probe = 0; probe <= m.clothCellMask; probe++)
             {
-              DforceCell cell = m.clothCells[(s + probe) & m.clothCellMask];
+              ClothGpuCell cell = m.clothCells[(s + probe) & m.clothCellMask];
               if(cell.start < 0)
                 break;
               if(cell.x != ix || cell.y != iy || cell.z != iz)
@@ -745,7 +745,7 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
         // probe the open-addressed table for this cell
         for(uint probe = 0; probe <= m.cellMask; probe++)
         {
-          DforceCell cell = m.cells[(s + probe) & m.cellMask];
+          ClothGpuCell cell = m.cells[(s + probe) & m.cellMask];
           if(cell.start < 0)
             break;
           if(cell.x != ix || cell.y != iy || cell.z != iz)
@@ -762,7 +762,7 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
             float  near = min(m.depth, gap + moved);
             if(any(p < box0.xyz - near) || any(p > box1.xyz + near))
               continue;
-            DforceTri tri = m.tris[f];
+            ClothGpuTri tri = m.tris[f];
             float3    a0, b0, c0, a1, b1, c1;
             faceAt(m, tri, pc.t, a1, b1, c1);
             float3 blo  = min(a1, min(b1, c1)) - near;
@@ -827,9 +827,9 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
 // One of the pose's faces against a free vertex at p, as collideMain meets each in turn (it is that loop's
 // body): p pushed out to the face's side and its slide shed, prev moved with it, and the face it rests on
 // noted. True when it moved p.
-bool meetFace(DforceModel m, int f, float3 was, float moved, int layer, float off, float fri, inout float3 p, inout float3 prev, inout int resting)
+bool meetFace(ClothGpuModel m, int f, float3 was, float moved, int layer, float off, float fri, inout float3 p, inout float3 prev, inout int resting)
 {
-  DforceTri tri  = m.tris[f];
+  ClothGpuTri tri  = m.tris[f];
   float     gap  = max(tri.offset, off);
   float     near = min(m.depth, gap + moved);
   float3    a0, b0, c0, a1, b1, c1;
@@ -886,7 +886,7 @@ bool meetFace(DforceModel m, int f, float3 was, float moved, int layer, float of
 }
 
 // Whether p may meet face f, by its box from boxesMain: what misses it, meetFace leaves as it is.
-bool mayMeet(DforceModel m, int f, float3 p, float off, float moved)
+bool mayMeet(ClothGpuModel m, int f, float3 p, float off, float moved)
 {
   float4 box0 = m.faceBox[2 * f], box1 = m.faceBox[2 * f + 1];
   float  near = min(m.depth, max(box0.w, off) + moved);
@@ -902,7 +902,7 @@ bool mayMeet(DforceModel m, int f, float3 p, float off, float moved)
 [require(spvGroupNonUniformBallot, spvGroupNonUniformShuffle)]
 void collideWaveMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m     = *pc.model;
+  ClothGpuModel m     = *pc.model;
   const uint  lane  = WaveGetLaneIndex();
   const int   lanes = int(WaveGetLaneCount());
   const uint  v     = tid.x / uint(lanes);
@@ -945,7 +945,7 @@ void collideWaveMain(uint3 tid: SV_DispatchThreadID)
             uint s = cellHash(ix, iy, iz) & m.clothCellMask;
             for(uint probe = 0; probe <= m.clothCellMask; probe++)
             {
-              DforceCell cell = m.clothCells[(s + probe) & m.clothCellMask];
+              ClothGpuCell cell = m.clothCells[(s + probe) & m.clothCellMask];
               if(cell.start < 0)
                 break;
               if(cell.x != ix || cell.y != iy || cell.z != iz)
@@ -980,7 +980,7 @@ void collideWaveMain(uint3 tid: SV_DispatchThreadID)
         uint s = cellHash(ix, iy, iz) & m.cellMask;
         for(uint probe = 0; probe <= m.cellMask; probe++)
         {
-          DforceCell cell = m.cells[(s + probe) & m.cellMask];
+          ClothGpuCell cell = m.cells[(s + probe) & m.cellMask];
           if(cell.start < 0)
             break;
           if(cell.x != ix || cell.y != iy || cell.z != iz)
@@ -1017,7 +1017,7 @@ void collideWaveMain(uint3 tid: SV_DispatchThreadID)
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void snapMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m = *pc.model;
+  ClothGpuModel m = *pc.model;
   if(tid.x >= m.nv)
     return;
   m.snap[tid.x]      = m.x[tid.x];
@@ -1026,7 +1026,7 @@ void snapMain(uint3 tid: SV_DispatchThreadID)
 
 // Whether v is among i's stretch neighbours or theirs (sorted): a cloth doesn't collide with the faces
 // around a vertex, whose planes it is in or next to.
-bool nearInCloth(DforceModel m, int i, int v)
+bool nearInCloth(ClothGpuModel m, int i, int v)
 {
   int lo = m.ring2Start[i], hi = m.ring2Start[i + 1] - 1;
   while(lo <= hi)
@@ -1045,11 +1045,11 @@ bool nearInCloth(DforceModel m, int i, int v)
 
 // A cloth face's corner as the pass began, and where it was at the last pass: a free corner's own, a
 // pinned one's where the pose had it then.
-float3 clothCornerNow(DforceModel m, int v)
+float3 clothCornerNow(ClothGpuModel m, int v)
 {
   return m.snap[v];
 }
-float3 clothCornerWas(DforceModel m, int v)
+float3 clothCornerWas(ClothGpuModel m, int v)
 {
   return m.inv[v] > 0 ? m.cprevSnap[v] : kinematicAt(m, v, pc.tFaces);
 }
@@ -1059,7 +1059,7 @@ float3 clothCornerWas(DforceModel m, int v)
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void velocityMain(uint3 tid: SV_DispatchThreadID)
 {
-  DforceModel m = *pc.model;
+  ClothGpuModel m = *pc.model;
   if(tid.x >= m.numFree)
     return;
   int i    = m.freeVerts[tid.x];

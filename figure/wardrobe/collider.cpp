@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include <figure/dforce/skin.hpp>
+#include <figure/physics/skin.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/fit/collide.hpp>
@@ -101,8 +101,8 @@ struct Collider::Job
     std::vector<int16_t>  limbs;
     // for the write-back: the rest cage, its skin and pose in the mesh's space, and the way back there
     std::vector<float> rest;
-    dforce::CageSkin   skin;
-    dforce::SkinPose   pose;
+    physics::CageSkin   skin;
+    physics::SkinPose   pose;
     Mat4               back;
   };
   std::vector<Item> items;
@@ -188,18 +188,18 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
   if(!body.geo || body.geo->cagePositions.empty())
     return nullptr;
   const auto worlds = m_scene.worlds();
-  const auto nodeOf = dforce::nodeOfMesh(m_scene);
+  const auto nodeOf = physics::nodeOfMesh(m_scene);
   const Mat4 rootWorld = m_root >= 0 && size_t(m_root) < worlds.size() ? worlds[size_t(m_root)] : Mat4{};
   const Mat4 fromWorld = inverse(rootWorld);
   const auto toSpace = [&](int mesh) { return fromWorld * (nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : Mat4{}); };
   // a mesh's cage in its own space as posed now: skinned when it has a skin, else as it is
-  const auto posedCage = [&](int mesh, const std::vector<float>& rest, dforce::CageSkin* skin, dforce::SkinPose* pose) {
+  const auto posedCage = [&](int mesh, const std::vector<float>& rest, physics::CageSkin* skin, physics::SkinPose* pose) {
     const Mesh& m = m_scene.meshes[size_t(mesh)];
     if(!m.skinned() || m.cageSkin.start.size() != rest.size() / 3 + 1)
       return rest;
-    dforce::CageSkin s = dforce::cageSkin(m.cageSkin);
-    dforce::SkinPose p = dforce::currentSkin(m_scene, worlds, nodeOf, mesh);
-    auto             posed = dforce::skinLocal(rest, s, p);
+    physics::CageSkin s = physics::cageSkin(m.cageSkin);
+    physics::SkinPose p = physics::currentSkin(m_scene, worlds, nodeOf, mesh);
+    auto             posed = physics::skinLocal(rest, s, p);
     if(skin)
       *skin = std::move(s);
     if(pose)
@@ -209,10 +209,10 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
 
   auto       job      = std::make_shared<Job>();
   const auto bodyRest = m_morphs.morphedCage(m_bodyMesh);
-  job->body           = dforce::transformPoints(toSpace(m_bodyMesh), posedCage(m_bodyMesh, bodyRest, nullptr, nullptr));
+  job->body           = physics::transformPoints(toSpace(m_bodyMesh), posedCage(m_bodyMesh, bodyRest, nullptr, nullptr));
   job->bodyTris       = body.geo->dsonTris;
   job->bodyLimbs      = meshLimbs(m_scene, body);
-  job->bodyRest       = dforce::transformPoints(toSpace(m_bodyMesh), bodyRest);
+  job->bodyRest       = physics::transformPoints(toSpace(m_bodyMesh), bodyRest);
 
   std::vector<int> order;
   if(wornOrder)
@@ -239,11 +239,11 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
     const auto own = m_morphs.cpuTarget(collideChannelOf(mesh), mesh);
     item.rest      = m_morphs.morphedCage(mesh, own.get());
     const Mat4 to  = toSpace(mesh);
-    item.posed     = dforce::transformPoints(to, posedCage(mesh, item.rest, &item.skin, &item.pose));
+    item.posed     = physics::transformPoints(to, posedCage(mesh, item.rest, &item.skin, &item.pose));
     item.tris      = m.geo->dsonTris;
     item.limbs     = meshLimbs(m_scene, m);
     item.back      = inverse(to);
-    item.restInSpace = dforce::transformPoints(to, item.rest);
+    item.restInSpace = physics::transformPoints(to, item.rest);
     item.worn        = placeWorn(mesh);
     job->items.push_back(std::move(item));
   }
@@ -359,8 +359,8 @@ bool Collider::apply(const Job& job, const std::vector<std::vector<float>>& posi
     const Mesh& m = m_scene.meshes[size_t(item.mesh)];
     if(!m.geo || m.geo->cagePositions.size() != item.rest.size())
       continue;
-    const auto local = dforce::transformPoints(item.back, positions[k]);
-    const auto delta = dforce::drapeDelta(item.rest, local, item.skin, item.pose);
+    const auto local = physics::transformPoints(item.back, positions[k]);
+    const auto delta = physics::drapeDelta(item.rest, local, item.skin, item.pose);
     mesh::CageDeltas cage;
     for(size_t v = 0; v * 3 + 2 < delta.size(); v++)
     {

@@ -1,10 +1,10 @@
 #pragma once
 
-// The collision grid the GPU cloth solver finds faces in (src/fv_dforce_gpu.cpp, physics-plan step 13b):
+// The collision grid the GPU cloth solver finds faces in (src/fv_physics_gpu.cpp, physics-plan step 13b):
 // every face over its sweep through a frame, its corners from `start` to `end`, filed under each cell of
 // `cellSize` its box meets. An open-addressed table of the cells met, linear probing from
 // sweepCellHash in a power of two of slots, each cell with its run of `items`: the faces in it in
-// ascending order. The GPU's nearest-face search (shaders/dforce_cloth.comp.slang, nearestFace) takes
+// ascending order. The GPU's nearest-face search (shaders/physics_cloth.comp.slang, nearestFace) takes
 // the first of equally near faces as it meets them, so that order is part of the drape; where a cell
 // lies in the table is not.
 //
@@ -17,7 +17,7 @@
 
 namespace fv::physics {
 
-// A cell of the table: shaderio::DforceCell's layout (32 bytes). `start` < 0: an empty slot.
+// A cell of the table: shaderio::ClothGpuCell's layout (32 bytes). `start` < 0: an empty slot.
 struct SweepCell
 {
   int32_t x, y, z, start;

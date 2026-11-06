@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "fv_dforce_gpu.hpp"
+#include "fv_physics_gpu.hpp"
 
 #include <algorithm>
 #include <array>
@@ -39,15 +39,15 @@
 #include <nvvk/commands.hpp>
 #include <nvvk/debug_util.hpp>
 
-#include "shaders/dforce_cloth_io.h.slang"
-#include "_autogen/dforce_cloth.comp.slang.h"
+#include "shaders/physics_cloth_io.h.slang"
+#include "_autogen/physics_cloth.comp.slang.h"
 
 using namespace fv;
-using namespace fv::dforce;
+using namespace fv::physics;
 
 namespace {
 
-// As the CPU solver's (figure/dforce/solver.cpp); kept the same so both drape alike.
+// As the CPU solver's (figure/physics/cloth/backend.cpp); kept the same so both drape alike.
 constexpr float kCell             = 2.f;
 constexpr float kDepth            = 2.f;
 constexpr float kCap              = 2.f;
@@ -60,14 +60,14 @@ constexpr float kPassSpacing      = 0.5f * kDepth;
 constexpr float kSearch           = 0.5f;
 constexpr float kRecoverDepth     = 3.f;
 
-// the queue simulations run on, when there is one of their own (DforceGpu::useQueue)
+// the queue simulations run on, when there is one of their own (ClothGpu::useQueue)
 nvvk::QueueInfo s_queue{};
 
 constexpr VkBufferUsageFlags2 kUsage = VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
                                        | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT;
 
-static_assert(sizeof(fv::physics::SweepCell) == sizeof(shaderio::DforceCell) && offsetof(fv::physics::SweepCell, start) == offsetof(shaderio::DforceCell, start)
-                  && offsetof(fv::physics::SweepCell, count) == offsetof(shaderio::DforceCell, count),
+static_assert(sizeof(fv::physics::SweepCell) == sizeof(shaderio::ClothGpuCell) && offsetof(fv::physics::SweepCell, start) == offsetof(shaderio::ClothGpuCell, start)
+                  && offsetof(fv::physics::SweepCell, count) == offsetof(shaderio::ClothGpuCell, count),
               "the grid's cells are the kernels'");
 
 // How a mesh's kinematic vertices move: a sweep of its bones from one pose to another.
@@ -125,15 +125,15 @@ struct Kernels
       if(!commandPool)
         return false;
     }
-    VkPushConstantRange        pushRange{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = sizeof(shaderio::DforcePushConstant)};
+    VkPushConstantRange        pushRange{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = sizeof(shaderio::ClothGpuPushConstant)};
     VkPipelineLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1, .pPushConstantRanges = &pushRange};
     if(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &layout) != VK_SUCCESS)
       return false;
     NVVK_DBG_NAME(layout);
     const auto pipe = [&](const char* entry, VkPipeline& out) {
       VkShaderModuleCreateInfo    shaderInfo{.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                             .codeSize = dforce_cloth_comp_slang_sizeInBytes,
-                                             .pCode    = dforce_cloth_comp_slang};
+                                             .codeSize = physics_cloth_comp_slang_sizeInBytes,
+                                             .pCode    = physics_cloth_comp_slang};
       VkComputePipelineCreateInfo pipeInfo{.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                            .stage  = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                       .pNext = &shaderInfo,
@@ -166,25 +166,25 @@ double msSince(std::chrono::steady_clock::time_point t)
 constexpr float kJumpPerPiece = 2.f;
 constexpr int   kMostPieces   = 12;
 
-struct DforceGpu::Impl
+struct ClothGpu::Impl
 {
   nvvk::ResourceAllocator* alloc = nullptr;
   nvapp::Application*      app   = nullptr;
-  std::vector<SettleMesh>  meshes;
-  SettleOptions            opts;
-  DforceGpu::Options       gpu;
+  std::vector<cloth::Surface>  meshes;
+  cloth::Options            opts;
+  ClothGpu::Options       gpu;
   // a queue of its own and the pool its commands come from, or none: the renderer's, through `app`
   nvvk::QueueInfo          queue{};
   VkCommandPool            commandPool = VK_NULL_HANDLE;
   // the kernels and the command pool, kept through restarts; the handles below are theirs
   std::shared_ptr<Kernels> kernels;
-  ClothModel               model;
+  cloth::Model               model;
   std::vector<Kinematic>   kin;
   // the cluster solve's partition, when it runs (gpu.clusterSize > 0 and the model fits it)
   fv::physics::cloth::Clusters        clusters;
-  std::vector<shaderio::DforceEdge>   clusterRows;
+  std::vector<shaderio::ClothGpuEdge>   clusterRows;
   std::vector<glm::uvec2>             clusterSoft;
-  DforceGpu::Stats                    stats;
+  ClothGpu::Stats                    stats;
   VkQueryPool                         queries   = VK_NULL_HANDLE;
   double                              msPerTick = 0;
   // the timestamps a frame wrote after its first two, in pairs around a phase, and which phase each is
@@ -197,13 +197,13 @@ struct DforceGpu::Impl
   int              stretchColours = 0;
   int                lengthColours = 0;
   // as the buffers take them, from prepare() until create()
-  std::vector<shaderio::DforceEdge> sorted;
-  std::vector<shaderio::DforceTri>  faces, clothFaces;
+  std::vector<shaderio::ClothGpuEdge> sorted;
+  std::vector<shaderio::ClothGpuTri>  faces, clothFaces;
 
   VkPipelineLayout layout{};
   VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{}, clusterPipe{}, commitPipe{},
       snapPipe{}, boxesPipe{}, collideWavePipe{}, recoverWavePipe{};
-  // the kernels' waveLanes, unless FV_DFORCE_GPU_DEBUG's 256 asks for a thread a vertex
+  // the kernels' waveLanes, unless FV_PHYSICS_GPU_DEBUG's 256 asks for a thread a vertex
   uint32_t waveLanes = 0;
 
   // the static faces' corners, three a face, and the grid made from them each frame (its buffers kept)
@@ -240,7 +240,7 @@ struct DforceGpu::Impl
   int                   passCount = 0;
   // live: simulated time a step was given that its whole substeps didn't take, carried to the next
   float                 liveCarry = 0;
-  shaderio::DforceModel shaderModel{};
+  shaderio::ClothGpuModel shaderModel{};
   // a settle under way, and what it has cost
   int    settled    = 0;
   double settleWork = 0, settleWait = 0;
@@ -248,7 +248,7 @@ struct DforceGpu::Impl
   // a frame that came back with a position that is not a number: the frame is dropped and the
   // simulation stops, so one bad step cannot take the device down with it
   bool broken = false;
-  // FV_DFORCE_GPU_DEBUG, bits: 1 leaves the recovery out, 2 the hold between passes; for finding
+  // FV_PHYSICS_GPU_DEBUG, bits: 1 leaves the recovery out, 2 the hold between passes; for finding
   // which kernel a device loss comes from. 256: the collision passes and the recovery a thread a vertex;
   // 512: a frame that takes over 250 ms stops the simulation
   int debug = 0;
@@ -268,18 +268,18 @@ struct DforceGpu::Impl
 
   // ---- a frame
   void kinematicAt(float t, std::vector<float>& out);
-  bool buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::DforceModel& m);
+  bool buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::ClothGpuModel& m);
   // a grid into its buffers, made larger when it outgrew them; false when they could not be made
   bool uploadGrid(const fv::physics::SweepGrid& g, nvvk::Buffer& cellBuf, size_t& cellCap, nvvk::Buffer& itemBuf, size_t& itemCap);
   // the cloth's faces where they are at the frame's start (xHost), into their grid and `m`
-  bool buildClothGrid(shaderio::DforceModel& m);
+  bool buildClothGrid(shaderio::ClothGpuModel& m);
   // `steps` substeps in `seconds`; 0, 0: a frame of opts.frameDt in `substeps`
   void frame(float t0, float t1, float extraDamping, float seconds = 0, int steps = 0);
-  // the cloth carried with the pose to fraction t of the sweep (DforceGpu::carry)
+  // the cloth carried with the pose to fraction t of the sweep (ClothGpu::carry)
   void carry(float t);
 };
 
-bool DforceGpu::Impl::mappedBytes(nvvk::Buffer& buf, const void* data, size_t bytes, VmaMemoryUsage usage)
+bool ClothGpu::Impl::mappedBytes(nvvk::Buffer& buf, const void* data, size_t bytes, VmaMemoryUsage usage)
 {
   if(buf.buffer != VK_NULL_HANDLE)
     alloc->destroyBuffer(buf);
@@ -300,20 +300,20 @@ bool DforceGpu::Impl::mappedBytes(nvvk::Buffer& buf, const void* data, size_t by
   return true;
 }
 
-bool DforceGpu::Impl::prepare()
+bool ClothGpu::Impl::prepare()
 {
-  model = ClothModel::build(meshes, opts.air, opts.reachLinks);
+  model = cloth::Model::build(meshes, opts.air, opts.reachLinks);
   if(model.nv == 0 || model.freeVerts.empty())
     return false;
 #pragma warning(suppress : 4996)  // getenv: read once, at start-up
-  if(const char* env = std::getenv("FV_DFORCE_GPU_DEBUG"); env && *env)
+  if(const char* env = std::getenv("FV_PHYSICS_GPU_DEBUG"); env && *env)
     debug = std::atoi(env);
 
   // the cluster solve: the clusters' rows run in shared memory, the rows that cross them coloured as below
   if(gpu.clusterSize > 0)
   {
     clusters = fv::physics::cloth::buildClusters(model, gpu.clusterSize, std::min(gpu.clusterLocal, DFORCE_CLUSTER_LOCAL),
-                                                 gpu.crossing == DforceGpu::Options::Crossing::eHalo);
+                                                 gpu.crossing == ClothGpu::Options::Crossing::eHalo);
     if(clusters.count() == 0 || clusters.mostLocal > DFORCE_CLUSTER_LOCAL || clusters.mostLocal > 0xFFFF)
     {
       LOGW("dForce GPU: the cluster solve can't take this model (%d vertices in a cluster at most); a dispatch a colour instead\n", clusters.mostLocal);
@@ -324,7 +324,7 @@ bool DforceGpu::Impl::prepare()
   {
     for(const auto& row : clusters.rows)
     {
-      const Edge& ed = model.edges[size_t(row.edge)];
+      const cloth::Distance& ed = model.edges[size_t(row.edge)];
       clusterRows.push_back({int(row.a), int(row.b), ed.rest, ed.alpha, int(ed.kind), ed.ratio, ed.buckle, 0.f});
     }
     for(const auto& [l, s] : clusters.soft)
@@ -333,7 +333,7 @@ bool DforceGpu::Impl::prepare()
     colourStart.assign(clusters.crossingStart.begin(), clusters.crossingStart.end());
     for(int e : clusters.crossing)
     {
-      const Edge& ed = model.edges[size_t(e)];
+      const cloth::Distance& ed = model.edges[size_t(e)];
       sorted.push_back({ed.a, ed.b, ed.rest, ed.alpha, int(ed.kind), ed.ratio, ed.buckle, 0.f});
     }
     stretchColours = clusters.crossingStretch;
@@ -355,7 +355,7 @@ bool DforceGpu::Impl::prepare()
     std::vector<uint64_t> used(size_t(model.nv), 0);
     for(size_t e = 0; e < model.edges.size(); e++)
     {
-      const Edge& ed = model.edges[e];
+      const cloth::Distance& ed = model.edges[e];
       if(!wanted(ed.kind) || (model.inv[ed.a] <= 0 && model.inv[ed.b] <= 0))
         continue;
       // a pinned end is only read: edges that share one don't touch
@@ -385,13 +385,13 @@ bool DforceGpu::Impl::prepare()
   // stretch, reach links, the rest: a stretch sweep takes the first two, a full sweep all but the links
   if(clusters.count() == 0)
   {
-    if(!colourKind([](EdgeKind k) { return k == EdgeKind::eStretch; }))
+    if(!colourKind([](cloth::DistanceKind k) { return k == cloth::DistanceKind::eStretch; }))
       return false;
     stretchColours = colours;
-    if(!colourKind([](EdgeKind k) { return k == EdgeKind::eReach; }))
+    if(!colourKind([](cloth::DistanceKind k) { return k == cloth::DistanceKind::eReach; }))
       return false;
     lengthColours = colours;
-    if(!colourKind([](EdgeKind k) { return !holdsLength(k); }))
+    if(!colourKind([](cloth::DistanceKind k) { return !cloth::holdsLength(k); }))
       return false;
     colourStart.assign(size_t(colours) + 1, 0);
     for(int c = 0; c < colours; c++)
@@ -400,7 +400,7 @@ bool DforceGpu::Impl::prepare()
       for(size_t e = 0; e < model.edges.size(); e++)
         if(colourOf[e] == c)
         {
-          const Edge& ed = model.edges[e];
+          const cloth::Distance& ed = model.edges[e];
           sorted.push_back({ed.a, ed.b, ed.rest, ed.alpha, int(ed.kind), ed.ratio, ed.buckle, 0.f});
         }
     }
@@ -410,13 +410,13 @@ bool DforceGpu::Impl::prepare()
 
   for(int t : model.staticTris)
   {
-    const Tri& tri = model.tris[size_t(t)];
+    const cloth::Face& tri = model.tris[size_t(t)];
     faces.push_back({tri.a, tri.b, tri.c, tri.layer, tri.offset, tri.friction, tri.mesh, tri.self ? 1 : 0});
     faceCorners.insert(faceCorners.end(), {tri.a, tri.b, tri.c});
   }
   // The cloth's faces, when any can meet a vertex of another garment (a petticoat under a skirt), or of
   // its own garment where that collides with itself (Self Collide): met as the CPU island meets them.
-  // FV_DFORCE_GPU_DEBUG's 64 leaves them out, 128 a garment's own
+  // FV_PHYSICS_GPU_DEBUG's 64 leaves them out, 128 a garment's own
   {
     const bool           own = (debug & 128) == 0;
     std::vector<uint8_t> movingMesh(meshes.size(), 0);
@@ -426,7 +426,7 @@ bool DforceGpu::Impl::prepare()
     bool canMeet = false;
     for(int t : model.dynamicTris)
     {
-      const Tri& tri = model.tris[size_t(t)];
+      const cloth::Face& tri = model.tris[size_t(t)];
       for(size_t mi = 0; mi < meshes.size() && !canMeet; mi++)
         canMeet = movingMesh[mi] && (int(mi) != tri.mesh || (own && tri.self));
       if(canMeet)
@@ -436,7 +436,7 @@ bool DforceGpu::Impl::prepare()
     if(clothOn)
       for(int t : model.dynamicTris)
       {
-        const Tri& tri = model.tris[size_t(t)];
+        const cloth::Face& tri = model.tris[size_t(t)];
         clothFaces.push_back({tri.a, tri.b, tri.c, tri.layer, tri.offset, tri.friction, tri.mesh, own && tri.self ? 1 : 0});
         clothCorners.insert(clothCorners.end(), {tri.a, tri.b, tri.c});
       }
@@ -445,13 +445,13 @@ bool DforceGpu::Impl::prepare()
 
   // the start: the rest shape, with what overlaps the body moved out of it, as the CPU solver starts
   xHost = model.rest;
-  separateStart(model, xHost);
+  cloth::separateStart(model, xHost);
   xStart = xHost;
   posePrepare();
   return true;
 }
 
-void DforceGpu::Impl::posePrepare()
+void ClothGpu::Impl::posePrepare()
 {
   // the pose's hold on each mesh, swept from the memorized pose to the target it came with
   kin.assign(meshes.size(), Kinematic{});
@@ -480,7 +480,7 @@ void DforceGpu::Impl::posePrepare()
   collisions           = std::min(substeps, std::max(kMinCollisionPasses, byMotion));
 }
 
-bool DforceGpu::Impl::create()
+bool ClothGpu::Impl::create()
 {
   fv::timing::Scope  t("dforce: buffers and kernels");
   const size_t       n = size_t(model.nv);
@@ -547,7 +547,7 @@ bool DforceGpu::Impl::create()
     ok &= mapped(snap, xHost);
     ok &= mapped(cprevSnap, xHost);
   }
-  ok &= mappedBytes(modelBuf, nullptr, sizeof(shaderio::DforceModel), VMA_MEMORY_USAGE_CPU_TO_GPU);
+  ok &= mappedBytes(modelBuf, nullptr, sizeof(shaderio::ClothGpuModel), VMA_MEMORY_USAGE_CPU_TO_GPU);
   ok &= mappedBytes(readback, nullptr, n * 3 * sizeof(float), VMA_MEMORY_USAGE_GPU_TO_CPU);
   if(!ok)
     return false;
@@ -600,13 +600,13 @@ bool DforceGpu::Impl::create()
   return true;
 }
 
-void DforceGpu::Impl::resetState()
+void ClothGpu::Impl::resetState()
 {
   if(startPending)
   {
     // as prepare() makes it: the rest shape, with what overlaps the body moved out of it
     xStart = model.rest;
-    separateStart(model, xStart);
+    cloth::separateStart(model, xStart);
     startPending = false;
   }
   resetPending = false;
@@ -637,7 +637,7 @@ void DforceGpu::Impl::resetState()
   stats.gridEntries = stats.gridSlots = 0;
 }
 
-void DforceGpu::Impl::destroy()
+void ClothGpu::Impl::destroy()
 {
   if(!alloc)
     return;
@@ -665,12 +665,12 @@ void DforceGpu::Impl::destroy()
 
 // Writes the pose at fraction t of the kinematic vertices, and of the soft ones (their tethers'
 // anchors), into `out` (only those entries).
-void DforceGpu::Impl::kinematicAt(float t, std::vector<float>& out)
+void ClothGpu::Impl::kinematicAt(float t, std::vector<float>& out)
 {
   std::vector<float> tmp;
   for(size_t mi = 0; mi < meshes.size(); mi++)
   {
-    const SettleMesh& m = meshes[mi];
+    const cloth::Surface& m = meshes[mi];
     const int         o = model.base[mi];
     const size_t      n = m.vertexCount();
     if(kin[mi].skinned)
@@ -679,7 +679,7 @@ void DforceGpu::Impl::kinematicAt(float t, std::vector<float>& out)
       for(size_t b = 0; b < bones.size(); b++)
         bones[b] = sweepAt(kin[mi].from[b], kin[mi].to[b], t);
       tmp.resize(n * 3);
-      skinMesh(m, bones, tmp.data());
+      cloth::skin(m, bones, tmp.data());
     }
     for(size_t v = 0; v < n; v++)
     {
@@ -695,7 +695,7 @@ void DforceGpu::Impl::kinematicAt(float t, std::vector<float>& out)
 // The body's faces over their sweep through the frame, into the open-addressed cell table
 // (figure/physics/collide/sweep_grid.hpp). False when the table's buffers could not be made: the frame
 // then runs without collisions.
-bool DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::DforceModel& m)
+bool ClothGpu::Impl::buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::ClothGpuModel& m)
 {
   fv::physics::buildSweepGrid(faceCorners, start.data(), end.data(), kCell, grid);
   stats.gridEntries += grid.entries;
@@ -705,13 +705,13 @@ bool DforceGpu::Impl::buildGrid(const std::vector<float>& start, const std::vect
   stats.gridCopyMs += msSince(copyStart);
   if(!ok)
     return false;
-  m.cells    = reinterpret_cast<shaderio::DforceCell*>(cells.address);
+  m.cells    = reinterpret_cast<shaderio::ClothGpuCell*>(cells.address);
   m.items    = reinterpret_cast<int*>(items.address);
   m.cellMask = grid.mask();
   return true;
 }
 
-bool DforceGpu::Impl::uploadGrid(const fv::physics::SweepGrid& g, nvvk::Buffer& cellBuf, size_t& cellCap, nvvk::Buffer& itemBuf, size_t& itemCap)
+bool ClothGpu::Impl::uploadGrid(const fv::physics::SweepGrid& g, nvvk::Buffer& cellBuf, size_t& cellCap, nvvk::Buffer& itemBuf, size_t& itemCap)
 {
   bool ok = true;
   if(g.cells.size() > cellCap)
@@ -731,13 +731,13 @@ bool DforceGpu::Impl::uploadGrid(const fv::physics::SweepGrid& g, nvvk::Buffer& 
   return ok;
 }
 
-bool DforceGpu::Impl::buildClothGrid(shaderio::DforceModel& m)
+bool ClothGpu::Impl::buildClothGrid(shaderio::ClothGpuModel& m)
 {
   const auto start = std::chrono::steady_clock::now();
   std::memcpy(frameStart.mapping, xHost.data(), xHost.size() * sizeof(float));
   fv::physics::buildSweepGrid(clothCorners, xHost.data(), xHost.data(), kCell, clothGrid);
   const bool ok = uploadGrid(clothGrid, clothCells, clothCellCapacity, clothItems, clothItemCapacity);
-  m.clothCells    = reinterpret_cast<shaderio::DforceCell*>(clothCells.address);
+  m.clothCells    = reinterpret_cast<shaderio::ClothGpuCell*>(clothCells.address);
   m.clothItems    = reinterpret_cast<int*>(clothItems.address);
   m.clothCellMask = clothGrid.mask();
   m.numClothTris  = ok ? uint32_t(clothCorners.size() / 3) : 0;
@@ -746,10 +746,10 @@ bool DforceGpu::Impl::buildClothGrid(shaderio::DforceModel& m)
   return ok;
 }
 
-void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds, int stepCount)
+void ClothGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds, int stepCount)
 {
   const size_t n = size_t(model.nv);
-  shaderio::DforceModel& m             = shaderModel;
+  shaderio::ClothGpuModel& m             = shaderModel;
   float                  kinematicMove = 0;
   const bool             held          = t0 == t1 && t0 == heldAt;
   heldAt                               = t0 == t1 ? t0 : -1.f;
@@ -788,9 +788,9 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     m.layer        = reinterpret_cast<int*>(layer.address);
     m.collides     = reinterpret_cast<int*>(collides.address);
     m.grav         = reinterpret_cast<glm::vec3*>(grav.address);
-    m.edges        = reinterpret_cast<shaderio::DforceEdge*>(edges.address);
+    m.edges        = reinterpret_cast<shaderio::ClothGpuEdge*>(edges.address);
     m.lam          = reinterpret_cast<float*>(lam.address);
-    m.tris         = reinterpret_cast<shaderio::DforceTri*>(tris.address);
+    m.tris         = reinterpret_cast<shaderio::ClothGpuTri*>(tris.address);
     m.softVerts    = reinterpret_cast<int*>(softVerts.address);
     m.attAlpha     = reinterpret_cast<float*>(attAlpha.address);
     m.lamAtt       = reinterpret_cast<float*>(lamAtt.address);
@@ -810,7 +810,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     m.searchReach  = model.maxOffset + kSearch;
     if(clusters.count() > 0)
     {
-      m.clusterEdges       = reinterpret_cast<shaderio::DforceEdge*>(clusterEdgeBuf.address);
+      m.clusterEdges       = reinterpret_cast<shaderio::ClothGpuEdge*>(clusterEdgeBuf.address);
       m.clusterLam         = reinterpret_cast<float*>(clusterLamBuf.address);
       m.clusterVerts       = reinterpret_cast<int*>(clusterVertBuf.address);
       m.clusterVertStart   = reinterpret_cast<int*>(clusterVertStartBuf.address);
@@ -826,7 +826,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
     }
     if(clothOn)
     {
-      m.clothTris  = reinterpret_cast<shaderio::DforceTri*>(clothTris.address);
+      m.clothTris  = reinterpret_cast<shaderio::ClothGpuTri*>(clothTris.address);
       m.meshOf     = reinterpret_cast<int*>(meshOf.address);
       m.ring2Start = reinterpret_cast<int*>(ring2Start.address);
       m.ring2      = reinterpret_cast<int*>(ring2.address);
@@ -900,8 +900,8 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
   const auto      barrier = [&] {
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   };
-  shaderio::DforcePushConstant pc{};
-  pc.model        = reinterpret_cast<shaderio::DforceModel*>(modelBuf.address);
+  shaderio::ClothGpuPushConstant pc{};
+  pc.model        = reinterpret_cast<shaderio::ClothGpuModel*>(modelBuf.address);
   pc.dt           = dt;
   pc.extraDamping = extraDamping;
   const auto colours = [&](size_t first, size_t last) {
@@ -1111,16 +1111,16 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       farthest = std::max(farthest, std::fabs(v));
     LOGW("dForce GPU: a frame took %.0f ms (%d substeps, %d collision passes, the fastest vertex moved %.1f cm, the farthest position %.0f cm)\n", ms,
          steps, passes, lastMove, farthest);
-    // FV_DFORCE_GPU_DEBUG's 512: no frame after it, for trying a kernel that may run away
+    // FV_PHYSICS_GPU_DEBUG's 512: no frame after it, for trying a kernel that may run away
     if(debug & 512)
     {
-      LOGW("dForce GPU: stopped after a long frame (FV_DFORCE_GPU_DEBUG 512)\n");
+      LOGW("dForce GPU: stopped after a long frame (FV_PHYSICS_GPU_DEBUG 512)\n");
       broken = true;
     }
   }
 }
 
-DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, std::vector<SettleMesh> meshes, const SettleOptions& opts,
+ClothGpu::ClothGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, std::vector<cloth::Surface> meshes, const cloth::Options& opts,
                      const Options& gpu)
     : m_impl(std::make_shared<Impl>())
 {
@@ -1130,11 +1130,11 @@ DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, st
   m_impl->opts   = opts;
   m_impl->gpu    = gpu;
   m_impl->queue  = s_queue;
-  // FV_DFORCE_GPU_DEBUG's bits 4 and 8: a dispatch a colour, and the renderer's queue, as before step 13
+  // FV_PHYSICS_GPU_DEBUG's bits 4 and 8: a dispatch a colour, and the renderer's queue, as before step 13
   // (for an A/B against the cluster solve on a queue of its own); 32: each frame timed on the GPU (the
   // [fv-time] "a frame on the GPU" lines, against the wait for it)
 #pragma warning(suppress : 4996)  // getenv: read once a simulation
-  if(const char* env = std::getenv("FV_DFORCE_GPU_DEBUG"); env && *env)
+  if(const char* env = std::getenv("FV_PHYSICS_GPU_DEBUG"); env && *env)
   {
     const int bits = std::atoi(env);
     if(bits & 4)
@@ -1149,7 +1149,7 @@ DforceGpu::DforceGpu(nvvk::ResourceAllocator* alloc, nvapp::Application* app, st
     m_prepared = fv::jobs::pool().submit([impl = m_impl] { return impl->prepare(); });
 }
 
-DforceGpu::~DforceGpu()
+ClothGpu::~ClothGpu()
 {
   // still on the pool: it has made no buffers, and lets go of the rest when it ends; the kernels a
   // restart handed it go here, not on the pool after the device
@@ -1159,7 +1159,7 @@ DforceGpu::~DforceGpu()
     m_impl->kernels.reset();
 }
 
-bool DforceGpu::started(bool wait)
+bool ClothGpu::started(bool wait)
 {
   if(!m_prepared.valid())
   {
@@ -1188,7 +1188,7 @@ bool DforceGpu::started(bool wait)
   return m_valid;
 }
 
-void DforceGpu::setGravity(const std::array<float, 3>& gravity)
+void ClothGpu::setGravity(const std::array<float, 3>& gravity)
 {
   if(!started(true))
     return;
@@ -1199,7 +1199,7 @@ void DforceGpu::setGravity(const std::array<float, 3>& gravity)
   std::memcpy(m_impl->grav.mapping, grav.data(), grav.size() * sizeof(float));
 }
 
-void DforceGpu::frame(float t0, float t1, float extraDamping, float seconds)
+void ClothGpu::frame(float t0, float t1, float extraDamping, float seconds)
 {
   if(!started(true) || m_impl->broken)
     return;
@@ -1249,7 +1249,7 @@ void DforceGpu::frame(float t0, float t1, float extraDamping, float seconds)
   m_lastMove = m_impl->broken ? 0.f : m_impl->lastMove;
 }
 
-void DforceGpu::setTarget(size_t mesh, const std::vector<Mat4>& bones)
+void ClothGpu::setTarget(size_t mesh, const std::vector<Mat4>& bones)
 {
   if(!started(true))
     return;
@@ -1267,13 +1267,13 @@ void DforceGpu::setTarget(size_t mesh, const std::vector<Mat4>& bones)
 // blended bone matrix at t times the inverse of the one at the start, so a turned thigh turns the skirt on
 // it rather than sliding it. Its velocity is kept: a step a few milliseconds late is carried that much,
 // and a swinging hem goes on swinging.
-void DforceGpu::Impl::carry(float t)
+void ClothGpu::Impl::carry(float t)
 {
   const size_t       n  = size_t(model.nv);
   std::vector<float> to = xHost;
   for(size_t mi = 0; mi < meshes.size(); mi++)
   {
-    const SettleMesh& m = meshes[mi];
+    const cloth::Surface& m = meshes[mi];
     if(!kin[mi].skinned)
       continue;
     std::vector<Mat4> from(kin[mi].to.size()), at(kin[mi].to.size());
@@ -1325,7 +1325,7 @@ void DforceGpu::Impl::carry(float t)
   heldAt = -1;
 }
 
-bool DforceGpu::carry(float t)
+bool ClothGpu::carry(float t)
 {
   if(!started(true) || m_impl->broken)
     return false;
@@ -1335,7 +1335,7 @@ bool DforceGpu::carry(float t)
   return true;
 }
 
-bool DforceGpu::setRest(size_t mesh, std::vector<float> restLocal)
+bool ClothGpu::setRest(size_t mesh, std::vector<float> restLocal)
 {
   if(!started(true))
     return false;
@@ -1348,7 +1348,7 @@ bool DforceGpu::setRest(size_t mesh, std::vector<float> restLocal)
   return true;
 }
 
-void DforceGpu::settle()
+void ClothGpu::settle()
 {
   started(true);
   while(!settleSome(std::numeric_limits<double>::infinity()))
@@ -1356,7 +1356,7 @@ void DforceGpu::settle()
   }
 }
 
-bool DforceGpu::settleSome(double seconds)
+bool ClothGpu::settleSome(double seconds)
 {
   if(!started(false))
     return !m_prepared.valid();
@@ -1401,14 +1401,14 @@ bool DforceGpu::settleSome(double seconds)
   return done;
 }
 
-bool DforceGpu::ownerThreadOnly() const
+bool ClothGpu::ownerThreadOnly() const
 {
   return !m_impl->queue.queue;
 }
 
-bool DforceGpu::restart(std::vector<SettleMesh> meshes, const SettleOptions& opts)
+bool ClothGpu::restart(std::vector<cloth::Surface> meshes, const cloth::Options& opts)
 {
-  // FV_DFORCE_GPU_DEBUG's bit 16: a new simulation for every settle, as before this was kept (an A/B)
+  // FV_PHYSICS_GPU_DEBUG's bit 16: a new simulation for every settle, as before this was kept (an A/B)
   if(failed() || (m_impl->debug & 16))
     return false;
   Impl& s    = *m_impl;
@@ -1426,7 +1426,7 @@ bool DforceGpu::restart(std::vector<SettleMesh> meshes, const SettleOptions& opt
     // start is made again from it); the rest is as it was
     for(size_t mi = 0; mi < meshes.size(); mi++)
     {
-      const SettleMesh& m = meshes[mi];
+      const cloth::Surface& m = meshes[mi];
       const size_t      o = size_t(s.model.base[mi]);
       std::copy(m.posed.begin(), m.posed.end(), s.model.posed.begin() + long(o * 3));
       for(size_t v = 0; v < m.vertexCount(); v++)
@@ -1462,22 +1462,22 @@ bool DforceGpu::restart(std::vector<SettleMesh> meshes, const SettleOptions& opt
   return true;
 }
 
-void DforceGpu::useQueue(const nvvk::QueueInfo& queue)
+void ClothGpu::useQueue(const nvvk::QueueInfo& queue)
 {
   s_queue = queue;
 }
 
-DforceGpu::Stats DforceGpu::stats() const
+ClothGpu::Stats ClothGpu::stats() const
 {
   return m_impl->stats;
 }
 
-bool DforceGpu::failed() const
+bool ClothGpu::failed() const
 {
   return !m_prepared.valid() && (!m_valid || m_impl->broken);
 }
 
-std::vector<std::vector<float>> DforceGpu::positions() const
+std::vector<std::vector<float>> ClothGpu::positions() const
 {
   const Impl&                     s = *m_impl;
   std::vector<std::vector<float>> out;

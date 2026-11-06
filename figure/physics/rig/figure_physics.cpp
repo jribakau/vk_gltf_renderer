@@ -4,7 +4,7 @@
 #include <cmath>
 #include <set>
 
-#include <figure/dforce/skin.hpp>
+#include <figure/physics/skin.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 

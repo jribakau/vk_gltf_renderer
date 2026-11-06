@@ -718,8 +718,8 @@ Json FvHost::Impl::sceneState(const Json& args)
   if(prop->figure->dforce)
   {
     state["dforce"]     = prop->figure->dforce->enabled();
-    state["dforceMode"] = prop->figure->dforce->mode() == fv::dforce::Mode::eLive    ? "live" :
-                          prop->figure->dforce->mode() == fv::dforce::Mode::eLiveGpu ? "gpu" :
+    state["dforceMode"] = prop->figure->dforce->mode() == fv::physics::ClothMode::eLive    ? "live" :
+                          prop->figure->dforce->mode() == fv::physics::ClothMode::eLiveGpu ? "gpu" :
                                                                                        "settle";
     state["dforceLight"] = prop->figure->dforce->light();
   }
@@ -1154,7 +1154,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       }
       catch(const std::exception& e)
       {
-        target->dforce->setMode(fv::dforce::Mode::eLive);
+        target->dforce->setMode(fv::physics::ClothMode::eLive);
         problems.push_back(std::string("dForce: ") + e.what() + "; simulating live on the CPU");
       }
     }

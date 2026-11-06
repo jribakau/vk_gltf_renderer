@@ -570,7 +570,7 @@ Flesh::Flesh(const SceneGraph& scene, const morph::MorphSet& morphs, int bodyMes
     const Node& node = scene.nodes[size_t(id)];
     in.bones.emplace_back(node.name, node.joint ? node.joint->centerAuthored : std::array<double, 3>{});
   }
-  m_skin   = dforce::cageSkin(body.cageSkin);
+  m_skin   = physics::cageSkin(body.cageSkin);
   m_solver = std::make_unique<FleshSolver>(buildFlesh(in));
   m_displacement.assign(body.geo->cagePositions.size(), 0.f);
 }
@@ -620,10 +620,10 @@ bool Flesh::step(double seconds)
   // the lobes' targets: their cage as the morphs have it, skinned as the GPU skins it
   const std::span<const float> cage = m_morphs.morphedCageView(m_bodyMesh, m_scratch);
   const auto                   worlds = m_scene.worlds();
-  const auto                   nodeOf = dforce::nodeOfMesh(m_scene);
+  const auto                   nodeOf = physics::nodeOfMesh(m_scene);
   std::vector<uint32_t>        list(model.vertex);
   list.insert(list.end(), model.support.begin(), model.support.end());
-  const std::vector<float> targets = dforce::skinLocal(cage, m_skin, dforce::currentSkin(m_scene, worlds, nodeOf, m_bodyMesh), list);
+  const std::vector<float> targets = physics::skinLocal(cage, m_skin, physics::currentSkin(m_scene, worlds, nodeOf, m_bodyMesh), list);
   // a dial that moved the lobes' cage (a breast's size) reshapes them: no motion to feel
   std::vector<float> rest;
   rest.reserve(list.size() * 3);

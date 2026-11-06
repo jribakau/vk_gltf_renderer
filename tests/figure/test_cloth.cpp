@@ -16,7 +16,7 @@
 #include <map>
 #include <random>
 
-#include <figure/dforce/solver.hpp>
+#include <figure/physics/cloth/backend.hpp>
 #include <figure/physics/cloth/clusters.hpp>
 #include <figure/physics/cloth/coarse.hpp>
 #include <figure/physics/cloth/island.hpp>
@@ -253,7 +253,7 @@ TEST(Cloth, dforcesSimIsTheIslandBehindItsSeam)
   const Surface s = strip(6, shifted(5));
   Island        island({s});
   island.settle();
-  dforce::ClothSim sim({s});
+  physics::cloth::CpuBackend sim({s});
   sim.settle();
   EXPECT_EQ(island.positions(), sim.positions());
 

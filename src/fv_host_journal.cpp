@@ -104,9 +104,9 @@ std::set<int> shaderChosen(const Prop& p, const Json& args)
   return out;
 }
 
-const char* dforceModeName(fv::dforce::Mode m)
+const char* dforceModeName(fv::physics::ClothMode m)
 {
-  return m == fv::dforce::Mode::eLive ? "live" : m == fv::dforce::Mode::eLiveGpu ? "gpu" : "settle";
+  return m == fv::physics::ClothMode::eLive ? "live" : m == fv::physics::ClothMode::eLiveGpu ? "gpu" : "settle";
 }
 
 }  // namespace
