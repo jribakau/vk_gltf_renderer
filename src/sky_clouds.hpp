@@ -132,6 +132,7 @@ private:
   nvvk::Image m_turbulenceNoise;  // 2D RGBA8, repeating
   nvvk::Image m_cloudImage;       // 2D RGBA16F, azimuth repeating, mipmapped; GENERAL for life
   nvvk::Image m_previewImage;     // the same, a quarter the size, one level
+  nvvk::Image m_rawImage;         // the settled march before the filter (filterMain): full size, one level
   // Storage writes need a view of one level; the images' own views span their chains for sampling.
   VkImageView m_shapeStorageView{VK_NULL_HANDLE};
   VkImageView m_detailStorageView{VK_NULL_HANDLE};
@@ -152,5 +153,6 @@ private:
   VkPipeline       m_turbulencePipeline{VK_NULL_HANDLE};
   VkPipelineLayout m_bakeLayout{VK_NULL_HANDLE};
   VkPipeline       m_bakePipeline{VK_NULL_HANDLE};
+  VkPipeline       m_filterPipeline{VK_NULL_HANDLE};
   VkCommandPool    m_transientCmdPool{VK_NULL_HANDLE};
 };

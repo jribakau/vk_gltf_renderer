@@ -49,6 +49,7 @@
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeWeather, 0)]]    Sampler2D<float4>                  g_weather;
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeTurbulence, 0)]] Sampler2D<float4>                  g_turbulence;
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeParams, 0)]]     ConstantBuffer<SkyCloudsParameters> g_params;
+[[vk::binding(SkyCloudsBakeBindings::eCloudBakeFiltered, 0)]]   [[vk::image_format("rgba16f")]] RWTexture2D<float4> g_filtered;
 
 // Set 1 is SkyBruneton's runtime set, as in the environment bake.
 [[vk::binding(0, 1)]] Sampler2D<float3>                       g_transmittance;
@@ -362,4 +363,43 @@ void main(uint3 id: SV_DispatchThreadID)
       texel += float4(0.0F, 0.0F, 0.0F, 1.0F);
   }
   g_out[id.xy] = texel / float(samples);
+}
+
+// How sharply the filter keeps neighbours of another transparency out: one 0.15 apart counts a third.
+static const float kFilterAlphaSharpness = 50.0F;
+
+// The settled bake's march (main) into the raw image, then this into the cloud image: each texel
+// averaged with its eight neighbours, a tent's weights, around the horizon and clamped at its ends.
+// Eight marches a texel leave noise where a march's light varies most with its jitter -- the shadowed
+// bodies of clouds under a low sun, read through many octaves of the light that got in -- and as
+// the jitter is a texel's interleaved gradient noise, the noise wears that noise's weave. Any 3x3
+// block of it holds the jitter's whole range, so the neighbours' marches are the ones this texel's
+// lacked: the weave averages out, as takram's frames average it over time. A neighbour counts less
+// the further its transparency is from the texel's own (kFilterAlphaSharpness), so the clouds'
+// edges against the sky stay a texel sharp; inside a cloud, where the transparency is the same, the
+// filter blurs a texel's light by a little under one. The texel composes linearly (composeClouds),
+// so the average of texels is what they draw.
+[shader("compute")]
+[numthreads(CLOUD_WORKGROUP_SIZE, CLOUD_WORKGROUP_SIZE, 1)]
+void filterMain(uint3 id: SV_DispatchThreadID)
+{
+  if(any(id.xy >= pc.imageSize))
+    return;
+  const int2   size   = int2(pc.imageSize);
+  const float4 centre = g_out[id.xy];
+  float4       sum    = float4(0.0F);
+  float        weight = 0.0F;
+  for(int dy = -1; dy <= 1; ++dy)
+  {
+    for(int dx = -1; dx <= 1; ++dx)
+    {
+      const int2   q  = int2((int(id.x) + dx + size.x) % size.x, clamp(int(id.y) + dy, 0, size.y - 1));
+      const float4 v  = g_out[uint2(q)];
+      const float  da = v.w - centre.w;
+      const float  w  = float((2 - abs(dx)) * (2 - abs(dy))) * exp(-da * da * kFilterAlphaSharpness);
+      sum += v * w;
+      weight += w;
+    }
+  }
+  g_filtered[id.xy] = sum / weight;
 }

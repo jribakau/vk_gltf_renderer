@@ -232,10 +232,10 @@ void SkyClouds::deinit(Resources& res)
   vkDestroyImageView(m_device, m_detailStorageView, nullptr);
   vkDestroyImageView(m_device, m_weatherStorageView, nullptr);
   vkDestroyImageView(m_device, m_cloudStorageView, nullptr);
-  for(nvvk::Image* image : {&m_shapeNoise, &m_detailNoise, &m_weatherNoise, &m_turbulenceNoise, &m_cloudImage, &m_previewImage})
+  for(nvvk::Image* image : {&m_shapeNoise, &m_detailNoise, &m_weatherNoise, &m_turbulenceNoise, &m_cloudImage, &m_previewImage, &m_rawImage})
     destroyImage(res, *image);
   res.allocator.destroyBuffer(m_paramsBuf);
-  for(VkPipeline pipeline : {m_shapePipeline, m_detailPipeline, m_weatherPipeline, m_turbulencePipeline, m_bakePipeline})
+  for(VkPipeline pipeline : {m_shapePipeline, m_detailPipeline, m_weatherPipeline, m_turbulencePipeline, m_bakePipeline, m_filterPipeline})
     vkDestroyPipeline(m_device, pipeline, nullptr);
   vkDestroyPipelineLayout(m_device, m_noiseLayout, nullptr);
   vkDestroyPipelineLayout(m_device, m_bakeLayout, nullptr);
@@ -267,6 +267,8 @@ void SkyClouds::createImages(Resources& res)
                              kClamp, "SkyClouds::image");
   m_previewImage = createImage(res, {kCloudPreviewSize.width, kCloudPreviewSize.height, 1}, VK_FORMAT_R16G16B16A16_SFLOAT, 1, kClamp,
                                "SkyClouds::preview");
+  m_rawImage = createImage(res, {kCloudImageSize.width, kCloudImageSize.height, 1}, VK_FORMAT_R16G16B16A16_SFLOAT, 1, kClamp,
+                           "SkyClouds::raw");
 
   m_shapeStorageView   = createLevelView(m_device, m_shapeNoise, VK_FORMAT_R8_UNORM, true);
   m_detailStorageView  = createLevelView(m_device, m_detailNoise, VK_FORMAT_R8_UNORM, true);
@@ -301,7 +303,9 @@ void SkyClouds::createPipelines(const Shaders& shaders, VkDescriptorSetLayout br
   }
 
   // Bake: the image out, the noise and the parameters in; set 1 is SkyBruneton's. Two sets of the
-  // one layout, the full image's and the preview's, which differ only in the image written.
+  // one layout, the full image's and the preview's, which differ only in the image written: the
+  // settled march writes the raw image, which the filter (the same layout) reads into the cloud
+  // image's first level; a drag's preview is written as it is.
   {
     using B = shaderio::SkyCloudsBakeBindings;
     nvvk::DescriptorBindings bindings;
@@ -310,16 +314,18 @@ void SkyClouds::createPipelines(const Shaders& shaders, VkDescriptorSetLayout br
                       uint32_t(B::eCloudBakeTurbulence)})
       bindings.addBinding(b, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(B::eCloudBakeParams, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(B::eCloudBakeFiltered, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     NVVK_CHECK(m_bakePack.init(bindings, m_device, 2));
     NVVK_DBG_NAME(m_bakePack.getLayout());
 
     const VkPushConstantRange pushRange{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = sizeof(shaderio::SkyCloudsPushConstant)};
     NVVK_CHECK(nvvk::createPipelineLayout(m_device, &m_bakeLayout, {m_bakePack.getLayout(), brunetonSetLayout}, {pushRange}));
     NVVK_DBG_NAME(m_bakeLayout);
-    m_bakePipeline = createComputePipeline(m_device, m_bakeLayout, shaders.bake, "main");
+    m_bakePipeline   = createComputePipeline(m_device, m_bakeLayout, shaders.bake, "main");
+    m_filterPipeline = createComputePipeline(m_device, m_bakeLayout, shaders.bake, "filterMain");
 
     nvvk::WriteSetContainer writes;
-    writes.append(m_bakePack.makeWrite(B::eCloudBakeOut, 0), m_cloudStorageView, VK_IMAGE_LAYOUT_GENERAL);
+    writes.append(m_bakePack.makeWrite(B::eCloudBakeOut, 0), m_rawImage);
     writes.append(m_bakePack.makeWrite(B::eCloudBakeOut, 1), m_previewImage);
     for(uint32_t set = 0; set < 2; ++set)
     {
@@ -328,6 +334,7 @@ void SkyClouds::createPipelines(const Shaders& shaders, VkDescriptorSetLayout br
       writes.append(m_bakePack.makeWrite(B::eCloudBakeWeather, set), m_weatherNoise);
       writes.append(m_bakePack.makeWrite(B::eCloudBakeTurbulence, set), m_turbulenceNoise);
       writes.append(m_bakePack.makeWrite(B::eCloudBakeParams, set), m_paramsBuf);
+      writes.append(m_bakePack.makeWrite(B::eCloudBakeFiltered, set), m_cloudStorageView, VK_IMAGE_LAYOUT_GENERAL);
     }
     vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
   }
@@ -353,7 +360,7 @@ void SkyClouds::generateNoise(Resources& res)
   VkCommandBuffer      cmd = VK_NULL_HANDLE;
   NVVK_CHECK(nvvk::beginSingleTimeCommands(cmd, m_device, m_transientCmdPool));
 
-  for(nvvk::Image* image : {&m_shapeNoise, &m_detailNoise, &m_weatherNoise, &m_turbulenceNoise, &m_cloudImage, &m_previewImage})
+  for(nvvk::Image* image : {&m_shapeNoise, &m_detailNoise, &m_weatherNoise, &m_turbulenceNoise, &m_cloudImage, &m_previewImage, &m_rawImage})
     nvvk::cmdImageMemoryBarrier(cmd, {image->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL});
 
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_noiseLayout, 0, 1, m_noisePack.getSetPtr(), 0, nullptr);
@@ -420,9 +427,17 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
     vkCmdPushConstants(cmd, m_bakeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
     vkCmdDispatch(cmd, groups(size.width, CLOUD_WORKGROUP_SIZE), groups(size.height, CLOUD_WORKGROUP_SIZE), 1);
 
-    // The environment bake reads the full image two levels down, at its own size.
     if(!preview)
+    {
+      // The raw march through the filter into the cloud image (filterMain): its neighbours' marches
+      // average out the noise of eight a texel. The preview's frames move on before it would show.
+      nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_filterPipeline);
+      vkCmdDispatch(cmd, groups(size.width, CLOUD_WORKGROUP_SIZE), groups(size.height, CLOUD_WORKGROUP_SIZE), 1);
+      // The environment bake reads the full image two levels down, at its own size.
       nvvk::cmdGenerateMipmaps(cmd, m_cloudImage.image, kCloudImageSize, m_imageMips, 1, VK_IMAGE_LAYOUT_GENERAL);
+    }
     m_imageClear     = m_imageClear && preview;
     m_showingPreview = preview;
   }

@@ -628,6 +628,21 @@ zooms in. The samples walk the jitter along the golden ratio and spread over the
 (Roberts' R2), so a texel is the clouds averaged over it; the texel composes linearly, so the average
 is what it draws.
 
+Eight still leave noise where a march's light swings most with its jitter: the shadowed bodies of
+clouds, lit through many octaves of what got in, and most under a low sun. Since the jitter is the
+texel's interleaved gradient noise, that noise wears its weave, which a camera zoomed in on a sunset
+sees as hatching. The settled march therefore goes into a raw image and through a filter into the
+cloud image (`filterMain`): each texel averaged with its eight neighbours, a tent's weights, a
+neighbour counting less the further its transparency is from the texel's own. Any 3x3 block of the
+noise holds the jitter's whole range, so the neighbours' marches are the ones a texel lacked, as
+takram's frames are over time. Measured on a sunset at 12 degrees of view: the fine noise in cloud
+bodies fell from 0.75-1.0% of their light to 0.40-0.62% (32 marches a texel unfiltered reached
+0.62-0.79%, at four times the cost), the clear sky's floor being 0.30%; the filter costs about a
+millisecond. The clouds' edges against the sky stay a texel sharp; inside, their light blurs by a
+little under a texel. (Takram also dithers by the jitter how many short steps go toward the sun
+and whether the detail noise is read. Blending those by their shares instead was tried and changed
+nothing measurable: the filter averages that part out too.)
+
 The pass is recorded at the head of `EnvBaker::recordBake`, ahead of the bake that reads it. A
 drag's preview bakes a quarter-size **preview image** instead (`kCloudPreviewSize`) at takram's low
 quality preset with one march a texel (`cloudWithQuality`), and `SkySunDisk::cloudPreview` tells
@@ -737,7 +752,7 @@ one march each, at the low preset, so a drag's cloud pass is under a millisecond
 measured on its own). Per frame the clouds cost one texture read in
 `evalPhysicalSkyBackground` and nothing in the lighting field, which is baked.
 
-Memory: the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the preview 2 MB.
+Memory: the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the raw image the filter reads 32 MB, the preview 2 MB.
 
 ## References
 

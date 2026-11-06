@@ -41,12 +41,13 @@ NAMESPACE_SHADERIO_BEGIN()
 // The cloud pass's own set (sky_clouds_bake.slang). Set 1 of that pass is SkyBruneton's runtime set.
 enum SkyCloudsBakeBindings
 {
-  eCloudBakeOut        = 0,  // RWTexture2D<float4>: mip 0 of the cloud image (sky_clouds.h.slang)
+  eCloudBakeOut        = 0,  // RWTexture2D<float4>: what the march writes -- the raw image, or the preview
   eCloudBakeShape      = 1,  // Sampler3D<float>, repeating, mipmapped
   eCloudBakeDetail     = 2,  // Sampler3D<float>, repeating, mipmapped
   eCloudBakeWeather    = 3,  // Sampler2D<float4>, repeating, mipmapped
   eCloudBakeTurbulence = 4,  // Sampler2D<float4>, repeating
   eCloudBakeParams     = 5,  // ConstantBuffer<SkyCloudsParameters>
+  eCloudBakeFiltered   = 6,  // RWTexture2D<float4>: mip 0 of the cloud image, the raw one filtered (filterMain)
 };
 
 // The noise pass's set: what it writes, once.
