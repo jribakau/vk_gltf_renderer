@@ -18,17 +18,18 @@
  */
 
 //
-// Writes the clouds' three noise volumes, once, when SkyClouds starts (src/sky_clouds.cpp). One
-// entry point per volume; what each holds is sky_clouds_noise.h.slang.
+// Writes the clouds' four noise textures, once, when SkyClouds starts (src/sky_clouds.cpp). One
+// entry point per texture; what each holds is sky_clouds_noise.h.slang, ported from takram's.
 //
 
 #include "sky_clouds_io.h.slang"
 #include "sky_clouds_noise.h.slang"
 
 // clang-format off
-[[vk::binding(SkyCloudsNoiseBindings::eCloudNoiseShape, 0)]]   [[vk::image_format("r8")]] RWTexture3D<float> g_shape;
-[[vk::binding(SkyCloudsNoiseBindings::eCloudNoiseDetail, 0)]]  [[vk::image_format("r8")]] RWTexture3D<float> g_detail;
-[[vk::binding(SkyCloudsNoiseBindings::eCloudNoiseWeather, 0)]] [[vk::image_format("r8")]] RWTexture2D<float> g_weather;
+[[vk::binding(SkyCloudsNoiseBindings::eCloudNoiseShape, 0)]]      [[vk::image_format("r8")]]    RWTexture3D<float>  g_shape;
+[[vk::binding(SkyCloudsNoiseBindings::eCloudNoiseDetail, 0)]]     [[vk::image_format("r8")]]    RWTexture3D<float>  g_detail;
+[[vk::binding(SkyCloudsNoiseBindings::eCloudNoiseWeather, 0)]]    [[vk::image_format("rgba8")]] RWTexture2D<float4> g_weather;
+[[vk::binding(SkyCloudsNoiseBindings::eCloudNoiseTurbulence, 0)]] [[vk::image_format("rgba8")]] RWTexture2D<float4> g_turbulence;
 // clang-format on
 
 [shader("compute")]
@@ -56,4 +57,13 @@ void weatherMain(uint3 id: SV_DispatchThreadID)
   if(any(id.xy >= uint2(CLOUD_WEATHER_SIZE)))
     return;
   g_weather[id.xy] = cloudWeatherNoise((float2(id.xy) + 0.5F) / float(CLOUD_WEATHER_SIZE));
+}
+
+[shader("compute")]
+[numthreads(CLOUD_WORKGROUP_SIZE, CLOUD_WORKGROUP_SIZE, 1)]
+void turbulenceMain(uint3 id: SV_DispatchThreadID)
+{
+  if(any(id.xy >= uint2(CLOUD_TURBULENCE_SIZE)))
+    return;
+  g_turbulence[id.xy] = float4(cloudTurbulenceNoise((float2(id.xy) + 0.5F) / float(CLOUD_TURBULENCE_SIZE)), 1.0F);
 }

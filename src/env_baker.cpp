@@ -285,7 +285,8 @@ void EnvBaker::recordBake(VkCommandBuffer cmd, bool preview)
   push.sunDiskAddress   = m_sunDiskBuf.address;
   push.gridSize         = {kEnvSamplingGrid.width, kEnvSamplingGrid.height};
   push.clouds           = (physical && m_clouds->hasClouds()) ? 1 : 0;
-  push.sunlitGround     = physical ? cloudSunlitGround(m_clouds->parameters()) : 1.0F;
+  push.sunlitGround     = physical ? cloudSunlitGround(m_clouds->settings()) : 1.0F;
+  push.cloudPreview     = (physical && m_clouds->showingPreview()) ? 1 : 0;
 
   // One pipeline for every sky: env_bake.slang switches on pc.skyType. Set 1 carries the LUTs only
   // the Bruneton case reads, and is bound regardless -- SkyBruneton precomputes at startup, so it

@@ -18,10 +18,9 @@
  */
 
 //
-// Host/device interface of the physical sky's cloud layer (src/sky_clouds.*): the noise volumes it
-// is built from, the pass that bakes it into the cloud image, and the image's set that the bake and
-// the path tracer read it through. What the clouds are, and how the image is laid out, is
-// shaders/sky_clouds.h.slang.
+// Host/device interface of the physical sky's clouds (src/sky_clouds.*): the noise they are cut from,
+// the pass that bakes them into the cloud image, and the image's set that the bake and the path
+// tracer read it through. What the clouds are is shaders/sky_clouds.h.slang.
 //
 
 #ifndef SKY_CLOUDS_IO_H
@@ -31,51 +30,106 @@
 
 NAMESPACE_SHADERIO_BEGIN()
 
-// The noise the clouds are cut from, generated once (sky_clouds_noise.slang). Each tiles, so a
-// sampler set to repeat walks it forever; the sizes are its texels per period.
-#define CLOUD_SHAPE_NOISE_SIZE 128  // 3D: the billows, Perlin-Worley
-#define CLOUD_DETAIL_NOISE_SIZE 64  // 3D: the edges they are eroded by, Worley
-#define CLOUD_WEATHER_SIZE 512      // 2D: where over the land there is cloud, Perlin
+// The noise, generated once (sky_clouds_noise.slang), each tiling, at takram's sizes.
+#define CLOUD_SHAPE_NOISE_SIZE 128  // 3D R8, mipmapped: the billows, Perlin-Worley
+#define CLOUD_DETAIL_NOISE_SIZE 32  // 3D R8, mipmapped: the eddies the edges are eroded by, Worley
+#define CLOUD_WEATHER_SIZE 512      // 2D RGBA8, mipmapped: where each layer may have cloud
+#define CLOUD_TURBULENCE_SIZE 128   // 2D RGBA8: a curl field that shreds the cloud bottoms
 
-#define CLOUD_WORKGROUP_SIZE 8      // 8x8 for the image and the weather map, 4x4x4 for the volumes
+#define CLOUD_WORKGROUP_SIZE 8  // 8x8 for the 2D passes, 4x4x4 for the volumes
 
 // The cloud pass's own set (sky_clouds_bake.slang). Set 1 of that pass is SkyBruneton's runtime set.
 enum SkyCloudsBakeBindings
 {
-  eCloudBakeOut     = 0,  // RWTexture2D<float4>: the cloud image (sky_clouds.h.slang says what it holds)
-  eCloudBakeShape   = 1,  // Sampler3D<float>: CLOUD_SHAPE_NOISE_SIZE^3, repeating
-  eCloudBakeDetail  = 2,  // Sampler3D<float>: CLOUD_DETAIL_NOISE_SIZE^3, repeating
-  eCloudBakeWeather = 3,  // Sampler2D<float>: CLOUD_WEATHER_SIZE^2, repeating
+  eCloudBakeOut        = 0,  // RWTexture2D<float4>: mip 0 of the cloud image (sky_clouds.h.slang)
+  eCloudBakeShape      = 1,  // Sampler3D<float>, repeating, mipmapped
+  eCloudBakeDetail     = 2,  // Sampler3D<float>, repeating, mipmapped
+  eCloudBakeWeather    = 3,  // Sampler2D<float4>, repeating, mipmapped
+  eCloudBakeTurbulence = 4,  // Sampler2D<float4>, repeating
+  eCloudBakeParams     = 5,  // ConstantBuffer<SkyCloudsParameters>
 };
 
-// The noise pass's set: the three volumes it writes, once.
+// The noise pass's set: what it writes, once.
 enum SkyCloudsNoiseBindings
 {
-  eCloudNoiseShape   = 0,  // RWTexture3D<float>
-  eCloudNoiseDetail  = 1,  // RWTexture3D<float>
-  eCloudNoiseWeather = 2,  // RWTexture2D<float>
+  eCloudNoiseShape      = 0,  // RWTexture3D<float>
+  eCloudNoiseDetail     = 1,  // RWTexture3D<float>
+  eCloudNoiseWeather    = 2,  // RWTexture2D<float4>, mip 0
+  eCloudNoiseTurbulence = 3,  // RWTexture2D<float4>
 };
 
 // The set the cloud image is *read* through, by the environment bake (its set 2) and the path
-// tracer (its set 4): binding 0, Sampler2D<float4>, azimuth repeating.
+// tracer (its set 4): Sampler2D<float4>s, azimuth repeating. The full image, mipmapped, for a
+// settled sky; a quarter-size one for a drag's preview (SkySunDisk::cloudPreview says which holds
+// the clouds of the moment).
 #define CLOUD_IMAGE_BINDING 0
+#define CLOUD_PREVIEW_BINDING 1
 
-// What one bake of the cloud image needs. The layer, in the atmosphere's kilometres, and where the
-// sun and the observer are -- the same two the sky's bake takes.
+// The layers and the medium, as takram's CloudsEffect uniforms (packages/clouds/src/uniforms.ts),
+// in the atmosphere's kilometres. Four layers, one per channel of the weather map; a layer with no
+// height and no density is off. Built by SkyClouds from the panel's cover, depth and arrangement.
+struct SkyCloudsParameters
+{
+  float4 minLayerHeights;  // km above the surface: each layer's base
+  float4 maxLayerHeights;  // ... and its top
+  float4 densityScales;
+  float4 shapeAmounts;
+  float4 shapeDetailAmounts;
+  float4 weatherExponents;
+  float4 shapeAlteringBiases;
+  float4 coverageFilterWidths;
+  // Density across each layer's height: expTerm * exp(exponent * h) + linearTerm * h + constantTerm
+  float4 profileExpTerms;
+  float4 profileExponents;
+  float4 profileLinearTerms;
+  float4 profileConstantTerms;
+
+  float3 minIntervalHeights;  // the gaps between layers, which the march steps over
+  float  coverage;            // takram's coverage, 0..1 (cloudCoverageFor: from the panel's cover)
+  float3 maxIntervalHeights;
+  float  minHeight;  // the lowest base and the highest top of all the layers, km
+  float2 weatherOffset;  // the arrangement: where in the weather map's tiling the observer stands
+  float  maxHeight;
+  float  shadowTopHeight;  // the top of the layers that shade the ground (their ground bounce stops above)
+
+  float3 shapeOffset;
+  float  scattering;  // 1/km at density 1
+  float  absorption;  // 1/km at density 1
+  float  skyLightScale;
+  float  groundBounceScale;
+  float  powderScale;
+  float  powderExponent;  // km
+  float  turbulenceDisplacement;  // km
+  float  _pad0;
+  float  _pad1;
+
+  // The march: takram's quality preset, in kilometres
+  int   maxIterations;
+  float minStepSize;
+  float maxStepSize;
+  float maxRayDistance;
+  float perspectiveStepScale;
+  float minDensity;
+  float minExtinction;  // 1/km
+  float minTransmittance;
+  int   sunIterations;     // the short march toward the sun, for the edges
+  int   groundIterations;  // toward the ground, for the bounce; 0 skips it
+  float minSecondaryStepSize;
+  float secondaryStepScale;
+  int   farSunIterations;  // the long march toward the sun (what takram's shadow map supplies)
+  int   octaves;           // multiple-scattering octaves
+  int   shapeDetail;       // 0 skips the detail noise
+  int   turbulence;        // 0 skips the turbulence
+};
+
+// What changes per bake: where the sun and the observer are, and which image it fills.
 struct SkyCloudsPushConstant
 {
-  uint2  imageSize;
-  float  level;      // the weather level for the cover (cloudLevel); 0 for no clouds
-  float  bottom;     // km above the surface: the cloud base
-  float3 sunDirection;  // unit, the environment's frame, toward the sun
-  float  thickness;     // km from the base to the highest tops
-  float2 offset;        // km: which stretch of the endless noise is overhead (the arrangement)
+  uint2  imageSize;         // the image written: the full one, or the preview
   float  observerAltitude;  // km above the surface, the bake's fixed observer
-  float  sunlitAir;         // share of the air under the layer the sun reaches (cloudSunlitAir)
-  int    viewSteps;         // samples along a view ray through the layer
-  int    lightSteps;        // samples toward the sun from each of them
-  int    _pad0;
-  int    _pad1;
+  float  sunlitAir;         // share of the air under the layers the sun reaches (cloudSunlitAir)
+  float3 sunDirection;      // unit, the environment's frame, toward the sun
+  float  texelAngle;        // radians a column of the image spans: its footprint at a distance
 };
 
 NAMESPACE_SHADERIO_END()

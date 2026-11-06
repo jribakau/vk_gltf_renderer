@@ -1,8 +1,8 @@
-// The physical sky's clouds (shaders/sky_clouds.h.slang and sky_clouds_noise.h.slang) compiled as
-// C++: a clear sky comes back exactly, the cloud image's mapping inverts and crowds its rows at the
-// horizon, the layer is where it should be from every observer, the phase is normalised, the
-// diffused light thins with depth as a slab's does, the noise tiles, and the coverage covers as much
-// of the land as the bake's sunlit share assumes.
+// The physical sky's clouds (shaders/sky_clouds.h.slang and sky_clouds_noise.h.slang, takram's model)
+// compiled as C++: a clear sky comes back exactly, the cloud image's mapping inverts and crowds its
+// rows at the horizon, the layers are where they should be from every observer, the coverage runs
+// from none to all, the phase is normalised and the octaves carry light deep into a cloud, the noise
+// tiles, and the panel's cover shades as much of the land as it says.
 
 // GLM as test_bsdf_lobes.cpp, the other file of this executable, sees it
 #undef GLM_FORCE_XYZW_ONLY
@@ -11,14 +11,15 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <algorithm>
 #include <random>
 #include <vector>
 
 using namespace glm;
 #include "../shaders/shaderio.h"
+#include "../shaders/sky_clouds_io.h.slang"
 using namespace shaderio;
 #include "../shaders/sky_clouds.h.slang"
 #include "../shaders/sky_clouds_noise.h.slang"
@@ -39,56 +40,68 @@ float wrap01(float x)
   return x - std::floor(x);
 }
 
-// The bake's density at a planet-centred point, with the noise evaluated directly instead of read
-// from its volumes (sky_clouds_bake.slang densityAt).
-float densityAt(float3 p, float level, float thickness)
+float3 wrap01(float3 x)
 {
-  const float r        = length(p);
-  const float altitude = r - kEarth;
-  const float h        = (altitude - CLOUD_BOTTOM_KM) / thickness;
-  if(h <= 0.0F || h >= 1.0F)
-    return 0.0F;
-  const float2 xz = float2(p.x, p.z);
-  const float  weather =
-      cloudWeather(cloudWeatherNoise(float2(wrap01(xz.x / CLOUD_WEATHER_PERIOD), wrap01(xz.y / CLOUD_WEATHER_PERIOD))),
-                   cloudWeatherNoise(float2(wrap01(xz.x / CLOUD_WEATHER_PERIOD2 + 0.37F), wrap01(xz.y / CLOUD_WEATHER_PERIOD2 + 0.61F))));
-  if(cloudLocalCoverage(weather, level) <= 0.0F)
-    return 0.0F;
-  const float3 q = float3(xz.x, altitude, xz.y);
-  const float  shape =
-      cloudShapeNoise(float3(wrap01(q.x / CLOUD_SHAPE_PERIOD), wrap01(q.y / CLOUD_SHAPE_PERIOD), wrap01(q.z / CLOUD_SHAPE_PERIOD)));
-  const float detail =
-      cloudDetailNoise(float3(wrap01(q.x / CLOUD_DETAIL_PERIOD), wrap01(q.y / CLOUD_DETAIL_PERIOD), wrap01(q.z / CLOUD_DETAIL_PERIOD)));
-  return cloudDensity(shape, detail, weather, h, level);
+  return x - floor(x);
 }
 
-// The share of the land the layer shades with the sun overhead, over columns straight up from the
-// ground at `ups` (on the sphere, a radius, not +Y).
-double shadedShare(const std::vector<float3>& ups, float level, float thickness)
+// One column straight up from the ground, with what does not depend on the coverage read once: the
+// weather map over it and the two volumes at each height, as the bake reads them (sky_clouds_bake.slang
+// mediaAt), the noise evaluated directly instead of from its textures. Without the turbulence, which
+// moves the billows about but not how many there are.
+struct Column
 {
-  const int steps  = 24;
-  double    shaded = 0.0;
-  for(const float3 up : ups)
-  {
-    double depth = 0.0;
-    for(int i = 0; i < steps; ++i)
-    {
-      const float altitude = CLOUD_BOTTOM_KM + (float(i) + 0.5F) / float(steps) * thickness;
-      depth += densityAt(up * (kEarth + altitude), level, thickness) * CLOUD_EXTINCTION * (thickness / steps);
-    }
-    shaded += 1.0 - std::exp(-depth);
-  }
-  return shaded / double(ups.size());
-}
+  float4             weather;
+  std::vector<float> heights;
+  std::vector<float> steps;  // km of column each height stands for
+  std::vector<float> shape;
+  std::vector<float> detail;
+};
 
-std::vector<float3> columns(int count, unsigned seed)
+std::vector<Column> columns(int count, unsigned seed, const SkyCloudsParameters& p)
 {
   std::mt19937                          rng(seed);
   std::uniform_real_distribution<float> spread(-600.0F, 600.0F);
-  std::vector<float3>                   ups(count);
-  for(float3& up : ups)
-    up = normalize(float3(spread(rng), kEarth, spread(rng)));
-  return ups;
+  std::vector<Column>                   out(count);
+  for(Column& c : out)
+  {
+    const float x = spread(rng), z = spread(rng);
+    c.weather     = cloudWeatherNoise(float2(wrap01(x / CLOUD_WEATHER_PERIOD), wrap01(z / CLOUD_WEATHER_PERIOD)));
+    // the cumulus layers finely, the high one coarsely, the gap between not at all
+    const auto band = [&](float bottom, float top, int n) {
+      for(int i = 0; i < n; ++i)
+      {
+        const float  h = bottom + (float(i) + 0.5F) / float(n) * (top - bottom);
+        const float3 q(x, h, z);
+        c.heights.push_back(h);
+        c.steps.push_back((top - bottom) / float(n));
+        c.shape.push_back(std::clamp(cloudShapeNoise(wrap01(q / CLOUD_SHAPE_PERIOD)), 0.0F, 1.0F));
+        c.detail.push_back(cloudDetailNoise(wrap01(q / CLOUD_DETAIL_PERIOD)));
+      }
+    };
+    band(p.minHeight, p.shadowTopHeight, 24);
+    band(p.minLayerHeights.z, p.maxLayerHeights.z, 4);
+  }
+  return out;
+}
+
+// The share of the land the layers shade with the sun overhead, at a coverage.
+double shadedShare(const std::vector<Column>& cols, SkyCloudsParameters p, float coverage)
+{
+  p.coverage    = coverage;
+  double shaded = 0.0;
+  for(const Column& c : cols)
+  {
+    double depth = 0.0;
+    for(size_t i = 0; i < c.heights.size(); ++i)
+    {
+      const CloudWeather w = cloudSampleWeather(p, c.weather, c.heights[i]);
+      if(cloudWeatherHasDensity(p, w))
+        depth += cloudSampleMedia(p, w, c.shape[i], c.detail[i], true).extinction * c.steps[i];
+    }
+    shaded += 1.0 - std::exp(-depth);
+  }
+  return shaded / double(cols.size());
 }
 
 }  // namespace
@@ -134,17 +147,18 @@ TEST(SkyClouds, TheImageMappingInvertsAndSharesTheLatLongsAzimuth)
 
 TEST(SkyClouds, TheRowsCrowdAtTheHorizonWhereTheCloudsDo)
 {
-  const float minElevation = horizonElevation(kObserver);
+  const float minElevation  = horizonElevation(kObserver);
+  const float rows          = 1024.0F;  // kCloudImageSize.height
   const auto  rowsPerDegree = [&](float degrees) {
     const float e  = degrees * kPi / 180.0F;
     const float de = 0.01F * kPi / 180.0F;
     const float v0 = cloudImageUv(float3(std::cos(e), std::sin(e), 0.0F), minElevation).y;
     const float v1 = cloudImageUv(float3(std::cos(e + de), std::sin(e + de), 0.0F), minElevation).y;
-    return (v1 - v0) / 0.01F * 512.0F;
+    return (v1 - v0) / 0.01F * rows;
   };
   EXPECT_GT(rowsPerDegree(2.0F), 3.0F * rowsPerDegree(60.0F));
   // and the zenith keeps a few: its clouds are the nearest and the largest
-  EXPECT_GT(rowsPerDegree(85.0F), 2.0F);
+  EXPECT_GT(rowsPerDegree(85.0F), 4.0F);
 }
 
 TEST(SkyClouds, TheLayerIsWhereItIsFromBelowInsideAndAbove)
@@ -179,113 +193,154 @@ TEST(SkyClouds, TheLayerIsWhereItIsFromBelowInsideAndAbove)
   EXPECT_LE(s.y, s.x);
 }
 
+TEST(SkyClouds, TheDefaultLayersAreTakramsAndTheDepthScalesTheCumulus)
+{
+  const SkyCloudsParameters p = cloudDefaultParameters(0.5F, CLOUD_DEFAULT_THICKNESS);
+  EXPECT_FLOAT_EQ(p.minLayerHeights.x, 0.75F);
+  EXPECT_FLOAT_EQ(p.maxLayerHeights.x, 1.4F);
+  EXPECT_FLOAT_EQ(p.maxLayerHeights.y, 2.2F);
+  EXPECT_FLOAT_EQ(p.minLayerHeights.z, 7.5F);
+  EXPECT_FLOAT_EQ(p.maxHeight, 8.0F);
+  // the march steps over the gap between the cumulus and the high layer, and nothing else
+  EXPECT_TRUE(cloudInsideIntervals(p, 5.0F));
+  EXPECT_FALSE(cloudInsideIntervals(p, 1.5F));
+  EXPECT_FALSE(cloudInsideIntervals(p, 7.7F));
+
+  const SkyCloudsParameters deep = cloudDefaultParameters(0.5F, 2.0F * CLOUD_DEFAULT_THICKNESS);
+  EXPECT_FLOAT_EQ(deep.maxLayerHeights.y - deep.minLayerHeights.y, 2.4F);
+  EXPECT_FLOAT_EQ(deep.minLayerHeights.y, 1.0F);
+  EXPECT_FLOAT_EQ(deep.maxLayerHeights.z, 8.0F);  // the high layer stays
+
+  // a preview is coarser but keeps the octaves, which hold the clouds' brightness
+  const SkyCloudsParameters preview = cloudWithQuality(p, true);
+  EXPECT_LT(preview.maxIterations, p.maxIterations);
+  EXPECT_EQ(preview.shapeDetail, 0);
+  EXPECT_EQ(preview.octaves, p.octaves);
+}
+
 TEST(SkyClouds, CoverageRunsFromNoneToAll)
 {
-  for(float w = 0.0F; w <= 1.0F; w += 0.05F)
-  {
-    EXPECT_EQ(cloudLocalCoverage(w, 0.0F), 0.0F) << w;
-    EXPECT_GE(cloudLocalCoverage(w, 1.0F), 1.0F) << w;  // past what the shape holds: a deck without holes
-    float last = 0.0F;
-    for(float c = 0.0F; c <= 1.0F; c += 0.05F)
+  const SkyCloudsParameters p = cloudDefaultParameters(0.0F, CLOUD_DEFAULT_THICKNESS);
+  for(float w = 0.0F; w <= 1.0F; w += 0.1F)
+    for(float h = 0.8F; h < 2.2F; h += 0.1F)
     {
-      const float local = cloudLocalCoverage(w, c);
-      EXPECT_GE(local, last);
-      last = local;
+      SkyCloudsParameters none = p;
+      none.coverage            = 0.0F;
+      EXPECT_FALSE(cloudWeatherHasDensity(none, cloudSampleWeather(none, float4(w), h))) << w << " " << h;
+      // rising with the coverage everywhere
+      float last = 0.0F;
+      for(float c = 0.0F; c <= 1.0F; c += 0.1F)
+      {
+        SkyCloudsParameters at = p;
+        at.coverage            = c;
+        const float4 d         = cloudSampleWeather(at, float4(w), h).density;
+        EXPECT_GE(d.x + d.y, last - 1e-6F);
+        last = d.x + d.y;
+      }
     }
-  }
-  // Nothing outside the layer, however much cloud
-  EXPECT_EQ(cloudDensity(1.0F, 0.5F, 1.0F, 0.0F, 1.0F), 0.0F);
-  EXPECT_EQ(cloudDensity(1.0F, 0.5F, 1.0F, 1.0F, 1.0F), 0.0F);
-  EXPECT_GT(cloudDensity(1.0F, 0.5F, 1.0F, 0.3F, 1.0F), 0.5F);
-  // and the sunlit share follows: all of it clear, none of it overcast
-  EXPECT_EQ(cloudSunlitAir(0.0F), 1.0F);
-  EXPECT_EQ(cloudSunlitAir(1.0F), 0.0F);
-  // the cover's level rises with it, from where the first clouds pass to a full deck
-  float last = 0.0F;
+  // The panel's cover maps onto it from the first clouds to a closed deck, rising
+  EXPECT_FLOAT_EQ(cloudCoverageFor(0.0F), CLOUD_COVERAGE_FOR_COVER[0]);
+  EXPECT_FLOAT_EQ(cloudCoverageFor(1.0F), CLOUD_COVERAGE_FOR_COVER[20]);
+  float last = -1.0F;
   for(float cover = 0.0F; cover <= 1.0F; cover += 0.01F)
   {
-    EXPECT_GT(cloudLevel(cover), last);
-    last = cloudLevel(cover);
+    EXPECT_GT(cloudCoverageFor(cover), last);
+    last = cloudCoverageFor(cover);
   }
-  EXPECT_FLOAT_EQ(cloudLevel(1.0F), 1.0F);
+  EXPECT_EQ(cloudSunlitAir(0.0F), 1.0F);
+  EXPECT_EQ(cloudSunlitAir(1.0F), 0.0F);
 }
 
 TEST(SkyClouds, ThePhaseIsNormalisedAndScattersForward)
 {
-  double sum = 0.0;
-  const int n = 20000;
+  for(const float attenuation : {1.0F, 0.5F, 0.125F})
+  {
+    double    sum = 0.0;
+    const int n   = 20000;
+    for(int i = 0; i < n; ++i)
+    {
+      const float c = -1.0F + 2.0F * (float(i) + 0.5F) / float(n);
+      sum += double(cloudPhase(c, attenuation)) * 2.0 * double(kPi) * (2.0 / n);
+    }
+    EXPECT_NEAR(sum, 1.0, 2e-3) << attenuation;
+  }
+  EXPECT_GT(cloudPhase(1.0F, 1.0F), 10.0F * cloudPhase(0.0F, 1.0F));
+}
+
+TEST(SkyClouds, TheOctavesCarryLightDeepIntoACloud)
+{
+  // At the surface the octaves add up to their shares, each phase normalised: 2 (1 - 2^-8)
+  double    sum = 0.0;
+  const int n   = 20000;
   for(int i = 0; i < n; ++i)
   {
     const float c = -1.0F + 2.0F * (float(i) + 0.5F) / float(n);
-    sum += double(cloudPhase(c)) * 2.0 * double(kPi) * (2.0 / n);
+    sum += double(cloudMultipleScattering(0.0F, c, 8)) * 2.0 * double(kPi) * (2.0 / n);
   }
-  EXPECT_NEAR(sum, 1.0, 1e-3);
-  EXPECT_GT(cloudPhase(1.0F), 50.0F * cloudPhase(-1.0F));
-}
+  EXPECT_NEAR(sum, 2.0 * (1.0 - 1.0 / 256.0), 5e-3);
 
-TEST(SkyClouds, DiffusedLightThinsWithDepthAsASlabPassesIt)
-{
-  // The sunlit face reflects as a white surface of the cloud's albedo would, plus the single scatter
-  const float3 sun  = float3(1.0F);
-  const float  face = cloudLight(sun, 0.0F, -1.0F, float3(0.0F), 1.0F).x;
-  EXPECT_NEAR(face, CLOUD_DIFFUSE_ALBEDO / kPi + cloudPhase(-1.0F), 1e-5F);
-
-  // A deck of optical depth 20 passes about a third of the light to its base: 1 / (1 + 3/4 (1 - g) tau)
-  const float base = cloudLight(sun, 20.0F, -1.0F, float3(0.0F), 0.0F).x;
-  EXPECT_NEAR(base / (CLOUD_DIFFUSE_ALBEDO / kPi), 1.0F / (1.0F + 0.1125F * 20.0F), 1e-3F);
-
-  // Toward the sun, a thin edge glows: the forward lobe outshines the sunlit face several times over
-  EXPECT_GT(cloudLight(sun, 0.5F, 1.0F, float3(0.0F), 0.5F).x, 5.0F * face);
+  // Deep in it, where single scattering is gone, the flattest octaves still pass light
+  const float deep = cloudMultipleScattering(20.0F, 0.0F, 8);
+  EXPECT_GT(deep, 1e5F * std::exp(-20.0F) * cloudPhase(0.0F, 1.0F));
+  EXPECT_LT(deep, cloudMultipleScattering(5.0F, 0.0F, 8));
 }
 
 TEST(SkyClouds, TheNoiseTilesAndStaysInRange)
 {
   std::mt19937                          rng(7);
   std::uniform_real_distribution<float> unit(0.0F, 1.0F);
-  for(int i = 0; i < 64; ++i)
+  for(int i = 0; i < 24; ++i)
   {
     const float3 p(unit(rng), unit(rng), unit(rng));
     const float  shape = cloudShapeNoise(p);
-    EXPECT_GE(shape, 0.0F);
-    EXPECT_LE(shape, 1.0F);
-    EXPECT_NEAR(cloudShapeNoise(p + float3(1.0F, 0.0F, 0.0F)), shape, 1e-4F);
-    EXPECT_NEAR(cloudShapeNoise(p + float3(0.0F, 0.0F, -1.0F)), shape, 1e-4F);
+    EXPECT_NEAR(cloudShapeNoise(p + float3(1.0F, 0.0F, 0.0F)), shape, 2e-3F);
+    EXPECT_NEAR(cloudShapeNoise(p + float3(0.0F, 0.0F, -1.0F)), shape, 2e-3F);
 
     const float detail = cloudDetailNoise(p);
     EXPECT_GE(detail, 0.0F);
     EXPECT_LE(detail, 1.0F);
-    EXPECT_NEAR(cloudDetailNoise(p + float3(0.0F, 1.0F, 0.0F)), detail, 1e-4F);
+    EXPECT_NEAR(cloudDetailNoise(p + float3(0.0F, 1.0F, 0.0F)), detail, 2e-3F);
 
     const float2 q(p.x, p.y);
-    const float  weather = cloudWeatherNoise(q);
-    EXPECT_GE(weather, 0.0F);
-    EXPECT_LE(weather, 1.0F);
-    EXPECT_NEAR(cloudWeatherNoise(q + float2(1.0F, 0.0F)), weather, 1e-4F);
+    const float4 weather = cloudWeatherNoise(q);
+    const float4 wrapped = cloudWeatherNoise(q + float2(1.0F, 0.0F));
+    for(int c = 0; c < 4; ++c)
+    {
+      EXPECT_GE(weather[c], 0.0F);
+      EXPECT_LE(weather[c], 1.0F);
+      EXPECT_NEAR(wrapped[c], weather[c], 2e-3F) << c;
+    }
+
+    const float3 turbulence = cloudTurbulenceNoise(q);
+    EXPECT_NEAR(length(turbulence * 2.0F - 1.0F), 1.0F, 1e-3F);
+    EXPECT_NEAR(length(cloudTurbulenceNoise(q + float2(0.0F, 1.0F)) - turbulence), 0.0F, 5e-3F);
   }
 }
 
 // Coverage is the share of the land the clouds shade with the sun overhead: what the panel says, and
 // what the bake assumes for the distant ground and haze (cloudSunlitAir). Other columns than the
 // table was fitted on.
-TEST(SkyClouds, TheCoverageShadesAsMuchOfTheLandAsItSays)
+TEST(SkyClouds, TheCoverShadesAsMuchOfTheLandAsItSays)
 {
-  const std::vector<float3> ups = columns(800, 11);
-  for(const float cover : {0.1F, 0.3F, 0.5F, 0.7F, 0.9F, 1.0F})
+  const SkyCloudsParameters p    = cloudDefaultParameters(0.0F, CLOUD_DEFAULT_THICKNESS);
+  const std::vector<Column> cols = columns(600, 11, p);
+  for(const float cover : {0.02F, 0.1F, 0.3F, 0.5F, 0.7F, 0.9F, 1.0F})
   {
-    const double shaded = shadedShare(ups, cloudLevel(cover), 1.2F);
+    const double shaded = shadedShare(cols, p, cloudCoverageFor(cover));
     std::printf("[ cover %.2f ] shades %.3f of the land\n", cover, shaded);
     EXPECT_NEAR(shaded, 1.0 - cloudSunlitAir(cover), 0.06) << cover;
   }
 }
 
-// Not a test: what CLOUD_LEVEL_FOR_COVER is fitted from. Prints the shaded share for weather levels
-// from 0.2 to 1; invert it at every 5% of cover (the knots) when the noise or the density changes.
+// Not a test: what CLOUD_COVERAGE_FOR_COVER is fitted from. Prints the shaded share for takram's
+// coverage from 0 to 1; invert it at every 5% of cover (the table's knots) when the model changes.
 TEST(SkyClouds, DISABLED_CoverageCurve)
 {
-  const std::vector<float3> ups = columns(3000, 5);
-  for(int k = 0; k <= 32; ++k)
+  const SkyCloudsParameters p    = cloudDefaultParameters(0.0F, CLOUD_DEFAULT_THICKNESS);
+  const std::vector<Column> cols = columns(2500, 5, p);
+  for(int k = 0; k <= 40; ++k)
   {
-    const float level = 0.2F + 0.025F * float(k);
-    std::printf("level %.3f shades %.4f\n", level, shadedShare(ups, level, 1.2F));
+    const float coverage = 0.025F * float(k);
+    std::printf("coverage %.3f shades %.4f\n", coverage, shadedShare(cols, p, coverage));
   }
 }

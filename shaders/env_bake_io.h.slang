@@ -82,6 +82,9 @@ struct EnvBakePushConstant
   // clear sky, which then bakes exactly as it did before there were clouds.
   int   clouds;
   float sunlitGround;
+  // Which of SkyClouds' images holds them: 1 the preview, 0 the full image.
+  int cloudPreview;
+  int _pad1;
 };
 
 NAMESPACE_SHADERIO_END()

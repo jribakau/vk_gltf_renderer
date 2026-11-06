@@ -565,14 +565,22 @@ Two things to know when reading the output:
 
 ## Clouds
 
-One layer of cumulus over the physical sky, from clear to overcast: `SkyClouds`
-(`src/sky_clouds.*`), with what the clouds *are* in `shaders/sky_clouds.h.slang`. Physical sky only:
-a gradient is a painting and an HDR file already has the clouds it was photographed with.
+Layers of cloud over the physical sky, from clear to overcast: `SkyClouds` (`src/sky_clouds.*`),
+with what the clouds *are* in `shaders/sky_clouds.h.slang`. Physical sky only: a gradient is a
+painting and an HDR file already has the clouds it was photographed with.
+
+The cloud model is a port of takram's [three-geospatial
+clouds](https://github.com/takram-design-engineering/three-geospatial/tree/main/packages/clouds)
+(MIT; the notices travel with the code in `shaders/sky_clouds_noise.h.slang`), which is built on
+the same Bruneton atmosphere as this renderer's. Ported is the model: the noise, the weather and
+coverage, the density, the lighting and the march. Not ported is the way takram runs it every frame
+-- a sixteenth of the pixels, reprojected over time, with a shadow map rendered from the sun --
+because here the clouds are baked, which neither needs.
 
 ### One number for the sun
 
 A scene is metres across and the clouds are kilometres up, so the whole scene is in one cloud's
-shadow or in none. The sun's transmittance through the layer, from the observer toward the sun, is
+shadow or in none. The sun's transmittance through the layers, from the observer toward the sun, is
 a single value the bake publishes with the disk (`SkySunDisk::cloudShadow`) and multiplies into the
 disk's radiance, so the sun light NEE samples, the disk the camera sees and the sun in a mirror all
 dim together. The air in the scene is in the same shadow: aerial perspective scales its sun share by
@@ -584,47 +592,64 @@ so it lights the scene from a wider source than the disk.
 
 ### The cloud image
 
-The layer is marched once per bake into the **cloud image** (`kCloudImageSize`, RGBA16F) for the
-fixed observer: for every direction above its horizon, what the clouds and the air in front of them
-add, and in alpha what is left of the sky behind. `composeClouds` is `sky * a + rgb`; a texel of
-`(0, 0, 0, 1)` gives the sky back exactly, so a sky without clouds bakes and draws bit for bit as it
-did before clouds existed. The image is cleared to that once when the cover goes to zero, and the
-pass does not run.
+The layers are marched once per bake into the **cloud image** (`kCloudImageSize`, RGBA16F, with a
+mip chain) for the fixed observer: for every direction above its horizon, what the clouds and the
+air in front of them add, and in alpha what is left of the sky behind. `composeClouds` is
+`sky * a + rgb`; a texel of `(0, 0, 0, 1)` gives the sky back exactly, so a sky without clouds bakes
+and draws bit for bit as it did before clouds existed. The image is cleared to that once when the
+cover goes to zero, and the pass does not run.
 
 It is read twice, through `SkyClouds`' runtime set: by the environment bake, which composes it into
-the **lighting field**, so an overcast sky lights the scene grey and the alias table follows; and by
-the path tracer's `evalPhysicalSkyBackground`, for what the camera and mirrors see. Its columns run
-round the horizon as the lat-long's do, its rows from the horizon to the zenith on a square root, so
-they crowd where the clouds do. What the camera sees of the clouds is this image, so its size is
-their sharpness on screen.
+the **lighting field** two mips down, at its own resolution, so an overcast sky lights the scene grey
+and the alias table follows; and by the path tracer's `evalPhysicalSkyBackground`, for what the
+camera and mirrors see. Its columns run round the horizon as the lat-long's do, its rows from the
+horizon to the zenith on a square root, so they crowd where the clouds do. What the camera sees of
+the clouds is this image, so its size is their sharpness on screen.
 
-The pass is recorded at the head of `EnvBaker::recordBake`, ahead of the bake that reads it, so the
-preview and the commit get it alike; a drag's preview takes fewer samples.
+The pass is recorded at the head of `EnvBaker::recordBake`, ahead of the bake that reads it. A
+drag's preview bakes a quarter-size **preview image** instead (`kCloudPreviewSize`) at takram's low
+quality preset (`cloudWithQuality`), and `SkySunDisk::cloudPreview` tells the readers which image
+holds the clouds of the moment; the settle that follows bakes the full one.
 
-### What is cloud, and how it is lit
+### What is cloud
 
-The usual real-time recipe (Schneider 2015, Hillaire's tileable noise): a 2D weather map says where
-over the land there may be cloud, Perlin-Worley billows are cut to it with rounded tops, and finer
-Worley noise erodes the edges. The three noise volumes tile and are generated once, at start-up
-(`sky_clouds_noise.slang`); the arrangement (`cloudSeed`) is only which stretch of them is overhead.
+Four layers, one to a channel of a weather map that tiles every ~100 km (`cloudDefaultParameters`):
+low cumulus from 750 m, deeper cumulus in larger fields from 1 km, and a thin streaky layer at 7.5 km;
+the fourth is off. The panel's **Thickness** scales the two cumulus layers' depth together from
+takram's 1.45 km. Coverage lowers each layer's threshold most at the height its clouds are widest,
+Perlin-Worley billows are cut from what the weather allows and rounded off toward the tops, finer
+Worley erodes the edges (fluffy above, wispy below), a curl-noise field shreds the bottoms, and a
+density profile per layer finishes it. The four noise textures tile and are generated once, at
+start-up (`sky_clouds_noise.slang`); the arrangement (`cloudSeed`) is only which stretch of them is
+overhead.
 
 **Coverage means the share of the land the clouds shade** with the sun overhead, which is near
-enough the share of the sky overhead they hide, the way cloud cover is reported. The weather level
-that gives each cover is measured by marching columns through the layer and inverted
-(`CLOUD_LEVEL_FOR_COVER`); `SkyClouds.DISABLED_CoverageCurve` in `tests/test_sky_clouds.cpp` prints
-the curve to re-fit it from when the noise or the density changes, and
-`SkyClouds.TheCoverageShadesAsMuchOfTheLandAsItSays` holds it to within a few percent.
+enough the share of the sky overhead they hide, the way cloud cover is reported. Takram's coverage is
+not that -- its default of 0.3 shades about a quarter, and by 0.65 the deck has closed -- so the
+panel's cover goes through a table measured by marching columns through the default layers and
+inverted (`CLOUD_COVERAGE_FOR_COVER`). `SkyClouds.DISABLED_CoverageCurve` in
+`tests/test_sky_clouds.cpp` prints the curve to re-fit it from when the model changes, and
+`SkyClouds.TheCoverShadesAsMuchOfTheLandAsItSays` holds it to within a few percent.
+
+### How it is lit
 
 Each point of cloud is lit by the sunlight that reaches it through the atmosphere -- the
 transmittance table's, so clouds take a sunset's colour and stay lit after the sun has left the
-ground -- and by the sky's irradiance at its height. The sunlight arrives three ways (`cloudLight`):
-scattered once, through droplets' strongly forward phase (the silver lining); diffused through the
-cloud by many scatterings, thinning with depth as a conservative slab's transmission does, which is
-almost all of a cloud's brightness; and the sky's light diffused from above. The air between the
-observer and the clouds is the same march aerial perspective uses.
+ground -- and by the sky's irradiance at its height. Takram's terms, all in the bake:
 
-Under the layer the distant ground and the haze in front of the clouds are lit by the sun only where
-it gets through: the open share of the land, `1 - cover` (`SkySunDisk::sunlitGround`).
+- **Multiple scattering** by Wrenninge's octaves: each a fainter, flatter scattering through less of
+  the optical depth to the sun, so thick cloud keeps a glow deep inside, and the forward lobe gives
+  the silver lining.
+- **The optical depth to the sun** from a short march at the point, for the shadow's edge, and a
+  long one out to a few kilometres for the other clouds and the far side of this one. Takram reads
+  the long part from a shadow map rendered each frame (`farSunOpticalDepth` replaces it).
+- **Sky light**, brighter toward each layer's top, and **ground bounce** onto the cloud bases: the
+  land lit by the sky and the open share of the sun, through the cloud below.
+- **Beer-Powder**: thin edges darker, where light has not yet built up by scattering.
+
+The air between the observer and the clouds is the same march aerial perspective uses, to where the
+clouds are on average. Under the layers the distant ground and that haze are lit by the sun only
+where it gets through: the open share of the land, `1 - cover` (`SkySunDisk::sunlitGround`).
 
 ### What it leaves out
 
@@ -632,18 +657,30 @@ it gets through: the open share of the land, `1 - cover` (`SkySunDisk::sunlitGro
   table and an accumulation restart every frame.
 - Shadows that move across the scene: one shadow for the whole scene, as above. A terrain kilometres
   wide is the case that would want more.
-- More than one layer, cirrus, rain, light shafts through the air.
+- Takram's haze and light shafts, and rain.
 - An observer above the clouds: the image covers what is above the observer's horizon.
 - Saving: the clouds are viewer settings (`cloud*` in `Settings`), not yet in `OMI_environment_sky`
   or a `.sky.json`. The Figure Viewer keeps them in its own scene files.
 
 ### Cost
 
-- **Start-up:** the noise, 1.6 ms on an RTX 4080; 2.4 MB for the volumes and 8 MB for the image,
-  allocated clouds or none, since the image is bound either way.
-- **Per bake with clouds:** a commit's bake went from ~0.4 to 2.1 ms at half cover (RTX 4080);
-  the preview takes about a third of the samples.
-- **Per frame:** one filtered fetch of the image per visible sky pixel.
+Measured on an RTX 4080 with the sun 25° up, from `EnvBaker::commit`'s log line (it submits and
+waits, so these are wall-clock):
+
+| What | Time |
+| --- | --- |
+| Noise, once at start-up (`SkyClouds::generateNoise`) | 4.5 ms |
+| The commit's bake, clear sky (the environment alone) | ~0.4 ms |
+| The commit's bake with the clouds at 4096×1024, cover 0.1 / 0.5 / 1.0 | 6.2 / 7.0 / 4.5 ms |
+| The whole commit (bake, alias table, PDF), cover 0.5 | 9.7 ms |
+
+Overcast is the cheapest cover because every ray ends at the deck's near side, once transmittance
+falls below `minTransmittance`; broken cloud marches the furthest. The preview image has a sixteenth
+of the texels and marches at the low preset, so a drag's cloud pass is under a sixteenth of the
+settled one (not measured on its own). Per frame the clouds cost one texture read in
+`evalPhysicalSkyBackground` and nothing in the lighting field, which is baked.
+
+Memory: the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the preview 2 MB.
 
 ## References
 

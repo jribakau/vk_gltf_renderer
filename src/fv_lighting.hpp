@@ -78,7 +78,7 @@ struct Sun
 struct Clouds
 {
   double coverage  = 0.0;
-  double thickness = 1.2;
+  double thickness = 1.45;
   int    seed      = 0;
 };
 

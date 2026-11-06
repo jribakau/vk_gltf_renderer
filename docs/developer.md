@@ -139,7 +139,7 @@ src/
 ├── sky_sun.cpp/hpp             # SkySun: who the sun is (renderer state, or a scene light marked
 │                               #   as the sky's) and every path that aims it
 ├── sky_bruneton.cpp/hpp        # SkyBruneton: the physical sky's scattering LUTs and the passes that build them
-├── sky_clouds.cpp/hpp          # SkyClouds: the physical sky's cloud layer -- its noise, the cloud image and
+├── sky_clouds.cpp/hpp          # SkyClouds: the physical sky's cloud layers -- their noise, the cloud images and
 │                               #   the pass that bakes it ahead of the environment bake (docs/sky.md)
 ├── sun_position.cpp/hpp        # NOAA solar position: (place, UTC instant) -> bearing + altitude.
 │                               #   Pure, self-contained, nothing else links against it
@@ -210,12 +210,12 @@ shaders/
 ├── env_bake.slang              # Bakes any sky into the lat-long image + importance buffer; one
 │                               #   switch, with the physical case reading SkyBruneton's LUTs and
 │                               #   composing SkyClouds' image over them
-├── sky_clouds.h.slang          # The clouds: the layer, what is cloud, how it is lit, the image's
+├── sky_clouds.h.slang          # The clouds (takram's model): the layers, what is cloud, how it is lit, the image's
 │                               #   mapping and composition (unit-tested as C++)
-├── sky_clouds_noise.h.slang    # The tiling noise they are cut from (unit-tested as C++)
-├── sky_clouds_noise.slang      # Writes that noise into its volumes, once
-├── sky_clouds_bake.slang       # Marches the layer into the cloud image for the fixed observer
-├── sky_clouds_io.h.slang       # Their bindings and push constant
+├── sky_clouds_noise.h.slang    # The tiling noise they are cut from, takram's generators (unit-tested as C++)
+├── sky_clouds_noise.slang      # Writes that noise into its textures, once
+├── sky_clouds_bake.slang       # Marches the layers into the cloud image for the fixed observer (takram's march)
+├── sky_clouds_io.h.slang       # Their bindings, parameter block and push constant
 │
 │   # Local material fork (see "Material System" below)
 ├── gltf_material_config.h      # MAT_EXT_* compile-time feature flags

@@ -371,7 +371,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({.name = "cloudCoverage", .help = "Physical sky: cloud cover, 0 clear to 1 overcast", .callbackSuccess = invalidateAtmosphere},
                  &m_resources.settings.cloudCoverage, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({.name            = "cloudThickness",
-                  .help            = "Physical sky: cloud depth from the base to the highest tops (km)",
+                  .help            = "Physical sky: the cumulus layers' depth from the base to the highest tops (km)",
                   .callbackSuccess = invalidateAtmosphere},
                  &m_resources.settings.cloudThickness, Persist::eYes, 0.2F, 4.0F);
   m_settings.add({.name = "cloudSeed", .help = "Physical sky: which arrangement of the clouds", .callbackSuccess = invalidateAtmosphere},

@@ -194,7 +194,9 @@ struct SkySunDisk
   // haze under the layer the sun still reaches (cloudSunlitAir).
   float cloudShadow;
   float sunlitGround;
-  float _pad0;
+  // 1 while a drag's preview holds the clouds of the moment (SkyClouds' quarter-size image, at
+  // CLOUD_PREVIEW_BINDING), 0 once the full image does.
+  int   cloudPreview;
   float _pad1;
   float _pad2;
 };

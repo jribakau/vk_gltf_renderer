@@ -82,7 +82,15 @@
 
 // Set 2 is SkyClouds' runtime set: the cloud image, baked just before this pass in the same command
 // buffer. Read by the PhysicalBruneton case alone, and only when pc.clouds says it holds any.
-[[vk::binding(CLOUD_IMAGE_BINDING, 2)]] Sampler2D<float4>       g_clouds;
+[[vk::binding(CLOUD_IMAGE_BINDING, 2)]]   Sampler2D<float4>     g_clouds;
+[[vk::binding(CLOUD_PREVIEW_BINDING, 2)]] Sampler2D<float4>     g_cloudsPreview;
+
+// The cloud image that holds the clouds of the moment, read with a footprint of about a third of a
+// degree whichever it is: the full image is four times the preview's size, two mips.
+float4 sampleClouds(float2 uv)
+{
+  return pc.cloudPreview != 0 ? g_cloudsPreview.SampleLevel(uv, 0.0F) : g_clouds.SampleLevel(uv, 2.0F);
+}
 
 [[vk::push_constant]]                                    ConstantBuffer<EnvBakePushConstant>  pc;
 // clang-format on
@@ -118,7 +126,7 @@ float3 evalSkyBruneton(float3 dir)
   const float horizonMu = brunetonHorizonMu(g_atmosphere, r);
   if(pc.clouds == 0 || dir.y <= horizonMu)
     return sky;
-  return composeClouds(sky, g_clouds.SampleLevel(cloudImageUv(dir, asin(horizonMu)), 0.0F));
+  return composeClouds(sky, sampleClouds(cloudImageUv(dir, asin(horizonMu))));
 }
 
 // Publish the solar disk the physical sky's image deliberately does not contain.
@@ -155,7 +163,7 @@ void publishSunDisk()
   // say, and the light NEE samples with it.
   float cloudShadow = 1.0F;
   if(pc.clouds != 0 && pc.sunDirection.y > horizonMu)
-    cloudShadow = g_clouds.SampleLevel(cloudImageUv(pc.sunDirection, asin(horizonMu)), 0.0F).w;
+    cloudShadow = sampleClouds(cloudImageUv(pc.sunDirection, asin(horizonMu))).w;
 
   out->radiance         = solarRadiance * toSun * SUN_RADIANCE_TO_LUMINANCE * cloudShadow;
   out->cosAngularRadius = cos(g_atmosphere.sunAngularRadius);
@@ -163,6 +171,7 @@ void publishSunDisk()
   out->horizonMu        = horizonMu;
   out->cloudShadow      = cloudShadow;
   out->sunlitGround     = pc.sunlitGround;
+  out->cloudPreview     = pc.cloudPreview;
 
   // Where the observer stood, so a per-ray evaluation of the sky stands there too and its horizon
   // meets the one baked into the lighting environment.

@@ -114,7 +114,8 @@ static bool doDebug = false;
 // Set 4 is SkyClouds' runtime set: the cloud image the physical sky's bake composed into the
 // lighting environment, composed here over what the camera and mirrors see. Clear, it is (0, 0, 0, 1)
 // everywhere, which gives the sky back unchanged.
-[[vk::binding(CLOUD_IMAGE_BINDING, 4)]] Sampler2D<float4>       g_clouds;
+[[vk::binding(CLOUD_IMAGE_BINDING, 4)]]   Sampler2D<float4>     g_clouds;
+[[vk::binding(CLOUD_PREVIEW_BINDING, 4)]] Sampler2D<float4>     g_cloudsPreview;
 
 // What a camera ray or a mirror bounce sees of the physical sky: its radiance, evaluated per ray
 // through the same function the bake uses, plus the solar disk. Per ray rather than read from the
@@ -132,7 +133,11 @@ float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
   // The clouds over it, as the bake composes them: above the horizon, from the same image. The disk
   // goes on top, already dimmed by the clouds in front of it (SkySunDisk::cloudShadow).
   if(dir.y > disk.horizonMu)
-    sky = composeClouds(sky, g_clouds.SampleLevel(cloudImageUv(dir, asin(disk.horizonMu)), 0.0F));
+  {
+    // whichever image holds the clouds of the moment: the full one, or a drag's preview
+    const float2 uv = cloudImageUv(dir, asin(disk.horizonMu));
+    sky = composeClouds(sky, disk.cloudPreview != 0 ? g_cloudsPreview.SampleLevel(uv, 0.0F) : g_clouds.SampleLevel(uv, 0.0F));
+  }
   return sky + evalSunDiskBackground(dir, frameInfo);
 }
 

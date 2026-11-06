@@ -27,40 +27,49 @@
 #include <nvvk/descriptors.hpp>
 #include <nvvk/resources.hpp>
 
+#include "shaders/sky_clouds_io.h.slang"
+
 struct Resources;
 
-// The cloud image's size. Columns run round the horizon (0.18 degrees each), rows from the horizon
+// The cloud image's size. Columns run round the horizon (0.09 degrees each), rows from the horizon
 // to the zenith, crowded at the horizon (sky_clouds.h.slang). What the camera sees of the clouds is
-// read from it, so this is their sharpness on screen.
-static constexpr VkExtent2D kCloudImageSize{2048, 512};
+// read from it, so this is their sharpness on screen. A drag's preview bakes a quarter of each.
+static constexpr VkExtent2D kCloudImageSize{4096, 1024};
+static constexpr VkExtent2D kCloudPreviewSize{1024, 256};
 
-// One cloud layer, as the panel sets it.
-struct SkyCloudsParameters
+// The clouds as the panel sets them.
+struct SkyCloudsSettings
 {
-  float    coverage{0.0F};     // 0 clear .. 1 overcast
-  float    thicknessKm{1.2F};  // from the base to the highest tops
-  uint32_t seed{0};            // which arrangement of the clouds
+  float    coverage{0.0F};      // 0 clear .. 1 overcast: the share of the land they shade
+  float    thicknessKm{1.45F};  // the cumulus layers' depth, base to the highest tops
+  uint32_t seed{0};             // which arrangement of the clouds
 
-  bool operator==(const SkyCloudsParameters&) const = default;
+  bool operator==(const SkyCloudsSettings&) const = default;
 };
 
-// Where the noise is read for an arrangement: a stretch of the endless tiling far from the last.
+// Where the weather map and the shape are read for an arrangement: a stretch of their endless
+// tiling far from the last one's.
 glm::vec2 cloudSeedOffsetKm(uint32_t seed);
 
 // The share of the distant ground the clouds leave sunlit, for the bake (cloudSunlitAir); 1 clear.
-float cloudSunlitGround(const SkyCloudsParameters& parameters);
+float cloudSunlitGround(const SkyCloudsSettings& settings);
+
+// The bake's parameter block for these settings: takram's layers and medium, the arrangement's
+// offsets, at the settled quality or a drag's.
+shaderio::SkyCloudsParameters cloudBakeParameters(const SkyCloudsSettings& settings, bool preview);
 
 //--------------------------------------------------------------------------------------------------
-// SkyClouds -- the physical sky's cloud layer.
+// SkyClouds -- the physical sky's cloud layers.
 //
 // Owns the noise the clouds are cut from (generated once, at init), the cloud image (one bake of the
-// layer as the fixed observer sees it, for this sun) and the pass that bakes it. EnvBaker records
-// that pass ahead of its own, which composes the image over the sky into the lighting environment;
-// the path tracer composes it over what the camera sees. Both read it through this class's runtime
-// set. What the image holds is shaders/sky_clouds.h.slang.
+// layers as the fixed observer sees them, for this sun), a quarter-size preview image for drags, and
+// the pass that bakes them. EnvBaker records that pass ahead of its own, which composes the image
+// over the sky into the lighting environment; the path tracer composes it over what the camera sees.
+// Both read it through this class's runtime set, and SkySunDisk::cloudPreview says which image holds
+// the clouds of the moment. The model is takram's (shaders/sky_clouds*.slang).
 //
-// With no clouds the pass is not run: the image is cleared once to (0, 0, 0, 1), which composes to
-// the sky exactly.
+// With no clouds the pass is not run: the full image is cleared once to (0, 0, 0, 1), which composes
+// to the sky exactly.
 //--------------------------------------------------------------------------------------------------
 class SkyClouds
 {
@@ -71,7 +80,7 @@ public:
   SkyClouds(const SkyClouds&)            = delete;
   SkyClouds& operator=(const SkyClouds&) = delete;
 
-  // The noise module has one entry point per volume (sky_clouds_noise.slang); the bake one.
+  // The noise module has one entry point per texture (sky_clouds_noise.slang); the bake one.
   struct Shaders
   {
     std::span<const uint32_t> noise;
@@ -83,16 +92,19 @@ public:
   void init(Resources& res, const Shaders& shaders, VkDescriptorSetLayout brunetonSetLayout, VkDescriptorSet brunetonSet);
   void deinit(Resources& res);
 
-  void                       setParameters(const SkyCloudsParameters& parameters) { m_parameters = parameters; }
-  const SkyCloudsParameters& parameters() const { return m_parameters; }
-  bool                       hasClouds() const { return m_parameters.coverage > 0.0F; }
+  void                     setSettings(const SkyCloudsSettings& settings) { m_settings = settings; }
+  const SkyCloudsSettings& settings() const { return m_settings; }
+  bool                     hasClouds() const { return m_settings.coverage > 0.0F; }
 
-  // Bake the cloud image for this sun (toward it, the environment's frame) and observer, into the
-  // caller's command buffer, behind a barrier for frames still reading the last one and ahead of one
-  // for the passes that read it. `preview` takes fewer samples, for a drag.
+  // Bake the clouds for this sun (toward it, the environment's frame) and observer, into the
+  // caller's command buffer, behind a barrier for frames still reading the last bake and ahead of
+  // one for the passes that read this one. `preview` bakes the quarter-size image at low quality.
   void record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float observerAltitudeKm, bool preview);
 
-  // The cloud image, as a combined image sampler at CLOUD_IMAGE_BINDING.
+  // Whether the preview image holds the clouds of the moment (the last record was a preview).
+  bool showingPreview() const { return m_showingPreview; }
+
+  // The images, as combined image samplers at CLOUD_IMAGE_BINDING and CLOUD_PREVIEW_BINDING.
   VkDescriptorSetLayout getDescriptorSetLayout() const { return m_runtimePack.getLayout(); }
   VkDescriptorSet       getDescriptorSet() const { return m_runtimePack.getSet(0); }
 
@@ -101,25 +113,40 @@ private:
   void createPipelines(const Shaders& shaders, VkDescriptorSetLayout brunetonSetLayout);
   void generateNoise(Resources& res);
 
-  bool                m_initialized{false};
-  VkDevice            m_device{VK_NULL_HANDLE};
-  SkyCloudsParameters m_parameters{};
-  bool                m_imageClear{false};  // the image holds (0, 0, 0, 1), and the bake has not run since
+  bool              m_initialized{false};
+  VkDevice          m_device{VK_NULL_HANDLE};
+  SkyCloudsSettings m_settings{};
+  bool              m_imageClear{false};      // the full image holds (0, 0, 0, 1), and no bake has run since
+  bool              m_showingPreview{false};  // the last bake went to the preview image
+  uint32_t          m_imageMips{1};
+  uint32_t          m_weatherMips{1};
+  uint32_t          m_shapeMips{1};
+  uint32_t          m_detailMips{1};
 
-  nvvk::Image m_shapeNoise;    // 3D R8, repeating
-  nvvk::Image m_detailNoise;   // 3D R8, repeating
-  nvvk::Image m_weatherNoise;  // 2D R8, repeating
-  nvvk::Image m_cloudImage;    // 2D RGBA16F, azimuth repeating; GENERAL for life
+  nvvk::Image m_shapeNoise;       // 3D R8, repeating, mipmapped
+  nvvk::Image m_detailNoise;      // 3D R8, repeating, mipmapped
+  nvvk::Image m_weatherNoise;     // 2D RGBA8, repeating, mipmapped
+  nvvk::Image m_turbulenceNoise;  // 2D RGBA8, repeating
+  nvvk::Image m_cloudImage;       // 2D RGBA16F, azimuth repeating, mipmapped; GENERAL for life
+  nvvk::Image m_previewImage;     // the same, a quarter the size, one level
+  // Storage writes need a view of one level; the images' own views span their chains for sampling.
+  VkImageView m_shapeStorageView{VK_NULL_HANDLE};
+  VkImageView m_detailStorageView{VK_NULL_HANDLE};
+  VkImageView m_weatherStorageView{VK_NULL_HANDLE};
+  VkImageView m_cloudStorageView{VK_NULL_HANDLE};
+
+  nvvk::Buffer m_paramsBuf;  // device-local SkyCloudsParameters, updated in the command buffer per bake
 
   VkDescriptorSet      m_brunetonSet{VK_NULL_HANDLE};  // SkyBruneton's, borrowed
-  nvvk::DescriptorPack m_noisePack;                    // the volumes, as storage, for their one write
-  nvvk::DescriptorPack m_bakePack;                     // the image out, the volumes in
-  nvvk::DescriptorPack m_runtimePack;                  // the image, for its readers
+  nvvk::DescriptorPack m_noisePack;                    // the noise textures, as storage, for their one write
+  nvvk::DescriptorPack m_bakePack;                     // two sets: set 0 writes the full image, set 1 the preview
+  nvvk::DescriptorPack m_runtimePack;                  // the images, for their readers
 
   VkPipelineLayout m_noiseLayout{VK_NULL_HANDLE};
   VkPipeline       m_shapePipeline{VK_NULL_HANDLE};
   VkPipeline       m_detailPipeline{VK_NULL_HANDLE};
   VkPipeline       m_weatherPipeline{VK_NULL_HANDLE};
+  VkPipeline       m_turbulencePipeline{VK_NULL_HANDLE};
   VkPipelineLayout m_bakeLayout{VK_NULL_HANDLE};
   VkPipeline       m_bakePipeline{VK_NULL_HANDLE};
   VkCommandPool    m_transientCmdPool{VK_NULL_HANDLE};
