@@ -331,6 +331,9 @@ struct SceneFrameInfo
   float  hazeAnisotropy = 0.7F;
   float3 hazeCenter     = {0.0F, 0.0F, 0.0F};
   float  hazeRadius     = 0.0F;
+  // A still's scatter point picks its light from this many candidates by what each gives the eye
+  // (HazeReservoir); a moving frame takes one. (Appended, per the note above.)
+  int hazeCandidates = 1;
 };
 
 enum PathtracerFlags

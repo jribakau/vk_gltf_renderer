@@ -510,6 +510,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   .help            = "Haze: how much it scatters forward, the halo round a light (Henyey-Greenstein g, -0.9 to 0.9)",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.hazeAnisotropy, Persist::eNo, -0.9F, 0.9F);
+  m_settings.add({.name            = "hazeCandidates",
+                  .help            = "Haze: lights a still's scatter point picks its light from, by what each gives the eye (1: the light pick's own)",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.hazeCandidates, Persist::eNo, 1, 16);
 
   // Register PathTracer-specific command line parameters
   m_pathTracer.registerParameters(&m_settings, [this]() { resetFrame(); });

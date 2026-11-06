@@ -246,4 +246,98 @@ TEST(Haze, AGuideAtTheLightTakesItsHalosNoiseAway)
   EXPECT_GT(none.relativeNoise, 4 * at.relativeNoise);
 }
 
+// A still's light among candidates (HazeReservoir): lights the pick weighs by power alone, half ahead
+// of the eye and half behind it, some hidden from the point. Kept by what they give the eye, one shadow
+// ray for the kept one, the estimate is still each light's share summed, and quieter than the pick's
+// one sample by more the more candidates there are.
+TEST(Haze, ALightKeptAmongCandidatesCountsForThemAll)
+{
+  struct Light
+  {
+    vec3  colour;  // its light at the point over nothing: what the pick's sample over its pdf scales
+    float pick;    // the pick's chance of it, by power and distance
+    float phase;   // toward it, at a glow of 0.7: ahead of the eye or behind it
+    bool  seen;    // the shadow ray reaches it
+  };
+  std::vector<Light> lights;
+  std::mt19937       setup(5);
+  std::uniform_real_distribution<float> u01(0.0F, 1.0F);
+  float              total = 0;
+  for(int i = 0; i < 24; i++)
+  {
+    const bool ahead = i % 2 == 0;
+    Light      l;
+    l.colour = vec3(0.5F + u01(setup), 0.5F + u01(setup), 0.5F + u01(setup)) * (0.2F + 2 * u01(setup));
+    l.pick   = 0.2F + u01(setup);
+    // the phase function's two ends at g 0.7, forward ((1 + g) / (1 - g))^3 times backward, and between
+    l.phase  = float(henyeyGreenstein(ahead ? 0.9 - 0.3 * u01(setup) : -0.9 + 0.3 * u01(setup), 0.7));
+    l.seen   = u01(setup) < 0.6F;
+    lights.push_back(l);
+    total += l.pick;
+  }
+  vec3 exact(0.0F);
+  for(Light& l : lights)
+  {
+    l.pick /= total;
+    exact += l.colour * l.phase * (l.seen ? 1.0F : 0.0F);
+  }
+  // one draw of the pick: the light, and its light over its pdf
+  const auto draw = [&](std::mt19937& rng, vec3& overPdf) {
+    float u = u01(rng);
+    for(size_t i = 0; i < lights.size(); i++)
+    {
+      if(u < lights[i].pick || i + 1 == lights.size())
+      {
+        overPdf = lights[i].colour / lights[i].pick;
+        return int(i);
+      }
+      u -= lights[i].pick;
+    }
+    return 0;
+  };
+  const auto lum = [](vec3 c) { return 0.2126F * c.x + 0.7152F * c.y + 0.0722F * c.z; };
+  double noiseOfOne = 0;
+  for(const int count : {1, 2, 4, 8})
+  {
+    std::mt19937 rng(100 + count);
+    const int    n = 400000;
+    dvec3        sum(0.0), sum2(0.0);
+    for(int k = 0; k < n; k++)
+    {
+      HazeReservoir r = hazeReservoir();
+      int           kept = -1;
+      vec3          keptOverPdf(0.0F);
+      for(int c = 0; c < count; c++)
+      {
+        vec3        overPdf;
+        const int   i = draw(rng, overPdf);
+        const float w = lights[i].phase * lum(overPdf);
+        const float u = hazeReservoirNeedsDraw(r, w) ? u01(rng) : 0.0F;
+        r             = hazeReservoirTake(r, w, u);
+        if(r.taken)
+        {
+          kept        = i;
+          keptOverPdf = overPdf;
+        }
+      }
+      vec3 x(0.0F);
+      if(kept >= 0 && lights[kept].seen)
+        x = keptOverPdf * lights[kept].phase * (count > 1 ? hazeReservoirWeight(r, count) : 1.0F);
+      sum += dvec3(x);
+      sum2 += dvec3(x) * dvec3(x);
+    }
+    const dvec3  mean  = sum / double(n);
+    const double noise = std::sqrt(sum2.y / n - mean.y * mean.y) / mean.y;
+    if(count == 1)
+      noiseOfOne = noise;
+    std::printf("%d candidates: one sample's noise over its mean %.3f\n", count, noise);
+    for(int ch = 0; ch < 3; ch++)
+      EXPECT_NEAR(mean[ch] / exact[ch], 1.0, 0.01) << count << " candidates, channel " << ch;
+    if(count == 4)
+      EXPECT_LT(noise, 0.75 * noiseOfOne);
+  }
+  // nothing to keep: no light
+  EXPECT_EQ(hazeReservoirWeight(hazeReservoir(), 4), 0.0F);
+}
+
 }  // namespace

@@ -218,6 +218,13 @@ pinhole's eye, as the aerial perspective).
   guide was; drawing the point's own light there, not reusing the guide's, is what finds a spot's
   beam wherever it crosses the ray (a light picked from elsewhere on the segment gets nothing where
   the cone misses that point).
+- **A still's light, from candidates** (`HazeReservoir`, `hazeCandidates`, 4): the light pick weighs
+  lights by power and distance alone, and at a glow of 0.7 the phase function sends 180 times more
+  light on than back. A still's scatter point draws several light samples, keeps one with the chance
+  its weight (its light over its pdf, the phase function toward it, the haze on the way) has of their
+  sum, and traces one shadow ray for it; the kept light counts for them all. A still also cuts the
+  haze's samples to the firefly clamp's level, as it does bounced light's. A moving frame keeps the
+  pick's one sample and its clamp-free light, bit for bit, for Ray Reconstruction.
 - **Checked:** `tests/test_haze.cpp` holds the estimator to a point light's single scattering by
   quadrature (itself held to thin isotropic haze's closed form) and the drawn distances to their
   density; a ray passing a light at 5 cm on a 10 m segment has a noise 0.9 times its mean a sample,

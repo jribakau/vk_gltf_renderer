@@ -21,6 +21,9 @@
 // guide was (one-sample MIS, the balance heuristic, given the guide). Equiangular sampling takes the
 // 1/r^2 out of a point light's halo: a ray passing a light at 5 cm on a 10 m segment gets a
 // noise 0.9 times its mean a sample, 5.7 times by the transmittance alone (tests/test_haze.cpp).
+// A still's point picks its light from several candidates by what each gives the eye, the phase
+// function's share included (HazeReservoir), and cuts its rare bright samples to the firefly clamp;
+// a moving frame keeps the light pick's one sample for Ray Reconstruction.
 //
 // Compiled as C++ for its test (tests/test_haze.cpp).
 
@@ -142,6 +145,58 @@ float hazeDistancePdf(float t, float sigma, float t0, float t1, HazeGuide g)
 float hazeScatterWeight(float t, float sigma, float t0, float t1, HazeGuide g)
 {
   return sigma * exp(-sigma * (t - t0)) / hazeDistancePdf(t, sigma, t0, t1, g);
+}
+
+// The scatter point's light, chosen among several drawn there (resampled importance sampling, as
+// Talbot's): each candidate is a light sample of the light pick, weighed by what it would give the
+// eye -- its light over its pdf, times the phase function toward it and the haze on the way -- and one
+// is kept with the chance its weight has of their sum. The pick weighs lights by their power and
+// distance only; at a glow of 0.7 the phase function sends 180 times more light on than back, so a
+// lamp ahead of the eye counts far more than one behind it, which only the weights see. The kept
+// candidate's light then counts for all of them: its light over its pdf, times (sum of the weights)
+// / (candidates x its weight). One shadow ray, for the kept one. A candidate of weight 0 counts as
+// one of them. Unbiased whatever the weights, as long as a light that gives anything weighs above 0.
+struct HazeReservoir
+{
+  float sum;    // of the weights so far
+  float kept;   // the kept candidate's weight; 0: none yet
+  bool  taken;  // the last candidate seen is now the kept one
+};
+
+HazeReservoir hazeReservoir()
+{
+  HazeReservoir r;
+  r.sum   = 0.0F;
+  r.kept  = 0.0F;
+  r.taken = false;
+  return r;
+}
+
+// The reservoir once it has seen a candidate of weight w, `taken` if that one is now the kept one;
+// `u` in [0, 1), read only when there is one to take the place of (hazeReservoirNeedsDraw), so a
+// single candidate draws no number
+bool hazeReservoirNeedsDraw(HazeReservoir r, float w)
+{
+  return w > 0.0F && r.sum > 0.0F;
+}
+
+HazeReservoir hazeReservoirTake(HazeReservoir r, float w, float u)
+{
+  r.taken = false;
+  if(!(w > 0.0F))
+    return r;
+  r.sum += w;
+  if(r.kept > 0.0F && u * r.sum >= w)
+    return r;
+  r.kept  = w;
+  r.taken = true;
+  return r;
+}
+
+// What the kept candidate's light over its pdf is multiplied by, of `count` candidates; 0 for none
+float hazeReservoirWeight(HazeReservoir r, int count)
+{
+  return r.kept > 0.0F ? r.sum / (float(count) * r.kept) : 0.0F;
 }
 
 #endif  // HAZE_H

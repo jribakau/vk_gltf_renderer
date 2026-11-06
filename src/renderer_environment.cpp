@@ -723,6 +723,7 @@ void GltfRenderer::fillHaze(shaderio::SceneFrameInfo& finfo) const
   finfo.hazeAnisotropy   = std::clamp(settings.hazeAnisotropy, -0.9F, 0.9F);
   finfo.hazeCenter       = center;
   finfo.hazeRadius       = radius * 1.01F + 1e-3F;  // the eye strictly inside
+  finfo.hazeCandidates   = std::clamp(settings.hazeCandidates, 1, 16);
 }
 
 //--------------------------------------------------------------------------------------------------

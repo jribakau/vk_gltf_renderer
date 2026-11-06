@@ -280,6 +280,8 @@ struct Settings
   // scatters forward (Henyey-Greenstein g), which is what puts a halo round a light seen through it.
   float hazeVisibility = 0.0f;
   float hazeAnisotropy = 0.7f;
+  // A still's scatter point picks its light from this many candidates (SceneFrameInfo::hazeCandidates)
+  int hazeCandidates = 4;
   bool      dlssRrHardwareAvailable = false;  // DLSS Ray Reconstruction hardware/extensions available (set at startup)
   bool dlssSrHardwareAvailable = false;  // DLSS Super Resolution / DLAA hardware/extensions available (set at startup)
   bool serHardwareAvailable    = false;  // VK_EXT_ray_tracing_invocation_reorder enabled on the device (set at startup)

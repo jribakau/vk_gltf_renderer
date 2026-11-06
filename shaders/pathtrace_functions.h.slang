@@ -1832,22 +1832,63 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
   const float  choice = rand(seed);
   const float  t      = hazeSampleDistance(rand(seed), choice, sigma, seg.x, seg.y, guide);
   const float3 pos    = eye + dir * t;
-  DirectLight  light;
-  sampleLights(pos, dir, dir, seed, light, /*isVolumeSample=*/true);
-  // a spot whose cone misses the point gives nothing: no shadow ray for it (as volumeScatterNEE)
-  if(light.pdf == 0.0F || all(light.radianceOverPdf == 0.0F))
+
+  // The point's light: a still's is the one of several candidates that gives the eye the most
+  // (HazeReservoir), so the phase function's 180 to 1 at a glow of 0.7 counts in the pick; a moving
+  // frame takes the first, the light pick's own, which Ray Reconstruction denoises well enough. One
+  // candidate draws no more numbers than the light sample did, so a moving frame's bits are as they were.
+  const bool    still     = !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss);
+  const int     count     = still ? clamp(frameInfo->hazeCandidates, 1, 16) : 1;
+  float3        toLight   = float3(0.0F);
+  float3        light     = float3(0.0F);  // its radiance over pdf
+  float         distance  = 0.0F;
+  float         phase     = 0.0F;
+  float         air       = 0.0F;
+  HazeReservoir reservoir = hazeReservoir();
+  for(int c = 0; c < count; c++)
+  {
+    DirectLight candidate;
+    sampleLights(pos, dir, dir, seed, candidate, /*isVolumeSample=*/true);
+    // a spot whose cone misses the point gives nothing (as volumeScatterNEE), and weighs 0
+    if(candidate.pdf == 0.0F || all(candidate.radianceOverPdf == 0.0F))
+      continue;
+    // the light travels -candidate.direction and leaves toward the eye, -dir
+    const float candidatePhase = henyeyGreensteinPdf(dot(dir, candidate.direction), frameInfo->hazeAnisotropy);
+    const float candidateAir   = exp(-sigma * min(candidate.distance, hazeExitDistance(pos, candidate.direction, frameInfo->hazeCenter, frameInfo->hazeRadius)));
+    const float w              = candidatePhase * candidateAir * luminance(candidate.radianceOverPdf);
+    const float u              = hazeReservoirNeedsDraw(reservoir, w) ? rand(seed) : 0.0F;
+    reservoir                  = hazeReservoirTake(reservoir, w, u);
+    if(reservoir.taken)
+    {
+      toLight  = candidate.direction;
+      light    = candidate.radianceOverPdf;
+      distance = candidate.distance;
+      phase    = candidatePhase;
+      air      = candidateAir;
+    }
+  }
+  if(!(reservoir.kept > 0.0F))
     return result;
 
-  // the light travels -light.direction and leaves toward the eye, -dir
-  const float phase = henyeyGreensteinPdf(dot(dir, light.direction), frameInfo->hazeAnisotropy);
-  RayDesc     shadowRay;
+  RayDesc shadowRay;
   shadowRay.Origin        = pos;
-  shadowRay.Direction     = light.direction;
+  shadowRay.Direction     = toLight;
   shadowRay.TMin          = 0.0F;
-  shadowRay.TMax          = light.distance;
+  shadowRay.TMax          = distance;
   const float3 visibility = raytracer.TraceShadow(shadowRay, seed);
-  const float  air = exp(-sigma * min(light.distance, hazeExitDistance(pos, light.direction, frameInfo->hazeCenter, frameInfo->hazeRadius)));
-  result.inScatter = (hazeScatterWeight(t, sigma, seg.x, seg.y, guide) * phase * air) * light.radianceOverPdf * visibility;
+  result.inScatter        = (hazeScatterWeight(t, sigma, seg.x, seg.y, guide) * phase * air) * light * visibility;
+  if(count > 1)
+    result.inScatter *= hazeReservoirWeight(reservoir, count);
+  // A still cuts the haze's rare bright samples to the firefly clamp's level, as it does bounced
+  // light's (addRadiance): a scatter point that lands by an emitter's face, lit by it at 1/r^2. Biased
+  // down a little where such samples carry the light; a moving frame keeps them for DLSS.
+  if(still && hasFlag(pushConst.flags, PathtracerFlags::ePtClampIndirect))
+  {
+    const float level   = pushConst.fireflyClampStill > 0.0F ? pushConst.fireflyClampStill : pushConst.fireflyClampThreshold;
+    const float largest = max(result.inScatter.x, max(result.inScatter.y, result.inScatter.z));
+    if(level > 0.0F && largest > level)
+      result.inScatter *= level / largest;
+  }
   return result;
 }
 
