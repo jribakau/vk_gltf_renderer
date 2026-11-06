@@ -87,6 +87,11 @@ float tearFilmIor(const Surface& s);
 // aqueous humour's 1.336 behind it bend a ray about as much as the humour's alone would at the front.
 constexpr float kEyeChamberIor = 1.336f;
 
+// The roughness a refracting surface is lowered with at most, with the limits the real-time view
+// has: the path tracer's clear crossing (shaders/clear_crossing.h.slang), so DAZ glass, frosted or
+// not, passes shadow rays straight through, as the eye's tear film does at its own 0.02
+constexpr float kRefractingRoughnessCap = 0.1f;
+
 // A bump map's full height range at Bump Strength 1, in metres. Set by eye: at 1 mm, CJ Evangeline's
 // face (Bump Strength 2, as Iray presets often have it) came out leathery, each grey step of the
 // JPEG a visible bump; a quarter of that reads as her skin.

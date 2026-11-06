@@ -345,9 +345,12 @@ Some things about the transport are worth knowing before touching it:
   takes a flag that disables the punctual-light hemisphere rejection in
   `singleLightContribution()`. Without it, a light behind a backlit leaf or sheet contributes
   nothing. For the same reason their TLAS instances disable back-face culling (`materialBits`):
-  a diffusely transmitted ray reaches the far wall of a closed object from behind.
+  a diffusely transmitted ray reaches the far wall of a closed object from behind. Rough thin glass
+  is lit from both sides too (`roughThinGlass` in `pathTraceOneBounce`): shadow rays stop at it, so
+  the emitter inside a frosted bulb is sampled from the envelope, through its transmission.
 - Straight-through shadow transmission (`getShadowTransmission()`) passes only a **clear crossing**:
-  smooth (`CLEAR_CROSSING_ALPHA`, from the material's own roughness and its texture) specular
+  smooth (`CLEAR_CROSSING_ROUGHNESS`, perceptual, from the material's own roughness and its texture as
+  `crossingRoughnessMetallic()` reads them for the shadow ray and the path's vertex alike) specular
   transmission with no thin-walled scatter, weighed by what the surface reflects (Fresnel times
   `specularFactor`, plus the clearcoat). A path's own ray that refracts through such a surface is a
   null event for MIS (`pathTraceOneBounce`): it keeps the previous vertex's sample pdf and light

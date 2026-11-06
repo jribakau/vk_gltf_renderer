@@ -386,7 +386,7 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   if(tearFilm)
     roughness = std::min(roughness, 0.02f);
   else if(refractive)
-    roughness = std::min(roughness, 0.1f);
+    roughness = std::min(roughness, kRefractingRoughnessCap);
   else if(s.kind == Kind::eEye)
     roughness = std::min(roughness, 0.35f);
   // PBRSkin's lobe multipliers and panel edits can pass its range

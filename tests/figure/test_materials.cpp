@@ -4,6 +4,9 @@
 
 #include "materials_test_util.hpp"
 
+// The path tracer's clear-crossing rule, which the lowering's cap is held to
+#include "../../shaders/clear_crossing.h.slang"
+
 using namespace materials_test;
 
 namespace {
@@ -416,6 +419,37 @@ TEST(Materials, ThinWalledOffRefractsAsASolid)
   ASSERT_TRUE(moisture.refraction);
   EXPECT_FALSE(moisture.refraction->thinWalled);
   EXPECT_EQ(thickness(moisture, true), 0.0f);
+}
+
+// Frosted DAZ glass is lowered at the refracting cap, and the path tracer takes the cap for a clear
+// crossing, so shadow rays pass it and the bulb inside a frosted envelope gets light samples. Compared
+// as GGX alpha the cap was not one: 0.1f squared is just above 0.01f.
+TEST(Materials, FrostedGlassAtTheCapIsAClearCrossing)
+{
+  const auto frosted = surfaceOf("Bulb_01", kUberType, {{"Glossy Roughness", 0.6}, {"Refraction Weight", 1}, {"Refraction Index", 1.5}, {"Thin Walled", true}});
+  ASSERT_TRUE(frosted.refraction);
+  const auto m = fv::mat::lower(frosted, {}, {}).material;
+  EXPECT_EQ(m.roughness, fv::mat::kRefractingRoughnessCap);
+  EXPECT_TRUE(isClearCrossing(m.roughness));
+  EXPECT_GT(m.roughness * m.roughness, 0.01f);  // why the rule is perceptual
+  // thin and clear: shadow rays pass it, so its vertex does not sample through it as well
+  EXPECT_FALSE(samplesLightsThroughGlass(true, 0.0f, m.roughness, 0.0f));
+}
+
+// A refracting surface is one of three: a clear crossing (shadow rays pass), thin rough glass whose
+// vertex samples the lights behind it, or neither (a medium's wall, thin scatter, too little
+// transmission), never both, or the light behind would be counted twice
+TEST(Materials, AGlassIsAClearCrossingOrSampledThroughNeverBoth)
+{
+  for(const float roughness : {0.0f, 0.05f, 0.1f, 0.1001f, 0.3f, 1.0f})
+    for(const bool transmissive : {false, true})
+      for(const float thickness : {0.0f, 1.0f})
+        for(const float scatter : {0.0f, 0.5f})
+        {
+          const bool through = samplesLightsThroughGlass(transmissive, thickness, roughness, scatter);
+          EXPECT_FALSE(through && isClearCrossing(roughness)) << roughness;
+          EXPECT_EQ(through, transmissive && thickness == 0.0f && scatter == 0.0f && roughness > 0.1f) << roughness;
+        }
 }
 
 TEST(Materials, AnOpacityEditOnASurfaceThatLoadedOpaqueIsSeen)

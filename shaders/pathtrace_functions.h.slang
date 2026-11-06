@@ -17,6 +17,7 @@
 #include "walk_guide.h.slang"
 #include "light_tree.h.slang"
 #include "mirror_image.h.slang"
+#include "clear_crossing.h.slang"
 
 //-----------------------------------------------------------------------
 // Types and tuning constants
@@ -62,11 +63,6 @@ struct DirectLight
 };
 
 static const float MIN_TRANSMISSION = 0.01f;  // Minimum shadow transmission factor for transparent materials
-// A clear surface this smooth (GGX alpha; perceptual roughness 0.1, the cap the figure's lowering puts
-// on refracting surfaces) passes shadow rays straight through, and a path's ray that refracts through
-// it is a null event for MIS (pathTraceOneBounce). A rougher one blocks shadow rays: the light behind
-// it is the BSDF ray's alone. Both sides read the material's own roughness, never the regularised one.
-static const float CLEAR_CROSSING_ALPHA = 0.01f;
 static const float ANTIALIASING_STANDARD_DEVIATION = 0.4246609f;  // Standard deviation for antialiasing
 static const int   RR_MIN_DEPTH                    = 3;           // Minimum depth for Russian Roulette
 static const float VOLUME_RAND_FLOOR               = 1.0e-10f;    // Minimum random floor for volume rendering
@@ -338,6 +334,18 @@ float4 sampleShadowTexture(GltfRenderPrimitive renderPrim, GltfTextureInfo texIn
                                                                        uv, 0.0f);
 }
 
+// A surface's roughness factor and metallic factor times its texture's, at a point of its triangle
+// `indices`: what decides whether it is a clear crossing (CLEAR_CROSSING_ROUGHNESS). Read as shadow
+// rays read textures (sampleShadowTexture, the top level), for the shadow ray and the path's vertex
+// alike, so the two decide the same texel by texel and the light behind is counted once.
+float2 crossingRoughnessMetallic(GltfShadeMaterial mat, GltfRenderPrimitive renderPrim, uint3 indices, float3 barycentrics)
+{
+  float2 roughnessMetallic = float2(mat.pbrRoughnessFactor, mat.pbrMetallicFactor);
+  if(isTexturePresent(mat.pbrMetallicRoughnessTexture))
+    roughnessMetallic *= sampleShadowTexture(renderPrim, pushConst.gltfScene->textureInfos[mat.pbrMetallicRoughnessTexture], indices, barycentrics).gb;
+  return roughnessMetallic;
+}
+
 //-----------------------------------------------------------------------
 // Calculate the transmission of a ray through a surface. The medium behind the surface is the
 // caller's to apply (shadowMediumTransmittance); crossing a volume boundary flips `isInside`, and
@@ -416,19 +424,11 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
     return float3(0.0);
   }
 
-  // Only a smooth surface is straight-through (CLEAR_CROSSING_ALPHA), and only what is not metal
-  float metallic = mat.pbrMetallicFactor;
-  {
-    float roughness = mat.pbrRoughnessFactor;
-    if(isTexturePresent(mat.pbrMetallicRoughnessTexture))
-    {
-      float4 mr_sample = sampleShadowTexture(renderPrim, texInfos[mat.pbrMetallicRoughnessTexture], indices, barycentrics);
-      roughness *= mr_sample.g;
-      metallic *= mr_sample.b;
-    }
-    if(roughness * roughness > CLEAR_CROSSING_ALPHA)
-      return float3(0.0);
-  }
+  // Only a smooth surface is straight-through (CLEAR_CROSSING_ROUGHNESS), and only what is not metal
+  const float2 roughnessMetallic = crossingRoughnessMetallic(mat, renderPrim, indices, barycentrics);
+  if(!isClearCrossing(roughnessMetallic.x))
+    return float3(0.0);
+  const float metallic = roughnessMetallic.y;
 
   float3 normal;
   {
@@ -2170,7 +2170,7 @@ struct PathTracerState
   // is the class of the light that event's own ray reaches.
   float pathRoughness  = 0.0F;
   bool  prefixIndirect = false;
-  // The length of the clear crossings (CLEAR_CROSSING_ALPHA) since the vertex whose light sample the
+  // The length of the clear crossings (CLEAR_CROSSING_ROUGHNESS) since the vertex whose light sample the
   // next hit is weighed against: an emitter's MIS pdf converts by the whole distance from there.
   float nullDistance = 0.0F;
   bool    solid         = true;
@@ -2245,7 +2245,7 @@ struct BounceScratch
 
 // The glass's own budget (PathtracePushConstant::glassBudget, the host's ptGlassBounces): events on clear
 // glass (smooth, transmissive, nothing scattering inside: the surfaces shadow rays pass straight through,
-// CLEAR_CROSSING_ALPHA) a path may take before they count as surface bounces, whichever lobe it took
+// CLEAR_CROSSING_ROUGHNESS) a path may take before they count as surface bounces, whichever lobe it took
 // there. Each side of a pane is one, so under the live view's few bounces a second pane, and what is
 // behind it, went black. A cornea is clear glass too.
 

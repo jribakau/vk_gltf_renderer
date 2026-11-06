@@ -783,9 +783,17 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif  // USE_GUIDE_SHADER
     }
 
-    // The material's own roughness, before the regularisation below: whether a refraction through it
-    // is a clear crossing (CLEAR_CROSSING_ALPHA) is decided by it, as the shadow rays decide.
-    const float materialAlpha = max(pbrMat.roughness.x, pbrMat.roughness.y);
+    // The material's own roughness, before the regularisation below, read as the shadow rays read it
+    // (crossingRoughnessMetallic): whether a refraction through it is a clear crossing
+    // (CLEAR_CROSSING_ROUGHNESS) is decided by it, texel by texel as they decide. 1: no refracting mesh.
+    float crossingRoughness = 1.0F;
+#if GLTF_USE_TRANSMISSION
+    if(materialIndex >= 0 && pbrMat.transmission > MIN_TRANSMISSION)
+    {
+      const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
+      crossingRoughness  = crossingRoughnessMetallic(materials[materialIndex], renderPrim, getTriangleIndices(renderPrim, payload.primitiveID), barys).x;
+    }
+#endif
 
     // Regularisation: later bounces are made at least as rough as the path, against fireflies.
     // Approximate caustics (Unreal's): as rough as the path's scattering, a diffuse bounce making
@@ -910,7 +918,16 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
 #endif
 #endif
-    const bool bothSides = pbrMat.diffuseTransmissionFactor > 0.0f || hairOn;
+    // Rough thin glass (frosted, the envelope of a bulb) blocks shadow rays, so the lights behind it are
+    // sampled from here, through its transmission lobe, and its BSDF ray that reaches one is weighed
+    // against that (samplesLightsThroughGlass)
+    bool roughThinGlass = false;
+#if GLTF_USE_TRANSMISSION
+    roughThinGlass = !hairOn && materialIndex >= 0
+                     && samplesLightsThroughGlass(pbrMat.transmission > MIN_TRANSMISSION, pbrMat.thickness, crossingRoughness,
+                                                  materials[materialIndex].scatterStrengthFactor);
+#endif
+    const bool bothSides = pbrMat.diffuseTransmissionFactor > 0.0f || hairOn || roughThinGlass;
 
     DirectLight directLight;
     // A fibre event spends the hair's own budget while it lasts, not a surface bounce
@@ -922,7 +939,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // through, so what is behind a pane is lit, and the path goes on to see it
 #if GLTF_USE_TRANSMISSION
     bounce.glassEvent = !hairOn && materialIndex >= 0 && pt.glassBounces < pushConst.glassBudget && pbrMat.transmission > MIN_TRANSMISSION
-                        && materialAlpha <= CLEAR_CROSSING_ALPHA && materials[materialIndex].scatterStrengthFactor <= 0.0F;
+                        && isClearCrossing(crossingRoughness) && materials[materialIndex].scatterStrengthFactor <= 0.0F;
 #endif
     // The water's surface likewise, on a count of its own the glass's size: its rays go into the water
     // to the floor and what stands in it, and back out
@@ -1254,7 +1271,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         pt.lastSamplePdf = DIRAC;
 
       // A clear crossing: a refraction through a smooth surface that shadow rays pass straight
-      // through (getShadowTransmission, CLEAR_CROSSING_ALPHA). The previous vertex's shadow ray already
+      // through (getShadowTransmission, CLEAR_CROSSING_ROUGHNESS). The previous vertex's shadow ray already
       // reached the light behind it, so the light this ray reaches beyond is weighed against that
       // vertex's light sample: the crossing is a null event for MIS. Weighed against its own (next to
       // nothing through smooth glass), the light behind a window or a cornea was counted 1 + w times.
@@ -1264,7 +1281,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       clearCrossing = hasFlag(pushConst.flags, PathtracerFlags::ePtShadowTransmission) && !hairOn && materialIndex >= 0
                       && (sampleData.event_type & BSDF_EVENT_TRANSMISSION) != 0
                       && (sampleData.event_type & (BSDF_EVENT_GLOSSY | BSDF_EVENT_IMPULSE)) != 0
-                      && materialAlpha <= CLEAR_CROSSING_ALPHA && materials[materialIndex].scatterStrengthFactor <= 0.0F;
+                      && isClearCrossing(crossingRoughness) && materials[materialIndex].scatterStrengthFactor <= 0.0F;
 #endif
       // The water's surface is crossed so by shadow rays whatever its roughness (groundWaterShadowTransmittance)
       clearCrossing = clearCrossing || (hitWater && (sampleData.event_type & BSDF_EVENT_TRANSMISSION) != 0);
