@@ -37,13 +37,15 @@ struct Resources;
 static constexpr VkExtent2D kCloudImageSize{4096, 1024};
 static constexpr VkExtent2D kCloudPreviewSize{1024, 256};
 
-// The clouds as the panel sets them.
+// The clouds as the panel sets them: three tiers over one another (cloudSkyParameters).
 struct SkyCloudsSettings
 {
-  float    coverage{0.0F};      // 0 clear .. 1 overcast: the share of the land they shade
-  float    thicknessKm{1.45F};  // the type's depth, base to the highest tops (cloudDefaultThickness)
+  float    coverage{0.0F};      // the low tier, 0 clear .. 1 overcast: the share of the land it shades
+  float    thicknessKm{1.45F};  // the low tier's depth, base to the highest tops (cloudDefaultThickness)
   uint32_t seed{0};             // which arrangement of the clouds
-  int      type{0};             // CLOUD_TYPE_* (sky_clouds.h.slang)
+  int      type{0};             // the low tier's kind, CLOUD_TYPE_* below CLOUD_LOW_TYPE_COUNT
+  float    midCoverage{0.0F};   // the mid tier, altocumulus: the share of the land it shades
+  float    highCoverage{0.0F};  // the high tier, cirrus: the share of the sky it veils
 
   bool operator==(const SkyCloudsSettings&) const = default;
 };
@@ -52,11 +54,11 @@ struct SkyCloudsSettings
 // tiling far from the last one's.
 glm::vec2 cloudSeedOffsetKm(uint32_t seed);
 
-// The share of the distant ground the clouds leave sunlit, for the bake (cloudSunlitAir); 1 clear.
+// The share of the distant ground the clouds leave sunlit, for the bake (cloudSunlitAirOfTiers); 1 clear.
 float cloudSunlitGround(const SkyCloudsSettings& settings);
 
-// The bake's parameter block for these settings: takram's layers and medium, the arrangement's
-// offsets, at the settled quality or a drag's.
+// The bake's parameter block for these settings: the tiers' layers and takram's medium, the
+// arrangement's offsets, at the settled quality or a drag's.
 shaderio::SkyCloudsParameters cloudBakeParameters(const SkyCloudsSettings& settings, bool preview);
 
 //--------------------------------------------------------------------------------------------------
@@ -95,7 +97,7 @@ public:
 
   void                     setSettings(const SkyCloudsSettings& settings) { m_settings = settings; }
   const SkyCloudsSettings& settings() const { return m_settings; }
-  bool                     hasClouds() const { return m_settings.coverage > 0.0F; }
+  bool hasClouds() const { return m_settings.coverage > 0.0F || m_settings.midCoverage > 0.0F || m_settings.highCoverage > 0.0F; }
 
   // Bake the clouds for this sun (toward it, the environment's frame) and observer, into the
   // caller's command buffer, behind a barrier for frames still reading the last bake and ahead of

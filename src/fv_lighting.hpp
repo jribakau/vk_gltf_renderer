@@ -29,7 +29,8 @@
 //   sun:     enabled, intensity, azimuth, elevation (degrees), color, softness
 //   clouds:  coverage (0 clear to 1 overcast: the share of the land they shade), thickness (km from
 //            the base to the highest tops), seed (which arrangement), type cumulus|stratocumulus|
-//            stratus|altocumulus. The physical sky's only
+//            stratus -- the low tier's -- and mid (altocumulus) and high (cirrus: the share of the sky
+//            it veils), the tiers over it, each 0 to 1. The physical sky's only
 //   ground:  mode floor|water|catcher|off, height ("auto" or world units), color, roughness,
 //            darkness, fade, water (0 dry to 1 a sheet of it, on a floor), depth (metres, of the
 //            water mode's body of water), waves (on it, 0 still to 1), ripples (on either, 0 still to 1)
@@ -82,6 +83,8 @@ struct Clouds
   double      thickness = 1.45;
   int         seed      = 0;
   std::string type      = "cumulus";
+  double      mid       = 0.0;
+  double      high      = 0.0;
 };
 
 struct Ground

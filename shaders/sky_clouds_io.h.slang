@@ -67,7 +67,8 @@ enum SkyCloudsNoiseBindings
 
 // The layers and the medium, as takram's CloudsEffect uniforms (packages/clouds/src/uniforms.ts),
 // in the atmosphere's kilometres. Four layers, one per channel of the weather map; a layer with no
-// height and no density is off. Built by SkyClouds from the panel's cover, depth and arrangement.
+// height and no density is off. Built by SkyClouds from the panel's tiers -- low, mid and high, each
+// its own layers and cover (cloudSkyParameters) -- and the arrangement.
 struct SkyCloudsParameters
 {
   float4 minLayerHeights;  // km above the surface: each layer's base
@@ -83,9 +84,15 @@ struct SkyCloudsParameters
   float4 profileExponents;
   float4 profileLinearTerms;
   float4 profileConstantTerms;
+  // Takram has one coverage and one noise scale for every layer; the tiers each have their own
+  float4 coverages;                // takram's coverage, 0..1 (cloudCoverageFor: from the tier's cover)
+  float4 shapeScales;              // the billows' and the detail's frequency against takram's (2: half the size)
+  float4 shapeStretches;           // ... along x against the other two: below 1 draws them out into streaks
+  float4 powderScales;             // Beer-Powder's darkening of thin cloud, takram's powderScale per layer
+  float4 turbulenceDisplacements;  // km the curl field moves the shape at each layer's bottom
 
   float3 minIntervalHeights;  // the gaps between layers, which the march steps over
-  float  coverage;            // takram's coverage, 0..1 (cloudCoverageFor: from the panel's cover)
+  float  _pad0;
   float3 maxIntervalHeights;
   float  minHeight;  // the lowest base and the highest top of all the layers, km
   float2 weatherOffset;  // the arrangement: where in the weather map's tiling the observer stands
@@ -97,11 +104,11 @@ struct SkyCloudsParameters
   float  absorption;  // 1/km at density 1
   float  skyLightScale;
   float  groundBounceScale;
-  float  powderScale;
+  float  _pad3;
   float  powderExponent;  // km
-  float  turbulenceDisplacement;  // km
-  int    samples;     // marches per texel, each at another jitter and spot in it, averaged
-  float  shapeScale;  // the billows' and the detail's frequency against takram's: 2 is clouds half the size
+  float  _pad1;
+  int    samples;  // marches per texel, each at another jitter and spot in it, averaged
+  float  _pad2;
 
   // The march: takram's quality preset, in kilometres
   int   maxIterations;

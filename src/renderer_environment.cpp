@@ -815,7 +815,9 @@ void GltfRenderer::updateBakerParameters()
   m_skyClouds.setSettings({.coverage    = s.cloudCoverage,
                          .thicknessKm = s.cloudThickness,
                          .seed        = uint32_t(std::max(s.cloudSeed, 0)),
-                         .type        = s.cloudType});
+                         .type        = s.cloudType,
+                         .midCoverage  = s.cloudMidCoverage,
+                         .highCoverage = s.cloudHighCoverage});
 }
 
 //--------------------------------------------------------------------------------------------------

@@ -188,7 +188,11 @@ void patchClouds(Clouds& c, const Json& p)
     else if(k == "seed")
       field(c.seed, d.seed, v, [&](const Json& x) { return int(std::lround(number(x, key, 0.0, double(1 << 20)))); });
     else if(k == "type")
-      field(c.type, d.type, v, [&](const Json& x) { return oneOf(x, key, {"cumulus", "stratocumulus", "stratus", "altocumulus"}); });
+      field(c.type, d.type, v, [&](const Json& x) { return oneOf(x, key, {"cumulus", "stratocumulus", "stratus"}); });
+    else if(k == "mid")
+      field(c.mid, d.mid, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "high")
+      field(c.high, d.high, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else
       reject("unknown key " + key);
   }
@@ -296,7 +300,8 @@ Json toJson(const State& s)
         {"elevation", u.elevation},
         {"color", u.color},
         {"softness", u.softness}}},
-      {"clouds", {{"coverage", c.coverage}, {"thickness", c.thickness}, {"seed", c.seed}, {"type", c.type}}},
+      {"clouds",
+       {{"coverage", c.coverage}, {"thickness", c.thickness}, {"seed", c.seed}, {"type", c.type}, {"mid", c.mid}, {"high", c.high}}},
       {"ground",
        {{"mode", g.mode},
         {"height", g.autoHeight ? Json("auto") : Json(g.height)},
@@ -602,7 +607,7 @@ double stillFireflyClamp(double wanted, double applied)
 // The renderer's cloudType for the topic's clouds.type: its CLOUD_TYPE_* (sky_clouds.h.slang).
 static int cloudType(const std::string& type)
 {
-  return type == "stratocumulus" ? 1 : type == "stratus" ? 2 : type == "altocumulus" ? 3 : 0;
+  return type == "stratocumulus" ? 1 : type == "stratus" ? 2 : 0;
 }
 
 Json rendererParams(const State& s, glm::uvec2 envSize)
@@ -635,6 +640,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       {"cloudThickness", s.clouds.thickness},
       {"cloudSeed", s.clouds.seed},
       {"cloudType", cloudType(s.clouds.type)},
+      {"cloudMidCoverage", s.clouds.mid},
+      {"cloudHighCoverage", s.clouds.high},
       {"tmActive", 1},
       {"tmAutoExposure", 0},
       {"tmMethod", tmMethod(t.method)},

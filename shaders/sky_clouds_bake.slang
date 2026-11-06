@@ -92,6 +92,16 @@ CloudWeather weatherAt(float3 position, float height, float mipLevel)
   return cloudSampleWeather(g_params, g_weather.SampleLevel(weatherUv(position), mipLevel), height);
 }
 
+// The two volumes at `q` for a layer, at its scale and its stretch along x: (shape, detail), the
+// detail 0 where it is left out. The level is the finer axis's, so a streak keeps its edges.
+float2 noiseAt(float3 q, float scale, float stretch, float distance, bool withDetail)
+{
+  const float3 f      = float3(scale * stretch, scale, scale);
+  const float  shape  = g_shape.SampleLevel(q * f / CLOUD_SHAPE_PERIOD + g_params.shapeOffset, noiseLod(distance, kShapeTexelKm / scale));
+  const float  detail = withDetail ? g_detail.SampleLevel(q * f / CLOUD_DETAIL_PERIOD, noiseLod(distance, kDetailTexelKm / scale)) : 0.0F;
+  return float2(shape, detail);
+}
+
 // The medium at `position`, with the weather already read there (sampleMedia). The noise is laid on
 // the observer's tangent plane horizontally and on altitude vertically, so the layers follow the
 // planet's curve out to the horizon. `far` leaves out the turbulence and the detail: the long march
@@ -102,13 +112,34 @@ CloudMedia mediaAt(float3 position, float height, CloudWeather weather, float mi
   if(g_params.turbulence != 0 && !far)
   {
     const float2 uv = weatherUv(position) * (CLOUD_WEATHER_PERIOD / CLOUD_TURBULENCE_PERIOD);
-    q += (g_turbulence.SampleLevel(uv, 0.0F).xyz * 2.0F - 1.0F) * g_params.turbulenceDisplacement * cloudTurbulenceWeight(weather);
+    q += (g_turbulence.SampleLevel(uv, 0.0F).xyz * 2.0F - 1.0F) * cloudTurbulenceDisplacement(g_params, weather);
   }
-  // at the type's scale: a texel of the volume covers less of the sky the finer it is read
-  const float scale      = g_params.shapeScale;
-  const float shape      = g_shape.SampleLevel(q * (scale / CLOUD_SHAPE_PERIOD) + g_params.shapeOffset, noiseLod(distance, kShapeTexelKm / scale));
-  const bool  withDetail = !far && g_params.shapeDetail != 0 && mipLevel * 0.5F + (jitter - 0.5F) * 0.5F < 0.5F;
-  const float detail = withDetail ? g_detail.SampleLevel(q * (scale / CLOUD_DETAIL_PERIOD), noiseLod(distance, kDetailTexelKm / scale)) : 0.0F;
+  // Each tier's layers at their own scale and stretch (shapeScales, shapeStretches), read only where
+  // they have cloud: the tiers lie at different heights, so a point reads the volumes once almost
+  // everywhere. The low tier's two layers share the first's. A texel of a volume covers less of the
+  // sky the finer it is read.
+  const bool withDetail = !far && g_params.shapeDetail != 0 && mipLevel * 0.5F + (jitter - 0.5F) * 0.5F < 0.5F;
+  float4     shape      = float4(0.0F);
+  float4     detail     = float4(0.0F);
+  const float minDensity = g_params.minDensity;
+  if(weather.density.x > minDensity || weather.density.y > minDensity)
+  {
+    const float2 v = noiseAt(q, g_params.shapeScales.x, g_params.shapeStretches.x, distance, withDetail);
+    shape.xy       = float2(v.x);
+    detail.xy      = float2(v.y);
+  }
+  if(weather.density.z > minDensity)
+  {
+    const float2 v = noiseAt(q, g_params.shapeScales.z, g_params.shapeStretches.z, distance, withDetail);
+    shape.z        = v.x;
+    detail.z       = v.y;
+  }
+  if(weather.density.w > minDensity)
+  {
+    const float2 v = noiseAt(q, g_params.shapeScales.w, g_params.shapeStretches.w, distance, withDetail);
+    shape.w        = v.x;
+    detail.w       = v.y;
+  }
   return cloudSampleMedia(g_params, weather, shape, detail, withDetail);
 }
 
@@ -265,7 +296,7 @@ float4 marchClouds(float r0, float3 dir, float jitter)
 
       radiance *= media.scattering;
       // Beer-Powder: thin edges darker, where light has not yet built up by scattering
-      radiance *= 1.0F - g_params.powderScale * exp(-media.extinction * g_params.powderExponent);
+      radiance *= 1.0F - dot(media.weight, g_params.powderScales) * exp(-media.extinction * g_params.powderExponent);
 
       // Energy-conserving integration over the step (Hillaire 2016, 5.6.3)
       const float transmittance = exp(-media.extinction * stepSize);
@@ -319,12 +350,13 @@ void main(uint3 id: SV_DispatchThreadID)
   // so averaging texels averages what they draw. A sample below the horizon sees no cloud.
   const float horizonElevation = asin(horizonMu);
   const int   samples          = max(1, g_params.samples);
+  const bool  anyTier          = any(g_params.densityScales > float4(0.0F));
   float4      texel            = float4(0.0F);
   for(int s = 0; s < samples; ++s)
   {
     const float2 offset = samples == 1 ? float2(0.5F) : frac(float2(0.5F) + float(s) * float2(0.754877666F, 0.569840291F));
     const float3 dir    = cloudImageDir((float2(id.xy) + offset) / float2(pc.imageSize), horizonElevation);
-    if(g_params.coverage > 0.0F && !RayIntersectsGround(g_atmosphere, r0, dir.y))
+    if(anyTier && !RayIntersectsGround(g_atmosphere, r0, dir.y))
       texel += marchClouds(r0, dir, stepJitter(id.xy, s));
     else
       texel += float4(0.0F, 0.0F, 0.0F, 1.0F);

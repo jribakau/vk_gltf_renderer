@@ -621,36 +621,52 @@ the readers which image holds the clouds of the moment; the settle that follows 
 
 ### What is cloud
 
-Up to four layers, one to a channel of a weather map that tiles every ~100 km. What they are is the
-panel's **Type** (`cloudType`, `CLOUD_TYPE_*`), each a set of takram's layer parameters
-(`cloudDefaultParameters`):
+The sky is **three tiers over one another**, as cloud cover is reported -- low, mid and high --
+each with its own cover on the panel, so they lie over one another as real ones do: cumulus under a
+mackerel sky under cirrus (`cloudSkyParameters`, from `cloudCoverage`, `cloudMidCoverage` and
+`cloudHighCoverage`). They share four layers, one to a channel of a weather map that tiles every
+~100 km, each kind a set of takram's layer parameters:
 
-| Type | Layers | What makes it look so |
-| --- | --- | --- |
-| Cumulus | takram's default: low cumulus from 750 m, deeper cumulus in larger fields from 1 km, a thin streaky layer at 7.5 km | the billows cut the weather's fields fully, the detail erodes the edges |
-| Stratocumulus | one deck from 900 m, 600 m deep, read through both low channels so their fields make one broad deck | the billows still cut it into lumps and rolls (shape amount 0.8), half the detail, softer field edges, half cumulus's density |
-| Stratus | one deck from 500 m, 400 m deep | after takram's fog layer: the billows barely mark it (0.25), no detail, the softest field edges, density nearly even with height, little turbulence |
-| Altocumulus | one deck from 3 km, 400 m deep, in the fourth layer: the weather map's own channel, patches from cells of their own | the noise read at twice takram's frequency (`shapeScale`), so cloudlets a few hundred metres across; a shape amount of 2, so the billows cut it everywhere into dense cloudlets with sky between rather than only at a field's edge |
+| Tier | Kind | Layers | What makes it look so |
+| --- | --- | --- | --- |
+| Low | Cumulus | 0 and 1: takram's default less its high layer, low cumulus from 750 m and deeper cumulus in larger fields from 1 km | the billows cut the weather's fields fully, the detail erodes the edges |
+| Low | Stratocumulus | 0 and 1: one deck from 900 m, 600 m deep, read through both low channels so their fields make one broad deck | the billows still cut it into lumps and rolls (shape amount 0.8), half the detail, softer field edges, half cumulus's density |
+| Low | Stratus | 0 and 1: one deck from 500 m, 400 m deep | after takram's fog layer: the billows barely mark it (0.25), no detail, the softest field edges, density nearly even with height, little turbulence |
+| Mid | Altocumulus | 3: one deck from 3 km, 400 m deep, the weather map's fourth channel, patches from cells of their own | the noise read at twice takram's frequency (`shapeScales`), so cloudlets a few hundred metres across; a shape amount of 2, so the billows cut it everywhere into dense cloudlets with sky between rather than only at a field's edge |
+| High | Cirrus | 2: a sheet from 7.5 km, 500 m deep, takram's high layer in its streaky channel | the billows drawn out sixfold along one way (`shapeStretches`) and cut hard (1.6) into long thin strands; no Beer-Powder, which greys a veil that is all thin edge |
 
-The panel's **Thickness** is the type's depth, put on at the type's own when the type is picked (a
-cumulus's 1.45 km would be a stratus ten times too deep); under cumulus it scales the two cumulus
-layers' depth together.
+The low tier's kind is the panel's **Type** (`cloudType`), and its **Thickness** the kind's depth,
+put on at the kind's own when it is picked (a cumulus's 1.45 km would be a stratus ten times too
+deep); under cumulus it scales the two cumulus layers' depth together. The other tiers keep their
+depth.
 
-In every type, coverage lowers each layer's threshold most at the height its clouds are widest,
+Takram has one coverage, one noise scale and one turbulence for every layer; here each is per layer
+(`coverages`, `shapeScales`, `shapeStretches`, `turbulenceDisplacements`, and the powder,
+`powderScales`), so each tier keeps its own. The march goes from the lowest base to the highest top
+and steps over the gaps between the tiers' spans (`cloudFinishLayers` merges what overlaps: a cumulus
+deep enough to reach the altocumulus makes one span of the two). The bake reads each tier's noise
+only where its layers have cloud (`noiseAt`), so a point reads the volumes once almost everywhere.
+The ground's light reaches the bases of the lowest tier.
+
+In every kind, coverage lowers each layer's threshold most at the height its clouds are widest,
 Perlin-Worley billows are cut from what the weather allows and rounded off toward the tops, finer
 Worley erodes the edges (fluffy above, wispy below), a curl-noise field shreds the bottoms, and a
 density profile per layer finishes it. The four noise textures tile and are generated once, at
 start-up (`sky_clouds_noise.slang`); the arrangement (`cloudSeed`) is only which stretch of them is
-overhead.
+overhead, for every tier at once.
 
-**Coverage means the share of the land the clouds shade** with the sun overhead, which is near
-enough the share of the sky overhead they hide, the way cloud cover is reported. Takram's coverage is
-not that -- under cumulus its default of 0.3 shades about a quarter, and by 0.65 the deck has
-closed; a stratus sheet has closed by 0.28 -- so the panel's cover goes through a table per type,
-measured by marching columns through the type's layers and inverted (`CLOUD_COVERAGE_FOR_COVER`).
-`SkyClouds.DISABLED_CoverageCurve` in `tests/test_sky_clouds.cpp` prints every type's row, ready
-to paste, when the model changes, and `SkyClouds.TheCoverShadesAsMuchOfTheLandAsItSays` holds each
-to within a few percent.
+**Coverage means the share of the land a tier shades** with the sun overhead, which is near enough
+the share of the sky overhead it hides, the way cloud cover is reported. Cirrus hardly blocks the
+sun -- a veil it shines through -- so its cover is the share of the sky it veils at all (an optical
+depth of 0.05 or more), of which it shades `CLOUD_CIRRUS_SHADE` (70%). Takram's coverage is none of
+these -- under cumulus its default of 0.3 shades about a quarter, and by 0.6 the deck has closed; a
+stratus sheet has closed by 0.28 -- so each tier's cover goes through its kind's own table,
+measured by marching columns through that kind's layers alone and inverted
+(`CLOUD_COVERAGE_FOR_COVER`). `SkyClouds.DISABLED_CoverageCurve` in `tests/test_sky_clouds.cpp`
+prints every kind's row, ready to paste, when the model changes, and
+`SkyClouds.TheCoverShadesAsMuchOfTheLandAsItSays` holds each to within a few percent. Together the
+tiers shade the land as if they lay over one another independently: the haze and the distant ground
+are lit by the share every tier leaves the sun (`cloudSunlitAirOfTiers`).
 
 ### How it is lit
 
@@ -670,7 +686,8 @@ ground -- and by the sky's irradiance at its height. Takram's terms, all in the 
 
 The air between the observer and the clouds is the same march aerial perspective uses, to where the
 clouds are on average. Under the layers the distant ground and that haze are lit by the sun only
-where it gets through: the open share of the land, `1 - cover` (`SkySunDisk::sunlitGround`).
+where it gets through: the share of the land every tier leaves open (`cloudSunlitAirOfTiers`,
+`SkySunDisk::sunlitGround`).
 
 ### What it leaves out
 
@@ -692,7 +709,9 @@ waits, so these are wall-clock):
 | --- | --- |
 | Noise, once at start-up (`SkyClouds::generateNoise`) | 4.5 ms |
 | The commit's bake, clear sky (the environment alone) | ~0.4 ms |
-| The commit's bake with the clouds at 4096×1024, 8 marches a texel, cover 0.1 / 0.5 / 1.0 | 59 / 53 / 38 ms |
+| The commit's bake with the clouds at 4096×1024, 8 marches a texel, cumulus at cover 0.1 / 0.5 / 1.0 | 59 / 53 / 38 ms |
+| ... the other kinds alone: stratocumulus 0.6, stratus 0.9, altocumulus 0.4 / 0.7, cirrus 0.6 | ~90, ~75, 57 / 64, 18 ms |
+| ... all three tiers: cumulus 0.3, altocumulus 0.3, cirrus 0.5 | 72 ms |
 | The same at one march a texel (the crosshatch) | 6.2 / 7.0 / 4.5 ms |
 | The whole commit (bake, alias table, PDF), cover 0.5 | 56 ms |
 

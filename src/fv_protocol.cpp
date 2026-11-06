@@ -60,7 +60,9 @@ namespace {
 // 31: clouds over the physical sky, the lighting's clouds section (coverage, thickness, seed).
 // 32: the kind of cloud, the lighting's clouds.type (cumulus, stratocumulus, stratus).
 // 33: clouds.type "altocumulus".
-constexpr int kProtocolVersion = 33;
+// 34: the clouds in three tiers: clouds.mid (altocumulus) and clouds.high (cirrus); clouds.type is
+// the low tier's, and "altocumulus" is no longer one of them.
+constexpr int kProtocolVersion = 34;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

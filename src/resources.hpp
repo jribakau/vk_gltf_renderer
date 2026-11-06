@@ -239,7 +239,9 @@ struct Settings
   float cloudCoverage  = 0.0f;  // 0 clear .. 1 overcast
   float cloudThickness = 1.45f;  // km: the type's depth, base to the highest tops
   int   cloudSeed      = 0;     // which arrangement of the clouds
-  int   cloudType      = 0;     // 0 cumulus, 1 stratocumulus, 2 stratus, 3 altocumulus (CLOUD_TYPE_*)
+  int   cloudType      = 0;     // the low tier's kind: 0 cumulus, 1 stratocumulus, 2 stratus (CLOUD_TYPE_*)
+  float cloudMidCoverage  = 0.0f;  // the mid tier, altocumulus: 0 none .. 1 a closed deck
+  float cloudHighCoverage = 0.0f;  // the high tier, cirrus: the share of the sky it veils
 
   // Authored sky parameters (glTF OMI_environment_sky). Defaults match the extension's own. When a
   // loaded scene carries the extension it overwrites these; they are the fallback for every scene

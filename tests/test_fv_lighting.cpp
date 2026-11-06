@@ -319,7 +319,14 @@ TEST(FvLighting, CloudsAreClearUntilSetAndReachTheRenderer)
   EXPECT_EQ(L::toJson(st)["clouds"]["type"], "stratus");
   EXPECT_EQ(L::rendererParams(st, {})["cloudType"], 2);
   EXPECT_EQ(L::rendererParams(L::applyPatch(s, {{"clouds", {{"type", "stratocumulus"}}}}), {})["cloudType"], 1);
-  EXPECT_EQ(L::rendererParams(L::applyPatch(s, {{"clouds", {{"type", "altocumulus"}}}}), {})["cloudType"], 3);
+  // altocumulus and cirrus are the tiers over the low one, each its own cover
+  EXPECT_THROW(L::applyPatch(s, {{"clouds", {{"type", "altocumulus"}}}}), std::invalid_argument);
+  EXPECT_EQ(p["cloudMidCoverage"], 0.0);
+  const L::State tiers = L::applyPatch(s, {{"clouds", {{"mid", 0.3}, {"high", 1.5}}}});
+  EXPECT_EQ(L::rendererParams(tiers, {})["cloudMidCoverage"], 0.3);
+  EXPECT_EQ(L::rendererParams(tiers, {})["cloudHighCoverage"], 1.0);
+  EXPECT_EQ(L::toJson(tiers)["clouds"]["mid"], 0.3);
+  EXPECT_EQ(tiers.clouds.coverage, 0.4);  // the low tier stays
   EXPECT_EQ(st.clouds.coverage, 0.4);  // the rest of the clouds stay
   EXPECT_THROW(L::applyPatch(s, {{"clouds", {{"type", "cirrus"}}}}), std::invalid_argument);
 }

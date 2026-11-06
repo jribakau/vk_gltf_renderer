@@ -2,8 +2,8 @@
 // compiled as C++: a clear sky comes back exactly, the cloud image's mapping inverts and crowds its
 // rows at the horizon, the layers are where they should be from every observer, the coverage runs
 // from none to all, the phase is normalised and the octaves carry light deep into a cloud, the noise
-// tiles, each type is the cloud it says, and the panel's cover shades as much of the land as it
-// says under every type.
+// tiles, each kind is the cloud it says, the tiers lie over one another, and each tier's cover shades
+// (cirrus: veils) as much of the land as it says.
 
 // GLM as test_bsdf_lobes.cpp, the other file of this executable, sees it
 #undef GLM_FORCE_XYZW_ONLY
@@ -48,15 +48,16 @@ float3 wrap01(float3 x)
 
 // One column straight up from the ground, with what does not depend on the coverage read once: the
 // weather map over it and the two volumes at each height, as the bake reads them (sky_clouds_bake.slang
-// mediaAt), the noise evaluated directly instead of from its textures. Without the turbulence, which
-// moves the billows about but not how many there are.
+// mediaAt) -- at the first layer's scale and at the fourth's -- the noise evaluated directly instead of
+// from its textures. The heights are the spans the march marches, the gaps between them left out.
+// Without the turbulence, which moves the billows about but not how many there are.
 struct Column
 {
-  float4             weather;
-  std::vector<float> heights;
-  std::vector<float> steps;  // km of column each height stands for
-  std::vector<float> shape;
-  std::vector<float> detail;
+  float4              weather;
+  std::vector<float>  heights;
+  std::vector<float>  steps;  // km of column each height stands for
+  std::vector<float4> shape;
+  std::vector<float4> detail;
 };
 
 std::vector<Column> columns(int count, unsigned seed, const SkyCloudsParameters& p)
@@ -68,30 +69,60 @@ std::vector<Column> columns(int count, unsigned seed, const SkyCloudsParameters&
   {
     const float x = spread(rng), z = spread(rng);
     c.weather     = cloudWeatherNoise(float2(wrap01(x / CLOUD_WEATHER_PERIOD), wrap01(z / CLOUD_WEATHER_PERIOD)));
-    // the cumulus layers finely, the high one coarsely, the gap between not at all
     const auto band = [&](float bottom, float top, int n) {
       for(int i = 0; i < n; ++i)
       {
         const float  h = bottom + (float(i) + 0.5F) / float(n) * (top - bottom);
         const float3 q(x, h, z);
+        // as the bake's noiseAt: layer 1 shares layer 0's
+        float4 shape(0.0F), detail(0.0F);
+        for(int l : {0, 2, 3})
+        {
+          const float  scale = p.shapeScales[l];
+          const float3 f     = float3(scale * p.shapeStretches[l], scale, scale);
+          shape[l]           = std::clamp(cloudShapeNoise(wrap01(q * f / CLOUD_SHAPE_PERIOD)), 0.0F, 1.0F);
+          detail[l]          = cloudDetailNoise(wrap01(q * f / CLOUD_DETAIL_PERIOD));
+        }
+        shape.y  = shape.x;
+        detail.y = detail.x;
         c.heights.push_back(h);
         c.steps.push_back((top - bottom) / float(n));
-        c.shape.push_back(std::clamp(cloudShapeNoise(wrap01(q * (p.shapeScale / CLOUD_SHAPE_PERIOD))), 0.0F, 1.0F));
-        c.detail.push_back(cloudDetailNoise(wrap01(q * (p.shapeScale / CLOUD_DETAIL_PERIOD))));
+        c.shape.push_back(shape);
+        c.detail.push_back(detail);
       }
     };
-    band(p.minHeight, p.shadowTopHeight, 24);
-    if(p.maxLayerHeights.z > p.minLayerHeights.z)
-      band(p.minLayerHeights.z, p.maxLayerHeights.z, 4);
+    float bottom = p.minHeight;
+    for(int g = 0; g < 3; ++g)
+      if(p.maxIntervalHeights[g] > p.minIntervalHeights[g])
+      {
+        band(bottom, p.minIntervalHeights[g], 24);
+        bottom = p.maxIntervalHeights[g];
+      }
+    band(bottom, p.maxHeight, 24);
   }
   return out;
 }
 
-// The share of the land the layers shade with the sun overhead, at a coverage.
-double shadedShare(const std::vector<Column>& cols, SkyCloudsParameters p, float coverage)
+// Takram's coverage on every layer a tier turned on.
+SkyCloudsParameters withCoverage(SkyCloudsParameters p, float coverage)
 {
-  p.coverage    = coverage;
-  double shaded = 0.0;
+  for(int i = 0; i < 4; ++i)
+    p.coverages[i] = p.densityScales[i] > 0.0F ? coverage : 0.0F;
+  return p;
+}
+
+// What the layers do to the land with the sun overhead, at a coverage: the share they shade, and the
+// share they veil at all (an optical depth of 0.05 or more, cirrus's cover).
+struct Shade
+{
+  double shaded;
+  double veiled;
+};
+
+Shade shadeAt(const std::vector<Column>& cols, const SkyCloudsParameters& layers, float coverage)
+{
+  const SkyCloudsParameters p = withCoverage(layers, coverage);
+  Shade                     out{0.0, 0.0};
   for(const Column& c : cols)
   {
     double depth = 0.0;
@@ -101,9 +132,18 @@ double shadedShare(const std::vector<Column>& cols, SkyCloudsParameters p, float
       if(cloudWeatherHasDensity(p, w))
         depth += cloudSampleMedia(p, w, c.shape[i], c.detail[i], true).extinction * c.steps[i];
     }
-    shaded += 1.0 - std::exp(-depth);
+    out.shaded += 1.0 - std::exp(-depth);
+    out.veiled += depth >= 0.05 ? 1.0 : 0.0;
   }
-  return shaded / double(cols.size());
+  out.shaded /= double(cols.size());
+  out.veiled /= double(cols.size());
+  return out;
+}
+
+// The share a kind's cover means: what cirrus veils, what the others shade.
+double coverShare(const Shade& s, int type)
+{
+  return type == CLOUD_TYPE_CIRRUS ? s.veiled : s.shaded;
 }
 
 }  // namespace
@@ -201,17 +241,16 @@ TEST(SkyClouds, TheDefaultLayersAreTakramsAndTheDepthScalesTheCumulus)
   EXPECT_FLOAT_EQ(p.minLayerHeights.x, 0.75F);
   EXPECT_FLOAT_EQ(p.maxLayerHeights.x, 1.4F);
   EXPECT_FLOAT_EQ(p.maxLayerHeights.y, 2.2F);
-  EXPECT_FLOAT_EQ(p.minLayerHeights.z, 7.5F);
-  EXPECT_FLOAT_EQ(p.maxHeight, 8.0F);
-  // the march steps over the gap between the cumulus and the high layer, and nothing else
-  EXPECT_TRUE(cloudInsideIntervals(p, 5.0F));
+  EXPECT_FLOAT_EQ(p.minHeight, 0.75F);
+  EXPECT_FLOAT_EQ(p.maxHeight, 2.2F);
+  EXPECT_FLOAT_EQ(p.shadowTopHeight, 2.2F);
+  // takram's high layer is the high tier's now: alone, the cumulus are one span with no gap in it
+  EXPECT_EQ(p.densityScales.z, 0.0F);
   EXPECT_FALSE(cloudInsideIntervals(p, 1.5F));
-  EXPECT_FALSE(cloudInsideIntervals(p, 7.7F));
 
   const SkyCloudsParameters deep = cloudDefaultParameters(0.5F, 2.0F * CLOUD_DEFAULT_THICKNESS, CLOUD_TYPE_CUMULUS);
   EXPECT_FLOAT_EQ(deep.maxLayerHeights.y - deep.minLayerHeights.y, 2.4F);
   EXPECT_FLOAT_EQ(deep.minLayerHeights.y, 1.0F);
-  EXPECT_FLOAT_EQ(deep.maxLayerHeights.z, 8.0F);  // the high layer stays
 
   // a preview is coarser but keeps the octaves, which hold the clouds' brightness
   const SkyCloudsParameters preview = cloudWithQuality(p, true);
@@ -234,16 +273,14 @@ TEST(SkyClouds, CoverageRunsFromNoneToAll)
     for(float w = 0.0F; w <= 1.0F; w += 0.1F)
       for(float h = p.minHeight + 0.05F; h < p.shadowTopHeight; h += 0.05F)
       {
-        SkyCloudsParameters none = p;
-        none.coverage            = 0.0F;
+        const SkyCloudsParameters none = withCoverage(p, 0.0F);
         EXPECT_FALSE(cloudWeatherHasDensity(none, cloudSampleWeather(none, float4(w), h))) << type << " " << w << " " << h;
         // rising with the coverage everywhere
         float last = 0.0F;
         for(float c = 0.0F; c <= 1.0F; c += 0.1F)
         {
-          SkyCloudsParameters at = p;
-          at.coverage            = c;
-          const float4 d         = cloudSampleWeather(at, float4(w), h).density;
+          const SkyCloudsParameters at = withCoverage(p, c);
+          const float4              d  = cloudSampleWeather(at, float4(w), h).density;
           EXPECT_GE(d.x + d.y + d.z + d.w, last - 1e-6F) << type;
           last = d.x + d.y + d.z + d.w;
         }
@@ -295,7 +332,7 @@ TEST(SkyClouds, EachTypeIsTheCloudItSays)
   EXPECT_GT(sc.shapeAmounts.x, st.shapeAmounts.x);
   EXPECT_EQ(st.shapeDetailAmounts.x, 0.0F);
   EXPECT_GT(st.coverageFilterWidths.x, cu.coverageFilterWidths.x);
-  EXPECT_LT(st.turbulenceDisplacement, cu.turbulenceDisplacement);
+  EXPECT_LT(st.turbulenceDisplacements.x, cu.turbulenceDisplacements.x);
 
   // Thickness is each deck's depth from its base
   const SkyCloudsParameters deepSt = cloudDefaultParameters(0.5F, 1.0F, CLOUD_TYPE_STRATUS);
@@ -317,9 +354,9 @@ TEST(SkyClouds, EachTypeIsTheCloudItSays)
   EXPECT_EQ(ac.densityScales.x + ac.densityScales.y + ac.densityScales.z, 0.0F);
   EXPECT_LT(cloudDefaultThickness(CLOUD_TYPE_ALTOCUMULUS), cloudDefaultThickness(CLOUD_TYPE_STRATOCUMULUS));
   EXPECT_GT(ac.shapeAmounts.w, 1.0F);
-  EXPECT_GT(ac.shapeScale, 1.0F);
+  EXPECT_GT(ac.shapeScales.w, 1.0F);
   for(const SkyCloudsParameters* p : {&cu, &sc, &st})
-    EXPECT_EQ(p->shapeScale, 1.0F);
+    EXPECT_EQ(p->shapeScales.x, 1.0F);
   for(float h = ac.minHeight; h <= ac.maxHeight; h += 0.05F)
     EXPECT_FALSE(cloudInsideIntervals(ac, h)) << h;
   // its channel of the weather map has patches and clear sky both
@@ -332,6 +369,82 @@ TEST(SkyClouds, EachTypeIsTheCloudItSays)
   }
   EXPECT_GT(patches, 40);
   EXPECT_GT(clear, 40);
+
+  // Cirrus: a thin sheet high above the others in the third layer alone, a veil rather than a deck
+  const SkyCloudsParameters ci = cloudDefaultParameters(0.5F, cloudDefaultThickness(CLOUD_TYPE_CIRRUS), CLOUD_TYPE_CIRRUS);
+  EXPECT_GE(ci.minHeight, 6.0F);
+  EXPECT_FLOAT_EQ(ci.minLayerHeights.z, ci.minHeight);
+  EXPECT_FLOAT_EQ(ci.maxLayerHeights.z, ci.maxHeight);
+  EXPECT_GT(ci.densityScales.z, 0.0F);
+  EXPECT_EQ(ci.densityScales.x + ci.densityScales.y + ci.densityScales.w, 0.0F);
+  EXPECT_LT(ci.densityScales.z, ac.densityScales.w / 4.0F);
+  EXPECT_EQ(ci.turbulenceDisplacements.z, 0.0F);
+  EXPECT_LT(ci.shapeStretches.z, 0.5F);  // drawn out into strands
+  EXPECT_EQ(ci.powderScales.z, 0.0F);    // a veil, all thin edge
+  EXPECT_GT(ci.shapeAmounts.z, 1.0F);
+  for(const SkyCloudsParameters* p : {&cu, &sc, &st, &ac})
+    for(int i = 0; i < 4; ++i)
+      if(p->densityScales[i] > 0.0F)
+        EXPECT_EQ(p->shapeStretches[i], 1.0F);
+  EXPECT_GT(CLOUD_CIRRUS_SHADE, 0.0F);
+  EXPECT_LT(CLOUD_CIRRUS_SHADE, 0.8F);  // a veil: the decks shade about all they cover
+}
+
+// The tiers lie over one another: each in its own layers with its own coverage, the march's span
+// from the lowest base to the highest top with the gaps between them stepped over, the ground's
+// light on the lowest tier's bases, and a tier at no cover not there at all.
+TEST(SkyClouds, TheTiersLieOverOneAnother)
+{
+  const SkyCloudsParameters all = cloudSkyParameters(0.5F, CLOUD_DEFAULT_THICKNESS, CLOUD_TYPE_CUMULUS, 0.3F, 0.7F);
+  const SkyCloudsParameters cu  = cloudDefaultParameters(0.5F, CLOUD_DEFAULT_THICKNESS, CLOUD_TYPE_CUMULUS);
+  const SkyCloudsParameters ac  = cloudDefaultParameters(0.3F, 0.0F, CLOUD_TYPE_ALTOCUMULUS);
+  const SkyCloudsParameters ci  = cloudDefaultParameters(0.7F, 0.0F, CLOUD_TYPE_CIRRUS);
+  // each tier as it is alone, in its own layers
+  EXPECT_EQ(all.coverages.x, cu.coverages.x);
+  EXPECT_EQ(all.coverages.y, cu.coverages.y);
+  EXPECT_EQ(all.coverages.w, ac.coverages.w);
+  EXPECT_EQ(all.coverages.z, ci.coverages.z);
+  for(int i = 0; i < 4; ++i)
+  {
+    const SkyCloudsParameters& alone = i < 2 ? cu : i == 2 ? ci : ac;
+    EXPECT_EQ(all.minLayerHeights[i], alone.minLayerHeights[i]) << i;
+    EXPECT_EQ(all.maxLayerHeights[i], alone.maxLayerHeights[i]) << i;
+    EXPECT_EQ(all.densityScales[i], alone.densityScales[i]) << i;
+    EXPECT_EQ(all.shapeAmounts[i], alone.shapeAmounts[i]) << i;
+    EXPECT_EQ(all.shapeScales[i], alone.shapeScales[i]) << i;
+    EXPECT_EQ(all.shapeStretches[i], alone.shapeStretches[i]) << i;
+    EXPECT_EQ(all.turbulenceDisplacements[i], alone.turbulenceDisplacements[i]) << i;
+  }
+  // marched from the cumulus bases to the cirrus tops, over the two gaps between the tiers
+  EXPECT_FLOAT_EQ(all.minHeight, cu.minHeight);
+  EXPECT_FLOAT_EQ(all.maxHeight, ci.maxHeight);
+  EXPECT_FLOAT_EQ(all.shadowTopHeight, cu.maxHeight);
+  EXPECT_TRUE(cloudInsideIntervals(all, 0.5F * (cu.maxHeight + ac.minHeight)));
+  EXPECT_TRUE(cloudInsideIntervals(all, 0.5F * (ac.maxHeight + ci.minHeight)));
+  for(const SkyCloudsParameters* t : {&cu, &ac, &ci})
+    for(float h = t->minHeight + 0.01F; h < t->maxHeight; h += 0.05F)
+      EXPECT_FALSE(cloudInsideIntervals(all, h)) << h;
+  // a deep cumulus up into the mid tier makes one span of the two: no gap between them
+  const SkyCloudsParameters tall = cloudSkyParameters(0.5F, 4.0F, CLOUD_TYPE_CUMULUS, 0.3F, 0.0F);
+  EXPECT_GT(tall.maxLayerHeights.y, tall.minLayerHeights.w);
+  for(float h = tall.minHeight; h < tall.maxHeight; h += 0.05F)
+    EXPECT_FALSE(cloudInsideIntervals(tall, h)) << h;
+  EXPECT_FLOAT_EQ(tall.maxHeight, std::max(tall.maxLayerHeights.y, tall.maxLayerHeights.w));
+  // a tier at no cover is not there
+  const SkyCloudsParameters high = cloudSkyParameters(0.0F, CLOUD_DEFAULT_THICKNESS, CLOUD_TYPE_CUMULUS, 0.0F, 0.4F);
+  EXPECT_EQ(high.densityScales.x + high.densityScales.y + high.densityScales.w, 0.0F);
+  EXPECT_FLOAT_EQ(high.minHeight, ci.minHeight);
+  EXPECT_FLOAT_EQ(high.shadowTopHeight, ci.maxHeight);
+  const SkyCloudsParameters none = cloudSkyParameters(0.0F, CLOUD_DEFAULT_THICKNESS, CLOUD_TYPE_CUMULUS, 0.0F, 0.0F);
+  EXPECT_EQ(none.densityScales.x + none.densityScales.y + none.densityScales.z + none.densityScales.w, 0.0F);
+  // the sun reaches the land where every tier leaves it, cirrus shading little of what it covers
+  EXPECT_FLOAT_EQ(cloudSunlitAirOfTiers(0.5F, 0.0F, 0.0F), cloudSunlitAir(0.5F));
+  EXPECT_FLOAT_EQ(cloudSunlitAirOfTiers(0.5F, 0.5F, 0.0F), 0.25F);
+  EXPECT_FLOAT_EQ(cloudSunlitAirOfTiers(0.0F, 0.0F, 1.0F), 1.0F - CLOUD_CIRRUS_SHADE);
+  EXPECT_GT(cloudSunlitAirOfTiers(0.0F, 0.0F, 1.0F), cloudSunlitAirOfTiers(1.0F, 0.0F, 0.0F));  // a deck shuts it all out
+  EXPECT_LT(cloudSunlitAirOfTiers(0.5F, 0.5F, 1.0F), cloudSunlitAirOfTiers(0.5F, 0.5F, 0.0F));
+  // and the low kind out of the low tier's range is one of its own, never another tier
+  EXPECT_EQ(cloudSkyParameters(0.5F, 1.0F, CLOUD_TYPE_CIRRUS, 0.0F, 0.0F).densityScales.z, 0.0F);
 }
 
 TEST(SkyClouds, ThePhaseIsNormalisedAndScattersForward)
@@ -400,9 +513,9 @@ TEST(SkyClouds, TheNoiseTilesAndStaysInRange)
   }
 }
 
-// Coverage is the share of the land the clouds shade with the sun overhead: what the panel says, and
-// what the bake assumes for the distant ground and haze (cloudSunlitAir). Other columns than the
-// table was fitted on.
+// Coverage is the share of the land a tier shades with the sun overhead (cirrus: veils): what the
+// panel says, and what the bake assumes for the distant ground and haze (cloudSunlitAirOfTiers).
+// Other columns than the table was fitted on.
 TEST(SkyClouds, TheCoverShadesAsMuchOfTheLandAsItSays)
 {
   for(int type = 0; type < CLOUD_TYPE_COUNT; ++type)
@@ -411,17 +524,18 @@ TEST(SkyClouds, TheCoverShadesAsMuchOfTheLandAsItSays)
     const std::vector<Column> cols = columns(600, 11, p);
     for(const float cover : {0.02F, 0.1F, 0.3F, 0.5F, 0.7F, 0.9F, 1.0F})
     {
-      const double shaded = shadedShare(cols, p, cloudCoverageFor(cover, type));
-      std::printf("[ type %d cover %.2f ] shades %.3f of the land\n", type, cover, shaded);
-      EXPECT_NEAR(shaded, 1.0 - cloudSunlitAir(cover), 0.06) << type << " " << cover;
+      const double share = coverShare(shadeAt(cols, p, cloudCoverageFor(cover, type)), type);
+      std::printf("[ type %d cover %.2f ] covers %.3f of the land\n", type, cover, share);
+      EXPECT_NEAR(share, 1.0 - cloudSunlitAir(cover), 0.06) << type << " " << cover;
     }
   }
 }
 
-// Not a test: what CLOUD_COVERAGE_FOR_COVER is fitted from. For each type, the shaded share at
-// takram's coverage from 0 to 1, inverted at every 5% of cover: a row of the table, to paste when
-// the model changes. Its first knot is where the share passes 0.2% (the first clouds), its last
-// where it passes 99.8% (the deck closed). Other columns than the test above checks.
+// Not a test: what CLOUD_COVERAGE_FOR_COVER is fitted from. For each kind alone, the share its cover
+// means (coverShare) at takram's coverage from 0 to 1, inverted at every 5% of cover: a row of the
+// table, to paste when the model changes. Its first knot is where the share passes 0.2% (the first
+// clouds), its last where it passes 99.8% (the deck closed). For cirrus, too, the share of what it
+// covers that it shades at full cover: CLOUD_CIRRUS_SHADE. Other columns than the test above checks.
 TEST(SkyClouds, DISABLED_CoverageCurve)
 {
   constexpr int kSteps = 400;
@@ -431,7 +545,7 @@ TEST(SkyClouds, DISABLED_CoverageCurve)
     const std::vector<Column> cols = columns(2500, 5, p);
     std::vector<double>       share(kSteps + 1);
     for(int k = 0; k <= kSteps; ++k)
-      share[k] = shadedShare(cols, p, float(k) / float(kSteps));
+      share[k] = coverShare(shadeAt(cols, p, float(k) / float(kSteps)), type);
     // the coverage where the share first reaches `target`, between the grid's points
     const auto coverageAt = [&](double target) {
       for(int k = 1; k <= kSteps; ++k)
@@ -447,6 +561,11 @@ TEST(SkyClouds, DISABLED_CoverageCurve)
     {
       const double target = knot == 0 ? 0.002 : knot == 20 ? 0.998 : 0.05 * knot;
       std::printf("%.4fF%s", coverageAt(target), knot < 20 ? ", " : "}\n");
+    }
+    if(type == CLOUD_TYPE_CIRRUS)
+    {
+      const Shade full = shadeAt(cols, p, float(coverageAt(0.998)));
+      std::printf("cirrus at full cover shades %.4f of what it covers (CLOUD_CIRRUS_SHADE)\n", full.shaded / std::max(full.veiled, 1e-9));
     }
   }
 }

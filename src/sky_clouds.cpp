@@ -181,13 +181,15 @@ glm::vec2 cloudSeedOffsetKm(uint32_t seed)
 
 float cloudSunlitGround(const SkyCloudsSettings& settings)
 {
-  return settings.coverage > 0.0F ? shaderio::cloudSunlitAir(settings.coverage) : 1.0F;
+  return shaderio::cloudSunlitAirOfTiers(settings.coverage, settings.midCoverage, settings.highCoverage);
 }
 
 shaderio::SkyCloudsParameters cloudBakeParameters(const SkyCloudsSettings& settings, bool preview)
 {
   shaderio::SkyCloudsParameters p =
-      shaderio::cloudWithQuality(shaderio::cloudDefaultParameters(settings.coverage, settings.thicknessKm, settings.type), preview);
+      shaderio::cloudWithQuality(shaderio::cloudSkyParameters(settings.coverage, settings.thicknessKm, settings.type,
+                                                              settings.midCoverage, settings.highCoverage),
+                                 preview);
   // The arrangement moves the weather map under the observer, and the billows within it.
   const glm::vec2 offset = cloudSeedOffsetKm(settings.seed);
   p.weatherOffset        = offset;
