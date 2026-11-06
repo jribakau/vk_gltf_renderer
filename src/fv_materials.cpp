@@ -144,6 +144,7 @@ void FvMaterials::attach(const std::string&                 figureId,
   m_waiting.clear();
   m_flipped = texturesFlipped;
   m_skin    = skin;
+  m_solidGlass = !m_options.empty() && m_options.front().solidGlass;  // the feed's, the same for every material
   m_applied.assign(scene->materials.size(), {});
   m_count = scene->materials.size();
   std::set<int> again;
@@ -582,6 +583,19 @@ void FvMaterials::surfacesChanged(const std::set<int>& materials)
     refresh(materials);
 }
 
+void FvMaterials::setSolidGlass(bool solid)
+{
+  if(solid == m_solidGlass)
+    return;
+  m_solidGlass = solid;
+  if(!m_scene || m_model)
+    return;
+  std::set<int> all;
+  for(size_t i = 0; i < m_count; i++)
+    all.insert(int(i));
+  refresh(all);
+}
+
 void FvMaterials::setSkinMode(fv::mat::SkinMode skin)
 {
   if(skin == m_skin)
@@ -646,6 +660,7 @@ void FvMaterials::refresh(const std::set<int>& materials)
     if(mi < 0 || mi >= int(m_count))
       continue;
     m_options[mi].skin          = m_skin;
+    m_options[mi].solidGlass    = m_solidGlass;
     m_options[mi].toneReference = toneReference;
     const fv::Material& m = m_scene->materials[mi];
     const fv::mat::Lowered     lowered = fv::mat::lower(m.surface, m.edits, m_options[mi]);

@@ -648,11 +648,12 @@ Json toolJson(const nvmcp::ToolResult& r)
   return Json::parse(r.json);
 }
 
-fv::build::BuildOptions buildOptionsOf(const Loaded& f, fv::mat::SkinMode skin)
+fv::build::BuildOptions buildOptionsOf(const Loaded& f, fv::mat::SkinMode skin, bool solidGlass)
 {
   fv::build::BuildOptions options;
   options.texturesFlipped = f.texturesFlipped;
   options.skin            = skin;
+  options.solidGlass      = solidGlass;
   options.texture         = [&f](const fv::build::TextureRequest& req) -> std::optional<fv::build::TextureImage> {
     auto it = f.images.find(fv::build::requestKey(req));
     return it == f.images.end() ? std::nullopt : it->second;

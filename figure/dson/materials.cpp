@@ -766,7 +766,14 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch, mat::Cont
     // MDL's default; the channel's wiring is inferred from its name), else by Refraction Color
     const Channel* shared = find({"Share Glossy Inputs"});
     if(uber)
+    {
       s.refraction->tint = !shared || truthy(shared) ? glossyColor : colorOr(find({"Refraction Color"}));
+      // Thin Walled is off unless the surface turns it on (the MDL's default), and the volume it then
+      // has absorbs by Transmitted Color over its distance
+      s.refraction->thinWalled          = truthy(find({"Thin Walled"}));
+      s.refraction->transmittedColor    = colorOr(find({"Transmitted Color"}));
+      s.refraction->transmittedDistance = float(std::max(0.0, num(find({"Transmitted Measurement Distance"}), 0)));
+    }
   }
   // Iray Uber's Weighted mode (normalized_base): the diffuse and the glossy mixed by Diffuse Weight
   // and Glossy Weight, each 0..1 and normalised when they pass 1 together, with no Fresnel and no

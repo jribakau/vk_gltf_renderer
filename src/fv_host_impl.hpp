@@ -645,7 +645,7 @@ Json toolJson(const nvmcp::ToolResult& r);
 
 // How a figure is built for the scene: its textures as resolved (cooked, or baked for an edit),
 // flipped as they arrive, the skin for the renderer, the surfaces light walks through.
-fv::build::BuildOptions buildOptionsOf(const Loaded& f, fv::mat::SkinMode skin);
+fv::build::BuildOptions buildOptionsOf(const Loaded& f, fv::mat::SkinMode skin, bool solidGlass);
 
 int itemIdOf(const Json& v);
 
@@ -1384,6 +1384,8 @@ struct FvHost::Impl
   std::unique_ptr<FvView> view;
   // how skin is shaded (render.mode's skin)
   std::atomic<fv::mat::SkinMode> skinMode{fv::mat::SkinMode::eMeasured};
+  // render.mode's solidGlass: Iray Uber's Thin Walled off refracts as a closed solid
+  std::atomic<bool> solidGlass{false};
   // a texture a material bake needs, from the cooker or a library (worker threads)
   std::optional<fv::build::TextureImage> bakeTexture(const std::shared_ptr<fv::dson::Library>& lib, const fv::build::TextureRequest& req, bool flipped);
 };

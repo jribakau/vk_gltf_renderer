@@ -194,6 +194,8 @@ public:
   void setSkin(fv::Json skin);
   // Real-time and RTX shade skin differently; lowers the materials that differ.
   void setSkinMode(fv::mat::SkinMode skin);
+  // Lowers every material again with LowerOptions::solidGlass, as setSkinMode does with the skin.
+  void setSolidGlass(bool solid);
   fv::mat::SkinMode skinMode() const { return m_skin; }
   // A texture they sample changed under them (a cook that landed): every attached material written
   // again with its options and edits, the feed setting only those that differ. Not for a model.
@@ -258,6 +260,7 @@ private:
   std::vector<std::vector<int>>                       m_meshesOf;  // per material, the scene meshes using it
   bool                                                m_flipped = false;
   fv::mat::SkinMode                                   m_skin    = fv::mat::SkinMode::eMeasured;
+  bool                                                m_solidGlass = false;
   uint64_t                                            m_generation = 0;
   fv::Json                                            m_eyes;       // the topic's `eyes`, null for none
   fv::Json                                            m_skinState;  // the topic's `skin`, null for none

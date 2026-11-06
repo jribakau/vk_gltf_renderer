@@ -244,6 +244,13 @@ struct Surface
     // linear; what tints the light it lets through: Glossy Color with Share Glossy Inputs, else
     // Refraction Color
     Rgb tint{1, 1, 1};
+    // Iray Uber's Thin Walled: a film light passes straight through (on), or the face of a closed solid
+    // that refracts (off, the MDL's default: a bottle, a glass, the wine in it). Other shaders: a film.
+    bool thinWalled = true;
+    // Iray's volume in that solid: Transmitted Color (linear) over Transmitted Measurement Distance
+    // (cm), what it absorbs along its depth; 0: none measured
+    Rgb   transmittedColor{1, 1, 1};
+    float transmittedDistance = 0;
   };
   std::optional<Refraction> refraction;
   struct TopCoat

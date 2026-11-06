@@ -609,6 +609,7 @@ std::vector<mat::LowerOptions> lowering(const SceneGraph& scene, const Drawing& 
     lo.forFile            = options.forFile;
     lo.flipV              = !options.texturesFlipped;
     lo.ribbon             = onRibbon[mi];
+    lo.solidGlass         = options.solidGlass;
     lo.emission           = mat::emissionStrength(scene.materials[mi].surface, emitArea[mi], options.exposureValue, options.iso);
     // one material on several meshes is one glTF material, so those meshes vote together
     if(!hairVotes[mi].empty())

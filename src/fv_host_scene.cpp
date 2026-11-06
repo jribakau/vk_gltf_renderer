@@ -532,7 +532,7 @@ Json FvHost::Impl::exportScene(const std::string& path)
     {
       noticeLinearExport(*f);
       catchUpDrawn(*f);
-      builds[i] = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, buildOptionsOf(*f, skinMode.load()));
+      builds[i] = fv::build::buildGltf(f->fig->loaded.scene, f->fig->loaded.root, buildOptionsOf(*f, skinMode.load(), solidGlass.load()));
       model     = &builds[i]->model;
     }
     else if(p.model)

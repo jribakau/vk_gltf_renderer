@@ -62,6 +62,9 @@ struct LowerOptions
   // A surface strand-hair ribbons draw with (mesh::BuiltMesh::ribbon): they face one way, so it is
   // seen from both sides whatever the surface or an edit says.
   bool ribbon = false;
+  // Iray Uber refraction with Thin Walled off lowers to a closed solid that refracts (a volume), as Iray
+  // renders it, instead of a film. Off: every refracting surface a film, as before 2026-11-06.
+  bool solidGlass = false;
 };
 
 // The eye's wet shells. The tear film (a refracting moisture shell over the whole eye, or a

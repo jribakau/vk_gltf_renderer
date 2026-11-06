@@ -3024,6 +3024,10 @@ TEST(FvHost, TheRendererPathTracesOnly)
   EXPECT_EQ(answer["result"].value("mode", ""), "rtx");
   EXPECT_TRUE(rig.cmd("render.mode", {{"mode", "rtx"}, {"skin", "thin"}}).value("ok", false));
   EXPECT_FALSE(rig.cmd("render.mode", {{"mode", "raster"}}).value("ok", false));
+  // solid glass (Iray Uber's Thin Walled off refracting as a solid) goes with the skin; unsent, it stays
+  EXPECT_TRUE(rig.cmd("render.mode", {{"skin", "thin"}, {"solidGlass", true}}).value("ok", false));
+  EXPECT_TRUE(rig.cmd("render.mode", {{"skin", "measured"}}).value("ok", false));
+  EXPECT_FALSE(rig.cmd("render.mode", {{"skin", "measured"}, {"solidGlass", "yes"}}).value("ok", false));
 }
 
 // The frame as a linear image, once it is on disk: the path tracer's, a .hdr

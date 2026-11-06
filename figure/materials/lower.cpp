@@ -678,6 +678,20 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     // with nothing behind it to see.
     if(tearFilm && shell != EyeShell::eMeniscus && !opts.forFile)
       out.chamberIor = kEyeChamberIor;
+    // Iray Uber's Thin Walled off: the face of a closed solid, which refracts what is behind it, not a
+    // film light goes straight through. The tint stays per crossing (a bottle doesn't darken across
+    // its width); the solid absorbs along its depth only where the file measures it. The eye's shells
+    // and surfaces keep their own rule.
+    if(opts.solidGlass && !s.refraction->thinWalled && shell == EyeShell::eNone && s.kind != Kind::eEye)
+    {
+      Volume solid{.thickness = 1};
+      if(s.refraction->transmittedDistance > 0)
+      {
+        solid.attenuationDistance = s.refraction->transmittedDistance * 0.01f;  // cm
+        solid.attenuationColor    = s.refraction->transmittedColor;
+      }
+      out.volume = solid;
+    }
   }
 
   // Refraction wins over skin: a cornea with a translucency weight stays glass.

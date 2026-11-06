@@ -268,20 +268,25 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     const fv::mat::SkinMode rtxSkin = skin == "thin"       ? fv::mat::SkinMode::eThin :
                                       skin == "measured" ? fv::mat::SkinMode::eMeasured :
                                                            fv::mat::SkinMode::eVolume;
-    return impl->onApp([impl, rtxSkin] {
-      // the app sends it at every start and scene open: the skin it has already lowers nothing again
-      if(impl->skinMode.exchange(rtxSkin) == rtxSkin)
+    // solidGlass: Iray Uber's Thin Walled off refracts as a closed solid; left as it is when not sent
+    const std::optional<bool> glass = args.contains("solidGlass") ? std::optional<bool>(args.at("solidGlass").get<bool>()) : std::nullopt;
+    return impl->onApp([impl, rtxSkin, glass] {
+      // the app sends it at every start and scene open: what it has already lowers nothing again
+      const bool skinChanged  = impl->skinMode.exchange(rtxSkin) != rtxSkin;
+      const bool glassChanged = glass && impl->solidGlass.exchange(*glass) != *glass;
+      if(!skinChanged && !glassChanged)
         return Json{{"mode", "rtx"}};
       for(const auto& p : impl->props)
         if(p->figure && p->materials)
         {
-          // the feed lowers every material with the new skin, then the edits' own lowering goes over it
+          // the feed lowers every material with the new options, then the edits' own lowering goes over it
           if(p->figure->feed)
           {
-            p->figure->feed->setOptions(buildOptionsOf(*p->figure, impl->skinMode));
+            p->figure->feed->setOptions(buildOptionsOf(*p->figure, impl->skinMode, impl->solidGlass));
             p->figure->feed->sync(p->figure->fig->loaded.scene, p->figure->fig->loaded.root);
           }
           p->materials->setSkinMode(impl->skinMode);
+          p->materials->setSolidGlass(impl->solidGlass);
         }
       return Json{{"mode", "rtx"}};
     });

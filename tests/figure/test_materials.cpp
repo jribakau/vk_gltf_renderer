@@ -375,6 +375,49 @@ TEST(Materials, ACorneaIsGlassNotSkin)
   EXPECT_EQ(lowered.material["alphaMode"], "OPAQUE");
 }
 
+// Iray Uber's Thin Walled off, its default, is the face of a closed solid that refracts: with
+// solidGlass, a volume, which absorbs only where the file measures it. Thin Walled on, or the option
+// off, a film as before. The eye's shells keep their own rule. (Glossy Roughness makes a surface Iray
+// Uber's to the reader, as every one has it.)
+TEST(Materials, ThinWalledOffRefractsAsASolid)
+{
+  const auto lowered = [](const fv::mat::Surface& s, bool solid) {
+    fv::mat::LowerOptions o;
+    o.solidGlass = solid;
+    return fv::mat::lower(s, {}, o).material.volume;
+  };
+  const auto thickness = [&](const fv::mat::Surface& s, bool solid) {
+    const auto v = lowered(s, solid);
+    return v ? v->thickness : 0.0f;
+  };
+  const auto glass = surfaceOf("Glass", kUberType, {{"Glossy Roughness", 0}, {"Refraction Weight", 1}, {"Refraction Index", 1.5}});
+  ASSERT_TRUE(glass.refraction);
+  EXPECT_FALSE(glass.refraction->thinWalled);  // the MDL's default
+  EXPECT_GT(thickness(glass, true), 0.0f);
+  EXPECT_EQ(thickness(glass, false), 0.0f);
+  const auto pane = surfaceOf("Window", kUberType, {{"Glossy Roughness", 0}, {"Refraction Weight", 1}, {"Refraction Index", 1.5}, {"Thin Walled", true}});
+  EXPECT_TRUE(pane.refraction->thinWalled);
+  EXPECT_EQ(thickness(pane, true), 0.0f);
+
+  // clear unless measured; then Transmitted Color over its distance, in centimetres
+  const auto clear = lowered(glass, true);
+  ASSERT_TRUE(clear);
+  EXPECT_EQ(clear->attenuationDistance, fv::mat::Volume{}.attenuationDistance);
+  const auto wine = surfaceOf("Wine", kUberType,
+                              {{"Glossy Roughness", 0}, {"Refraction Weight", 1}, {"Refraction Index", 1.34}, {"Transmitted Color", Json::array({0.5, 0.05, 0.1})},
+                               {"Transmitted Measurement Distance", 2}});
+  const auto red = lowered(wine, true);
+  ASSERT_TRUE(red);
+  EXPECT_NEAR(red->attenuationDistance, 0.02f, 1e-6f);
+  EXPECT_LT(red->attenuationColor[1], red->attenuationColor[0]);
+
+  // the eye's moisture shell: a film still
+  const auto moisture = fv::dson::parseSurface("Eye Moisture Left", channelsOf(kEyeMoisture));
+  ASSERT_TRUE(moisture.refraction);
+  EXPECT_FALSE(moisture.refraction->thinWalled);
+  EXPECT_EQ(thickness(moisture, true), 0.0f);
+}
+
 TEST(Materials, AnOpacityEditOnASurfaceThatLoadedOpaqueIsSeen)
 {
   const auto s = fv::dson::parseSurface("Face", channelsOf(kSkin));
