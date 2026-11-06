@@ -66,7 +66,7 @@ the enum for the authoritative list and formats):
 | `eDlssNormalRoughness` | World-space normal + roughness, packed | `pInNormals` (and `pInRoughness` in packed mode) |
 | `eDlssMotion` | Pixel-space motion vectors (see below) | `pInMotionVectors` |
 | `eDlssDepth` | NDC depth (`z/w`, `1.0` on miss) | `pInDepth` |
-| `eDlssSpecularHitDist` | Specular hit distance, captured at the first reflection bounce | `pInSpecularHitDistance` (optional) |
+| `eDlssSpecularHitDist` | Specular hit distance, captured at the first reflection bounce; on an eye's tear film, half the film's radius behind it on every sample (`shaders/mirror_image.h.slang`), so the catchlight goes with the eye | `pInSpecularHitDistance` (optional) |
 
 - **DLSS-SR** uses only color + depth + motion — the material guides above are RR-only.
 - **OptiX and OIDN** share one shader path for their guides: `eDenoiserAlbedo` and

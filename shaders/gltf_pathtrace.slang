@@ -739,6 +739,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       float  guideRoughness = sqrt(pbrMat.roughness.x);
       // also on the accumulation's frames, so OptiX and OIDN see the iris behind a cornea too (only DLSS
       // reads the replaced depth and motion)
+      float replacedDepth = 0.0F;  // how far behind the hit DLSS's depth is put (primary surface replacement)
       if(USE_DLSS_TRANSP == 1 && dlssIsClearGlass(pbrMat))
       {
         // #DLSS primary surface replacement: describe what is seen through the glass. The albedo
@@ -755,8 +756,20 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           pt.guide.psrValid  = true;
           pt.guide.psrPos    = hit.pos + ray.Direction * psr.pathLength;
           pt.firstHitPosPrev = pt.guide.psrPos + psr.posDelta;
+          replacedDepth      = psr.pathLength;
         }
       }
+#if GLTF_USE_TRANSMISSION
+      // #DLSS an eye's tear film: its reflection lies where the curved film shows it, half its radius
+      // behind it (mirror_image.h.slang), whichever lobe this sample took, so the catchlight goes
+      // with the eye while the camera moves. The bounce below then captures nothing.
+      if(materialIndex >= 0 && hit.frontFace && materials[materialIndex].chamberIor > 0.0F)
+      {
+        const float radius = dlssHitMirrorRadius(renderNode, renderPrim, payload.primitiveID);
+        if(radius > 0.0F)
+          pt.guide.specularHitDist = float16_t(mirrorImageDistance(radius, replacedDepth));
+      }
+#endif
       pt.guide.specularAlbedo = float16_t3(specularAlbedo);
 #if MAT_EXT_DLSS_NR
       if(materialIndex >= 0)
@@ -1267,7 +1280,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #if USE_DLSS_SHADER
       // #DLSS - Enable specular hit distance capture on first bounce if this is a glossy reflection
       // Matches reference implementation: only capture for BSDF_EVENT_GLOSSY_REFLECTION
-      if(firstRay && (sampleData.event_type == BSDF_EVENT_GLOSSY_REFLECTION || sampleData.event_type == BSDF_EVENT_IMPULSE_REFLECTION))
+      // A distance already given at the hit (an eye's tear film) stands.
+      if(firstRay && pt.guide.specularHitDist == float16_t(0)
+         && (sampleData.event_type == BSDF_EVENT_GLOSSY_REFLECTION || sampleData.event_type == BSDF_EVENT_IMPULSE_REFLECTION))
       {
         pt.guide.captureSpecularHit = true;
       }

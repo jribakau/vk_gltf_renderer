@@ -16,6 +16,7 @@
 #include "light_ris.h.slang"
 #include "walk_guide.h.slang"
 #include "light_tree.h.slang"
+#include "mirror_image.h.slang"
 
 //-----------------------------------------------------------------------
 // Types and tuning constants
@@ -1825,6 +1826,23 @@ float3 dlssPrevHitPos(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim,
   const float4x4 objectToWorld =
       pushConst.prevRenderNodeObjectToWorld != nullptr ? pushConst.prevRenderNodeObjectToWorld[rnodeID] : renderNode.objectToWorld;
   return mul(float4(objPos, 1.0), objectToWorld).xyz;
+}
+
+// The radius of curvature of the mesh at triangle `triangleID` of `renderPrim` in `renderNode`, from
+// its vertex normals (meshMirrorRadius); 0 for a flat or concave one, or a mesh without normals
+float dlssHitMirrorRadius(GltfRenderNode renderNode, GltfRenderPrimitive renderPrim, int triangleID)
+{
+  if(!hasVertexNormal(renderPrim))
+    return 0.0F;
+  const uint3  idx = getTriangleIndices(renderPrim, triangleID);
+  const float3 p0  = getVertexPosition(renderPrim, idx.x);
+  const float3 e1  = mul(float4(getVertexPosition(renderPrim, idx.y) - p0, 0.0), renderNode.objectToWorld).xyz;
+  const float3 e2  = mul(float4(getVertexPosition(renderPrim, idx.z) - p0, 0.0), renderNode.objectToWorld).xyz;
+  // normals go through the inverse transpose, as getHitState turns them
+  const float3 n0 = normalize(mul(renderNode.worldToObject, float4(getVertexNormal(renderPrim, idx.x), 0.0)).xyz);
+  const float3 n1 = normalize(mul(renderNode.worldToObject, float4(getVertexNormal(renderPrim, idx.y), 0.0)).xyz);
+  const float3 n2 = normalize(mul(renderNode.worldToObject, float4(getVertexNormal(renderPrim, idx.z), 0.0)).xyz);
+  return meshMirrorRadius(e1, e2, n1 - n0, n2 - n0);
 }
 #endif  // USE_GUIDE_SHADER && USE_DLSS_SHADER
 
