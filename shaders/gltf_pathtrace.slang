@@ -119,11 +119,12 @@ static bool doDebug = false;
 [[vk::binding(CLOUD_PREVIEW_BINDING, 4)]] Sampler2D<float4>     g_cloudsPreview;
 [[vk::binding(CLOUD_VIEW_BINDING, 4)]]    Sampler2D<float4>     g_cloudView;
 
-// What a camera ray or a mirror bounce sees of the physical sky: its radiance, evaluated per ray
-// through the same function the bake uses, plus the solar disk. Per ray rather than read from the
-// baked image so what the camera sees does not depend on the bake resolution -- the horizon, where
-// sky meets ground in a hard edge, is what a lat-long would otherwise smear.
-float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
+// The physical sky along a ray, without the solar disk: its radiance, evaluated per ray through the
+// same function the bake uses, the clouds over it. Per ray rather than read from the baked image so
+// what the camera, a mirror or still water sees does not depend on the bake resolution -- the
+// horizon, where sky meets ground in a hard edge, is what a lat-long would otherwise smear, and the
+// clouds' edges what its 0.35 degrees would.
+float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo)
 {
   const float3 dir    = quatRotateInverse(frameInfo->envRotation, worldDir);
   const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
@@ -162,8 +163,20 @@ float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
     sky -= cloudShadeOfClearSky(g_atmosphere, g_transmittance, g_irradiance, disk.observerRadius, dir, sunDir, disk.cloudTop,
                                 disk.sunlitGround, disk.cloudSkyShare, air);
   }
-  return sky + evalSunDiskBackground(dir, frameInfo);
+  return sky;
 }
+
+// What a camera ray or a mirror bounce sees of the physical sky: the sky per ray, plus the solar disk.
+float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
+{
+  return evalPhysicalSky(worldDir, frameInfo) + evalSunDiskBackground(quatRotateInverse(frameInfo->envRotation, worldDir), frameInfo);
+}
+
+// A lobe whose pdf at the sampled direction is above this, per steradian, is narrower than about a
+// degree: three of the lighting field's texels (kEnvBakeSize, 1024 x 512, 0.35 degrees). Still water,
+// the facing slopes of near waves, polished stone and car paint reflect a sky that sharp; GGX at alpha
+// 0.009 peaks here. Their rays see the physical sky per ray, as a mirror's do (envColor below).
+static const float SKY_NARROW_LOBE_PDF = 1000.0F;
 
 // Specialization constants
 [[vk::constant_id(0)]]  int USE_SER = 1;
@@ -428,6 +441,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // The vertex this ray left drew its environment sample from the compensated table: it
         // traced this ray (sampleLights' `compensatedEnv`)
         envPdf = environmentCompensatedPdfAt(ray.Direction, frameInfo);
+        // A lobe narrower than the field resolves (SKY_NARROW_LOBE_PDF) reflects the physical sky per
+        // ray, as sharp as the camera sees it: still water read the field's blurred clouds under the
+        // sky's sharp ones. The disk is not in it: it comes below, weighed against its light sample,
+        // and so does this against the environment's, a sample of the field that agrees with it but
+        // in sharpness.
+        if(frameInfo->sunDisk != nullptr && pt.lastSamplePdf > SKY_NARROW_LOBE_PDF)
+          envColor = evalPhysicalSky(ray.Direction, frameInfo) * frameInfo->envIntensity;
       }
 
       // We may hit the environment twice: once via sampleLights() and once when hitting the sky while probing

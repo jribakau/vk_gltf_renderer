@@ -535,6 +535,20 @@ and wrong in proportion to how far away it was. A half-degree sun disk landed ab
 500 units out, while the smooth sky gradient hid the same error completely. A sharp feature is the
 test worth running: put the sun in frame and check where the disk lands.
 
+## What a reflection sees
+
+A camera ray and a mirror's (a delta lobe) see the physical sky per ray (`evalPhysicalSkyBackground`);
+any other bounce reads the lighting field, the baked image at 1024 x 512, 0.35 degrees a texel, its
+clouds two mips down. For a lobe narrower than about three of those texels that is a visible blur:
+still water showed the field's soft clouds under the sky's sharp ones. So a ray whose sampled pdf is
+above `SKY_NARROW_LOBE_PDF` (1000 per steradian, GGX alpha 0.009 at its peak) sees the sky per ray too
+(`evalPhysicalSky`, without the disk, which keeps its own MIS against the sun's light sample), and its
+MIS weight against the environment's light sample stays: that sample reads the field, which agrees with
+the per-ray sky but in sharpness. Wider lobes blur more than the field does, and keep it. Rippled water
+is one: with Ripples 0.7 its far surface reflects some 6 degrees of sky (alpha about 0.1), which at a
+sunset with a dark band of cloud on the horizon and bright gaps above makes the far water brighter
+than the sky just above the horizon, as wind-roughened water is.
+
 ## Verifying a change
 
 `utils/sky_luminance_factors.py` recomputes the sky and sun spectral constants in
