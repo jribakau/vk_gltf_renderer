@@ -838,3 +838,217 @@ TEST(ClothCoarse, theSameCopyOfAColliderPosedAnewKeepsItsFacesAndTakesThePose)
   // nor for a collider without those vertices
   EXPECT_FALSE(physics::cloth::sameCopy(sphere(3.f, 8), *c));
 }
+
+namespace {
+
+// A cloth from points and the quads of a grid over them, `rows` by `cols` vertices, free but for the
+// first row, which is held to its skin.
+Surface clothOn(std::vector<float> pos, int rows, int cols)
+{
+  Surface s;
+  s.kind = Surface::Kind::eDynamic;
+  const auto at = [&](int r, int c) { return uint32_t(r * cols + c); };
+  for(int r = 0; r + 1 < rows; r++)
+    for(int c = 0; c + 1 < cols; c++)
+    {
+      s.tris.insert(s.tris.end(), {at(r, c), at(r + 1, c), at(r, c + 1), at(r, c + 1), at(r + 1, c), at(r + 1, c + 1)});
+      s.polyVerts.insert(s.polyVerts.end(), {int32_t(at(r, c)), int32_t(at(r + 1, c)), int32_t(at(r + 1, c + 1)), int32_t(at(r, c + 1))});
+      s.polyStart.push_back(int32_t(s.polyVerts.size()));
+    }
+  const size_t n = pos.size() / 3;
+  s.rest         = pos;
+  s.posed        = std::move(pos);
+  s.strength.assign(n, 1.f);
+  for(int c = 0; c < cols; c++)
+    s.strength[at(0, c)] = 0.f;
+  s.stretch.assign(n, 0.8f);
+  s.shear.assign(n, 0.2f);
+  s.bend.assign(n, 0.5f);
+  s.buckling.assign(n, 0.05f);
+  s.bucklingRatio.assign(n, 0.7f);
+  s.density.assign(n, 180.f);
+  s.contraction.assign(n, 1.f);
+  s.damping.assign(n, 0.1f);
+  s.friction.assign(n, 0.4f);
+  s.offset.assign(n, 0.2f);
+  s.layer.assign(n, 0);
+  s.selfCollide.assign(n, 0);
+  s.collide.assign(n, 1);
+  s.visible.assign(n, 1);
+  for(size_t v = 0; v < n; v++)
+    s.friction[v] = 0.3f + 1e-5f * float(v);
+  return s;
+}
+
+// A sheet `size` cm square in quads of size / n, in the xz plane, with a gentle swell so its vertices
+// lie off a copy's flat faces.
+Surface sheet(int n, float size)
+{
+  std::vector<float> pos;
+  for(int r = 0; r <= n; r++)
+    for(int c = 0; c <= n; c++)
+    {
+      const float x = size * (float(c) / float(n) - 0.5f), z = size * (float(r) / float(n) - 0.5f);
+      pos.insert(pos.end(), {x, 0.4f * std::sin(0.5f * x) * std::cos(0.4f * z), z});
+    }
+  return clothOn(std::move(pos), n + 1, n + 1);
+}
+
+float sideOf(const std::vector<float>& p, uint32_t a, uint32_t b)
+{
+  return std::hypot(p[a * 3] - p[b * 3], p[a * 3 + 1] - p[b * 3 + 1], p[a * 3 + 2] - p[b * 3 + 2]);
+}
+
+}  // namespace
+
+TEST(ClothLight, aFineClothBecomesALightCopyOfEvenFacesThatKeepsItsSettings)
+{
+  // 15 cm square in quads of 0.25 cm (7,200 faces), copied with faces 2 cm wide
+  const Surface fine = sheet(60, 15.f);
+  const auto    c    = physics::cloth::coarseCloth(fine, 2.f);
+  ASSERT_TRUE(c);
+  const Surface& s = c->surface;
+  // about as many faces as sides of 2 cm take to cover it: 225 / (sqrt(3)/4 * 4) = 130
+  EXPECT_GT(s.tris.size() / 3, 60u);
+  EXPECT_LT(s.tris.size() / 3, 400u);
+  EXPECT_EQ(s.kind, Surface::Kind::eDynamic);
+  // even faces: their sides are mostly about as long as asked
+  std::vector<float> sides;
+  for(size_t t = 0; t + 2 < s.tris.size(); t += 3)
+    for(size_t k = 0; k < 3; k++)
+      sides.push_back(sideOf(s.rest, s.tris[t + k], s.tris[t + (k + 1) % 3]));
+  std::sort(sides.begin(), sides.end());
+  EXPECT_GT(sides[sides.size() / 2], 1.f);
+  EXPECT_LT(sides[sides.size() / 2], 3.f);
+  EXPECT_LT(sides[size_t(0.95 * double(sides.size() - 1))], 6.f);
+  // its faces are its polygons, and its vertices the cloth's own with what each carries
+  ASSERT_EQ(s.polyStart.size(), s.tris.size() / 3 + 1);
+  EXPECT_EQ(s.polyVerts.size(), s.tris.size());
+  ASSERT_EQ(s.vertexCount(), c->keep.size());
+  EXPECT_TRUE(std::is_sorted(c->keep.begin(), c->keep.end()));
+  size_t held = 0;
+  for(size_t i = 0; i < c->keep.size(); i++)
+  {
+    EXPECT_EQ(s.strength[i], fine.strength[c->keep[i]]);
+    EXPECT_EQ(s.friction[i], fine.friction[c->keep[i]]);
+    held += s.strength[i] == 0.f ? 1 : 0;
+  }
+  // the held row is in the copy, and every vertex of it is held as it rides
+  EXPECT_GE(held, 2u);
+  ASSERT_EQ(c->riding.held.size(), fine.vertexCount());
+  for(size_t v = 0; v < fine.vertexCount(); v++)
+    EXPECT_EQ(c->riding.held[v], fine.strength[v] == 0.f ? 1 : 0) << v;
+}
+
+TEST(ClothLight, theClothRidesOnItsCopyExactlyAtRestAndMovesRigidlyWithIt)
+{
+  const Surface fine = sheet(60, 15.f);
+  const auto    c    = physics::cloth::coarseCloth(fine, 2.f);
+  ASSERT_TRUE(c);
+  // at rest: every vertex where it was
+  const auto still = physics::cloth::ride(*c, c->surface.rest);
+  ASSERT_EQ(still.size(), fine.rest.size());
+  float worst = 0, off = 0;
+  for(size_t i = 0; i < still.size(); i++)
+    worst = std::max(worst, std::fabs(still[i] - fine.rest[i]));
+  EXPECT_LT(worst, 1e-4f);
+  for(float o : c->riding.offset)
+    off = std::max(off, std::fabs(o));
+  EXPECT_GT(off, 1e-3f) << "the swell lies off the copy's faces, so the offsets are tested";
+  // the copy turned 30 degrees about y and moved: the cloth turns and moves with it
+  const float ca = std::cos(0.5236f), sa = std::sin(0.5236f);
+  const auto  move = [&](const std::vector<float>& p) {
+    std::vector<float> o(p.size());
+    for(size_t v = 0; v < p.size() / 3; v++)
+    {
+      o[v * 3]     = ca * p[v * 3] + sa * p[v * 3 + 2] + 3.f;
+      o[v * 3 + 1] = p[v * 3 + 1] - 2.f;
+      o[v * 3 + 2] = -sa * p[v * 3] + ca * p[v * 3 + 2] + 1.f;
+    }
+    return o;
+  };
+  const auto moved = physics::cloth::ride(*c, move(c->surface.rest));
+  const auto want  = move(fine.rest);
+  worst            = 0;
+  for(size_t i = 0; i < moved.size(); i++)
+    worst = std::max(worst, std::fabs(moved[i] - want[i]));
+  EXPECT_LT(worst, 1e-3f);
+}
+
+TEST(ClothLight, eachLayerOfAFoldRidesOnItsOwn)
+{
+  // A strip 4 cm wide folded back on itself, as a pleat: 10 cm along x at y = 0, round a bend of
+  // 0.2 cm, and back at y = 0.4, in quads of 0.2 cm. The copy's upper layer lifted 5 cm lifts the
+  // cloth's upper layer, and its lower one stays
+  const float        r = 0.2f, flat = 10.f, bend = 3.14159265f * r, length = 2 * flat + bend;
+  const int          along = 108, across = 21;
+  std::vector<float> pos;
+  for(int i = 0; i < along; i++)
+    for(int j = 0; j < across; j++)
+    {
+      const float u = length * float(i) / float(along - 1), z = 4.f * float(j) / float(across - 1);
+      float       x = 0, y = 0;
+      if(u <= flat)
+        x = u;
+      else if(u <= flat + bend)
+      {
+        const float a = (u - flat) / r;
+        x = flat + r * std::sin(a);
+        y = r - r * std::cos(a);
+      }
+      else
+      {
+        x = flat - (u - flat - bend);
+        y = 2 * r;
+      }
+      pos.insert(pos.end(), {x, y, z});
+    }
+  Surface fine = clothOn(std::move(pos), along, across);
+  // nothing held here: the copy's lift is all there is
+  std::fill(fine.strength.begin(), fine.strength.end(), 1.f);
+  const auto c = physics::cloth::coarseCloth(fine, 1.f);
+  ASSERT_TRUE(c);
+  std::vector<float> lifted = c->surface.rest;
+  for(size_t v = 0; v < lifted.size() / 3; v++)
+    if(lifted[v * 3 + 1] > r)
+      lifted[v * 3 + 1] += 5.f;
+  const auto rode = physics::cloth::ride(*c, lifted);
+  for(size_t v = 0; v < fine.vertexCount(); v++)
+  {
+    if(fine.rest[v * 3] > flat - 2)
+      continue;  // by the bend, the faces join the layers
+    const float rise = rode[v * 3 + 1] - fine.rest[v * 3 + 1];
+    if(fine.rest[v * 3 + 1] > r)
+      EXPECT_NEAR(rise, 5.f, 0.05f) << "upper layer, vertex " << v;
+    else
+      EXPECT_NEAR(rise, 0.f, 0.05f) << "lower layer, vertex " << v;
+  }
+}
+
+TEST(ClothLight, aClothAsCoarseAsAskedOrAColliderIsNotCopied)
+{
+  EXPECT_FALSE(physics::cloth::coarseCloth(sheet(6, 15.f), 2.f));
+  Surface collider = sheet(60, 15.f);
+  collider.kind    = Surface::Kind::eCollider;
+  EXPECT_FALSE(physics::cloth::coarseCloth(collider, 2.f));
+  EXPECT_FALSE(physics::cloth::coarseCloth(sheet(60, 15.f), 0.f));
+}
+
+TEST(ClothLight, theSameCopyOfAClothPosedAnewRidesAsItDid)
+{
+  const Surface fine = sheet(60, 15.f);
+  const auto    c    = physics::cloth::coarseCloth(fine, 2.f);
+  ASSERT_TRUE(c);
+  Surface moved = fine;
+  for(size_t v = 0; v < moved.vertexCount(); v++)
+    moved.posed[v * 3 + 1] += 1.f;
+  const auto same = physics::cloth::sameCloth(moved, *c);
+  ASSERT_TRUE(same);
+  EXPECT_EQ(same->keep, c->keep);
+  EXPECT_EQ(same->surface.tris, c->surface.tris);
+  EXPECT_EQ(same->surface.polyVerts, c->surface.polyVerts);
+  EXPECT_EQ(same->riding.face, c->riding.face);
+  for(size_t i = 0; i < same->keep.size(); i++)
+    EXPECT_EQ(same->surface.posed[i * 3 + 1], fine.posed[size_t(same->keep[i]) * 3 + 1] + 1.f);
+  EXPECT_FALSE(physics::cloth::sameCloth(sheet(30, 15.f), *c));
+}

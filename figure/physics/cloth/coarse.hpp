@@ -39,6 +39,43 @@ std::optional<Coarse> coarsen(const Surface& collider, float edge, float maxErro
 // when it hasn't the vertices.
 std::optional<Coarse> sameCopy(const Surface& collider, const Coarse& like);
 
+// A light copy of a cloth (asked for 2026-11-06): the cloth simulates as a coarse copy of itself, its
+// faces about as wide as asked, and its own vertices ride on it, each on a face of the copy at fixed
+// weights and an offset in the copy's frame there, so the folds, seams and pleats it was made with move
+// with it. Folds narrower than the copy's faces can't form. The copy is made of the cloth's own
+// vertices, so each keeps what it carries (its strength, its settings, its skin) as it is.
+struct Riding
+{
+  // per vertex of the cloth: the face of the copy it rides on (into the copy's tris, three to a face)
+  std::vector<uint32_t> face;
+  // 3 per vertex: the face's corners' weights at the point it rides at
+  std::vector<float> weights;
+  // 3 per vertex: from that point along the face's first side, across it, and along the copy's normal
+  std::vector<float> offset;
+  // per vertex: 1 where the cloth is held to its skin (no strength), which it keeps
+  std::vector<uint8_t> held;
+};
+
+struct CoarseCloth
+{
+  // simulated in the cloth's place; its faces are its polygons
+  Surface surface;
+  // the cloth's vertices it is made of, ascending
+  std::vector<uint32_t> keep;
+  Riding                riding;
+};
+
+// A light copy of a simulated cloth, its faces' sides about `edge` long, and how the cloth rides on it.
+// None when it isn't simulated, or isn't much finer than that already.
+std::optional<CoarseCloth> coarseCloth(const Surface& cloth, float edge);
+
+// The copy `like` is, of the cloth as it is now (its pose, its skin), as sameCopy.
+std::optional<CoarseCloth> sameCloth(const Surface& cloth, const CoarseCloth& like);
+
+// The cloth's vertices where its copy's are `at` (xyz per vertex of the copy): xyz per vertex of the
+// cloth, in the same space.
+std::vector<float> ride(const CoarseCloth& c, const std::vector<float>& at);
+
 // What `keep` takes of an array with `per` values a vertex (xyz: 3).
 template <typename T>
 std::vector<T> keepOf(const std::vector<T>& values, const std::vector<uint32_t>& keep, size_t per)

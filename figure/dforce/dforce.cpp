@@ -58,8 +58,8 @@ bool sameGravity(const std::array<float, 3>& a, const std::array<float, 3>& b)
   return true;
 }
 
-// What a coarse copy of a collider is made from: its rest cage, its faces and which collide, and the
-// cloth's edge and error it is made for (FNV-1a over their bytes).
+// What a coarse copy is made from: its rest cage, its faces and which collide, its strength and what is
+// in the simulation, and the edge and error it is made for (FNV-1a over their bytes).
 uint64_t shapeKey(const SettleMesh& s, float edge, float maxError)
 {
   uint64_t   h   = 1469598103934665603ull;
@@ -74,6 +74,8 @@ uint64_t shapeKey(const SettleMesh& s, float edge, float maxError)
   mix(s.rest.data(), s.rest.size() * sizeof(float));
   mix(s.tris.data(), s.tris.size() * sizeof(uint32_t));
   mix(s.collide.data(), s.collide.size());
+  mix(s.strength.data(), s.strength.size() * sizeof(float));
+  mix(s.visible.data(), s.visible.size());
   mix(&edge, sizeof edge);
   mix(&maxError, sizeof maxError);
   return h;
@@ -114,6 +116,8 @@ struct Dforce::Job
     // the pose the positions are read back through: the job's, or the live step's
     SkinPose pose;
     Mat4     back;  // job space -> mesh-local
+    // its light copy, simulated in its place in `bodies` (null: the cloth itself)
+    std::shared_ptr<const physics::cloth::CoarseCloth> light;
   };
   std::vector<Drape> drapes;
   // strand hair that falls, which collides with `bodies` and is no part of their settle
@@ -534,9 +538,47 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
   if(job->drapes.empty() && job->hairs.empty())
     return nullptr;
 
+  job->slotKeep.resize(job->bodies.size());
+  // Light cloth: a cloth much finer than the faces asked for simulates as a coarse copy of itself, and
+  // its own vertices ride on it. Before the colliders, which are then copied as fine as the copy
+  std::map<uint64_t, std::shared_ptr<const physics::cloth::CoarseCloth>> lights;
+  if(lightCloth && lightClothEdge > 0)
+  {
+    timing::Scope t("dforce: light cloth", 1);
+    for(Job::Drape& d : job->drapes)
+    {
+      SettleMesh&                                        s   = job->bodies[d.slot];
+      const uint64_t                                     key = shapeKey(s, lightClothEdge, 0);
+      std::shared_ptr<const physics::cloth::CoarseCloth> c;
+      if(const auto made = m_light.find(key); made != m_light.end())
+      {
+        // made for this shape before: the same copy, of the cloth as it is posed now
+        if(made->second)
+          if(auto same = physics::cloth::sameCloth(s, *made->second))
+            c = std::make_shared<const physics::cloth::CoarseCloth>(std::move(*same));
+        lights[key] = made->second;
+      }
+      else
+      {
+        const size_t had = s.vertexCount();
+        if(auto fresh = physics::cloth::coarseCloth(s, lightClothEdge))
+          c = std::make_shared<const physics::cloth::CoarseCloth>(std::move(*fresh));
+        lights[key] = c;
+        if(c && timing::enabled())
+          timing::line("dforce: " + m_scene.meshes[size_t(d.mesh)].name + " simulates as a light copy of " + std::to_string(c->keep.size())
+                       + " of its " + std::to_string(had) + " vertices, faces " + std::to_string(lightClothEdge) + " cm wide");
+      }
+      if(!c)
+        continue;
+      s                     = c->surface;
+      job->slotKeep[d.slot] = c->keep;
+      d.light               = std::move(c);
+    }
+  }
+  m_light = std::move(lights);
+
   // What's worn much finer than the cloth (a necklace's 150k triangles of chain under a neckline, lace)
   // is met as a coarse copy, as fine as the cloth; not the body, the cage already, where a gap shows most
-  job->slotKeep.resize(job->bodies.size());
   std::map<uint64_t, std::optional<physics::cloth::Coarse>> copies;
   if(coarseColliders && !job->drapes.empty())
   {
@@ -599,7 +641,10 @@ std::optional<Dforce::Prepared> Dforce::prepared() const
   p.bodies   = job->bodies;
   p.slotMesh = job->slotMesh;
   for(const Job::Drape& d : job->drapes)
+  {
     p.drapes.emplace_back(d.mesh, int(d.slot));
+    p.light.push_back(d.light);
+  }
   for(const Job::Hair& h : job->hairs)
     p.hairs.emplace_back(h.mesh, h.strands);
   return p;
@@ -818,22 +863,23 @@ bool Dforce::pumpLive()
       if(mesh < 0 || !m_liveReshaped.count(mesh))
         continue;
       const auto         drape = std::find_if(m_liveJob->drapes.begin(), m_liveJob->drapes.end(), [&](const Job::Drape& d) { return d.slot == slot; });
-      std::vector<float> rest  = liveRest(mesh, drape != m_liveJob->drapes.end());
-      // a coarse copy skins only what it kept
-      if(const auto& keep = m_liveJob->slotKeep[slot]; !keep.empty() && rest.size() > size_t(keep.back()) * 3 + 2)
-        rest = physics::cloth::keepOf(rest, keep, 3);
+      std::vector<float> whole = liveRest(mesh, drape != m_liveJob->drapes.end());
+      // a coarse copy skins only what it kept; a drape's own deltas are of all of it
+      std::vector<float> rest = whole;
+      if(const auto& keep = m_liveJob->slotKeep[slot]; !keep.empty() && whole.size() > size_t(keep.back()) * 3 + 2)
+        rest = physics::cloth::keepOf(whole, keep, 3);
       if(rest.size() != m_liveJob->bodies[slot].restLocal.size())
         continue;
       if(drape != m_liveJob->drapes.end())
       {
         if(m_liveStep.valid())
         {
-          std::vector<float> shift(rest.size());
-          for(size_t i = 0; i < rest.size() && i < drape->rest.size(); i++)
-            shift[i] = drape->rest[i] - rest[i];
+          std::vector<float> shift(whole.size());
+          for(size_t i = 0; i < whole.size() && i < drape->rest.size(); i++)
+            shift[i] = drape->rest[i] - whole[i];
           shifts.emplace_back(size_t(drape - m_liveJob->drapes.begin()), std::move(shift));
         }
-        drape->rest = rest;
+        drape->rest = std::move(whole);
       }
       m_liveJob->bodies[slot].restLocal = rest;
       m_liveRestMoved = m_live->setRest(slot, std::move(rest)) || m_liveRestMoved;
@@ -1045,8 +1091,19 @@ std::vector<std::vector<float>> Dforce::deltasOf(const Job& job, const std::vect
   for(size_t k = 0; k < job.drapes.size(); k++)
   {
     const Job::Drape& d = job.drapes[k];
-    if(d.slot < positions.size())
+    if(d.slot >= positions.size())
+      continue;
+    if(!d.light)
+    {
       out[k] = drapeDelta(d.rest, transformPoints(d.back, positions[d.slot]), d.skin, d.pose);
+      continue;
+    }
+    // a light copy's cloth rides on it, but where it is held to its skin it stays, as the cloth would
+    out[k] = drapeDelta(d.rest, transformPoints(d.back, physics::cloth::ride(*d.light, positions[d.slot])), d.skin, d.pose);
+    const auto& held = d.light->riding.held;
+    for(size_t v = 0; v < held.size() && v * 3 + 2 < out[k].size(); v++)
+      if(held[v])
+        out[k][v * 3] = out[k][v * 3 + 1] = out[k][v * 3 + 2] = 0.f;
   }
   return out;
 }

@@ -3121,3 +3121,134 @@ TEST(Dforce, aWornItemMuchFinerThanTheClothIsMetAsACoarseCopyThatLiveReshapesInP
   EXPECT_EQ(busy, 0) << "the simulation was built again";
   EXPECT_NEAR(lowest() - before, 1.f, 0.3f) << "the veil rose with the belt's copy";
 }
+
+TEST(Dforce, aLightClothSettlesAndGoesLiveWithItsOwnVerticesRidingOnIt)
+{
+  // A veil 6 cm square in quads of 0.1 cm (7,200 faces) over a body, both skinned to one bone, simulated
+  // as a light copy with faces a centimetre wide: it settles onto the body with every one of its own
+  // vertices, and in live mode the body's corrective (1 cm up) lifts it without a rebuild
+  fv::SceneGraph scene;
+  const int      rootNode = scene.add(fv::Node{});
+  fv::Node       boneNode;
+  boneNode.kind  = fv::NodeKind::eBone;
+  const int bone = scene.add(boneNode, rootNode);
+  Grid      veil = grid(60, 3);
+  for(size_t v = 0; v < veil.pos.size() / 3; v++)
+  {
+    veil.pos[v * 3] *= 0.1f;
+    veil.pos[v * 3 + 2] *= 0.1f;
+  }
+  const auto skinned = [&](fv::Mesh m) {
+    const size_t n = m.geo->cagePositions.size() / 3;
+    m.bones        = {bone};
+    m.boneInverses = {fv::Mat4{}};
+    for(size_t v = 0; v <= n; v++)
+      m.cageSkin.start.push_back(int32_t(v));
+    m.cageSkin.bone.assign(n, 0);
+    m.cageSkin.weight.assign(n, 1.f);
+    return m;
+  };
+  scene.meshes.push_back(skinned(sceneMesh(grid(8, 0), false)));
+  scene.meshes.push_back(skinned(sceneMesh(veil, true)));
+  scene.materials.push_back({});
+  for(int i = 0; i < 2; i++)
+  {
+    fv::Node n;
+    n.kind = fv::NodeKind::eMesh;
+    n.mesh = i;
+    scene.add(n, rootNode);
+  }
+  morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(scene, morphs, 0, rootNode);
+  d.lightCloth     = true;
+  d.lightClothEdge = 1.f;
+  {
+    // the veil's place in the job is its copy, and all of its own vertices ride on it
+    const auto p = d.prepared();
+    ASSERT_TRUE(p);
+    ASSERT_EQ(p->drapes.size(), 1u);
+    ASSERT_EQ(p->light.size(), 1u);
+    ASSERT_TRUE(p->light[0]);
+    EXPECT_LT(p->bodies[size_t(p->drapes[0].second)].vertexCount(), size_t(61 * 61 / 10));
+    EXPECT_EQ(p->light[0]->riding.face.size(), size_t(61 * 61));
+  }
+  const auto lowestHighest = [&] {
+    morphs.flush();
+    const auto& pos = scene.meshes[1].geo->position;
+    float       lo = 1e9f, hi = -1e9f;
+    for(size_t v = 0; v < pos.size() / 3; v++)
+    {
+      lo = std::min(lo, pos[v * 3 + 1]);
+      hi = std::max(hi, pos[v * 3 + 1]);
+    }
+    return std::pair{lo, hi};
+  };
+  // settled: from 3 cm down to just above the body, all of it
+  d.resimulate();
+  bool wrote = false;
+  for(int i = 0; i < 6000 && !wrote; i++)
+  {
+    wrote = d.pump();
+    if(!wrote)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(wrote);
+  {
+    const auto [lo, hi] = lowestHighest();
+    EXPECT_GT(lo, 0.f);
+    EXPECT_LT(hi, 1.f);
+  }
+
+  // live, under a clip's frames
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(dforce::Mode::eLive);
+  int        frame     = 0;
+  const auto clipFrame = [&] {
+    scene.nodes[size_t(bone)].position.x = 0.02 * std::sin(0.1 * frame++);
+    now += std::chrono::microseconds(16667);
+    morphs.flush();
+    d.changed({0, 1}, true);
+    const bool w = d.pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return w;
+  };
+  wrote = false;
+  for(int i = 0; i < 6000 && !wrote; i++)
+    wrote = clipFrame();
+  ASSERT_TRUE(wrote) << "live never began";
+  for(int i = 0; i < 200; i++)
+    clipFrame();
+  const float before = lowestHighest().first;
+  EXPECT_GT(before, 0.f);
+  EXPECT_LT(before, 1.f);
+  {
+    mesh::CageDeltas up;
+    const auto&      cage = scene.meshes[0].geo->cagePositions;
+    for(size_t v = 0; v < cage.size() / 3; v++)
+    {
+      up.verts.push_back(int32_t(v));
+      up.deltas.insert(up.deltas.end(), {0.f, 1.f, 0.f});
+    }
+    morph::ChannelOptions opts;
+    opts.hidden = true;
+    opts.value  = 0.0;
+    morphs.addTarget("corrective", 0, std::make_shared<const mesh::RenderTarget>(mesh::target(*scene.meshes[0].geo, up)), opts);
+  }
+  int busy = 0;
+  for(int i = 1; i <= 100; i++)
+  {
+    morphs.set("corrective", i / 100.0);
+    clipFrame();
+    busy += d.busy() ? 1 : 0;
+  }
+  for(int i = 0; i < 300; i++)
+  {
+    clipFrame();
+    busy += d.busy() ? 1 : 0;
+  }
+  EXPECT_EQ(busy, 0) << "the simulation was built again";
+  const auto [lo, hi] = lowestHighest();
+  EXPECT_NEAR(lo - before, 1.f, 0.3f) << "the veil rose with the body";
+  EXPECT_LT(hi - lo, 1.f) << "all of it, not only its copy's vertices";
+}

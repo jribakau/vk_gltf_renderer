@@ -90,6 +90,10 @@ public:
   // A collider much finer than the cloth (a necklace's links, lace) is met as a coarse copy of it, as
   // fine as the cloth (physics/cloth/coarse.hpp); off, as it is, for an A/B.
   bool coarseColliders = true;
+  // Light cloth: a cloth much finer than this simulates as a coarse copy of itself with faces this wide
+  // (cm), its own vertices riding on it (physics/cloth/coarse.hpp's coarseCloth). Off: as it is.
+  bool  lightCloth     = false;
+  float lightClothEdge = 2.f;
 
   // Whether anything worn would be draped.
   bool active() const;
@@ -141,6 +145,8 @@ public:
     std::vector<std::pair<int, int>> drapes;
     // strand hair that falls: its mesh and its strands, against `bodies`
     std::vector<std::pair<int, StrandSet>> hairs;
+    // per drape: its light copy, which is in `bodies` in its place (null: the cloth itself)
+    std::vector<std::shared_ptr<const physics::cloth::CoarseCloth>> light;
   };
   std::optional<Prepared> prepared() const;
 
@@ -217,6 +223,8 @@ private:
   // faces, and the cloth's edge): a rebuild for the same shapes doesn't simplify them again (188 ms on
   // a necklace, underwear and boots). None: one that isn't copied
   mutable std::map<uint64_t, std::optional<physics::cloth::Coarse>> m_coarse;
+  // and the light copies of cloth, the same way (null: one that isn't copied)
+  mutable std::map<uint64_t, std::shared_ptr<const physics::cloth::CoarseCloth>> m_light;
 };
 
 }  // namespace fv::dforce

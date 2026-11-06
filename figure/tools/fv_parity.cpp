@@ -1317,6 +1317,13 @@ int main(int argc, char** argv)
           d.collidesWith = [](int) { return false; };
         // what's worn much finer than the cloth meets it as a coarse copy; "coarse": false, as it is
         d.coarseColliders = step.value("coarse", true);
+        // the cloth simulates as a light copy of itself: "light": true, or the copy's faces' width in cm
+        if(step.contains("light"))
+        {
+          d.lightCloth = !step["light"].is_boolean() || step["light"].get<bool>();
+          if(step["light"].is_number())
+            d.lightClothEdge = step["light"].get<float>();
+        }
         auto p = d.prepared();
         if(!p)
           throw std::runtime_error("nothing worn drapes");
@@ -1428,6 +1435,21 @@ int main(int argc, char** argv)
           if(p->drapes.empty())
             continue;
         }
+        // experiments: a cloth's polygons as its triangles (no shear diagonals, every side a thread), as a
+        // light copy's are
+        if(step.value("triangles", false))
+          for(const auto& [mesh, slot] : p->drapes)
+          {
+            fv::physics::cloth::Surface& m = p->bodies[size_t(slot)];
+            m.polyStart.assign(1, 0);
+            m.polyVerts.clear();
+            for(size_t t = 0; t + 2 < m.tris.size(); t += 3)
+            {
+              for(size_t k = 0; k < 3; k++)
+                m.polyVerts.push_back(int32_t(m.tris[t + k]));
+              m.polyStart.push_back(int32_t(m.polyVerts.size()));
+            }
+          }
         // experiments: the cloth's own faces left out of its collisions
         if(!step.value("selfCollide", true))
           for(fv::physics::cloth::Surface& m : p->bodies)
@@ -1525,24 +1547,78 @@ int main(int argc, char** argv)
         }
         if(objDir)
           writeObj(*objDir / (fileSafe(label) + "_body.obj"), out[0], p->bodies[0]);
+        // Every drape and collider as it is, with neither copied: what a light copy's cloth is measured
+        // by, as it rides on the copy, and what the drapes are held against below
+        const bool lightOn = d.lightCloth, coarseOn = d.coarseColliders;
+        d.lightCloth       = false;
+        d.coarseColliders  = false;
+        const auto full    = d.prepared();
+        d.lightCloth       = lightOn;
+        d.coarseColliders  = coarseOn;
+        // each drape as drawn: a light copy's cloth where it rides, held where it is held to its skin
+        std::vector<const fv::physics::cloth::Surface*> drawnMesh(p->drapes.size());
+        std::vector<std::vector<float>>                 drawnAt(p->drapes.size());
+        for(size_t i = 0; i < p->drapes.size(); i++)
+        {
+          const size_t slot = size_t(p->drapes[i].second);
+          drawnMesh[i]      = &p->bodies[slot];
+          drawnAt[i]        = out[slot];
+          if(i >= p->light.size() || !p->light[i] || !full)
+            continue;
+          const fv::physics::cloth::Surface&     fine = full->bodies[slot];
+          const fv::physics::cloth::CoarseCloth& copy = *p->light[i];
+          std::vector<float>                     at   = fv::physics::cloth::ride(copy, out[slot]);
+          for(size_t v = 0; v < copy.riding.held.size(); v++)
+            if(copy.riding.held[v])
+              for(size_t c = 0; c < 3; c++)
+                at[v * 3 + c] = fine.posed[v * 3 + c];
+          // its hem, how far its own edges stretch, how much of it is inside the body
+          float minPosed = 1e9f, minOut = 1e9f;
+          for(size_t v = 0; v < fine.vertexCount(); v++)
+          {
+            minPosed = std::min(minPosed, fine.posed[v * 3 + 1]);
+            minOut   = std::min(minOut, at[v * 3 + 1]);
+          }
+          std::vector<std::pair<uint32_t, uint32_t>> edges;
+          for(size_t t = 0; t + 2 < fine.tris.size(); t += 3)
+            for(size_t k = 0; k < 3; k++)
+            {
+              const uint32_t a = fine.tris[t + k], b = fine.tris[t + (k + 1) % 3];
+              edges.emplace_back(std::min(a, b), std::max(a, b));
+            }
+          std::sort(edges.begin(), edges.end());
+          edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+          const auto length = [](const std::vector<float>& x, uint32_t a, uint32_t b) {
+            return std::hypot(double(x[a * 3] - x[b * 3]), double(x[a * 3 + 1] - x[b * 3 + 1]), double(x[a * 3 + 2] - x[b * 3 + 2]));
+          };
+          std::vector<double> ratio;
+          for(const auto& [a, b] : edges)
+            if(const double was = length(fine.rest, a, b); was > 1e-6)
+              ratio.push_back(length(at, a, b) / was);
+          std::sort(ratio.begin(), ratio.end());
+          items[i]["light"] = {{"copyVertices", copy.surface.vertexCount()},
+                               {"copyFaces", copy.surface.tris.size() / 3},
+                               {"hemDropCm", double(minPosed - minOut)},
+                               {"stretchP99", ratio.empty() ? 0.0 : ratio[size_t(0.99 * double(ratio.size() - 1))]},
+                               {"stretchMax", ratio.empty() ? 0.0 : ratio.back()},
+                               {"insideBody", fv::physics::cloth::insideBody(p->bodies[0], out[0], at)}};
+          drawnMesh[i] = &fine;
+          drawnAt[i]   = std::move(at);
+          if(objDir)
+            writeObj(*objDir / (fileSafe(label) + "_" + meshName(p->drapes[i].first) + "_riding.obj"), drawnAt[i], fine);
+        }
         // each drape against every worn collider as it is, not its coarse copy: its vertices that ended on
         // the other side of it than they began (a dress through the underwear it met as a copy)
         if(step.value("through", true))
-        {
-          d.coarseColliders = false;
-          const auto full   = d.prepared();
-          d.coarseColliders = step.value("coarse", true);
           for(size_t i = 0; full && i < p->drapes.size(); i++)
           {
-            const int slot    = p->drapes[i].second;
-            Json      through = Json::object();
+            Json through = Json::object();
             for(size_t k = 1; k < full->bodies.size(); k++)
               if(full->bodies[k].kind == fv::physics::cloth::Surface::Kind::eCollider)
                 through[full->slotMesh[k] >= 0 ? meshName(full->slotMesh[k]) : std::to_string(k)] =
-                    fv::physics::cloth::wrongSide(p->bodies[size_t(slot)], out[size_t(slot)], full->bodies[k], full->bodies[k].posed);
+                    fv::physics::cloth::wrongSide(*drawnMesh[i], drawnAt[i], full->bodies[k], full->bodies[k].posed);
             items[i]["through"] = through;
           }
-        }
         std::cerr << "dforce " << label << ": " << items.dump() << "\n";
         Json dump = {{"dforce", items}, {"substeps", sim.substepsPerFrame()}, {"transition", r(sim.transitionSeconds())}, {"ms", r(simMs)}};
         if(step.value("apply", false))
