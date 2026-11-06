@@ -20,6 +20,7 @@
 #include "fv_physics_gpu.hpp"
 
 #include <algorithm>
+#include <unordered_map>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -118,7 +119,7 @@ struct Kernels
   VkCommandPool    commandPool = VK_NULL_HANDLE;
   VkPipelineLayout layout      = VK_NULL_HANDLE;
   VkPipeline       integrate{}, edges{}, attach{}, recover{}, hold{}, collide{}, velocity{}, cluster{}, commit{}, snap{}, boxes{}, collideWave{},
-      recoverWave{};
+      recoverWave{}, tie{};
   // the lanes of the device's waves, when the collision pass and the recovery go a wave a vertex
   // (collideWaveMain, recoverWaveMain: 32, with the ballots, shuffles and least they need); 0: a thread a vertex
   uint32_t waveLanes = 0;
@@ -130,7 +131,7 @@ struct Kernels
   {
     if(!device)
       return;
-    for(VkPipeline p : {integrate, edges, attach, recover, hold, collide, velocity, cluster, commit, snap, boxes, collideWave, recoverWave})
+    for(VkPipeline p : {integrate, edges, attach, recover, hold, collide, velocity, cluster, commit, snap, boxes, collideWave, recoverWave, tie})
       if(p)
         vkDestroyPipeline(device, p, nullptr);
     if(layout)
@@ -182,7 +183,7 @@ struct Kernels
     };
     return pipe("integrateMain", integrate) && pipe("edgesMain", edges) && pipe("attachMain", attach) && pipe("recoverMain", recover)
            && pipe("holdMain", hold) && pipe("collideMain", collide) && pipe("velocityMain", velocity) && pipe("clusterMain", cluster)
-           && pipe("commitMain", commit) && pipe("snapMain", snap) && pipe("boxesMain", boxes)
+           && pipe("commitMain", commit) && pipe("snapMain", snap) && pipe("boxesMain", boxes) && pipe("tieMain", tie)
            && (waveLanes == 0 || (pipe("collideWaveMain", collideWave) && pipe("recoverWaveMain", recoverWave)));
   }
 };
@@ -234,7 +235,7 @@ struct ClothGpu::Impl
 
   VkPipelineLayout layout{};
   VkPipeline       integratePipe{}, edgesPipe{}, attachPipe{}, recoverPipe{}, holdPipe{}, collidePipe{}, velocityPipe{}, clusterPipe{}, commitPipe{},
-      snapPipe{}, boxesPipe{}, collideWavePipe{}, recoverWavePipe{};
+      snapPipe{}, boxesPipe{}, collideWavePipe{}, recoverWavePipe{}, tiePipe{};
   // the kernels' waveLanes, unless FV_PHYSICS_GPU_DEBUG's 256 asks for a thread a vertex
   uint32_t waveLanes = 0;
 
@@ -250,7 +251,11 @@ struct ClothGpu::Impl
   nvvk::Buffer x, prev, vel, cprev, kinStart, kinEnd, kinematic, freeVerts, inv, dampRate, offset, friction, layer, collides, grav, edges,
       lam, tris, cells, items, softVerts, attAlpha, lamAtt, contact, modelBuf, readback, clusterEdgeBuf, clusterLamBuf, clusterVertBuf, clusterVertStartBuf,
       clusterOwnedBuf, clusterColourBuf, clusterSoftBuf, clusterSoftStartBuf, xTwin, clothTris, clothCells, clothItems, meshOf, ring2Start, ring2,
-      frameStart, snap, cprevSnap, faceBox, clothContact;
+      frameStart, snap, cprevSnap, faceBox, clothContact, tieBuf, tieNextBuf;
+  // live: the cloth tied to the body (ClothGpu::tie), as tieBuf has it, for a late step's carry
+  std::vector<fv::physics::cloth::Tie> ties;
+  // the body's faces as `tris` has them, by their corners, for a tie to find its own (made at the first tie)
+  std::unordered_map<uint64_t, int> tieFaceOf;
   size_t cellCapacity = 0, itemCapacity = 0, clothCellCapacity = 0, clothItemCapacity = 0;
   bool   gridFailed = false;
 
@@ -627,6 +632,7 @@ bool ClothGpu::Impl::create()
   boxesPipe     = kernels->boxes;
   collideWavePipe = kernels->collideWave;
   recoverWavePipe = kernels->recoverWave;
+  tiePipe         = kernels->tie;
   waveLanes       = (debug & 256) ? 0 : kernels->waveLanes;
   if(gpu.timestamps)
   {
@@ -678,6 +684,8 @@ void ClothGpu::Impl::resetState()
   if(clothContact.mapping)
     std::memset(clothContact.mapping, 0xFF, size_t(clothContact.bufferSize));
   passCount = 0;
+  // a settle from the start: what was tied to the body was tied to a drape it no longer has
+  ties.clear();
   std::memcpy(grav.mapping, model.grav.data(), model.grav.size() * sizeof(float));
   heldAt    = -1;
   lastMove  = 0;
@@ -704,14 +712,14 @@ void ClothGpu::Impl::destroy()
   commandPool = VK_NULL_HANDLE;
   layout      = VK_NULL_HANDLE;
   for(VkPipeline* p : {&integratePipe, &edgesPipe, &attachPipe, &recoverPipe, &holdPipe, &collidePipe, &velocityPipe, &clusterPipe, &commitPipe, &snapPipe,
-                       &boxesPipe, &collideWavePipe, &recoverWavePipe})
+                       &boxesPipe, &collideWavePipe, &recoverWavePipe, &tiePipe})
     *p = VK_NULL_HANDLE;
   kernels.reset();
   for(nvvk::Buffer* b : {&x, &prev, &vel, &cprev, &kinStart, &kinEnd, &kinematic, &freeVerts, &inv, &dampRate, &offset, &friction, &layer,
                          &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &contact, &modelBuf, &readback,
                          &clusterEdgeBuf, &clusterLamBuf, &clusterVertBuf, &clusterVertStartBuf, &clusterOwnedBuf, &clusterColourBuf, &clusterSoftBuf,
                          &clusterSoftStartBuf, &xTwin, &clothTris, &clothCells, &clothItems, &meshOf, &ring2Start, &ring2, &frameStart, &snap,
-                         &cprevSnap, &faceBox, &clothContact})
+                         &cprevSnap, &faceBox, &clothContact, &tieBuf, &tieNextBuf})
     if(b->buffer != VK_NULL_HANDLE)
       alloc->destroyBuffer(*b);
 }
@@ -905,6 +913,9 @@ void ClothGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds
     m.contact      = reinterpret_cast<int*>(contact.address);
     m.faceBox      = reinterpret_cast<glm::vec4*>(faceBox.address);
     m.recoverDepth = kRecoverDepth;
+    m.ties         = ties.empty() ? nullptr : reinterpret_cast<shaderio::ClothGpuTie*>(tieBuf.address);
+    m.tieNext      = ties.empty() ? nullptr : reinterpret_cast<int*>(tieNextBuf.address);
+    m.numTies      = uint32_t(ties.size());
     m.nv           = uint32_t(n);
     m.numKinematic = uint32_t(model.kinematicVerts.size());
     m.numFree      = uint32_t(model.freeVerts.size());
@@ -1142,6 +1153,14 @@ void ClothGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds
       next += std::max(1, steps / passes);
     }
     home();
+    // the cloth tied to the body, last: held to its faces where the pose has them now
+    if(m.numTies > 0)
+    {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tiePipe);
+      vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+      dispatch(cmd, groups(m.numTies), 1, 1);
+      barrier();
+    }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, velocityPipe);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     dispatch(cmd, groups(m.numFree), 1, 1);
@@ -1378,6 +1397,16 @@ void ClothGpu::setTarget(size_t mesh, const std::vector<Mat4>& bones)
 void ClothGpu::Impl::carry(float t)
 {
   const size_t       n  = size_t(model.nv);
+  // the pose's vertices at the sweep's start and at t, for the faces the ties ride (the frame that follows
+  // skins t again, and finds it skinned)
+  std::vector<float> from, at;
+  if(!ties.empty())
+  {
+    from = xHost;
+    at   = xHost;
+    kinematicAt(0, from);
+    kinematicAt(t, at);
+  }
   std::vector<float> to = xHost;
   for(size_t mi = 0; mi < meshes.size(); mi++)
   {
@@ -1412,6 +1441,21 @@ void ClothGpu::Impl::carry(float t)
       }
     });
   }
+  // a tied vertex with its face, as much as it rides it: its own skin took a dress into a thigh swinging
+  // forward, and the step set out from inside it
+  fv::jobs::parallelFor(ties.size(), 2048, [&](size_t begin, size_t end) {
+    for(size_t k = begin; k < end; k++)
+    {
+      const cloth::Tie&      tie = ties[k];
+      const cloth::RideFrame f0  = cloth::rideFrame(&from[size_t(tie.corner[0]) * 3], &from[size_t(tie.corner[1]) * 3], &from[size_t(tie.corner[2]) * 3], tie.bary);
+      const cloth::RideFrame f1  = cloth::rideFrame(&at[size_t(tie.corner[0]) * 3], &at[size_t(tie.corner[1]) * 3], &at[size_t(tie.corner[2]) * 3], tie.bary);
+      const size_t           i   = size_t(tie.vertex);
+      float                  q[3] = {xHost[i * 3], xHost[i * 3 + 1], xHost[i * 3 + 2]};
+      cloth::carryOne(f0, f1, q);
+      for(size_t c = 0; c < 3; c++)
+        to[i * 3 + c] += (q[c] - to[i * 3 + c]) * tie.carry;
+    }
+  });
   // nothing is in flight between steps: the buffers are written as they lie
   xHost = std::move(to);
   for(nvvk::Buffer* buf : {&x, &prev, &cprev, &xTwin})
@@ -1428,6 +1472,65 @@ bool ClothGpu::carry(float t)
   m_impl->carry(t);
   fv::timing::accumulate("dforceGpu: a late step's carry", msSince(start));
   return true;
+}
+
+size_t ClothGpu::tie(std::vector<cloth::Tie> ties)
+{
+  if(!started(true) || m_impl->broken)
+    return 0;
+  Impl&      s       = *m_impl;
+  const int  nv      = s.model.nv;
+  const auto movable = [&](int i) { return i >= 0 && i < nv && s.model.dynamic[size_t(i)] && s.model.inv[size_t(i)] > 0; };
+  const auto posed   = [&](int i) { return i >= 0 && i < nv && !movable(i); };
+  ties.erase(std::remove_if(ties.begin(), ties.end(),
+                            [&](const cloth::Tie& t) { return !movable(t.vertex) || !posed(t.corner[0]) || !posed(t.corner[1]) || !posed(t.corner[2]); }),
+             ties.end());
+  const auto key = [](int a, int b, int c) {
+    int k[3] = {a, b, c};
+    std::sort(k, k + 3);
+    return (uint64_t(uint32_t(k[0])) << 42) ^ (uint64_t(uint32_t(k[1])) << 21) ^ uint64_t(uint32_t(k[2]));
+  };
+  if(s.tieFaceOf.empty() && !s.model.staticTris.empty())
+  {
+    // the body's faces in the order `tris` has them (the model's static faces), and the ones across each
+    // side of each, as the model pairs them
+    std::vector<int> gpuOf(s.model.tris.size(), -1), next(s.model.staticTris.size() * 3, -1);
+    for(size_t g = 0; g < s.model.staticTris.size(); g++)
+    {
+      const cloth::Face& f = s.model.tris[size_t(s.model.staticTris[g])];
+      gpuOf[size_t(s.model.staticTris[g])] = int(g);
+      s.tieFaceOf.emplace(key(f.a, f.b, f.c), int(g));
+    }
+    for(size_t g = 0; g < s.model.staticTris.size(); g++)
+      for(size_t k = 0; k < 3; k++)
+        if(const int o = s.model.triNext[size_t(s.model.staticTris[g]) * 3 + k]; o >= 0)
+          next[g * 3 + k] = gpuOf[size_t(o)];
+    if(!s.mapped(s.tieNextBuf, next))
+    {
+      s.tieFaceOf.clear();
+      return 0;
+    }
+  }
+  std::vector<shaderio::ClothGpuTie> gpu(ties.size());
+  for(size_t k = 0; k < ties.size(); k++)
+  {
+    const cloth::Tie& t    = ties[k];
+    const auto        it   = s.tieFaceOf.find(key(t.corner[0], t.corner[1], t.corner[2]));
+    const int         face = it != s.tieFaceOf.end() ? it->second : -1;
+    gpu[k]                 = {t.vertex,   t.corner[0], t.corner[1], t.corner[2], t.bary[0], t.bary[1], t.bary[2], t.reach,
+                              t.local[0], t.local[1],  t.local[2],  t.gap,       face,      0,         0,         0};
+  }
+  s.ties.clear();
+  // every step ties again: into the buffer it has while they fit (nothing is in flight between steps)
+  const size_t bytes = gpu.size() * sizeof(shaderio::ClothGpuTie);
+  if(!gpu.empty() && s.tieBuf.mapping && size_t(s.tieBuf.bufferSize) >= bytes)
+    std::memcpy(s.tieBuf.mapping, gpu.data(), bytes);
+  else if(!gpu.empty() && !s.mapped(s.tieBuf, gpu))
+    return 0;
+  s.ties = std::move(ties);
+  // the model is written again at the next frame, with them
+  s.heldAt = -1;
+  return s.ties.size();
 }
 
 bool ClothGpu::setRest(size_t mesh, std::vector<float> restLocal)

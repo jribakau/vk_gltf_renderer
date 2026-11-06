@@ -26,15 +26,21 @@ std::vector<double> stretchRatios(const Model& model, size_t slot, size_t n, con
   return ratio;
 }
 
-size_t insideBody(const Surface& body, const std::vector<float>& bodyNow, const std::vector<float>& out)
+size_t insideBody(const Surface& body, const std::vector<float>& bodyNow, const std::vector<float>& out, std::vector<uint8_t>* which)
 {
   const wardrobe::Surface        surface{bodyNow, body.tris};
   const wardrobe::SurfaceBinding binding = wardrobe::bindToSurface(bodyNow, body.tris, out);
   const std::vector<float>       pushed  = wardrobe::pushOut(out, surface, binding, 0.f, 3.f);
   size_t                         inside  = 0;
+  if(which)
+    which->assign(out.size() / 3, 0);
   for(size_t k = 0; k + 2 < out.size(); k += 3)
     if(pushed[k] != out[k] || pushed[k + 1] != out[k + 1] || pushed[k + 2] != out[k + 2])
+    {
       inside++;
+      if(which)
+        (*which)[k / 3] = 1;
+    }
   return inside;
 }
 

@@ -467,6 +467,7 @@ int main(int argc, char** argv)
   std::vector<int>         sizes   = {1024};
   int                      local   = 2048;
   bool                     onlyAnalyse = false, onlyGrid = false, onlySelf = false, trace = false;
+  int                      tieFrames = 0;
   for(int i = 2; i < argc; i++)
   {
     const std::string a = argv[i];
@@ -488,6 +489,8 @@ int main(int argc, char** argv)
       onlySelf = true;
     else if(a == "--trace")
       trace = true;
+    else if(a == "--tie" && i + 1 < argc)
+      tieFrames = std::stoi(argv[++i]);
     else if(outFile.empty())
       outFile = a;
   }
@@ -640,6 +643,49 @@ int main(int argc, char** argv)
             report["cut"] = {{"clusters", s.clusters},         {"clusterColours", s.clusterColours}, {"crossingRows", s.crossingRows},
                              {"crossingColours", s.crossingColours}, {"haloRows", s.haloRows},           {"mostLocal", s.mostLocal}};
           report["drapes"] = judge(*job, model, pos, cpu.empty() ? nullptr : &cpu);
+          if(tieFrames > 0)
+          {
+            // physics-plan 13c: the settled drape tied to the body (cloth::tieTo) and held there for so many live
+            // frames, against an untied simulation stepped as long: the tie kernel's cost, and what it moved
+            std::vector<size_t> slots;
+            for(const auto& [slot, name] : job->drapes)
+              slots.push_back(size_t(slot));
+            std::vector<cloth::Ride> rides;
+            const size_t             tied = sim.tie(cloth::tieTo(job->surfaces, 0, slots, pos, rides, true));
+            ClothGpu                 plain(&alloc, &app, job->surfaces, job->options, gpu);
+            plain.settle();
+            const auto tiedBefore = sim.stats(), plainBefore = plain.stats();
+            for(int f = 0; f < tieFrames && !sim.failed() && !plain.failed(); f++)
+            {
+              sim.step(0, job->options.frameDt, 0);
+              plain.step(0, job->options.frameDt, 0);
+            }
+            const auto tiedAfter = sim.stats(), plainAfter = plain.stats();
+            const auto a = sim.positions(), b = plain.positions();
+            double     most  = 0;
+            size_t     apart = 0;
+            bool       finite = true;
+            for(size_t slot : slots)
+              for(size_t i = 0; slot < a.size() && slot < b.size() && i + 2 < a[slot].size() && i + 2 < b[slot].size(); i += 3)
+              {
+                const double d = std::hypot(a[slot][i] - b[slot][i], a[slot][i + 1] - b[slot][i + 1], a[slot][i + 2] - b[slot][i + 2]);
+                finite         = finite && std::isfinite(d);
+                most           = std::max(most, d);
+                apart += d > 1e-3 ? 1 : 0;
+              }
+            const double frames = double(std::max(1, tiedAfter.frames - tiedBefore.frames));
+            report["tie"] = {{"ties", tied},
+                             {"frames", tiedAfter.frames - tiedBefore.frames},
+                             {"failed", sim.failed() || plain.failed()},
+                             {"finite", finite},
+                             {"gpuMsPerFrame", r4((tiedAfter.gpuMs - tiedBefore.gpuMs) / frames)},
+                             {"plainGpuMsPerFrame", r4((plainAfter.gpuMs - plainBefore.gpuMs) / frames)},
+                             {"mostApartCm", r4(most)},
+                             {"verticesApart", apart},
+                             {"tied", judge(*job, model, a, nullptr)},
+                             {"plain", judge(*job, model, b, nullptr)}};
+            std::cout << "tie " << report["tie"].dump() << std::endl;
+          }
           // the same job again on the same simulation, which keeps what it made and starts over
           const auto t1   = std::chrono::steady_clock::now();
           const bool kept = sim.restart(job->surfaces, job->options);

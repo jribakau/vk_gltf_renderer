@@ -66,7 +66,9 @@
 #include <unordered_map>
 
 #include <figure/dson/store.hpp>
+#include <figure/physics/cloth/backend.hpp>
 #include <figure/physics/cloth/cloth.hpp>
+#include <figure/physics/cloth/leash.hpp>
 #include <figure/physics/skin.hpp>
 #include <figure/physics/cloth/island.hpp>
 #include <figure/physics/cloth/job.hpp>
@@ -1851,6 +1853,194 @@ int main(int argc, char** argv)
         }
         if(!thens.empty())
           dump["then"] = thenReports;
+        // {"walk": {"clip": rel, "from": s, "every": s, "steps": n[, "seconds": s]}}: Live through a clip as the
+        // app steps it when every step comes late (10TEST's walk at a 4K viewport: a step every 90 ms, each
+        // simulating 1/30 s and carrying the cloth through the rest, Backend::step's late share), on a CPU
+        // simulation of this job settled as above, untied and then tied to the body as Live ties it
+        // (physics/cloth/leash.hpp): after each step, how many of each drape's simulated vertices are inside
+        // the body as drawn at the pose it was stepped to
+        if(step.contains("walk"))
+        {
+          namespace cloth = fv::physics::cloth;
+          const Json& w       = step["walk"];
+          const float from    = w.value("from", 0.f), every = w.value("every", 0.09f), seconds = w.value("seconds", opts.frameDt);
+          const int   count   = w.value("steps", 20);
+          const float late    = every > seconds ? 1.f - seconds / every : 0.f;
+          // each step's pose as a job takes it: every slot's bones and rest cage
+          std::vector<std::vector<cloth::Surface>> poses;
+          for(int k = 1; k <= count; k++)
+          {
+            poseAtClip(Json{{"clip", w.at("clip")}, {"time", from + every * float(k)}});
+            auto later = d.prepared();
+            if(!later || later->bodies.size() != p->bodies.size())
+              throw std::runtime_error("the walk's pose prepares another job");
+            poses.push_back(std::move(later->bodies));
+          }
+          Json walk = Json::object();
+          for(const bool tie : {false, true})
+          {
+            using Clock = std::chrono::steady_clock;
+            cloth::CpuBackend live(p->bodies, opts);
+            live.settle();
+            // as physics::Cloth::tieLive: each simulated drape tied to the body where the settle, then each step,
+            // left it, found again on its faces but afresh every eighth time
+            std::vector<size_t> slots;
+            for(const auto& [mesh, slot] : p->drapes)
+              slots.push_back(size_t(slot));
+            std::vector<cloth::Ride> rides;
+            size_t                   ties = 0, ties2 = 0;
+            double                   tieMs = 0, retieMs = 0;
+            int                      tied  = 0;
+            const auto               retie = [&](const std::vector<cloth::Surface>& surfaces, const std::vector<std::vector<float>>& at) {
+              const auto   tieStart = Clock::now();
+              const bool   fresh    = tied++ % 8 == 0;
+              const size_t n        = live.tie(cloth::tieTo(surfaces, 0, slots, at, rides, fresh));
+              const double ms       = std::chrono::duration<double, std::milli>(Clock::now() - tieStart).count();
+              if(fresh)
+                tieMs = std::max(tieMs, ms), ties = std::max(ties, n);
+              else
+                retieMs = std::max(retieMs, ms), ties2 = std::max(ties2, n);
+            };
+            if(tie)
+              retie(p->bodies, live.positions());
+            Json       inside    = Json::array();
+            size_t     most      = 0, total = 0;
+            // of what is inside after a step, by how it was tied as the step began: held (tied, with a
+            // backstop), tied without one, and not tied (further than the ride's band, or held to its skin)
+            size_t     wasHeld = 0, wasBare = 0, wasLoose = 0;
+            // and of the held: gone past their reach by the step's end; inside a face within 3 cm of the one they
+            // were tied to, or further off (another part of the body)
+            size_t     heldPast = 0, heldNear = 0, heldFar = 0;
+            // what holding the drawn drape costs a frame (physics::Cloth::holdLive's body skin and hold): the most
+            double     drawnHoldMs = 0;
+            const std::vector<int> bodyAcross = cloth::facesAcross(p->bodies[0].tris);
+            // where on the body what is inside lies: the bone that moves its nearest body vertex most
+            std::map<std::string, size_t> insideAt;
+            const fv::Mesh*               bodyMesh = p->slotMesh[0] >= 0 ? &scene.meshes[size_t(p->slotMesh[0])] : nullptr;
+            const auto walkStart = Clock::now();
+            for(size_t k = 0; k < poses.size(); k++)
+            {
+              const std::vector<cloth::Surface>& now = poses[k];
+              const std::vector<cloth::Surface>& was = k > 0 ? poses[k - 1] : p->bodies;
+              for(size_t slot = 0; slot < now.size(); slot++)
+              {
+                if(!now[slot].skinned())
+                  continue;
+                if(now[slot].restLocal != was[slot].restLocal)
+                  live.setRest(slot, now[slot].restLocal);
+                live.setTarget(slot, now[slot].bones);
+              }
+              // how each drape vertex is tied as the step begins
+              std::vector<std::vector<int8_t>> how(p->drapes.size());
+              std::vector<std::vector<int>>    leashOf(p->drapes.size());
+              std::vector<cloth::Leashes>      leashes(p->drapes.size());
+              for(size_t di = 0; di < p->drapes.size(); di++)
+              {
+                how[di].assign(p->bodies[size_t(p->drapes[di].second)].vertexCount(), 0);
+                leashOf[di].assign(how[di].size(), -1);
+                if(di < rides.size())
+                {
+                  leashes[di]            = cloth::leash(rides[di], &now[size_t(p->drapes[di].second)], now[0]);
+                  const cloth::Leashes& l = leashes[di];
+                  for(size_t i = 0; i < l.ride.vertices.size(); i++)
+                  {
+                    how[di][l.ride.vertices[i]]     = l.gap[i] >= 0 ? 1 : -1;
+                    leashOf[di][l.ride.vertices[i]] = int(i);
+                  }
+                }
+              }
+              live.step(0, seconds, late);
+              const auto pos = live.positions();
+              if(tie && !rides.empty())
+              {
+                const auto         holdStart = Clock::now();
+                std::vector<float> bodyAt(now[0].vertexCount() * 3);
+                cloth::skin(now[0], now[0].bones, bodyAt.data());
+                for(size_t di = 0; di < p->drapes.size() && di < rides.size(); di++)
+                {
+                  const size_t         slot = size_t(p->drapes[di].second);
+                  const cloth::Leashes l    = cloth::leash(rides[di], &now[slot], now[0]);
+                  std::vector<float>   at;
+                  for(uint32_t v : l.ride.vertices)
+                    at.insert(at.end(), {pos[slot][size_t(v) * 3], pos[slot][size_t(v) * 3 + 1], pos[slot][size_t(v) * 3 + 2]});
+                  cloth::holdLeashes(l, bodyAt, now[0].tris, bodyAcross, at);
+                }
+                drawnHoldMs = std::max(drawnHoldMs, std::chrono::duration<double, std::milli>(Clock::now() - holdStart).count());
+              }
+              if(tie)
+                retie(now, pos);
+              Json       row = Json::array();
+              for(size_t di = 0; di < p->drapes.size(); di++)
+              {
+                const size_t         slot = size_t(p->drapes[di].second);
+                std::vector<uint8_t> which;
+                const size_t         in = cloth::insideBody(now[0], now[0].posed, pos[slot], &which);
+                most                    = std::max(most, in);
+                total += in;
+                row.push_back(in);
+                for(size_t v = 0; v < which.size(); v++)
+                  if(which[v])
+                    (how[di][v] > 0 ? wasHeld : how[di][v] < 0 ? wasBare : wasLoose)++;
+                const fv::wardrobe::SurfaceBinding nearest = fv::wardrobe::bindToSurface(pos[0], now[0].tris, pos[slot]);
+                const cloth::Leashes&              l       = leashes[di];
+                for(size_t v = 0; v < which.size(); v++)
+                {
+                  if(!which[v])
+                    continue;
+                  const float* w   = &nearest.weights[v * 3];
+                  const size_t bv  = nearest.verts[v * 3 + size_t(w[1] > w[0] && w[1] >= w[2] ? 1 : w[2] > w[0] ? 2 : 0)];
+                  int          most = -1;
+                  float        mw   = 0;
+                  for(int k = 0; k < 4 && bv * 4 + 3 < now[0].skinWeight.size(); k++)
+                    if(now[0].skinWeight[bv * 4 + size_t(k)] > mw)
+                      mw = now[0].skinWeight[bv * 4 + size_t(k)], most = now[0].skinIndex[bv * 4 + size_t(k)];
+                  std::string name = "?";
+                  if(bodyMesh && most >= 0 && size_t(most) < bodyMesh->bones.size() && bodyMesh->bones[size_t(most)] >= 0)
+                    name = scene.nodes[size_t(bodyMesh->bones[size_t(most)])].name;
+                  insideAt[std::string(how[di][v] > 0 ? "held " : how[di][v] < 0 ? "bare " : "loose ") + name]++;
+                }
+                for(size_t v = 0; v < which.size(); v++)
+                {
+                  if(!which[v] || how[di][v] <= 0)
+                    continue;
+                  const size_t    i = size_t(leashOf[di][v]);
+                  const uint32_t* c = &l.ride.at[i * 3];
+                  float           corner[3][3];
+                  for(int k = 0; k < 3; k++)
+                    for(int a = 0; a < 3; a++)
+                      corner[k][a] = pos[0][size_t(l.ride.corners[c[k]]) * 3 + size_t(a)];
+                  const cloth::RideFrame f  = cloth::rideFrame(corner[0], corner[1], corner[2], &l.ride.bary[i * 3]);
+                  const float*           lo = &l.ride.local[i * 3];
+                  double                 toRef = 0, toNear = 0;
+                  for(int a = 0; a < 3; a++)
+                  {
+                    const double ref = f.q[a] + lo[0] * f.e1[a] + lo[1] * f.e2[a] + lo[2] * f.n[a];
+                    toRef += (pos[slot][v * 3 + size_t(a)] - ref) * (pos[slot][v * 3 + size_t(a)] - ref);
+                    double nearAt = 0;
+                    for(int k = 0; k < 3; k++)
+                      nearAt += nearest.weights[v * 3 + size_t(k)] * pos[0][size_t(nearest.verts[v * 3 + size_t(k)]) * 3 + size_t(a)];
+                    toNear += (nearAt - f.q[a]) * (nearAt - f.q[a]);
+                  }
+                  if(std::sqrt(toRef) > l.reach[i])
+                    heldPast++;
+                  else if(std::sqrt(toNear) < 3)
+                    heldNear++;
+                  else
+                    heldFar++;
+                }
+              }
+              inside.push_back(row);
+            }
+            const double walkMs = std::chrono::duration<double, std::milli>(Clock::now() - walkStart).count();
+            walk[tie ? "tied" : "untied"] = {{"inside", inside}, {"most", most}, {"total", total}, {"ties", ties}, {"tiesAgain", ties2}, {"tieMs", tieMs},
+                                             {"retieMs", retieMs}, {"stepMs", walkMs / std::max<size_t>(1, poses.size())},
+                                             {"insideWas", {{"held", wasHeld}, {"bare", wasBare}, {"loose", wasLoose}}},
+                                             {"held", {{"pastReach", heldPast}, {"nearItsFace", heldNear}, {"elsewhere", heldFar}}}, {"insideAt", insideAt}, {"drawnHoldMs", drawnHoldMs}};
+          }
+          walk["late"] = late;
+          std::cerr << "dforce " << label << " walk: " << walk.dump() << "\n";
+          dump["walk"] = walk;
+        }
         dumps[label] = dump;
       }
       else if(step.contains("dump"))

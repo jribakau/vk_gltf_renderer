@@ -42,6 +42,7 @@
 
 #include <figure/physics/hair/strands.hpp>
 #include <figure/physics/cloth/coarse.hpp>
+#include <figure/physics/cloth/leash.hpp>
 #include <figure/physics/cloth/ride.hpp>
 #include <figure/math/xform.hpp>
 #include <figure/morph/morph_set.hpp>
@@ -170,11 +171,20 @@ private:
   // back through, as they were when it began (the job's change as the next one does). `rides`: each drape
   // bound where it lies to the body where the job left it (physics/cloth/ride.hpp), for Live to carry it
   // between steps; with `hints`, the last rides, each vertex is found again on the face it had.
+  // With `leashes`, each drape's rides as leashes (physics/cloth/leash.hpp): what is drawn until the next
+  // step lands is held out of the body by them.
   static std::vector<std::vector<float>> deltasOf(const Job& job, const std::vector<std::vector<float>>& positions,
                                                   const std::vector<std::vector<float>>* rests = nullptr,
                                                   const std::vector<SkinPose>*           poses = nullptr,
                                                   std::vector<cloth::Ride>*              rides = nullptr,
-                                                  const std::vector<cloth::Ride>*        hints = nullptr);
+                                                  const std::vector<cloth::Ride>*        hints = nullptr,
+                                                  std::vector<cloth::Leashes>*           leashes = nullptr);
+  // Live: the cloth tied to the body where a step (or the settle that began live) left it, `positions` as
+  // the simulation has them, for the next step (physics/cloth/leash.hpp, cloth::tieTo). `rides`: the last
+  // ties' rides, found again on their faces unless `fresh`; given back as these. Any thread, the simulation
+  // free. How many vertices it tied.
+  static size_t tieLive(const Job& job, cloth::Backend& sim, const std::vector<std::vector<float>>& positions, std::vector<cloth::Ride>& rides,
+                        bool fresh);
   // Writes them, but not on an item taken off meanwhile. True when it wrote.
   bool writeDeltas(const Job& job, const std::vector<std::vector<float>>& deltas);
   // The bones of a job's skinned meshes as the figure has them now, per slot (empty: unskinned).
@@ -204,6 +214,9 @@ private:
   // Live: the offsets on each ride's faces, the body at `bones`, of where `shown` (deltas) puts its
   // riding vertices: where the ease sets out from.
   void                           rideFrom(const std::vector<std::vector<float>>& shown, const std::vector<Mat4>& bones);
+  // Live: what each drape shows (`shown`, deltas), the body at `bones`, held out of the body by the last
+  // landed step's leashes (m_leashes): within its reach of where it lay, out of the backstop under its face.
+  void                           holdLive(std::vector<std::vector<float>>& shown, const std::vector<Mat4>& bones) const;
 
   SceneGraph&      m_scene;
   morph::MorphSet& m_morphs;
@@ -248,6 +261,8 @@ private:
   {
     std::vector<std::vector<float>> deltas;
     std::vector<cloth::Ride>        rides;
+    // and its rides as leashes (deltasOf's)
+    std::vector<cloth::Leashes>     leashes;
   };
   struct LiveRun
   {
@@ -295,6 +310,14 @@ private:
   std::vector<std::vector<float>>                m_rideFrom;
   std::vector<Mat4>                              m_rideBones, m_rideLanded, m_rideWritten;
   int                                            m_liveBinds = 0;
+  // live: each drape's leashes from the last landed run, what is drawn is held out of the body by (holdLive)
+  std::shared_ptr<const std::vector<cloth::Leashes>> m_leashes;
+  // live: the simulation's last ties' rides, per drape (tieLive's), shared with the runs on the pool, which
+  // tie one after another: each step's from where the one before left the cloth
+  std::shared_ptr<std::vector<cloth::Ride>>          m_tieRides;
+  // live: the faces across each side of each of the body's faces (cloth::facesAcross), for the job they are of
+  mutable std::shared_ptr<const std::vector<int>>   m_bodyAcross;
+  mutable const Job*                                 m_bodyAcrossOf = nullptr;
   std::set<int> m_draped;
   int           m_version = 0;
   // the coarse copies of colliders the last job made, by the shape each was made from (its rest cage,

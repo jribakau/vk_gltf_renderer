@@ -2563,9 +2563,14 @@ public:
   void  settle() override {}
   float lastMove() const override { return 1.f; }
   bool  ownerThreadOnly() const override { return false; }
+  size_t tie(std::vector<physics::cloth::Tie> ties) override
+  {
+    tied = std::move(ties);
+    return tied.size();
+  }
   std::vector<std::vector<float>> positions() const override
   {
-    // the body (slot 0) where its target puts it, and the cloth raised by as much
+    // the body (slot 0) where its target puts it, and the cloth raised by as much (or left where it was)
     std::vector<std::vector<float>> out;
     float                           lift = 0;
     for(size_t k = 0; k < m_meshes.size(); k++)
@@ -2575,7 +2580,7 @@ public:
       if(k == 0 && !m_bones[k].empty())
       {
         physics::cloth::skin(m, m_bones[k], at.data());
-        lift = at[1] - m.posed[1];
+        lift = follows ? at[1] - m.posed[1] : 0.f;
       }
       out.push_back(std::move(at));
     }
@@ -2587,6 +2592,10 @@ public:
   }
   std::atomic<bool> go{false}, open{false};
   std::atomic<int>  steps{0};
+  // false: the cloth stays where it was made as the body moves (a step that leaves it inside)
+  bool                             follows = true;
+  // what the settle that began live tied to the body
+  std::vector<physics::cloth::Tie> tied;
 
 private:
   std::vector<physics::cloth::Surface> m_meshes;
@@ -2663,6 +2672,71 @@ TEST(Dforce, aLiveDrapeNearTheBodyRidesItUntilTheNextStepLands)
     frame(0.f);
     EXPECT_NEAR(overBody(), 1.f, 1e-3f) << "after the second step landed, frame " << i;
   }
+}
+
+TEST(Dforce, whatIsDrawnIsHeldOutOfTheBodyWhereAStepLeftItInside)
+{
+  // Live begins with a settle, and the settled drape is tied to the body (physics/cloth/leash.hpp): the
+  // simulation is given the ties before its first step, and what is drawn between steps is held to them
+  // too. A step that leaves the cloth inside the body (one that set out from inside a thigh: a late step
+  // carried the dress there by its own skin) is drawn back out of it by its gap, not ridden in
+  TwoBoneVeil     v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  physics::Cloth  d(v.scene, morphs, 0, v.rootNode);
+  std::shared_ptr<RidingSim> sim;
+  d.makeGpuSim = [&](std::vector<physics::cloth::Surface> meshes, const physics::cloth::Options&) {
+    sim          = std::make_shared<RidingSim>(std::move(meshes));
+    sim->follows = false;
+    return sim;
+  };
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(physics::ClothMode::eLiveGpu);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  ASSERT_TRUE(sim);
+  struct Open
+  {
+    std::shared_ptr<RidingSim>& sim;
+    ~Open() { sim->open = true; }
+  } open{sim};
+  // every vertex of the veil, each on a face of the body, numbered after the body's as the model has them
+  const size_t bodyVerts = v.scene.meshes[0].geo->cagePositions.size() / 3, veilVerts = v.scene.meshes[1].geo->cagePositions.size() / 3;
+  ASSERT_EQ(sim->tied.size(), veilVerts);
+  for(const physics::cloth::Tie& t : sim->tied)
+  {
+    EXPECT_GE(t.vertex, int(bodyVerts));
+    EXPECT_LT(t.vertex, int(bodyVerts + veilVerts));
+    for(int c : t.corner)
+      EXPECT_LT(c, int(bodyVerts));
+    EXPECT_GT(t.gap, 0.f);
+  }
+  float      body     = 0;
+  const auto overBody = [&] {
+    morphs.flush();
+    return lowestOf(v.scene.meshes[1].geo->position) - body;
+  };
+  ASSERT_NEAR(overBody(), 1.f, 1e-4f);
+  const auto frame = [&](float rise) {
+    body += rise;
+    v.scene.nodes[size_t(v.bodyBone)].position.y = body;
+    now += std::chrono::milliseconds(20);
+    d.pump();
+  };
+  // the body rises 2 cm, and the step that sets out for it lands with the veil where it was: 1 cm inside
+  frame(2.f);
+  EXPECT_NEAR(overBody(), 1.f, 1e-3f) << "riding the body before the step lands";
+  sim->go = true;
+  for(int i = 0; i < 5000 && sim->steps.load() < 1; i++)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_EQ(sim->steps.load(), 1);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  const float gap = sim->tied.front().gap;
+  for(int i = 0; i < 10; i++)
+  {
+    frame(0.f);
+    EXPECT_GE(overBody(), gap - 1e-3f) << "drawn inside the body as the step eased in, frame " << i;
+  }
+  EXPECT_NEAR(overBody(), gap, 1e-3f) << "held out by its gap once the step is in";
 }
 
 TEST(Dforce, aLiveStepBeginsWhileTheLastOnesDrapesAreMade)

@@ -9,20 +9,10 @@
 
 namespace fv::physics::cloth {
 
-namespace {
-
-// A face's point at `bary` and its frame there: e1 along its first side, n its normal (its winding's),
-// e2 across. A face with no area has none (`ok` false), and an offset on it is taken as it is.
-struct Frame
+RideFrame rideFrame(const float* a, const float* b, const float* c, const float* bary)
 {
-  double q[3], e1[3], e2[3], n[3];
-  bool   ok = false;
-};
-
-Frame frameOf(const float* a, const float* b, const float* c, const float* bary)
-{
-  Frame f;
-  double s[3], t[3];
+  RideFrame f;
+  double    s[3], t[3];
   for(int k = 0; k < 3; k++)
   {
     f.q[k] = double(bary[0]) * a[k] + double(bary[1]) * b[k] + double(bary[2]) * c[k];
@@ -44,6 +34,8 @@ Frame frameOf(const float* a, const float* b, const float* c, const float* bary)
   f.ok    = true;
   return f;
 }
+
+namespace {
 
 // The closest point to p on the face abc (Ericson, Real-Time Collision Detection 5.1.5): its weight per
 // corner into `bary`, and its squared distance from p.
@@ -88,10 +80,10 @@ double closestOn(const double p[3], const float* a, const float* b, const float*
   return d;
 }
 
-Frame frameOf(const Ride& ride, size_t i, const std::vector<float>& corners)
+RideFrame frameOf(const Ride& ride, size_t i, const std::vector<float>& corners)
 {
   const uint32_t* c = &ride.at[i * 3];
-  return frameOf(&corners[size_t(c[0]) * 3], &corners[size_t(c[1]) * 3], &corners[size_t(c[2]) * 3], &ride.bary[i * 3]);
+  return rideFrame(&corners[size_t(c[0]) * 3], &corners[size_t(c[1]) * 3], &corners[size_t(c[2]) * 3], &ride.bary[i * 3]);
 }
 
 }  // namespace
@@ -255,7 +247,7 @@ std::vector<float> rideAt(const Ride& ride, const std::vector<float>& corners, c
   jobs::parallelFor(n, 2048, [&](size_t begin, size_t end) {
     for(size_t i = begin; i < end; i++)
     {
-      const Frame  f = frameOf(ride, i, corners);
+      const RideFrame f = frameOf(ride, i, corners);
       const float* l = &local[i * 3];
       for(int k = 0; k < 3; k++)
         out[i * 3 + size_t(k)] = float(f.ok ? f.q[k] + l[0] * f.e1[k] + l[1] * f.e2[k] + l[2] * f.n[k] : f.q[k] + l[k]);
@@ -273,7 +265,7 @@ std::vector<float> rideLocal(const Ride& ride, const std::vector<float>& corners
   jobs::parallelFor(n, 2048, [&](size_t begin, size_t end) {
     for(size_t i = begin; i < end; i++)
     {
-      const Frame  f    = frameOf(ride, i, corners);
+      const RideFrame f    = frameOf(ride, i, corners);
       const double d[3] = {points[i * 3] - f.q[0], points[i * 3 + 1] - f.q[1], points[i * 3 + 2] - f.q[2]};
       if(!f.ok)
       {

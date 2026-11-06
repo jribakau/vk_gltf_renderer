@@ -1054,6 +1054,92 @@ float3 clothCornerWas(ClothGpuModel m, int v)
   return m.inv[v] > 0 ? m.cprevSnap[v] : kinematicAt(m, v, pc.tFaces);
 }
 
+// Live: a vertex tied to the body (figure/physics/cloth/leash.hpp, cloth::holdOut), while within its reach of
+// where its face has it, held out of the body's face it is over, of its tie's and the two rings about it, to
+// its gap, from as deep as recoverDepth: the outside is the faces' winding, whatever side the last pass found
+// the vertex on, so a late carry or a pass that found it inside can't keep it in. The corners are the pose's,
+// where this substep has them. The last of a substep's corrections, after the collisions. Each writes its own
+// vertex and tie only.
+bool tieOver(ClothGpuModel m, int f, float3 p, out float sd, out float dist, out float3 n)
+{
+  ClothGpuTri tri = m.tris[f];
+  float3      a, b, c;
+  faceAt(m, tri, pc.t, a, b, c);
+  sd   = 0;
+  dist = 0;
+  if(!faceNormal(a, b, c, n))
+    return false;
+  bool interior;
+  closestOn(p, a, b, c, n, sd, dist, interior);
+  return interior;
+}
+
+[shader("compute")]
+[numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
+void tieMain(uint3 tid: SV_DispatchThreadID)
+{
+  ClothGpuModel m = *pc.model;
+  if(tid.x >= m.numTies)
+    return;
+  ClothGpuTie t = m.ties[tid.x];
+  if(t.gap < 0 || t.face < 0)
+    return;
+  float3 a  = m.x[t.a];
+  float3 b  = m.x[t.b];
+  float3 c  = m.x[t.c];
+  float3 s  = b - a;
+  float3 fn = cross(s, c - a);
+  float  ls = length(s);
+  float  ln = length(fn);
+  if(ls < 1e-12 || ln < 1e-12)
+    return;
+  float3 e1 = s / ls;
+  fn        = fn / ln;
+  float3 e2 = cross(fn, e1);
+  float3 q  = t.u * a + t.v * b + t.w * c;
+  float3 p  = m.x[t.vertex];
+  // swung further from where it was tied than its reach: not this part of the body's to hold
+  if(length(p - (q + t.lx * e1 + t.ly * e2 + t.lz * fn)) > t.reach)
+    return;
+  // the face it is over: its own, or the nearest it is over two sides around it
+  float  sd, dist;
+  float3 n;
+  int    at = -1;
+  if(tieOver(m, t.face, p, sd, dist, n))
+    at = t.face;
+  else
+  {
+    float best = 1e30;
+    for(int k = 0; k < 3; k++)
+    {
+      int nb = m.tieNext[t.face * 3 + k];
+      if(nb < 0)
+        continue;
+      for(int l = -1; l < 3; l++)
+      {
+        int f = l < 0 ? nb : m.tieNext[nb * 3 + l];
+        if(f < 0 || f == t.face)
+          continue;
+        float  fsd, fdist;
+        float3 fnn;
+        if(tieOver(m, f, p, fsd, fdist, fnn) && fdist < best)
+        {
+          best = fdist;
+          sd   = fsd;
+          n    = fnn;
+          at   = f;
+        }
+      }
+    }
+  }
+  if(at < 0)
+    return;
+  m.ties[tid.x].face = at;
+  if(sd >= t.gap || sd < -m.recoverDepth)
+    return;
+  m.x[t.vertex] = p + n * min(t.gap - sd, m.cap);
+}
+
 // Velocities from the substep's motion.
 [shader("compute")]
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]

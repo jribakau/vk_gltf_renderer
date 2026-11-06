@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <unordered_map>
 
 #include <figure/jobs/pool.hpp>
 #include <figure/physics/cloth/geometry.hpp>
@@ -66,6 +67,12 @@ struct Island::State : Model
   // them every pass and was held against neither
   std::vector<int>    contact, clothContact;
   int                 passCount = 0;
+  // the cloth tied to the body (setTies), held every substep, and the face of the pose's each is over (its
+  // tie's at first, then the one it slid onto, as a contact is followed)
+  std::vector<Tie>    ties;
+  std::vector<int>    tieFace;
+  // the pose's faces by their corners, for a tie to find its own (made at the first)
+  std::unordered_map<uint64_t, int> faceOf;
   std::vector<double> lam, lamAtt;
   std::vector<V3>     n0, n1, boxLo, boxHi;
   TriGrid             staticGrid, dynamicGrid;
@@ -123,6 +130,9 @@ struct Island::State : Model
   // One sweep over the constraints (the stretch edges alone when `stretchOnly`) and the tethers.
   void solveEdges(float dt, bool stretchOnly = false);
   void collide(float kinematicStep);
+  // Each tied vertex held to its face where the pose has it now (Island::setTies).
+  void holdTies();
+  void carry(float t);
   void frame(float t0, float t1, float extraDamping, float seconds);
 };
 
@@ -692,6 +702,7 @@ void Island::State::frame(float t0, float t1, float extraDamping, float seconds)
       holdContacts(false);
       nextCollision += std::max(1, n / passes);
     }
+    holdTies();
     for(int i : freeVerts)
       for(int k = 0; k < 3; k++)
         vel[i * 3 + k] = (x[i * 3 + k] - prev[i * 3 + k]) / dt;
@@ -703,6 +714,107 @@ void Island::State::frame(float t0, float t1, float extraDamping, float seconds)
     moved = std::max(moved, dx * dx + dy * dy + dz * dz);
   }
   lastMove = std::sqrt(moved);
+}
+
+void Island::State::holdTies()
+{
+  jobs::parallelFor(ties.size(), 2048, [&](size_t begin, size_t end) {
+    for(size_t k = begin; k < end; k++)
+    {
+      const Tie& t = ties[k];
+      if(t.gap < 0 || tieFace[k] < 0)
+        continue;
+      // swung further from where it was tied than its reach: not this part of the body's to hold
+      const RideFrame f  = rideFrame(&x[size_t(t.corner[0]) * 3], &x[size_t(t.corner[1]) * 3], &x[size_t(t.corner[2]) * 3], t.bary);
+      double          l2 = 0;
+      for(int c = 0; c < 3; c++)
+      {
+        const double d = x[size_t(t.vertex) * 3 + size_t(c)] - (f.q[c] + t.local[0] * f.e1[c] + t.local[1] * f.e2[c] + t.local[2] * f.n[c]);
+        l2 += d * d;
+      }
+      if(!f.ok || l2 > double(t.reach) * t.reach)
+        continue;
+      // the face it is over now, of its tie's and the two rings about it, and out of it to the gap: the
+      // body's outside is its faces' winding, whichever side the last pass found the vertex on
+      Closest   now{};
+      V3        n{};
+      const int i  = t.vertex;
+      const int at = followContact(i, tieFace[k], now, n);
+      if(at < 0)
+        continue;
+      tieFace[k] = at;
+      if(now.signedDistance >= t.gap || now.signedDistance < -kLeashInside)
+        continue;
+      const float push = std::min(t.gap - now.signedDistance, kLeashPush);
+      for(int c = 0; c < 3; c++)
+        x[size_t(i) * 3 + size_t(c)] += n[size_t(c)] * push;
+    }
+  });
+}
+
+void Island::State::carry(float t)
+{
+  // the pose's vertices at the sweep's start and at t, for the faces the ties ride
+  std::vector<float> from, at;
+  if(!ties.empty())
+  {
+    from = x;
+    at   = x;
+    kinematicAt(0, from, nullptr);
+    kinematicAt(t, at, nullptr);
+  }
+  std::vector<float> to = x;
+  for(size_t mi = 0; mi < meshes.size(); mi++)
+  {
+    const Kinematic& k = kin[mi];
+    if(!k.skinned)
+      continue;
+    std::vector<Mat4> bonesFrom(k.to.size()), bonesAt(k.to.size());
+    for(size_t b = 0; b < k.to.size(); b++)
+    {
+      bonesFrom[b] = sweepAt(k.from[b], k.to[b], 0);
+      bonesAt[b]   = sweepAt(k.from[b], k.to[b], t);
+    }
+    const Surface&    m = meshes[mi];
+    const SurfaceSkin skinFrom(m, std::move(bonesFrom)), skinAt(m, std::move(bonesAt));
+    const size_t      o = size_t(base[mi]);
+    jobs::parallelFor(m.vertexCount(), 1024, [&](size_t begin, size_t end) {
+      for(size_t v = begin; v < end; v++)
+      {
+        const size_t i = o + v;
+        if(!dynamic[i] || inv[i] <= 0)
+          continue;
+        Mat4 a, b;
+        if(!skinFrom.matrix(v, a) || !skinAt.matrix(v, b))
+          continue;
+        const Vec3 p = (b * inverse(a)).transformPoint({x[i * 3], x[i * 3 + 1], x[i * 3 + 2]});
+        if(!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+          continue;
+        to[i * 3]     = float(p.x);
+        to[i * 3 + 1] = float(p.y);
+        to[i * 3 + 2] = float(p.z);
+      }
+    });
+  }
+  // a tied vertex with its face, as much as it rides it
+  jobs::parallelFor(ties.size(), 2048, [&](size_t begin, size_t end) {
+    for(size_t k = begin; k < end; k++)
+    {
+      const Tie&      tie = ties[k];
+      const RideFrame f0  = rideFrame(&from[size_t(tie.corner[0]) * 3], &from[size_t(tie.corner[1]) * 3], &from[size_t(tie.corner[2]) * 3], tie.bary);
+      const RideFrame f1  = rideFrame(&at[size_t(tie.corner[0]) * 3], &at[size_t(tie.corner[1]) * 3], &at[size_t(tie.corner[2]) * 3], tie.bary);
+      float*          p   = &to[size_t(tie.vertex) * 3];
+      float           q[3] = {x[size_t(tie.vertex) * 3], x[size_t(tie.vertex) * 3 + 1], x[size_t(tie.vertex) * 3 + 2]};
+      carryOne(f0, f1, q);
+      for(int c = 0; c < 3; c++)
+        p[c] += (q[c] - p[c]) * tie.carry;
+    }
+  });
+  x = std::move(to);
+  // where it is now is where it was at its last pass and its last look: the side it is on
+  cprev  = x;
+  tested = x;
+  std::fill(budget.begin(), budget.end(), 0.f);
 }
 
 Island::Island(std::vector<Surface> surfaces, const Options& opts)
@@ -722,6 +834,37 @@ void Island::setGravity(const std::array<float, 3>& gravity)
   std::vector<float>& grav = m_state->grav;
   for(size_t i = 0; i + 2 < grav.size(); i += 3)
     std::copy(gravity.begin(), gravity.end(), grav.begin() + long(i));
+}
+
+size_t Island::setTies(std::vector<Tie> ties)
+{
+  State& s = *m_state;
+  // a vertex the cloth moves, on a face of the pose's
+  const auto movable = [&](int i) { return i >= 0 && i < s.nv && s.dynamic[size_t(i)] && s.inv[size_t(i)] > 0; };
+  const auto posed   = [&](int i) { return i >= 0 && i < s.nv && !movable(i); };
+  ties.erase(std::remove_if(ties.begin(), ties.end(),
+                            [&](const Tie& t) { return !movable(t.vertex) || !posed(t.corner[0]) || !posed(t.corner[1]) || !posed(t.corner[2]); }),
+             ties.end());
+  // each tie's face as the model has it, by its corners
+  const auto key = [](int a, int b, int c) {
+    int k[3] = {a, b, c};
+    std::sort(k, k + 3);
+    return (uint64_t(uint32_t(k[0])) << 42) ^ (uint64_t(uint32_t(k[1])) << 21) ^ uint64_t(uint32_t(k[2]));
+  };
+  if(s.faceOf.empty())
+    for(int t : s.staticTris)
+      s.faceOf.emplace(key(s.tris[size_t(t)].a, s.tris[size_t(t)].b, s.tris[size_t(t)].c), t);
+  s.tieFace.assign(ties.size(), -1);
+  for(size_t k = 0; k < ties.size(); k++)
+    if(const auto it = s.faceOf.find(key(ties[k].corner[0], ties[k].corner[1], ties[k].corner[2])); it != s.faceOf.end())
+      s.tieFace[k] = it->second;
+  s.ties = std::move(ties);
+  return s.ties.size();
+}
+
+void Island::carry(float t)
+{
+  m_state->carry(t);
 }
 
 bool Island::setTarget(size_t surface, const std::vector<Mat4>& bones)

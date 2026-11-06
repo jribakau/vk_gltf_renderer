@@ -62,6 +62,18 @@ struct ClothGpuCell
   int count, pad0, pad1, pad2;
 };
 
+// Live: a vertex tied to the body (figure/physics/cloth/leash.hpp, cloth::Tie): its face's corners, where on
+// the face (u v w) and its offset from there in the face's frame (l), how far from there it is held, its gap
+// out of the body's faces (< 0: not held), and the face of the body's it is over (into `tris`: its tie's
+// at first, then each one it slides onto; -1: none).
+struct ClothGpuTie
+{
+  int   vertex, a, b, c;
+  float u, v, w, reach;
+  float lx, ly, lz, gap;
+  int   face, pad0, pad1, pad2;
+};
+
 struct ClothGpuModel
 {
   float3* x;
@@ -121,8 +133,10 @@ struct ClothGpuModel
   int*        clusterColourStart;
   uint2*      clusterSoft;
   int*        clusterSoftStart;
+  ClothGpuTie* ties;  // live: the cloth tied to the body, held every substep (tieMain)
+  int*        tieNext;  // the faces across each side of each of `tris` (three a face, -1: none), for a tie to follow
   uint        nv, numKinematic, numFree, numEdges, numTris, cellMask, numSoft, numClusterEdges;
-  uint        numClothTris, clothCellMask, pad0, pad1;
+  uint        numClothTris, clothCellMask, numTies, pad1;
   uint        numClusters, clusterColours, clusterStretch, clusterReach;
   float       cellSize, depth, cap, maxSpeed, searchReach, recoverDepth;
 };

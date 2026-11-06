@@ -46,9 +46,14 @@ public:
   // (not skinned, another size), and nothing changed. Never while it runs.
   virtual bool setRest(size_t /*mesh*/, std::vector<float> /*restLocal*/) { return false; }
   // Live: the cloth carried with the pose from where the next sweep sets out to fraction `t` of it, each
-  // vertex as its own skin moves it, at rest, so the sweep starts there. False when it can't (the CPU's),
-  // and nothing changed.
+  // vertex as its own skin moves it (a tied one with its face), at rest, so the sweep starts there. False
+  // when it can't, and nothing changed.
   virtual bool carry(float /*t*/) { return false; }
+  // Live: the cloth tied to the body (physics/cloth/leash.hpp: the settled drape on its faces) from the
+  // next step, in place of any ties before: each substep holds every tied vertex within its reach of
+  // where its face has it and out of the backstop under the face, and a late step's carry takes it with
+  // its face. How many ties it holds; 0 when it can't. Never while it runs.
+  virtual size_t tie(std::vector<Tie> /*ties*/) { return 0; }
   // Live: one frame. After a setTarget the pose sweeps from the one it reached to the new target
   // (0 to 1); otherwise it holds where the last sweep ended (1), as a settle's hold frames do. A
   // sweep from 0 on every frame would set the colliders and the pinned cloth out from the pose
@@ -86,6 +91,8 @@ public:
   void  frame(float t0, float t1, float extraDamping = 0, float seconds = 0) override;
   void  setTarget(size_t mesh, const std::vector<Mat4>& bones) override;
   bool  setRest(size_t mesh, std::vector<float> restLocal) override;
+  bool  carry(float t) override;
+  size_t tie(std::vector<Tie> ties) override;
   void  setGravity(const std::array<float, 3>& gravity) override;
   void  settle() override;
   float lastMove() const override;

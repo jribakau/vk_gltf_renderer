@@ -21,6 +21,7 @@
 #include <figure/physics/cloth/coarse.hpp>
 #include <figure/physics/cloth/island.hpp>
 #include <figure/physics/cloth/job.hpp>
+#include <figure/physics/cloth/leash.hpp>
 #include <figure/physics/cloth/report.hpp>
 #include <figure/physics/cloth/ride.hpp>
 #include <figure/physics/collide/tri_grid.hpp>
@@ -696,6 +697,75 @@ TEST(ClothRide, itsCornersAreWhereTheBodysSkinHasThem)
   }
 }
 
+// A drape tied to the body (physics-plan 13c, physics/cloth/leash.hpp): a vertex gone under the body near
+// where it was tied is put back out over the face it is under by its gap, one that hung off it from further
+// away too, and one that swung away further than its reach is left to the collisions. Nothing is pulled
+// toward the body
+TEST(ClothLeash, aTiedVertexNearWhereItLayIsHeldOutOfTheBody)
+{
+  namespace cloth          = physics::cloth;
+  const std::vector<float> rest = {-5, 0, -5, 5, 0, -5, 5, 0, 5, -5, 0, 5};
+  const Surface            body = Surface::collider(rest, rest, {0, 3, 2, 0, 2, 1}, 0, 0.2f, 0.4f);
+  // half a centimetre up, against it; 3 cm up, hanging off it; and against it again
+  const std::vector<float> drape = {1, 0.5f, 2, -2, 3, 1, 3, 0.5f, -3};
+  const cloth::Leashes     l     = cloth::leash(cloth::bindRide(body, rest, drape, {}), nullptr, body);
+  ASSERT_EQ(l.ride.vertices.size(), 3u);
+  EXPECT_NEAR(l.reach[0], cloth::kLeashReach, 1e-6f);
+  EXPECT_NEAR(l.reach[1], cloth::kLeashReach + cloth::kLeashSlope * 2, 1e-5f);
+  // held out by the body's gap
+  EXPECT_NEAR(l.gap[0], 0.2f, 1e-6f);
+  const std::vector<int> across = cloth::facesAcross(body.tris);
+  // where it lies, or further off the body, nothing moves
+  std::vector<float> lying = drape;
+  EXPECT_EQ(cloth::holdLeashes(l, rest, body.tris, across, lying), 0u);
+  std::vector<float> off = {1, 9, 2, -2, 20, 1, 3, 0.5f, -3};
+  EXPECT_EQ(cloth::holdLeashes(l, rest, body.tris, across, off), 0u);
+  // the first and second gone under the body within their reach come back out over it by the gap; the
+  // third, gone under it 4 cm along from where it lay, past its reach, stays
+  std::vector<float>   points = {1, -0.5f, 2, -2, -1, 1, 7, -0.5f, -3};
+  std::vector<uint8_t> moved;
+  EXPECT_EQ(cloth::holdLeashes(l, rest, body.tris, across, points, &moved), 2u);
+  EXPECT_EQ(moved, (std::vector<uint8_t>{1, 1, 0}));
+  const std::vector<float> want = {1, 0.2f, 2, -2, 0.2f, 1, 7, -0.5f, -3};
+  for(size_t i = 0; i < want.size(); i++)
+    EXPECT_NEAR(points[i], want[i], 1e-4f) << i;
+}
+
+// The hold is the body's own faces: a vertex tied over one face that slid onto the next, where the body
+// bends, is held out of that one along its normal. A sphere under the first face, as round as the body is
+// there, fell away from the faces beside it: of what it kept outside, most was in the body
+TEST(ClothLeash, aVertexSlidOntoTheNextFaceIsHeldOutOfThatOne)
+{
+  namespace cloth = physics::cloth;
+  // flat for x < 0, then rising at 45 degrees
+  const std::vector<float>    rest = {-5, 0, -5, 0, 0, -5, 0, 0, 5, -5, 0, 5, 5, 5, -5, 5, 5, 5};
+  const std::vector<uint32_t> tris = {0, 3, 2, 0, 2, 1, 1, 2, 5, 1, 5, 4};
+  const Surface               body = Surface::collider(rest, rest, tris, 0, 0.2f, 0.4f);
+  const cloth::Leashes        l    = cloth::leash(cloth::bindRide(body, rest, {-0.5f, 0.5f, 0}, {}), nullptr, body);
+  ASSERT_EQ(l.ride.vertices.size(), 1u);
+  EXPECT_LT(l.ride.face[0], 2u) << "tied over the flat";
+  // slid 1.5 cm on, under the rising face
+  std::vector<float> points = {1, 0.6f, 0};
+  ASSERT_EQ(cloth::holdLeashes(l, rest, body.tris, cloth::facesAcross(body.tris), points), 1u);
+  EXPECT_NEAR((points[1] - points[0]) / std::sqrt(2.f), 0.2f, 1e-4f) << "out of the rising face by the gap";
+  EXPECT_NEAR(points[2], 0.f, 1e-5f);
+}
+
+// The faces across each side of each face, as the model pairs them
+TEST(ClothLeash, facesAcrossPairsTheFacesThatShareASide)
+{
+  const std::vector<int> across = physics::cloth::facesAcross({0, 3, 2, 0, 2, 1, 1, 2, 5, 1, 5, 4});
+  ASSERT_EQ(across.size(), 12u);
+  // the first shares 2-0 with the second; the second 1-2 with the third; the third 5-1 with the fourth
+  EXPECT_EQ(across[2], 1);
+  EXPECT_EQ(across[3 + 0], 0);
+  EXPECT_EQ(across[3 + 1], 2);
+  EXPECT_EQ(across[6 + 0], 1);
+  EXPECT_EQ(across[6 + 2], 3);
+  EXPECT_EQ(across[9 + 0], 2);
+  EXPECT_EQ(std::count(across.begin(), across.end(), -1), 6);
+}
+
 TEST(ClothSurface, sameButPoseLooksPastThePoseAlone)
 {
   // a kept GPU simulation keeps its model for a surface that is the same but for its pose: the target
@@ -1173,6 +1243,79 @@ float sideOf(const std::vector<float>& p, uint32_t a, uint32_t b)
 }
 
 }  // namespace
+
+// A late step's carry takes tied cloth with the body's faces (physics-plan 13c). Carried by its own skin, a
+// veil whose weights don't follow the body stayed where it was as the body rose 6 cm through it, and the
+// sweep through the rest of the step set out from inside the body, which it then kept to: in 10TEST's
+// walk at 11 steps a second every step came late, and the Witch Dress began each inside a thigh
+TEST(ClothLeash, aLateStepCarriesTiedClothWithTheBodyNotThroughIt)
+{
+  namespace cloth = physics::cloth;
+  const auto skinned = [](Surface& m) {
+    const size_t n = m.vertexCount();
+    m.skinIndex.assign(n * 4, 0);
+    m.skinWeight.assign(n * 4, 0.f);
+    for(size_t k = 0; k < n; k++)
+      m.skinWeight[k * 4] = 1;
+    m.bones     = {Mat4{}};
+    m.restLocal = m.rest;
+  };
+  // a body 12 cm square on one bone, and a veil 6 cm square 1 cm over it, free and weightless, on another
+  std::vector<float>    bodyAt;
+  std::vector<uint32_t> bodyTris;
+  for(int z = 0; z <= 12; z++)
+    for(int x = 0; x <= 12; x++)
+      bodyAt.insert(bodyAt.end(), {float(x) - 6, 0.f, float(z) - 6});
+  for(int z = 0; z < 12; z++)
+    for(int x = 0; x < 12; x++)
+    {
+      const auto v = [&](int i, int k) { return uint32_t(k * 13 + i); };
+      bodyTris.insert(bodyTris.end(), {v(x, z), v(x, z + 1), v(x + 1, z), v(x + 1, z), v(x, z + 1), v(x + 1, z + 1)});
+    }
+  Surface body = Surface::collider(bodyAt, bodyAt, bodyTris, cloth::kBodyLayer, 0.2f, 0.4f);
+  skinned(body);
+  std::vector<float> veilAt;
+  for(int r = 0; r <= 6; r++)
+    for(int c = 0; c <= 6; c++)
+      veilAt.insert(veilAt.end(), {float(c) - 3, 1.f, float(r) - 3});
+  Surface veil = clothOn(veilAt, 7, 7);
+  veil.strength.assign(veil.vertexCount(), 1.f);
+  veil.gravity = {0, 0, 0};
+  skinned(veil);
+  const size_t       n    = veil.vertexCount();
+  const float        rise = 8, late = 0.75f;
+  const std::vector<Mat4> up = {compose(Vec3{0, rise, 0}, Quat{}, Vec3{1, 1, 1})};
+  const auto run = [&](bool tie, std::vector<float>& carried) {
+    Island sim({body, veil});
+    sim.frame(1, 1);
+    if(tie)
+    {
+      const auto           at = sim.positions();
+      const cloth::Leashes l  = cloth::leash(cloth::bindRide(body, at[0], at[1], cloth::heldOf(veil)), &veil, body);
+      EXPECT_EQ(sim.setTies(cloth::tiesOf(l, int(body.vertexCount()), 0)), n);
+    }
+    sim.setTarget(0, up);
+    sim.carry(late);
+    carried = sim.positions()[1];
+    sim.frame(late, 1);
+    return sim.positions()[1];
+  };
+  std::vector<float>       carried;
+  const std::vector<float> tied = run(true, carried);
+  for(size_t v = 0; v < n; v++)
+  {
+    EXPECT_NEAR(carried[v * 3 + 1], 1 + rise * late, 1e-4f) << "carried with the body, vertex " << v;
+    EXPECT_GE(tied[v * 3 + 1], rise + 0.2f - 1e-3f) << "outside the body at the step's end, vertex " << v;
+    EXPECT_LE(tied[v * 3 + 1], rise + 3) << "thrown off it, vertex " << v;
+  }
+  // untied, as before: left where it was, it ends the step under the body
+  const std::vector<float> loose = run(false, carried);
+  for(size_t v = 0; v < n; v++)
+  {
+    EXPECT_NEAR(carried[v * 3 + 1], 1, 1e-4f) << v;
+    EXPECT_LT(loose[v * 3 + 1], rise * late) << v;
+  }
+}
 
 TEST(ClothLight, aFineClothBecomesALightCopyOfQuadsAlongItsThreadsThatKeepsItsSettings)
 {

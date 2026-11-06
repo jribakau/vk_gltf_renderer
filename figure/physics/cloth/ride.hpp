@@ -35,6 +35,16 @@ struct Ride
   bool empty() const { return vertices.empty(); }
 };
 
+// A face's point at `bary` and its frame there: e1 along its first side, n its normal (its winding's,
+// outward on the body: its faces wind as keepOut and the collisions read them), e2 across. A face with no
+// area has none (`ok` false), and an offset on it is taken as it is.
+struct RideFrame
+{
+  double q[3], e1[3], e2[3], n[3];
+  bool   ok = false;
+};
+RideFrame rideFrame(const float* a, const float* b, const float* c, const float* bary);
+
 // `drape` (xyz per vertex, in the job's space) on the nearest faces of `body` as it lies at `bodyAt`, all
 // but what is `held` to its skin (per vertex, 1: a vertex of no strength, or one the cloth leaves out).
 // With `hint`, the last ride of the same drape on the same body, each vertex it has is found again on its

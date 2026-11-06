@@ -36,6 +36,7 @@
 #include <memory>
 #include <vector>
 
+#include <figure/physics/cloth/leash.hpp>
 #include <figure/physics/cloth/model.hpp>
 #include <figure/physics/sweep.hpp>
 
@@ -101,6 +102,15 @@ public:
   bool setRest(size_t surface, std::vector<float> restLocal);
   // Which way is down and how hard, cm/s^2 in the job's space.
   void setGravity(const std::array<float, 3>& gravity);
+  // Live: the cloth tied to the body (physics/cloth/leash.hpp) from the next frame, in place of any ties
+  // before: every substep each tied vertex is held within its reach of where its face has it and out of
+  // the backstop under the face. A tie of a vertex the cloth doesn't move, or to a face it does, is left
+  // out. How many it kept.
+  size_t setTies(std::vector<Tie> ties);
+  // Live: the cloth carried with the pose from where the next sweep sets out to fraction `t` of it, at
+  // rest, as the GPU solver's carry: each free vertex as its own skin moves it, and a tied one with its
+  // face as much as it rides it (Tie::carry). Its velocity is kept.
+  void carry(float t);
   // The pose transition over its frames, then the hold until the cloth is still (or `maxHold`).
   void settle();
   // How far the fastest dynamic vertex moved over the last frame, cm.

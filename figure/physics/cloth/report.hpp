@@ -5,6 +5,7 @@
 // GPU cloth bench (docs/physics-plan.md step 13a) take them from here, so both judge alike.
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include <figure/physics/cloth/model.hpp>
@@ -17,8 +18,8 @@ namespace fv::physics::cloth {
 std::vector<double> stretchRatios(const Model& model, size_t slot, size_t n, const std::vector<float>& out);
 
 // How many of `out`'s vertices lie behind the body's closest face (the wardrobe's pushOut rule, within
-// 3 cm), the body at `bodyNow`.
-size_t insideBody(const Surface& body, const std::vector<float>& bodyNow, const std::vector<float>& out);
+// 3 cm), the body at `bodyNow`; with `which`, 1 for each of them.
+size_t insideBody(const Surface& body, const std::vector<float>& bodyNow, const std::vector<float>& out, std::vector<uint8_t>* which = nullptr);
 
 // How many of `a`'s vertices have gone to the other side of `b`, another simulated surface: each one's
 // side of b's closest face where both lie as made, against its side where both lie now (`aOut`,
