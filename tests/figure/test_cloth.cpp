@@ -779,6 +779,49 @@ TEST(ClothCoarse, aChainOfSmallLinksIsCopiedThoughNoLinkCanBeSimplifiedAlone)
   EXPECT_GT(hi, 24.75f);
 }
 
+TEST(ClothCoarse, aChainOfThinWireRingsIsCopiedWithEveryRing)
+{
+  // The Charming Witch necklace's chain, as the app had it in a walk: rings 1.4 mm across of wire 0.24 mm
+  // thick, one every 2.5 mm. Within an eighth of the error asked the simplifier still folds a ring's wire
+  // flat, and a ring that goes leaves its vertices too far off: the copy was made finer still
+  constexpr int   kRings = 100, kAround = 24, kRound = 8;
+  constexpr float kRing = 0.07f, kWire = 0.012f, kPitch = 0.25f;
+  std::vector<float>    pos;
+  std::vector<uint32_t> tris;
+  for(int k = 0; k < kRings; k++)
+  {
+    const uint32_t base = uint32_t(pos.size() / 3);
+    // each ring turned a quarter from the last, as a chain's links are
+    const bool upright = k % 2 == 1;
+    for(int a = 0; a < kAround; a++)
+      for(int r = 0; r < kRound; r++)
+      {
+        const float u = 2.f * 3.14159265f * float(a) / kAround, w = 2.f * 3.14159265f * float(r) / kRound;
+        const float x = (kRing + kWire * std::cos(w)) * std::cos(u), y = (kRing + kWire * std::cos(w)) * std::sin(u), z = kWire * std::sin(w);
+        pos.insert(pos.end(), {x + kPitch * float(k), upright ? z : y, upright ? y : z});
+      }
+    for(int a = 0; a < kAround; a++)
+      for(int r = 0; r < kRound; r++)
+      {
+        const uint32_t v00 = base + uint32_t(a * kRound + r), v01 = base + uint32_t(a * kRound + (r + 1) % kRound);
+        const uint32_t v10 = base + uint32_t(((a + 1) % kAround) * kRound + r), v11 = base + uint32_t(((a + 1) % kAround) * kRound + (r + 1) % kRound);
+        tris.insert(tris.end(), {v00, v10, v11, v00, v11, v01});
+      }
+  }
+  const Surface chain = Surface::collider(pos, pos, tris, 0, 0.2f, 0.4f);
+  ASSERT_EQ(chain.tris.size() / 3, size_t(kRings * kAround * kRound * 2));
+  const auto c = physics::cloth::coarsen(chain, 1.f, 0.25f);
+  ASSERT_TRUE(c) << "a chain of thin rings stays as fine as it is";
+  EXPECT_LT(c->surface.tris.size() / 3, chain.tris.size() / 3 / 2);
+  EXPECT_LE(c->error, 0.5f);
+  // every ring has faces in the copy
+  std::vector<int> faces(kRings, 0);
+  for(size_t t = 0; t + 2 < c->surface.tris.size(); t += 3)
+    faces[size_t(c->keep[c->surface.tris[t]] / (kAround * kRound))]++;
+  for(int k = 0; k < kRings; k++)
+    EXPECT_GT(faces[size_t(k)], 0) << "ring " << k;
+}
+
 TEST(ClothCoarse, aColliderAsFineAsTheClothOrClothItselfStaysAsItIs)
 {
   // 8 bands: sides of about 1.2 cm, as the cloth's

@@ -26,8 +26,9 @@ constexpr double kFiner = 2.0;
 constexpr double kMostKept = 0.5;
 // nor when a vertex of the original lies further from it than this many times the error asked for
 constexpr double kTooFar = 2.0;
-// How many times a copy that lies too far off is made again, within half the error each time
-constexpr int kAttempts = 4;
+// How many times a copy that lies too far off is made again, within half the error each time: the
+// Charming Witch necklace's chain, in a walk in the app, kept its rings only within a sixteenth
+constexpr int kAttempts = 6;
 
 double distance(const float* p, uint32_t a, uint32_t b)
 {
@@ -185,8 +186,9 @@ std::optional<Coarse> coarsen(const Surface& collider, float edge, float maxErro
   // Simplified to lie within the error (in the cage's units), then measured: the simplifier's own
   // estimate runs low (a sphere's copy sank 1.4 mm under it where it said 1). It also drops whole any
   // piece smaller than the error (a bead, a stitch), and when one lies far from the rest (a chain's
-  // links, 1.4 mm across, under an error of 2.3 mm) the copy is too far off there: made again within
-  // half the error, which keeps them, each in a few faces
+  // links, 1.4 mm across, under an error of 2.3 mm) the copy is too far off there, as it is where a
+  // link's wire, thinner than the error, folds flat: made again within half the error, which keeps
+  // them, each in a few faces
   std::vector<uint32_t> out(faces.size());
   float                 within = maxError;
   for(int attempt = 0; attempt < kAttempts; attempt++, within *= 0.5f)
@@ -194,8 +196,11 @@ std::optional<Coarse> coarsen(const Surface& collider, float edge, float maxErro
     float        estimate = 0;
     const size_t count    = meshopt_simplify(out.data(), faces.data(), faces.size(), p, n, sizeof(float) * 3, want * 3, within,
                                              meshopt_SimplifyErrorAbsolute | meshopt_SimplifyPrune, &estimate);
+    // nothing left of it: every piece was smaller than the error
+    if(count == 0)
+      continue;
     // within less it keeps more
-    if(count == 0 || double(count / 3) > kMostKept * double(had))
+    if(double(count / 3) > kMostKept * double(had))
       return std::nullopt;
     Coarse     c   = copyOf(collider, std::vector<uint32_t>(out.begin(), out.begin() + std::ptrdiff_t(count)));
     const auto far = farthest(c.surface, p, verts, limit2);
