@@ -327,6 +327,13 @@ rotation moves the environment. See the `calculateMotionVector` overload comment
   so a still with DLSS left on keeps its history when the camera moves again. Only the checkbox
   frees the RR inner GBuffer; a `dlssEnable` write from elsewhere keeps it, so a host that turns
   DLSS off for every still does not recreate the feature at the next move.
+- **A DLSS frame's samples share its jitter.** `ptSamplesDlss` (1 by default) is how many samples
+  a DLSS frame traces, all through the frame's one jittered position: the guides, written from the
+  last sample, describe that point, so the extra samples take noise out of its light only. Under
+  Ray Reconstruction a still's frame of 1 sample looked no better than a moving one; the app sends
+  more while a still refines with DLSS (Render › Refine with DLSS › Samples a frame, 4 by default)
+  and 1 when the view moves, with no reset, so RR keeps its history. They count toward Max Samples:
+  128 at 4 a frame end after 32 frames.
 - **Switching DLSS off restarts the path tracer's accumulation.** DLSS frames count toward
   `maxFrames` and the accumulated-sample total like any other frame, and the result image holds the
   last 1-spp DLSS input. Every DLSS setting therefore resets the frame (the `resetAccumulation` hook

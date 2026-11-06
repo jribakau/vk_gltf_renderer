@@ -1871,15 +1871,19 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
 #endif
 
   // The frame traces exactly the samples the host counts (numSamples): the host decides, per frame.
-  // A frame DLSS denoises gets 1 (DLSS does its own temporal accumulation); with OptiX or OIDN also
-  // on, the frames after DLSS's frame 0 get Auto SPP's or ptSamples' count.
+  // A frame DLSS denoises gets ptSamplesDlss (1 but for the DLSS refine of a still: DLSS does its own
+  // temporal accumulation); with OptiX or OIDN also on, the frames after DLSS's frame 0 get Auto SPP's
+  // or ptSamples' count.
   for(int s = 1; s < pushConst.numSamples; s++)
   {
 #if USE_LIGHT_RIS
     g_reuseFirstSample = false;
 #endif
     beginSobolSample(uint(pushConst.totalSamples + s));
-    subpixelJitter = gaussianSubpixelJitter(seed);  // the same pixel filter as the first sample
+    // the same pixel filter as the first sample; a DLSS frame's all go through its jittered position,
+    // the one Ray Reconstruction's guides (written from the last sample) describe
+    if(!hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+      subpixelJitter = gaussianSubpixelJitter(seed);
     sampleResult   = samplePixel(raytracer, seed, samplePos, subpixelJitter, imageSize, pushConst.frameInfo->projInv,
                                  pushConst.frameInfo->viewInv, pushConst.focalDistance, pushConst.aperture);
     pixelColor += sampleResult.radiance;

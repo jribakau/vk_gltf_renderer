@@ -434,6 +434,7 @@ public:
   bool                       m_adaptiveSampling{true};
   int m_adaptiveSamples{MIN_SAMPLES_PER_PIXEL};  // Auto SPP's samples per frame; ptSamples keeps the user's value
   int m_totalSamplesAccumulated{0};              // Track total samples separately
+  int m_samplesDlss{1};   // Samples per pixel a DLSS frame traces (ptSamplesDlss)
   int m_frameSamples{1};  // Samples per pixel traced this frame: ptSamples, fewer on a frame that ends on a stop
   // Samples traced by the last frames, as far back as the profiler's GPU times lag (Auto SPP)
   std::array<int, nvutils::ProfilerTimeline::MAX_FRAME_DELAY + 1> m_recentFrameSamples{};

@@ -65,7 +65,9 @@ namespace {
 // 35: the exposure follows the clouds: tonemap.followClouds and tonemap.skyShare, and the read-only
 // tonemap.cloudLight, what the clouds leave of the light.
 // 36: haze in the air, the lighting's haze section (enabled, visibility, glow).
-constexpr int kProtocolVersion = 36;
+// 37: ptSamplesDlss, the samples a DLSS frame traces (an older renderer refuses the app's whole
+// batch of render parameters for it).
+constexpr int kProtocolVersion = 37;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

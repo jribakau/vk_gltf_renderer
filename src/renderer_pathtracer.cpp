@@ -222,6 +222,11 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: Samples per pixel traced each frame (see ptMaxSamples for the total)",
                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { m_adaptiveSampling = false; }},
                 &m_pushConst.numSamples, Persist::eYes, MIN_SAMPLES_PER_PIXEL, MAX_SAMPLES_PER_PIXEL);
+  // A DLSS frame's samples go through its jittered position, so Ray Reconstruction's guides stay that
+  // point's and the samples only take noise out of its light. The app sends more while the view is
+  // still under the DLSS refine, 1 when it moves; no reset, Ray Reconstruction keeps its history.
+  settings->add({.name = "ptSamplesDlss", .help = "PathTracer: DLSS frames: samples per pixel traced each frame, through the frame's jittered position"},
+                &m_samplesDlss, Persist::eNo, MIN_SAMPLES_PER_PIXEL, MAX_SAMPLES_PER_PIXEL);
   // An accumulation's frames clamp at ptFireflyClampStill when it is set, so a new ptFireflyClamp (the
   // host sends one with every exposure change) restarts only an accumulation that reads it; DLSS frames
   // pick it up as they come (Unreal keeps a still across small exposure changes too)
@@ -1432,13 +1437,14 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
         static_cast<float>(glm::length(resources.cameraManip->getEye() - resources.cameraManip->getCenter()));
   }
 
-  // Samples per frame: the setting (ptSamples), Auto SPP's count, or 1 with DLSS
+  // Samples per frame: the setting (ptSamples), Auto SPP's count, or with DLSS ptSamplesDlss (1 but
+  // for the DLSS refine of a still)
   int  samplesPerFrame = m_adaptiveSampling ? m_adaptiveSamples : m_pushConst.numSamples;
   bool useDlss         = false;
 #if defined(USE_DLSS)
   useDlss = getEffectiveDlssEnabled(resources);
   if(useDlss)
-    samplesPerFrame = 1;
+    samplesPerFrame = m_samplesDlss;
 
   // Halton jitter and frame-index counter. GltfRenderer::renderFrame writes the frame info with a
   // zero jitter every frame; only a DLSS frame patches it.
