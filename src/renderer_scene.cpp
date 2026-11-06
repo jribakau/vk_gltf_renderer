@@ -239,6 +239,7 @@ rs::VulkanGpuBackend::Info GltfRenderer::retainedBackendInfo()
           .submitResourceFree = [app](std::function<void()>&& fn) { app->submitResourceFree(std::move(fn)); },
           .bindings           = &m_resources.descriptorBinding[0],
           .descriptorSet      = m_resources.descriptorSet,
+          .descriptorSetLayout = m_resources.descriptorSetLayout[0],
           .textureBinding     = shaderio::BindingPoints::eTextures,
           .samplerBinding     = shaderio::BindingPoints::eSamplers,
           .maxTextures        = m_maxTextures,

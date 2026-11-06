@@ -288,6 +288,9 @@ void Residency::clear()
   m_dirtyMaterials.clear();
   m_slotsFollowed.clear();
   m_relitSlots.clear();
+  m_texelMeans.clear();
+  m_texelAsks.clear();  // what comes for them is let go of
+  m_texelAsked.clear();
   m_heldMaterials.clear();
   m_textureInfoPool = poolFromOne(m_options.textureInfoLimit);
   m_textureInfos.assign(1, {});
@@ -3095,6 +3098,8 @@ SyncResult Residency::sync(RetainedScene& scene)
   // a settled mesh's BVH, looked at now and then: it waits for room
   const bool settleBuild = !m_settleBuilds.empty() && m_gpu.frame() % 30 == 0;
   const bool liveAsleep  = !m_wakeAsked.empty();
+  // a textured emitter's texels being averaged: the table takes them when they come
+  const bool texelsAsked = !m_texelAsks.empty();
   const bool parkedChanged = std::exchange(m_parkedChanged, false);
   // what a large chain worked in goes once nothing has posed for a while
   constexpr uint64_t kChainScratchIdleFrames = 600;
@@ -3117,7 +3122,8 @@ SyncResult Residency::sync(RetainedScene& scene)
       retireBuffer(std::exchange(d->second.prevPositions, {}));
     it = m_prevResting.erase(it);
   }
-  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked && !parkedChanged && !settleBuild && !liveAsleep && m_arriving.empty())
+  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked && !parkedChanged && !settleBuild && !liveAsleep && !texelsAsked
+     && m_arriving.empty())
     return result;
   // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
   m_gpu.barrier(GpuBarrier::eFrameToWrite);
@@ -3253,12 +3259,15 @@ SyncResult Residency::sync(RetainedScene& scene)
     }
   }
   m_relitSlots.clear();
+  // a textured emitter's own triangles weighed, now that their texels are averaged
+  const bool texelsLanded = takeTexelAverages();
   if(emitterWritten)
   {
     m_emissiveStale     = true;
     m_emitterWriteFrame = m_gpu.frame();
   }
-  if(fresh || materialsWritten || result.visibilityChanged || emitterMoved || emitterRelit || (emissiveSettled && !emitterWritten))
+  if(fresh || materialsWritten || result.visibilityChanged || emitterMoved || emitterRelit || texelsLanded
+     || (emissiveSettled && !emitterWritten))
   {
     fv::timing::Accum time("emissive rebuild");
     syncEmissive(scene);
@@ -3801,6 +3810,79 @@ void Residency::syncLights(RetainedScene& scene)
   m_lightCount = uint32_t(lights.size());
 }
 
+std::optional<Residency::TexelKey> Residency::texelKey(const Instance& inst, shaderio::GltfTextureInfo* info) const
+{
+  if(inst.materialSlot >= m_materialStates.size() || !m_materialStates[inst.materialSlot] || inst.materialSlot >= m_shadeMaterials.size())
+    return std::nullopt;
+  const MaterialState& state = *m_materialStates[inst.materialSlot];
+  const int            entry = state.payload.emissiveMap.index;
+  const uint32_t       row   = m_shadeMaterials[inst.materialSlot].emissiveTexture;  // 0: none (textureInfos[0] is reserved)
+  const auto           slot  = m_materials.find(state.material);
+  if(entry < 0 || row == 0 || row >= m_textureInfos.size() || state.texturesDropped || slot == m_materials.end()
+     || size_t(entry) >= slot->second.textures.size() || !slot->second.textures[entry])
+    return std::nullopt;
+  const auto& [texture, sampler, srgb] = *slot->second.textures[entry];
+  const auto image                     = m_images.find({texture, srgb});
+  if(image == m_images.end() || !image->second.image)
+    return std::nullopt;  // drawn with the default image until it lands: nothing of its own to average
+  const shaderio::GltfTextureInfo& ti = m_textureInfos[row];
+  TexelKey key{.mesh = inst.mesh, .submesh = inst.submesh, .texture = texture, .srgb = srgb, .texCoord = ti.texCoord,
+               .transform = {1.f, 0.f, 0.f, 1.f, 0.f, 0.f}};
+#if MAT_EXT_TEXTURE_TRANSFORM
+  for(int r = 0; r < 3; r++)
+  {
+    key.transform[2 * r]     = ti.uvTransform[r].x;
+    key.transform[2 * r + 1] = ti.uvTransform[r].y;
+  }
+#endif
+  if(info)
+    *info = ti;
+  return key;
+}
+
+std::vector<float> Residency::emitterTriangleLuminance(const RetainedScene& scene, uint32_t slot) const
+{
+  const Instance* inst = instance(slot);
+  if(!inst || !inst->shown || inst->materialSlot >= m_shadeMaterials.size())
+    return {};
+  const std::optional<TexelKey> key = texelKey(*inst, nullptr);
+  const auto                    it  = key ? m_texelMeans.find(*key) : m_texelMeans.end();
+  const MeshRecord*             record = scene.mesh(inst->mesh);
+  if(it == m_texelMeans.end() || it->second.empty() || !record || it->second.size() != record->drawnRun(inst->submesh).indexCount / 3)
+    return {};
+  const glm::vec3    factor = glm::max(m_shadeMaterials[inst->materialSlot].emissiveFactor, glm::vec3(0.f));
+  std::vector<float> lum(it->second.size());
+  for(size_t t = 0; t < lum.size(); t++)
+    lum[t] = nvvkgltf::emissiveLuminance(factor * it->second[t]);
+  return lum;
+}
+
+bool Residency::takeTexelAverages()
+{
+  bool landed = false;
+  for(GpuBackend::TexelAverages& a : m_gpu.takeTexelAverages())
+  {
+    const auto ask = m_texelAsks.find(a.ticket);
+    if(ask == m_texelAsks.end())
+      continue;  // asked for a scene since replaced
+    size_t at = 0, black = 0;
+    for(const auto& [key, count] : ask->second)
+    {
+      if(at + count <= a.means.size())
+        m_texelMeans[key].assign(a.means.begin() + at, a.means.begin() + at + count);
+      m_texelAsked.erase(key);
+      at += count;
+    }
+    for(const glm::vec3& m : a.means)
+      black += nvvkgltf::emissiveLuminance(m) <= 0.f ? 1 : 0;
+    LOGI("[Lights] %zu emissive triangles of %zu textured emitters weighed by their own texels; %zu of them black\n",
+         a.means.size(), ask->second.size(), black);
+    m_texelAsks.erase(ask);
+    landed = true;
+  }
+  return landed;
+}
+
 // A shown instance whose material emits
 bool Residency::emits(const Instance& inst) const
 {
@@ -3826,10 +3908,16 @@ void Residency::syncIesProfiles(const RetainedScene& scene)
   m_iesProfileCount = uint32_t(scene.iesProfiles().size());
 }
 
-// The shown instances whose material emits, their triangles from their mesh records
+// The shown instances whose material emits, their triangles from their mesh records, a textured
+// one's each weighed by its own texels once they are averaged: those not asked for yet are, in one
+// pass recorded here (the table is built again when they come, takeTexelAverages)
 void Residency::syncEmissive(const RetainedScene& scene)
 {
-  std::vector<nvvkgltf::Emitter> emitters;
+  std::vector<nvvkgltf::Emitter>              emitters;
+  std::vector<std::vector<float>>             lums;  // what each emitter's triangleLuminance views
+  std::vector<shaderio::TexelTriangle>        ask;
+  std::vector<std::pair<TexelKey, uint32_t>>  asked;
+  lums.reserve(m_instances.size());
   for(uint32_t s = 0; s < m_instances.size(); s++)
   {
     const std::optional<Instance>& inst = m_instances[s];
@@ -3839,14 +3927,64 @@ void Residency::syncEmissive(const RetainedScene& scene)
     const MeshRecord* record   = scene.mesh(inst->mesh);
     if(nvvkgltf::emissiveLuminance(radiance) <= 0.f || !record)
       continue;
-    const Submesh run = record->drawnRun(inst->submesh);
-    emitters.push_back({.renderNodeID = s,
-                        .renderPrimID = inst->prim,
-                        .radiance     = radiance,
-                        .doubleSided  = m_materialStates[inst->materialSlot]->payload.doubleSided,
-                        .world        = inst->world,
-                        .positions    = record->positions,
-                        .indices      = std::span(record->indices).subspan(run.firstIndex, run.indexCount)});
+    const Submesh                   run     = record->drawnRun(inst->submesh);
+    const std::span<const uint32_t> indices = std::span(record->indices).subspan(run.firstIndex, run.indexCount);
+    lums.push_back(emitterTriangleLuminance(scene, s));
+    shaderio::GltfTextureInfo info{};
+    if(const std::optional<TexelKey> key = lums.back().empty() ? texelKey(*inst, &info) : std::nullopt;
+       key && !m_texelMeans.count(*key) && !m_texelAsked.count(*key))
+    {
+      // its triangles in the texture's UV space, as the shader reads it (texCoord, then the transform)
+      const std::span<const glm::vec2> uv = info.texCoord == 1 ? std::span<const glm::vec2>(record->uv1) : std::span<const glm::vec2>(record->uv0);
+      const size_t                     first = ask.size();
+      bool                             whole = !uv.empty();
+      for(size_t i = 0; whole && i + 2 < indices.size(); i += 3)
+      {
+        shaderio::TexelTriangle t{.texture = uint32_t(info.index), .sampler = uint32_t(info.samplerIndex)};
+        glm::vec2*              corners[3] = {&t.uv0, &t.uv1, &t.uv2};
+        for(int c = 0; c < 3; c++)
+        {
+          if(indices[i + c] >= uv.size())
+          {
+            whole = false;
+            break;
+          }
+          const glm::vec2 p = uv[indices[i + c]];
+          *corners[c] = glm::vec2(p.x * key->transform[0] + p.y * key->transform[2] + key->transform[4],
+                                  p.x * key->transform[1] + p.y * key->transform[3] + key->transform[5]);
+        }
+        ask.push_back(t);
+      }
+      if(whole)
+      {
+        asked.emplace_back(*key, uint32_t(ask.size() - first));
+        m_texelAsked.insert(*key);
+      }
+      else
+      {
+        ask.resize(first);
+        m_texelMeans[*key] = {};  // no UVs to average over: weighed whole
+      }
+    }
+    emitters.push_back({.renderNodeID      = s,
+                        .renderPrimID      = inst->prim,
+                        .radiance          = radiance,
+                        .doubleSided       = m_materialStates[inst->materialSlot]->payload.doubleSided,
+                        .world             = inst->world,
+                        .positions         = record->positions,
+                        .indices           = indices,
+                        .triangleLuminance = lums.back()});
+  }
+  if(!ask.empty())
+  {
+    if(const uint64_t ticket = m_gpu.averageTexels(ask))
+      m_texelAsks[ticket] = std::move(asked);
+    else
+      for(const auto& [key, count] : asked)  // a backend with no such pass: weighed whole
+      {
+        m_texelMeans[key] = {};
+        m_texelAsked.erase(key);
+      }
   }
   const nvvkgltf::EmissiveTable table = nvvkgltf::buildEmissiveTable(emitters, shaderio::EMISSIVE_GROUP_MAX);
   const uint64_t                bytes = std::span(table.triangles).size_bytes();

@@ -81,6 +81,7 @@ public:
     // the scene's texture (SAMPLED_IMAGE) and sampler (SAMPLER) arrays
     const nvvk::DescriptorBindings* bindings          = nullptr;
     VkDescriptorSet                 descriptorSet     = VK_NULL_HANDLE;
+    VkDescriptorSetLayout           descriptorSetLayout = VK_NULL_HANDLE;  // its layout, for the passes that sample them
     uint32_t                        textureBinding    = 0;
     uint32_t                        samplerBinding    = 0;
     uint32_t                        maxTextures       = 0;
@@ -180,6 +181,10 @@ public:
   // made at the first)
   void dispatchDeform(const DeformDispatch& dispatch) override;
   void barrier(GpuBarrier barrier) override;
+  // shaders/emissive_texels.comp.slang over the triangles, into a buffer the host reads once the frame
+  // has completed (the pipeline is made at the first)
+  uint64_t                   averageTexels(std::span<const shaderio::TexelTriangle> triangles) override;
+  std::vector<TexelAverages> takeTexelAverages() override;
 
 private:
   struct BufferEntry
@@ -285,6 +290,18 @@ private:
   Compaction                                  m_compaction;
   uint32_t                                  m_prefetchTaken = 0;
   nvvkgltf::DeformPipelines                 m_deformPipelines;
+  // averageTexels: its pipeline, and the averages in flight (the triangles read, the means written,
+  // set done by a retire once the frame that wrote them has completed)
+  VkPipeline       m_texelPipeline = VK_NULL_HANDLE;
+  VkPipelineLayout m_texelLayout   = VK_NULL_HANDLE;
+  struct TexelJob
+  {
+    nvvk::Buffer          triangles, means;
+    uint32_t              count = 0;
+    std::shared_ptr<bool> done  = std::make_shared<bool>(false);
+  };
+  std::map<uint64_t, TexelJob> m_texelJobs;
+  uint64_t                     m_nextTexelTicket = 1;
   std::unique_ptr<ImageDecodePool>          m_decodes;  // first in the destructor: its threads call takePrefetched
 };
 

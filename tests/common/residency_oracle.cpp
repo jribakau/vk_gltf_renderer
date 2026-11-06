@@ -731,7 +731,9 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
   // the emissive table (I6): the shown instances whose materials emit, by their slots, built from
   // their meshes' current positions; not while an emitter's vertex writes settle, when its areas lag
   // by design (the tests check the table once they have)
-  std::vector<nvvkgltf::Emitter> emitters;
+  std::vector<nvvkgltf::Emitter>  emitters;
+  std::vector<std::vector<float>> lums;  // a textured emitter's own triangles' weights, once averaged
+  lums.reserve(hwm);
   for(uint32_t s = 0; s < hwm; s++)
   {
     const Residency::Instance* inst = residency.instance(s);
@@ -746,8 +748,9 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     if(nvvkgltf::emissiveLuminance(radiance) <= 0.f)
       continue;
     const Submesh& run = record->submeshes[inst->submesh];
+    lums.push_back(residency.emitterTriangleLuminance(scene, s));
     emitters.push_back({s, inst->prim, radiance, mat->payload.doubleSided, inst->world, record->positions,
-                        std::span(record->indices).subspan(run.firstIndex, run.indexCount)});
+                        std::span(record->indices).subspan(run.firstIndex, run.indexCount), lums.back()});
   }
   const nvvkgltf::EmissiveTable table = nvvkgltf::buildEmissiveTable(emitters, shaderio::EMISSIVE_GROUP_MAX);
   if(!residency.emissiveSettling()

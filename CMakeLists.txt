@@ -366,13 +366,14 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_BINARY_DIR}/${PROJECT
 #####################################################################################
 
 # Collect local shaders (exclude header-only .h.slang files).
-file(GLOB_RECURSE _ALL_SLANG_FILES "shaders/*.slang")
+# CONFIGURE_DEPENDS: a new shader is picked up by the next build (ZERO_CHECK), not only a configure
+file(GLOB_RECURSE _ALL_SLANG_FILES CONFIGURE_DEPENDS "shaders/*.slang")
 list(FILTER _ALL_SLANG_FILES EXCLUDE REGEX ".*\\.h\\.slang$")
 if(NOT FV_PHYSICS_GPU)
   list(FILTER _ALL_SLANG_FILES EXCLUDE REGEX "physics_cloth")
 endif()
 set(SHADER_SRC_SLANG_FILES ${_ALL_SLANG_FILES})
-file(GLOB SHADER_H_FILES "shaders/*.h" "shaders/*.h.slang")
+file(GLOB SHADER_H_FILES CONFIGURE_DEPENDS "shaders/*.h" "shaders/*.h.slang")
 
 # Shared shaders from nvshaders (tonemapper, sky, HDR processing).
 set(SHADER_SHARED_SLANG_FILES

@@ -2495,6 +2495,80 @@ TEST(RetainedResidency, AnEmissiveTextureThatLandsLateReweighsItsEmitter)
     ADD_FAILURE() << p;
 }
 
+// Row `slot` of a GPU table, as the fake holds it
+template <typename T>
+T tableRow(const FakeGpuBackend& gpu, BufferHandle table, size_t slot)
+{
+  T                             row{};
+  const FakeGpuBackend::Buffer* b = gpu.buffer(table);
+  if(b && (slot + 1) * sizeof(T) <= b->bytes.size())
+    std::memcpy(&row, b->bytes.data() + slot * sizeof(T), sizeof(T));
+  return row;
+}
+
+// A textured emitter's triangles are weighed by their own texels once those are averaged: asked for
+// once, in the sync that builds the table, and weighed whole until they come; the black ones are then
+// never sampled. An edit that leaves the texture and the mesh as they were reuses them.
+TEST(RetainedResidency, ATexturedEmittersTrianglesWeighTheirOwnTexels)
+{
+  RetainedScene   scene;
+  const TextureId mask  = scene.addTexture(chainTexture("chain_sign_half_mean=0.5", 64));  // lit where u >= 0.5
+  auto            table = std::make_shared<TextureTable>();
+  table->push_back({mask, {}});
+  MaterialRecord sign;
+  sign.payload.name              = "sign";
+  sign.payload.emissive          = {2, 2, 2};
+  sign.payload.emissiveMap.index = 0;
+  sign.textures                  = table;
+  const MaterialId signMaterial  = scene.addMaterial(std::move(sign));
+  drawn(scene, "sign", scene.addMesh(gridMesh(2, 0.f)), {signMaterial});  // u = x / 2: two columns of four triangles
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu, "asked: ");
+  EXPECT_EQ(gpu.texelAveragesAsked(), 8u);
+  ASSERT_EQ(residency.emissiveCount(), 8u);
+  const auto selections = [&] {
+    std::vector<float> out(8);
+    for(size_t i = 0; i < 8; i++)
+      out[i] = tableRow<shaderio::EmissiveTriangle>(gpu, residency.emissiveTable(), i).selection;
+    return out;
+  };
+  for(float s : selections())
+    EXPECT_GT(s, 0.f) << "weighed whole until the averages come";
+
+  for(int frame = 0; frame < 4; frame++)
+  {
+    gpu.beginFrame();
+    residency.sync(scene);
+  }
+  expectClean(scene, residency, gpu, "landed: ");
+  EXPECT_EQ(residency.texelMeansHeld(), 1u);
+  const std::vector<float> landed = selections();
+  for(size_t t = 0; t < 8; t++)
+  {
+    const bool lit = (t / 2) % 2 == 1;  // cells (y, x) in order, two triangles each: x = 1 is u >= 0.5
+    if(lit)
+      EXPECT_NEAR(landed[t], 2.f, 1e-5f) << "triangle " << t << ": the factor's luminance, its only emitter's mean";
+    else
+      EXPECT_EQ(landed[t], 0.f) << "triangle " << t << " is black";
+  }
+
+  // the strength changes: the texels are as they were, so nothing is asked again
+  fv::mat::Material brighter = scene.material(signMaterial)->payload;
+  brighter.emissive          = {4, 4, 4};
+  scene.setMaterial(signMaterial, brighter);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "brighter: ");
+  EXPECT_EQ(gpu.texelAveragesAsked(), 8u);
+  EXPECT_NEAR(tableRow<shaderio::EmissiveTriangle>(gpu, residency.emissiveTable(), 2).selection, 4.f, 1e-5f);
+  EXPECT_EQ(tableRow<shaderio::EmissiveTriangle>(gpu, residency.emissiveTable(), 0).selection, 0.f);
+  drain(gpu);
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
 TEST(RetainedResidency, AnEmittersVertexWritesRebuildTheTableOnceTheyStop)
 {
   RetainedScene scene;

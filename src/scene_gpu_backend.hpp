@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "image_levels.hpp"
+#include "shaders/emissive_texels_io.h.slang"
 
 namespace rs {
 
@@ -379,6 +380,19 @@ public:
   // ---------- Passes ----------
   virtual void dispatchDeform(const DeformDispatch& dispatch) = 0;
   virtual void barrier(GpuBarrier barrier)                    = 0;
+
+  // A textured emitter's mean linear colour over each of `triangles`, as its texture samples there
+  // (shaders/emissive_texels.comp.slang), recorded into this frame after what is queued; its ticket,
+  // 0 where this backend has no such pass (its emitters are then weighed whole). The slots must hold
+  // their images in this frame, as any slot a frame samples does.
+  virtual uint64_t averageTexels(std::span<const shaderio::TexelTriangle> /*triangles*/) { return 0; }
+  struct TexelAverages
+  {
+    uint64_t               ticket = 0;
+    std::vector<glm::vec3> means;  // one per triangle, in order
+  };
+  // The averages whose frames have completed, each once
+  virtual std::vector<TexelAverages> takeTexelAverages() { return {}; }
 };
 
 }  // namespace rs

@@ -20,6 +20,7 @@
 #include "fake_gpu_backend.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 
@@ -949,6 +950,60 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
       m_computeBeforeBuild.insert(r->buffer.value);
       m_computeBeforeCompute.insert(r->buffer.value);
     }
+}
+
+uint64_t FakeGpuBackend::averageTexels(std::span<const shaderio::TexelTriangle> triangles)
+{
+  if(triangles.empty())
+    return 0;
+  TexelJob job;
+  job.averages.ticket = m_nextTexelTicket++;
+  for(const shaderio::TexelTriangle& t : triangles)
+  {
+    const auto shown = m_textureDescriptors.find(t.texture);
+    const auto image = shown != m_textureDescriptors.end() ? m_images.find(shown->second.value) : m_images.end();
+    if(image == m_images.end())
+      error("averageTexels: texture slot " + std::to_string(t.texture) + " holds no image");
+    const std::string uri  = image != m_images.end() ? image->second.uri : std::string();
+    const bool        half = uri.find("half") != std::string::npos;
+    const size_t      at   = uri.find("mean=");
+    const float       grey = at != std::string::npos ? std::stof(uri.substr(at + 5)) : 1.f;
+    // the shader's points: Hammersley, warped onto the triangle by area
+    glm::vec3 sum(0.f);
+    for(uint32_t s = 0; s < shaderio::EMISSIVE_TEXELS_SAMPLES; s++)
+    {
+      uint32_t bits = s;
+      bits          = (bits << 16u) | (bits >> 16u);
+      bits          = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+      bits          = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+      bits          = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+      bits          = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+      const float     u  = (float(s) + 0.5f) / float(shaderio::EMISSIVE_TEXELS_SAMPLES), v = float(bits) * 2.3283064365386963e-10f;
+      const float     su = std::sqrt(u);
+      const glm::vec2 uv = t.uv0 + (t.uv1 - t.uv0) * (1.f - su) + (t.uv2 - t.uv0) * (v * su);
+      sum += glm::vec3(half ? (uv.x - std::floor(uv.x) >= 0.5f ? 1.f : 0.f) : grey);
+    }
+    job.averages.means.push_back(sum / float(shaderio::EMISSIVE_TEXELS_SAMPLES));
+  }
+  m_texelAveragesAsked += uint32_t(triangles.size());
+  retire([done = job.done] { *done = true; });
+  const uint64_t ticket = job.averages.ticket;
+  m_texelJobs.push_back(std::move(job));
+  return ticket;
+}
+
+std::vector<GpuBackend::TexelAverages> FakeGpuBackend::takeTexelAverages()
+{
+  std::vector<TexelAverages> out;
+  for(auto it = m_texelJobs.begin(); it != m_texelJobs.end();)
+    if(*it->done)
+    {
+      out.push_back(std::move(it->averages));
+      it = m_texelJobs.erase(it);
+    }
+    else
+      ++it;
+  return out;
 }
 
 void FakeGpuBackend::barrier(GpuBarrier barrier)

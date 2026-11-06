@@ -133,26 +133,33 @@ Host — build the emitter list (`rs::Residency`, with `buildEmissiveTable` in `
    index, never the material row), use the selection, which is what picked it. A degenerate triangle
    keeps its place at selection 0, never sampled. A texture that lands later with a different mean
    changes the row, and the residency rebuilds the table in that sync (`m_relitSlots`).
-4. Compute the triangle's **world-space area** (verts × node transform) and give it a **selection
+4. A **textured** emitter's triangles are each weighed by their own texels: the residency asks the
+   backend once for its texture's mean colour over every triangle of its drawn run
+   (`GpuBackend::averageTexels`, `shaders/emissive_texels.comp.slang`: 64 points a triangle at the
+   level of detail that spreads them over its texels), keeps the answer by mesh, run, texture, UV set
+   and transform (`Residency::TexelKey`), and builds the table again when it comes back a few frames
+   later; until then, and on a backend without the pass, the emitter is weighed whole. A facade whose
+   emission mask is mostly black then spends its light samples on its lit signs.
+5. Compute the triangle's **world-space area** (verts × node transform) and give it a **selection
    weight = area × selection** (see the defensive tweak below). Build a **Vose alias table** from the
    weights (`aliasProb` / `aliasIndex` per triangle) for O(1) GPU selection, plus the totals
    (`numEmissiveTriangles`, `emissiveTotalWeight`).
-5. Upload the flat list + those scalars to the scene descriptor.
+6. Upload the flat list + those scalars to the scene descriptor.
 
 Device — sample a light at each surface hit (`sampleLights`):
 
-6. See what light sources exist: **environment**, **punctual lights**, **emissive triangles**.
-7. **Choose a category**: first "a light" vs "the environment", then within lights "a punctual light"
+7. See what light sources exist: **environment**, **punctual lights**, **emissive triangles**.
+8. **Choose a category**: first "a light" vs "the environment", then within lights "a punctual light"
    vs "an emissive triangle" (the probabilities balance the categories).
-8. **For an emissive triangle**: pick one in **O(1) via the alias table** (bright/large ones win more)
+9. **For an emissive triangle**: pick one in **O(1) via the alias table** (bright/large ones win more)
    → read its live world vertices → **sample a random point** on it → form direction/distance and the
    sample's **pdf** → evaluate the surface BSDF toward it → **cast a shadow ray**; if unblocked, add
    the light, **MIS-weighted** against BSDF sampling.
-9. Separately, when a normal bounce ray **hits an emitter directly** (`gltf_pathtrace.slang`, the
+10. Separately, when a normal bounce ray **hits an emitter directly** (`gltf_pathtrace.slang`, the
    emissive add), its glow is added but **MIS-weighted**, so the "sampled via NEE" and "hit by chance"
    paths combine without double-counting.
    The weights on the two sides agree only because the NEE pdf includes the probability of picking
-   the category in step 7, which is what the hit side recomputes. Punctual lights are the exception:
+   the category in step 8, which is what the hit side recomputes. Punctual lights are the exception:
    no bounce ray can hit one, so their samples take no MIS weight at all. All but the sky's sun,
    whose disk a bounce ray *can* see when it escapes: its cone sample is MIS-weighted against the
    BSDF like an emitter (`skySunNeePdf` / `computeSkySunHitMisWeight` in

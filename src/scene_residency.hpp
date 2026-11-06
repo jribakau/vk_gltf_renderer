@@ -442,6 +442,12 @@ public:
 
   // ---- what the oracle reads
   const Instance* instance(uint32_t slot) const;  // nullptr for a hole
+  // What the emissive table weighs each triangle of instance `slot`'s drawn run by: its emissive
+  // texture's mean there (GpuBackend::averageTexels) times its emissive factor, as
+  // nvvkgltf::Emitter::triangleLuminance takes it. Empty while that isn't in, or for an emitter with no
+  // texture: the emitter is weighed whole.
+  std::vector<float> emitterTriangleLuminance(const RetainedScene& scene, uint32_t slot) const;
+  size_t             texelMeansHeld() const { return m_texelMeans.size(); }
   const Prim*     prim(uint32_t slot) const;
   uint32_t        primHighWater() const { return uint32_t(m_prims.size()); }
   const MeshGpu*  meshGpu(MeshId mesh) const;
@@ -835,6 +841,26 @@ private:
   std::set<uint32_t>                                   m_dirtyMaterials;         // material slots to convert
   std::set<uint32_t>                                   m_slotsFollowed;          // material slots whose textures moved slot: the same picture
   std::set<uint32_t>                                   m_relitSlots;             // material slots whose emitter weight changed in writeMaterials
+  // A textured emitter's texels averaged over each triangle of its drawn run, by what that depends on:
+  // its mesh and run, and the texture as its material reads it. Kept across table builds, let go of
+  // with the scene; an empty one: none to be had (a backend with no such pass, no UVs).
+  struct TexelKey
+  {
+    MeshId               mesh;
+    uint32_t             submesh = 0;
+    TextureId            texture;
+    bool                 srgb     = false;
+    int                  texCoord = 0;
+    std::array<float, 6> transform{};  // KHR_texture_transform's rows
+    auto                 operator<=>(const TexelKey&) const = default;
+  };
+  // An instance's key, when its material emits through a texture whose image is in (not the default
+  // image a texture is drawn with until it lands); `info`: its texture info, to ask with
+  std::optional<TexelKey>                                        texelKey(const Instance& inst, shaderio::GltfTextureInfo* info) const;
+  bool                                                           takeTexelAverages();  // into m_texelMeans: whether any came
+  std::map<TexelKey, std::vector<glm::vec3>>                     m_texelMeans;
+  std::map<uint64_t, std::vector<std::pair<TexelKey, uint32_t>>> m_texelAsks;  // per ticket: each key and its triangles, in order
+  std::set<TexelKey>                                             m_texelAsked;  // in flight
   std::shared_ptr<nvutils::IDPool>                     m_textureInfoPool;        // spans; entry 0 held
   std::vector<shaderio::GltfTextureInfo>               m_textureInfos;           // the table's contents
   bool                                                 m_spansRepacked = false;  // this write

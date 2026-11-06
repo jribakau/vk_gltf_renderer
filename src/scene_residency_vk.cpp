@@ -41,6 +41,8 @@
 #include "sampled_image.hpp"
 #include "scene_material_bits.hpp"
 #include "shaders/animation_io.h.slang"
+#include "shaders/shaderio.h"
+#include "_autogen/emissive_texels.comp.slang.h"
 #include "staging_config.hpp"
 
 // scene_material_bits.hpp is Vulkan-free; its flags are these
@@ -154,6 +156,15 @@ VulkanGpuBackend::~VulkanGpuBackend()
   }
   m_info.alloc->destroyBuffer(m_blasScratch);
   m_deformPipelines.destroy(m_info.device);
+  for(auto& [ticket, job] : m_texelJobs)
+  {
+    m_info.alloc->destroyBuffer(job.triangles);
+    m_info.alloc->destroyBuffer(job.means);
+  }
+  if(m_texelPipeline)
+    vkDestroyPipeline(m_info.device, m_texelPipeline, nullptr);
+  if(m_texelLayout)
+    vkDestroyPipelineLayout(m_info.device, m_texelLayout, nullptr);
   for(auto& [slot, sampler] : m_samplers)
     m_info.samplerPool->releaseSampler(sampler);
   m_info.alloc->destroyImage(m_white);
@@ -262,6 +273,100 @@ void VulkanGpuBackend::runRetired()
 void VulkanGpuBackend::waitIdle()
 {
   vkDeviceWaitIdle(m_info.device);
+}
+
+uint64_t VulkanGpuBackend::averageTexels(std::span<const shaderio::TexelTriangle> triangles)
+{
+  if(triangles.empty() || !m_info.descriptorSetLayout || !recording("averageTexels"))
+    return 0;
+  // call order: the queued builds and uploads (the images it samples among them) are recorded first
+  flushBuilds();
+  flushUploads();
+  if(!m_texelPipeline)
+  {
+    const VkPushConstantRange push{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .size = sizeof(shaderio::EmissiveTexelsPushConstant)};
+    const VkPipelineLayoutCreateInfo layout{.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                            .setLayoutCount         = 1,
+                                            .pSetLayouts            = &m_info.descriptorSetLayout,
+                                            .pushConstantRangeCount = 1,
+                                            .pPushConstantRanges    = &push};
+    NVVK_CHECK(vkCreatePipelineLayout(m_info.device, &layout, nullptr, &m_texelLayout));
+    const VkShaderModuleCreateInfo shader{.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                          .codeSize = emissive_texels_comp_slang_sizeInBytes,
+                                          .pCode    = emissive_texels_comp_slang};
+    const VkComputePipelineCreateInfo pipeline{.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                               .stage  = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                          .pNext = &shader,
+                                                          .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                          .pName = "main"},
+                                               .layout = m_texelLayout};
+    NVVK_CHECK(vkCreateComputePipelines(m_info.device, nullptr, 1, &pipeline, nullptr, &m_texelPipeline));
+    NVVK_DBG_NAME(m_texelPipeline);
+  }
+  // small, so both sit in host memory: the triangles written here, the means read back
+  TexelJob             job;
+  const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  const VkDeviceSize   in = triangles.size_bytes(), out = triangles.size() * sizeof(glm::vec4);
+  if(m_info.alloc->createBuffer(job.triangles, in, usage, VMA_MEMORY_USAGE_AUTO,
+                                VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT)
+         != VK_SUCCESS
+     || m_info.alloc->createBuffer(job.means, out, usage, VMA_MEMORY_USAGE_AUTO,
+                                   VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT)
+            != VK_SUCCESS
+     || !job.triangles.mapping || !job.means.mapping)
+  {
+    LOGW("VulkanGpuBackend::averageTexels: no memory for %zu triangles\n", triangles.size());
+    m_info.alloc->destroyBuffer(job.triangles);
+    m_info.alloc->destroyBuffer(job.means);
+    return 0;
+  }
+  std::memcpy(job.triangles.mapping, triangles.data(), size_t(in));
+  vmaFlushAllocation(*m_info.alloc, job.triangles.allocation, 0, VK_WHOLE_SIZE);
+  job.count = uint32_t(triangles.size());
+  const shaderio::EmissiveTexelsPushConstant pc{.triangles = reinterpret_cast<shaderio::TexelTriangle*>(job.triangles.address),
+                                                .means     = reinterpret_cast<glm::vec4*>(job.means.address),
+                                                .count     = job.count};
+  vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_texelPipeline);
+  vkCmdBindDescriptorSets(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_texelLayout, 0, 1, &m_info.descriptorSet, 0, nullptr);
+  vkCmdPushConstants(m_cmd, m_texelLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+  vkCmdDispatch(m_cmd, (job.count + shaderio::EMISSIVE_TEXELS_WORKGROUP - 1) / shaderio::EMISSIVE_TEXELS_WORKGROUP, 1, 1);
+  const VkMemoryBarrier2 toHost{.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                .srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                .dstStageMask  = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+  const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &toHost};
+  vkCmdPipelineBarrier2(m_cmd, &dependency);
+  // done once no frame in flight is still at it
+  retire([done = job.done] { *done = true; });
+  const uint64_t ticket = m_nextTexelTicket++;
+  m_texelJobs.emplace(ticket, std::move(job));
+  return ticket;
+}
+
+std::vector<GpuBackend::TexelAverages> VulkanGpuBackend::takeTexelAverages()
+{
+  std::vector<TexelAverages> out;
+  for(auto it = m_texelJobs.begin(); it != m_texelJobs.end();)
+  {
+    TexelJob& job = it->second;
+    if(!*job.done)
+    {
+      ++it;
+      continue;
+    }
+    vmaInvalidateAllocation(*m_info.alloc, job.means.allocation, 0, VK_WHOLE_SIZE);
+    TexelAverages averages{.ticket = it->first};
+    averages.means.resize(job.count);
+    const auto* means = reinterpret_cast<const glm::vec4*>(job.means.mapping);
+    for(uint32_t i = 0; i < job.count; i++)
+      averages.means[i] = glm::vec3(means[i]);
+    out.push_back(std::move(averages));
+    m_info.alloc->destroyBuffer(job.triangles);
+    m_info.alloc->destroyBuffer(job.means);
+    it = m_texelJobs.erase(it);
+  }
+  return out;
 }
 
 void VulkanGpuBackend::barrier(GpuBarrier barrier)

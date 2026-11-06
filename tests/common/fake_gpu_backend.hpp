@@ -175,6 +175,12 @@ public:
   uint64_t    liveBytes() const;
   void        dispatchDeform(const DeformDispatch& dispatch) override;
   void        barrier(GpuBarrier barrier) override;
+  // The means over the shader's own points of a pattern the image's name gives: "half", lit (white)
+  // where U's fraction is at least 0.5 and black elsewhere; "mean=<v>" grey v; else white. Taken once
+  // its frame has completed (its retire).
+  uint64_t                   averageTexels(std::span<const shaderio::TexelTriangle> triangles) override;
+  std::vector<TexelAverages> takeTexelAverages() override;
+  uint32_t                   texelAveragesAsked() const { return m_texelAveragesAsked; }
 
   // What the GPU holds; nullptr for a dead or unknown handle
   const Buffer* buffer(BufferHandle buffer) const;
@@ -242,6 +248,14 @@ private:
 
   uint32_t m_framesInFlight;
   uint64_t m_frame         = 0;
+  struct TexelJob
+  {
+    TexelAverages         averages;
+    std::shared_ptr<bool> done = std::make_shared<bool>(false);
+  };
+  std::vector<TexelJob> m_texelJobs;
+  uint64_t              m_nextTexelTicket    = 1;
+  uint32_t              m_texelAveragesAsked = 0;  // triangles, over every call
   uint64_t m_nextHandle    = 1;
   uint32_t m_waitIdleCount = 0;
   bool     m_opacityMicromaps = true;
