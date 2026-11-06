@@ -138,6 +138,14 @@ vec3 viewAbove(std::mt19937& rng)
 
 float sum(vec3 v) { return v.x + v.y + v.z; }
 
+// Where a sample of `mat` can leave toward k2 (bsdfFaceAllows), for the cases above: with reflection
+// lobes only, the face's side. The transmitting cases are flat, where each lobe's own side is the face's.
+bool reachable(const PbrMaterial& mat, const vec3& k2)
+{
+  const bool transmits = mat.transmission > 0.0f || mat.diffuseTransmissionFactor > 0.0f;
+  return transmits || dot(k2, mat.Ng) > 0.0f;
+}
+
 }  // namespace
 
 // bsdfEvaluateAll is bsdfEvaluate's mean over the lobe choice (xi.z), at every pair of directions.
@@ -200,9 +208,9 @@ TEST(BsdfLobes, TheMixtureSampleReportsTheEveryLobePdf)
     }
 }
 
-// What sampling carries (the mean of bsdf_over_pdf) is the BSDF's integral over directions, as
-// evaluation gives it. Retroreflection sampled twice its value, rough refraction's evaluation
-// lacked eta_t^2 and the clearcoat's evaluation used the base normal's frame.
+// What sampling carries (the mean of bsdf_over_pdf) is the BSDF's integral over the directions a sample
+// can leave by, as evaluation gives it. Retroreflection sampled twice its value, rough refraction's
+// evaluation lacked eta_t^2 and the clearcoat's evaluation used the base normal's frame.
 TEST(BsdfLobes, SamplingCarriesWhatEvaluationIntegratesTo)
 {
   std::mt19937                          rng(13);
@@ -229,7 +237,8 @@ TEST(BsdfLobes, SamplingCarriesWhatEvaluationIntegratesTo)
       e.k2 = sphere(rng);
       e.xi = vec3(u(rng), u(rng), u(rng));
       bsdfEvaluateAll(e, c.mat);
-      integral += sum(e.bsdf_diffuse + e.bsdf_glossy) * 4.0 * 3.14159265358979 / N;
+      if(reachable(c.mat, e.k2))
+        integral += sum(e.bsdf_diffuse + e.bsdf_glossy) * 4.0 * 3.14159265358979 / N;
     }
     EXPECT_NEAR(carried, integral, 0.03 * integral) << c.name;
   }
@@ -1082,4 +1091,74 @@ TEST(BsdfLobes, ADarkGlossyBasePicksItsSpecular)
   const auto        pb    = bsdfLobePick(black, sb, tb);
   EXPECT_GT(pb[LOBE_DIFFUSE_REFLECTION], 0.08f * sb[LOBE_DIFFUSE_REFLECTION]);
   EXPECT_LE(bsdfPickShare(sb, pb, LOBE_DIFFUSE_REFLECTION), 11.0f);
+}
+
+// A bounce leaves on the side of the face its event says: a reflection on the view's side, a
+// transmission across it, though a normal map tilts the lobes' normal past the face. By the shading
+// normal alone, a Lambert lobe tilted 35 degrees sent (1 - cos t) / 2 = 9% of its samples through the
+// face (the unit disk outside the ellipse of half-axis cos t its projection leaves above the face). Light from there still counts for next-event estimation, at a pdf of 0 (weight 1).
+// The ground and water opt out (faceSided).
+TEST(BsdfLobes, ABounceLeavesOnTheSideItsLobeSays)
+{
+  const vec3  tilted = normalize(vec3(0.7f, 0.0f, 1.0f));
+  PbrMaterial bumped = defaultPbrMaterial(vec3(0.8f), 0.0f, 0.5f, tilted, vec3(0, 0, 1));
+  bumped.specular    = 0.0f;  // Lambert about N
+  orthonormalBasis(bumped.N, bumped.T, bumped.B);
+  PbrMaterial sheet                 = bumped;  // a thin sheet that only transmits
+  sheet.diffuseTransmissionFactor   = 1.0f;
+  PbrMaterial loose                 = bumped;
+  loose.faceSided                   = false;
+  const auto sampleSides = [](const PbrMaterial& mat, int& through, int& absorbed, int& kept) {
+    std::mt19937                          rng(43);
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    through = absorbed = kept = 0;
+    for(int i = 0; i < 100000; i++)
+    {
+      BsdfSampleData s;
+      s.k1 = vec3(0.0f, 0.0f, 1.0f);
+      s.xi = vec3(u(rng), u(rng), u(rng));
+      bsdfSample(s, mat);
+      if(s.event_type == BSDF_EVENT_ABSORB)
+      {
+        absorbed++;
+        continue;
+      }
+      kept++;
+      const bool transmits = (s.event_type & BSDF_EVENT_TRANSMISSION) != 0;
+      if(transmits != (s.k2.z < 0.0f))
+        through++;
+    }
+  };
+  const float leak = 0.5f * (1.0f - dot(tilted, vec3(0, 0, 1)));
+  int through, absorbed, kept;
+  sampleSides(bumped, through, absorbed, kept);
+  EXPECT_EQ(through, 0);
+  EXPECT_NEAR(absorbed / 100000.0f, leak, 0.004f);
+  sampleSides(sheet, through, absorbed, kept);
+  EXPECT_EQ(through, 0);
+  EXPECT_NEAR(absorbed / 100000.0f, leak, 0.004f);
+  sampleSides(loose, through, absorbed, kept);
+  EXPECT_NEAR(through / 100000.0f, leak, 0.004f);  // as before
+  EXPECT_EQ(absorbed, 0);
+
+  // Light below the face but above the tilted normal: the lobe's value, no BSDF sample to share it
+  const vec3 below = normalize(vec3(0.9f, 0.0f, -0.1f));
+  ASSERT_GT(dot(below, tilted), 0.0f);
+  for(int mixture = 0; mixture < 2; mixture++)
+  {
+    BsdfEvaluateData e;
+    e.k1 = vec3(0.0f, 0.0f, 1.0f);
+    e.k2 = below;
+    e.xi = vec3(0.5f);
+    if(mixture)
+      bsdfEvaluateAll(e, bumped);
+    else
+      bsdfEvaluate(e, bumped);
+    EXPECT_GT(sum(e.bsdf_diffuse), 0.0f) << mixture;
+    EXPECT_EQ(e.pdf, 0.0f) << mixture;
+    EXPECT_TRUE(bsdfEvaluated(e)) << mixture;
+    BsdfEvaluateData l = e;
+    bsdfEvaluateAll(l, loose);
+    EXPECT_GT(l.pdf, 0.0f) << mixture;
+  }
 }

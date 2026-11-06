@@ -372,6 +372,11 @@ Some things about the transport are worth knowing before touching it:
   own value gives back, so a dark base under a specular or a coat stops taking nearly every sample;
   each pick is at least a tenth of its weight. A sample carries weight over pick (`bsdfPickShare`),
   and the mixture pdf both MIS sides read is the picks' (`bsdfEvaluateSumWeighted`).
+- A bounce leaves on the **side of the face** its event says (`bsdfFaceAllows`): a reflection on the
+  face normal's side, a transmission across it, whatever a normal map does to the shading normal.
+  The sampler drops the rest, and the pdf leaves those directions out; a light sample there keeps
+  its value at MIS weight 1, so gate light samples on `bsdfEvaluated`, not on the pdf. The ground
+  plane and water opt out (`PbrMaterial::faceSided`): their waves are the surface.
 - The **diffuse exit** (`ePtVolumeDiffuseExit`) is Lambertian times the boundary's Fresnel
   transmittance toward the light, over its cosine-weighted mean (`diffuseExitFresnelWeight`,
   `ePtExitFresnel`): the entry paid (1 − F) on the camera's side, so the exit pays it on the

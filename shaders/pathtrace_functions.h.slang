@@ -1510,6 +1510,7 @@ PbrMaterial waterSurfaceMaterial(float3 pos, float3 geometricNormal, bool fromAb
   const float2      slope   = waves.slope.slope + ripples.slope;
   const float3      up      = normalize(float3(-slope.x, 1.0F, -slope.y));
   PbrMaterial       mat     = defaultPbrMaterial(float3(1.0F), 0.0F, 0.0F, fromAbove ? up : -up, geometricNormal);
+  mat.faceSided             = false;  // the waves are the surface, not a map over the flat plane
   // pbrMat.roughness holds alpha; the averaged-out slopes add to its square as in groundMaterial
   const float alpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * (waves.slope.variance + ripples.variance));
   mat.roughness     = float2(max(alpha, MICROFACET_MIN_ROUGHNESS));
@@ -1529,6 +1530,7 @@ PbrMaterial groundMaterial(float3 pos, float footprint, SceneFrameInfo* frameInf
   const float3 up  = float3(0.0F, 1.0F, 0.0F);
   PbrMaterial  mat = defaultPbrMaterial(frameInfo->infinitePlaneBaseColor, frameInfo->infinitePlaneMetallic,
                                         frameInfo->infinitePlaneRoughness, up, up);
+  mat.faceSided    = false;  // a puddle's ripples are its surface, as the water's waves
   // The catcher is a compositing effect, not a surface
   if(frameInfo->groundWater <= 0.0F || hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher))
     return mat;

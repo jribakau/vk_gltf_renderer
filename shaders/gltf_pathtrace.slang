@@ -996,7 +996,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         {
           const bool candidateAllLobes = lobeMixture || (candidate.pdf == DIRAC && hasFlag(pushConst.flags, PathtracerFlags::ePtLobeSumPunctual));
           candidateEval = evaluateSurfaceForLight(pbrMat, -ray.Direction, candidate.direction, candidateAllLobes, exitFresnelEta, seed);
-          if(candidateEval.pdf > 0.0F)
+          if(bsdfEvaluated(candidateEval))
           {
             const float mis = (candidate.pdf == DIRAC || lastVertex) ? 1.0F : misPowerWeight(candidate.pdf, candidateEval.pdf);
             weight = luminance(pt.throughput * candidate.radianceOverPdf * mis * (candidateEval.bsdf_diffuse + candidateEval.bsdf_glossy));
@@ -1026,7 +1026,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         if(recordM > 0.0F && reservoir.kept > 0.0F && directLight.reuseKind != LIGHT_REUSE_NONE && directLight.pdf != DIRAC)
         {
           const BsdfEvaluateData e = evaluateSurfaceForLight(thereMat, record.view, directLight.direction, lobeMixture, exitFresnelEta, seed);
-          if(e.pdf > 0.0F)
+          if(bsdfEvaluated(e))
           {
             const float mis = lastVertex ? 1.0F : misPowerWeight(directLight.pdf, e.pdf);
             keptThere       = luminance(pt.throughput * directLight.radianceOverPdf * mis * (e.bsdf_diffuse + e.bsdf_glossy));
@@ -1046,14 +1046,14 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           if(any(reused.radiance > 0.0F))
           {
             reusedEval = evaluateSurfaceForLight(pbrMat, -ray.Direction, reused.direction, lobeMixture, exitFresnelEta, seed);
-            if(reusedEval.pdf > 0.0F)
+            if(bsdfEvaluated(reusedEval))
             {
               const float mis = lastVertex ? 1.0F : misPowerWeight(reused.pdf, reusedEval.pdf);
               recordTarget    = luminance(pt.throughput * reused.radiance * mis * (reusedEval.bsdf_diffuse + reusedEval.bsdf_glossy));
             }
             float                  recordThere = 0.0F;
             const BsdfEvaluateData e           = evaluateSurfaceForLight(thereMat, record.view, reused.direction, lobeMixture, exitFresnelEta, seed);
-            if(e.pdf > 0.0F)
+            if(bsdfEvaluated(e))
             {
               const float mis = lastVertex ? 1.0F : misPowerWeight(reused.pdf, e.pdf);
               recordThere     = luminance(pt.throughput * reused.radiance * mis * (e.bsdf_diffuse + e.bsdf_glossy));
@@ -1150,8 +1150,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           evalData.bsdf_diffuse *= diffuseExitFresnelWeight(dot(pbrMat.N, directLight.direction), exitFresnelEta);
       }
 
-      // Some lobe can scatter toward the light (in every mode): the shadow ray is worth tracing
-      if(evalData.pdf > 0.0)
+      // Some lobe can scatter toward the light (in every mode): the shadow ray is worth tracing. Its
+      // pdf is 0 where the light lies past the face from where the lobe would send a bounce
+      // (bsdfFaceAllows): no BSDF sample reaches it, and the light sample's weight is 1.
+      if(bsdfEvaluated(evalData))
       {
         // Weight for combining light and BSDF sampling strategies (Multiple Importance Sampling);
         // 1 at the last vertex (above).
@@ -1311,7 +1313,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         bool isSpecular     = (sampleData.event_type & BSDF_EVENT_IMPULSE) != 0;
         bool isTransmission = (sampleData.event_type & BSDF_EVENT_TRANSMISSION) != 0;
 
-        // Compute the offset position for the next bounce
+        // Compute the offset position for the next bounce: the side the event leaves by, since a sample
+        // leaving on the other side of the face was dropped (bsdfFaceAllows; not on the ground and water,
+        // where the direction says)
         float3 offsetDir = dot(ray.Direction, hit.geonrm) > 0 ? hit.geonrm : -hit.geonrm;
         ray.Origin       = safeOffsetRay(hit.pos, offsetDir, hit.offsetDistance);
 
