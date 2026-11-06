@@ -2497,6 +2497,107 @@ TEST(Dforce, aLiveStepIsEasedInOverAsLongAsItTookNotAtOnce)
   EXPECT_NEAR(lifted(), 3.f, 1e-4f);
 }
 
+TEST(Dforce, aLiveStepBeginsWhileTheLastOnesDrapesAreMade)
+{
+  // A light copy's drapes are made from it on the pool in about as long as its step takes on the GPU
+  // (10 ms each, the Charming Witch Dress walking in 10TEST), and the next step waited for them, so it
+  // stepped every other frame. Now the next begins once the simulation is free, while the last one's
+  // drapes are made, two in flight at most, and they land in their order. A rest the pose's correctives
+  // move meanwhile (under a clip, every frame) shifts the drapes in flight by as much: the cloth is drawn
+  // where it was simulated
+  SkinnedVeil     v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  std::shared_ptr<SteppingSim> sim;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions&) {
+    sim = std::make_shared<SteppingSim>(std::move(meshes));
+    return sim;
+  };
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(dforce::Mode::eLiveGpu);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  ASSERT_TRUE(sim);
+  morphs.flush();
+  const auto& geo     = *v.scene.meshes[1].geo;
+  const float settled = geo.position[1];
+  const auto  lifted  = [&] {
+    morphs.flush();
+    return geo.position[1] - settled;
+  };
+  // every step's drapes held until let go
+  std::atomic<bool> hold{true};
+  std::atomic<int>  making{0};
+  d.beforeLiveDrapes = [&] {
+    making++;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while(hold.load() && std::chrono::steady_clock::now() < until)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  };
+  struct Free
+  {
+    std::atomic<bool>&            hold;
+    std::shared_ptr<SteppingSim>& sim;
+    ~Free()
+    {
+      hold      = false;
+      sim->open = true;
+    }
+  } free{hold, sim};
+  const auto frame = [&] {
+    now += std::chrono::milliseconds(20);
+    d.pump();
+  };
+  const auto waitFor = [](const auto& done) {
+    for(int i = 0; i < 5000 && !done(); i++)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return done();
+  };
+  sim->open = true;
+  d.setPlacement(kUpsideDown);
+  frame();
+  ASSERT_TRUE(waitFor([&] { return making.load() == 1; }));
+  EXPECT_EQ(sim->steps.load(), 1);
+  // the next frame the simulation is free: the second step begins, the first's drapes still being made
+  frame();
+  ASSERT_TRUE(waitFor([&] { return making.load() == 2; })) << "the next step waited for the last one's drapes";
+  EXPECT_EQ(sim->steps.load(), 2);
+  EXPECT_NEAR(lifted(), 0.f, 1e-4f);
+  // two in flight: no third
+  frame();
+  frame();
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  EXPECT_EQ(sim->steps.load(), 2) << "a third began with two in flight";
+
+  // the veil's rest raised a centimetre by a corrective, reported with the bones, while both are in flight
+  {
+    mesh::CageDeltas up;
+    const auto&      cage = v.scene.meshes[1].geo->cagePositions;
+    for(size_t i = 0; i < cage.size() / 3; i++)
+    {
+      up.verts.push_back(int32_t(i));
+      up.deltas.insert(up.deltas.end(), {0.f, 1.f, 0.f});
+    }
+    morph::ChannelOptions opts;
+    opts.hidden = true;
+    opts.value  = 1.0;
+    morphs.addTarget("corrective", 1, std::make_shared<const mesh::RenderTarget>(mesh::target(*v.scene.meshes[1].geo, up)), opts);
+  }
+  morphs.flush();
+  d.changed({1}, true);
+  frame();
+  EXPECT_FALSE(d.busy()) << "the veil's corrective built the simulation again";
+  // let go, the next step held: both land in their order, the second's eased in, and the veil is where the
+  // second step left it (2 cm up), not a centimetre higher for the corrective under it
+  sim->open = false;
+  hold      = false;
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  for(int i = 0; i < 8; i++)
+    frame();
+  EXPECT_NEAR(lifted(), 2.f, 1e-3f);
+  EXPECT_EQ(sim->steps.load(), 2);
+}
+
 TEST(Dforce, aTurnOnAFrameTooShortToStepIsStillTaken)
 {
   VeilScene       v;

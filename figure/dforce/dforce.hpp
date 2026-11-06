@@ -28,6 +28,7 @@
 #include <array>
 #include <chrono>
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <future>
 #include <memory>
@@ -49,6 +50,8 @@ struct Options;
 }  // namespace fv::physics::cloth
 
 namespace fv::dforce {
+
+struct SkinPose;
 
 class ClothBackend;
 using SettleMesh    = physics::cloth::Surface;
@@ -82,6 +85,9 @@ public:
   std::function<bool()> waitWhile;
   // The time live steps are measured by; unset: the steady clock. For a test.
   std::function<std::chrono::steady_clock::time_point()> clock;
+  // Called on the pool as a live step's drapes are about to be made from it, after its simulation is free
+  // for the next; unset: nothing. For a test, to hold them.
+  std::function<void()> beforeLiveDrapes;
   // The GPU simulation, when the renderer offers one.
   MakeSim makeGpuSim;
   // Whether a shown mesh with no simulation modifier is a collider the cloth meets (a belt, a bra,
@@ -159,8 +165,12 @@ private:
   std::vector<int>     dynamics() const;
   std::shared_ptr<Job> prepare(uint64_t generation) const;
   bool                 apply(const Job& job, const std::vector<std::vector<float>>& positions);
-  // A job's drapes from its positions: each one's cage deltas, in job.drapes' order. Any thread.
-  static std::vector<std::vector<float>> deltasOf(const Job& job, const std::vector<std::vector<float>>& positions);
+  // A job's drapes from its positions: each one's cage deltas, in job.drapes' order. Any thread. `rests` and
+  // `poses`, drape by drape, in place of the job's: what a live step's deltas are taken against and read
+  // back through, as they were when it began (the job's change as the next one does).
+  static std::vector<std::vector<float>> deltasOf(const Job& job, const std::vector<std::vector<float>>& positions,
+                                                  const std::vector<std::vector<float>>* rests = nullptr,
+                                                  const std::vector<SkinPose>*           poses = nullptr);
   // Writes them, but not on an item taken off meanwhile. True when it wrote.
   bool writeDeltas(const Job& job, const std::vector<std::vector<float>>& deltas);
   // The bones of a job's skinned meshes as the figure has them now, per slot (empty: unskinned).
@@ -171,6 +181,9 @@ private:
   // World down, in cm/s^2, in the job's space.
   std::array<float, 3> currentGravity() const;
   bool                           pumpLive();
+  // Live: `advance` (a step, or the settle that begins live) run on `sim` on the pool, then its drapes made
+  // from where it left the cloth, as a run at the back of m_liveRuns.
+  void                           launchLive(std::shared_ptr<ClothBackend> sim, std::function<void(ClothBackend&)> advance, bool settle);
   // Live: the drapes a frame further from what was shown when the last step landed toward that step's.
   // True when it wrote.
   bool                           easeLive(std::chrono::steady_clock::time_point now);
@@ -207,25 +220,44 @@ private:
   std::future<std::vector<std::vector<float>>>   m_hairJob;
   std::shared_ptr<std::atomic<bool>>             m_hairStale;
   uint64_t                                       m_hairGen = 0;
-  // live: the simulation, what it was built from, the step in flight (its drapes' deltas, made on the
-  // pool) and the bones it was given
+  // live: the simulation, what it was built from, and the bones it was given
   std::shared_ptr<ClothBackend>                  m_live;
   std::shared_ptr<Job>                           m_liveJob;
-  std::future<std::vector<std::vector<float>>>   m_liveStep;
+  // Live: the steps in flight, in the order they began, each the step and then its drapes' deltas on the
+  // pool: `stepped` is ready once the simulation is free for the next (its positions taken), `drapes` once
+  // the drapes are made from them. The next step begins while the last one's drapes are made, so a light
+  // copy, whose drapes take as long as its step, steps every frame rather than every other. At most two are
+  // in flight: one stepping, one making its drapes. A run of a job since made again lands and is dropped
+  struct LiveRun
+  {
+    std::future<void>                                      stepped;
+    std::future<std::vector<std::vector<float>>>           drapes;
+    std::shared_ptr<Job>                                   job;
+    // what its deltas are taken against: each drape's rest as the step began (the job's moves on with
+    // the next step's), so the drapes are shifted by as much as the rest moved since
+    std::shared_ptr<const std::vector<std::vector<float>>> rests;
+    std::chrono::steady_clock::time_point                  began;
+    // the settle that began live: written at once, and the drape no longer busy
+    bool                                                   settle = false;
+  };
+  std::deque<LiveRun>                            m_liveRuns;
   std::vector<std::vector<Mat4>>                 m_liveBones;
   bool                                           m_liveSettling = false;
   bool                                           m_liveMoving   = true;
   std::array<float, 3>                           m_liveGravity{0, 0, 0};
   // live: when the last step started, and the simulated seconds since the pose last moved
   std::chrono::steady_clock::time_point          m_liveLast;
+  // live: when the last run's drapes landed; the next is eased in over the time since then, or since it
+  // began if that is later (as long as it took, when one waits for the other)
+  std::chrono::steady_clock::time_point          m_liveLanded;
   float                                          m_liveStill = 0;
   uint64_t                                       m_liveGen      = 0;
   // live: meshes whose rest shapes moved since the last step (correctives, a dent), and whether the next
   // step has a moved rest shape to take though no bone moved
   std::set<int>                                  m_liveReshaped;
   bool                                           m_liveRestMoved = false;
-  // live: a step's drapes aren't written at once when it lands but eased in from what was shown, over as
-  // long as that step took, so the next lands as this one is in (beside the path tracer a step lands
+  // live: a step's drapes aren't written at once when it lands but eased in from what was shown, over the
+  // time since the last landed (see m_liveLanded), so the next lands as this one is in (beside the path tracer a step lands
   // every two to four frames, and written at once the cloth jumped as often). Its deltas, those shown
   // when it landed, those shown now; when it landed, and over how long (0: nothing to ease)
   std::vector<std::vector<float>>                m_easeTo, m_easeFrom, m_shown;
