@@ -218,7 +218,7 @@ struct DforceGpu::Impl
   nvvk::Buffer x, prev, vel, cprev, kinStart, kinEnd, kinematic, freeVerts, inv, dampRate, offset, friction, layer, collides, grav, edges,
       lam, tris, cells, items, softVerts, attAlpha, lamAtt, contact, modelBuf, readback, clusterEdgeBuf, clusterLamBuf, clusterVertBuf, clusterVertStartBuf,
       clusterOwnedBuf, clusterColourBuf, clusterSoftBuf, clusterSoftStartBuf, xTwin, clothTris, clothCells, clothItems, meshOf, ring2Start, ring2,
-      frameStart, snap, cprevSnap, faceBox;
+      frameStart, snap, cprevSnap, faceBox, clothContact;
   size_t cellCapacity = 0, itemCapacity = 0, clothCellCapacity = 0, clothItemCapacity = 0;
   bool   gridFailed = false;
 
@@ -236,6 +236,8 @@ struct DforceGpu::Impl
   // the pose a frame that held still was last given (negative: none): the next at the same place needs
   // neither the skin nor the collision grid again
   float                 heldAt = -1;
+  // the collision passes so far: every fourth looks around for cloth faces (clothLook), as the CPU island does
+  int                   passCount = 0;
   // live: simulated time a step was given that its whole substeps didn't take, carried to the next
   float                 liveCarry = 0;
   shaderio::DforceModel shaderModel{};
@@ -247,7 +249,8 @@ struct DforceGpu::Impl
   // simulation stops, so one bad step cannot take the device down with it
   bool broken = false;
   // FV_DFORCE_GPU_DEBUG, bits: 1 leaves the recovery out, 2 the hold between passes; for finding
-  // which kernel a device loss comes from. 256: the collision passes and the recovery a thread a vertex
+  // which kernel a device loss comes from. 256: the collision passes and the recovery a thread a vertex;
+  // 512: a frame that takes over 250 ms stops the simulation
   int debug = 0;
 
   // ---- setup
@@ -411,13 +414,11 @@ bool DforceGpu::Impl::prepare()
     faces.push_back({tri.a, tri.b, tri.c, tri.layer, tri.offset, tri.friction, tri.mesh, tri.self ? 1 : 0});
     faceCorners.insert(faceCorners.end(), {tri.a, tri.b, tri.c});
   }
-  // The cloth's faces, when any can meet a vertex of another garment (a petticoat under a skirt): off
-  // unless asked for (Options::clothCollide, or FV_DFORCE_GPU_DEBUG's bit 64), it isn't finished. A
-  // garment's own faces (Self Collide, bit 128 as well) tore the Kai Dress apart (887 ms a frame, 4,375
-  // vertices in the body) and worsened a stride in the She Is The Boss skirt; without them the BBR
-  // Skirt's walk stretched (99th centile 1.61 against 1.04 with none)
+  // The cloth's faces, when any can meet a vertex of another garment (a petticoat under a skirt), or of
+  // its own garment where that collides with itself (Self Collide): met as the CPU island meets them.
+  // FV_DFORCE_GPU_DEBUG's 64 leaves them out, 128 a garment's own
   {
-    const bool           own = (debug & 128) != 0;
+    const bool           own = (debug & 128) == 0;
     std::vector<uint8_t> movingMesh(meshes.size(), 0);
     for(int i : model.freeVerts)
       if(model.collides[size_t(i)])
@@ -431,7 +432,7 @@ bool DforceGpu::Impl::prepare()
       if(canMeet)
         break;
     }
-    clothOn = canMeet && (gpu.clothCollide || (debug & 64));
+    clothOn = canMeet && gpu.clothCollide && !(debug & 64);
     if(clothOn)
       for(int t : model.dynamicTris)
       {
@@ -522,6 +523,8 @@ bool DforceGpu::Impl::create()
   ok &= mapped(attAlpha, model.attAlpha);
   ok &= mapped(lamAtt, lamAttZero);
   ok &= mapped(contact, noContact);
+  if(clothOn)
+    ok &= mapped(clothContact, noContact);
   if(clusters.count() > 0)
   {
     ok &= mapped(clusterEdgeBuf, clusterRows);
@@ -590,7 +593,7 @@ bool DforceGpu::Impl::create()
     LOGI("dForce GPU: %d clusters of up to %d vertices, %d colours each, %zu rows held by two\n", clusters.count(), clusters.mostLocal,
          clusters.colours(), clusters.haloRows);
   if(clothOn)
-    LOGI("dForce GPU: the cloth meets %zu of its own faces\n", clothFaces.size());
+    LOGI("dForce GPU: the cloth meets %zu cloth faces\n", clothFaces.size());
   sorted     = {};
   faces      = {};
   clothFaces = {};
@@ -619,6 +622,9 @@ void DforceGpu::Impl::resetState()
   // -1 everywhere: no face under any vertex
   if(contact.mapping)
     std::memset(contact.mapping, 0xFF, size_t(contact.bufferSize));
+  if(clothContact.mapping)
+    std::memset(clothContact.mapping, 0xFF, size_t(clothContact.bufferSize));
+  passCount = 0;
   std::memcpy(grav.mapping, model.grav.data(), model.grav.size() * sizeof(float));
   heldAt    = -1;
   lastMove  = 0;
@@ -652,7 +658,7 @@ void DforceGpu::Impl::destroy()
                          &collides, &grav, &edges, &lam, &tris, &cells, &items, &softVerts, &attAlpha, &lamAtt, &contact, &modelBuf, &readback,
                          &clusterEdgeBuf, &clusterLamBuf, &clusterVertBuf, &clusterVertStartBuf, &clusterOwnedBuf, &clusterColourBuf, &clusterSoftBuf,
                          &clusterSoftStartBuf, &xTwin, &clothTris, &clothCells, &clothItems, &meshOf, &ring2Start, &ring2, &frameStart, &snap,
-                         &cprevSnap, &faceBox})
+                         &cprevSnap, &faceBox, &clothContact})
     if(b->buffer != VK_NULL_HANDLE)
       alloc->destroyBuffer(*b);
 }
@@ -827,6 +833,7 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       m.frameStart = reinterpret_cast<glm::vec3*>(frameStart.address);
       m.snap       = reinterpret_cast<glm::vec3*>(snap.address);
       m.cprevSnap  = reinterpret_cast<glm::vec3*>(cprevSnap.address);
+      m.clothContact = reinterpret_cast<int*>(clothContact.address);
     }
     const auto gridStart = std::chrono::steady_clock::now();
     const bool grid      = !model.staticTris.empty() && buildGrid(start, end, m);
@@ -1013,8 +1020,8 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
         }
         if(m.numTris > 0)
           boxes();
-        // a wave a vertex, unless a garment meets another's faces (collideMain alone does)
-        const bool wave = waveLanes && m.numTris > 0 && m.numClothTris == 0;
+        pc.clothLook    = m.numClothTris > 0 && (++passCount % 4) == 0 ? 1u : 0u;
+        const bool wave = waveLanes && m.numTris > 0;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, wave ? collideWavePipe : collidePipe);
         vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
         dispatch(cmd, groups(m.numFree * (wave ? waveLanes : 1u)), 1, 1);
@@ -1104,6 +1111,12 @@ void DforceGpu::Impl::frame(float t0, float t1, float extraDamping, float second
       farthest = std::max(farthest, std::fabs(v));
     LOGW("dForce GPU: a frame took %.0f ms (%d substeps, %d collision passes, the fastest vertex moved %.1f cm, the farthest position %.0f cm)\n", ms,
          steps, passes, lastMove, farthest);
+    // FV_DFORCE_GPU_DEBUG's 512: no frame after it, for trying a kernel that may run away
+    if(debug & 512)
+    {
+      LOGW("dForce GPU: stopped after a long frame (FV_DFORCE_GPU_DEBUG 512)\n");
+      broken = true;
+    }
   }
 }
 

@@ -39,8 +39,14 @@
 // so the drape is the same to the bit (physics-plan step 13c). A thread a vertex walked its hundreds of
 // faces alone, and with a few thousand vertices most of the GPU stood idle.
 //
-// Not done here: the cloth does not collide with itself, vertices keep no clearance budgets (every
-// free vertex looks around on every pass; the GPU has the threads for it), and the kinematic
+// Cloth meets cloth as the CPU island has it: every fourth collision pass looks around for another
+// garment's faces (and a garment's own, with Self Collide, past the two rings about a vertex), the others
+// meet the one face a vertex rests on; each side of such a contact takes half the correction, since both
+// move. Looked for every pass, a crumpled dress jammed (a vertex within the gap of 30 of its own faces,
+// each push rewriting its velocity) and a full push from both sides threw vertices through the body.
+//
+// Not done here: vertices keep no clearance budgets (every free vertex looks around on every pass; the
+// GPU has the threads for it), and the kinematic
 // vertices move along straight lines within a frame (the host sweeps them along their bones
 // between frames). What the two share: the model, the tethers of partial strength, the sweeps over
 // the stretch edges, the start separated from the body, the sweep after a collision pass, a vertex
@@ -62,7 +68,8 @@
 // device loss: Windows resets a GPU held for about two seconds). FV_DFORCE_GPU_DEBUG in the
 // environment leaves a kernel out, for bisecting one: 1 the recovery, 2 the hold; 4 solves a dispatch
 // a colour and 8 on the renderer's queue, as before step 13; 16 makes a new simulation for every settle,
-// as before the driver kept one; 256 runs the collision passes and the recovery a thread a vertex.
+// as before the driver kept one; 256 runs the collision passes and the recovery a thread a vertex; 512 stops
+// a simulation after a frame over 250 ms, for trying a kernel that may run away.
 
 #include <functional>
 #include <future>
@@ -96,11 +103,9 @@ public:
       eColoured,
     } crossing = Crossing::eHalo;
     bool timestamps   = false;  // time each frame on the GPU (stats().gpuMs)
-    // a garment meets another garment's faces, as on the CPU. Off: unfinished (physics-plan step 13d). On
-    // the BBR Skirt standing it keeps the petticoat inside the plaid, but in a walk it stretches both,
-    // and a garment meeting its own faces (Self Collide) tore the Kai Dress apart. FV_DFORCE_GPU_DEBUG's
-    // bit 64 turns it on, 128 with a garment's own faces
-    bool clothCollide = false;
+    // a garment meets another garment's faces, and its own where it collides with itself (Self Collide), as
+    // on the CPU island (physics-plan step 13d). FV_DFORCE_GPU_DEBUG's 64 leaves them out, 128 a garment's own
+    bool clothCollide = true;
   };
   // What it has done so far.
   struct Stats

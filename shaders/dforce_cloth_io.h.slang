@@ -107,6 +107,7 @@ struct DforceModel
   float*      attAlpha;   // each one's tether compliance, by vertex index (0 for the rest)
   float*      lamAtt;     // and its multiplier, by soft index
   int*        contact;    // the face each free vertex rests on (set by the last collision pass, or a recovery), or -1
+  int*        clothContact;  // and the cloth face it rests on, met every pass until it leaves it (clothLook finds them), or -1
   // the cluster solve, when there is one: `edges` above are then only the rows that cross clusters.
   // Cluster c's vertices are clusterVerts[clusterVertStart[c] ..], its own first (clusterOwned[c] of
   // them); its colour k is clusterEdges[clusterColourStart[c * clusterColours + k] ..], each row's ends
@@ -136,6 +137,10 @@ struct DforcePushConstant
   float        extraDamping;
   uint         grip;                  // a hold that applies friction
   uint         lengthOnly;            // a cluster sweep over the rows that hold length (else a full sweep)
+  // a collision pass that looks around for cloth faces (every fourth, as the CPU island does); the others
+  // meet the cloth face a vertex rests on alone
+  uint         clothLook;
+  uint         pad0;
   // a cluster sweep reads the free vertices from one buffer and writes its own to the other (x and its
   // twin, in turn), so what it reads of another cluster's is where that was at the sweep's start
   float3*      clusterSrc;

@@ -555,6 +555,113 @@ void holdMain(uint3 tid: SV_DispatchThreadID)
   m.x[i] = p;
 }
 
+
+// Whether free vertex i may meet cloth face f, by the face's box where its corners are as the pass began:
+// not its own face, not one of its own mesh's unless that meets itself and the face is past the two rings
+// about it, and within reach of p.
+bool clothMayMeet(DforceModel m, int f, int i, int own, float3 p, float off, float moved)
+{
+  DforceTri tri = m.clothTris[f];
+  if(tri.a == i || tri.b == i || tri.c == i)
+    return false;
+  if(tri.mesh == own && (tri.self == 0 || nearInCloth(m, i, tri.a) || nearInCloth(m, i, tri.b) || nearInCloth(m, i, tri.c)))
+    return false;
+  float3 a = clothCornerNow(m, tri.a), b = clothCornerNow(m, tri.b), c = clothCornerNow(m, tri.c);
+  float  near = min(m.depth, max(tri.offset, off) + moved);
+  return !(any(p < min(a, min(b, c)) - near) || any(p > max(a, max(b, c)) + near));
+}
+
+// A cloth face against a free vertex at p, as meetFace meets the pose's, with two differences. The face's
+// corners are free too, so each side takes half the correction: a full push from both sides threw the
+// vertex through the body (She Is The Boss striding: the skirt 6 cm lower, 45 vertices in the body). And
+// a side is trusted only where the vertex lay over or under the face at its last pass: one beside it, past
+// an edge, has none, and was pushed through (a walk, two layers sliding by each other). `resting`: the
+// vertex is over the face and close enough to rest on it. True when it moved p.
+bool meetClothFace(DforceModel m, int f, float3 was, float moved, int layer, float off, float fri, inout float3 p, inout float3 prev, out bool resting)
+{
+  resting       = false;
+  DforceTri tri = m.clothTris[f];
+  float3    a1 = clothCornerNow(m, tri.a), b1 = clothCornerNow(m, tri.b), c1 = clothCornerNow(m, tri.c);
+  float3    n1;
+  if(!faceNormal(a1, b1, c1, n1))
+    return false;
+  float  gap  = max(tri.offset, off);
+  float  near = min(m.depth, gap + moved);
+  float3 blo  = min(a1, min(b1, c1)) - near;
+  float3 bhi  = max(a1, max(b1, c1)) + near;
+  if(any(p < blo) || any(p > bhi))
+    return false;
+  float3 a0 = clothCornerWas(m, tri.a), b0 = clothCornerWas(m, tri.b), c0 = clothCornerWas(m, tri.c);
+  float3 n0;
+  if(!faceNormal(a0, b0, c0, n0))
+    return false;
+  float wasSigned, wasDist;
+  bool  wasInterior;
+  closestOn(was, a0, b0, c0, n0, wasSigned, wasDist, wasInterior);
+  if(abs(wasSigned) < 0.6 * wasDist)
+    return false;
+  int direction;
+  if(layer > tri.layer)
+  {
+    if(wasSigned < -0.05)
+      return false;
+    direction = 1;
+  }
+  else if(layer < tri.layer)
+  {
+    if(wasSigned > 0.05)
+      return false;
+    direction = -1;
+  }
+  else
+    direction = wasSigned >= 0 ? 1 : -1;
+  float nowSigned, nowDist;
+  bool  nowInterior;
+  closestOn(p, a1, b1, c1, n1, nowSigned, nowDist, nowInterior);
+  resting      = nowInterior && nowDist <= gap + near;
+  float target = float(direction) * gap;
+  if(direction > 0 ? nowSigned >= target : nowSigned <= target)
+    return false;
+  if(nowDist > m.depth)
+    return false;
+  if(abs(nowSigned) < 0.6 * nowDist)
+    return false;
+  float  push  = 0.5 * min(abs(target - nowSigned), m.cap);
+  float  along = target - nowSigned > 0 ? 1.0 : -1.0;
+  p            = p + n1 * (push * along);
+  float3 d     = p - prev;
+  float  dn    = dot(d, n1);
+  float  fr    = clamp((tri.friction + fri) * 0.5, 0.0, 0.95);
+  p            = p - (d - n1 * dn) * fr;
+  prev         = p - (d - n1 * dn) * (1 - fr);
+  return true;
+}
+
+// The cloth face a vertex rested on at its last pass, met again (every pass, while it stays over it: it
+// keeps two layers apart between the passes that look around, and pushes the same way each time, where
+// a different face each pass jammed a crumpled dress). -1 once it has left it.
+int keepClothContact(DforceModel m, int i, float3 was, float moved, int layer, float off, float fri, inout float3 p, inout float3 prev)
+{
+  int f = m.clothContact[i];
+  if(f < 0)
+    return -1;
+  bool resting;
+  meetClothFace(m, f, was, moved, layer, off, fri, p, prev, resting);
+  return resting ? f : -1;
+}
+
+// The cells a vertex looks in for cloth faces: the cloth's faces are filed where they were at the frame's
+// start (`frameStart`), so it looks between where it was then and where it is; one that has gone further
+// than a pass recovers from, where it was then.
+void clothCells(DforceModel m, int i, float3 p, out float3 lo, out float3 hi)
+{
+  float3 v0    = m.frameStart[i];
+  float  reach = m.searchReach;
+  bool   far   = length(p - v0) > m.depth;
+  lo           = far ? v0 - reach : min(p, v0) - reach;
+  hi           = far ? v0 + reach : max(p, v0) + reach;
+}
+
 // Pushes a free vertex out of the faces it was outside of at its last pass, and notes the face it
 // rests on, if any.
 [shader("compute")]
@@ -586,97 +693,49 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
   float  off   = m.offset[i];
   float  fri   = m.friction[i];
   int    resting = -1;
-  // Another garment's faces (a garment's own with Self Collide, when the host gives them): filed where they were at the frame's
-  // start, so they're looked for between where the vertex was then and where it is (the two layers of
-  // a skirt move together); a vertex that has gone further than a pass recovers from, where it was then
+  // Cloth faces (another garment's, and a garment's own with Self Collide), when the host gives them:
+  // every fourth pass the cells about the vertex are looked through, and the face it comes to rest on is
+  // kept; the other passes meet that face alone. Before the pose's faces, so the body has the last word
+  int clothResting = -1;
   if(m.numClothTris > 0)
   {
-    float3 v0  = m.frameStart[i];
-    float3 clo = length(x0 - v0) > m.depth ? v0 - reach : min(x0, v0) - reach;
-    float3 chi = length(x0 - v0) > m.depth ? v0 + reach : max(x0, v0) + reach;
-    int    own = m.meshOf[i];
-    for(int ix = cellOf(clo.x, m.cellSize); ix <= cellOf(chi.x, m.cellSize); ix++)
-      for(int iy = cellOf(clo.y, m.cellSize); iy <= cellOf(chi.y, m.cellSize); iy++)
-        for(int iz = cellOf(clo.z, m.cellSize); iz <= cellOf(chi.z, m.cellSize); iz++)
-        {
-          uint s = cellHash(ix, iy, iz) & m.clothCellMask;
-          for(uint probe = 0; probe <= m.clothCellMask; probe++)
+    float3 p  = m.x[i];
+    float3 pv = m.prev[i];
+    if(pc.clothLook == 0)
+      clothResting = keepClothContact(m, i, was, moved, layer, off, fri, p, pv);
+    else
+    {
+      float3 clo, chi;
+      clothCells(m, i, p, clo, chi);
+      int own = m.meshOf[i];
+      for(int ix = cellOf(clo.x, m.cellSize); ix <= cellOf(chi.x, m.cellSize); ix++)
+        for(int iy = cellOf(clo.y, m.cellSize); iy <= cellOf(chi.y, m.cellSize); iy++)
+          for(int iz = cellOf(clo.z, m.cellSize); iz <= cellOf(chi.z, m.cellSize); iz++)
           {
-            DforceCell cell = m.clothCells[(s + probe) & m.clothCellMask];
-            if(cell.start < 0)
-              break;
-            if(cell.x != ix || cell.y != iy || cell.z != iz)
-              continue;
-            for(int k = 0; k < cell.count; k++)
+            uint s = cellHash(ix, iy, iz) & m.clothCellMask;
+            for(uint probe = 0; probe <= m.clothCellMask; probe++)
             {
-              int       f   = m.clothItems[cell.start + k];
-              DforceTri tri = m.clothTris[f];
-              if(tri.a == i || tri.b == i || tri.c == i)
+              DforceCell cell = m.clothCells[(s + probe) & m.clothCellMask];
+              if(cell.start < 0)
+                break;
+              if(cell.x != ix || cell.y != iy || cell.z != iz)
                 continue;
-              if(tri.mesh == own && (tri.self == 0 || nearInCloth(m, i, tri.a) || nearInCloth(m, i, tri.b) || nearInCloth(m, i, tri.c)))
-                continue;
-              // a face filed in two cells the box meets is tested twice, as the body's are: the first
-              // push leaves the vertex at the gap, so the second finds nothing to do
-              float3 a1 = clothCornerNow(m, tri.a), b1 = clothCornerNow(m, tri.b), c1 = clothCornerNow(m, tri.c);
-              float3 n1;
-              if(!faceNormal(a1, b1, c1, n1))
-                continue;
-              float3 p    = m.x[i];
-              float  gap  = max(tri.offset, off);
-              float  near = min(m.depth, gap + moved);
-              float3 blo  = min(a1, min(b1, c1)) - near;
-              float3 bhi  = max(a1, max(b1, c1)) + near;
-              if(any(p < blo) || any(p > bhi))
-                continue;
-              float3 a0 = clothCornerWas(m, tri.a), b0 = clothCornerWas(m, tri.b), c0 = clothCornerWas(m, tri.c);
-              float3 n0;
-              if(!faceNormal(a0, b0, c0, n0))
-                continue;
-              float wasSigned, wasDist;
-              bool  wasInterior;
-              closestOn(was, a0, b0, c0, n0, wasSigned, wasDist, wasInterior);
-              // a side only where the vertex lay over or under the face at its last pass: one beside it,
-              // past an edge, has none, and was pushed through (a walk, two layers sliding by each other)
-              if(abs(wasSigned) < 0.6 * wasDist)
-                continue;
-              int direction;
-              if(layer > tri.layer)
+              for(int k = 0; k < cell.count; k++)
               {
-                if(wasSigned < -0.05)
+                int f = m.clothItems[cell.start + k];
+                if(!clothMayMeet(m, f, i, own, p, off, moved))
                   continue;
-                direction = 1;
+                bool rests;
+                meetClothFace(m, f, was, moved, layer, off, fri, p, pv, rests);
+                if(rests)
+                  clothResting = f;
               }
-              else if(layer < tri.layer)
-              {
-                if(wasSigned > 0.05)
-                  continue;
-                direction = -1;
-              }
-              else
-                direction = wasSigned >= 0 ? 1 : -1;
-              float nowSigned, nowDist;
-              bool  nowInterior;
-              closestOn(p, a1, b1, c1, n1, nowSigned, nowDist, nowInterior);
-              float target = float(direction) * gap;
-              if(direction > 0 ? nowSigned >= target : nowSigned <= target)
-                continue;
-              if(nowDist > m.depth)
-                continue;
-              if(abs(nowSigned) < 0.6 * nowDist)
-                continue;
-              float  push  = min(abs(target - nowSigned), m.cap);
-              float  along = target - nowSigned > 0 ? 1.0 : -1.0;
-              p            = p + n1 * (push * along);
-              float3 d     = p - m.prev[i];
-              float  dn    = dot(d, n1);
-              float  fr    = clamp((tri.friction + fri) * 0.5, 0.0, 0.95);
-              p            = p - (d - n1 * dn) * fr;
-              m.prev[i]    = p - (d - n1 * dn) * (1 - fr);
-              m.x[i]       = p;
+              break;
             }
-            break;
           }
-        }
+    }
+    m.x[i]    = p;
+    m.prev[i] = pv;
   }
   for(int ix = cellOf(lo.x, m.cellSize); ix <= cellOf(hi.x, m.cellSize); ix++)
     for(int iy = cellOf(lo.y, m.cellSize); iy <= cellOf(hi.y, m.cellSize); iy++)
@@ -761,6 +820,8 @@ void collideMain(uint3 tid: SV_DispatchThreadID)
       }
   m.cprev[i]   = m.x[i];
   m.contact[i] = resting;
+  if(m.numClothTris > 0)
+    m.clothContact[i] = clothResting;
 }
 
 // One of the pose's faces against a free vertex at p, as collideMain meets each in turn (it is that loop's
@@ -832,10 +893,10 @@ bool mayMeet(DforceModel m, int f, float3 p, float off, float moved)
   return !(any(p < box0.xyz - near) || any(p > box1.xyz + near));
 }
 
-// collideMain over the pose's faces, a wave a vertex: its lanes look at the next 32 faces at once, each on
-// its box, and those it may meet are met one after another in their order, on every lane alike, as the
-// thread met them. A push moves the vertex: the faces after it among the 32 are looked at again from there.
-// A garment meeting another's faces (numClothTris) runs collideMain.
+// collideMain a wave a vertex: its lanes look at the next 32 faces at once, each on its box, and those it
+// may meet are met one after another in their order, on every lane alike, as the thread met them. A push
+// moves the vertex: the faces after it among the 32 are looked at again from there. The cloth's faces go
+// the same way, first, on the passes that look around; the face the vertex rests on every pass.
 [shader("compute")]
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 [require(spvGroupNonUniformBallot, spvGroupNonUniformShuffle)]
@@ -867,6 +928,51 @@ void collideWaveMain(uint3 tid: SV_DispatchThreadID)
   int    resting = -1;
   float3 p       = x0;
   float3 prev    = m.prev[i];
+  int    clothResting = -1;
+  if(m.numClothTris > 0)
+  {
+    if(pc.clothLook == 0)
+      clothResting = keepClothContact(m, i, was, moved, layer, off, fri, p, prev);
+    else
+    {
+      float3 clo, chi;
+      clothCells(m, i, p, clo, chi);
+      int own = m.meshOf[i];
+      for(int ix = cellOf(clo.x, m.cellSize); ix <= cellOf(chi.x, m.cellSize); ix++)
+        for(int iy = cellOf(clo.y, m.cellSize); iy <= cellOf(chi.y, m.cellSize); iy++)
+          for(int iz = cellOf(clo.z, m.cellSize); iz <= cellOf(chi.z, m.cellSize); iz++)
+          {
+            uint s = cellHash(ix, iy, iz) & m.clothCellMask;
+            for(uint probe = 0; probe <= m.clothCellMask; probe++)
+            {
+              DforceCell cell = m.clothCells[(s + probe) & m.clothCellMask];
+              if(cell.start < 0)
+                break;
+              if(cell.x != ix || cell.y != iy || cell.z != iz)
+                continue;
+              for(int first = 0; first < cell.count; first += lanes)
+              {
+                const int k    = first + int(lane);
+                const int f    = k < cell.count ? m.clothItems[cell.start + k] : -1;
+                uint      them = WaveActiveBallot(f >= 0 && clothMayMeet(m, f, i, own, p, off, moved)).x;
+                while(them != 0)
+                {
+                  const uint j  = firstbitlow(them);
+                  them &= ~((2u << j) - 1u);
+                  const int fj = WaveReadLaneAt(f, j);
+                  bool      rests;
+                  const bool pushed = meetClothFace(m, fj, was, moved, layer, off, fri, p, prev, rests);
+                  if(rests)
+                    clothResting = fj;
+                  if(pushed)
+                    them = WaveActiveBallot(f >= 0 && lane > j && clothMayMeet(m, f, i, own, p, off, moved)).x;
+                }
+              }
+              break;
+            }
+          }
+    }
+  }
   for(int ix = cellOf(lo.x, m.cellSize); ix <= cellOf(hi.x, m.cellSize); ix++)
     for(int iy = cellOf(lo.y, m.cellSize); iy <= cellOf(hi.y, m.cellSize); iy++)
       for(int iz = cellOf(lo.z, m.cellSize); iz <= cellOf(hi.z, m.cellSize); iz++)
@@ -902,6 +1008,8 @@ void collideWaveMain(uint3 tid: SV_DispatchThreadID)
   m.prev[i]    = prev;
   m.cprev[i]   = p;
   m.contact[i] = resting;
+  if(m.numClothTris > 0)
+    m.clothContact[i] = clothResting;
 }
 
 // As a collision pass begins: every position, and every free vertex's at the last pass, as they are now.

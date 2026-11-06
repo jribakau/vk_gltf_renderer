@@ -4,7 +4,7 @@
 // against the CPU's vertex by vertex. Needs a Vulkan device and nothing of the app.
 //
 //   fv_cloth_bench <job> [out.json] [--solvers cpu,gpu,cluster,coloured] [--cluster 1024[,512..]] [--local 2048]
-//                  [--analyse] [--grid]
+//                  [--analyse] [--grid] [--self] [--trace]
 //
 // "cluster" has both clusters of a row that crosses them hold it, each moving its own end; "coloured"
 // runs those rows after the clusters, a dispatch a colour of them.
@@ -21,11 +21,18 @@
 // drape is the first's to the bit. Then once more with the body dented (its rest cage moved in, as a
 // contact pass does), set against a new simulation of that job: "dented" says whether the two agree.
 
+// --self needs no GPU: for each simulated mesh, its own faces that lie under or over its vertices at the
+// start (the rest shape), beyond the two rings a vertex never meets, within the gap and within twice it,
+// how many such faces the worst vertex has, and the deepest; with the mesh's edge length and offsets. For
+// a garment that tears when it meets its own faces: whether it is folded onto itself as made. --trace runs
+// the GPU settle a frame at a time and prints the same after each frame (physics-plan step 13d: the Kai
+// Dress crumples onto itself from its sixth frame, 5,000 vertices within the gap of an own face).
 // the allocator's implementation, as renderer.cpp compiles it for the renderer
 #define VMA_IMPLEMENTATION
 #include <nvvk/resource_allocator.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -46,6 +53,7 @@
 #include <figure/physics/sweep.hpp>
 #include <nvapp/application.hpp>
 #include <nvutils/logger.hpp>
+#include <glm/glm.hpp>
 #include <nvvk/context.hpp>
 #include <nvvk/resource_allocator.hpp>
 #include <volk.h>
@@ -288,6 +296,165 @@ std::vector<std::vector<float>> settleCpu(const cloth::Job& job, Json& report)
 
 }  // namespace
 
+
+namespace {
+
+Json selfReport(const fv::physics::cloth::Model& model, const float* pos = nullptr)
+{
+  if(!pos)
+    pos = model.rest.data();
+  namespace cloth = fv::physics::cloth;
+  Json out = Json::array();
+  // every face of a mesh whose own vertices meet it, at the rest shape, in cells of 2 cm
+  std::vector<int32_t> corners;
+  std::vector<int>     faceOf;
+  for(int t : model.dynamicTris)
+  {
+    const cloth::Face& tri = model.tris[size_t(t)];
+    if(!tri.self)
+      continue;
+    corners.insert(corners.end(), {tri.a, tri.b, tri.c});
+    faceOf.push_back(t);
+  }
+  fv::physics::SweepGrid grid;
+  const float            cell = 2.f;
+  if(!corners.empty())
+    fv::physics::buildSweepGrid(corners, pos, pos, cell, grid);
+  const auto inRing2 = [&](int i, int v) {
+    const int* first = model.ring2.data() + model.ring2Start[size_t(i)];
+    const int* last  = model.ring2.data() + model.ring2Start[size_t(i) + 1];
+    return std::binary_search(first, last, v);
+  };
+  const auto at = [&](int v) { return glm::vec3(pos[size_t(v) * 3], pos[size_t(v) * 3 + 1], pos[size_t(v) * 3 + 2]); };
+  const int  meshes = model.base.empty() ? 0 : int(model.base.size());
+  for(int mi = 0; mi < meshes; mi++)
+  {
+    const int first = model.base[size_t(mi)], last = mi + 1 < meshes ? model.base[size_t(mi) + 1] : model.nv;
+    int       freeHere = 0, selfFaces = 0;
+    double    edgeSum = 0;
+    int       edges   = 0;
+    float     offLo = 1e9f, offHi = 0;
+    for(int t : model.dynamicTris)
+      if(model.tris[size_t(t)].mesh == mi && model.tris[size_t(t)].self)
+        selfFaces++;
+    for(const cloth::Distance& e : model.edges)
+      if(e.kind == cloth::DistanceKind::eStretch && model.meshOf[size_t(e.a)] == mi)
+      {
+        edgeSum += e.rest;
+        edges++;
+      }
+    for(int v = first; v < last; v++)
+    {
+      if(model.dynamic[size_t(v)] && model.inv[size_t(v)] > 0)
+        freeHere++;
+      offLo = std::min(offLo, model.offset[size_t(v)]);
+      offHi = std::max(offHi, model.offset[size_t(v)]);
+    }
+    if(freeHere == 0)
+      continue;
+    std::atomic<int>   withinGap{0}, withinTwice{0}, mostFaces{0};
+    std::atomic<int>   deepestMilli{0};
+    const uint32_t     mask = grid.cells.empty() ? 0 : grid.mask();
+    fv::jobs::parallelFor(size_t(last - first), 512, [&](size_t begin, size_t end) {
+      std::vector<int> seen;
+      for(size_t k = begin; k < end; k++)
+      {
+        const int i = first + int(k);
+        if(!model.dynamic[size_t(i)] || model.inv[size_t(i)] <= 0 || !model.collides[size_t(i)] || grid.cells.empty())
+          continue;
+        const glm::vec3 q     = at(i);
+        const float     reach = 2 * model.offset[size_t(i)] + 0.5f;
+        int             nGap = 0, nTwice = 0;
+        float           deepest = 0;
+        seen.clear();
+        for(int ix = int(std::floor((q.x - reach) / cell)); ix <= int(std::floor((q.x + reach) / cell)); ix++)
+          for(int iy = int(std::floor((q.y - reach) / cell)); iy <= int(std::floor((q.y + reach) / cell)); iy++)
+            for(int iz = int(std::floor((q.z - reach) / cell)); iz <= int(std::floor((q.z + reach) / cell)); iz++)
+            {
+              const uint32_t s = fv::physics::sweepCellHash(ix, iy, iz) & mask;
+              for(uint32_t probe = 0; probe <= mask; probe++)
+              {
+                const fv::physics::SweepCell& c = grid.cells[(s + probe) & mask];
+                if(c.start < 0)
+                  break;
+                if(c.x != ix || c.y != iy || c.z != iz)
+                  continue;
+                for(int n = 0; n < c.count; n++)
+                {
+                  const int f = grid.items[size_t(c.start + n)];
+                  if(std::find(seen.begin(), seen.end(), f) != seen.end())
+                    continue;
+                  seen.push_back(f);
+                  const cloth::Face& tri = model.tris[size_t(faceOf[size_t(f)])];
+                  if(tri.mesh != mi || tri.a == i || tri.b == i || tri.c == i || inRing2(i, tri.a) || inRing2(i, tri.b) || inRing2(i, tri.c))
+                    continue;
+                  const glm::vec3 a = at(tri.a), b = at(tri.b), cc = at(tri.c);
+                  glm::vec3       nrm = glm::cross(b - a, cc - a);
+                  const float     len = glm::length(nrm);
+                  if(len < 1e-8f)
+                    continue;
+                  nrm /= len;
+                  // the closest point on the face, as the kernels find it
+                  const glm::vec3 ab = b - a, ac = cc - a, aq = q - a;
+                  const float d00 = glm::dot(ab, ab), d01 = glm::dot(ab, ac), d11 = glm::dot(ac, ac), d20 = glm::dot(ab, aq), d21 = glm::dot(ac, aq);
+                  const float den = d00 * d11 - d01 * d01;
+                  float       bv = 0, cv = 0;
+                  if(den > 1e-12f)
+                  {
+                    bv = std::clamp((d11 * d20 - d01 * d21) / den, 0.f, 1.f);
+                    cv = std::clamp((d00 * d21 - d01 * d20) / den, 0.f, 1.f);
+                    if(bv + cv > 1)
+                    {
+                      const float sum = bv + cv;
+                      bv /= sum;
+                      cv /= sum;
+                    }
+                  }
+                  const glm::vec3 d    = q - (a + ab * bv + ac * cv);
+                  const float     dist = glm::length(d), sd = glm::dot(d, nrm);
+                  if(std::fabs(sd) < 0.6f * dist)
+                    continue;  // past the edge
+                  const float gap = std::max(tri.offset, model.offset[size_t(i)]);
+                  if(dist < gap)
+                  {
+                    nGap++;
+                    deepest = std::max(deepest, gap - dist);
+                  }
+                  if(dist < 2 * gap)
+                    nTwice++;
+                }
+                break;
+              }
+            }
+        if(nGap > 0)
+          withinGap++;
+        if(nTwice > 0)
+          withinTwice++;
+        int most = mostFaces.load();
+        while(nGap > most && !mostFaces.compare_exchange_weak(most, nGap))
+        {
+        }
+        int deep = deepestMilli.load();
+        while(int(deepest * 1000) > deep && !deepestMilli.compare_exchange_weak(deep, int(deepest * 1000)))
+        {
+        }
+      }
+    });
+    out.push_back({{"mesh", mi},
+                   {"free", freeHere},
+                   {"selfFaces", selfFaces},
+                   {"meanEdgeCm", edges ? edgeSum / edges : 0.0},
+                   {"offsetCm", {offLo, offHi}},
+                   {"verticesWithinGapOfOwnFace", withinGap.load()},
+                   {"verticesWithinTwiceGap", withinTwice.load()},
+                   {"mostOwnFacesOnOneVertex", mostFaces.load()},
+                   {"deepestCm", deepestMilli.load() / 1000.0}});
+  }
+  return out;
+}
+
+}  // namespace
+
 int main(int argc, char** argv)
 {
   if(argc < 2)
@@ -299,7 +466,7 @@ int main(int argc, char** argv)
   std::vector<std::string> solvers = {"cpu", "gpu", "cluster"};
   std::vector<int>         sizes   = {1024};
   int                      local   = 2048;
-  bool                     onlyAnalyse = false, onlyGrid = false;
+  bool                     onlyAnalyse = false, onlyGrid = false, onlySelf = false, trace = false;
   for(int i = 2; i < argc; i++)
   {
     const std::string a = argv[i];
@@ -317,6 +484,10 @@ int main(int argc, char** argv)
       onlyAnalyse = true;
     else if(a == "--grid")
       onlyGrid = true;
+    else if(a == "--self")
+      onlySelf = true;
+    else if(a == "--trace")
+      trace = true;
     else if(outFile.empty())
       outFile = a;
   }
@@ -340,6 +511,13 @@ int main(int argc, char** argv)
   };
   if(onlyAnalyse)
   {
+    write();
+    return 0;
+  }
+  if(onlySelf)
+  {
+    out["self"] = selfReport(model);
+    std::cout << out["self"].dump(1) << std::endl;
     write();
     return 0;
   }
@@ -410,7 +588,28 @@ int main(int argc, char** argv)
         const auto t0    = std::chrono::steady_clock::now();
         {
           DforceGpu sim(&alloc, &app, job->surfaces, job->options, gpu);
-          sim.settle();
+          if(trace)
+          {
+            // a frame at a time, and after each the cloth faces under the cloth's vertices
+            int frameNo = 0;
+            while(!sim.settleSome(1e-9) && !sim.failed())
+            {
+              if(sim.stats().frames == 0)
+                continue;  // still preparing
+              const auto         ps = sim.positions();
+              std::vector<float> all;
+              for(const auto& v : ps)
+                all.insert(all.end(), v.begin(), v.end());
+              const Json r = selfReport(model, all.data());
+              std::cout << "trace frame " << ++frameNo << " move " << sim.lastMove();
+              for(const Json& m : r)
+                std::cout << " | mesh " << m["mesh"] << " gap " << m["verticesWithinGapOfOwnFace"] << " twice " << m["verticesWithinTwiceGap"] << " most "
+                          << m["mostOwnFacesOnOneVertex"] << " deep " << m["deepestCm"];
+              std::cout << std::endl;
+            }
+          }
+          else
+            sim.settle();
           const double ms = since(t0);
           const auto   s  = sim.stats();
           if(sim.failed())
