@@ -319,6 +319,7 @@ TEST(FvLighting, CloudsAreClearUntilSetAndReachTheRenderer)
   EXPECT_EQ(L::toJson(st)["clouds"]["type"], "stratus");
   EXPECT_EQ(L::rendererParams(st, {})["cloudType"], 2);
   EXPECT_EQ(L::rendererParams(L::applyPatch(s, {{"clouds", {{"type", "stratocumulus"}}}}), {})["cloudType"], 1);
+  EXPECT_EQ(L::rendererParams(L::applyPatch(s, {{"clouds", {{"type", "altocumulus"}}}}), {})["cloudType"], 3);
   EXPECT_EQ(st.clouds.coverage, 0.4);  // the rest of the clouds stay
   EXPECT_THROW(L::applyPatch(s, {{"clouds", {{"type", "cirrus"}}}}), std::invalid_argument);
 }

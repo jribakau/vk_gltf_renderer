@@ -104,9 +104,11 @@ CloudMedia mediaAt(float3 position, float height, CloudWeather weather, float mi
     const float2 uv = weatherUv(position) * (CLOUD_WEATHER_PERIOD / CLOUD_TURBULENCE_PERIOD);
     q += (g_turbulence.SampleLevel(uv, 0.0F).xyz * 2.0F - 1.0F) * g_params.turbulenceDisplacement * cloudTurbulenceWeight(weather);
   }
-  const float shape      = g_shape.SampleLevel(q / CLOUD_SHAPE_PERIOD + g_params.shapeOffset, noiseLod(distance, kShapeTexelKm));
+  // at the type's scale: a texel of the volume covers less of the sky the finer it is read
+  const float scale      = g_params.shapeScale;
+  const float shape      = g_shape.SampleLevel(q * (scale / CLOUD_SHAPE_PERIOD) + g_params.shapeOffset, noiseLod(distance, kShapeTexelKm / scale));
   const bool  withDetail = !far && g_params.shapeDetail != 0 && mipLevel * 0.5F + (jitter - 0.5F) * 0.5F < 0.5F;
-  const float detail     = withDetail ? g_detail.SampleLevel(q / CLOUD_DETAIL_PERIOD, noiseLod(distance, kDetailTexelKm)) : 0.0F;
+  const float detail = withDetail ? g_detail.SampleLevel(q * (scale / CLOUD_DETAIL_PERIOD), noiseLod(distance, kDetailTexelKm / scale)) : 0.0F;
   return cloudSampleMedia(g_params, weather, shape, detail, withDetail);
 }
 

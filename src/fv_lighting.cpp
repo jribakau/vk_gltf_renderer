@@ -188,7 +188,7 @@ void patchClouds(Clouds& c, const Json& p)
     else if(k == "seed")
       field(c.seed, d.seed, v, [&](const Json& x) { return int(std::lround(number(x, key, 0.0, double(1 << 20)))); });
     else if(k == "type")
-      field(c.type, d.type, v, [&](const Json& x) { return oneOf(x, key, {"cumulus", "stratocumulus", "stratus"}); });
+      field(c.type, d.type, v, [&](const Json& x) { return oneOf(x, key, {"cumulus", "stratocumulus", "stratus", "altocumulus"}); });
     else
       reject("unknown key " + key);
   }
@@ -599,6 +599,12 @@ double stillFireflyClamp(double wanted, double applied)
   return applied > 0.0 && wanted <= 4.0 * applied && applied <= 4.0 * wanted ? applied : wanted;
 }
 
+// The renderer's cloudType for the topic's clouds.type: its CLOUD_TYPE_* (sky_clouds.h.slang).
+static int cloudType(const std::string& type)
+{
+  return type == "stratocumulus" ? 1 : type == "stratus" ? 2 : type == "altocumulus" ? 3 : 0;
+}
+
 Json rendererParams(const State& s, glm::uvec2 envSize)
 {
   const Env&     e = s.env;
@@ -628,7 +634,7 @@ Json rendererParams(const State& s, glm::uvec2 envSize)
       {"cloudCoverage", s.clouds.coverage},
       {"cloudThickness", s.clouds.thickness},
       {"cloudSeed", s.clouds.seed},
-      {"cloudType", s.clouds.type == "stratus" ? 2 : s.clouds.type == "stratocumulus" ? 1 : 0},
+      {"cloudType", cloudType(s.clouds.type)},
       {"tmActive", 1},
       {"tmAutoExposure", 0},
       {"tmMethod", tmMethod(t.method)},

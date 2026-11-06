@@ -100,8 +100,8 @@ struct SkyCloudsParameters
   float  powderScale;
   float  powderExponent;  // km
   float  turbulenceDisplacement;  // km
-  int    samples;  // marches per texel, each at another jitter and spot in it, averaged
-  float  _pad1;
+  int    samples;     // marches per texel, each at another jitter and spot in it, averaged
+  float  shapeScale;  // the billows' and the detail's frequency against takram's: 2 is clouds half the size
 
   // The march: takram's quality preset, in kilometres
   int   maxIterations;

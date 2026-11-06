@@ -59,7 +59,8 @@ namespace {
 // 30: light cloth: dforce.light, the dforce/<prop> topic's and the scene state's `dforceLight`.
 // 31: clouds over the physical sky, the lighting's clouds section (coverage, thickness, seed).
 // 32: the kind of cloud, the lighting's clouds.type (cumulus, stratocumulus, stratus).
-constexpr int kProtocolVersion = 32;
+// 33: clouds.type "altocumulus".
+constexpr int kProtocolVersion = 33;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

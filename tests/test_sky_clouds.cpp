@@ -76,8 +76,8 @@ std::vector<Column> columns(int count, unsigned seed, const SkyCloudsParameters&
         const float3 q(x, h, z);
         c.heights.push_back(h);
         c.steps.push_back((top - bottom) / float(n));
-        c.shape.push_back(std::clamp(cloudShapeNoise(wrap01(q / CLOUD_SHAPE_PERIOD)), 0.0F, 1.0F));
-        c.detail.push_back(cloudDetailNoise(wrap01(q / CLOUD_DETAIL_PERIOD)));
+        c.shape.push_back(std::clamp(cloudShapeNoise(wrap01(q * (p.shapeScale / CLOUD_SHAPE_PERIOD))), 0.0F, 1.0F));
+        c.detail.push_back(cloudDetailNoise(wrap01(q * (p.shapeScale / CLOUD_DETAIL_PERIOD))));
       }
     };
     band(p.minHeight, p.shadowTopHeight, 24);
@@ -244,8 +244,8 @@ TEST(SkyClouds, CoverageRunsFromNoneToAll)
           SkyCloudsParameters at = p;
           at.coverage            = c;
           const float4 d         = cloudSampleWeather(at, float4(w), h).density;
-          EXPECT_GE(d.x + d.y, last - 1e-6F) << type;
-          last = d.x + d.y;
+          EXPECT_GE(d.x + d.y + d.z + d.w, last - 1e-6F) << type;
+          last = d.x + d.y + d.z + d.w;
         }
       }
     // The panel's cover maps onto it from the first clouds to a closed deck, rising
@@ -303,6 +303,35 @@ TEST(SkyClouds, EachTypeIsTheCloudItSays)
   EXPECT_NEAR(deepSt.maxHeight - deepSt.minHeight, 1.0F, 1e-5F);
   // and the cover means the same under each: takram's coverage differs by type
   EXPECT_NE(cloudCoverageFor(0.5F, CLOUD_TYPE_STRATUS), cloudCoverageFor(0.5F, CLOUD_TYPE_CUMULUS));
+
+  // Altocumulus: a mid-level deck in the fourth layer alone, of cloudlets smaller than takram's billows
+  // that the billows cut everywhere (a shape amount past 1), shallower than the low decks; every other
+  // type at takram's scale
+  const SkyCloudsParameters ac =
+      cloudDefaultParameters(0.5F, cloudDefaultThickness(CLOUD_TYPE_ALTOCUMULUS), CLOUD_TYPE_ALTOCUMULUS);
+  EXPECT_GE(ac.minHeight, 2.0F);
+  EXPECT_LE(ac.maxHeight, 6.0F);
+  EXPECT_FLOAT_EQ(ac.minLayerHeights.w, ac.minHeight);
+  EXPECT_FLOAT_EQ(ac.maxLayerHeights.w, ac.maxHeight);
+  EXPECT_GT(ac.densityScales.w, 0.0F);
+  EXPECT_EQ(ac.densityScales.x + ac.densityScales.y + ac.densityScales.z, 0.0F);
+  EXPECT_LT(cloudDefaultThickness(CLOUD_TYPE_ALTOCUMULUS), cloudDefaultThickness(CLOUD_TYPE_STRATOCUMULUS));
+  EXPECT_GT(ac.shapeAmounts.w, 1.0F);
+  EXPECT_GT(ac.shapeScale, 1.0F);
+  for(const SkyCloudsParameters* p : {&cu, &sc, &st})
+    EXPECT_EQ(p->shapeScale, 1.0F);
+  for(float h = ac.minHeight; h <= ac.maxHeight; h += 0.05F)
+    EXPECT_FALSE(cloudInsideIntervals(ac, h)) << h;
+  // its channel of the weather map has patches and clear sky both
+  int patches = 0, clear = 0;
+  for(int i = 0; i < 400; ++i)
+  {
+    const float a = cloudWeatherNoise(float2((float(i % 20) + 0.5F) / 20.0F, (float(i / 20) + 0.5F) / 20.0F)).w;
+    patches += a > 0.5F ? 1 : 0;
+    clear += a < 0.05F ? 1 : 0;
+  }
+  EXPECT_GT(patches, 40);
+  EXPECT_GT(clear, 40);
 }
 
 TEST(SkyClouds, ThePhaseIsNormalisedAndScattersForward)

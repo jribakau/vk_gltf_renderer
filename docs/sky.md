@@ -630,6 +630,7 @@ panel's **Type** (`cloudType`, `CLOUD_TYPE_*`), each a set of takram's layer par
 | Cumulus | takram's default: low cumulus from 750 m, deeper cumulus in larger fields from 1 km, a thin streaky layer at 7.5 km | the billows cut the weather's fields fully, the detail erodes the edges |
 | Stratocumulus | one deck from 900 m, 600 m deep, read through both low channels so their fields make one broad deck | the billows still cut it into lumps and rolls (shape amount 0.8), half the detail, softer field edges, half cumulus's density |
 | Stratus | one deck from 500 m, 400 m deep | after takram's fog layer: the billows barely mark it (0.25), no detail, the softest field edges, density nearly even with height, little turbulence |
+| Altocumulus | one deck from 3 km, 400 m deep, in the fourth layer: the weather map's own channel, patches from cells of their own | the noise read at twice takram's frequency (`shapeScale`), so cloudlets a few hundred metres across; a shape amount of 2, so the billows cut it everywhere into dense cloudlets with sky between rather than only at a field's edge |
 
 The panel's **Thickness** is the type's depth, put on at the type's own when the type is picked (a
 cumulus's 1.45 km would be a stratus ten times too deep); under cumulus it scales the two cumulus

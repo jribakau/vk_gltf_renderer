@@ -331,14 +331,17 @@ inline float cloudWorleyFbm(float3 point, float frequency, float amplitude, floa
 }
 
 // The weather map at `p` in the unit square, one layer to a channel: r the low cumulus (where the
-// deeper ones are not), g the deeper cumulus in large fields, b the high cloud in streaks, a unused.
+// deeper ones are not), g the deeper cumulus in large fields, b the high cloud in streaks -- takram's
+// -- and a ours, the altocumulus: patches as r's are, from cells of their own, so a mid-level deck
+// does not lie over the low one's fields.
 inline float4 cloudWeatherNoise(float2 p)
 {
   const float3 point = float3(p.x, p.y, 0.0F);
   const float  mid   = smoothstep(1.0F, 1.4F, cloudWorleyFbm(point + float3(0.5F), 8.0F, 0.4F, 2.0F, 0.95F, 4));
   const float  low   = clamp(smoothstep(0.8F, 1.4F, cloudWorleyFbm(point, 16.0F, 0.4F, 2.0F, 0.95F, 4)) - mid, 0.0F, 1.0F);
   const float  high  = smoothstep(-0.5F, 0.5F, cloudPerlinNoise(point, float3(6.0F, 12.0F, 1.0F), 8));
-  return float4(low, mid, high, 1.0F);
+  const float  alto  = smoothstep(0.8F, 1.4F, cloudWorleyFbm(point + float3(0.25F, 0.75F, 0.0F), 12.0F, 0.4F, 2.0F, 0.95F, 4));
+  return float4(low, mid, high, alto);
 }
 
 inline float3 cloudPerlin3d(float3 point)
