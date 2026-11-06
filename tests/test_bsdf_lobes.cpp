@@ -100,7 +100,23 @@ std::vector<Case> cases()
   orthonormalBasis(softened.N, softened.T, softened.B);
   softened.diffuseSoftening = vec3(0.99f, 0.9f, 0.7f);
   out.push_back({"softened diffuse", softened});
+  // Lobes picked apart from their weights (bsdfLobePick): a near-black base under its specular, and
+  // under a smooth coat, whose diffuse is picked at its floor
+  out.push_back({"dark glossy", defaultPbrMaterial(vec3(0.04f), 0.0f, 0.3f, vec3(0, 0, 1), vec3(0, 0, 1))});
+  PbrMaterial darkCoat        = defaultPbrMaterial(vec3(0.005f), 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1));
+  darkCoat.clearcoat          = 1.0f;
+  darkCoat.clearcoatRoughness = 0.15f;
+  out.push_back({"dark coat", darkCoat});
   return out;
+}
+
+PbrMaterial caseNamed(const char* name)
+{
+  for(const Case& c : cases())
+    if(std::strcmp(c.name, name) == 0)
+      return c.mat;
+  ADD_FAILURE() << "no case " << name;
+  return base(0.5f);
 }
 
 // The "normal map" case's: a view above the surface that its bent normal faces away from.
@@ -237,7 +253,7 @@ TEST(BsdfLobes, AReflectionLobeIsDarkBelowItsNormal)
 TEST(BsdfLobes, ABumpTiltedAwayFromTheViewStillReflects)
 {
   PbrMaterial metal = cases()[1].mat;
-  metal.N           = cases().back().mat.N;
+  metal.N           = caseNamed("normal map").N;
   orthonormalBasis(metal.N, metal.T, metal.B);
   ASSERT_LT(dot(kBehindTheBump, metal.N), 0.0f);
   ASSERT_GT(dot(kBehindTheBump, metal.Ng), 0.0f);
@@ -263,7 +279,7 @@ TEST(BsdfLobes, ABumpTiltedAwayFromTheViewStillReflects)
 TEST(BsdfLobes, TheTerminatorTermFadesOnlyABumpedLobe)
 {
   const vec3 Ns(0.0f, 0.0f, 1.0f);
-  const vec3 N = cases().back().mat.N;
+  const vec3 N = caseNamed("normal map").N;
   for(float cosI : {0.05f, 0.3f, 0.7f, 1.0f})
   {
     const vec3 L(std::sqrt(1.0f - cosI * cosI), 0.0f, cosI);
@@ -974,4 +990,96 @@ TEST(BsdfLobes, EmissionComesOutThroughACoat)
   EXPECT_LT(grazing.x, straight.x);
   // half the coverage takes less
   EXPECT_GT(bsdfCoatEmission(0.5f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f).x, straight.x);
+}
+
+// The baked sheen albedo is the sheen lobe's own integral, as its sampler carries it, over its
+// roughness and the view
+TEST(BsdfLobes, TheSheenAlbedoTableIsTheLobesIntegral)
+{
+  std::mt19937                          rng(37);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  for(float roughness : {0.1f, 0.3f, 0.5f, 0.8f, 1.0f})
+    for(float NoV : {0.1f, 0.3f, 0.6f, 1.0f})
+    {
+      PbrMaterial mat    = base(0.5f);
+      mat.sheenColor     = vec3(1.0f);
+      mat.sheenRoughness = roughness;
+      const vec3 k1      = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+      const int  N       = 200000;
+      double     albedo  = 0.0;
+      for(int i = 0; i < N; i++)
+      {
+        BsdfSampleData s;
+        s.k1 = k1;
+        s.xi = vec3(u(rng), u(rng), u(rng));
+        brdf_sheen_sample(s, mat);
+        if(s.event_type != BSDF_EVENT_ABSORB)
+          albedo += s.bsdf_over_pdf.x / N;
+      }
+      EXPECT_NEAR(sheenAlbedo(roughness, NoV), albedo, 0.01) << "roughness " << roughness << " NoV " << NoV;
+    }
+}
+
+// A sheen takes from the base under it only what it reflects (KHR_materials_sheen's albedo scaling):
+// white over white gives back the light it was lit with at every view, and a faint sheen leaves the base
+// as it was. Charged by the view and roughness alone, a 0.05 sheen took 48% of the base at NoV 0.7 (M47).
+TEST(BsdfLobes, ASheenTakesFromTheBaseOnlyWhatItReflects)
+{
+  for(float roughness : {0.2f, 0.5f, 0.9f})
+    for(float NoV : {0.1f, 0.3f, 0.7f, 1.0f})
+    {
+      PbrMaterial white    = defaultPbrMaterial(vec3(1.0f), 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1));
+      white.specular       = 0.0f;  // a Lambert base, which gives back all of it
+      white.sheenColor     = vec3(1.0f);
+      white.sheenRoughness = roughness;
+      const vec3 all       = carriedAt(white, NoV, 200000).all;
+      EXPECT_NEAR(all.x, 1.0f, 0.01f) << "roughness " << roughness << " NoV " << NoV;
+
+      PbrMaterial cloth = defaultPbrMaterial(vec3(0.6f, 0.2f, 0.1f), 0.0f, 0.6f, vec3(0, 0, 1), vec3(0, 0, 1));
+      PbrMaterial faint = cloth;
+      faint.sheenColor     = vec3(0.05f);
+      faint.sheenRoughness = roughness;
+      vec3       ta = cloth.baseColor, tb = faint.baseColor;
+      const auto wa = computeLobeWeights(cloth, NoV, ta);
+      const auto wb = computeLobeWeights(faint, NoV, tb);
+      EXPECT_GT(wb[LOBE_DIFFUSE_REFLECTION], 0.95f * wa[LOBE_DIFFUSE_REFLECTION]) << "roughness " << roughness << " NoV " << NoV;
+    }
+}
+
+// A near-black base under its specular samples the specular about as often as the light it returns,
+// not by its 5% weight; what each sample carries keeps the mean (SamplingCarriesWhatEvaluationIntegratesTo
+// and the pdf tests run on the same material). A white one is picked by weight, as before.
+TEST(BsdfLobes, ADarkGlossyBasePicksItsSpecular)
+{
+  std::mt19937                          rng(41);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  for(float NoV : {1.0f, 0.5f})
+  {
+    const PbrMaterial dark = defaultPbrMaterial(vec3(0.04f), 0.0f, 0.3f, vec3(0, 0, 1), vec3(0, 0, 1));
+    const vec3        k1   = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+    const int         N    = 20000;
+    int               glossy = 0;
+    for(int i = 0; i < N; i++)
+    {
+      BsdfSampleData s;
+      s.k1 = k1;
+      s.xi = vec3(u(rng), u(rng), u(rng));
+      bsdfSample(s, dark);
+      glossy += s.event_type == BSDF_EVENT_GLOSSY_REFLECTION ? 1 : 0;
+    }
+    EXPECT_GT(float(glossy) / N, 0.4f) << "NoV " << NoV;
+  }
+  const PbrMaterial white = defaultPbrMaterial(vec3(1.0f), 0.0f, 0.3f, vec3(0, 0, 1), vec3(0, 0, 1));
+  vec3              tint  = white.baseColor;
+  const auto        s     = computeLobeWeights(white, 1.0f, tint);
+  const auto        p     = bsdfLobePick(white, s, tint);
+  for(int j = 0; j < LOBE_COUNT; j++)
+    EXPECT_NEAR(p[j], s[j], 1e-6f) << "lobe " << j;
+  // the floor: a black base is still picked a tenth as often as it weighs, and carries at most about 11x
+  const PbrMaterial black = defaultPbrMaterial(vec3(0.0f), 0.0f, 0.3f, vec3(0, 0, 1), vec3(0, 0, 1));
+  vec3              tb    = black.baseColor;
+  const auto        sb    = computeLobeWeights(black, 1.0f, tb);
+  const auto        pb    = bsdfLobePick(black, sb, tb);
+  EXPECT_GT(pb[LOBE_DIFFUSE_REFLECTION], 0.08f * sb[LOBE_DIFFUSE_REFLECTION]);
+  EXPECT_LE(bsdfPickShare(sb, pb, LOBE_DIFFUSE_REFLECTION), 11.0f);
 }

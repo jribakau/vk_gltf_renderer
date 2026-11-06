@@ -364,6 +364,14 @@ Some things about the transport are worth knowing before touching it:
   from a table baked from the lobe (`nvshaders/ggx_albedo_table.h.slang`). Change the lobe, rerun
   `utils/ggx_albedo_table.py`: `BsdfLobes.TheGgxAlbedoFitIsTheLobesIntegral` checks them against
   each other.
+- The **sheen** takes from the layers below what it reflects, max(sheenColor) times its lobe's albedo
+  (KHR_materials_sheen's albedo scaling), and its lobe is divided by the same, as the specular lobes
+  are. The albedo is baked from the lobe too (`nvshaders/sheen_albedo_table.h.slang`, rerun
+  `utils/sheen_albedo_table.py`; `BsdfLobes.TheSheenAlbedoTableIsTheLobesIntegral`).
+- A lobe is **picked** apart from what it weighs (`bsdfLobePick`): by its weight times the light its
+  own value gives back, so a dark base under a specular or a coat stops taking nearly every sample;
+  each pick is at least a tenth of its weight. A sample carries weight over pick (`bsdfPickShare`),
+  and the mixture pdf both MIS sides read is the picks' (`bsdfEvaluateSumWeighted`).
 - The **diffuse exit** (`ePtVolumeDiffuseExit`) is Lambertian times the boundary's Fresnel
   transmittance toward the light, over its cosine-weighted mean (`diffuseExitFresnelWeight`,
   `ePtExitFresnel`): the entry paid (1 − F) on the camera's side, so the exit pays it on the
