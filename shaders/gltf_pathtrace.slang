@@ -836,9 +836,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       float emissiveMis = 1.0;
       if(!hitInfinitePlane && !hitWater)
       {
-        // Power-weighted MIS pdf needs only the radiance the emitter was picked by (the light table's,
-        // not the material row's), its geometric normal, and W_total (the area cancels).
-        emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, emitterSelectionRadiance(payload.rnodeID),
+        // Power-weighted MIS pdf needs only the hit triangle's selection (the light table's, not the
+        // material row's), its geometric normal, and W_total (the area cancels).
+        emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, emitterSelection(payload.rnodeID, payload.primitiveID),
                                                  hit.geonrm, ray.Direction, pt.nullDistance + payload.hitT, payload.rnodeID);
       }
       const float3 throughCoat = bsdfCoatEmission(pbrMat.clearcoat, pbrMat.clearcoatRoughness, pbrMat.baseColor, pbrMat.metallic,

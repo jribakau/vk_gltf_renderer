@@ -114,6 +114,63 @@ TEST(SceneGpuTables, TheAliasTableSamplesTheWeightsItWasBuiltFrom)
   }
 }
 
+// An emitter's triangles keep their places (first + triangleID, as a BSDF hit reads its record), a
+// degenerate or black one at selection 0 and never picked; a triangle's own luminance shares out its
+// emitter's defensive weight, so the black part of a textured emitter stays black, and the leaf's
+// bounds hold only what can be sampled; an emitter with nothing to sample has no entries
+TEST(SceneGpuTables, AnEmittersTrianglesKeepTheirPlacesAndTheirOwnLuminance)
+{
+  const std::vector<glm::vec3> quad = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+  const std::vector<uint32_t>  gap  = {0, 1, 2, 0, 0, 1, 0, 2, 3};  // the middle one is degenerate
+  // the first triangle far off at x = 10, the second at the origin
+  const std::vector<glm::vec3> apart = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {10, 0, 0}, {11, 0, 0}, {11, 1, 0}};
+  const std::vector<uint32_t>  two   = {3, 4, 5, 0, 1, 2};
+  const std::vector<float>     dark  = {0.f, 2.f};  // the far one black
+  const std::vector<float>     none  = {0.f, 0.f};
+  const std::vector<Emitter>   emitters = {
+      {.renderNodeID = 0, .renderPrimID = 0, .radiance = glm::vec3(1.f), .positions = quad, .indices = gap},
+      {.renderNodeID = 1, .renderPrimID = 1, .radiance = glm::vec3(1.f), .positions = apart, .indices = two, .triangleLuminance = dark},
+      {.renderNodeID = 2, .renderPrimID = 2, .radiance = glm::vec3(1.f), .positions = apart, .indices = two, .triangleLuminance = none},
+  };
+  const auto table = buildEmissiveTable(emitters, shaderio::EMISSIVE_GROUP_MAX);
+  ASSERT_EQ(table.triangles.size(), 5u) << "3 + 2; the all-black one has none";
+  ASSERT_EQ(table.groups.size(), 2u);
+  EXPECT_EQ(table.leafOfNode.size(), 2u) << "no leaf for render node 2";
+  for(uint32_t g = 0; g < 2; g++)
+    for(uint32_t t = 0; t < table.groups[g].count; t++)
+    {
+      EXPECT_EQ(table.triangles[table.groups[g].first + t].triangleID, t);
+      EXPECT_EQ(table.triangles[table.groups[g].first + t].renderNodeID, g);
+    }
+  EXPECT_EQ(table.triangles[1].selection, 0.f) << "degenerate";
+  EXPECT_EQ(table.triangles[3].selection, 0.f) << "black";
+
+  // the means: emitter 0 lights 1.0 of area at 1, emitter 1 lights 0.5 at 2
+  const float f    = shaderio::EMISSIVE_DEFENSIVE_FRACTION;
+  const float mean = (1.f * 1.f + 0.5f * 2.f) / 1.5f;
+  EXPECT_NEAR(table.meanLum, mean, 1e-5f);
+  EXPECT_NEAR(table.triangles[0].selection, (1.f - f) * 1.f + f * mean, 1e-5f);
+  EXPECT_NEAR(table.triangles[4].selection, (1.f - f) * 2.f + f * mean, 1e-5f) << "its emitter's mean is its own";
+  for(uint32_t g = 0; g < 2; g++)
+  {
+    const shaderio::EmissiveGroup& group = table.groups[g];
+    double                         sum   = 0.0;
+    std::vector<double>            picked(table.triangles.size(), 0.0);
+    for(uint32_t i = group.first; i < group.first + group.count; i++)
+    {
+      picked[i] += table.triangles[i].aliasProb / double(group.count);
+      picked[table.triangles[i].aliasIndex] += (1.0 - table.triangles[i].aliasProb) / double(group.count);
+      sum += 0.5 * table.triangles[i].selection;  // every triangle here has area 0.5, or selection 0
+    }
+    EXPECT_NEAR(group.weight, sum, 1e-5);
+    for(uint32_t i = group.first; i < group.first + group.count; i++)
+      EXPECT_NEAR(picked[i], 0.5 * table.triangles[i].selection / group.weight, 1e-6) << "triangle " << i;
+  }
+  // the second leaf bounds its lit triangle at the origin, not the black one at x = 10
+  EXPECT_LT(table.groups[1].center.x, 1.f);
+  EXPECT_LT(table.groups[1].radius, 1.f);
+}
+
 TEST(SceneGpuTables, NoEmittersNoTable)
 {
   const auto table = buildEmissiveTable({});

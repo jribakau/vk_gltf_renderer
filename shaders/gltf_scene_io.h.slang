@@ -81,6 +81,10 @@ struct EmissiveTriangle
   uint   triangleID;    // triangle within the primitive
   uint   doubleSided;   // 1 = emit from both faces
   uint   aliasIndex;    // Vose alias table: fallback bin (with emitter groups, within the triangle's group)
+  // its selection weight over its area: what both MIS sides weigh it by (a light sample's pdf, a BSDF
+  // ray's MIS weight on hitting it). 0: never sampled (a degenerate or black triangle, kept so an
+  // emitter's triangles sit at first + triangleID).
+  float  selection;
 };
 
 // A node of the emitters' light tree (light_tree.h.slang). A leaf is the emissive triangles of one
@@ -226,7 +230,8 @@ struct GltfShadeMaterial
   // the emissive texture's mean luminance (from the decoded image), 1 without a texture or
   // where the mean is unknown, 0 for an all-black texture (not a light). The emissive table copies it
   // when it is built (rs::Residency rebuilds it when this changes), and the path tracer's hit side
-  // reads the table's copy to recover the pick the light sample made (emitterSelectionRadiance).
+  // reads the table's record of the hit triangle to recover the pick the light sample made
+  // (emitterSelection).
   float emissiveLightScale = 1;
   // 1: the cutout is a fabric's weave, whose gaps close as the surface turns away from the ray
   // (wovenOpacity); 0: the opacity is the same from every direction, as glTF has it
@@ -502,8 +507,10 @@ struct GltfScene
   int                  numLights;  // number of punctual lights
   EmissiveTriangle*    emissiveTriangles;
   int                  numEmissiveTriangles;  // number of sampled emissive triangles (area lights)
-  float                emissiveTotalWeight;   // sum of per-triangle selection weights (area * defensive luminance)
-  float                emissiveMeanLum;       // area-weighted mean emitter luminance (for defensive sampling)
+  float                emissiveTotalWeight;   // sum of per-triangle selection weights (area * EmissiveTriangle::selection)
+  // area-weighted mean emitter luminance, the defensive share's: the host folds it into each
+  // EmissiveTriangle::selection, so no shader reads it. Kept so the fields after it stay where they are.
+  float                emissiveMeanLum;
   int                  numEmissiveGroups;     // the light tree's cut; 0: the triangles are one table (EmissiveGroup)
   EmissiveGroup*       emissiveGroups;        // the cut, then the rest of the tree
   int*                 emissiveLeafOfNode;    // [render node]: the leaf whose triangles it draws, -1 for none

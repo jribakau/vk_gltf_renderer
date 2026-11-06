@@ -764,21 +764,14 @@ float punctualPickShare(LightPickSet s, float estimate)
 //
 // Emissive triangles are sampled directly and MIS-combined with BSDF sampling, mirroring the
 // environment-light MIS. Selection is POWER-WEIGHTED: triangle i is chosen with probability
-// proportional to (world area * luminance), in O(1) via a Vose alias table. The key simplification
-// is that the world area cancels in the solid-angle pdf:
-//     pdf(i) = P(select i) * dist^2 / (area_i * cos) = luminance_i * dist^2 / (W_total * cos)
-// so the MIS pdf for a BSDF ray landing on an emitter is still recovered from local hit geometry
-// (its own radiance + W_total) with NO per-triangle lookup table. Triangles are stored as
-// references, so vertices/transforms are read live here.
+// proportional to (world area * selection_i), in O(1) via a Vose alias table, where selection_i
+// (EmissiveTriangle::selection) is the host's weight over the area: the triangle's luminance, with
+// its emitter's mean pulled toward the scene's (nvvkgltf::buildEmissiveTable). The world area
+// cancels in the solid-angle pdf:
+//     pdf(i) = P(select i) * dist^2 / (area_i * cos) = selection_i * dist^2 / (W * cos)
+// so both MIS sides read the triangle's record and nothing else of the host's weighting. Triangles
+// are stored as references, so vertices/transforms are read live here.
 //-----------------------------------------------------------------------
-// Defensive luminance: pull the emitter's luminance toward the scene's area-weighted mean so a dim
-// emitter is never starved. Uses the shared Rec. 709 luminance() (nvshaders/functions.h.slang); the
-// host weight (gltf_scene_vk.cpp uploadEmissiveTriangles) must use the same coefficients.
-float emitterDefensiveLuminance(float3 radiance)
-{
-  float f = EMISSIVE_DEFENSIVE_FRACTION;
-  return (1.0f - f) * luminance(radiance) + f * pushConst.gltfScene.emissiveMeanLum;
-}
 
 struct EmissiveSample
 {
@@ -836,18 +829,17 @@ int emissiveLeafOf(uint renderNodeID)
   return pushConst.gltfScene.emissiveLeafOfNode[renderNodeID];
 }
 
-// The radiance render node `renderNodeID` was picked by among the emitters, read from the emissive
-// table the light samples were drawn from: emissiveFactor (strength included) times its emissive
-// texture's mean (emissiveLightScale), as the table was built. Not the material row, which a texture
-// landing since may have changed before the table followed it; the two MIS sides must weigh with the
-// same number. Not what it emits at any one point of a textured emitter; what the pick's pdf is made
-// of. Black: not in the table, so only BSDF rays reach it.
-float3 emitterSelectionRadiance(uint renderNodeID)
+// The selection triangle `primitiveID` of render node `renderNodeID` was weighed by among the
+// emitters (EmissiveTriangle::selection), read from the emissive table the light samples were drawn
+// from: an emitter's triangles sit there in order from its leaf's first. Never the material row, which
+// a texture landing since may have changed before the table followed it; the two MIS sides must weigh
+// with the same number. 0: not in the table, or never sampled there, so only BSDF rays reach it.
+float emitterSelection(uint renderNodeID, uint primitiveID)
 {
   const int leaf = emissiveLeafOf(renderNodeID);
-  if(leaf < 0)
-    return float3(0.0F);
-  return pushConst.gltfScene.emissiveTriangles[pushConst.gltfScene.emissiveGroups[leaf].first].radiance;
+  if(leaf < 0 || primitiveID >= pushConst.gltfScene.emissiveGroups[leaf].count)
+    return 0.0F;
+  return pushConst.gltfScene.emissiveTriangles[pushConst.gltfScene.emissiveGroups[leaf].first + primitiveID].selection;
 }
 
 // The light tree is a candidate in the light pick (ePtLightTree, and the scene has one); otherwise
@@ -940,17 +932,16 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
   // flame's card, a lamp's pattern) emitted to light samples alone, so a masked panel lit a floor
   // 1.9x a panel with the same holes cut (tests/render/emitter_cutout.py).
   es.radiance *= getOpacity(node, prim, int(et.triangleID), bary, mul(float4(dir, 0.0F), node.worldToObject).xyz);
-  // Power-weighted solid-angle pdf; the triangle area cancels (see header). Uses the defensive
-  // luminance so it matches the host selection weight.
-  es.pdf = emitterDefensiveLuminance(et.radiance) * dist2 / (wtot * cosLight);
+  // Power-weighted solid-angle pdf; the triangle area cancels (see header)
+  es.pdf = et.selection * dist2 / (wtot * cosLight);
   return es;
 }
 
 // NEE solid-angle pdf (within the light technique) of sampling the hit emissive triangle in the hit
-// direction. Power-weighted selection makes the area cancel, so this needs only the emitter's own
-// radiance, the geometric normal, and the weight it was picked among (`totalWeight`: all of them, or
-// its group's) -- no per-triangle lookup. 0 if not a valid emitter dir.
-float emitterHitSolidAnglePdf(float3 radiance, float3 geoNormal, float3 rayDir, float hitDist, float totalWeight)
+// direction. Power-weighted selection makes the area cancel, so this needs only the triangle's
+// selection (EmissiveTriangle::selection), the geometric normal, and the weight it was picked among
+// (`totalWeight`: all of them, or its group's). 0 if not a valid emitter dir.
+float emitterHitSolidAnglePdf(float selection, float3 geoNormal, float3 rayDir, float hitDist, float totalWeight)
 {
   float wtot = totalWeight;
   if(pushConst.gltfScene.numEmissiveTriangles <= 0 || wtot <= 0.0)
@@ -961,7 +952,7 @@ float emitterHitSolidAnglePdf(float3 radiance, float3 geoNormal, float3 rayDir, 
   float cosLight = abs(dot(geoNormal, rayDir));  // geonrm is pre-flipped toward the ray
   if(cosLight <= 1e-6)
     return 0.0;
-  return emitterDefensiveLuminance(radiance) * (hitDist * hitDist) / (wtot * cosLight);
+  return selection * (hitDist * hitDist) / (wtot * cosLight);
 }
 
 // MIS weight for a BSDF ray that landed on an emissive triangle, weighted against the emissive-NEE
@@ -969,14 +960,14 @@ float emitterHitSolidAnglePdf(float3 radiance, float3 geoNormal, float3 rayDir, 
 // at the vertex the ray left (`pick`) times the emitter's solid-angle pdf. With the light tree, the
 // share of the cut node above the leaf drawn by `renderNodeID` there, as sizedLightNeePdf recovers a
 // sized light's, times the walk's probability from it down to that leaf (emissiveTreeClimb).
-// `radiance`: the emitter's selection radiance (emitterSelectionRadiance), not its texel; black: it is
-// not in the light list, and only BSDF rays reach it.
-float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float3 radiance, float3 geoNormal, float3 rayDir,
+// `selection`: the hit triangle's (emitterSelection), not its texel; 0: it is not in the light list,
+// or never sampled there, and only BSDF rays reach it.
+float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float selection, float3 geoNormal, float3 rayDir,
                                  float hitDist, uint renderNodeID)
 {
-  if(lastSamplePdf == DIRAC || !(luminance(radiance) > 0.0f))
+  if(lastSamplePdf == DIRAC || !(selection > 0.0f))
     return 1.0f;
-  float emitterNeePdf = pick.emissive * emitterHitSolidAnglePdf(radiance, geoNormal, rayDir, hitDist, pushConst.gltfScene.emissiveTotalWeight);
+  float emitterNeePdf = pick.emissive * emitterHitSolidAnglePdf(selection, geoNormal, rayDir, hitDist, pushConst.gltfScene.emissiveTotalWeight);
   if(emissiveTreeOn() && punctualLightCount() <= LIGHT_PICK_MAX_LIGHTS)
   {
     const int leaf = emissiveLeafOf(renderNodeID);
@@ -988,7 +979,7 @@ float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float3 rad
     const float            share = set.restShare * climb.prob
                         * lightPickProbability(emissiveGroupPickEstimate(climb.leaf, pick.pos, pick.normal, cull), set.total, set.candidates);
     emitterNeePdf = share
-                    * emitterHitSolidAnglePdf(radiance, geoNormal, rayDir, hitDist, pushConst.gltfScene.emissiveGroups[leaf].weight);
+                    * emitterHitSolidAnglePdf(selection, geoNormal, rayDir, hitDist, pushConst.gltfScene.emissiveGroups[leaf].weight);
   }
   return misPowerWeight(lastSamplePdf, emitterNeePdf);
 }
@@ -1291,7 +1282,7 @@ float emissiveTriangleNeePdf(LightPick pick, EmissiveTriangle et, float cosLight
 {
   if(!(cosLight > 1e-6F))
     return 0.0F;
-  const float defensive = emitterDefensiveLuminance(et.radiance);
+  const float defensive = et.selection;
   if(emissiveTreeOn() && punctualLightCount() <= LIGHT_PICK_MAX_LIGHTS)
   {
     const int leaf = emissiveLeafOf(et.renderNodeID);

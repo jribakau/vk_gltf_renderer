@@ -125,17 +125,18 @@ Host — build the emitter list (`rs::Residency`, with `buildEmissiveTable` in `
    8-bit image's from a 64 × 64 grid of its texels; a cooked BC7 or BC4 one's from its 1 × 1 level,
    which the cooker averages in linear light, decoded by `bc7FirstTexel`; 1 where neither can be
    read, so the factor alone weighs it; 0 for an all-black texture, which is then no light).
-3. For each triangle of that primitive, store a **reference** — render node, primitive, triangle
-   index — plus the selection **radiance** (not baked vertices, so the shader reads live
-   geometry/transforms). A textured emitter's light sample reads the texel at its point; the pdf, and
-   a BSDF hit's MIS weight (`emitterSelectionRadiance`, which reads the table's copy through the
-   render node's leaf, never the material row), use the selection radiance, which is what picked it.
-   A texture that lands later with a different mean changes the row, and the residency rebuilds the
-   table in that sync (`m_relitSlots`).
+3. For each triangle of that primitive, in order, store a **reference** — render node, primitive,
+   triangle index — plus the radiance (not baked vertices, so the shader reads live
+   geometry/transforms) and its **selection**: the weight over its area that both MIS sides read. A
+   textured emitter's light sample reads the texel at its point; the pdf, and a BSDF hit's MIS weight
+   (`emitterSelection`, which finds the hit triangle's record at its leaf's first plus its primitive
+   index, never the material row), use the selection, which is what picked it. A degenerate triangle
+   keeps its place at selection 0, never sampled. A texture that lands later with a different mean
+   changes the row, and the residency rebuilds the table in that sync (`m_relitSlots`).
 4. Compute the triangle's **world-space area** (verts × node transform) and give it a **selection
-   weight = area × luminance** (see the defensive tweak below). Build a **Vose alias table** from the
+   weight = area × selection** (see the defensive tweak below). Build a **Vose alias table** from the
    weights (`aliasProb` / `aliasIndex` per triangle) for O(1) GPU selection, plus the totals
-   (`numEmissiveTriangles`, `emissiveTotalWeight`, `emissiveMeanLum`).
+   (`numEmissiveTriangles`, `emissiveTotalWeight`).
 5. Upload the flat list + those scalars to the scene descriptor.
 
 Device — sample a light at each surface hit (`sampleLights`):
@@ -168,14 +169,15 @@ area (below), so the host table and the live geometry must agree on that area �
 the estimate, it does not merely add noise.
 
 Selection is **power-weighted** (an O(1) **Vose alias table**, not a CDF binary search), with a
-**defensive floor** so a dim emitter next to a bright one is never starved: each emitter's luminance
-is pulled toward the scene's area-weighted mean, `lum' = (1−f)·lum + f·meanLum`
-(`EMISSIVE_DEFENSIVE_FRACTION`, kept in sync between host and shader). The alias table samples the
-same distribution `P(i) = weightᵢ / emissiveTotalWeight`, so the pdf is unchanged.
-The world area **cancels** in the solid-angle pdf (`pdf = lum' · dist² / (emissiveTotalWeight · cos)`),
-so the BSDF-hit MIS weight is recoverable from local hit geometry (the emitter's radiance +
-`emissiveTotalWeight` + `emissiveMeanLum`) with **no per-triangle lookup**; and because `meanLum = W/A`
-the total weight `W` is unchanged. The weight uses world area, so the sync rebuilds the list whenever
+**defensive floor** so a dim emitter next to a bright one is never starved: each emitter's mean
+luminance `L` is pulled toward the scene's area-weighted mean, `(1−f)·L + f·meanLum`
+(`EMISSIVE_DEFENSIVE_FRACTION`, host only), and that weight is shared among its triangles by area
+times their own luminance (`Emitter::triangleLuminance` where it has one, so a black part of a
+textured emitter stays at 0). The alias table samples the same distribution
+`P(i) = weightᵢ / emissiveTotalWeight`, so the pdf is unchanged. The world area **cancels** in the
+solid-angle pdf (`pdf = selectionᵢ · dist² / (W · cos)`, with `W` the total or the leaf's weight), so
+the BSDF-hit MIS weight is recoverable from local hit geometry and the hit triangle's record alone;
+the shader holds none of the host's weighting policy. The weight uses world area, so the sync rebuilds the list whenever
 an emitter's transform changes. Morph/skin-deformed emitters are the one remaining case that falls
 back to last-rebuilt-pose sampling. The scene-descriptor scalars refresh whenever the count
 **or** the weights change, so radiance-only edits (e.g. dragging emissive strength) take effect

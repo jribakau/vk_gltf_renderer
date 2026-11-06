@@ -115,10 +115,16 @@ void buildAliasTable(std::vector<shaderio::EmissiveTriangle>& tris, const std::v
     tris[first + g].aliasProb  = 1.0f;
     tris[first + g].aliasIndex = static_cast<uint32_t>(first + g);
   }
+  // a bin left small by rounding is taken as itself, unless it weighs nothing: that one (a degenerate
+  // or black triangle) always gives way to a bin that can be sampled
+  size_t positive = first;
+  while(!(weights[positive] > 0.0))
+    positive++;
   for(uint32_t l : smallBins)
   {
-    tris[first + l].aliasProb  = 1.0f;
-    tris[first + l].aliasIndex = static_cast<uint32_t>(first + l);
+    const bool none            = !(weights[first + l] > 0.0);
+    tris[first + l].aliasProb  = none ? 0.0f : 1.0f;
+    tris[first + l].aliasIndex = static_cast<uint32_t>(none ? positive : first + l);
   }
 }
 
@@ -143,7 +149,8 @@ Cone normalCone(const glm::dvec3& sum, std::span<const glm::vec3> normals)
   cone.axis     = glm::vec3(sum / length);
   float minCos  = 1.f;
   for(const glm::vec3& n : normals)
-    minCos = std::min(minCos, glm::dot(cone.axis, n));
+    if(n != glm::vec3(0.f))  // a triangle that can't be sampled has none
+      minCos = std::min(minCos, glm::dot(cone.axis, n));
   const float angle = std::acos(std::clamp(minCos, -1.f, 1.f)) + kConeSlack;
   cone.cosSpread    = angle >= glm::pi<float>() ? -1.f : std::cos(angle);
   return cone;
@@ -314,84 +321,116 @@ std::vector<shaderio::EmissiveGroup> buildLightTree(std::span<const TreeLeaf> le
 
 EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters, int maxCut)
 {
-  // First pass: gather emissive triangles + per-triangle world area, and accumulate the totals used
-  // to derive the area-weighted mean luminance for defensive sampling.
+  // First pass: every triangle of each emitter, in order (EmissiveTriangle::triangleID is its place
+  // after the emitter's first, which a BSDF hit reads its weight by), with its world area and
+  // selection luminance; the totals over the triangles that can be sampled (area and luminance both
+  // above 0), for the defensive share's mean.
   EmissiveTable                            out;
   std::vector<shaderio::EmissiveTriangle>& tris = out.triangles;
-  std::vector<float>                       triArea;    // parallel to tris (used by the alias pass below)
+  std::vector<float>                       triArea;    // parallel to tris: 0 for one that can't be sampled
+  std::vector<float>                       triLum;     // parallel to tris: its selection luminance
   std::vector<glm::vec3>                   triNormal;  // parallel to tris: the world geometric normal, for the light tree's cones
   double                                   sumArea = 0.0, sumAreaLum = 0.0;
-  // each emitter's triangles, as a group, and their world bounds
+  // each emitter's triangles, as a group, and the world bounds of those that can be sampled
   struct Span
   {
-    size_t    first = 0;
-    uint32_t  renderNodeID = 0;
-    bool      doubleSided  = false;
-    glm::vec3 lo{std::numeric_limits<float>::max()}, hi{-std::numeric_limits<float>::max()};
+    size_t     first = 0;
+    uint32_t   renderNodeID = 0;
+    bool       doubleSided  = false;
+    glm::vec3  lo{std::numeric_limits<float>::max()}, hi{-std::numeric_limits<float>::max()};
     glm::dvec3 normalSum{0.0};  // its triangles' normals weighted by area
+    double     area = 0.0, areaLum = 0.0;
   };
   std::vector<Span> spans;
   for(const Emitter& e : emitters)
   {
     const float lum = emissiveLuminance(e.radiance);
-    if(lum <= 0.0f || e.positions.empty() || e.indices.size() < 3)
+    const bool  own = !e.triangleLuminance.empty();
+    if((!own && lum <= 0.0f) || e.positions.empty() || e.indices.size() < 3)
       continue;
-    spans.push_back({.first = tris.size(), .renderNodeID = e.renderNodeID, .doubleSided = e.doubleSided});
+    Span           span{.first = tris.size(), .renderNodeID = e.renderNodeID, .doubleSided = e.doubleSided};
     const uint32_t numTri = static_cast<uint32_t>(e.indices.size() / 3);
     for(uint32_t t = 0; t < numTri; ++t)
     {
-      const uint32_t i0 = e.indices[3 * t + 0], i1 = e.indices[3 * t + 1], i2 = e.indices[3 * t + 2];
-      if(i0 >= e.positions.size() || i1 >= e.positions.size() || i2 >= e.positions.size())
-        continue;
-      const glm::vec3 w0   = glm::vec3(e.world * glm::vec4(e.positions[i0], 1.0f));
-      const glm::vec3 w1   = glm::vec3(e.world * glm::vec4(e.positions[i1], 1.0f));
-      const glm::vec3 w2   = glm::vec3(e.world * glm::vec4(e.positions[i2], 1.0f));
-      const glm::vec3 cross = glm::cross(w1 - w0, w2 - w0);  // as sampleEmissiveTriangle's lightN
-      const float     area  = 0.5f * glm::length(cross);
-      if(area <= 0.0f)
-        continue;  // skip degenerate (zero-area) triangles
-      spans.back().normalSum += glm::dvec3(cross) * 0.5;
-      sumArea += area;
-      sumAreaLum += static_cast<double>(area) * lum;
-      for(const glm::vec3& w : {w0, w1, w2})
-      {
-        spans.back().lo = glm::min(spans.back().lo, w);
-        spans.back().hi = glm::max(spans.back().hi, w);
-      }
-
       shaderio::EmissiveTriangle et{};
       et.radiance     = e.radiance;
       et.renderNodeID = e.renderNodeID;
       et.renderPrimID = e.renderPrimID;
       et.triangleID   = t;
       et.doubleSided  = e.doubleSided ? 1u : 0u;
-      // aliasProb / aliasIndex are filled in the alias-table pass below.
+      // aliasProb / aliasIndex / selection are filled in by the passes below
+      float          area = 0.f, tlum = 0.f;
+      glm::vec3      normal{0.f};
+      const uint32_t i0 = e.indices[3 * t + 0], i1 = e.indices[3 * t + 1], i2 = e.indices[3 * t + 2];
+      if(i0 < e.positions.size() && i1 < e.positions.size() && i2 < e.positions.size())
+      {
+        const glm::vec3 w0    = glm::vec3(e.world * glm::vec4(e.positions[i0], 1.0f));
+        const glm::vec3 w1    = glm::vec3(e.world * glm::vec4(e.positions[i1], 1.0f));
+        const glm::vec3 w2    = glm::vec3(e.world * glm::vec4(e.positions[i2], 1.0f));
+        const glm::vec3 cross = glm::cross(w1 - w0, w2 - w0);  // as sampleEmissiveTriangle's lightN
+        area                  = 0.5f * glm::length(cross);
+        tlum                  = own ? (t < e.triangleLuminance.size() ? e.triangleLuminance[t] : 0.f) : lum;
+        if(area > 0.0f && tlum > 0.0f)
+        {
+          normal = cross / (2.0f * area);
+          span.normalSum += glm::dvec3(cross) * 0.5;
+          span.area += area;
+          span.areaLum += static_cast<double>(area) * tlum;
+          for(const glm::vec3& w : {w0, w1, w2})
+          {
+            span.lo = glm::min(span.lo, w);
+            span.hi = glm::max(span.hi, w);
+          }
+        }
+        else
+          area = tlum = 0.f;  // degenerate or black: weight 0, never sampled
+      }
       tris.push_back(et);
       triArea.push_back(area);
-      triNormal.push_back(cross / (2.0f * area));
+      triLum.push_back(tlum);
+      triNormal.push_back(normal);
     }
+    if(!(span.areaLum > 0.0))
+    {
+      // nothing of it can be sampled: no leaf, no entries
+      tris.resize(span.first);
+      triArea.resize(span.first);
+      triLum.resize(span.first);
+      triNormal.resize(span.first);
+      continue;
+    }
+    sumArea += span.area;
+    sumAreaLum += span.areaLum;
+    spans.push_back(span);
   }
 
-  // Second pass: defensive selection. Pull each emitter's luminance toward the area-weighted mean so
-  // a dim emitter is never starved (lum' = (1-f)*lum + f*meanLum); the weight is area * lum'. The area
-  // still cancels in the solid-angle pdf, so the shader recovers it from radiance + meanLum + totals.
+  // Second pass: defensive selection, per emitter. Each emitter's mean luminance L is pulled toward
+  // the area-weighted mean over all of them, so a dim emitter is never starved: its weight is its area
+  // times (1-f)*L + f*meanLum, shared among its triangles by area times their own luminance, so a black
+  // triangle of a textured emitter stays at 0. A triangle's selection is its weight over its area,
+  // which the shader's pdfs read (the area cancels in the solid-angle pdf).
   const float         meanLum = (sumArea > 0.0) ? static_cast<float>(sumAreaLum / sumArea) : 0.0f;
   const float         f       = shaderio::EMISSIVE_DEFENSIVE_FRACTION;
-  std::vector<double> triWeight(tris.size());
+  std::vector<double> triWeight(tris.size(), 0.0);
   double              totalWeight = 0.0;
-  for(size_t i = 0; i < tris.size(); ++i)
+  for(size_t g = 0; g < spans.size(); ++g)
   {
-    const float lum    = emissiveLuminance(tris[i].radiance);
-    const float lumDef = (1.0f - f) * lum + f * meanLum;
-    triWeight[i]       = static_cast<double>(triArea[i]) * lumDef;
-    totalWeight += triWeight[i];
+    const size_t first = spans[g].first, end = g + 1 < spans.size() ? spans[g + 1].first : tris.size();
+    const float  mean  = static_cast<float>(spans[g].areaLum / spans[g].area);
+    const float  scale = ((1.0f - f) * mean + f * meanLum) / mean;
+    for(size_t i = first; i < end; ++i)
+    {
+      tris[i].selection = triLum[i] * scale;
+      triWeight[i]      = static_cast<double>(triArea[i]) * tris[i].selection;
+      totalWeight += triWeight[i];
+    }
   }
 
   // Third pass: build a Vose alias table so the shader selects a triangle in O(1) (no CDF binary
   // search). It samples the exact same distribution P(i) = weight_i / totalWeight, so the pdf is
   // unchanged. See https://en.wikipedia.org/wiki/Alias_method. With the light tree, one per leaf: P(i)
   // = weight_i / the leaf's weight, the leaf picked by the shader.
-  // (an emitter whose triangles were all degenerate leaves an empty span: no leaf)
+  // (an emitter with nothing that can be sampled has no span, so no leaf)
   if(spans.empty() || maxCut <= 0)
     buildAliasTable(tris, triWeight, 0, tris.size());
   else

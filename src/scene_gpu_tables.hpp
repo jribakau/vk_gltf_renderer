@@ -44,8 +44,9 @@ shaderio::GltfLight packLight(const tinygltf::Light* light, const glm::mat4& wor
 shaderio::GltfLight packIesLight(const glm::mat4& world, int profile, float multiplier, const glm::vec3& color);
 
 // One drawn surface that may emit: its render node and prim, its radiance (emissive factor, strength
-// and a textured emitter's mean, as the hit side reads it), and its triangles in world space through
-// `world`
+// and a textured emitter's mean), and its triangles in world space through `world`. With
+// `triangleLuminance`, each triangle (of `indices`, in order) is weighed by its own luminance there
+// (a textured emitter's texels over it, times its factor), not by the radiance's.
 struct Emitter
 {
   uint32_t                   renderNodeID = 0;
@@ -55,6 +56,7 @@ struct Emitter
   glm::mat4                  world{1.f};
   std::span<const glm::vec3> positions;
   std::span<const uint32_t>  indices;
+  std::span<const float>     triangleLuminance;
 };
 
 struct EmissiveTable
@@ -67,9 +69,10 @@ struct EmissiveTable
   float                                   meanLum     = 0.f;  // GltfScene::emissiveMeanLum
 };
 
-// Every non-degenerate triangle of the emitters that emit, weighted by area times defensive
-// luminance (pulled toward the area-weighted mean, so a dim emitter is never starved), with a Vose
-// alias table over those weights for O(1) selection. With `maxCut` above 0, one leaf per emitter
+// Every triangle of the emitters that emit, each emitter's in order, weighted by area times its
+// selection (EmissiveTriangle::selection: its luminance, with each emitter's mean pulled toward the
+// area-weighted mean so a dim emitter is never starved; 0 for a degenerate or black triangle, which is
+// never sampled), with a Vose alias table over those weights for O(1) selection. With `maxCut` above 0, one leaf per emitter
 // (shaderio::EmissiveGroup), each with an alias table of its own over its triangles, in a light tree
 // (shaders/light_tree.h.slang) whose cut holds at most `maxCut` nodes; with 0, one table over all of
 // them.
