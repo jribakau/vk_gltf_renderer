@@ -502,7 +502,8 @@ void GltfRenderer::updateSampleCaptures()
 
   // A .hdr capture saves the rendered image, never a denoiser's (saveViewportImage): name it after
   // that image's samples, not after the denoised one on screen, which OptiX keeps a frame behind.
-  const bool    linear = nvutils::extensionMatches(headlessOutputPathOrDefault(), ".hdr");
+  const bool    linear = nvutils::extensionMatches(headlessOutputPathOrDefault(), ".hdr")
+                      || nvutils::extensionMatches(headlessOutputPathOrDefault(), ".pfm");
   DisplayBuffer source{};
   const int     samples = linear ? m_resources.accumulatedSamples : displayedImageSamples(source);
   if(linear)
@@ -567,7 +568,8 @@ void GltfRenderer::onPostRender()
 }
 
 // One rule for every way the viewport is saved (--output, --outputSamples, the screenshot
-// parameter): a .hdr file gets the linear rendered image, so it can be measured; an .exr the
+// parameter): a .hdr file gets the linear rendered image, so it can be measured (a .pfm the same, every
+// bit of its floats, for a bit-exact comparison); an .exr the
 // linear image the screen is made from (saveExr); any other extension gets what the screen shows.
 void GltfRenderer::saveViewportImage(const std::filesystem::path& filename)
 {
@@ -577,7 +579,8 @@ void GltfRenderer::saveViewportImage(const std::filesystem::path& filename)
     return;
   }
   const Resources::ImageType imageType =
-      nvutils::extensionMatches(filename, ".hdr") ? Resources::eImgRendered : Resources::eImgTonemapped;
+      nvutils::extensionMatches(filename, ".hdr") || nvutils::extensionMatches(filename, ".pfm") ? Resources::eImgRendered :
+                                                                                                   Resources::eImgTonemapped;
   m_app->saveImageToFile(m_resources.gBuffers.getColorImage(imageType), m_resources.gBuffers.getSize(), filename);
 }
 
@@ -1175,7 +1178,11 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
       m_pathTracer.onAccumulationComplete(cmd, m_resources);
       // A headless run given --ptMaxSamples is done: this frame shows the final image (and its
       // denoise, which OptiX makes on this first idle frame), and --frames is only an upper bound.
-      if(isHeadlessMode() && m_parameterParser && m_parameterParser->wasParsed("ptMaxSamples") && m_app)
+      // Not while an image is still decoding: a large file's last texture can land after the first
+      // samples are in, and the still begins again with it, so what is saved has every texture (two
+      // runs of a 326 MB figure differed where its top's map had landed in one of them only).
+      const bool decoding = m_resources.retainedGpu && m_resources.retainedGpu->residency().queuedDecodes() > 0;
+      if(isHeadlessMode() && m_parameterParser && m_parameterParser->wasParsed("ptMaxSamples") && m_app && !decoding)
         m_app->close();
     }
   }
