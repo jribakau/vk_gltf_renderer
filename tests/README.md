@@ -102,6 +102,28 @@ python tests/render/volume_scatter_punctual.py --exe _bin/Release/vk_gltf_render
 | `volume_transmittance.py` | Light that crosses a `KHR_materials_volume` medium is attenuated by it: an emitter inside an absorbing medium is dimmed by `exp(-sigma_t d)`, seen from outside the medium and from inside it (emission used to be added before the medium in front of it, and a camera path started in clear air wherever the camera was), a surface and its point light inside one by the camera and shadow segments (a shadow ray did not know it started inside, nor attenuate its last segment), a fog lit from just inside its boundary matches one lit from just outside, and an extinction given over a 0.2 mm `attenuationDistance` renders like the same extinction given over 1 m (a 1 mm floor once dropped all absorption of such media), and a lit fog scaled down to a fraction of a millimetre renders like the original (a fixed-length ray offset once skipped medium at every boundary, so small media came out brighter) |
 | `volume_walk_exit.py` | A scatter walk's diffuse exit (`ptVolumeDiffuseExit`) divides out the albedo of the medium it walked in, not that of the surface it leaves through: a white two-sided card with no medium inside a back-lit skin slab adds no light (the walk meeting its back was divided by the 0.05 floor: 14 times the slab's brightness), and giving the slab's hidden faces a material of another albedo leaves the image as it was (it was divided by theirs: 4 times) |
 
+### Struct layouts, and the gates over whole images
+
+`test_struct_layout.cpp` holds where the host puts each field of the structs it shares with the
+shaders (the path tracer's push constant, `SceneFrameInfo`, `GltfScene` and the tables it points at,
+`GltfShadeMaterial`) to where the shaders read it. It compiles a small module that reads them as the
+path tracer does, with the renderer's compiler settings, and compares the SPIR-V's `Offset`
+decorations, field by field and by name, with `offsetof`, and each pointer's array stride with
+`sizeof`. A field added to one of those structs and not to the test's lists fails by its name. Under
+the scalar layout both use, float3 and pointers sit alike; a bool does not (1 byte against 4), as the
+test's probe shows.
+
+Two scripts in the app's `scripts/` draw whole images headless (`scripts/headless.py`: a photographed
+dome, DLSS and the denoisers off, `.pfm` output, which keeps every bit of the accumulation's floats):
+
+- `golden-gate.py`: did a change leave the image bit-identical? `--update` makes references from the
+  build before the change, a plain run compares after it, with a map of any pixel that moved; `--twice`
+  checks that a build repeats itself. Four views, about 20 s. The default physical sky differs from run
+  to run, so the views don't use it.
+- `noise-vs-reference.py`: one number for a sampling change. Relative MSE against a cached 4096-sample
+  reference drawn with a seed of its own, at 4, 16, 64 and 256 samples, plain and with fireflies capped,
+  the milliseconds a sample took, and the two candidates' RMSE ratio (`--a ptSampler=0 --b ptSampler=1`).
+
 ## Running Benchmarks
 
 ```bash
