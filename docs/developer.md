@@ -608,6 +608,15 @@ Grey maps are half the size from their next cook on: the cooker writes one grey 
 (`texcache.rs GreyMap`), which the images it cooked before need not, and a lobe's roughness from the file the
 base roughness uses asks for the same image.
 
+A cooked map of one value everywhere (a flat roughness, a black mask, a flat normal map) loads as the one
+block it is made of, a 4x4 image of one level (`constantBlock` in `src/gltf_image_loader.cpp`,
+`LoadedImageData::constant`): 27 of the 1811 maps in the user's cache on 11-06, 374 MiB when resident. Level 0
+must be that block repeated and level 2 the same block, so a pattern repeating every four texels, which has
+averaged to another colour by level 2, stays whole. Only a level 0 its zstd shrinks below a thousandth is
+inflated to look, so other maps cost nothing; the chain the planner reads (`readImageChain`) says 4x4 too,
+leaving it nothing to lower or raise, and a light's mean reads the block (`imageMeanLuminance`). The cache
+is read as it is: nothing recooks. Count a cache with `ImageLoader.DISABLED_CountConstantMapsInACache`.
+
 A commit either finishes or takes off what it merged (`commitWear`'s `TakeOff`), so a failed allocation
 anywhere in it leaves the figure whole; a test fails each allocation of a wear in turn. Workers report what
 they let escape (`FvWorkers::onError`, `sideBySide`), and a figure's part of the frame reports it and goes on.

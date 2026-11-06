@@ -120,6 +120,69 @@ bool loadDds(LoadedImageData& out, const void* data, size_t byteLength, bool srg
   return true;
 }
 
+// The bytes of one block of a block-compressed format (BC1 to BC7); 0 for any other
+uint32_t blockBytes(VkFormat format)
+{
+  switch(format)
+  {
+    case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+    case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+    case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+    case VK_FORMAT_BC4_UNORM_BLOCK:
+    case VK_FORMAT_BC4_SNORM_BLOCK:
+      return 8;
+    case VK_FORMAT_BC2_UNORM_BLOCK:
+    case VK_FORMAT_BC2_SRGB_BLOCK:
+    case VK_FORMAT_BC3_UNORM_BLOCK:
+    case VK_FORMAT_BC3_SRGB_BLOCK:
+    case VK_FORMAT_BC5_UNORM_BLOCK:
+    case VK_FORMAT_BC5_SNORM_BLOCK:
+    case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+    case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+    case VK_FORMAT_BC7_UNORM_BLOCK:
+    case VK_FORMAT_BC7_SRGB_BLOCK:
+      return 16;
+    default:
+      return 0;
+  }
+}
+
+// A KTX map that holds one value everywhere (a flat roughness, a black mask, a flat normal map; 26 of
+// the user's 1709 cooked files on 11-06, 22 of them 4096 square): the one block it is made of, or empty.
+// Level 0 must be that block repeated, and level 2 the same block: a pattern repeating every 4 texels
+// or less is one block repeated too, but averages to another colour by level 2. No BC decoding, so a
+// flat BC5 normal map passes as well. Only a level 0 its supercompression shrinks below a thousandth is
+// inflated to look, read from the level index, so an ordinary map costs nothing.
+std::vector<char> constantBlock(nv_ktx::Image& ktx, const char* data, size_t byteLength)
+{
+  const uint32_t block = blockBytes(ktx.format);
+  if(block == 0 || ktx.mip0Width < 64 || ktx.mip0Height < 64 || ktx.numMips < 3 || ktx.mip0Depth > 1 || ktx.numFaces > 1
+     || ktx.numLayersPossibly0 > 1)
+    return {};
+  const nv_ktx::SubresourceLayout& top = ktx.getSubresourceLayout(0, 0, 0);
+  if(top.fileByteSize == 0 || top.fileByteSize * 1000 >= top.uncompressedByteSize)
+    return {};
+  const auto read = [&](uint32_t mip, std::vector<char>& level) {
+    level.resize(ktx.getSubresourceLayout(mip, 0, 0).uncompressedByteSize);
+    nv_ktx::SubresourceTarget target{.data = level.data(), .capacityInBytes = level.size()};
+    return !ktx.readSubresourcesFromMemory(data, byteLength, nv_ktx::SubresourceRange{.firstMip = mip, .numMips = 1}, &target).has_value()
+           && !level.empty() && level.size() % block == 0;
+  };
+  std::vector<char> level0, level2;
+  if(!read(0, level0) || !read(2, level2))
+    return {};
+  const auto oneBlock = [&](const std::vector<char>& level) {
+    for(size_t at = block; at < level.size(); at += block)
+      if(std::memcmp(level.data() + at, level.data(), block) != 0)
+        return false;
+    return true;
+  };
+  if(!oneBlock(level0) || std::memcmp(level2.data(), level0.data(), block) != 0 || !oneBlock(level2))
+    return {};
+  return std::vector<char>(level0.begin(), level0.begin() + block);
+}
+
 bool loadKtx(LoadedImageData& out, const void* data, size_t byteLength, bool srgb, uint64_t imageIDForLog, uint32_t maxExtent)
 {
   const uint8_t ktxIdentifier[5] = {0xAB, 0x4B, 0x54, 0x58, 0x20};  // Common for KTX1 + KTX2
@@ -152,6 +215,19 @@ bool loadKtx(LoadedImageData& out, const void* data, size_t byteLength, bool srg
     LOGW("KTX image %" PRIu64 " had %u array elements, but loadFromMemory() cannot handle array textures.\n",
          imageIDForLog, ktxImage.numLayersPossibly0);
     return false;
+  }
+
+  // One value everywhere: the one block it is made of, as a 4x4 image, its whole chain left out
+  if(std::vector<char> block = constantBlock(ktxImage, reading, byteLength); !block.empty())
+  {
+    LOGI("[images] a %ux%u map of one value everywhere kept as one block (%.1f MB less)\n", ktxImage.mip0Width,
+         ktxImage.mip0Height, double(ktxImage.getSubresourceLayout(0, 0, 0).uncompressedByteSize) * 4.0 / 3.0 / 1e6);
+    out.mipData          = {std::move(block)};
+    out.size             = {4, 4};
+    out.format           = texture_formats::tryForceVkFormatTransferFunction(ktxImage.format, srgb);
+    out.componentMapping = ktxSwizzleToVkComponentMapping(ktxImage.swizzle);
+    out.constant         = true;
+    return true;
   }
 
   // only the levels kept are read, and inflated
@@ -343,6 +419,9 @@ std::optional<rs::ImageChain> readImageChain(const void* data, size_t byteLength
   nv_ktx::Image ktxImage;
   if(ktxImage.readHeaderFromMemory(reinterpret_cast<const char*>(data), byteLength, nv_ktx::ReadSettings{}).has_value())
     return std::nullopt;
+  // what loadKtx keeps of a map of one value: its one block
+  if(const std::vector<char> block = constantBlock(ktxImage, reinterpret_cast<const char*>(data), byteLength); !block.empty())
+    return rs::ImageChain{.width = 4, .height = 4, .levelBytes = {uint64_t(block.size())}};
   rs::ImageChain chain{.width = ktxImage.mip0Width, .height = ktxImage.mip0Height};
   for(uint32_t i = 0; i < ktxImage.numMips; i++)
     chain.levelBytes.push_back(ktxImage.getSubresourceLayout(i, 0, 0).uncompressedByteSize);
@@ -522,10 +601,12 @@ float imageMeanLuminance(const LoadedImageData& image)
   const bool bc7 = image.format == VK_FORMAT_BC7_UNORM_BLOCK || image.format == VK_FORMAT_BC7_SRGB_BLOCK;
   if(!bc7 && image.format != VK_FORMAT_BC4_UNORM_BLOCK)
     return imageMeanLuminance(image.format, image.size, image.mipData[0]);
-  // the smallest level, when it is 1 x 1: the image averaged in linear light (texcache.rs `cook`)
+  // the smallest level, when it is 1 x 1: the image averaged in linear light (texcache.rs `cook`); a
+  // map of one value kept as its one block (LoadedImageData::constant) is that value in every texel
   const uint32_t last = uint32_t(image.mipData.size() - 1);
   const std::vector<char>& level = image.mipData.back();
-  if(rs::levelExtent(image.size.width, last) != 1 || rs::levelExtent(image.size.height, last) != 1 || level.size() < (bc7 ? 16u : 8u))
+  const bool oneTexel = rs::levelExtent(image.size.width, last) == 1 && rs::levelExtent(image.size.height, last) == 1;
+  if(!(oneTexel || image.constant) || level.size() < (bc7 ? 16u : 8u))
     return -1.0f;
   const auto* block = reinterpret_cast<const uint8_t*>(level.data());
   float       texel[4];  // what the image's own channels hold, 0-1

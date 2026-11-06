@@ -31,8 +31,15 @@
 #include <turbojpeg.h>
 #include <webp/encode.h>
 
+#include <cstdlib>
+#include <map>
+#include <sstream>
+#include <string>
+
 #include "gltf_image_loader.hpp"
+#include "image_levels.hpp"
 #include "image_prefetch.hpp"
+#include "nvimageformats/nv_ktx.h"
 
 namespace {
 
@@ -228,6 +235,145 @@ TEST(ImageLoader, KtxKeepsAGreyMapsSwizzle)
   EXPECT_EQ(out.componentMapping.g, VK_COMPONENT_SWIZZLE_R);
   EXPECT_EQ(out.componentMapping.b, VK_COMPONENT_SWIZZLE_ONE);
   EXPECT_EQ(out.componentMapping.a, VK_COMPONENT_SWIZZLE_ONE);
+}
+
+namespace {
+
+// A block-compressed KTX2 map of `size` square with every level, written as the cooker writes them
+// (texcache.rs: zstd per level), each block `blockOf(level, index)`
+template <class BlockOf>
+std::vector<char> makeKtx(VkFormat format, uint32_t size, uint32_t blockBytes, BlockOf blockOf, bool zstd = true)
+{
+  nv_ktx::Image ktx;
+  uint32_t      levels = 1;
+  while((size >> (levels - 1)) > 1)
+    levels++;
+  EXPECT_FALSE(ktx.allocate(levels, 0, 1).has_value());
+  ktx.mip0Width  = size;
+  ktx.mip0Height = size;
+  ktx.format     = format;
+  for(uint32_t level = 0; level < levels; level++)
+  {
+    const uint32_t     across = (std::max(size >> level, 1u) + 3) / 4;
+    std::vector<char>& data   = ktx.subresource(level);
+    for(uint32_t i = 0; i < across * across; i++)
+    {
+      const std::vector<char> block = blockOf(level, i);
+      EXPECT_EQ(block.size(), blockBytes);
+      data.insert(data.end(), block.begin(), block.end());
+    }
+  }
+  nv_ktx::WriteSettings settings;
+  settings.supercompression = zstd ? nv_ktx::SupercompressionScheme::eZstd : nv_ktx::SupercompressionScheme::eNone;
+  std::ostringstream out;
+  EXPECT_FALSE(ktx.writeKTX2Stream(out, settings).has_value());
+  const std::string s = out.str();
+  return std::vector<char>(s.begin(), s.end());
+}
+
+std::vector<char> filled(uint32_t bytes, char value)
+{
+  return std::vector<char>(bytes, value);
+}
+
+}  // namespace
+
+// A map of one value everywhere keeps the one block it is made of, as a 4x4 image of one level: nothing
+// visible lost, 1.4 MB less for this 1024 square. The planner's chain says the same, so it has nothing to
+// lower or raise, and the mean a light weighs it by is still read.
+TEST(ImageLoader, AConstantMapKeepsOneBlock)
+{
+  const std::vector<char> block = {char(0x20), 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, char(0x88), char(0x99), 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
+  const std::vector<char> file  = makeKtx(VK_FORMAT_BC7_SRGB_BLOCK, 1024, 16, [&](uint32_t, uint32_t) { return block; });
+  nvvkgltf::LoadedImageData out;
+  ASSERT_TRUE(nvvkgltf::loadFromMemory(out, file.data(), file.size(), /*srgb*/ true));
+  EXPECT_TRUE(out.constant);
+  EXPECT_EQ(out.format, VK_FORMAT_BC7_SRGB_BLOCK);
+  EXPECT_EQ(out.size.width, 4u);
+  EXPECT_EQ(out.size.height, 4u);
+  ASSERT_EQ(out.mipData.size(), 1u);
+  EXPECT_EQ(out.mipData[0], block);
+
+  const std::optional<rs::ImageChain> chain = nvvkgltf::readImageChain(file.data(), file.size());
+  ASSERT_TRUE(chain);
+  EXPECT_EQ(chain->width, 4u);
+  ASSERT_EQ(chain->levelBytes.size(), 1u);
+  EXPECT_EQ(chain->levelBytes[0], 16u);
+  rs::ImageFit fit{.chain = *chain};
+  EXPECT_FALSE(fit.canLower(1));
+  EXPECT_FALSE(fit.canRaise(0));
+  std::vector<rs::ImageFit> fits{fit};
+  EXPECT_EQ(rs::lowerToFit(fits, 1 << 20, 1), 0u);
+
+  // the mean: what the map's own 1 x 1 level held, the same block
+  nvvkgltf::LoadedImageData oneTexel{.format = VK_FORMAT_BC7_SRGB_BLOCK, .size = {1, 1}, .mipData = {block}, .componentMapping = out.componentMapping};
+  EXPECT_GE(nvvkgltf::imageMeanLuminance(out), 0.0f);
+  EXPECT_EQ(nvvkgltf::imageMeanLuminance(out), nvvkgltf::imageMeanLuminance(oneTexel));
+
+  // a flat BC5 normal map too
+  const std::vector<char> flat = makeKtx(VK_FORMAT_BC5_UNORM_BLOCK, 512, 16, [](uint32_t, uint32_t) { return filled(16, char(0x7f)); });
+  nvvkgltf::LoadedImageData normal;
+  ASSERT_TRUE(nvvkgltf::loadFromMemory(normal, flat.data(), flat.size(), false));
+  EXPECT_TRUE(normal.constant);
+  EXPECT_EQ(normal.size.width, 4u);
+}
+
+// What only looks like one value stays whole: a pattern repeating every 4 texels (one block repeated,
+// another by level 2, where it has averaged out), a map with one block of its own, one too small to be
+// worth it, and one written without supercompression (whose level index can't say it is one value)
+TEST(ImageLoader, WhatOnlyLooksConstantStaysWhole)
+{
+  const auto whole = [](const std::vector<char>& file, uint32_t size) {
+    nvvkgltf::LoadedImageData out;
+    EXPECT_TRUE(nvvkgltf::loadFromMemory(out, file.data(), file.size(), false));
+    EXPECT_FALSE(out.constant);
+    EXPECT_EQ(out.size.width, size);
+    const std::optional<rs::ImageChain> chain = nvvkgltf::readImageChain(file.data(), file.size());
+    EXPECT_TRUE(chain && chain->width == size && chain->levelBytes.size() == out.mipData.size());
+  };
+  // the checker's block at the top, its average below
+  whole(makeKtx(VK_FORMAT_BC7_UNORM_BLOCK, 1024, 16, [](uint32_t level, uint32_t) { return filled(16, char(level == 0 ? 0x5a : 0x33)); }), 1024);
+  whole(makeKtx(VK_FORMAT_BC7_UNORM_BLOCK, 1024, 16, [](uint32_t level, uint32_t i) { return filled(16, char(level == 0 && i == 777 ? 0x01 : 0x33)); }), 1024);
+  whole(makeKtx(VK_FORMAT_BC4_UNORM_BLOCK, 32, 8, [](uint32_t, uint32_t) { return filled(8, char(0x40)); }), 32);
+  whole(makeKtx(VK_FORMAT_BC7_UNORM_BLOCK, 1024, 16, [](uint32_t, uint32_t) { return filled(16, char(0x33)); }, /*zstd*/ false), 1024);
+}
+
+// The cooked texture cache in FV_TEXCACHE_SCAN, read and counted: how many maps are one value, and
+// what keeping them as one block saves. Opt in (it reads the user's cache), with
+// --gtest_also_run_disabled_tests --gtest_filter=ImageLoader.DISABLED_CountConstantMapsInACache
+TEST(ImageLoader, DISABLED_CountConstantMapsInACache)
+{
+  const char* dir = std::getenv("FV_TEXCACHE_SCAN");
+  if(!dir)
+    GTEST_SKIP() << "set FV_TEXCACHE_SCAN to a cache folder";
+  int      files = 0, constant = 0;
+  uint64_t saved = 0;
+  std::map<uint32_t, int> bySize;
+  for(const auto& e : std::filesystem::directory_iterator(dir))
+  {
+    if(e.path().extension() != ".ktx2")
+      continue;
+    std::ifstream           in(e.path(), std::ios::binary);
+    const std::vector<char> file{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    files++;
+    const std::optional<rs::ImageChain> chain = nvvkgltf::readImageChain(file.data(), file.size());
+    if(!chain || chain->width != 4 || chain->levelBytes.size() != 1)
+      continue;
+    nv_ktx::Image header;
+    ASSERT_FALSE(header.readHeaderFromMemory(file.data(), file.size(), nv_ktx::ReadSettings{}).has_value());
+    nvvkgltf::LoadedImageData out;
+    ASSERT_TRUE(nvvkgltf::loadFromMemory(out, file.data(), file.size(), false));
+    EXPECT_TRUE(out.constant) << e.path().string();
+    constant++;
+    bySize[header.mip0Width]++;
+    for(uint32_t i = 0; i < header.numMips; i++)
+      saved += header.getSubresourceLayout(i, 0, 0).uncompressedByteSize;
+    saved -= 16;
+  }
+  std::string sizes;
+  for(const auto& [size, n] : bySize)
+    sizes += " " + std::to_string(n) + " at " + std::to_string(size);
+  printf("%d of %d cooked maps are one value (%s), %.0f MiB less when resident\n", constant, files, sizes.c_str(), double(saved) / (1 << 20));
 }
 
 namespace {

@@ -38,6 +38,9 @@ struct LoadedImageData
   VkExtent2D                     size{0, 0};
   std::vector<std::vector<char>> mipData{};
   VkComponentMapping             componentMapping{};
+  // one value everywhere: a map that held it over its whole chain, kept as the one block it was made
+  // of (a 4x4 image of one level), whose every texel is the map's mean
+  bool constant = false;
 };
 
 // Decodes raw image bytes into LoadedImageData. Dispatches by magic bytes:

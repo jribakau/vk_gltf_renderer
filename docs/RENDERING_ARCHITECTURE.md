@@ -123,7 +123,8 @@ Host — build the emitter list (`rs::Residency`, with `buildEmissiveTable` in `
    emissiveLightScale`, is non-black. `emissiveLightScale` (`GltfShadeMaterial`) is 1 for a constant
    emitter and the emissive texture's mean luminance for a textured one (`imageMeanLuminance`: an
    8-bit image's from a 64 × 64 grid of its texels; a cooked BC7 or BC4 one's from its 1 × 1 level,
-   which the cooker averages in linear light, decoded by `bc7FirstTexel`; 1 where neither can be
+   which the cooker averages in linear light, or from its one block where it held one value and loaded
+   as that (`LoadedImageData::constant`), decoded by `bc7FirstTexel`; 1 where neither can be
    read, so the factor alone weighs it; 0 for an all-black texture, which is then no light).
 3. For each triangle of that primitive, in order, store a **reference** — render node, primitive,
    triangle index — plus the radiance (not baked vertices, so the shader reads live
