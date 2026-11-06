@@ -142,3 +142,79 @@ TEST(HdrOutput, TheGainLeavesTheMidtonesAndRaisesTheHighlights)
   EXPECT_EQ(hdrGain(int(ToneMapMethod::eACES), float3(8.0F), float3(0.95F), 1.0F), 1.0F);
   EXPECT_EQ(hdrGain(int(ToneMapMethod::eACES), float3(0.0F), float3(0.0F), peak), 1.0F);
 }
+
+// The SDR grading's Saturation (nvshaders/tonemap_functions.h.slang) takes sRGB-encoded values and
+// scales them away from the gray of the same luminance in linear light, so 0 is the colour's own
+// luminance as a gray: BT.709's weights on the encoded values made pure red 0.21 instead of 0.50
+TEST(TonemapGrading, SaturationOneLeavesTheColour)
+{
+  for(const float3 c : {float3(0.9F, 0.2F, 0.1F), float3(0.0F), float3(1.0F), float3(0.3F, 0.6F, 0.95F)})
+  {
+    const float3 out = adjustSaturation(c, 1.0F);
+    EXPECT_EQ(out.x, c.x);
+    EXPECT_EQ(out.y, c.y);
+    EXPECT_EQ(out.z, c.z);
+  }
+}
+
+TEST(TonemapGrading, ZeroIsTheGrayOfTheLinearLuminance)
+{
+  // pure red, green and blue: their linear luminance, encoded
+  EXPECT_NEAR(adjustSaturation(float3(1.0F, 0.0F, 0.0F), 0.0F).x, toSrgb(float3(0.2126F)).x, 1e-5F);
+  EXPECT_NEAR(adjustSaturation(float3(0.0F, 1.0F, 0.0F), 0.0F).x, toSrgb(float3(0.7152F)).x, 1e-5F);
+  EXPECT_NEAR(adjustSaturation(float3(0.0F, 0.0F, 1.0F), 0.0F).x, toSrgb(float3(0.0722F)).x, 1e-5F);
+  EXPECT_NEAR(adjustSaturation(float3(1.0F, 0.0F, 0.0F), 0.0F).x, 0.4985F, 1e-3F);  // not 0.2126
+  for(const float3 c : {float3(0.9F, 0.2F, 0.1F), float3(0.3F, 0.6F, 0.95F), float3(0.55F, 0.42F, 0.38F)})
+  {
+    const float3 g = adjustSaturation(c, 0.0F);
+    EXPECT_NEAR(g.x, g.y, 1e-6F);
+    EXPECT_NEAR(g.y, g.z, 1e-6F);
+    EXPECT_NEAR(bt709Luminance(toLinear(g)), bt709Luminance(toLinear(c)), 1e-5F);
+  }
+}
+
+TEST(TonemapGrading, EverySaturationKeepsTheLuminance)
+{
+  // a skin tone and a muted blue stay in gamut up to twice the saturation
+  for(const float3 c : {float3(0.80F, 0.62F, 0.55F), float3(0.40F, 0.48F, 0.60F)})
+    for(const float sat : {0.25F, 0.5F, 1.5F, 2.0F})
+    {
+      const float3 out = adjustSaturation(c, sat);
+      EXPECT_NEAR(bt709Luminance(toLinear(out)), bt709Luminance(toLinear(c)), 1e-5F) << sat;
+    }
+  // more saturation moves the channels apart, less brings them together
+  const float3 skin = float3(0.80F, 0.62F, 0.55F);
+  EXPECT_GT(adjustSaturation(skin, 1.5F).x - adjustSaturation(skin, 1.5F).z, skin.x - skin.z);
+  EXPECT_LT(adjustSaturation(skin, 0.5F).x - adjustSaturation(skin, 0.5F).z, skin.x - skin.z);
+}
+
+TEST(TonemapGrading, GraysStayGrayAndOutOfGamutClampsAtBlack)
+{
+  for(const float v : {0.0F, 0.18F, 0.5F, 1.0F})
+    for(const float sat : {0.0F, 0.5F, 2.0F})
+    {
+      const float3 out = adjustSaturation(float3(v), sat);
+      EXPECT_NEAR(out.x, v, 1e-5F);
+      EXPECT_NEAR(out.z, v, 1e-5F);
+    }
+  // twice the saturation of pure red would take green and blue below 0: they stop at 0, no NaN
+  const float3 red = adjustSaturation(float3(1.0F, 0.0F, 0.0F), 2.0F);
+  EXPECT_EQ(red.y, 0.0F);
+  EXPECT_EQ(red.z, 0.0F);
+  EXPECT_FALSE(std::isnan(red.x));
+}
+
+// The whole grade at saturation 0 on a saturated colour: a gray as bright as the colour
+TEST(TonemapGrading, TheGradeAtZeroSaturationIsTheColoursLuminance)
+{
+  TonemapperData tm;
+  tm.method     = int(ToneMapMethod::eClip);
+  tm.saturation = 0.0F;
+  tm.dither     = 0;
+  tm.vignette   = 0.0F;
+  tm.inputMatrix = float3x3(1.0F);  // no exposure or white balance
+  const float3 c   = float3(0.6F, 0.05F, 0.02F);  // linear, a deep red
+  const float3 out = applyTonemap(tm, c, float2(0.0F), float2(1.0F));
+  EXPECT_NEAR(out.x, out.y, 1e-5F);
+  EXPECT_NEAR(toLinear(out).x, bt709Luminance(c), 1e-5F);
+}
