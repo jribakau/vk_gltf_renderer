@@ -692,6 +692,40 @@ void GltfRenderer::fillGround(shaderio::SceneFrameInfo& finfo) const
 }
 
 //--------------------------------------------------------------------------------------------------
+// The haze (shaders/haze.h.slang): its extinction from the visibility, -ln(0.02) / V
+// (hazeExtinctionFromVisibility), and the sphere it fills. Round the scene's bounds, its lights and
+// the eye, so the eye is in it and a light's beam reaches the scene inside it, and nothing beyond: the
+// sky is seen through as much haze as the scene holds. A scene unit is a metre.
+void GltfRenderer::fillHaze(shaderio::SceneFrameInfo& finfo) const
+{
+  finfo.hazeExtinction     = 0.0F;
+  const Settings& settings = m_resources.settings;
+  if(!(settings.hazeVisibility > 0.0F))
+    return;
+  const SceneGpuView& view   = m_resources.gpuView();
+  const glm::vec3     eye    = glm::vec3(finfo.viewInv[3]);
+  glm::vec3           center = eye;
+  float               radius = 0.0F;
+  if(view.hasContent())
+  {
+    const nvutils::Bbox bounds = view.bounds();
+    if(!bounds.isEmpty())
+    {
+      center = bounds.center();
+      radius = bounds.radius();
+    }
+    for(const SceneGpuView::LightInfo& light : view.lights())
+      if(!light.directional)
+        radius = std::max(radius, glm::distance(glm::vec3(light.worldMatrix[3]), center));
+  }
+  radius                 = std::max(radius, glm::distance(eye, center));
+  finfo.hazeExtinction   = 3.912023F / settings.hazeVisibility;
+  finfo.hazeAnisotropy   = std::clamp(settings.hazeAnisotropy, -0.9F, 0.9F);
+  finfo.hazeCenter       = center;
+  finfo.hazeRadius       = radius * 1.01F + 1e-3F;  // the eye strictly inside
+}
+
+//--------------------------------------------------------------------------------------------------
 // Illuminance of the gradient sky's sun, before `envIntensity`.
 //
 // The physical sky measures its sun: the bake reports a disk radiance, and radiance times the solid

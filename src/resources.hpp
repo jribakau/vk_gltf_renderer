@@ -275,6 +275,11 @@ struct Settings
   float groundWaves      = 0.4f;
   // A multiplier on the light the sky's sun gives (SceneFrameInfo::skySunScale).
   float skySunScale = 1.0f;
+  // Haze in the air, lit by the scene's lights (shaders/haze.h.slang): its visibility in metres, the
+  // distance at which it leaves 2% of a dark object's contrast (0: no haze), and how strongly it
+  // scatters forward (Henyey-Greenstein g), which is what puts a halo round a light seen through it.
+  float hazeVisibility = 0.0f;
+  float hazeAnisotropy = 0.7f;
   bool      dlssRrHardwareAvailable = false;  // DLSS Ray Reconstruction hardware/extensions available (set at startup)
   bool dlssSrHardwareAvailable = false;  // DLSS Super Resolution / DLAA hardware/extensions available (set at startup)
   bool serHardwareAvailable    = false;  // VK_EXT_ray_tracing_invocation_reorder enabled on the device (set at startup)

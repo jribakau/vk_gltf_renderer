@@ -318,6 +318,14 @@ struct SceneFrameInfo
   float4 cloudViewForward  = {0.0F, 0.0F, 0.0F, 0.0F};
   float  cloudViewUvScaleX = 1.0F;
   float  cloudViewUvScaleY = 1.0F;
+
+  // Haze in the air (haze.h.slang): its extinction per metre (0: none), the anisotropy of its
+  // Henyey-Greenstein phase function, and the sphere it fills, around the scene, its lights and the
+  // eye (GltfRenderer::fillHaze). (Appended, per the note above.)
+  float  hazeExtinction = 0.0F;
+  float  hazeAnisotropy = 0.7F;
+  float3 hazeCenter     = {0.0F, 0.0F, 0.0F};
+  float  hazeRadius     = 0.0F;
 };
 
 enum PathtracerFlags

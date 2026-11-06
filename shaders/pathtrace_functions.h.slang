@@ -18,6 +18,7 @@
 #include "light_tree.h.slang"
 #include "mirror_image.h.slang"
 #include "clear_crossing.h.slang"
+#include "haze.h.slang"
 
 //-----------------------------------------------------------------------
 // Types and tuning constants
@@ -1795,6 +1796,60 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
   return throughput * directLight.radianceOverPdf * misWeight * phase * shadowFactor;
 }
 #endif  // GLTF_USE_SCATTER
+
+
+// The haze on the camera's segment (haze.h.slang), from the eye along `dir` (unit) to `tEnd`: what
+// gets through of the light behind it, and the light it scatters toward the eye. One scatter point,
+// lit by one light sample drawn there, and one shadow ray; one more light sample places the guide
+// the point is drawn toward. Only the haze's single scattering, and the shadow ray is dimmed by the
+// haze alone: the walk's media and the water are not on it.
+struct HazeSegmentResult
+{
+  float3 inScatter;
+  float  transmittance;
+};
+
+HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir, float tEnd, inout uint seed)
+{
+  SceneFrameInfo*   frameInfo = pushConst.frameInfo;
+  HazeSegmentResult result;
+  result.inScatter     = float3(0.0F);
+  result.transmittance = 1.0F;
+  const float2 seg     = hazeSegment(eye, dir, tEnd, frameInfo->hazeCenter, frameInfo->hazeRadius);
+  if(!(seg.y > seg.x))
+    return result;
+  const float sigma    = frameInfo->hazeExtinction;
+  result.transmittance = exp(-sigma * (seg.y - seg.x));
+
+  // The guide: a point on a light drawn from somewhere on the segment. A light at infinity (the
+  // environment, a directional light, the sky's sun) has none, and its points go by the transmittance.
+  const float3 guideFrom = eye + dir * hazeSampleTransmittance(rand(seed), sigma, seg.x, seg.y);
+  DirectLight  guideLight;
+  sampleLights(guideFrom, dir, dir, seed, guideLight, /*isVolumeSample=*/true);
+  const bool      guided = guideLight.pdf != 0.0F && guideLight.distance < 0.5F * INFINITE;
+  const HazeGuide guide  = hazeGuide(eye, dir, seg.x, seg.y, guideFrom + guideLight.direction * guideLight.distance, guided);
+
+  const float  choice = rand(seed);
+  const float  t      = hazeSampleDistance(rand(seed), choice, sigma, seg.x, seg.y, guide);
+  const float3 pos    = eye + dir * t;
+  DirectLight  light;
+  sampleLights(pos, dir, dir, seed, light, /*isVolumeSample=*/true);
+  // a spot whose cone misses the point gives nothing: no shadow ray for it (as volumeScatterNEE)
+  if(light.pdf == 0.0F || all(light.radianceOverPdf == 0.0F))
+    return result;
+
+  // the light travels -light.direction and leaves toward the eye, -dir
+  const float phase = henyeyGreensteinPdf(dot(dir, light.direction), frameInfo->hazeAnisotropy);
+  RayDesc     shadowRay;
+  shadowRay.Origin        = pos;
+  shadowRay.Direction     = light.direction;
+  shadowRay.TMin          = 0.0F;
+  shadowRay.TMax          = light.distance;
+  const float3 visibility = raytracer.TraceShadow(shadowRay, seed);
+  const float  air = exp(-sigma * min(light.distance, hazeExitDistance(pos, light.direction, frameInfo->hazeCenter, frameInfo->hazeRadius)));
+  result.inScatter = (hazeScatterWeight(t, sigma, seg.x, seg.y, guide) * phase * air) * light.radianceOverPdf * visibility;
+  return result;
+}
 
 
 //-----------------------------------------------------------------------

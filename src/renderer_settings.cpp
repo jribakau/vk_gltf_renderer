@@ -501,6 +501,15 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.groundWaves, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({.name = "skySunScale", .help = "Sky: multiplier on the light the sky's sun gives (0: no sun light)", .callbackSuccess = groundChanged},
                  &m_resources.settings.skySunScale, Persist::eNo, 0.0F, 100.0F);
+  // Haze: SceneFrameInfo alone, as the aerial perspective (fillHaze)
+  m_settings.add({.name            = "hazeVisibility",
+                  .help            = "Haze: a thin haze in the air, lit by the scene's lights; its visibility in metres (0: none)",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.hazeVisibility, Persist::eNo, 0.0F, 100000.0F);
+  m_settings.add({.name            = "hazeAnisotropy",
+                  .help            = "Haze: how much it scatters forward, the halo round a light (Henyey-Greenstein g, -0.9 to 0.9)",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.hazeAnisotropy, Persist::eNo, -0.9F, 0.9F);
 
   // Register PathTracer-specific command line parameters
   m_pathTracer.registerParameters(&m_settings, [this]() { resetFrame(); });

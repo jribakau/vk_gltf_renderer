@@ -1154,6 +1154,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
         .envPickEstimate       = 0.25F * m_resources.hdrIbl.getIntegral(),
     };
     fillGround(finfo);
+    fillHaze(finfo);
     // The clouds where the camera looks, while the view image holds the clouds of the moment: it
     // looks where it was baked, which the camera may since have turned from (updateCloudView).
     if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.viewCurrent())

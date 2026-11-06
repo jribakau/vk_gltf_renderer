@@ -193,6 +193,42 @@ immediately.
 
 ---
 
+## Haze in the air
+
+A thin, even haze lit by every light of the scene (`shaders/haze.h.slang`), set by `hazeVisibility`
+(metres: where it leaves 2% of a dark object's contrast, so the extinction is 3.912 / V; 0 is none)
+and `hazeAnisotropy` (its Henyey-Greenstein g, the halo round a light seen through it). Its albedo is
+1. It is on the camera's segment only, applied at the end of `pathTrace` beside the aerial
+perspective: every bounce's light reaches the eye through that segment, so the path's radiance is
+dimmed by the segment's transmittance and what the haze scatters toward the eye is added. Light on its
+way to a surface, a mirror's view and a window's are not hazed, and the haze is not defocused (the
+pinhole's eye, as the aerial perspective).
+
+- **Where it is:** a sphere round the scene's bounds, its punctual lights and the eye
+  (`GltfRenderer::fillHaze`, into `SceneFrameInfo::hazeCenter`/`hazeRadius`). The eye is inside it and
+  a light's beam reaches the scene inside it; a ray that hits nothing is hazed to the sphere's edge,
+  so a beam in front of the sky shows and the sky is seen through as much haze as the scene holds.
+  Not over the shadow catcher, nor for an orthographic camera.
+- **One scatter point a camera path** (`hazeCameraSegment`, `shaders/pathtrace_functions.h.slang`):
+  its distance drawn half by the transmittance from where the ray enters the haze and half
+  equiangularly (Kulla and Fajardo 2012) toward a guide, a point on a light `sampleLights` drew from
+  a point of the segment; none for a light at infinity. The point is then lit by a light sample drawn
+  there, as a walk's scatter is (`volumeScatterNEE`), with one shadow ray dimmed by the haze to the
+  sphere's edge. The mixture's density is the pdf, so the estimate is unbiased whichever light the
+  guide was; drawing the point's own light there, not reusing the guide's, is what finds a spot's
+  beam wherever it crosses the ray (a light picked from elsewhere on the segment gets nothing where
+  the cone misses that point).
+- **Checked:** `tests/test_haze.cpp` holds the estimator to a point light's single scattering by
+  quadrature (itself held to thin isotropic haze's closed form) and the drawn distances to their
+  density; a ray passing a light at 5 cm on a 10 m segment has a noise 0.9 times its mean a sample,
+  5.7 by the transmittance alone. Rendered (a point light 3 m ahead in 20 m visibility, g 0.7, 1024
+  samples), rings of pixels from 1 to 26 degrees off it came within 0.1% of the integral.
+- **Not in it:** the haze's multiple scattering, light bounced off surfaces into it, and its shade on
+  what it lights (docs/falcor-ideas.md: the air as its own medium). DLSS-RR has no guide for light in
+  the air.
+
+---
+
 ## Ray tracing hit correlation
 
 ```

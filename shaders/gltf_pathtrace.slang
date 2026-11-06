@@ -1637,6 +1637,22 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     pt.radiance = pt.radiance * march.transmittance + inScatter;
   }
 
+  // Haze in the air (haze.h.slang), on the same segment, taken as in front of the atmosphere's air:
+  // at a scene's size the order makes no difference. Unlike that air it hazes a miss too, to the edge
+  // of the sphere it fills, so a beam in front of the sky shows. From the pinhole's eye, as above: the
+  // haze is not defocused. Not over the shadow catcher, which shows the environment behind it.
+  if(pt.firstHitHazed && pushConst.frameInfo->hazeExtinction > 0.0F
+     && !hasFlag(pushConst.frameInfo->flags, SceneFrameInfoFlags::eSceneIsOrthographic)
+     && (!pt.solid || all(abs(pt.firstHitPos) < float3(1e33F))))  // a path ended before its first hit has none
+  {
+    const float3            eye   = pushConst.frameInfo->viewInv[3].xyz;
+    const float3            toHit = pt.firstHitPos - eye;
+    const float             tEnd  = pt.solid ? length(toHit) : INFINITE;
+    const float3            dir   = pt.solid ? toHit / max(tEnd, 1e-20F) : pt.firstHitPos;  // a miss keeps its direction there
+    const HazeSegmentResult haze  = hazeCameraSegment(raytracer, eye, dir, tEnd, seed);
+    pt.radiance                   = pt.radiance * haze.transmittance + haze.inScatter;
+  }
+
   return packSampleResult(pt);
 }
 

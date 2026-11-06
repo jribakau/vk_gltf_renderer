@@ -331,6 +331,31 @@ TEST(FvLighting, CloudsAreClearUntilSetAndReachTheRenderer)
   EXPECT_THROW(L::applyPatch(s, {{"clouds", {{"type", "cirrus"}}}}), std::invalid_argument);
 }
 
+// Haze: off by default (as a scene from before it), kept with its visibility and glow while off, clamped
+// to the renderer's ranges, and sent as its visibility, 0 while off (protocol 36)
+TEST(FvLighting, HazeIsOffUntilSwitchedOnAndKeepsItsValues)
+{
+  const fv::Json none = L::rendererParams(L::State{}, {});
+  EXPECT_EQ(none["hazeVisibility"], 0.0);
+  EXPECT_EQ(none["hazeAnisotropy"], 0.7);
+  EXPECT_EQ(L::toJson(L::State{})["haze"]["enabled"], false);
+
+  const L::State dim = L::applyPatch(L::State{}, {{"haze", {{"visibility", 40.0}, {"glow", 2.0}}}});
+  EXPECT_EQ(dim.haze.visibility, 40.0);
+  EXPECT_EQ(dim.haze.glow, 0.9);
+  EXPECT_EQ(L::rendererParams(dim, {})["hazeVisibility"], 0.0);  // set, but still off
+  const L::State on = L::applyPatch(dim, {{"haze", {{"enabled", true}}}});
+  EXPECT_EQ(L::rendererParams(on, {})["hazeVisibility"], 40.0);
+  EXPECT_EQ(L::rendererParams(on, {})["hazeAnisotropy"], 0.9);
+  EXPECT_EQ(L::toJson(on)["haze"]["visibility"], 40.0);
+  EXPECT_EQ(L::applyPatch(on, {{"haze", {{"visibility", 0.0}}}}).haze.visibility, 1.0);
+  EXPECT_FALSE(L::applyPatch(on, {{"haze", nullptr}}).haze.enabled);
+  EXPECT_THROW(L::applyPatch(on, {{"haze", {{"colour", 1}}}}), std::invalid_argument);
+  EXPECT_THROW(L::applyPatch(on, {{"haze", {{"enabled", 1}}}}), std::invalid_argument);
+  // the topic replays as a patch
+  EXPECT_EQ(L::applyPatch(L::State{}, L::toJson(on)).haze.visibility, 40.0);
+}
+
 // The exposure follows the clouds where the app's camera meters (protocol 35): what they take from the
 // light given back, by the sky's share of a clear day's light and the share of the sun past them
 TEST(FvLighting, TheExposureFollowsTheClouds)

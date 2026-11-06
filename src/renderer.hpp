@@ -261,6 +261,8 @@ public:
 
   /// The ground's fade disk into the frame info.
   void fillGround(shaderio::SceneFrameInfo& finfo) const;
+  // The haze's extinction and the sphere it fills: round the scene, its lights and the eye (viewInv)
+  void fillHaze(shaderio::SceneFrameInfo& finfo) const;
 
   /// Frame-top consumer of onEnvironmentChanged(). Called from onUIRender, not onRender: it waits
   /// on the device and rewrites descriptors, which is unsafe mid-command-buffer.

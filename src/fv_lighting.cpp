@@ -198,6 +198,26 @@ void patchClouds(Clouds& c, const Json& p)
   }
 }
 
+void patchHaze(Haze& h, const Json& p)
+{
+  const Haze d;
+  for(auto it = p.begin(); it != p.end(); ++it)
+  {
+    const std::string& k   = it.key();
+    const Json&        v   = it.value();
+    const std::string  key = "haze." + k;
+    if(k == "enabled")
+      field(h.enabled, d.enabled, v, [&](const Json& x) { return boolean(x, key); });
+    else if(k == "visibility")
+      // a fog you can touch to a city's clear day
+      field(h.visibility, d.visibility, v, [&](const Json& x) { return number(x, key, 1.0, 1e5); });
+    else if(k == "glow")
+      field(h.glow, d.glow, v, [&](const Json& x) { return number(x, key, 0.0, 0.9); });
+    else
+      reject("unknown key " + key);
+  }
+}
+
 void patchGround(Ground& g, const Json& p)
 {
   const Ground d;
@@ -286,6 +306,7 @@ Json toJson(const State& s)
   const Env&     e = s.env;
   const Sun&     u = s.sun;
   const Clouds&  c = s.clouds;
+  const Haze&    h = s.haze;
   const Ground&  g = s.ground;
   const Tonemap& t = s.tonemap;
   return {
@@ -308,6 +329,7 @@ Json toJson(const State& s)
         {"softness", u.softness}}},
       {"clouds",
        {{"coverage", c.coverage}, {"thickness", c.thickness}, {"seed", c.seed}, {"type", c.type}, {"mid", c.mid}, {"high", c.high}}},
+      {"haze", {{"enabled", h.enabled}, {"visibility", h.visibility}, {"glow", h.glow}}},
       {"ground",
        {{"mode", g.mode},
         {"height", g.autoHeight ? Json("auto") : Json(g.height)},
@@ -351,6 +373,8 @@ State applyPatch(const State& s, const Json& patch)
     }
     else if(k == "clouds")
       reset ? void(out.clouds = Clouds{}) : patchClouds(out.clouds, section(patch, "clouds"));
+    else if(k == "haze")
+      reset ? void(out.haze = Haze{}) : patchHaze(out.haze, section(patch, "haze"));
     else if(k == "ground")
       reset ? void(out.ground = Ground{}) : patchGround(out.ground, section(patch, "ground"));
     else if(k == "tonemap")
@@ -668,6 +692,9 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"cloudType", cloudType(s.clouds.type)},
       {"cloudMidCoverage", s.clouds.mid},
       {"cloudHighCoverage", s.clouds.high},
+      // under every environment; 0 is none
+      {"hazeVisibility", s.haze.enabled ? s.haze.visibility : 0.0},
+      {"hazeAnisotropy", s.haze.glow},
       {"tmActive", 1},
       {"tmAutoExposure", 0},
       {"tmMethod", tmMethod(t.method)},

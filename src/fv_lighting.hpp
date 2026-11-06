@@ -31,6 +31,10 @@
 //            the base to the highest tops), seed (which arrangement), type cumulus|stratocumulus|
 //            stratus -- the low tier's -- and mid (altocumulus) and high (cirrus: the share of the sky
 //            it veils), the tiers over it, each 0 to 1. The physical sky's only
+//   haze:    enabled, visibility (metres: where the haze leaves 2% of a dark object's contrast),
+//            glow (how much it scatters forward, the halo round a light seen through it:
+//            Henyey-Greenstein g, 0 to 0.9). A thin haze in the air, lit by every light of the
+//            scene, between the eye and what it sees (shaders/haze.h.slang)
 //   ground:  mode floor|water|catcher|off, height ("auto" or world units), color, roughness,
 //            darkness, fade, water (0 dry to 1 a sheet of it, on a floor), depth (metres, of the
 //            water mode's body of water), waves (on it, 0 still to 1), ripples (on either, 0 still to 1)
@@ -91,6 +95,13 @@ struct Clouds
   double      high      = 0.0;
 };
 
+struct Haze
+{
+  bool   enabled    = false;
+  double visibility = 100.0;  // beams in a room, the far wall of a hall veiled
+  double glow       = 0.7;
+};
+
 struct Ground
 {
   std::string mode = "floor";
@@ -136,6 +147,7 @@ struct State
   Env     env;
   Sun     sun;
   Clouds  clouds;
+  Haze    haze;
   Ground  ground;
   Tonemap tonemap;
 };
