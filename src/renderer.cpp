@@ -880,6 +880,65 @@ rs::MemoryLedger GltfRenderer::memoryLedger() const
   return ledger;
 }
 
+//--------------------------------------------------------------------------------------------------
+// The wipe against a kept frame (setWipe): the tone-mapped image as this frame left it is kept when
+// asked, and the kept one copied over the live image left of the divider. Copies only: the tone
+// mapper, DLSS-NR and the HDR output are as they were. A kept frame of another size (a resize) goes.
+void GltfRenderer::cmdWipe(VkCommandBuffer cmd)
+{
+  if(!m_wipeKeep && m_wipeAt < 0.0F)
+    return;
+  const VkExtent2D size  = m_resources.gBuffers.getSize();
+  const VkImage    shown = m_resources.gBuffers.getColorImage(Resources::eImgTonemapped);
+  if(m_wipeFrame.image && (m_wipeExtent.width != size.width || m_wipeExtent.height != size.height))
+    dropWipeFrame();
+  const uint32_t width = m_wipeAt >= 0.0F ? std::min(size.width, uint32_t(std::lround(m_wipeAt * float(size.width)))) : 0u;
+  if(!m_wipeKeep && (!m_wipeFrame.image || width == 0))
+    return;
+  // after the tone mapper (compute) and DLSS-NR's blit wrote the image, and the HDR output read it
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                         VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT,
+                         VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+  const VkImageSubresourceLayers color{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  if(m_wipeKeep)
+  {
+    m_wipeKeep = false;
+    if(!m_wipeFrame.image)
+    {
+      const VkImageCreateInfo info{.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                   .imageType     = VK_IMAGE_TYPE_2D,
+                                   .format        = m_resources.gBuffers.getColorFormat(Resources::eImgTonemapped),
+                                   .extent        = {size.width, size.height, 1},
+                                   .mipLevels     = 1,
+                                   .arrayLayers   = 1,
+                                   .samples       = VK_SAMPLE_COUNT_1_BIT,
+                                   .tiling        = VK_IMAGE_TILING_OPTIMAL,
+                                   .usage         = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                   .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      if(m_resources.allocator.createImage(m_wipeFrame, info) != VK_SUCCESS)
+      {
+        m_wipeFrame = {};
+        return;
+      }
+      NVVK_DBG_NAME(m_wipeFrame.image);
+      m_wipeExtent = size;
+      nvvk::cmdImageMemoryBarrier(cmd, {m_wipeFrame.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL});
+    }
+    const VkImageCopy whole{.srcSubresource = color, .dstSubresource = color, .extent = {size.width, size.height, 1}};
+    vkCmdCopyImage(cmd, shown, VK_IMAGE_LAYOUT_GENERAL, m_wipeFrame.image, VK_IMAGE_LAYOUT_GENERAL, 1, &whole);
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+  }
+  if(width > 0 && m_wipeFrame.image)
+  {
+    const VkImageCopy left{.srcSubresource = color, .dstSubresource = color, .extent = {width, size.height, 1}};
+    vkCmdCopyImage(cmd, m_wipeFrame.image, VK_IMAGE_LAYOUT_GENERAL, shown, VK_IMAGE_LAYOUT_GENERAL, 1, &left);
+  }
+  // the overlays draw into it next, the HDR output composes from it, the stream reads it
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+}
+
 void GltfRenderer::onRender(VkCommandBuffer cmd)
 {
   const bool timed = fv::timing::enabled();
@@ -1136,6 +1195,10 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
 #endif
   // The SDR image is final: the HDR one keeps a copy to tell the overlays drawn next from it
   m_hdrOutput.cmdKeepSdr(cmd, m_resources);
+  // The wipe's kept frame over its side, after that copy: the HDR image shows that side at SDR white,
+  // as it shows an overlay. Not on a screenshot's frame, which is the live image whole.
+  if(m_screenshotPending.empty())
+    cmdWipe(cmd);
   // The overlays go into the tonemapped image; a frame a screenshot takes is drawn without them
   // (the stream shows that one frame bare, the next has them again)
   const bool overlays = m_screenshotPending.empty();
@@ -1666,6 +1729,9 @@ void GltfRenderer::destroyResources()
   }
   m_silhouette.deinit(m_resources);
   m_hdrOutput.deinit(m_resources);
+  if(m_wipeFrame.image)
+    m_resources.allocator.destroyImage(m_wipeFrame);
+  m_wipeFrame = {};
   m_skyBruneton.deinit(m_resources);
   m_envBaker.deinit(m_resources);
   m_skyClouds.deinit(m_resources);

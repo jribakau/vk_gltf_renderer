@@ -202,6 +202,28 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
       return fv::Json{{"ok", true}};
     });
   });
+  // The wipe against a kept frame: `keep` keeps the image as it is now, `at` puts the divider at a share
+  // of the view's width from its left edge, the kept frame left of it; `at` null ends the wipe
+  commands.add("view.wipe", [this](const fv::Json& args) {
+    std::optional<std::optional<float>> at;
+    if(args.contains("at"))
+    {
+      if(args["at"].is_null())
+        at = std::optional<float>();
+      else if(!args["at"].is_number())
+        throw std::runtime_error("at is a share of the view's width, or null");
+      else
+        at = std::optional<float>(float(args["at"].get<double>()));
+    }
+    const bool keep = args.value("keep", false);
+    return m_onApp([this, keep, at] {
+      if(keep)
+        m_renderer->keepWipeFrame();
+      if(at)
+        m_renderer->setWipe(*at);
+      return fv::Json{{"ok", true}};
+    });
+  });
   commands.add("view.set", [this](const fv::Json& args) {
     return m_onApp([this, args] {
       if(args.contains("display"))

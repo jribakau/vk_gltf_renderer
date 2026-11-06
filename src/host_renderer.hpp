@@ -171,6 +171,11 @@ public:
   // The false-colour exposure view in place of the image (TonemapperData::falseColor): the tone
   // mapper's alone, so a still keeps its samples
   virtual void setFalseColor(bool on) = 0;
+  // The wipe against a kept frame: keep the image as the next frame shows it (without the overlays),
+  // and show it left of `at` (a share of the view's width from its left edge), the live image right
+  // of it. None: no wipe, and the kept frame goes. A resize drops the kept frame too.
+  virtual void keepWipeFrame()                  = 0;
+  virtual void setWipe(std::optional<float> at) = 0;
   virtual void setShowGrid(bool on)                                              = 0;
   virtual void setShowAxis(bool on)                                              = 0;
   // path-traced depth of field: `aperture` is the lens radius squared in metres (0: pinhole)

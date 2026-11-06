@@ -110,6 +110,10 @@ public:
   void setWireframe(bool) override {}
   void setFalseColor(bool on) override { falseColor = on; }
   bool falseColor = false;
+  void keepWipeFrame() override { wipeKept++; }
+  void setWipe(std::optional<float> at) override { wipeAt = at; }
+  int                  wipeKept = 0;
+  std::optional<float> wipeAt;
   void setShowGrid(bool) override {}
   void setShowAxis(bool) override {}
   void setDepthOfField(float, float, bool, int, float) override {}

@@ -433,6 +433,8 @@ public:
   void setVisualization(shaderio::Visualization mode) override;
   void setWireframe(bool on) override;
   void setFalseColor(bool on) override { m_falseColor = on; }
+  void keepWipeFrame() override { m_wipeKeep = true; }
+  void setWipe(std::optional<float> at) override;
   void setShowGrid(bool on) override;
   void setShowAxis(bool on) override;
   /// Path-tracer depth of field. `aperture` is the lens radius squared in metres (0: pinhole).
@@ -626,6 +628,14 @@ private:
     shaderio::TonemapperData data{};
   } m_tonemapInput;
   bool m_falseColor = false;  // setFalseColor
+  // The wipe (setWipe): the kept tone-mapped frame, at the size it was kept at, shown left of
+  // m_wipeAt (a share of the width; below 0, none). cmdWipe keeps and shows it.
+  nvvk::Image m_wipeFrame{};
+  VkExtent2D  m_wipeExtent{};
+  bool        m_wipeKeep = false;
+  float       m_wipeAt   = -1.0F;
+  void        cmdWipe(VkCommandBuffer cmd);
+  void        dropWipeFrame();
   bool          m_presentHdr     = true;  // presentHdr: HDR frames when the display is in HDR mode
   float         m_presentHdrPeak = 0.0F;  // presentHdrPeak: the display's peak in nits; 0 = as it reports
   VisualHelpers m_visualHelpers;  // Grid + transform gizmo overlay

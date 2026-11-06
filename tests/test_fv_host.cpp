@@ -3044,6 +3044,23 @@ TEST(FvHost, TheExposureViewIsTheToneMappersFalseColour)
   EXPECT_FALSE(rig.renderer.falseColor);
 }
 
+// The wipe against a kept frame: keep the image as it is, move the divider, end it; a divider that
+// is no number is refused
+TEST(FvHost, AWipeKeepsAFrameAndMovesItsDivider)
+{
+  HostRig rig;
+  EXPECT_TRUE(rig.cmd("view.wipe", {{"keep", true}, {"at", 0.5}}).value("ok", false));
+  EXPECT_EQ(rig.renderer.wipeKept, 1);
+  ASSERT_TRUE(rig.renderer.wipeAt);
+  EXPECT_FLOAT_EQ(*rig.renderer.wipeAt, 0.5f);
+  EXPECT_TRUE(rig.cmd("view.wipe", {{"at", 0.25}}).value("ok", false));
+  EXPECT_EQ(rig.renderer.wipeKept, 1);  // moving it keeps nothing new
+  EXPECT_FLOAT_EQ(*rig.renderer.wipeAt, 0.25f);
+  EXPECT_TRUE(rig.cmd("view.wipe", {{"at", nullptr}}).value("ok", false));
+  EXPECT_FALSE(rig.renderer.wipeAt);
+  EXPECT_FALSE(rig.cmd("view.wipe", {{"at", "left"}}).value("ok", false));
+}
+
 // The frame as a linear image, once it is on disk: the path tracer's, a .hdr
 TEST(FvHost, ACaptureIsAnHdrOfThePathTracersImage)
 {

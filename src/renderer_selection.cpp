@@ -157,6 +157,29 @@ void GltfRenderer::setWireframe(bool on)
   resetFrame();
 }
 
+void GltfRenderer::setWipe(std::optional<float> at)
+{
+  m_wipeAt = at ? std::clamp(*at, 0.0F, 1.0F) : -1.0F;
+  if(!at)
+  {
+    m_wipeKeep = false;
+    dropWipeFrame();
+  }
+}
+
+// The kept frame goes once the frames in flight that read it are done
+void GltfRenderer::dropWipeFrame()
+{
+  if(!m_wipeFrame.image)
+    return;
+  if(m_app)
+    m_app->submitResourceFree([alloc = &m_resources.allocator, image = m_wipeFrame]() mutable { alloc->destroyImage(image); });
+  else
+    m_resources.allocator.destroyImage(m_wipeFrame);
+  m_wipeFrame  = {};
+  m_wipeExtent = {};
+}
+
 void GltfRenderer::setShowGrid(bool on)
 {
   // view.set sends the grid with the other display options: the same one again keeps a still refining
