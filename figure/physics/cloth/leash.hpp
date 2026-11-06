@@ -66,6 +66,10 @@ struct Leashes
 // The leashes of a drape where it lies on `ride`: `cloth` is the surface it is (its gaps, by the ride's
 // vertex; null: a light copy's cloth, the model's least gap), `body` the body under it (its faces' gaps).
 Leashes leash(Ride ride, const Surface* cloth, const Surface& body);
+// The same with no reach: each vertex held out of the body however far it has gone from where it was
+// bound, while it is over its face or one two sides about it. What Live draws when it meets the body as
+// its capsule floor (physics/cloth/proxy.hpp): the drawn cloth held out of the faces the simulation left.
+Leashes leashAll(Ride ride, const Surface* cloth, const Surface& body);
 
 // The faces across each side of each face of `tris` (three a face, -1 at a border), as cloth::Model's
 // triNext has them for its faces.
@@ -73,13 +77,15 @@ std::vector<int> facesAcross(const std::vector<uint32_t>& tris);
 
 // p (xyz) held out of the body at `bodyAt` (its faces `tris`, `across` theirs): the face it is over, of
 // `face` and the two rings about it, which becomes `face`; under it by less than kLeashInside, or nearer it
-// than `gap`, it is moved out along the face's normal to the gap, by at most kLeashPush. False when it is
+// than `gap`, it is moved out along the face's normal to the gap, by at most `most`. False when it is
 // over none of them, or didn't move.
-bool holdOut(const std::vector<float>& bodyAt, const std::vector<uint32_t>& tris, const std::vector<int>& across, int& face, float gap, float* p);
+bool holdOut(const std::vector<float>& bodyAt, const std::vector<uint32_t>& tris, const std::vector<int>& across, int& face, float gap, float* p,
+             float most = kLeashPush);
 
 // The leashes' vertices `points` (xyz per riding vertex, in the ride's order) held so, each while within
 // its reach of where its face has it, the body at `bodyAt` (every vertex of it) with its faces `tris` and
-// `across` theirs. With `moved`, 1 for each that moved. How many moved.
+// `across` theirs, each all the way out at once: what is drawn, which nothing reads back. With `moved`, 1
+// for each that moved. How many moved.
 size_t holdLeashes(const Leashes& l, const std::vector<float>& bodyAt, const std::vector<uint32_t>& tris, const std::vector<int>& across,
                    std::vector<float>& points, std::vector<uint8_t>* moved = nullptr);
 

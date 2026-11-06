@@ -23,6 +23,7 @@
 #include <figure/physics/cloth/island.hpp>
 #include <figure/physics/cloth/job.hpp>
 #include <figure/physics/cloth/leash.hpp>
+#include <figure/physics/cloth/proxy.hpp>
 #include <figure/physics/cloth/report.hpp>
 #include <figure/physics/cloth/ride.hpp>
 #include <figure/physics/collide/tri_grid.hpp>
@@ -1742,4 +1743,83 @@ TEST(ClothCapsules, clothALimbJumpsThroughIsPushedOutByTheFloorWhereTheFacesWoul
     else
       EXPECT_EQ(inSkin, cloth.vertexCount()) << "the sided faces alone keep what a limb jumped through";
   }
+}
+
+// What Live meets of the body (physics/cloth/proxy.hpp): the body's faces leave the simulation and its floor
+// meets the cloth; what of the cloth lies on the skin at rest is held to it, eased to free over the next
+// centimetre; stockings on the skin under the cloth become part of the skin, the body thicker by them; a belt
+// over the cloth stays a collider where the cloth is under it. Without a floor nothing changes.
+TEST(ClothProxy, liveMeetsTheBodyAsItsFloorAndWhatLiesOnTheSkinFollowsIt)
+{
+  const Surface body  = tube(32.f, 6.f, 6.f);
+  const auto    floor = physics::cloth::capsuleFloor(body);
+  ASSERT_TRUE(floor.has_value());
+  // a drape standing out from the side of the body: columns 0.5, 1.5 and 3.5 cm off the skin, rows from 12 to 20
+  std::vector<float> pos;
+  for(int i = 0; i < 5; i++)
+    for(const float d : {0.5f, 1.5f, 3.5f})
+      pos.insert(pos.end(), {6.f + d, 12.f + 2.f * float(i), 0.f});
+  Surface drape = clothOn(pos, 5, 3);
+  std::fill(drape.strength.begin(), drape.strength.end(), 1.f);
+  // stockings 0.2 cm off the skin, and a belt 0.8 off: over the drape's first column, where that lies
+  Surface stocking = tube(32.f, 6.2f, 6.2f), belt = tube(32.f, 6.8f, 6.8f);
+  stocking.layer.assign(stocking.vertexCount(), 0);
+  belt.layer.assign(belt.vertexCount(), 0);
+  std::vector<Surface> surfaces{body, drape, stocking, belt, *floor};
+  const physics::cloth::Proxied p = physics::cloth::proxyLive(surfaces, 0, {1});
+  ASSERT_TRUE(p.on);
+
+  // on the skin: held to it; a centimetre further: half free; past that: as it was
+  for(int i = 0; i < 5; i++)
+  {
+    EXPECT_EQ(surfaces[1].strength[size_t(i) * 3], 0.f);
+    EXPECT_NEAR(surfaces[1].strength[size_t(i) * 3 + 1], 0.5f, 1e-3f);
+    EXPECT_EQ(surfaces[1].strength[size_t(i) * 3 + 2], 1.f);
+  }
+  EXPECT_EQ(p.held, 5u);
+  EXPECT_EQ(p.eased, 5u);
+
+  // the body's faces and the stockings' leave the simulation; the floor meets the cloth
+  const physics::cloth::Model model = physics::cloth::Model::build(surfaces, 0.15f);
+  EXPECT_FALSE(model.capsules.empty());
+  for(const physics::cloth::Face& f : model.tris)
+  {
+    EXPECT_NE(f.mesh, 0);
+    EXPECT_NE(f.mesh, 2);
+  }
+  EXPECT_TRUE(std::all_of(surfaces[2].collide.begin(), surfaces[2].collide.end(), [](uint8_t c) { return c == 0; }));
+
+  // ring 8 is y 16: the belt's vertex beside the drape, at x, stays; the one across the body, on bare skin, goes
+  const size_t atDrape = 8 * 24, across = 8 * 24 + 12;
+  EXPECT_EQ(surfaces[3].collide[atDrape], 1);
+  EXPECT_EQ(surfaces[3].collide[across], 0);
+  // the body thickened by what it took: by the stockings and their gap beside the drape, by the belt across
+  EXPECT_GE(surfaces[0].offset[atDrape], 0.4f - 1e-3f);
+  EXPECT_NEAR(surfaces[0].offset[across], 1.0f, 1e-3f);
+
+  // without a floor, nothing
+  std::vector<Surface>       bare{body, drape, stocking};
+  const std::vector<Surface> before = bare;
+  EXPECT_FALSE(physics::cloth::proxyLive(bare, 0, {1}).on);
+  EXPECT_EQ(bare[1].strength, before[1].strength);
+  EXPECT_EQ(bare[0].collide, before[0].collide);
+  EXPECT_EQ(bare[2].collide, before[2].collide);
+}
+
+// What Live draws over a body met as its floor is held out of the body's faces however far the cloth went
+// from where it was bound (leashAll), while it is over a face near its own; a tie's leash lets go past its reach
+TEST(ClothLeash, leashAllHoldsWhatIsDrawnHoweverFarItWentFromWhereItWasBound)
+{
+  const Surface            body = tube(32.f, 6.f, 6.f);
+  const std::vector<float> was{6.5f, 15.f, 0.4f};
+  const physics::cloth::Ride ride = physics::cloth::bindRide(body, body.rest, was, {0});
+  ASSERT_EQ(ride.vertices.size(), 1u);
+  const std::vector<int> across = physics::cloth::facesAcross(body.tris);
+  // a centimetre into the body and 1.5 cm up: further than a tie's 2 cm reach from where it lay
+  const std::vector<float> now{5.f, 16.5f, 0.4f};
+  std::vector<float>       tied = now, drawn = now;
+  EXPECT_EQ(physics::cloth::holdLeashes(physics::cloth::leash(ride, nullptr, body), body.rest, body.tris, across, tied), 0u);
+  EXPECT_EQ(physics::cloth::holdLeashes(physics::cloth::leashAll(ride, nullptr, body), body.rest, body.tris, across, drawn), 1u);
+  EXPECT_EQ(tied, now);
+  EXPECT_GT(std::sqrt(drawn[0] * drawn[0] + drawn[2] * drawn[2]), 6.f);
 }

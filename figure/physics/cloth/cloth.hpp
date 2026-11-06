@@ -100,6 +100,11 @@ public:
   // The body's capsule floor (physics/cloth/capsules.hpp): capsules fitted inside the body that no cloth
   // vertex is left in, whichever side the faces found it on. Off for an A/B (FV_DFORCE_NO_FLOOR).
   bool capsuleFloor = true;
+  // Live meets the body as games do (physics/cloth/proxy.hpp): as its capsule floor alone, what is drawn held
+  // out of its faces, and what lies on the skin at rest held to it. Off, as a settle does, it meets the
+  // body's faces, which left fewer of the Witch Dress inside on 10TEST's walk (proxy.hpp); on for an A/B by
+  // eye (FV_DFORCE_PROXY_LIVE). Read by the next live build.
+  bool liveProxy = false;
   // Light cloth: a cloth much finer than this simulates as a coarse copy of itself with faces this wide
   // (cm), its own vertices riding on it (physics/cloth/coarse.hpp's coarseCloth). Off: as it is. Read by
   // the next drape; setLight() also makes one (a tool sets the field alone)
@@ -162,12 +167,13 @@ public:
     // per drape: its light copy, which is in `bodies` in its place (null: the cloth itself)
     std::vector<std::shared_ptr<const physics::cloth::CoarseCloth>> light;
   };
-  std::optional<Prepared> prepared() const;
+  // What a settle simulates; with `live`, what Live does (physics/cloth/proxy.hpp, when liveProxy).
+  std::optional<Prepared> prepared(bool live = false) const;
 
 private:
   struct Job;
   std::vector<int>     dynamics() const;
-  std::shared_ptr<Job> prepare(uint64_t generation) const;
+  std::shared_ptr<Job> prepare(uint64_t generation, bool live) const;
   bool                 apply(const Job& job, const std::vector<std::vector<float>>& positions);
   // A job's drapes from its positions: each one's cage deltas, in job.drapes' order. Any thread. `rests` and
   // `poses`, drape by drape, in place of the job's: what a live step's deltas are taken against and read

@@ -58,6 +58,13 @@ Leashes leash(Ride ride, const Surface* cloth, const Surface& body)
   return l;
 }
 
+Leashes leashAll(Ride ride, const Surface* cloth, const Surface& body)
+{
+  Leashes l = leash(std::move(ride), cloth, body);
+  std::fill(l.reach.begin(), l.reach.end(), INFINITY);
+  return l;
+}
+
 std::vector<int> facesAcross(const std::vector<uint32_t>& tris)
 {
   // two faces share a side when they share its two corners, as cloth::Model::build pairs them
@@ -83,7 +90,7 @@ std::vector<int> facesAcross(const std::vector<uint32_t>& tris)
   return out;
 }
 
-bool holdOut(const std::vector<float>& bodyAt, const std::vector<uint32_t>& tris, const std::vector<int>& across, int& face, float gap, float* p)
+bool holdOut(const std::vector<float>& bodyAt, const std::vector<uint32_t>& tris, const std::vector<int>& across, int& face, float gap, float* p, float most)
 {
   const int nt = int(tris.size() / 3);
   if(face < 0 || face >= nt || across.size() != tris.size())
@@ -132,7 +139,7 @@ bool holdOut(const std::vector<float>& bodyAt, const std::vector<uint32_t>& tris
   face = at;
   if(now.signedDistance >= gap || now.signedDistance < -kLeashInside)
     return false;
-  const float push = std::min(gap - now.signedDistance, kLeashPush);
+  const float push = std::min(gap - now.signedDistance, most);
   for(int k = 0; k < 3; k++)
     p[k] += n[size_t(k)] * push;
   return true;
@@ -166,7 +173,7 @@ size_t holdLeashes(const Leashes& l, const std::vector<float>& bodyAt, const std
         l2 += d * d;
       }
       int face = int(ride.face[i]);
-      if(!f.ok || l2 > double(l.reach[i]) * l.reach[i] || !holdOut(bodyAt, tris, across, face, l.gap[i], &points[i * 3]))
+      if(!f.ok || l2 > double(l.reach[i]) * l.reach[i] || !holdOut(bodyAt, tris, across, face, l.gap[i], &points[i * 3], INFINITY))
         continue;
       here++;
       if(moved)

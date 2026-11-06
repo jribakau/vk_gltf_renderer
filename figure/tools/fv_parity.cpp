@@ -1351,6 +1351,10 @@ int main(int argc, char** argv)
 #pragma warning(suppress : 4996)
         if(const char* env = std::getenv("FV_DFORCE_NO_FLOOR"); env && *env && std::atoi(env) != 0)
           d.capsuleFloor = false;
+        // FV_DFORCE_PROXY_LIVE=1: a "live" walk meets the body as Live's proxy, as the app's switch has Live do
+#pragma warning(suppress : 4996)
+        if(const char* env = std::getenv("FV_DFORCE_PROXY_LIVE"); env && *env && std::atoi(env) != 0)
+          d.liveProxy = true;
         // as the host sets it: the figure's shown clothing collides, its anatomy and hair do not
         if(step.value("colliders", true))
           d.collidesWith = [fig = loaded.get()](int mesh) {
@@ -1875,18 +1879,139 @@ int main(int argc, char** argv)
           const float from    = w.value("from", 0.f), every = w.value("every", 0.09f), seconds = w.value("seconds", opts.frameDt);
           const int   count   = w.value("steps", 20);
           const float late    = every > seconds ? 1.f - seconds / every : 0.f;
+          // "live": true walks the job as Live makes it (with FV_DFORCE_PROXY_LIVE, physics/cloth/proxy.hpp: the body
+          // met as its floor, what lies on the skin held to it) and counts what is drawn: each drape, or its light
+          // copy's cloth, bound where its step leaves it and held out of the body as a proxy job's is. A job that
+          // meets the body's faces is walked so too, untied, which its own ties and reach would draw near enough
+          const bool liveWalk = w.value("live", false);
+          const auto start    = liveWalk ? d.prepared(true) : p;
+          if(!start)
+            throw std::runtime_error("the walk's job prepares nothing");
           // each step's pose as a job takes it: every slot's bones and rest cage
           std::vector<std::vector<cloth::Surface>> poses;
           for(int k = 1; k <= count; k++)
           {
             poseAtClip(Json{{"clip", w.at("clip")}, {"time", from + every * float(k)}});
-            auto later = d.prepared();
-            if(!later || later->bodies.size() != p->bodies.size())
+            auto later = d.prepared(liveWalk);
+            if(!later || later->bodies.size() != start->bodies.size())
               throw std::runtime_error("the walk's pose prepares another job");
             poses.push_back(std::move(later->bodies));
           }
           Json walk = Json::object();
-          for(const bool tie : {false, true})
+          if(liveWalk)
+          {
+            using Clock = std::chrono::steady_clock;
+            cloth::CpuBackend sim(start->bodies, opts);
+            sim.settle();
+            const std::vector<int>   across = cloth::facesAcross(start->bodies[0].tris);
+            std::vector<cloth::Ride> rides(start->drapes.size());
+            Json                     drawn = Json::array(), simulated = Json::array(), deep = Json::array();
+            size_t                   drawnMost = 0, drawnTotal = 0, simTotal = 0, deepMost = 0, deepTotal = 0, capsules = 0, drawnHeld = 0, deepHeld = 0;
+            const bool               fresh = w.value("fresh", true);
+            double                   holdMs = 0;
+            std::map<std::string, size_t> insideAt;
+            const fv::Mesh*               bodyMesh = start->slotMesh[0] >= 0 ? &scene.meshes[size_t(start->slotMesh[0])] : nullptr;
+            const auto                    walkStart = Clock::now();
+            for(size_t k = 0; k < poses.size(); k++)
+            {
+              const std::vector<cloth::Surface>& now = poses[k];
+              const std::vector<cloth::Surface>& was = k > 0 ? poses[k - 1] : start->bodies;
+              for(size_t slot = 0; slot < now.size(); slot++)
+              {
+                if(!now[slot].skinned())
+                  continue;
+                if(now[slot].restLocal != was[slot].restLocal)
+                  sim.setRest(slot, now[slot].restLocal);
+                sim.setTarget(slot, now[slot].bones);
+              }
+              sim.step(0, seconds, late);
+              const auto         pos = sim.positions();
+              std::vector<float> bodyAt(now[0].vertexCount() * 3);
+              cloth::skin(now[0], now[0].bones, bodyAt.data());
+              const auto floorNow = cloth::capsuleFloor(now[0]);
+              capsules            = floorNow ? floorNow->capsules.size() : 0;
+              Json drawnRow = Json::array(), simRow = Json::array(), deepRow = Json::array();
+              for(size_t di = 0; di < start->drapes.size(); di++)
+              {
+                const size_t slot = size_t(start->drapes[di].second);
+                // as physics::Cloth binds a proxy job's drape where its step leaves it (afresh every step; "fresh":
+                // false found again on the faces the last had, the other Live jobs' between their full binds) and
+                // holds what it draws out of the body; a light copy's cloth rides on it, kept out of the body where
+                // the copy's faces cross a curve of it
+                const auto         holdStart = Clock::now();
+                const auto&        light     = di < start->light.size() ? start->light[di] : nullptr;
+                std::vector<float> drawnAt   = light ? cloth::ride(*light, pos[slot]) : pos[slot];
+                if(light)
+                  cloth::keepOut(drawnAt, light->riding.held, now[0], pos[0], 2.f, light.get(), &pos[slot]);
+                const size_t       nv   = drawnAt.size() / 3;
+                const cloth::Ride* hint = !fresh && k % 8 != 0 && !rides[di].empty() ? &rides[di] : nullptr;
+                cloth::Ride        ride = cloth::bindRide(now[0], bodyAt, drawnAt, std::vector<uint8_t>(nv, 0), hint);
+                const cloth::Leashes l  = cloth::leashAll(ride, light ? nullptr : &now[slot], now[0]);
+                std::vector<float>   at;
+                for(uint32_t v : l.ride.vertices)
+                  at.insert(at.end(), {drawnAt[size_t(v) * 3], drawnAt[size_t(v) * 3 + 1], drawnAt[size_t(v) * 3 + 2]});
+                cloth::holdLeashes(l, bodyAt, now[0].tris, across, at);
+                std::vector<float> shown = drawnAt;
+                for(size_t i = 0; i < l.ride.vertices.size(); i++)
+                  for(size_t c = 0; c < 3; c++)
+                    shown[size_t(l.ride.vertices[i]) * 3 + c] = at[i * 3 + c];
+                holdMs    = std::max(holdMs, std::chrono::duration<double, std::milli>(Clock::now() - holdStart).count());
+                rides[di] = std::move(ride);
+                std::vector<uint8_t> which;
+                const size_t         in = cloth::insideBody(now[0], now[0].posed, shown, &which);
+                const size_t         dp = floorNow ? cloth::insideFloor(*floorNow, floorNow->posed, shown) : 0;
+                const size_t         is = cloth::insideBody(now[0], now[0].posed, pos[slot]);
+                // of what is drawn inside, how much Live's proxy holds to the skin (no strength in the job)
+                std::vector<uint8_t> heldHere(nv, 0);
+                for(size_t v = 0; v < nv; v++)
+                  heldHere[v] = light ? v < light->riding.held.size() && light->riding.held[v]
+                                      : v < start->bodies[slot].strength.size() && start->bodies[slot].strength[v] <= 0;
+                std::vector<uint8_t> deepWhich(nv, 0);
+                if(floorNow)
+                  for(size_t v = 0; v < deepWhich.size(); v++)
+                    deepWhich[v] = cloth::insideFloor(*floorNow, floorNow->posed, {shown[v * 3], shown[v * 3 + 1], shown[v * 3 + 2]}) > 0;
+                for(size_t v = 0; v < which.size() && v < nv; v++)
+                {
+                  drawnHeld += which[v] && heldHere[v];
+                  deepHeld += deepWhich[v] && heldHere[v];
+                }
+                drawnRow.push_back(in);
+                simRow.push_back(is);
+                deepRow.push_back(dp);
+                drawnMost = std::max(drawnMost, in);
+                deepMost  = std::max(deepMost, dp);
+                drawnTotal += in;
+                simTotal += is;
+                deepTotal += dp;
+                // where on the body what is drawn inside lies: the strongest bone of its nearest body vertex
+                const fv::wardrobe::SurfaceBinding nearest = fv::wardrobe::bindToSurface(bodyAt, now[0].tris, shown);
+                for(size_t v = 0; v < which.size(); v++)
+                {
+                  if(!which[v])
+                    continue;
+                  const float* wt = &nearest.weights[v * 3];
+                  const size_t bv = nearest.verts[v * 3 + size_t(wt[1] > wt[0] && wt[1] >= wt[2] ? 1 : wt[2] > wt[0] ? 2 : 0)];
+                  int          most = -1;
+                  float        mw   = 0;
+                  for(size_t q = 0; q < 4 && bv * 4 + 3 < now[0].skinWeight.size(); q++)
+                    if(now[0].skinWeight[bv * 4 + q] > mw)
+                      mw = now[0].skinWeight[bv * 4 + q], most = now[0].skinIndex[bv * 4 + q];
+                  std::string name = "?";
+                  if(bodyMesh && most >= 0 && size_t(most) < bodyMesh->bones.size() && bodyMesh->bones[size_t(most)] >= 0)
+                    name = scene.nodes[size_t(bodyMesh->bones[size_t(most)])].name;
+                  insideAt[name]++;
+                }
+              }
+              drawn.push_back(drawnRow);
+              simulated.push_back(simRow);
+              deep.push_back(deepRow);
+            }
+            const double walkMs = std::chrono::duration<double, std::milli>(Clock::now() - walkStart).count();
+            walk["proxy"] = {{"drawn", drawn}, {"drawnMost", drawnMost}, {"drawnTotal", drawnTotal}, {"simulated", simulated}, {"simulatedTotal", simTotal},
+                             {"deep", deep}, {"deepMost", deepMost}, {"deepTotal", deepTotal}, {"capsules", capsules}, {"holdMs", holdMs},
+                             {"stepMs", walkMs / std::max<size_t>(1, poses.size())}, {"insideAt", insideAt}, {"drawnHeld", drawnHeld}, {"deepHeld", deepHeld}};
+          }
+          for(const bool tie : liveWalk ? std::vector<bool>{} : std::vector<bool>{false, true})
           {
             using Clock = std::chrono::steady_clock;
             cloth::CpuBackend live(p->bodies, opts);

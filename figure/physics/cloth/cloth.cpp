@@ -9,6 +9,7 @@
 #include <figure/jobs/pool.hpp>
 #include <figure/physics/cloth/capsules.hpp>
 #include <figure/physics/cloth/coarse.hpp>
+#include <figure/physics/cloth/proxy.hpp>
 
 namespace fv::physics {
 
@@ -117,6 +118,9 @@ struct Cloth::Job
   std::vector<std::vector<uint32_t>> slotKeep;
   // the body's slot, what a light copy's cloth is kept out of; SIZE_MAX: none
   size_t bodySlot = SIZE_MAX;
+  // Live's: the body met as its capsule floor (physics/cloth/proxy.hpp), so nothing is tied to its faces and
+  // what is drawn is held out of them
+  bool proxy = false;
   struct Drape
   {
     int                mesh = -1;
@@ -372,7 +376,7 @@ void Cloth::setLight(bool on)
     resimulate();
 }
 
-std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t) const
+std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t, bool live) const
 {
   const std::vector<int> dyn = dynamics();
   if(dyn.empty())
@@ -583,6 +587,21 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t) const
 
   job->slotKeep.resize(job->bodies.size());
   job->bodySlot = bodySlot;
+  // Live meets the body as its floor, and what lies on the skin follows it (physics/cloth/proxy.hpp): before
+  // the light copies, which take the cloth's strengths, and the coarse colliders, which copy what collides
+  if(live && liveProxy && bodySlot != SIZE_MAX && !job->drapes.empty())
+  {
+    timing::Scope       tp("dforce: Live's proxy of the body");
+    std::vector<size_t> slots;
+    for(const Job::Drape& d : job->drapes)
+      slots.push_back(d.slot);
+    const physics::cloth::Proxied p = physics::cloth::proxyLive(job->bodies, bodySlot, slots);
+    job->proxy                      = p.on;
+    if(timing::enabled())
+      timing::line("dforce: Live meets the body as its floor" + std::string(job->proxy ? "" : " (none: no floor)") + "; " + std::to_string(p.held)
+                   + " cloth vertices held to the skin, " + std::to_string(p.eased) + " eased, " + std::to_string(p.folded)
+                   + " worn vertices taken as skin");
+  }
   // Light cloth: a cloth much finer than the faces asked for simulates as a coarse copy of itself, and
   // its own vertices ride on it. Before the colliders, which are then copied as fine as the copy
   std::map<uint64_t, std::shared_ptr<const physics::cloth::CoarseCloth>> lights;
@@ -677,9 +696,9 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t) const
   return job;
 }
 
-std::optional<Cloth::Prepared> Cloth::prepared() const
+std::optional<Cloth::Prepared> Cloth::prepared(bool live) const
 {
-  const auto job = prepare(m_gen);
+  const auto job = prepare(m_gen, live);
   if(!job)
     return std::nullopt;
   Prepared p;
@@ -833,7 +852,7 @@ bool Cloth::pump()
       std::shared_ptr<Job> job;
       {
         timing::Scope t("dforce: prepare");
-        job = prepare(m_gen);
+        job = prepare(m_gen, false);
       }
       if(job)
       {
@@ -960,7 +979,10 @@ bool Cloth::pumpLive()
     if(run.settle || m_shown.size() != deltas.size())
     {
       // the settle that began live, at once, as a settle's drape is (and as it was simulated: the next
-      // frame carries what rides from the pose it met to the one shown)
+      // frame carries what rides from the pose it met to the one shown), held out of the body as drawn
+      if(m_liveJob->proxy)
+        if(const auto bones = liveBodyBones(); !bones.empty())
+          holdLive(deltas, bones);
       timing::Accum t("dforce: live, the drape written");
       wrote        = writeDeltas(*m_liveJob, deltas) || wrote;
       m_easeFrom   = deltas;
@@ -1006,7 +1028,7 @@ bool Cloth::pumpLive()
     m_liveRestMoved = false;
     if(!active())
       return wrote;
-    m_liveJob = prepare(m_gen);
+    m_liveJob = prepare(m_gen, true);
     // strand hair settles only: it has no live simulation
     if(m_liveJob && m_liveJob->drapes.empty())
       m_liveJob.reset();
@@ -1141,9 +1163,12 @@ void Cloth::launchLive(std::shared_ptr<cloth::Backend> sim, std::function<void(c
   if(m_liveJob->bodySlot < m_liveBones.size())
     run.bodyBones = m_liveBones[m_liveJob->bodySlot];
   // where its drapes ride the body: each vertex found again on the face it had, but afresh every
-  // kLiveRebind-th step, the settle's, and when nothing rides yet
+  // kLiveRebind-th step, the settle's, and when nothing rides yet. Over Live's proxy, every step: nothing
+  // keeps the cloth near the faces it had, and a step's skirt slid 10 cm over a striding thigh or onto the
+  // other leg (10TEST's walk at 4K: the Witch Dress drawn inside by the thousand four steps on, against
+  // about a hundred bound afresh, for a bind 1 to 3 ms longer)
   std::shared_ptr<const std::vector<cloth::Ride>> hints;
-  if(!settle && m_rides && m_rides->size() == m_liveJob->drapes.size() && m_liveBinds % kLiveRebind != 0)
+  if(!settle && !m_liveJob->proxy && m_rides && m_rides->size() == m_liveJob->drapes.size() && m_liveBinds % kLiveRebind != 0)
     hints = m_rides;
   m_liveBinds++;
   auto stepped = std::make_shared<std::promise<void>>();
@@ -1464,6 +1489,19 @@ std::vector<std::vector<float>> Cloth::deltasOf(const Job& job, const std::vecto
       return;
     const cloth::Ride* hint = hints && k < hints->size() ? &(*hints)[k] : nullptr;
     timing::Accum      bound(hint ? "dforce: a live drape found again on the body it rides" : "dforce: a live drape bound to the body it rides");
+    if(job.proxy)
+    {
+      // Live's proxy: all of it near the body is held out of it as drawn, what is held to its skin too (the
+      // wardrobe's collider leaves a draped mesh alone); that rides none of the way, keeping its skin
+      (*rides)[k] = cloth::bindRide(job.bodies[job.bodySlot], positions[job.bodySlot], at, std::vector<uint8_t>(held.size(), 0), hint);
+      cloth::Ride& ride = (*rides)[k];
+      for(size_t i = 0; i < ride.vertices.size(); i++)
+        if(ride.vertices[i] < held.size() && held[ride.vertices[i]])
+          ride.weight[i] = 0;
+      if(leashes)
+        (*leashes)[k] = cloth::leashAll(ride, job.drapes[k].light ? nullptr : &job.bodies[job.drapes[k].slot], job.bodies[job.bodySlot]);
+      return;
+    }
     (*rides)[k] = cloth::bindRide(job.bodies[job.bodySlot], positions[job.bodySlot], at, held, hint);
     // a light copy's cloth has the gaps of its copy's surface, not its own vertices'
     if(leashes)
@@ -1513,7 +1551,8 @@ std::vector<std::vector<float>> Cloth::deltasOf(const Job& job, const std::vecto
 
 size_t Cloth::tieLive(const Job& job, cloth::Backend& sim, const std::vector<std::vector<float>>& positions, std::vector<cloth::Ride>& rides, bool fresh)
 {
-  if(job.bodySlot >= positions.size() || job.bodySlot >= job.bodies.size())
+  // a body met as its floor has no faces in the simulation to tie to
+  if(job.proxy || job.bodySlot >= positions.size() || job.bodySlot >= job.bodies.size())
     return 0;
   timing::Accum t(fresh ? "dforce: live, the cloth tied to the body" : "dforce: live, the cloth tied again to the body");
   // what is simulated of each drape: itself, or its light copy

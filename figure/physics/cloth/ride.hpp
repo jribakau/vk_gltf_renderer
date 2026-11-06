@@ -30,7 +30,7 @@ struct Ride
   std::vector<uint32_t> at;        // per riding vertex: its face's three corners, as indices into `corners`
   std::vector<float>    bary;      // per riding vertex: where on its face, a weight per corner
   std::vector<float>    local;     // per riding vertex: its offset from there in the face's frame
-  std::vector<float>    weight;    // per riding vertex: how much it rides, in (0, 1]
+  std::vector<float>    weight;    // per riding vertex: how much it rides, in (0, 1] (0: Live's proxy holds it, it keeps its skin)
 
   bool empty() const { return vertices.empty(); }
 };
