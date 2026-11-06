@@ -216,6 +216,12 @@ TEST(SkyClouds, TheDefaultLayersAreTakramsAndTheDepthScalesTheCumulus)
   EXPECT_LT(preview.maxIterations, p.maxIterations);
   EXPECT_EQ(preview.shapeDetail, 0);
   EXPECT_EQ(preview.octaves, p.octaves);
+
+  // the settled image averages the march's jitter over several marches a texel, or its crosshatch
+  // stays frozen in the clouds' edges; a drag's preview makes do with one
+  EXPECT_GE(p.samples, 8);
+  EXPECT_EQ(cloudWithQuality(p, false).samples, p.samples);
+  EXPECT_EQ(preview.samples, 1);
 }
 
 TEST(SkyClouds, CoverageRunsFromNoneToAll)

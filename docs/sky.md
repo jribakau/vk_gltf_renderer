@@ -606,10 +606,18 @@ camera and mirrors see. Its columns run round the horizon as the lat-long's do, 
 horizon to the zenith on a square root, so they crowd where the clouds do. What the camera sees of
 the clouds is this image, so its size is their sharpness on screen.
 
+Each texel averages several marches (`SkyCloudsParameters::samples`, 8). The march is jittered --
+where it starts within its step, how far the short marches toward the sun go, whether the detail
+noise is read -- and takram averages that jitter over frames. A bake is one frame, so with one march
+a texel the jitter's crosshatch stays frozen in the clouds' edges, plainly visible when the camera
+zooms in. The samples walk the jitter along the golden ratio and spread over the texel's footprint
+(Roberts' R2), so a texel is the clouds averaged over it; the texel composes linearly, so the average
+is what it draws.
+
 The pass is recorded at the head of `EnvBaker::recordBake`, ahead of the bake that reads it. A
 drag's preview bakes a quarter-size **preview image** instead (`kCloudPreviewSize`) at takram's low
-quality preset (`cloudWithQuality`), and `SkySunDisk::cloudPreview` tells the readers which image
-holds the clouds of the moment; the settle that follows bakes the full one.
+quality preset with one march a texel (`cloudWithQuality`), and `SkySunDisk::cloudPreview` tells
+the readers which image holds the clouds of the moment; the settle that follows bakes the full one.
 
 ### What is cloud
 
@@ -671,13 +679,16 @@ waits, so these are wall-clock):
 | --- | --- |
 | Noise, once at start-up (`SkyClouds::generateNoise`) | 4.5 ms |
 | The commit's bake, clear sky (the environment alone) | ~0.4 ms |
-| The commit's bake with the clouds at 4096×1024, cover 0.1 / 0.5 / 1.0 | 6.2 / 7.0 / 4.5 ms |
-| The whole commit (bake, alias table, PDF), cover 0.5 | 9.7 ms |
+| The commit's bake with the clouds at 4096×1024, 8 marches a texel, cover 0.1 / 0.5 / 1.0 | 59 / 53 / 38 ms |
+| The same at one march a texel (the crosshatch) | 6.2 / 7.0 / 4.5 ms |
+| The whole commit (bake, alias table, PDF), cover 0.5 | 56 ms |
 
 Overcast is the cheapest cover because every ray ends at the deck's near side, once transmittance
-falls below `minTransmittance`; broken cloud marches the furthest. The preview image has a sixteenth
-of the texels and marches at the low preset, so a drag's cloud pass is under a sixteenth of the
-settled one (not measured on its own). Per frame the clouds cost one texture read in
+falls below `minTransmittance`; scattered cloud marches the furthest. The cost is the marches a
+texel times the single march's, so `samples` is the dial: 4 would halve it and leave some grain.
+The settle pays it once, as a hitch of that length; the preview image has a sixteenth of the texels,
+one march each, at the low preset, so a drag's cloud pass is under a millisecond by that count (not
+measured on its own). Per frame the clouds cost one texture read in
 `evalPhysicalSkyBackground` and nothing in the lighting field, which is baked.
 
 Memory: the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the preview 2 MB.

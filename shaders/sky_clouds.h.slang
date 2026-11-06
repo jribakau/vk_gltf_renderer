@@ -275,8 +275,10 @@ inline SkyCloudsParameters cloudDefaultParameters(float cover, float thicknessKm
   p.powderScale            = 0.8F;
   p.powderExponent         = 0.15F;  // 150 m
   p.turbulenceDisplacement = 0.35F;  // 350 m
-  p._pad0                  = 0.0F;
-  p._pad1                  = 0.0F;
+  // Takram averages the march's jitter over frames; a bake is one frame, so it averages it over
+  // marches per texel instead. One leaves the jitter's crosshatch frozen in the image.
+  p.samples = 8;
+  p._pad1   = 0.0F;
 
   p.maxIterations        = 500;
   p.minStepSize          = 0.05F;
@@ -314,6 +316,7 @@ inline SkyCloudsParameters cloudWithQuality(SkyCloudsParameters p, bool preview)
     p.farSunIterations = 3;
     p.shapeDetail      = 0;
     p.turbulence       = 0;
+    p.samples          = 1;  // a drag's frames move on before the dither would show
   }
   return p;
 }

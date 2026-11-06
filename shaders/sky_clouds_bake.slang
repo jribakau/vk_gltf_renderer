@@ -174,14 +174,17 @@ float3 radianceFromGround(float3 position, float3 normal, float mipLevel, float 
 }
 
 // Jimenez's interleaved gradient noise: where each texel's march starts within its step, so the
-// steps' edges dither instead of banding. The image is baked once, so the dither is frozen; the
-// bilinear lookups that read it smooth it.
-float stepJitter(uint2 pixel)
+// steps' edges dither instead of banding. The same value picks how far the short marches go and
+// whether the detail noise is read, which at the clouds' edges flips texel by texel. Takram's
+// frames each take another and average over time; here `sampleIndex` walks it along the golden
+// ratio, and main averages the samples in the texel.
+float stepJitter(uint2 pixel, int sampleIndex)
 {
-  return frac(52.9829189F * frac(0.06711056F * float(pixel.x) + 0.00583715F * float(pixel.y)));
+  const float ign = frac(52.9829189F * frac(0.06711056F * float(pixel.x) + 0.00583715F * float(pixel.y)));
+  return frac(ign + 0.618033989F * float(sampleIndex));
 }
 
-float4 marchClouds(float r0, float3 dir, uint2 pixel)
+float4 marchClouds(float r0, float3 dir, float jitter)
 {
   const float  R       = g_atmosphere.bottomRadius;
   const float2 segment = cloudLayerSegment(r0, dir.y, R + g_params.minHeight, R + g_params.maxHeight);
@@ -194,7 +197,6 @@ float4 marchClouds(float r0, float3 dir, uint2 pixel)
   const float3 origin   = observer + dir * rayNear;
   const float3 sunDir   = pc.sunDirection;
   const float  cosTheta = dot(dir, sunDir);
-  const float  jitter   = stepJitter(pixel);
   const float  span     = rayFar - rayNear;
 
   float3 radianceIntegral      = float3(0.0F);
@@ -309,11 +311,21 @@ void main(uint3 id: SV_DispatchThreadID)
   const float r0        = g_atmosphere.bottomRadius + pc.observerAltitude;
   const float horizonMu = brunetonHorizonMu(g_atmosphere, r0);
 
-  const float2 uv  = (float2(id.xy) + 0.5F) / float2(pc.imageSize);
-  const float3 dir = cloudImageDir(uv, asin(horizonMu));
-
-  float4 texel = float4(0.0F, 0.0F, 0.0F, 1.0F);
-  if(g_params.coverage > 0.0F && !RayIntersectsGround(g_atmosphere, r0, dir.y))
-    texel = marchClouds(r0, dir, id.xy);
-  g_out[id.xy] = texel;
+  // The samples spread over the texel's footprint (Roberts' R2 sequence) as well as over the jitter,
+  // so the texel is the clouds averaged over it: edges smooth, not stepped, and the far clouds,
+  // smaller than a texel, are not one point of them. The texel composes linearly (composeClouds),
+  // so averaging texels averages what they draw. A sample below the horizon sees no cloud.
+  const float horizonElevation = asin(horizonMu);
+  const int   samples          = max(1, g_params.samples);
+  float4      texel            = float4(0.0F);
+  for(int s = 0; s < samples; ++s)
+  {
+    const float2 offset = samples == 1 ? float2(0.5F) : frac(float2(0.5F) + float(s) * float2(0.754877666F, 0.569840291F));
+    const float3 dir    = cloudImageDir((float2(id.xy) + offset) / float2(pc.imageSize), horizonElevation);
+    if(g_params.coverage > 0.0F && !RayIntersectsGround(g_atmosphere, r0, dir.y))
+      texel += marchClouds(r0, dir, stepJitter(id.xy, s));
+    else
+      texel += float4(0.0F, 0.0F, 0.0F, 1.0F);
+  }
+  g_out[id.xy] = texel / float(samples);
 }
