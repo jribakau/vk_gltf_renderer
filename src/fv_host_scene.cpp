@@ -721,6 +721,7 @@ Json FvHost::Impl::sceneState(const Json& args)
     state["dforceMode"] = prop->figure->dforce->mode() == fv::dforce::Mode::eLive    ? "live" :
                           prop->figure->dforce->mode() == fv::dforce::Mode::eLiveGpu ? "gpu" :
                                                                                        "settle";
+    state["dforceLight"] = prop->figure->dforce->light();
   }
   return state;
 }
@@ -1157,6 +1158,9 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         problems.push_back(std::string("dForce: ") + e.what() + "; simulating live on the CPU");
       }
     }
+    // before dForce goes on, so the drape it makes is the one kept
+    if(target->dforce && args.contains("dforceLight") && args["dforceLight"].is_boolean())
+      target->dforce->setLight(args["dforceLight"].get<bool>());
     if(target->dforce && args.contains("dforce") && args["dforce"].is_boolean())
     {
       target->dforce->setEnabled(args["dforce"].get<bool>());

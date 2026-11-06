@@ -356,6 +356,18 @@ void Dforce::setMode(Mode mode)
     resimulate();
 }
 
+void Dforce::setLight(bool on)
+{
+  if(on == lightCloth)
+    return;
+  lightCloth = on;
+  // what is draped was made the other way: made again, as a mode switch makes it
+  cancel();
+  m_version++;
+  if(m_enabled)
+    resimulate();
+}
+
 std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
 {
   const std::vector<int> dyn = dynamics();

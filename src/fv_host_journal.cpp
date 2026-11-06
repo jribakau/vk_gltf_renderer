@@ -437,6 +437,7 @@ Json FvHost::Impl::journalState(const Json& scope)
   {
     ops.push_back(op("dforce.enable", {{"prop", id}, {"on", f.dforce->enabled()}}));
     ops.push_back(op("dforce.mode", {{"prop", id}, {"mode", dforceModeName(f.dforce->mode())}}));
+    ops.push_back(op("dforce.light", {{"prop", id}, {"on", f.dforce->light()}}));
   }
   return ops;
 }
@@ -588,6 +589,8 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
   }
   if(cmd == "dforce.enable")
     return "dForce " + on();
+  if(cmd == "dforce.light")
+    return "Light cloth " + on();
   if(cmd == "dforce.mode")
   {
     const std::string mode = args.value("mode", "settle");
@@ -724,7 +727,7 @@ Json FvHost::Impl::applyOp(const Json& o)
     return wardrobeCloth(args);
   if(cmd == "wardrobe.tight")
     return wardrobeTight(args);
-  if(cmd == "dforce.enable" || cmd == "dforce.mode")
+  if(cmd == "dforce.enable" || cmd == "dforce.mode" || cmd == "dforce.light")
     return dforceCommand(cmd.substr(std::string("dforce.").size()), args);
   if(cmd == "lighting.set")
     return lightingSet(args);

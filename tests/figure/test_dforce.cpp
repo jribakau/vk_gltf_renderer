@@ -3252,6 +3252,33 @@ TEST(Dforce, aWornItemMuchFinerThanTheClothIsMetAsACoarseCopyThatLiveReshapesInP
   EXPECT_NEAR(lowest() - before, 1.f, 0.3f) << "the veil rose with the belt's copy";
 }
 
+TEST(Dforce, theLightClothSwitchDrapesAgainTheOtherWayAndOnlyWhenItChanges)
+{
+  // The Wardrobe tab's Light cloth (dforce.light): what is draped was made the other way, so it is made
+  // again, as a mode switch makes it; the same again changes nothing; with dForce off it waits for it
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  d.resimulate();
+  ASSERT_TRUE(pumpUntilWritten(d));
+  EXPECT_FALSE(d.light());
+  int was = d.version();
+  d.setLight(true);
+  EXPECT_TRUE(d.light());
+  EXPECT_TRUE(d.busy()) << "draped again";
+  EXPECT_GT(d.version(), was);
+  ASSERT_TRUE(pumpUntilWritten(d));
+  EXPECT_FALSE(d.busy());
+  was = d.version();
+  d.setLight(true);
+  EXPECT_FALSE(d.busy());
+  EXPECT_EQ(d.version(), was);
+  d.setEnabled(false);
+  d.setLight(false);
+  EXPECT_FALSE(d.light());
+  EXPECT_FALSE(d.busy()) << "nothing drapes while dForce is off";
+}
+
 TEST(Dforce, aLightClothSettlesAndGoesLiveWithItsOwnVerticesRidingOnIt)
 {
   // A veil 6 cm square in quads of 0.1 cm (7,200 faces) over a body, both skinned to one bone, simulated

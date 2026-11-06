@@ -958,7 +958,7 @@ void FvHost::Impl::showItem(const Loaded& f, const std::vector<std::pair<int, st
 //--------------------------------------------------------------------------------------------------
 // dForce
 
-// Topic "dforce/<prop>": {figure, enabled, mode, active, busy, draped}, when it changes.
+// Topic "dforce/<prop>": {figure, enabled, mode, light, active, busy, draped}, when it changes.
 void FvHost::Impl::publishDforce(Loaded& f, bool force)
 {
   if(!f.dforce)
@@ -970,6 +970,7 @@ void FvHost::Impl::publishDforce(Loaded& f, bool force)
   protocol->events().snapshot("dforce/" + f.id, {{"figure", f.id},
                                                  {"enabled", d.enabled()},
                                                  {"mode", d.mode() == fv::dforce::Mode::eLive ? "live" : d.mode() == fv::dforce::Mode::eLiveGpu ? "gpu" : "settle"},
+                                                 {"light", d.light()},
                                                  {"active", d.active()},
                                                  {"busy", d.busy()},
                                                  {"draped", d.draped()}});
@@ -978,6 +979,7 @@ void FvHost::Impl::publishDforce(Loaded& f, bool force)
 // dforce.enable {prop, on}: cloth drapes (true) or shows the conforming shape (false);
 // dforce.mode {prop, mode}: "settle" (once the pose stops changing), "live" (every frame) or "gpu"
 // (every frame, on the experimental GPU solver, in a build with FV_DFORCE_GPU);
+// dforce.light {prop, on}: the cloth simulates as a light copy of itself, its own vertices riding on it;
 // dforce.resimulate {prop} settles the cloth now.
 Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
 {
@@ -993,6 +995,8 @@ Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
   }
   else if(cmd == "mode")
     figure->dforce->setMode(dforceMode(args.value("mode", "settle")));
+  else if(cmd == "light")
+    figure->dforce->setLight(args.value("on", true));
   else
     figure->dforce->resimulate();
   publishDforce(*figure, true);

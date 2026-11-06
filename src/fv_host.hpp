@@ -170,14 +170,18 @@
 //   dforce.enable   {prop, on}; dforce.resimulate {prop}   cloth drapes over the body (figure/dforce)
 //   dforce.mode     {prop, mode: "settle" | "live" | "gpu"}   one settle once the pose stops (on the GPU solver
 //                                                where there is one), a step every frame, or that on the GPU
-//                                                solver. The app offers only settle: real-time cloth is paused
-//                                                (FV_DFORCE_GPU builds; the
-//                                                "session" topic's features.dforceGpu says, and a scene file's
-//                                                "gpu" restores as live without it)
+//                                                solver (FV_DFORCE_GPU builds; the "session" topic's
+//                                                features.dforceGpu says, and a scene file's "gpu" restores as
+//                                                live without it). The Wardrobe tab offers settle and live on
+//                                                the GPU
+//   dforce.light    {prop, on}                   the cloth simulates as a light copy of itself, faces 2 cm wide
+//                                                (FV_DFORCE_LIGHT=<cm> another width), its own vertices riding on
+//                                                it (figure/physics/cloth/coarse.hpp): a fine garment drapes and
+//                                                follows a clip in a fraction of the time, a little stiffer
 //   scene.state / scene.restore {prop}           a scene file's part of a prop: source, worn, dials, pose,
 //                                                material presets, skin, eyes and makeup (rel | null, once
 //                                                chosen), material edits, collision and dForce on/off, dForce's
-//                                                mode; restored after the add-ons: presets (eye-only ones as
+//                                                mode and light cloth; restored after the add-ons: presets (eye-only ones as
 //                                                eyes), skin, eyes, makeup, worn items' colours, edits. A worn
 //                                                item's `id` is the "i:N" it goes back on under; the edits name
 //                                                the surfaces in use, so a taken-off item's count for nothing. A prop's id is

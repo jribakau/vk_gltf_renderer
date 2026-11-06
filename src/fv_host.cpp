@@ -185,6 +185,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   });
   cmds.add("dforce.enable", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("dforce.enable", args); }); });
   cmds.add("dforce.mode", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("dforce.mode", args); }); });
+  cmds.add("dforce.light", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("dforce.light", args); }); });
   cmds.add("dforce.resimulate", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->dforceCommand("resimulate", args); }); });
   cmds.add("material.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("material.set", args); }); });
   cmds.add("material.reset", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("material.reset", args); }); });

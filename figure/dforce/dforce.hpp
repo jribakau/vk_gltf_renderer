@@ -91,9 +91,13 @@ public:
   // fine as the cloth (physics/cloth/coarse.hpp); off, as it is, for an A/B.
   bool coarseColliders = true;
   // Light cloth: a cloth much finer than this simulates as a coarse copy of itself with faces this wide
-  // (cm), its own vertices riding on it (physics/cloth/coarse.hpp's coarseCloth). Off: as it is.
+  // (cm), its own vertices riding on it (physics/cloth/coarse.hpp's coarseCloth). Off: as it is. Read by
+  // the next drape; setLight() also makes one (a tool sets the field alone)
   bool  lightCloth     = false;
   float lightClothEdge = 2.f;
+  // Light cloth on or off, and the drape made again that way if dForce is on (live: the simulation).
+  void setLight(bool on);
+  bool light() const { return lightCloth; }
 
   // Whether anything worn would be draped.
   bool active() const;

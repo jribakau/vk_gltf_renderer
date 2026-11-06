@@ -56,7 +56,8 @@ namespace {
 // 27: soft flesh: physics.soft, the soft/<prop> topic and the scene state's `soft`.
 // 28: VaM Timeline clips: load's `as` "vam", and the animation topic's clip `vam`.
 // 29: self-contact: figure.contact's, the contact/<prop> topic's and the scene state's `self`.
-constexpr int kProtocolVersion = 29;
+// 30: light cloth: dforce.light, the dforce/<prop> topic's and the scene state's `dforceLight`.
+constexpr int kProtocolVersion = 30;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

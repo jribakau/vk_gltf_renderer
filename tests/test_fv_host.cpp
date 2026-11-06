@@ -1179,6 +1179,29 @@ std::string dialOn(HostRig& rig, const std::string& id, const std::string& dial,
 }
 }  // namespace
 
+// The Wardrobe tab's Light cloth (dforce.light): in the dforce topic, one step to undo and redo, kept
+// with the scene and back with it.
+TEST(FvHostWardrobe, LightClothIsPublishedUndoneAndSaved)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("load", {{"rel", "People/Test/Box Figure.duf"}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  const std::string id    = figureId(rig.topic("scene"));
+  const auto        light = [&] { return rig.topic("dforce/" + id).value("light", Json()); };
+  const auto        saved = [&] { return rig.cmd("scene.state", {{"prop", id}}).at("result").value("dforceLight", Json()); };
+  EXPECT_EQ(light(), Json(false));
+  EXPECT_EQ(saved(), Json(false));
+  ASSERT_TRUE(rig.cmd("dforce.light", {{"prop", id}, {"on", true}}).value("ok", false));
+  EXPECT_EQ(light(), Json(true));
+  EXPECT_EQ(saved(), Json(true));
+  historyStep(rig, "history.undo");
+  EXPECT_EQ(light(), Json(false));
+  historyStep(rig, "history.redo");
+  EXPECT_EQ(light(), Json(true));
+  Reopened again(rig.cmd("scene.state", {{"prop", id}}).at("result"));
+  EXPECT_EQ(again.rig.topic("dforce/" + again.id).value("light", Json()), Json(true));
+}
+
 // A preset over a skin chosen: a Head's tint leaves the Body's skin chosen, and both come back when the
 // scene does, the skin named as it was. One over all of the skin is the skin. A skin chosen over the
 // surfaces the tint set takes it off them, and the file agrees.
