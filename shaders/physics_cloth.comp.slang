@@ -382,7 +382,9 @@ void boxesMain(uint3 tid: SV_DispatchThreadID)
 }
 
 // At a frame's start: a free vertex touching nothing that lies behind the nearest face of a lower
-// layer within recoverDepth is put back outside it, and rests on that face from now on.
+// layer within recoverDepth is put back outside it, and rests on that face from now on. At its end
+// (recoverAny), whatever it rests on: what a late carry took into a limb, or the capsule floor left
+// under its skin, is put back before the frame is read, as the CPU island's recoverLost(true).
 [shader("compute")]
 [numthreads(DFORCE_WORKGROUP_SIZE, 1, 1)]
 void recoverMain(uint3 tid: SV_DispatchThreadID)
@@ -391,7 +393,7 @@ void recoverMain(uint3 tid: SV_DispatchThreadID)
   if(tid.x >= m.numFree)
     return;
   int i = m.freeVerts[tid.x];
-  if(m.collides[i] == 0 || m.contact[i] >= 0)
+  if(m.collides[i] == 0 || (m.contact[i] >= 0 && pc.recoverAny == 0))
     return;
   float  sd;
   float3 n;
@@ -491,7 +493,7 @@ void recoverWaveMain(uint3 tid: SV_DispatchThreadID)
   if(v >= m.numFree)
     return;
   int i = m.freeVerts[v];
-  if(m.collides[i] == 0 || m.contact[i] >= 0)
+  if(m.collides[i] == 0 || (m.contact[i] >= 0 && pc.recoverAny == 0))
     return;
   float  sd;
   float3 n;

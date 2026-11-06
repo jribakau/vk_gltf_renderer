@@ -164,7 +164,8 @@ struct ClothGpuPushConstant
   // a collision pass that looks around for cloth faces (every fourth, as the CPU island does); the others
   // meet the cloth face a vertex rests on alone
   uint         clothLook;
-  uint         pad0;
+  // the recovery at a frame's end: a vertex resting on a face too, not only one touching nothing
+  uint         recoverAny;
   // a cluster sweep reads the free vertices from one buffer and writes its own to the other (x and its
   // twin, in turn), so what it reads of another cluster's is where that was at the sweep's start
   float3*      clusterSrc;

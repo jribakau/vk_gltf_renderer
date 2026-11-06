@@ -1699,7 +1699,8 @@ TEST(ClothCapsules, theFloorPosesWithItsBone)
 // A limb that jumps through a patch of cloth in one substep (as a late step's carry or a fast shin does)
 // leaves it deep inside, on the axis, 4 cm and more behind the skin: past the 2 cm a collision pass pushes
 // back from and the 3 cm the recovery trusts, so the sided faces keep it in for good. With the floor it is
-// pushed out to the floor that substep, and from there the faces put it outside the skin
+// pushed out to the floor that substep, and from there the recovery at the frame's end puts it outside the
+// skin before the frame is read: the frame that jumped already drapes outside
 TEST(ClothCapsules, clothALimbJumpsThroughIsPushedOutByTheFloorWhereTheFacesWouldKeepItIn)
 {
   const Surface limb  = tube(32.f, 7.f, 5.f);
@@ -1723,8 +1724,6 @@ TEST(ClothCapsules, clothALimbJumpsThroughIsPushedOutByTheFloorWhereTheFacesWoul
     if(withFloor)
       ASSERT_TRUE(island.setTarget(2, {shifted(8)}));
     island.frame(0, 1);
-    for(int f = 0; f < 5; f++)
-      island.frame(1, 1);
     const std::vector<float> at = island.positions()[1];
     std::vector<float>       floorAt(floor->rest.size());
     physics::cloth::skin(*floor, {shifted(8)}, floorAt.data());

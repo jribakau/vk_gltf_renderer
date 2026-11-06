@@ -122,7 +122,8 @@ struct Island::State : Model
   // of the soft vertices into `anchors` when given.
   void kinematicAt(float t, std::vector<float>& out, std::vector<float>* anchors);
   void separateStart();
-  void recoverLost();
+  // `any`: a vertex resting on a face too (the frame's end), not only one touching nothing (its start).
+  void recoverLost(bool any = false);
   // The face a vertex resting on face `t` is over now: `t`, or the nearest face two edges around it
   // that the vertex slid onto; -1 when it is over none (it left the surface). Fills `now` and `n`.
   int  followContact(int i, int t, Closest& now, V3& n) const;
@@ -237,10 +238,16 @@ void Island::State::separateStart()
 // Puts back free vertices that lost the surface they were outside of: one touching no face that
 // lies behind the nearest static face of a lower layer, within kRecoverDepth, is moved out to the
 // gap along that face and remembered as outside there, so the next pass keeps it out. The nearest
-// face decides, as at the start, so a vertex just outside a thin limb is not sent through it.
-void Island::State::recoverLost()
+// face decides, as at the start, so a vertex just outside a thin limb is not sent through it. At a
+// frame's start; and at its end (`any`, whatever face a vertex rests on): what a late step's carry
+// took into a limb, or the capsule floor left under its skin, is put back before the frame is read,
+// so the step's drape, what is drawn and what the next step's carry sets out from, lies outside the
+// body. A tie holds only over its own face and the two rings about it, which a carried vertex slides
+// past, and the faces' passes keep the side a vertex was last found on.
+void Island::State::recoverLost(bool any)
 {
-  recovered = 0;
+  if(!any)
+    recovered = 0;
   if(staticTris.empty())
     return;
   std::atomic<int> count{0};
@@ -251,7 +258,7 @@ void Island::State::recoverLost()
     for(size_t vi = begin; vi < end; vi++)
     {
       const int i = freeVerts[vi];
-      if(!collides[i] || contact[i] >= 0)
+      if(!collides[i] || (!any && contact[i] >= 0))
         continue;
       const float qx = x[i * 3], qy = x[i * 3 + 1], qz = x[i * 3 + 2];
       const float lo[3] = {qx - kRecoverDepth, qy - kRecoverDepth, qz - kRecoverDepth};
@@ -303,7 +310,7 @@ void Island::State::recoverLost()
     }
     count += mine;
   });
-  recovered = count.load();
+  recovered += count.load();
 }
 
 // Between collision passes, a vertex resting on a face of the pose (a limb, a belt) is held outside
@@ -710,6 +717,9 @@ void Island::State::frame(float t0, float t1, float extraDamping, float seconds)
       for(int k = 0; k < 3; k++)
         vel[i * 3 + k] = (x[i * 3 + k] - prev[i * 3 + k]) / dt;
   }
+  // and what the frame leaves in the body within reach is put back before it is read
+  if(opts.recoverLost)
+    recoverLost(true);
   float moved = 0;
   for(int i : freeVerts)
   {

@@ -1112,10 +1112,11 @@ void ClothGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds
     dispatch(cmd, groups(m.numTris), 1, 1);
     barrier();
   };
-  // the frame's start: cloth lost behind a face of a lower layer is put back, as on the CPU
-  if(m.numTris > 0 && opts.recoverLost && !(debug & 1))
-  {
-    pc.t = 0;
+  // the frame's start: cloth lost behind a face of a lower layer is put back, as on the CPU; and its
+  // end (`any`: whatever face a vertex rests on), so what the frame leaves in the body within reach
+  // is put back before it is read
+  const auto recover = [&](bool any) {
+    pc.recoverAny = any ? 1u : 0u;
     timed(2, [&] {
       boxes();
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, waveLanes ? recoverWavePipe : recoverPipe);
@@ -1123,6 +1124,13 @@ void ClothGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds
       dispatch(cmd, groups(m.numFree * std::max(1u, waveLanes)), 1, 1);
       barrier();
     });
+    pc.recoverAny = 0;
+  };
+  const bool recovering = m.numTris > 0 && opts.recoverLost && !(debug & 1);
+  if(recovering)
+  {
+    pc.t = 0;
+    recover(false);
   }
   for(int s = 0; s < steps; s++)
   {
@@ -1185,6 +1193,11 @@ void ClothGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
     dispatch(cmd, groups(m.numFree), 1, 1);
     barrier();
+  }
+  if(recovering)
+  {
+    pc.t = 1;
+    recover(true);
   }
   if(queries)
     vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, queries, 1);
