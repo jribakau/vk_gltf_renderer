@@ -7,9 +7,11 @@
 // InitLightPickingCdf / SelectLight, plus horizon culling). Slang and C++ (tests/test_light_pick.cpp),
 // so the tests run the arithmetic the shader runs.
 //
-// An estimate is the largest channel of the irradiance the light gives at normal incidence, its
-// occlusion unknown: the channel measure of the environment's alias table (hdr_ibl.cpp), whose
-// integral over 4 is the environment's estimate (a uniform sky of that power on a surface facing it).
+// An estimate is the largest channel of the irradiance the light gives the surface, its occlusion
+// unknown: at normal incidence, times the cosine at which the surface can at best face the light
+// where it is one-sided (receiverBoundCosine). The environment's is the channel measure of its alias
+// table (hdr_ibl.cpp), whose integral over 4 is its estimate (a uniform sky of that power on a
+// surface facing it), whatever the surface faces.
 
 // Above this many punctual lights the pick is uniform and nothing is culled: weighing every light at
 // every vertex (two or three times: the pick, its walk, a BSDF hit's MIS) would cost more than it
@@ -19,6 +21,27 @@ static const int LIGHT_PICK_MAX_LIGHTS = 64;
 // The share spread evenly over the candidates, for the light an estimate underrates: one the
 // figure shades, or a glossy lobe's reflection of a light the irradiance calls dim.
 static const float LIGHT_PICK_DEFENSIVE = 0.1F;
+
+// The cosine at which a surface of unit `normal` can at best face a sphere of `radius` whose centre
+// lies along `toCenter` (PBRT-v4's LightBounds::Importance, Falcor's boundCosineTerm):
+// cos(max(0, theta - thetaB)), theta from the normal to the centre and thetaB the half angle the sphere
+// subtends. So a lamp on the surface's horizon is worth what it lights there, not what it would face
+// on. 0 where the sphere lies wholly below the surface's plane (where next-event estimation would
+// discard every sample), 1 from inside it, and max(cos theta, 0) for a point.
+float receiverBoundCosine(float3 normal, float3 toCenter, float radius)
+{
+  const float d2 = dot(toCenter, toCenter);
+  const float r2 = radius * radius;
+  if(d2 <= r2)
+    return 1.0F;
+  const float cosL  = dot(normal, toCenter) / sqrt(d2);
+  const float sin2B = r2 / d2;
+  const float cosB  = sqrt(1.0F - sin2B);
+  if(cosL >= cosB)
+    return 1.0F;
+  const float sinL = sqrt(max(1.0F - cosL * cosL, 0.0F));
+  return max(cosL * cosB + sinL * sqrt(sin2B), 0.0F);
+}
 
 // How far a sample of a sphere light, in `direction` from `pos`, travels to the light: to its near
 // side from outside, to its far side from within. A hair short, so the shadow ray ends on this side.
@@ -87,9 +110,10 @@ bool directionalLightHit(float3 direction, float3 lightDir, float oneMinusCos)
 // `invRange`: 1 / the KHR_lights_punctual range, 0 for none; the spot's cone in radians.
 //
 // The irradiance singleLightContribution (light_contrib.h.slang) gives the point, before the
-// sample's direction is drawn. With `cull`, 0 for a light that lies wholly below the plane of
-// `normal`, where next-event estimation would discard its sample: a directional light whose centre
-// is below it (singleLightContribution's own test), a sphere whose top is.
+// sample's direction is drawn. With `cull` (a one-sided surface), times the cosine at which the plane
+// of `normal` can face it (receiverBoundCosine), which is 0 for a light lying wholly below the plane,
+// where next-event estimation would discard its sample: a directional light whose centre is below it
+// (singleLightContribution's own test), a sphere whose top is.
 float punctualLightPickEstimate(bool   directional,
                                 bool   spot,
                                 float3 lightPos,
@@ -106,12 +130,13 @@ float punctualLightPickEstimate(bool   directional,
   if(!(power > 0.0F))
     return 0.0F;
   if(directional)
-    return (cull && dot(normal, -lightDir) <= 0.0F) ? 0.0F : power;
+    return cull ? power * max(dot(normal, -lightDir), 0.0F) : power;
 
-  const float3 toLight = lightPos - pos;
-  const float  d2      = dot(toLight, toLight);
-  const float  d       = sqrt(d2);
-  if(cull && dot(normal, toLight) <= -radius)
+  const float3 toLight  = lightPos - pos;
+  const float  d2       = dot(toLight, toLight);
+  const float  d        = sqrt(d2);
+  const float  receiver = cull ? receiverBoundCosine(normal, toLight, radius) : 1.0F;
+  if(!(receiver > 0.0F))
     return 0.0F;
 
   float irradiance;
@@ -145,7 +170,7 @@ float punctualLightPickEstimate(bool   directional,
       irradiance *= t * t;
     }
   }
-  return irradiance;
+  return irradiance * receiver;
 }
 
 // The probability of picking a candidate of `estimate` among `candidates` (lights and environment

@@ -272,3 +272,51 @@ TEST(LightTree, ConesDropOnlyEmittersThatFaceAway)
   }
   EXPECT_GT(dropped, 0);  // the cones do drop something
 }
+
+// A one-sided receiver weighs a node by the best cosine at which it can face the node's bounds, and
+// that never underrates an emitter below it: every corner of every emitter lies within that cosine
+// of the normal, and a node the receiver gives nothing has every corner below its plane. Lit from
+// both sides, a node keeps what it had.
+TEST(LightTree, TheReceiverBoundNeverUnderratesAnEmitter)
+{
+  std::mt19937               rng(9);
+  const std::vector<Emitter> emitters = roomOfPanels(kCount, rng);
+  auto                       table    = buildEmissiveTable(emitters, EMISSIVE_GROUP_MAX);
+  EmissiveGroup*             nodes    = table.groups.data();
+  std::vector<std::vector<int>> below(table.groups.size());
+  for(int i = 0; i < int(table.groups.size()); i++)
+    if(nodes[i].left < 0)
+      for(int node = i; node >= 0; node = nodes[node].parent)
+        below[node].push_back(int(table.triangles[nodes[i].first].renderPrimID));
+  std::uniform_real_distribution<float> place(-12.f, 12.f), turn(-1.f, 1.f);
+  int                                   lowered = 0, dropped = 0;
+  for(int point = 0; point < 300; point++)
+  {
+    const float3 pos(place(rng), place(rng) * 0.3f + 2.f, place(rng));
+    const float3 normal = normalize(float3(turn(rng), turn(rng), turn(rng)));
+    for(int i = 0; i < int(table.groups.size()); i++)
+    {
+      const float both = emissiveNodeEstimate(nodes[i], pos, normal, false);
+      const float one  = emissiveNodeEstimate(nodes[i], pos, normal, true);
+      EXPECT_LE(one, both * (1.f + 1e-6f)) << "node " << i;
+      if(!(both > 0.f))
+        continue;
+      const float bound = receiverBoundCosine(normal, nodes[i].center - pos, nodes[i].radius);
+      EXPECT_NEAR(one, both * bound, 1e-5f * both) << "node " << i;
+      lowered += one < both;
+      dropped += one == 0.f;
+      for(const int e : below[i])
+        for(const glm::vec3& corner : cornersOf(emitters[e]))
+        {
+          const float3 to = corner - pos;
+          const float  d  = length(to);
+          if(one == 0.f)
+            EXPECT_LE(dot(normal, to), 1e-4f * d) << "node " << i << " point " << point;
+          else if(d > nodes[i].radius)
+            EXPECT_LE(dot(normal, to) / d, bound + 1e-4f) << "node " << i << " point " << point;
+        }
+    }
+  }
+  EXPECT_GT(lowered, 0);
+  EXPECT_GT(dropped, 0);
+}

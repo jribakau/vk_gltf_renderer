@@ -108,8 +108,8 @@ double misIrradiance(float3 lightAxis, float lightOmc, const TestLobe& lobe, Hit
 }  // namespace
 
 // A small light gives intensity over distance squared, a sphere far away the same, and the range
-// and the spot cone shape it as KHR_lights_punctual says.
-TEST(LightPick, EstimatesAreTheIrradianceAtNormalIncidence)
+// and the spot cone shape it as KHR_lights_punctual says; a sun gives its illuminance on the surface.
+TEST(LightPick, EstimatesAreTheIrradiance)
 {
   const float3 pos(0, 0, 0), up(0, 1, 0);
   EXPECT_NEAR(pointEstimate(float3(0, 2, 0), 0.0f, 100.0f, pos, up), 25.0f, 1e-4f);
@@ -130,8 +130,56 @@ TEST(LightPick, EstimatesAreTheIrradianceAtNormalIncidence)
   const float3 away(std::sin(0.8f), -std::cos(0.8f), 0.0f);
   EXPECT_EQ(punctualLightPickEstimate(false, true, float3(0, 2, 0), away, 0.0f, 100.0f, 0.0f, inner, outer, pos, up, true), 0.0f);
 
-  // A directional light is its illuminance
-  EXPECT_EQ(punctualLightPickEstimate(true, false, float3(0), normalize(float3(1, -1, 0)), 0, 5000.0f, 0, 0, 0, pos, up, true), 5000.0f);
+  // A directional light is its illuminance, on the surface at 45 degrees
+  EXPECT_NEAR(punctualLightPickEstimate(true, false, float3(0), normalize(float3(1, -1, 0)), 0, 5000.0f, 0, 0, 0, pos, up, true),
+              5000.0f * std::sqrt(0.5f), 1e-2f);
+}
+
+// A one-sided surface weighs a light by the cosine at which it can best face it: a point lamp 60
+// degrees off its normal by a half, a sphere whose cone holds the normal not at all, a sun low on
+// the horizon by its sine. Lit from both sides, nothing changes.
+TEST(LightPick, ALightOnTheHorizonIsWorthWhatItLightsThere)
+{
+  const float3 pos(0), up(0, 1, 0);
+  const float  off = 60.0f * kPi / 180.0f;
+  const float3 lamp(2.0f * std::sin(off), 2.0f * std::cos(off), 0.0f);
+  EXPECT_NEAR(pointEstimate(lamp, 0.0f, 100.0f, pos, up), 25.0f * 0.5f, 1e-4f);
+  EXPECT_NEAR(pointEstimate(lamp, 0.0f, 100.0f, pos, up, false), 25.0f, 1e-4f);
+  // radius 1.9 at distance 2: its cone reaches past 60 degrees to the normal
+  EXPECT_NEAR(pointEstimate(lamp, 1.9f, 100.0f, pos, up), pointEstimate(lamp, 1.9f, 100.0f, pos, up, false), 1e-5f);
+  const float3 lowSun = -normalize(float3(std::cos(0.1f), std::sin(0.1f), 0.0f));  // travels down at 0.1 rad
+  EXPECT_NEAR(punctualLightPickEstimate(true, false, float3(0), lowSun, 0, 1e5f, 0, 0, 0, pos, up, true), 1e5f * std::sin(0.1f), 1.0f);
+  EXPECT_EQ(punctualLightPickEstimate(true, false, float3(0), lowSun, 0, 1e5f, 0, 0, 0, pos, up, false), 1e5f);
+}
+
+// The bound is the best cosine of any direction to the sphere, never less (or a light sample the
+// estimate underrates would be starved): the largest cosine over a fine grid of its cone, which
+// reaches the cone's edge, comes within a hair below it.
+TEST(LightPick, TheReceiverBoundIsTheBestCosineOverTheSphere)
+{
+  std::mt19937                          rng(5);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const float3                          up(0, 1, 0), pos(0);
+  for(int i = 0; i < 200; i++)
+  {
+    const float3 center(4.0f * u(rng) - 2.0f, 3.0f * u(rng) - 1.5f, 4.0f * u(rng) - 2.0f);
+    const float  radius = 0.02f + u(rng) * 0.8f;
+    if(length(center) <= radius * 1.01f)
+      continue;
+    const float bound = receiverBoundCosine(up, center, radius);
+    float       best  = 0.0f;
+    const int   n     = 128;
+    for(int a = 0; a < n; a++)
+      for(int b = 0; b <= n; b++)
+        best = std::max(best, dot(sampleSphereCone(center, radius, pos, a / float(n), b / float(n)), up));
+    EXPECT_GE(bound, best - 1e-5f) << "centre y " << center.y << " radius " << radius;
+    EXPECT_NEAR(bound, best, 2e-3f) << "centre y " << center.y << " radius " << radius;
+  }
+  // a point: the cosine itself, and inside the sphere every way
+  EXPECT_NEAR(receiverBoundCosine(up, float3(1, 1, 0), 0.0f), std::sqrt(0.5f), 1e-6f);
+  EXPECT_EQ(receiverBoundCosine(up, float3(0, -1, 0), 0.0f), 0.0f);
+  EXPECT_EQ(receiverBoundCosine(up, float3(0, -0.5f, 0), 1.0f), 1.0f);
+  EXPECT_EQ(receiverBoundCosine(up, float3(0), 0.0f), 1.0f);
 }
 
 // A directional light below the horizon is culled, as singleLightContribution drops it; lit from

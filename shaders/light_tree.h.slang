@@ -19,16 +19,18 @@
 // its normals can face the point (PBRT-v4's LightBounds::Importance): the angle from the cone's axis to
 // the point, less the cone's spread and the angle its bounds subtend. 0 where none of its triangles
 // can face the point, as a one-sided triangle emits to its front alone (a light sample there would be
-// discarded); a point within its bounds is not judged. With `cull`, 0 for a node whose bounds lie
-// wholly below the plane of `normal`.
+// discarded); a point within its bounds is not judged. With `cull` (a one-sided surface), times the
+// cosine at which the plane of `normal` can face its bounds (receiverBoundCosine, PBRT-v4's other
+// bound), which is 0 for a node whose bounds lie wholly below that plane.
 float emissiveNodeEstimate(EmissiveGroup g, float3 pos, float3 normal, bool cull)
 {
   const float3 toCenter = g.center - pos;
-  if(cull && dot(normal, toCenter) <= -g.radius)
+  const float  receiver = cull ? receiverBoundCosine(normal, toCenter, g.radius) : 1.0F;
+  if(!(receiver > 0.0F))
     return 0.0F;
   const float d2       = dot(toCenter, toCenter);
   const float r2       = g.radius * g.radius;
-  const float estimate = g.weight / max(d2, max(r2, 1e-8F));
+  const float estimate = receiver * g.weight / max(d2, max(r2, 1e-8F));
   if(g.cosSpread <= -1.0F || d2 <= r2)
     return estimate;
   // the angle from the axis to the point, past the spread
