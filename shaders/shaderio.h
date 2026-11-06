@@ -191,14 +191,19 @@ struct SkySunDisk
   // The clouds' (sky_clouds.h.slang), 1 and 1 without them. `cloudShadow` is the sun's transmittance
   // through the layer from the observer: the scene's shadow, already in `radiance`, and what the air
   // in the scene is lit by (aerial perspective). `sunlitGround` is the share of the distant land and
-  // haze under the layer the sun still reaches (cloudSunlitAir).
+  // haze under the layer the sun still reaches, as the cloud bake measures it toward this sun (airMain
+  // in sky_clouds_bake.slang): the cover's complement overhead, all but none through a broken deck at
+  // a low sun's slant.
   float cloudShadow;
   float sunlitGround;
   // 1 while a drag's preview holds the clouds of the moment (SkyClouds' quarter-size image, at
   // CLOUD_PREVIEW_BINDING), 0 once the full image does.
-  int   cloudPreview;
-  float _pad1;
-  float _pad2;
+  int cloudPreview;
+  // The top of the clouds' highest layer, km above the surface, 0 without clouds, and the share of
+  // the sky's light they leave on the air (1 clear): below the horizon the air in front of the ground
+  // is under their shade, by that and `sunlitGround` (sky_clouds_air.h.slang).
+  float cloudTop;
+  float cloudSkyShare;
 };
 
 struct SceneFrameInfo

@@ -105,6 +105,9 @@ public:
   void                     setSettings(const SkyCloudsSettings& settings) { m_settings = settings; }
   const SkyCloudsSettings& settings() const { return m_settings; }
   bool hasClouds() const { return m_settings.coverage > 0.0F || m_settings.midCoverage > 0.0F || m_settings.highCoverage > 0.0F; }
+  // The top of the highest layer the settings turn on, km above the surface; 0 with none. The air
+  // below it is under the clouds' shade (sky_clouds_air.h.slang).
+  float topKm() const { return hasClouds() ? cloudBakeParameters(m_settings, false).maxHeight : 0.0F; }
 
   // Bake the clouds for this sun (toward it, the environment's frame) and observer, into the
   // caller's command buffer, behind a barrier for frames still reading the last bake and ahead of
@@ -113,6 +116,10 @@ public:
 
   // Whether the preview image holds the clouds of the moment (the last record was a preview).
   bool showingPreview() const { return m_showingPreview; }
+
+  // Where the last bake measured the shares of the air's light the clouds leave, the sun's and the
+  // sky's (a float2, airMain in sky_clouds_bake.slang), for the environment bake recorded after it.
+  VkDeviceAddress airAddress() const { return m_airBuf.address; }
 
   // The clouds where the camera looks, at the screen's resolution, into the view image: the last
   // full bake's clouds, sun and observer, marched again for the view's directions only. Into the
@@ -133,6 +140,7 @@ public:
 
 private:
   void createImages(Resources& res);
+  void recordAirShade(VkCommandBuffer cmd, uint32_t width, uint32_t height);
   void createPipelines(const Shaders& shaders, VkDescriptorSetLayout brunetonSetLayout);
   void generateNoise(Resources& res);
 
@@ -171,6 +179,7 @@ private:
   VkImageView m_cloudStorageView{VK_NULL_HANDLE};
 
   nvvk::Buffer m_paramsBuf;  // device-local SkyCloudsParameters, updated in the command buffer per bake
+  nvvk::Buffer m_airBuf;     // device-local float2, the air's shares a bake measures (airMain)
 
   VkDescriptorSet      m_brunetonSet{VK_NULL_HANDLE};  // SkyBruneton's, borrowed
   nvvk::DescriptorPack m_noisePack;                    // the noise textures, as storage, for their one write
@@ -185,5 +194,7 @@ private:
   VkPipelineLayout m_bakeLayout{VK_NULL_HANDLE};
   VkPipeline       m_bakePipeline{VK_NULL_HANDLE};
   VkPipeline       m_filterPipeline{VK_NULL_HANDLE};
+  VkPipeline       m_airPipeline{VK_NULL_HANDLE};
+  VkPipeline       m_airShadePipeline{VK_NULL_HANDLE};
   VkCommandPool    m_transientCmdPool{VK_NULL_HANDLE};
 };

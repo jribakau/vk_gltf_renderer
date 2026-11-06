@@ -743,8 +743,8 @@ measured by marching columns through that kind's layers alone and inverted
 (`CLOUD_COVERAGE_FOR_COVER`). `SkyClouds.DISABLED_CoverageCurve` in `tests/test_sky_clouds.cpp`
 prints every kind's row, ready to paste, when the model changes, and
 `SkyClouds.TheCoverShadesAsMuchOfTheLandAsItSays` holds each to within a few percent. Together the
-tiers shade the land as if they lay over one another independently: the haze and the distant ground
-are lit by the share every tier leaves the sun (`cloudSunlitAirOfTiers`).
+tiers shade the land as if they lay over one another independently (`cloudSunlitAirOfTiers`), which
+is airMain's first guess at the share of the land and the air the sun reaches (below).
 
 ### How it is lit
 
@@ -768,14 +768,53 @@ ground -- and by the sky's irradiance at its height. Takram's terms, all in the 
   its top whatever lies above it, which lit a deck's underside alike from end to end; here a thick
   part goes dark and a thin one lets the light through, as overcast decks do (10-30% of the light
   through), and a thin veil takes the whole sky's.
-- **Ground bounce** onto the cloud bases: the land lit by the sky and the open share of the sun,
-  through the cloud below.
+- **Ground bounce** onto the cloud bases: the land lit by the shares of the sun and the sky the
+  clouds leave (below), through the cloud below.
 - **Beer-Powder**: thin edges darker, where light has not yet built up by scattering.
 
 The air between the observer and the clouds is the same march aerial perspective uses, to where the
-clouds are on average. Under the layers the distant ground and that haze are lit by the sun only
-where it gets through: the share of the land every tier leaves open (`cloudSunlitAirOfTiers`,
-`SkySunDisk::sunlitGround`).
+clouds are on average, lit by the shares of the sun's and the sky's light the clouds leave (below).
+
+### The air under them
+
+The clear sky (`evalBrunetonSkyRadiance`) holds the light the air scatters along a ray as though the
+clouds were not there: every part of it sunlit, and lit by the whole clear sky. Toward a low sun that
+light is the brightest part of the sky. Until 2026-11-06 the clouds shaded only the air in front of
+themselves, and that by the share of the land they leave open overhead, 1 - cover. So a stratus deck
+at 59% with the sun 2 degrees up glowed orange along the horizon, and below it, where nothing
+shaded the haze over the distant ground, a closed deck's sky was as bright as a clear one's, which
+water then reflected. The sun's own share past the clouds was 0 there.
+
+- **The shares, measured** (`airMain` in `sky_clouds_bake.slang`, one workgroup ahead of each bake,
+  into a float2 the march and the environment bake read). The sun's: the mean transmittance toward it
+  through the layers from 256 points spread over 60 km around the observer, at its height. Overhead
+  that is about the cover's complement (cumulus 0.5: 0.48, stratocumulus 0.3: 0.72; thin stratus
+  lets some sun through what counts as cover, 0.59: 0.60); a low sun's light crosses a layer at a
+  slant, kilometres of it, where the clouds overlap (stratus 0.59: 0.52 at 45 degrees, 0.27 at 20,
+  0.06 at 8, 0.000 at 2.1). The sky's: the sky with the clouds against the sky without, over 256
+  cosine-weighted directions from the observer (often 1: lit cloud is as bright as the sky it hides).
+  They light the haze in front of clouds, the ground bounce, and the distant ground
+  (`SkySunDisk::sunlitGround`); the sky's is `SkySunDisk::cloudSkyShare`. `EnvBaker::commit` logs both.
+- **The air seen past them** (`sky_clouds_air.h.slang`). Through the gaps, up to where a ray leaves
+  the top of the highest layer, and below the horizon all the air in front of the ground, lies in
+  the clouds' shade. Each ray's air is marched (the sun's single scattering and the sky's light, as
+  aerial perspective's sources), and the share of it in the shell that the shares leave unlit, times
+  the clear sky's own air light (`evalBrunetonSkyInScatter`, the ground left out), comes off: a share
+  per channel, never more than the air's light. A share and not an amount, because the sky's tables
+  and a march integrate the same air differently, toward a low sun below the horizon by half. The
+  cloud bake takes it off each texel by its transparency, in a pass of its own (`airShadeMain`; in the
+  march's it slowed the march by half again), so the image composes to the shaded sky, and texels can
+  be below zero (`composeClouds` stops at nothing). Below the horizon, where the image does not reach,
+  the path tracer's background and the environment bake take it off per ray.
+
+Measured on that sky (stratus 0.59 at 0.4 km, the sun 2.1 degrees up, looking at it; screen values,
+tonemapped): the rows just above the horizon 19 / 42 became 7 / 2.4, and the haze below it 49 / 25
+became 3.3 / 1.7; under a closed deck below the horizon 49 became 3.4, against the deck's 2.7-9 above
+it. A clear sky is untouched (no clouds, no pass). The settled bake costs what it did (95-100 ms
+there, against 101).
+
+Left out: the gaps' own pattern in the air -- light shafts, a lit stretch of air under a gap -- is a
+share here, not marched; and the sky's share of the ground's own light under the clouds.
 
 ### What it leaves out
 
@@ -783,7 +822,7 @@ where it gets through: the share of the land every tier leaves open (`cloudSunli
   table and an accumulation restart every frame.
 - Shadows that move across the scene: one shadow for the whole scene, as above. A terrain kilometres
   wide is the case that would want more.
-- Takram's haze and light shafts, and rain.
+- Light shafts (the air under the clouds is shaded by a share, above), takram's haze, and rain.
 - An observer above the clouds: the image covers what is above the observer's horizon.
 - Saving: the clouds are viewer settings (`cloud*` in `Settings`), not yet in `OMI_environment_sky`
   or a `.sky.json`. The Figure Viewer keeps them in its own scene files.

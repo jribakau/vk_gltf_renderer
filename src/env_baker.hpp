@@ -132,6 +132,9 @@ public:
     bool  operator==(const CloudLight&) const = default;
   };
   CloudLight cloudLight() const { return m_cloudLight; }
+  // What the clouds leave of the sun's and the sky's light on the air under them (airMain in
+  // sky_clouds_bake.slang), read with the meter for the log; 1 and 1 clear.
+  glm::vec2 airShares() const { return m_airShares; }
 
   // The parameter block the shader reads. Fill it, then call `preview()` or `commit()`; the
   // contents are uploaded as part of the dispatch.
@@ -195,6 +198,7 @@ private:
   nvvk::Buffer m_sunDiskBuf;     // Device-local; written by the bake, read by the background passes
   nvvk::Buffer m_meterBuf;       // Host-visible: the meter's sums per cell and the sun's share (env_bake_io's meterAddress)
   CloudLight   m_cloudLight;     // what the last commit read from it
+  glm::vec2    m_airShares{1.0F}; // ... and the air's shares the cloud bake measured, read with it
 
   VkPipeline           m_pipeline{VK_NULL_HANDLE};
   VkPipelineLayout     m_pipelineLayout{VK_NULL_HANDLE};

@@ -82,15 +82,21 @@ struct EnvBakePushConstant
   // clear sky, which then bakes exactly as it did before there were clouds.
   int   clouds;
   float sunlitGround;
-  // Which of SkyClouds' images holds them: 1 the preview, 0 the full image.
-  int cloudPreview;
-  int _pad1;
+  // Which of SkyClouds' images holds them: 1 the preview, 0 the full image. And the top of their
+  // highest layer, km above the surface: the air below it is under their shade (sky_clouds_air.h.slang).
+  int   cloudPreview;
+  float cloudTop;
 
   // PhysicalBruneton only: where the bake writes what the camera's meter reads of the clouds
   // (EnvBaker::cloudLight), one float2 per cell of the sampling grid -- the light of the sky above
   // the horizon on a figure standing on a floor, clear and with the clouds -- then one more, the
-  // sun's share past them (SkySunDisk::cloudShadow) and 1. Zero when the caller does not want it.
+  // sun's share past them (SkySunDisk::cloudShadow) and 1, then the air's shares (cloudAirAddress) for
+  // the log. Zero when the caller does not want it.
   uint64_t meterAddress;
+
+  // PhysicalBruneton with clouds: where SkyClouds' bake measured the shares of the air's light they
+  // leave, the sun's and the sky's (float2, airMain in sky_clouds_bake.slang). Zero without clouds.
+  uint64_t cloudAirAddress;
 };
 
 // The floor's reflectance the meter takes (the panel's default ground, 20% grey): the sky's light

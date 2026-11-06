@@ -113,7 +113,7 @@ void EnvBaker::init(Resources& res, VkDescriptorSetLayout brunetonSetLayout, VkD
   // Host-visible and mapped: the bake writes it (a quarter of a megabyte, once a bake) and the host
   // reads it after the commit's wait. A preview bake writes it too, which nobody reads: the next
   // commit writes it again before the host does.
-  NVVK_CHECK(res.allocator.createBuffer(m_meterBuf, (VkDeviceSize(kEnvSamplingGrid.width) * kEnvSamplingGrid.height + 1) * sizeof(glm::vec2),
+  NVVK_CHECK(res.allocator.createBuffer(m_meterBuf, (VkDeviceSize(kEnvSamplingGrid.width) * kEnvSamplingGrid.height + 2) * sizeof(glm::vec2),
                                         VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
                                         VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT));
   NVVK_DBG_NAME(m_meterBuf.buffer);
@@ -296,6 +296,8 @@ void EnvBaker::recordBake(VkCommandBuffer cmd, bool preview)
   push.clouds           = (physical && m_clouds->hasClouds()) ? 1 : 0;
   push.sunlitGround     = physical ? cloudSunlitGround(m_clouds->settings()) : 1.0F;
   push.cloudPreview     = (physical && m_clouds->showingPreview()) ? 1 : 0;
+  push.cloudTop         = physical ? m_clouds->topKm() : 0.0F;
+  push.cloudAirAddress  = (physical && m_clouds->hasClouds()) ? m_clouds->airAddress() : 0;
   push.meterAddress     = physical ? m_meterBuf.address : 0;
 
   // One pipeline for every sky: env_bake.slang switches on pc.skyType. Set 1 carries the LUTs only
@@ -328,6 +330,7 @@ void EnvBaker::readCloudLight(Resources& res)
   if(m_skyType != shaderio::SkyType::ePhysicalBruneton || !m_clouds->hasClouds())
   {
     m_cloudLight = {};
+    m_airShares  = glm::vec2(1.0F);
     return;
   }
   NVVK_CHECK(vmaInvalidateAllocation(res.allocator, m_meterBuf.allocation, 0, VK_WHOLE_SIZE));
@@ -340,6 +343,7 @@ void EnvBaker::readCloudLight(Resources& res)
     clouded += meter[i].y;
   }
   m_cloudLight = {.sky = clear > 0.0 ? float(clouded / clear) : 1.0F, .sun = std::clamp(meter[cells].x, 0.0F, 1.0F)};
+  m_airShares  = meter[cells + 1];
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -431,8 +435,9 @@ void EnvBaker::commit(Resources& res)
   timings.aliasMs = mark(stage);
 
   timings.totalMs = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
-  LOGI("EnvBaker::commit %.2f ms (bake %.2f, alias+pdf %.2f); the clouds leave the sky's light %.3f, the sun %.3f\n",
-       timings.totalMs, timings.bakeMs, timings.aliasMs, m_cloudLight.sky, m_cloudLight.sun);
+  LOGI("EnvBaker::commit %.2f ms (bake %.2f, alias+pdf %.2f); the clouds leave the sky's light %.3f, the sun %.3f; the air "
+       "under them keeps the sun's %.3f, the sky's %.3f\n",
+       timings.totalMs, timings.bakeMs, timings.aliasMs, m_cloudLight.sky, m_cloudLight.sun, m_airShares.x, m_airShares.y);
 
   m_needsCommit = false;
 }

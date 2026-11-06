@@ -254,7 +254,7 @@ HostStruct skySunDisk()
   using Self = SkySunDisk;
   return {"SkySunDisk", sizeof(Self), {
     F(radiance), F(cosAngularRadius), F(angularRadius), F(horizonMu), F(observerRadius), F(cloudShadow),
-    F(sunlitGround), F(cloudPreview), F(_pad1), F(_pad2)
+    F(sunlitGround), F(cloudPreview), F(cloudTop), F(cloudSkyShare)
   }};
 }
 

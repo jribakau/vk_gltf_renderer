@@ -183,6 +183,40 @@ TEST(SkyClouds, AnOpaqueCloudHidesTheSkyBehindIt)
   EXPECT_FLOAT_EQ(texel.w, 0.0F);
 }
 
+TEST(SkyClouds, TheShadeOfTheAirSeenThroughThemNeverTakesTheSkyPastNothing)
+{
+  // A gap's texel takes off what the clouds' shade takes from the clear sky's air (sky_clouds_air.h.slang)
+  const float4 gap(-30.0F, -20.0F, -10.0F, 1.0F);
+  EXPECT_FLOAT_EQ(composeClouds(float3(100.0F), gap).x, 70.0F);
+  // and a coarser read of the sky than the bake's own may hold less than it takes
+  const float3 seen = composeClouds(float3(5.0F), gap);
+  EXPECT_EQ(seen.x, 0.0F);
+  EXPECT_EQ(seen.z, 0.0F);
+}
+
+TEST(SkyClouds, TheShadedAirRunsToTheCloudsTopOrToTheGround)
+{
+  // The shell sky_clouds_air.h.slang shades: from the ground to the top of the highest layer, here a
+  // stratus deck's 0.66 km, seen from 0.3 km up.
+  const float top = kEarth + 0.66F;
+  // level: out to where the ray climbs to the top, some 68 km off
+  const float2 level = cloudLayerSegment(kObserver, 0.0F, kEarth, top);
+  EXPECT_EQ(level.x, 0.0F);
+  EXPECT_NEAR(level.y, std::sqrt(top * top - kObserver * kObserver), 1e-2F);
+  EXPECT_GT(level.y, 60.0F);
+  // up steeply: the deck's depth above the eye, a fraction of a kilometre
+  const float2 up = cloudLayerSegment(kObserver, 0.8F, kEarth, top);
+  EXPECT_NEAR(up.y, 0.36F / 0.8F, 1e-2F);
+  // down: to the ground, the whole of the air in front of it
+  const float2 down = cloudLayerSegment(kObserver, -0.1F, kEarth, top);
+  EXPECT_EQ(down.x, 0.0F);
+  EXPECT_NEAR(down.y, 3.0F, 0.05F);
+  // from above the deck, from where the ray comes down into it
+  const float2 above = cloudLayerSegment(kEarth + 2.0F, -0.5F, kEarth, top);
+  EXPECT_NEAR(above.x, (2.0F - 0.66F) / 0.5F, 0.05F);
+  EXPECT_NEAR(above.y, 2.0F / 0.5F, 0.05F);
+}
+
 TEST(SkyClouds, TheImageMappingInvertsAndSharesTheLatLongsAzimuth)
 {
   const float minElevation = horizonElevation(kObserver);

@@ -41,6 +41,7 @@
 #include "sky_bruneton_radiance.h.slang"  // brunetonHorizonMu
 #include "sky_clouds_io.h.slang"
 #include "sky_clouds.h.slang"
+#include "sky_clouds_air.h.slang"  // cloudShadeOfClearSky
 
 // clang-format off
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeOut, 0)]]        [[vk::image_format("rgba16f")]] RWTexture2D<float4> g_out;
@@ -50,6 +51,7 @@
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeTurbulence, 0)]] Sampler2D<float4>                  g_turbulence;
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeParams, 0)]]     ConstantBuffer<SkyCloudsParameters> g_params;
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeFiltered, 0)]]   [[vk::image_format("rgba16f")]] RWTexture2D<float4> g_filtered;
+[[vk::binding(SkyCloudsBakeBindings::eCloudBakeAir, 0)]]        RWStructuredBuffer<float>          g_air;
 
 // Set 1 is SkyBruneton's runtime set, as in the environment bake.
 [[vk::binding(0, 1)]] Sampler2D<float3>                       g_transmittance;
@@ -62,6 +64,10 @@
 // clang-format on
 
 static const float kInvFourPi = 0.0795774715F;
+
+// The shares of the air's light the clouds leave, the sun's and the sky's (sky_clouds_air.h.slang):
+// what airMain measured, for the march that reads them. Each entry point sets it first.
+static float2 s_air = float2(1.0F, 1.0F);
 
 // takram's mip level from distance (clouds.frag: rayStartTexelsPerPixel + rayDistance * 1e-5, in
 // metres): 0 near, 1 at 100 km. It drops the detail noise and the short march toward the sun with
@@ -258,7 +264,7 @@ float3 radianceFromGround(float3 position, float3 normal, float mipLevel, float 
   float3       skyIrradiance;
   const float3 sunIrradiance =
       GetSunAndSkyIrradiance(g_atmosphere, g_transmittance, g_irradiance, ground, normal, pc.sunDirection, skyIrradiance);
-  const float3 irradiance = skyIrradiance * SKY_RADIANCE_TO_LUMINANCE + sunIrradiance * (SUN_RADIANCE_TO_LUMINANCE * pc.sunlitAir);
+  const float3 irradiance = skyIrradiance * (SKY_RADIANCE_TO_LUMINANCE * s_air.y) + sunIrradiance * (SUN_RADIANCE_TO_LUMINANCE * s_air.x);
   return g_atmosphere.groundAlbedo * (1.0F / M_PI) * irradiance * exp(-depth);
 }
 
@@ -389,13 +395,13 @@ float4 marchClouds(float r0, float3 dir, float jitter)
   if(transmittance >= 1.0F)
     return float4(0.0F, 0.0F, 0.0F, 1.0F);
 
-  // The air between the observer and the clouds, to where they are on average. Its sunlit share is
-  // the share of the land under the clouds the sun reaches (cloudSunlitAir): under a deck the haze
-  // is grey, not the blue of the clear sky's.
+  // The air between the observer and the clouds, to where they are on average, lit by what the
+  // clouds leave of the sun and the sky (s_air, airMain): under a deck the haze is grey, not the blue
+  // of the clear sky's, and toward a low sun dim, not its glow.
   const float frontDepth = transmittanceSum > 0.0F ? weightedDistanceSum / transmittanceSum : rayNear;
   const AerialMarch air =
       marchAerialPerspective(g_atmosphere, g_transmittance, g_irradiance, observer, dir * frontDepth, sunDir, float2(0.5F));
-  const float3 airInFront = (air.inScatter - air.sunInScatter * (1.0F - pc.sunlitAir)) * SKY_RADIANCE_TO_LUMINANCE;
+  const float3 airInFront = (air.sunInScatter * s_air.x + (air.inScatter - air.sunInScatter) * s_air.y) * SKY_RADIANCE_TO_LUMINANCE;
   return cloudTexel(radianceIntegral, transmittance, air.transmittance, airInFront);
 }
 
@@ -406,6 +412,7 @@ void main(uint3 id: SV_DispatchThreadID)
   if(any(id.xy >= pc.imageSize))
     return;
 
+  s_air = float2(g_air[0], g_air[1]);
   // The observer and its horizon are the environment bake's (publishSunDisk in env_bake.slang).
   const float r0        = g_atmosphere.bottomRadius + pc.observerAltitude;
   const float horizonMu = brunetonHorizonMu(g_atmosphere, r0);
@@ -431,6 +438,123 @@ void main(uint3 id: SV_DispatchThreadID)
       texel += float4(0.0F, 0.0F, 0.0F, 1.0F);
   }
   g_out[rawTexel(id.xy)] = texel / float(samples);
+}
+
+// After the march, over what it wrote: the sky seen through the clouds is the clear one, its air
+// sunlit all the way, so each texel takes off what their shade takes from the air under their top, by
+// as much of the sky as it lets through (sky_clouds_air.h.slang). Once a texel, at its centre: the air
+// varies over far more than one. A pass of its own, since in the march's it slowed the whole march by
+// half again (the registers it holds).
+[shader("compute")]
+[numthreads(CLOUD_WORKGROUP_SIZE, CLOUD_WORKGROUP_SIZE, 1)]
+void airShadeMain(uint3 id: SV_DispatchThreadID)
+{
+  if(any(id.xy >= pc.imageSize))
+    return;
+  const uint2  at    = rawTexel(id.xy);
+  float4       texel = g_out[at];
+  if(texel.w <= 0.0F)
+    return;
+  const float  r0               = g_atmosphere.bottomRadius + pc.observerAltitude;
+  const float  horizonElevation = asin(brunetonHorizonMu(g_atmosphere, r0));
+  const float2 uv               = (float2(id.xy) + 0.5F) / float2(pc.imageSize);
+  const float3 dir = pc.viewForward.w != 0.0F ? cloudViewDir(uv, pc.viewRight.xyz, pc.viewRight.w, pc.viewUp.xyz, pc.viewUp.w, pc.viewForward.xyz) :
+                                                cloudImageDir(uv, horizonElevation);
+  if(RayIntersectsGround(g_atmosphere, r0, dir.y))
+    return;
+  const float3 clear = evalBrunetonSkyInScatter(g_atmosphere, g_transmittance, g_scattering, g_singleMie, r0, dir, pc.sunDirection);
+  texel.xyz -= texel.w
+               * cloudShadeOfClearSky(g_atmosphere, g_transmittance, g_irradiance, r0, dir, pc.sunDirection, g_params.maxHeight,
+                                      g_air[0], g_air[1], clear);
+  g_out[at] = texel;
+}
+
+// The transmittance toward the sun from a point at the observer's height, through the layers: a
+// march of the clouds alone, without their light. The sun below the point's horizon is the planet's
+// shadow, which the atmosphere already has, so the clouds pass it.
+float sunTransmittanceFrom(float3 origin, float jitter)
+{
+  const float R  = g_atmosphere.bottomRadius;
+  const float r  = length(origin);
+  const float mu = dot(origin, pc.sunDirection) / r;
+  if(RayIntersectsGround(g_atmosphere, r, mu))
+    return 1.0F;
+  const float2 segment = cloudLayerSegment(r, mu, R + g_params.minHeight, R + g_params.maxHeight);
+  if(segment.y <= segment.x)
+    return 1.0F;
+  // 96 steps over at most 100 km of it: a low sun's slant through a thick layer is that long
+  const int   kSteps = 96;
+  const float span   = min(segment.y - segment.x, 100.0F);
+  const float step   = span / float(kSteps);
+  float       depth  = 0.0F;
+  for(int i = 0; i < kSteps && depth < 20.0F; ++i)
+  {
+    const float  t      = segment.x + (float(i) + jitter) * step;
+    const float3 p      = origin + pc.sunDirection * t;
+    const float  height = length(p) - R;
+    if(cloudInsideIntervals(g_params, height))
+      continue;
+    const CloudWeather weather = weatherAt(p, height, 1.0F);
+    if(cloudWeatherHasDensity(g_params, weather))
+      depth += mediaAt(p, height, weather, 1.0F, t, jitter, true).extinction * step;
+  }
+  return exp(-depth);
+}
+
+groupshared float  s_sunSum[CLOUD_AIR_SAMPLES];
+groupshared float2 s_skySum[CLOUD_AIR_SAMPLES];
+
+// The shares of the air's light the clouds leave, measured once a bake before the march that reads
+// them (s_air, sky_clouds_air.h.slang), into g_air: [0] the sun's, [1] the sky's.
+//
+// The sun's is the share of the land it reaches through the clouds: the mean transmittance toward it
+// from points spread over 60 km around the observer, at its height: about what the haze toward the
+// horizon lies over, and some dozens of the weather's cells. Overhead it is the cover's
+// complement (cloudSunlitAir, which the cover tables are fitted to); a low sun's light crosses a layer
+// at a slant, kilometres of it, where the clouds overlap and a broken deck shades nearly all.
+// The sky's is what is left of the sky's light on the air with the clouds over it: the sky with them
+// against the sky without, over directions spread across the sky as its light falls on the ground
+// (cosine-weighted), as the observer sees it.
+[shader("compute")]
+[numthreads(CLOUD_AIR_SAMPLES, 1, 1)]
+void airMain(uint3 id: SV_DispatchThreadID)
+{
+  // the marches below light their own air by the overhead guess
+  s_air = float2(pc.sunlitAir, 1.0F);
+  const uint  i      = id.x;
+  const float kPi    = 3.14159265F;
+  const float r0     = g_atmosphere.bottomRadius + pc.observerAltitude;
+  const float jitter = frac(0.5F + 0.618033989F * float(i));
+  // Hammersley: the index over the samples, and its bits reversed
+  const float2 u = float2((float(i) + 0.5F) / float(CLOUD_AIR_SAMPLES), float(reversebits(i)) * 2.3283064365386963e-10F);
+
+  // The sun's: a point of a 60 km square around the observer, on the sphere at its height
+  const float2 offset = (u - 0.5F) * 60.0F;
+  const float3 origin = normalize(float3(offset.x, r0, offset.y)) * r0;
+  s_sunSum[i]         = sunTransmittanceFrom(origin, jitter);
+
+  // The sky's: a direction over the upper hemisphere, cosine-weighted
+  const float  sinTheta = sqrt(u.x);
+  const float  phi      = 2.0F * kPi * u.y;
+  const float3 dir      = float3(cos(phi) * sinTheta, sqrt(max(0.0F, 1.0F - u.x)), sin(phi) * sinTheta);
+  const float3 clear = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r0, dir,
+                                               pc.sunDirection, 1.0F);
+  const float3 clouded = RayIntersectsGround(g_atmosphere, r0, dir.y) ? clear : composeClouds(clear, marchClouds(r0, dir, jitter));
+  s_skySum[i]          = float2(luminance(clear), luminance(clouded));
+
+  GroupMemoryBarrierWithGroupSync();
+  if(i == 0)
+  {
+    float  sun = 0.0F;
+    float2 sky = float2(0.0F);
+    for(int k = 0; k < CLOUD_AIR_SAMPLES; ++k)
+    {
+      sun += s_sunSum[k];
+      sky += s_skySum[k];
+    }
+    g_air[0] = sun / float(CLOUD_AIR_SAMPLES);
+    g_air[1] = sky.x > 0.0F ? clamp(sky.y / sky.x, 0.0F, 1.0F) : 1.0F;
+  }
 }
 
 // How sharply the filter keeps neighbours of another transparency out: one 0.15 apart counts a third.

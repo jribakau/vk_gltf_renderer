@@ -65,6 +65,7 @@
 #include "sky_bruneton_io.h.slang"
 #include "sky_bruneton_radiance.h.slang"
 #include "sky_clouds.h.slang"
+#include "sky_clouds_air.h.slang"
 #include "sky_clouds_io.h.slang"
 
 // clang-format off
@@ -119,16 +120,33 @@ float3 evalSkyGradient(float3 dir)
 // shared with the path tracer's per-ray background; see sky_bruneton_radiance.h.slang.
 // `clear` is the same sky without its clouds, for the meter: above the horizon nothing else of it
 // depends on them (below, the ground's sunlit share does, and the meter does not read the ground).
+// What the clouds leave of the sun's and the sky's light on the land and the air (airMain in
+// sky_clouds_bake.slang, which runs ahead of this bake): 1 and 1 for a clear sky.
+float2 cloudAirShares()
+{
+  if(pc.clouds == 0 || pc.cloudAirAddress == 0)
+    return float2(1.0F, 1.0F);
+  return ((float2*)pc.cloudAirAddress)[0];
+}
+
 float3 evalSkyBruneton(float3 dir, out float3 clear)
 {
-  const float  r   = g_atmosphere.bottomRadius + pc.observerAltitude;
-  const float3 sky = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r,
-                                             dir, pc.sunDirection, pc.sunlitGround);
+  const float  r      = g_atmosphere.bottomRadius + pc.observerAltitude;
+  const float2 shares = cloudAirShares();
+  const float3 sky    = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r,
+                                                dir, pc.sunDirection, shares.x);
   clear = sky;
-  // The clouds over it, above the horizon: below, the ground is in the way.
+  // The clouds over it, above the horizon. Below, the ground is in the way, and what they change is
+  // the air in front of it, under their shade (sky_clouds_air.h.slang), as the background's.
   const float horizonMu = brunetonHorizonMu(g_atmosphere, r);
-  if(pc.clouds == 0 || dir.y <= horizonMu)
+  if(pc.clouds == 0)
     return sky;
+  if(dir.y <= horizonMu)
+  {
+    const float3 air = evalBrunetonSkyInScatter(g_atmosphere, g_transmittance, g_scattering, g_singleMie, r, dir, pc.sunDirection);
+    return sky - cloudShadeOfClearSky(g_atmosphere, g_transmittance, g_irradiance, r, dir, pc.sunDirection, pc.cloudTop, shares.x,
+                                      shares.y, air);
+  }
   return composeClouds(sky, sampleClouds(cloudImageUv(dir, asin(horizonMu))));
 }
 
@@ -173,12 +191,18 @@ void publishSunDisk()
   out->angularRadius    = g_atmosphere.sunAngularRadius;
   out->horizonMu        = horizonMu;
   out->cloudShadow      = cloudShadow;
-  out->sunlitGround     = pc.sunlitGround;
+  const float2 shares   = cloudAirShares();
+  out->sunlitGround     = shares.x;
   out->cloudPreview     = pc.cloudPreview;
+  out->cloudTop         = pc.clouds != 0 ? pc.cloudTop : 0.0F;
+  out->cloudSkyShare    = shares.y;
 
   // and for the meter, after its cells
   if(pc.meterAddress != 0)
-    ((float2*)pc.meterAddress)[pc.gridSize.x * pc.gridSize.y] = float2(cloudShadow, 1.0F);
+  {
+    ((float2*)pc.meterAddress)[pc.gridSize.x * pc.gridSize.y]     = float2(cloudShadow, 1.0F);
+    ((float2*)pc.meterAddress)[pc.gridSize.x * pc.gridSize.y + 1] = shares;
+  }
 
   // Where the observer stood, so a per-ray evaluation of the sky stands there too and its horizon
   // meets the one baked into the lighting environment.

@@ -48,7 +48,12 @@ enum SkyCloudsBakeBindings
   eCloudBakeTurbulence = 4,  // Sampler2D<float4>, repeating
   eCloudBakeParams     = 5,  // ConstantBuffer<SkyCloudsParameters>
   eCloudBakeFiltered   = 6,  // RWTexture2D<float4>: mip 0 of the cloud image, the raw one filtered (filterMain)
+  eCloudBakeAir        = 7,  // RWStructuredBuffer<float>: the shares of the air's light the clouds leave (airMain)
 };
+
+// The ground points, and the directions over the sky, the bake measures the air's shares at (airMain):
+// one workgroup's threads, one of each.
+#define CLOUD_AIR_SAMPLES 256
 
 // The noise pass's set: what it writes, once.
 enum SkyCloudsNoiseBindings
@@ -148,7 +153,7 @@ struct SkyCloudsPushConstant
 {
   uint2  imageSize;         // the image written: the full one, or the preview
   float  observerAltitude;  // km above the surface, the bake's fixed observer
-  float  sunlitAir;         // share of the air under the layers the sun reaches (cloudSunlitAir)
+  float  sunlitAir;         // the land's share the sun reaches overhead (cloudSunlitAir): airMain's first guess
   float3 sunDirection;      // unit, the environment's frame, toward the sun
   float  texelAngle;        // radians a column of the image spans: its footprint at a distance
   // A view bake's (SkyClouds::recordView): the environment-frame directions of the view image's

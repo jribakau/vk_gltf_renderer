@@ -744,10 +744,12 @@ inline float4 cloudTexel(float3 cloudLightSeen, float cloudTransmittance, float3
 }
 
 // The sky along a ray, with the clouds over it. No clouds is a texel of (0, 0, 0, 1), which gives
-// back `sky` exactly.
+// back `sky` exactly. A texel's light can be below zero, what the clouds' shade takes from the clear
+// sky seen through them (sky_clouds_air.h.slang); a coarser read of it than the bake's own, the
+// lighting field's, may take a hair more than that sky had, never past nothing.
 inline float3 composeClouds(float3 sky, float4 texel)
 {
-  return sky * texel.w + float3(texel.x, texel.y, texel.z);
+  return max(sky * texel.w + float3(texel.x, texel.y, texel.z), float3(0.0F));
 }
 
 #endif  // SKY_CLOUDS_H

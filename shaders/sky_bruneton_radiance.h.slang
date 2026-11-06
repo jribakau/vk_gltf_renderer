@@ -48,6 +48,23 @@ float brunetonHorizonMu(SkyAtmosphereParameters atmosphere, float r)
   return -sqrt(max(1.0F - sinHorizon * sinHorizon, 0.0F));
 }
 
+// The light the air scatters toward the observer along `dir`, to the ground or out of the atmosphere:
+// the sky above the horizon, and below it the haze in front of the ground (evalBrunetonSkyRadiance
+// adds the ground). In the units evalBrunetonSkyRadiance returns.
+float3 evalBrunetonSkyInScatter(SkyAtmosphereParameters atmosphere,
+                                Sampler2D<float3>       transmittanceTexture,
+                                Sampler3D<float4>       scatteringTexture,
+                                Sampler3D<float4>       singleMieScatteringTexture,
+                                float                   observerRadius,
+                                float3                  dir,
+                                float3                  sunDirection)
+{
+  float3 transmittance;
+  return GetSkyRadiance(atmosphere, transmittanceTexture, scatteringTexture, singleMieScatteringTexture,
+                        float3(0.0F, observerRadius, 0.0F), dir, sunDirection, transmittance)
+         * SKY_RADIANCE_TO_LUMINANCE;
+}
+
 // `dir` and `sunDirection` are unit vectors in the environment's frame. Returns luminance, in the
 // same units as the baked image. `sunlitGround` is the share of the ground the sun reaches past the
 // clouds (SkySunDisk::sunlitGround), 1 under a clear sky; the clouds themselves are composed over

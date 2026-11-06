@@ -68,6 +68,7 @@ static bool doDebug = false;
 #include "aperture.h.slang"
 #include "sky_bruneton_radiance.h.slang"
 #include "sky_clouds.h.slang"
+#include "sky_clouds_air.h.slang"
 #include "sky_clouds_io.h.slang"
 
 // NVSHADERS are under: https://github.com/nvpro-samples/nvpro_core2/tree/main/nvshaders
@@ -152,6 +153,14 @@ float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
       }
     }
     sky = composeClouds(sky, clouds);
+  }
+  else if(disk.cloudTop > 0.0F)
+  {
+    // Below the horizon the image does not reach: the air in front of the ground, all of it under the
+    // clouds, under their shade (sky_clouds_air.h.slang). The ground's own light is the sunlit share's.
+    const float3 air = evalBrunetonSkyInScatter(g_atmosphere, g_transmittance, g_scattering, g_singleMie, disk.observerRadius, dir, sunDir);
+    sky -= cloudShadeOfClearSky(g_atmosphere, g_transmittance, g_irradiance, disk.observerRadius, dir, sunDir, disk.cloudTop,
+                                disk.sunlitGround, disk.cloudSkyShare, air);
   }
   return sky + evalSunDiskBackground(dir, frameInfo);
 }
