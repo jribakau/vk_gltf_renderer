@@ -430,11 +430,12 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
       return sim;
     };
 #endif
-    // the figure's shown clothing collides in the simulation (a belt, a bra, shoes); its anatomy,
-    // hair and props do not
+    // the figure's shown clothing collides in the simulation (a belt, a bra, shoes), and so does what it
+    // wears as a prop (an outfit is a Prop once a hat or a necklace of it mounts on a bone, stockings and
+    // shoes with it; DAZ collides with every visible object); its anatomy and hair do not
     f->dforce->collidesWith = [fig = f->fig.get()](int mesh) {
       for(const fv::WornItem& w : fig->items)
-        if(w.visible && w.kind == "Clothing" && std::find(w.meshes.begin(), w.meshes.end(), mesh) != w.meshes.end())
+        if(w.visible && (w.kind == "Clothing" || w.kind == "Prop") && std::find(w.meshes.begin(), w.meshes.end(), mesh) != w.meshes.end())
           return true;
       return false;
     };
