@@ -2367,6 +2367,136 @@ TEST(Dforce, aLiveStepKeepsTheClockAtAnyFrameRate)
   EXPECT_LE(sim->seconds.size() - steps, 60u + 1u);
 }
 
+namespace {
+
+// A live solver on a queue of its own (any thread steps it): each step lifts the cloth a centimetre, and
+// holds until it is let go, as a step beside the path tracer takes frames. `open` lets every step through.
+class SteppingSim final : public dforce::ClothBackend
+{
+public:
+  explicit SteppingSim(std::vector<dforce::SettleMesh> meshes)
+      : m_meshes(std::move(meshes))
+  {
+  }
+  void frame(float, float, float, float) override
+  {
+    // never for good, should a test end with a step held
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while(!open.load() && !go.load() && std::chrono::steady_clock::now() < until)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    go   = false;
+    lift = lift.load() + 1.f;
+    steps++;
+  }
+  void  setTarget(size_t, const std::vector<fv::Mat4>&) override {}
+  void  setGravity(const std::array<float, 3>&) override {}
+  void  settle() override {}
+  float lastMove() const override { return 1.f; }
+  bool  ownerThreadOnly() const override { return false; }
+  std::vector<std::vector<float>> positions() const override
+  {
+    std::vector<std::vector<float>> out;
+    for(const dforce::SettleMesh& m : m_meshes)
+    {
+      out.push_back(m.rest);
+      for(size_t v = 0; v < out.back().size() / 3; v++)
+        out.back()[v * 3 + 1] += lift.load();
+    }
+    return out;
+  }
+  std::atomic<bool>  go{false}, open{false};
+  std::atomic<float> lift{0};
+  std::atomic<int>   steps{0};
+
+private:
+  std::vector<dforce::SettleMesh> m_meshes;
+};
+
+}  // namespace
+
+TEST(Dforce, aLiveStepIsEasedInOverAsLongAsItTookNotAtOnce)
+{
+  // Beside the path tracer a live step lands every two to four frames, and its drape written at once,
+  // the cloth jumped as often (15 to 20 times a second at 52 fps, the Charming Witch outfit walking). Now
+  // a step's drape is eased in from what was shown, over as long as the step took, so the next lands as
+  // it is in
+  VeilScene       v;
+  morph::MorphSet morphs([&](int m) { return v.scene.meshes[size_t(m)].geo.get(); });
+  dforce::Dforce  d(v.scene, morphs, 0, v.rootNode);
+  std::shared_ptr<SteppingSim> sim;
+  d.makeGpuSim = [&](std::vector<dforce::SettleMesh> meshes, const dforce::SettleOptions&) {
+    sim = std::make_shared<SteppingSim>(std::move(meshes));
+    return sim;
+  };
+  auto now = std::chrono::steady_clock::now();
+  d.clock  = [&] { return now; };
+  d.setMode(dforce::Mode::eLiveGpu);
+  // the settle that begins live is written at once; the figure turned over, the cloth steps on
+  ASSERT_TRUE(pumpUntilWritten(d));
+  ASSERT_TRUE(sim);
+  d.setPlacement(kUpsideDown);
+  struct Open
+  {
+    std::shared_ptr<SteppingSim>& sim;
+    ~Open() { sim->open = true; }
+  } open{sim};
+  morphs.flush();
+  const auto& geo     = *v.scene.meshes[1].geo;
+  const float settled = geo.position[1];
+  const auto  lifted  = [&] {
+    morphs.flush();
+    return geo.position[1] - settled;
+  };
+  const auto frame = [&] {
+    now += std::chrono::milliseconds(20);
+    d.pump();
+  };
+  // a step let go and done on the pool: it lands at the next frame
+  const auto letGo = [&](int step) {
+    sim->go = true;
+    for(int i = 0; i < 5000 && sim->steps.load() < step; i++)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    ASSERT_EQ(sim->steps.load(), step);
+    // its drape's deltas, after the step on the same thread
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  };
+
+  // the first step begins, and runs through two more frames: 60 ms
+  frame();
+  frame();
+  frame();
+  EXPECT_NEAR(lifted(), 0.f, 1e-4f);
+  letGo(1);
+  frame();
+  EXPECT_NEAR(lifted(), 0.f, 1e-4f) << "the step's drape written at once";
+  // eased in over the 60 ms it took, a third a frame, and then held
+  frame();
+  EXPECT_NEAR(lifted(), 1.f / 3.f, 1e-3f);
+  frame();
+  EXPECT_NEAR(lifted(), 2.f / 3.f, 1e-3f);
+  frame();
+  EXPECT_NEAR(lifted(), 1.f, 1e-4f);
+  frame();
+  EXPECT_NEAR(lifted(), 1.f, 1e-4f);
+
+  // the second began as the first landed and took 100 ms, as long as is eased; a fifth of it a frame
+  letGo(2);
+  frame();
+  frame();
+  EXPECT_NEAR(lifted(), 1.2f, 1e-3f);
+  // the third lands two frames in, after 40 ms: from where the cloth is then, without a jump, and in
+  // over the 40 ms it took
+  letGo(3);
+  frame();
+  EXPECT_NEAR(lifted(), 1.4f, 1e-3f) << "the cloth jumped as the third step landed";
+  frame();
+  EXPECT_NEAR(lifted(), 2.2f, 1e-3f);
+  frame();
+  EXPECT_NEAR(lifted(), 3.f, 1e-4f);
+  frame();
+  EXPECT_NEAR(lifted(), 3.f, 1e-4f);
+}
+
 TEST(Dforce, aTurnOnAFrameTooShortToStepIsStillTaken)
 {
   VeilScene       v;

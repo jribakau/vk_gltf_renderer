@@ -31,6 +31,9 @@ constexpr double kSettleSlice = 0.05;
 // on the GPU beside the path tracer took longer than it simulated, so the next was longer still (a walk
 // held at the 1/20 s this was, half its steps late); below it they shorten, to a frame or two.
 constexpr float kLiveMinStep = 1.f / 60.f, kLiveMaxStep = 1.f / 30.f;
+// A landed step's drape is eased in over as long as the step took, but no longer than this: a step
+// that came late (a rebuild, a slow frame) would leave the cloth that far behind
+constexpr float kLiveEaseMost = 0.1f;
 // How far gravity must turn to matter, cm/s^2 on any axis: about a twentieth of a degree.
 constexpr float kGravityChange = 1.f;
 // A collider much finer than the cloth meets it as a coarse copy (physics/cloth/coarse.hpp), with
@@ -315,6 +318,8 @@ void Dforce::cancel()
   m_live.reset();
   m_liveJob.reset();
   m_liveSettling = false;
+  m_easeFor      = 0;
+  m_shown.clear();
 }
 
 void Dforce::setEnabled(bool on)
@@ -847,12 +852,14 @@ bool Dforce::pump()
 // or nothing has moved, the figure's bones now go to the simulation and it steps once more.
 bool Dforce::pumpLive()
 {
-  bool wrote = false;
+  const auto frameAt = clock ? clock() : std::chrono::steady_clock::now();
+  // the last step's drapes a frame further in, every frame, whether or not the next has landed
+  bool       wrote   = easeLive(frameAt);
   // a frame the step is still running through: counted, so a slow step shows as frames without cloth
   if(m_liveStep.valid() && m_liveStep.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
   {
     timing::accumulate("dforce: live, a frame its step was still running", 0);
-    return false;
+    return wrote;
   }
   // Rest shapes the pose or a dent moved since the last step, read as the figure's pump left them, while
   // the simulation is between steps: what it skins from next, and a drape's what its delta is taken
@@ -902,6 +909,7 @@ bool Dforce::pumpLive()
     {
       positions.clear();
     }
+    const bool settled = m_liveSettling;
     if(m_liveSettling)
     {
       m_liveSettling = false;
@@ -914,8 +922,22 @@ bool Dforce::pumpLive()
         if(k < positions.size() && positions[k].size() == shift.size())
           for(size_t i = 0; i < shift.size(); i++)
             positions[k][i] += shift[i];
-      timing::Accum t("dforce: live, the drape written");
-      wrote = writeDeltas(*m_liveJob, positions);
+      if(settled || m_shown.size() != positions.size())
+      {
+        // the settle that began live, at once, as a settle's drape is
+        timing::Accum t("dforce: live, the drape written");
+        wrote     = writeDeltas(*m_liveJob, positions) || wrote;
+        m_shown   = std::move(positions);
+        m_easeFor = 0;
+      }
+      else
+      {
+        // eased in from what is shown, over as long as this step took: the next one takes about as long
+        m_easeFrom  = m_shown;
+        m_easeTo    = std::move(positions);
+        m_easeStart = frameAt;
+        m_easeFor   = std::clamp(std::chrono::duration<float>(frameAt - m_liveLast).count(), kLiveMinStep, kLiveEaseMost);
+      }
     }
   }
   if(!m_enabled)
@@ -926,6 +948,8 @@ bool Dforce::pumpLive()
     m_scheduled = false;
     m_live.reset();
     m_liveJob.reset();
+    m_easeFor = 0;
+    m_shown.clear();
     // the new job reads every shape as it is now
     m_liveReshaped.clear();
     m_liveRestMoved = false;
@@ -1036,6 +1060,39 @@ bool Dforce::pumpLive()
     return deltasOf(*job, sim->positions());
   });
   return wrote;
+}
+
+bool Dforce::easeLive(std::chrono::steady_clock::time_point now)
+{
+  if(m_easeFor <= 0)
+    return false;
+  if(!m_liveJob || m_liveGen != m_gen || !m_enabled)
+  {
+    m_easeFor = 0;
+    return false;
+  }
+  const float a = std::clamp(std::chrono::duration<float>(now - m_easeStart).count() / m_easeFor, 0.f, 1.f);
+  if(a <= 0)
+    return false;
+  m_shown.resize(m_easeTo.size());
+  for(size_t k = 0; k < m_easeTo.size(); k++)
+  {
+    const std::vector<float>& to   = m_easeTo[k];
+    const std::vector<float>& from = k < m_easeFrom.size() ? m_easeFrom[k] : to;
+    std::vector<float>&       at   = m_shown[k];
+    if(from.size() != to.size() || a >= 1)
+    {
+      at = to;
+      continue;
+    }
+    at.resize(to.size());
+    for(size_t i = 0; i < to.size(); i++)
+      at[i] = from[i] + (to[i] - from[i]) * a;
+  }
+  if(a >= 1)
+    m_easeFor = 0;
+  timing::Accum t("dforce: live, the drape eased");
+  return writeDeltas(*m_liveJob, m_shown);
 }
 
 std::vector<float> Dforce::liveRest(int mesh, bool drape) const

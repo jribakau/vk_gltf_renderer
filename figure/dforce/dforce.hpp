@@ -167,6 +167,9 @@ private:
   // World down, in cm/s^2, in the job's space.
   std::array<float, 3> currentGravity() const;
   bool                           pumpLive();
+  // Live: the drapes a frame further from what was shown when the last step landed toward that step's.
+  // True when it wrote.
+  bool                           easeLive(std::chrono::steady_clock::time_point now);
   // Live: a mesh's rest cage as the simulation skins it, in its own space: a drape's without its drape.
   std::vector<float>             liveRest(int mesh, bool drape) const;
 
@@ -217,6 +220,13 @@ private:
   // step has a moved rest shape to take though no bone moved
   std::set<int>                                  m_liveReshaped;
   bool                                           m_liveRestMoved = false;
+  // live: a step's drapes aren't written at once when it lands but eased in from what was shown, over as
+  // long as that step took, so the next lands as this one is in (beside the path tracer a step lands
+  // every two to four frames, and written at once the cloth jumped as often). Its deltas, those shown
+  // when it landed, those shown now; when it landed, and over how long (0: nothing to ease)
+  std::vector<std::vector<float>>                m_easeTo, m_easeFrom, m_shown;
+  std::chrono::steady_clock::time_point          m_easeStart;
+  float                                          m_easeFor = 0;
   std::set<int> m_draped;
   int           m_version = 0;
   // the coarse copies of colliders the last job made, by the shape each was made from (its rest cage,
