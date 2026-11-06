@@ -343,6 +343,7 @@ TEST(ImageLoader, WhatOnlyLooksConstantStaysWhole)
 // --gtest_also_run_disabled_tests --gtest_filter=ImageLoader.DISABLED_CountConstantMapsInACache
 TEST(ImageLoader, DISABLED_CountConstantMapsInACache)
 {
+#pragma warning(suppress : 4996)  // getenv
   const char* dir = std::getenv("FV_TEXCACHE_SCAN");
   if(!dir)
     GTEST_SKIP() << "set FV_TEXCACHE_SCAN to a cache folder";

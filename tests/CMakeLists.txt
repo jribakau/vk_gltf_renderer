@@ -161,6 +161,8 @@ set(TEST_SOURCES
     test_variant_compile_job.cpp
     # nvslang's compiler: no global session until it compiles, names looked up then
     test_slang_compiler.cpp
+    # The structs the host and the shaders share: each field where both put it, by the SPIR-V's offsets
+    test_struct_layout.cpp
     # What a lost device leaves in the log: the frames kept, what each says
     test_gpu_crash_trail.cpp
     ${CMAKE_SOURCE_DIR}/src/gpu_crash_trail.cpp
@@ -275,6 +277,8 @@ target_compile_definitions(${TEST_NAME} PRIVATE
     FV_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/figure/data"
     GLTF_2_1_FIXTURES_DIR="${GLTF_2_1_FIXTURES_DIR}"
     FV_TEST_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+    FV_SHADER_DIR="${CMAKE_SOURCE_DIR}/shaders"
+    FV_NVSHADERS_DIR="${NVSHADERS_DIR}"
 )
 
 # Add Draco support if enabled
