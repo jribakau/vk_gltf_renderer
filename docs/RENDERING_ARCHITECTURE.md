@@ -278,7 +278,9 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
 - **A body of water over the ground** (`groundHasWater`). Its surface is a heightfield of gentle
   waves (`groundWavesAt`) that a path's ray meets analytically after the floor
   (`checkWaterIntersection`, `groundWaterCrossing`), shaded as smooth water with the waves and
-  ripples in its normal (`waterSurfaceMaterial`). The path keeps its own `inWater` flag beside a
+  ripples in its normal (`waterSurfaceMaterial`), and what the ray's footprint averages of them in
+  its roughness as Gaussian slopes, a Beckmann lobe (`PbrMaterial::gaussianSlopes`; sky.md § What a
+  reflection sees). The path keeps its own `inWater` flag beside a
   mesh's medium: each segment under the surface is charged pure water's absorption, and what is
   under it sees water, not air, outside its surfaces. Crossing the surface is a clear crossing for MIS
   and spends a budget of its own, the glass's size. A shadow ray crosses the surface straight

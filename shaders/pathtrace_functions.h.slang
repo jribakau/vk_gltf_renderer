@@ -1518,6 +1518,10 @@ PbrMaterial waterSurfaceMaterial(float3 pos, float3 geometricNormal, bool fromAb
   // pbrMat.roughness holds alpha; the averaged-out slopes add to its square as in groundMaterial
   const float alpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * (waves.slope.variance + ripples.variance));
   mat.roughness     = float2(max(alpha, MICROFACET_MIN_ROUGHNESS));
+  // Those slopes are Gaussian, as a wind's ripples are (Cox and Munk 1954), and the variance above is
+  // Beckmann's alpha: GGX's long tail of steep microfacets made far water reflect the sky up to 18
+  // degrees up where it reflects 10, blurred it four times as wide, and a third darker at grazing
+  mat.gaussianSlopes = true;
   mat.transmission  = 1.0F;
   mat.thickness     = 1.0F;  // a volume, so the ray bends; the water's absorption is the path's (pt.inWater)
   mat.ior1          = fromAbove ? 1.0F : GROUND_WATER_IOR;

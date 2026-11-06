@@ -51,6 +51,20 @@ PbrMaterial base(float roughness)
   return defaultPbrMaterial(vec3(0.8f, 0.6f, 0.4f), 0.0f, roughness, vec3(0, 0, 1), vec3(0, 0, 1));
 }
 
+// The ground's water surface seen from above, as waterSurfaceMaterial makes it, at GGX/Beckmann alpha
+// `alpha`; `gaussian` false for the GGX lobe it had
+PbrMaterial water(float alpha, bool gaussian = true)
+{
+  PbrMaterial mat    = defaultPbrMaterial(vec3(1.0f), 0.0f, 0.0f, vec3(0, 0, 1), vec3(0, 0, 1));
+  mat.roughness      = vec2(alpha);
+  mat.transmission   = 1.0f;
+  mat.thickness      = 1.0f;
+  mat.ior1           = 1.0f;
+  mat.ior2           = 1.33f;
+  mat.gaussianSlopes = gaussian;
+  return mat;
+}
+
 // One of each lobe the sum adds up, and the combinations a DAZ figure has.
 std::vector<Case> cases()
 {
@@ -115,6 +129,12 @@ std::vector<Case> cases()
   PbrMaterial thinGlass = pane;
   thinGlass.plate       = false;
   out.push_back({"thin glass", thinGlass});
+  // The ground's water (waterSurfaceMaterial): a medium's surface whose ripples are Gaussian slopes,
+  // sampled by GGX's lobe (bsdfGaussianSlopeShare); and the same slopes on a reflection lobe alone
+  out.push_back({"water", water(0.15f)});
+  PbrMaterial gaussianPlastic    = base(0.4f);
+  gaussianPlastic.gaussianSlopes = true;
+  out.push_back({"gaussian plastic", gaussianPlastic});
   return out;
 }
 
@@ -225,11 +245,12 @@ TEST(BsdfLobes, SamplingCarriesWhatEvaluationIntegratesTo)
   std::uniform_real_distribution<float> u(0.0f, 1.0f);
   for(Case c : cases())
   {
-    // uniform directions cannot integrate the cornea's narrow refraction lobe: a rougher one
+    // uniform directions cannot integrate the cornea's narrow refraction lobe: a rougher one, and
+    // eight times the directions, without which water's (into 1.33, GGX or Gaussian) came out 5% off
     if(c.mat.transmission > 0.0f)
       c.mat.roughness = vec2(0.4f * 0.4f);
     const vec3 k1 = normalize(vec3(0.4f, 0.2f, 0.9f));
-    const int  N  = 400000;
+    const int  N  = c.mat.transmission > 0.0f ? 3200000 : 400000;
     double     carried = 0.0, integral = 0.0;
     for(int i = 0; i < N; i++)
     {
@@ -1240,4 +1261,100 @@ TEST(BsdfLobes, ABounceLeavesOnTheSideItsLobeSays)
     bsdfEvaluateAll(l, loose);
     EXPECT_GT(l.pdf, 0.0f) << mixture;
   }
+}
+
+// Gaussian slopes (PbrMaterial::gaussianSlopes): Beckmann's distribution of microfacets, over the slope
+// plane, where a microfacet's normal is normalize(-s, 1) and D(h) dw = hvd(h) h.z^2 d^2s.
+namespace {
+
+template <class F>
+double overSlopes(float alpha, const F& f)
+{
+  const int    n    = 600;
+  const double span = 7.0 * alpha, step = 2.0 * span / n;
+  double       sum  = 0.0;
+  for(int i = 0; i < n; i++)
+    for(int j = 0; j < n; j++)
+    {
+      const vec3 h = normalize(vec3(-(-span + (i + 0.5) * step), -(-span + (j + 0.5) * step), 1.0));
+      sum += f(h) * step * step;
+    }
+  return sum;
+}
+
+}  // namespace
+
+// Every direction is some microfacet's: D cos(theta) over the hemisphere is one
+TEST(BsdfLobes, GaussianSlopesCoverTheSurfaceOnce)
+{
+  for(float alpha : {0.01f, 0.057f, 0.3f})
+  {
+    const double area = overSlopes(alpha, [&](const vec3& h) { return hvd_beckmann_eval(vec2(1.0f / alpha), h) * h.z * h.z * h.z; });
+    EXPECT_NEAR(area, 1.0, 2e-3) << alpha;
+  }
+  // anisotropic: the same Gaussian, stretched along one axis
+  const vec2 inv(1.0f / 0.05f, 1.0f / 0.12f);
+  const double area = overSlopes(0.12f, [&](const vec3& h) { return hvd_beckmann_eval(inv, h) * h.z * h.z * h.z; });
+  EXPECT_NEAR(area, 1.0, 2e-3);
+}
+
+// Smith's masking is what makes the microfacets a view sees as large as the surface it sees:
+// G1(k) times the microfacets' area facing k, projected, is k.z (Heitz 2014). Down to a view half a
+// degree off the surface, where far water is seen.
+TEST(BsdfLobes, GaussianMaskingShowsTheSurfaceItsOwnSize)
+{
+  for(float alpha : {0.02f, 0.057f, 0.3f})
+    for(float elevation : {0.5f, 1.0f, 3.0f, 10.0f, 30.0f, 60.0f})
+    {
+      const float  e         = radians(elevation);
+      const vec3   k(std::cos(e), 0.0f, std::sin(e));
+      const double projected = overSlopes(alpha, [&](const vec3& h) {
+        return std::max(0.0f, dot(k, h)) * hvd_beckmann_eval(vec2(1.0f / alpha), h) * h.z * h.z;
+      });
+      const double seen = beckmann_shadow_or_mask(k, vec2(alpha)) * projected;
+      EXPECT_NEAR(seen / k.z, 1.0, 5e-3) << "alpha " << alpha << ", " << elevation << " degrees";
+    }
+}
+
+// Why the ground's water has Gaussian slopes. Seen a degree above its surface, as far water is, with the
+// alpha Ripples 0.71 and Waves 0.32 average out to there: GGX's tail of steep microfacets reflected sky
+// up to 18 degrees high where the water's own slopes reach 10, blurred it sideways four times as wide,
+// and reflected a third less of it.
+TEST(BsdfLobes, FarWaterReflectsTheSkyJustAboveTheHorizon)
+{
+  const float e = radians(1.0f);
+  const vec3  k1(std::cos(e), 0.0f, std::sin(e));
+  struct Reflection
+  {
+    double total = 0.0, high = 0.0, wide = 0.0;
+  };
+  const auto reflect = [&](const PbrMaterial& mat) {
+    std::mt19937                          rng(31);
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    Reflection                            r;
+    const int                             N = 400000;
+    for(int i = 0; i < N; i++)
+    {
+      BsdfSampleData s;
+      s.k1 = k1;
+      s.xi = vec3(u(rng), u(rng), u(rng));
+      bsdfSample(s, mat);
+      if(s.event_type != BSDF_EVENT_GLOSSY_REFLECTION || s.k2.z <= 0.0f)
+        continue;
+      const double carried = s.bsdf_over_pdf.x / N;
+      r.total += carried;
+      if(s.k2.z > std::sin(radians(12.0f)))
+        r.high += carried;
+      if(std::abs(std::atan2(s.k2.y, -s.k2.x)) > radians(1.0f))
+        r.wide += carried;
+    }
+    return r;
+  };
+  const Reflection gaussian = reflect(water(0.057f)), ggx = reflect(water(0.057f, false));
+  EXPECT_LT(gaussian.high / gaussian.total, 0.03) << "sky above 12 degrees";
+  EXPECT_GT(ggx.high / ggx.total, 0.15);
+  EXPECT_LT(gaussian.wide / gaussian.total, 0.03) << "more than a degree sideways";
+  EXPECT_GT(ggx.wide / ggx.total, 0.15);
+  EXPECT_GT(gaussian.total, 1.25 * ggx.total);
+  EXPECT_LT(gaussian.total, 1.0);
 }

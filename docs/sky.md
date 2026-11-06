@@ -545,9 +545,18 @@ above `SKY_NARROW_LOBE_PDF` (1000 per steradian, GGX alpha 0.009 at its peak) se
 (`evalPhysicalSky`, without the disk, which keeps its own MIS against the sun's light sample), and its
 MIS weight against the environment's light sample stays: that sample reads the field, which agrees with
 the per-ray sky but in sharpness. Wider lobes blur more than the field does, and keep it. Rippled water
-is one: with Ripples 0.7 its far surface reflects some 6 degrees of sky (alpha about 0.1), which at a
-sunset with a dark band of cloud on the horizon and bright gaps above makes the far water brighter
-than the sky just above the horizon, as wind-roughened water is.
+is one: at Ripples 0.71 and Waves 0.32 its far surface is alpha 0.057, and seen a degree above it
+reflects the sky from 2 to 10 degrees up (a tenth to nine tenths of its light), which at a sunset with
+a dark band of cloud on the horizon and bright gaps above makes the far water brighter than the sky
+just above the horizon, as wind-roughened water is, each gap a column under it.
+
+Those slopes are Gaussian, as a wind's ripples are (Cox and Munk 1954), and the water's lobe is
+Beckmann's since 2026-11-06 (`PbrMaterial::gaussianSlopes`, sampled by GGX's VNDF of the same alpha;
+`bsdfGaussianSlopeShare` in nvshaders). GGX's long tail of steep microfacets had that far water reflect
+sky up to 18 degrees up, spread it sideways four times as far (90% within 2 degrees, not 0.5), and
+reflect a third less at grazing (47% where Beckmann's 66%): the columns were a dull, wide glow. A render
+of the same view with every ripple and swell traced in the normal instead of averaged (footprint 0, 1024
+samples) is the reference: its far columns' contrast across the view is 20.8, Gaussian 20.9, GGX 17.5.
 
 ## Verifying a change
 
