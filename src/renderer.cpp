@@ -1319,6 +1319,7 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
     tonemapperData.isActive = 0;
   if(bypassTonemapper)
     tonemapperData.isActive = 0;
+  tonemapperData.falseColor = m_falseColor ? 1 : 0;
 
   m_resources.tonemapper.runCompute(cmd, gbufSize, tonemapperData, inputBuffer,
                                     m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgTonemapped));

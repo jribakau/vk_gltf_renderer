@@ -432,6 +432,7 @@ public:
   /// Shaded, clay, normals and the other debug views (shaderio::Visualization).
   void setVisualization(shaderio::Visualization mode) override;
   void setWireframe(bool on) override;
+  void setFalseColor(bool on) override { m_falseColor = on; }
   void setShowGrid(bool on) override;
   void setShowAxis(bool on) override;
   /// Path-tracer depth of field. `aperture` is the lens radius squared in metres (0: pinhole).
@@ -624,6 +625,7 @@ private:
     VkExtent2D               size{};
     shaderio::TonemapperData data{};
   } m_tonemapInput;
+  bool m_falseColor = false;  // setFalseColor
   bool          m_presentHdr     = true;  // presentHdr: HDR frames when the display is in HDR mode
   float         m_presentHdrPeak = 0.0F;  // presentHdrPeak: the display's peak in nits; 0 = as it reports
   VisualHelpers m_visualHelpers;  // Grid + transform gizmo overlay

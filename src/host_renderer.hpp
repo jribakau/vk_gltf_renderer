@@ -168,6 +168,9 @@ public:
   virtual void                                        fitCamera(bool wholeScene) = 0;
   virtual void setVisualization(shaderio::Visualization mode)                    = 0;
   virtual void setWireframe(bool on)                                             = 0;
+  // The false-colour exposure view in place of the image (TonemapperData::falseColor): the tone
+  // mapper's alone, so a still keeps its samples
+  virtual void setFalseColor(bool on) = 0;
   virtual void setShowGrid(bool on)                                              = 0;
   virtual void setShowAxis(bool on)                                              = 0;
   // path-traced depth of field: `aperture` is the lens radius squared in metres (0: pinhole)

@@ -218,3 +218,42 @@ TEST(TonemapGrading, TheGradeAtZeroSaturationIsTheColoursLuminance)
   EXPECT_NEAR(out.x, out.y, 1e-5F);
   EXPECT_NEAR(toLinear(out).x, bt709Luminance(c), 1e-5F);
 }
+
+// The exposure view: whole stops around middle grey, a band each, centred on its stop; what the
+// image shows clipped or crushed in colours of their own, whatever the stop
+TEST(HdrOutput, TheExposureViewBandsStopsAroundMiddleGrey)
+{
+  EXPECT_EQ(falseColorBand(0.18F), 4);  // the middle band
+  EXPECT_EQ(falseColorBand(0.18F * std::exp2(0.49F)), 4);
+  EXPECT_EQ(falseColorBand(0.18F * std::exp2(0.51F)), 5);
+  EXPECT_EQ(falseColorBand(0.36F), 5);
+  EXPECT_EQ(falseColorBand(0.18F * std::exp2(-1.0F)), 3);
+  EXPECT_EQ(falseColorBand(0.18F * std::exp2(-4.0F)), 0);
+  EXPECT_EQ(falseColorBand(0.0F), 0);  // and below
+  EXPECT_EQ(falseColorBand(0.18F * std::exp2(10.0F)), 8);
+  const float3 mid = float3(188.F, 55.F, 84.F) / 255.F;
+  EXPECT_EQ(falseColorExposure(0.18F, float3(0.46F)), mid);
+  const float3 clipped = falseColorExposure(0.18F, float3(1.0F, 0.5F, 0.5F));
+  const float3 crushed = falseColorExposure(0.18F, float3(0.0F, 0.0F, 0.001F));
+  EXPECT_NE(clipped, mid);
+  EXPECT_NE(crushed, mid);
+  EXPECT_NE(clipped, crushed);
+  // nine distinct bands
+  for(int a = 0; a < 9; a++)
+    for(int b = a + 1; b < 9; b++)
+      EXPECT_NE(falseColorExposure(0.18F * std::exp2(float(a - 4)), float3(0.5F)), falseColorExposure(0.18F * std::exp2(float(b - 4)), float3(0.5F)))
+          << a << " " << b;
+}
+
+// The tone mapper paints it in place of the image, from the exposure the image uses: a grey card
+// at the metered exposure lands in the middle band, two stops over it two bands up
+TEST(HdrOutput, TheToneMapperPaintsTheExposureViewAtItsOwnExposure)
+{
+  TonemapperData tm;
+  tm.inputMatrix = float3x3(4.0F);  // two stops of exposure
+  tm.falseColor  = 1;
+  EXPECT_EQ(applyTonemap(tm, float3(0.045F), float2(0.0F), float2(1.0F)), float3(188.F, 55.F, 84.F) / 255.F);
+  EXPECT_EQ(applyTonemap(tm, float3(0.18F), float2(0.0F), float2(1.0F)), falseColorExposure(0.72F, float3(0.5F)));
+  tm.falseColor = 0;
+  EXPECT_NE(applyTonemap(tm, float3(0.045F), float2(0.0F), float2(1.0F)), float3(188.F, 55.F, 84.F) / 255.F);
+}

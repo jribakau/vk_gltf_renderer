@@ -108,6 +108,8 @@ public:
   void                                        fitCamera(bool) override {}
   void setVisualization(shaderio::Visualization) override {}
   void setWireframe(bool) override {}
+  void setFalseColor(bool on) override { falseColor = on; }
+  bool falseColor = false;
   void setShowGrid(bool) override {}
   void setShowAxis(bool) override {}
   void setDepthOfField(float, float, bool, int, float) override {}

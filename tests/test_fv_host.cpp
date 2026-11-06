@@ -3030,6 +3030,20 @@ TEST(FvHost, TheRendererPathTracesOnly)
   EXPECT_FALSE(rig.cmd("render.mode", {{"skin", "measured"}, {"solidGlass", "yes"}}).value("ok", false));
 }
 
+// The Display menu's exposure view: the tone mapper's false colour over the shaded image, off in every
+// other mode, and a name the host doesn't know changes nothing
+TEST(FvHost, TheExposureViewIsTheToneMappersFalseColour)
+{
+  HostRig rig;
+  EXPECT_FALSE(rig.renderer.falseColor);
+  EXPECT_TRUE(rig.cmd("view.set", {{"display", "exposure"}}).value("ok", false));
+  EXPECT_TRUE(rig.renderer.falseColor);
+  EXPECT_FALSE(rig.cmd("view.set", {{"display", "heat"}}).value("ok", false));
+  EXPECT_TRUE(rig.renderer.falseColor);
+  EXPECT_TRUE(rig.cmd("view.set", {{"display", "clay"}}).value("ok", false));
+  EXPECT_FALSE(rig.renderer.falseColor);
+}
+
 // The frame as a linear image, once it is on disk: the path tracer's, a .hdr
 TEST(FvHost, ACaptureIsAnHdrOfThePathTracersImage)
 {

@@ -222,13 +222,14 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
           m_renderer->setVisualization(shaderio::Visualization::eRendered);
           m_renderer->setWireframe(true);
         }
-        else if(display == "shaded")
+        else if(display == "shaded" || display == "exposure")
         {
           m_renderer->setVisualization(shaderio::Visualization::eRendered);
           m_renderer->setWireframe(false);
         }
         else
-          throw std::runtime_error("display is shaded, clay, wireframe or normals");
+          throw std::runtime_error("display is shaded, clay, wireframe, normals or exposure");
+        m_renderer->setFalseColor(display == "exposure");
       }
       if(args.contains("grid"))
         m_renderer->setShowGrid(args["grid"].get<bool>());
