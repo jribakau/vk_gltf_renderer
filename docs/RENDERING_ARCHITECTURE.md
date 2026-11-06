@@ -121,9 +121,10 @@ Host — build the emitter list (`rs::Residency`, with `buildEmissiveTable` in `
 1. Walk every shown **instance** and look at its material.
 2. Keep it if it emits: its **selection radiance**, `emissiveFactor × emissiveStrength ×
    emissiveLightScale`, is non-black. `emissiveLightScale` (`GltfShadeMaterial`) is 1 for a constant
-   emitter and the emissive texture's mean luminance for a textured one (`imageMeanLuminance`, from a
-   64 × 64 grid of the decoded texels; 1 where the format cannot be read, so the factor alone weighs
-   it; 0 for an all-black texture, which is then no light).
+   emitter and the emissive texture's mean luminance for a textured one (`imageMeanLuminance`: an
+   8-bit image's from a 64 × 64 grid of its texels; a cooked BC7 or BC4 one's from its 1 × 1 level,
+   which the cooker averages in linear light, decoded by `bc7FirstTexel`; 1 where neither can be
+   read, so the factor alone weighs it; 0 for an all-black texture, which is then no light).
 3. For each triangle of that primitive, store a **reference** — render node, primitive, triangle
    index — plus the selection **radiance** (not baked vertices, so the shader reads live
    geometry/transforms). A textured emitter's light sample reads the texel at its point; the pdf, and

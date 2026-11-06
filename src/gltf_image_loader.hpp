@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -61,6 +62,18 @@ std::optional<rs::ImageChain> readImageChain(const void* data, size_t byteLength
 // them; negative for a format it does not read (compressed, float). An emissive texture's weight as a
 // light (GltfShadeMaterial::emissiveLightScale).
 float imageMeanLuminance(VkFormat format, VkExtent2D size, const std::vector<char>& texels);
+
+// The same of a decoded image as a sampler reads it. An 8-bit one as above, from its first level. A
+// BC7 or BC4 one from its smallest level when that is 1 x 1, as every texture the app cooks has it
+// (texcache.rs `cook`): the image averaged in linear light, so its one texel is the mean, and through
+// the image's swizzle. Negative where unknown (other formats, a chain that stops short of 1 x 1).
+float imageMeanLuminance(const LoadedImageData& image);
+
+// The top-left texel of a BC7 block, RGBA: a 1 x 1 level's only one. Texel 0 is subset 0's anchor
+// under every partition, so this needs the mode table and the weights only, not the partitions.
+std::array<uint8_t, 4> bc7FirstTexel(const uint8_t block[16]);
+// The same of a BC4 block, its one channel
+uint8_t bc4FirstTexel(const uint8_t block[8]);
 
 // Number of color components a sampled VkFormat actually carries. Vulkan synthesizes the missing
 // ones (0 for G/B, 1 for A), so a consumer that needs a component the format does not store must
