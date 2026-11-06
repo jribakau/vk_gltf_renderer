@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <mutex>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <meshoptimizer.h>
@@ -492,12 +495,364 @@ Riding rideOn(const Surface& cloth, const Surface& copy, const std::vector<uint3
 
 }  // namespace
 
+namespace {
+
+// A cloth mostly of quads (as DAZ's are, with a few triangles) is copied as quads along its own threads:
+// the quads' diagonals give it its soft bias, and a copy of triangles has every side a thread (a
+// triangle of springs can't hold the weft stiff with the bias soft). This share of its faces quads
+constexpr double kQuadShare = 0.8;
+// A ring of quads is collapsed while the faces either side of it come out no wider than this many times
+// the faces asked for
+constexpr double kGrow = 1.5;
+// Passes, each of which can halve the faces' width
+constexpr int kPasses = 6;
+// A collapse that would turn a face further than this (the cosine) is left: it would fold the copy
+constexpr double kNoFold = 0.3;
+
+uint64_t sideKey(uint32_t a, uint32_t b)
+{
+  return (uint64_t(std::min(a, b)) << 32) | uint64_t(std::max(a, b));
+}
+
+// A face's normal, the fan of its corners, each vertex taken through `at`.
+template <class At>
+D3 faceNormal(const std::vector<uint32_t>& f, const float* p, At&& at)
+{
+  D3       out;
+  const D3 o = pointOf(p, at(f[0]));
+  for(size_t k = 1; k + 1 < f.size(); k++)
+    out = out + cross(pointOf(p, at(f[k])) - o, pointOf(p, at(f[k + 1])) - o);
+  return out;
+}
+
+// The faces as they are: each vertex through `find`, a corner repeated in turn once, and a face left with
+// fewer than three corners, or one twice, gone.
+template <class Find>
+std::vector<std::vector<uint32_t>> resolved(const std::vector<std::vector<uint32_t>>& faces, Find&& find)
+{
+  std::vector<std::vector<uint32_t>> out;
+  out.reserve(faces.size());
+  for(const auto& f : faces)
+  {
+    std::vector<uint32_t> g;
+    for(uint32_t v : f)
+    {
+      v = find(v);
+      if(g.empty() || g.back() != v)
+        g.push_back(v);
+    }
+    while(g.size() > 1 && g.front() == g.back())
+      g.pop_back();
+    if(g.size() < 3)
+      continue;
+    std::vector<uint32_t> sorted = g;
+    std::sort(sorted.begin(), sorted.end());
+    if(std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+      continue;
+    out.push_back(std::move(g));
+  }
+  return out;
+}
+
+// The cloth's polygons with rings of its quads collapsed until its faces are about `edge` wide. A ring
+// is a strip of quads joined by their opposite sides; collapsing it merges the vertices along one side
+// of the strip into those along the other, so the strip goes and the quads either side grow across it.
+// A pass collapses rings both ways at once, but none beside one it collapsed (a quad would grow three
+// times), nor one that would fold a face; a hem and where the cloth is held keep their vertices. None
+// when the cloth isn't mostly quads.
+std::optional<std::vector<std::vector<uint32_t>>> collapseRings(const Surface& cloth, float edge)
+{
+  const size_t                       n = cloth.vertexCount();
+  const float*                       p = cloth.rest.data();
+  std::vector<std::vector<uint32_t>> faces;
+  size_t                             quads = 0;
+  for(size_t f = 0; f + 1 < cloth.polyStart.size(); f++)
+  {
+    const int s = cloth.polyStart[f], e = cloth.polyStart[f + 1];
+    if(e - s < 3 || size_t(e) > cloth.polyVerts.size())
+      continue;
+    std::vector<uint32_t> face;
+    bool                  ok = true;
+    for(int k = s; k < e; k++)
+    {
+      const int32_t v = cloth.polyVerts[size_t(k)];
+      ok              = ok && v >= 0 && size_t(v) < n;
+      if(ok)
+        face.push_back(uint32_t(v));
+    }
+    if(!ok)
+      continue;
+    quads += face.size() == 4 ? 1 : 0;
+    faces.push_back(std::move(face));
+  }
+  if(faces.empty() || double(quads) < kQuadShare * double(faces.size()))
+    return std::nullopt;
+
+  std::vector<uint32_t> rep(n);
+  for(size_t v = 0; v < n; v++)
+    rep[v] = uint32_t(v);
+  const auto find = [&](uint32_t v) {
+    while(rep[v] != v)
+    {
+      rep[v] = rep[rep[v]];
+      v      = rep[v];
+    }
+    return v;
+  };
+  const auto held = [&](uint32_t v) { return !(cloth.strength.size() == n && cloth.strength[v] > 1e-4f); };
+  constexpr uint32_t kNone = UINT32_MAX;
+
+  for(int pass = 0; pass < kPasses; pass++)
+  {
+    faces           = resolved(faces, find);
+    const size_t nf = faces.size();
+    // each side's faces, and the vertices on a hem (a side with one face)
+    std::unordered_map<uint64_t, std::vector<std::pair<uint32_t, uint8_t>>> sides;
+    sides.reserve(nf * 4);
+    for(uint32_t f = 0; f < nf; f++)
+      for(size_t k = 0; k < faces[f].size(); k++)
+        sides[sideKey(faces[f][k], faces[f][(k + 1) % faces[f].size()])].emplace_back(f, uint8_t(k));
+    std::vector<uint8_t> hem(n, 0);
+    for(const auto& [key, on] : sides)
+      if(on.size() == 1)
+        hem[size_t(key >> 32)] = hem[size_t(key & 0xffffffffu)] = 1;
+    // a quad's two pairs of opposite sides are nodes (face * 2 + side % 2), joined into rings where two
+    // quads share a side
+    std::vector<uint32_t> parent(nf * 2);
+    for(size_t x = 0; x < parent.size(); x++)
+      parent[x] = uint32_t(x);
+    const auto root = [&](uint32_t x) {
+      while(parent[x] != x)
+      {
+        parent[x] = parent[parent[x]];
+        x         = parent[x];
+      }
+      return x;
+    };
+    for(const auto& [key, on] : sides)
+      if(on.size() == 2 && faces[on[0].first].size() == 4 && faces[on[1].first].size() == 4)
+      {
+        const uint32_t a = root(on[0].first * 2 + on[0].second % 2), b = root(on[1].first * 2 + on[1].second % 2);
+        if(a != b)
+          parent[std::max(a, b)] = std::min(a, b);
+      }
+    struct Ring
+    {
+      std::vector<uint32_t>                       nodes;
+      std::vector<std::pair<uint32_t, uint32_t>> merge;  // (from, to)
+      double                                      mean = 0;
+      bool                                        ok   = true;
+    };
+    std::vector<Ring>     rings;
+    std::vector<uint32_t> ringOf(nf * 2, kNone);
+    {
+      std::unordered_map<uint32_t, uint32_t> idOf;
+      for(uint32_t x = 0; x < nf * 2; x++)
+      {
+        if(faces[x / 2].size() != 4)
+          continue;
+        const uint32_t r  = root(x);
+        auto [it, fresh]  = idOf.emplace(r, uint32_t(rings.size()));
+        if(fresh)
+          rings.emplace_back();
+        ringOf[x] = it->second;
+        rings[it->second].nodes.push_back(x);
+      }
+    }
+    // a node's two sides, each from one side of its strip to the other: (v0 v1, v3 v2) or (v1 v2, v0 v3)
+    const auto across = [&](uint32_t node, int which) {
+      const auto& q = faces[node / 2];
+      if(node % 2 == 0)
+        return which == 0 ? std::pair{q[0], q[1]} : std::pair{q[3], q[2]};
+      return which == 0 ? std::pair{q[1], q[2]} : std::pair{q[0], q[3]};
+    };
+    std::vector<int8_t> flip(nf * 2, -1);
+    for(uint32_t id = 0; id < rings.size(); id++)
+    {
+      Ring& R = rings[id];
+      // a ring through a quad both ways (a spiral) can't be collapsed
+      for(uint32_t x : R.nodes)
+        R.ok = R.ok && ringOf[x ^ 1u] != id;
+      if(!R.ok)
+        continue;
+      // its sides oriented alike, from the start: a ring that comes back reversed (a Moebius strip) can't
+      std::vector<uint32_t> todo{R.nodes.front()};
+      flip[R.nodes.front()] = 0;
+      while(!todo.empty() && R.ok)
+      {
+        const uint32_t x = todo.back();
+        todo.pop_back();
+        for(int which = 0; which < 2; which++)
+        {
+          auto [a, b] = across(x, which);
+          if(flip[x])
+            std::swap(a, b);
+          for(const auto& [g, j] : sides[sideKey(a, b)])
+          {
+            if(faces[g].size() != 4 || g * 2 + j % 2 == x)
+              continue;
+            const uint32_t y      = g * 2 + j % 2;
+            const auto [ya, yb]   = across(y, j < 2 ? 0 : 1);
+            const int8_t   want   = ya == a ? 0 : 1;
+            if(flip[y] < 0)
+            {
+              flip[y] = want;
+              todo.push_back(y);
+            }
+            else if(flip[y] != want)
+              R.ok = false;
+            (void)yb;
+          }
+        }
+      }
+      if(!R.ok)
+        continue;
+      // its sides, each once; a vertex on two of them (a ring round a pole) can't be collapsed
+      std::vector<std::pair<uint32_t, uint32_t>> sidesOf;
+      for(uint32_t x : R.nodes)
+        for(int which = 0; which < 2; which++)
+        {
+          auto [a, b] = across(x, which);
+          if(flip[x])
+            std::swap(a, b);
+          sidesOf.emplace_back(a, b);
+        }
+      std::sort(sidesOf.begin(), sidesOf.end());
+      sidesOf.erase(std::unique(sidesOf.begin(), sidesOf.end()), sidesOf.end());
+      std::vector<uint32_t> verts;
+      size_t                hemA = 0, hemB = 0, heldA = 0, heldB = 0;
+      for(const auto& [a, b] : sidesOf)
+      {
+        verts.insert(verts.end(), {a, b});
+        R.mean += distance(p, a, b);
+        hemA += hem[a];
+        hemB += hem[b];
+        heldA += held(a) ? 1 : 0;
+        heldB += held(b) ? 1 : 0;
+      }
+      std::sort(verts.begin(), verts.end());
+      R.ok = std::adjacent_find(verts.begin(), verts.end()) == verts.end() && !sidesOf.empty();
+      if(!R.ok)
+        continue;
+      R.mean /= double(sidesOf.size());
+      // the side on a hem, or held, keeps its vertices: the other merges into it
+      const bool intoB = hemB > hemA || (hemB == hemA && heldB > heldA);
+      for(const auto& [a, b] : sidesOf)
+        R.merge.emplace_back(intoB ? a : b, intoB ? b : a);
+    }
+    // which rings cross (share a quad), and each vertex's faces
+    std::unordered_set<uint64_t> crossing;
+    for(uint32_t f = 0; f < nf; f++)
+      if(faces[f].size() == 4)
+        crossing.insert(sideKey(ringOf[f * 2], ringOf[f * 2 + 1]));
+    const auto crosses = [&](uint32_t a, uint32_t b) { return crossing.count(sideKey(a, b)) > 0; };
+    std::vector<std::vector<uint32_t>> facesAt(n);
+    for(uint32_t f = 0; f < nf; f++)
+      for(uint32_t v : faces[f])
+        facesAt[v].push_back(f);
+    // the narrowest rings first
+    std::vector<uint32_t> order;
+    for(uint32_t id = 0; id < rings.size(); id++)
+      if(rings[id].ok && 2 * rings[id].mean <= kGrow * double(edge))
+        order.push_back(id);
+    std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return rings[a].mean < rings[b].mean; });
+    std::vector<std::vector<uint32_t>> grownBy(nf), movedBy(n);
+    std::unordered_map<uint32_t, uint32_t> moving;
+    size_t                                 collapsed = 0;
+    for(uint32_t id : order)
+    {
+      const Ring& R       = rings[id];
+      const auto  inStrip = [&](uint32_t f) { return faces[f].size() == 4 && (ringOf[f * 2] == id || ringOf[f * 2 + 1] == id); };
+      // beside a ring collapsed this pass, other than one it crosses
+      bool blocked = false;
+      for(uint32_t x : R.nodes)
+        for(uint32_t by : grownBy[x / 2])
+          blocked = blocked || !crosses(by, id);
+      for(const auto& [from, to] : R.merge)
+        for(uint32_t v : {from, to})
+          for(uint32_t by : movedBy[v])
+            blocked = blocked || !crosses(by, id);
+      if(blocked)
+        continue;
+      // nor one that would fold a face
+      moving.clear();
+      for(const auto& [from, to] : R.merge)
+        if(find(from) != find(to))
+          moving[find(from)] = find(to);
+      const auto now   = [&](uint32_t v) { return find(v); };
+      const auto after = [&](uint32_t v) {
+        v             = find(v);
+        const auto it = moving.find(v);
+        return it == moving.end() ? v : it->second;
+      };
+      for(const auto& [from, to] : R.merge)
+        for(uint32_t f : facesAt[from])
+        {
+          if(inStrip(f))
+            continue;
+          const D3     was = faceNormal(faces[f], p, now), will = faceNormal(faces[f], p, after);
+          const double lw = std::sqrt(dot(was, was)), ll = std::sqrt(dot(will, will));
+          if(lw > 1e-12 && ll > 1e-12 && dot(was, will) < kNoFold * lw * ll)
+            blocked = true;
+        }
+      if(blocked)
+        continue;
+      for(const auto& [v, to] : moving)
+        rep[v] = to;
+      for(const auto& [from, to] : R.merge)
+        for(uint32_t v : {from, to})
+        {
+          movedBy[v].push_back(id);
+          for(uint32_t f : facesAt[v])
+            if(!inStrip(f))
+              grownBy[f].push_back(id);
+        }
+      collapsed++;
+    }
+    if(collapsed == 0)
+      break;
+  }
+  return resolved(faces, find);
+}
+
+}  // namespace
+
 std::optional<CoarseCloth> coarseCloth(const Surface& cloth, float edge)
 {
   if(cloth.kind == Surface::Kind::eCollider || !(edge > 0))
     return std::nullopt;
-  const size_t          n = cloth.vertexCount();
-  const float*          p = cloth.rest.data();
+  const size_t n = cloth.vertexCount();
+  const float* p = cloth.rest.data();
+  if(cloth.strength.size() != n)
+    return std::nullopt;
+  // a cloth of quads: a copy of quads along its threads, its faces its polygons
+  if(auto quads = collapseRings(cloth, edge))
+  {
+    std::vector<uint32_t> tris;
+    for(const auto& f : *quads)
+      for(size_t k = 1; k + 1 < f.size(); k++)
+        tris.insert(tris.end(), {f[0], f[uint32_t(k)], f[uint32_t(k + 1)]});
+    Coarse copy = copyOf(cloth, tris);
+    if(copy.keep.empty() || double(copy.keep.size()) > kMostKept * double(n))
+      return std::nullopt;
+    CoarseCloth c;
+    c.surface = std::move(copy.surface);
+    c.keep    = std::move(copy.keep);
+    std::vector<uint32_t> index(n, 0);
+    for(size_t i = 0; i < c.keep.size(); i++)
+      index[c.keep[i]] = uint32_t(i);
+    c.surface.polyStart.assign(1, 0);
+    c.surface.polyVerts.clear();
+    for(const auto& f : *quads)
+    {
+      for(uint32_t v : f)
+        c.surface.polyVerts.push_back(int32_t(index[v]));
+      c.surface.polyStart.push_back(int32_t(c.surface.polyVerts.size()));
+    }
+    c.riding = rideOn(cloth, c.surface, c.keep);
+    return c;
+  }
+  // otherwise of triangles, which hang stiffer
   std::vector<uint32_t> faces;
   faces.reserve(cloth.tris.size());
   double covered = 0;
@@ -512,7 +867,7 @@ std::optional<CoarseCloth> coarseCloth(const Surface& cloth, float edge)
   const size_t had  = faces.size() / 3;
   const double each = std::sqrt(3.0) / 4.0 * double(edge) * double(edge);
   const size_t want = std::max<size_t>(1, size_t(std::ceil(covered / each)));
-  if(double(had) < kFiner * double(want) || cloth.strength.size() != n)
+  if(double(had) < kFiner * double(want))
     return std::nullopt;
   // simplified to faces of even sizes, with the cloth's strength in the error so where it goes from held
   // to free stays where it is: a step of all of it counts as far as a face is wide
@@ -547,8 +902,10 @@ std::optional<CoarseCloth> sameCloth(const Surface& cloth, const CoarseCloth& li
   CoarseCloth c;
   c.surface = std::move(copy.surface);
   c.keep    = std::move(copy.keep);
-  facesArePolygons(c.surface);
-  c.riding = like.riding;
+  // its polygons as the copy has them: quads, or its faces
+  c.surface.polyStart = like.surface.polyStart;
+  c.surface.polyVerts = like.surface.polyVerts;
+  c.riding            = like.riding;
   return c;
 }
 
@@ -570,6 +927,66 @@ std::vector<float> ride(const CoarseCloth& c, const std::vector<float>& at)
     }
   });
   return out;
+}
+
+size_t keepOut(std::vector<float>& at, const std::vector<uint8_t>& held, const Surface& body, const std::vector<float>& bodyAt, float reach)
+{
+  const size_t nb = body.vertexCount(), n = at.size() / 3;
+  if(bodyAt.size() != nb * 3 || body.tris.empty() || n == 0)
+    return 0;
+  // the body's faces that collide, as the model keeps them, and the most any keeps the cloth off
+  const bool            perVert = body.collide.size() == nb;
+  std::vector<uint32_t> tris;
+  tris.reserve(body.tris.size());
+  float most = 0;
+  for(size_t t = 0; t + 2 < body.tris.size(); t += 3)
+  {
+    const uint32_t a = body.tris[t], b = body.tris[t + 1], c = body.tris[t + 2];
+    if(a >= nb || b >= nb || c >= nb || (perVert && !(body.collide[a] && body.collide[b] && body.collide[c])))
+      continue;
+    tris.insert(tris.end(), {a, b, c});
+  }
+  const auto offsetOf = [&](uint32_t v) { return v < body.offset.size() && body.offset[v] > 0 ? body.offset[v] : 0.05f; };
+  for(uint32_t v : tris)
+    most = std::max(most, offsetOf(v));
+  if(tris.empty())
+    return 0;
+  const SurfaceIndex  index(bodyAt, tris);
+  const float*        q     = bodyAt.data();
+  const double        near2 = double(reach + most) * double(reach + most);
+  std::atomic<size_t> moved{0};
+  jobs::parallelFor(n, 2048, [&](size_t begin, size_t end) {
+    size_t count = 0;
+    for(size_t v = begin; v < end; v++)
+    {
+      if(v < held.size() && held[v])
+        continue;
+      Stamps&       stamps = threadStamps();
+      const int32_t id     = stamps.next(index.triangles());
+      const D3      p{at[v * 3], at[v * 3 + 1], at[v * 3 + 2]};
+      const auto    hit = index.search(p.x, p.y, p.z, 0, {}, near2, stamps.stamp, id);
+      if(hit.tri < 0)
+        continue;
+      const uint32_t a = tris[size_t(hit.tri) * 3], b = tris[size_t(hit.tri) * 3 + 1], c = tris[size_t(hit.tri) * 3 + 2];
+      const D3       pa = pointOf(q, a), pb = pointOf(q, b), pc = pointOf(q, c);
+      D3             nrm = cross(pb - pa, pc - pa);
+      if(!normalize(nrm))
+        continue;
+      const D3     on     = pa * hit.u + pb * hit.v + pc * hit.w;
+      const double side   = dot(p - on, nrm);
+      const double offset = (offsetOf(a) + offsetOf(b) + offsetOf(c)) / 3;
+      // closer than the offset, from in front or from up to `reach` behind: out along the face to it
+      if(side >= offset || side < -double(reach))
+        continue;
+      const D3 to    = p + nrm * (offset - side);
+      at[v * 3]      = float(to.x);
+      at[v * 3 + 1]  = float(to.y);
+      at[v * 3 + 2]  = float(to.z);
+      count++;
+    }
+    moved += count;
+  });
+  return moved;
 }
 
 }  // namespace fv::physics::cloth

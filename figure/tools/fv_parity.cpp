@@ -1435,6 +1435,15 @@ int main(int argc, char** argv)
           if(p->drapes.empty())
             continue;
         }
+        // experiments: a light copy's bending this many times as compliant
+        if(const float soften = step.value("lightBend", 1.f); soften != 1.f)
+          for(size_t i = 0; i < p->drapes.size(); i++)
+            if(i < p->light.size() && p->light[i])
+              for(float& s : p->bodies[size_t(p->drapes[i].second)].bend)
+              {
+                const float c = std::max(0.01f, std::min(1.f, s));
+                s             = 1.f / (1.f + soften * (1.f - c) / c);
+              }
         // experiments: a cloth's polygons as its triangles (no shear diagonals, every side a thread), as a
         // light copy's are
         if(step.value("triangles", false))
@@ -1568,6 +1577,7 @@ int main(int argc, char** argv)
           const fv::physics::cloth::Surface&     fine = full->bodies[slot];
           const fv::physics::cloth::CoarseCloth& copy = *p->light[i];
           std::vector<float>                     at   = fv::physics::cloth::ride(copy, out[slot]);
+          const size_t kept = step.value("keepOut", true) ? fv::physics::cloth::keepOut(at, copy.riding.held, p->bodies[0], out[0]) : 0;
           for(size_t v = 0; v < copy.riding.held.size(); v++)
             if(copy.riding.held[v])
               for(size_t c = 0; c < 3; c++)
@@ -1597,6 +1607,7 @@ int main(int argc, char** argv)
               ratio.push_back(length(at, a, b) / was);
           std::sort(ratio.begin(), ratio.end());
           items[i]["light"] = {{"copyVertices", copy.surface.vertexCount()},
+                               {"keptOut", kept},
                                {"copyFaces", copy.surface.tris.size() / 3},
                                {"hemDropCm", double(minPosed - minOut)},
                                {"stretchP99", ratio.empty() ? 0.0 : ratio[size_t(0.99 * double(ratio.size() - 1))]},

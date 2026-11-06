@@ -34,8 +34,9 @@ constexpr float kLiveMinStep = 1.f / 60.f, kLiveMaxStep = 1.f / 30.f;
 // How far gravity must turn to matter, cm/s^2 on any axis: about a twentieth of a degree.
 constexpr float kGravityChange = 1.f;
 // A collider much finer than the cloth meets it as a coarse copy (physics/cloth/coarse.hpp), with
-// faces about as wide as the cloth's and at most this share of their width off its surface.
-constexpr float kCoarseError = 0.25f;
+// faces about as wide as the cloth's and at most this share of their width off its surface, but of no
+// more than this width (cm): the cloth lies that much further off, and a light copy's faces are wide
+constexpr float kCoarseError = 0.25f, kCoarseErrorWidth = 1.f;
 
 // Whether the node of every mesh is shown: not taken off, not hidden, nor anything above it.
 std::vector<bool> shownNodes(const SceneGraph& scene)
@@ -107,6 +108,8 @@ struct Dforce::Job
   std::vector<int> slotMesh;
   // a coarse copy's vertices of its mesh's cage, per slot (physics/cloth/coarse.hpp); empty: all of them
   std::vector<std::vector<uint32_t>> slotKeep;
+  // the body's slot, what a light copy's cloth is kept out of; SIZE_MAX: none
+  size_t bodySlot = SIZE_MAX;
   struct Drape
   {
     int                mesh = -1;
@@ -539,6 +542,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
     return nullptr;
 
   job->slotKeep.resize(job->bodies.size());
+  job->bodySlot = bodySlot;
   // Light cloth: a cloth much finer than the faces asked for simulates as a coarse copy of itself, and
   // its own vertices ride on it. Before the colliders, which are then copied as fine as the copy
   std::map<uint64_t, std::shared_ptr<const physics::cloth::CoarseCloth>> lights;
@@ -597,7 +601,8 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       if(slot == bodySlot)
         continue;
       const size_t   had = job->bodies[slot].tris.size() / 3;
-      const uint64_t key = shapeKey(job->bodies[slot], edge, kCoarseError * edge);
+      const float    err = kCoarseError * std::min(edge, kCoarseErrorWidth);
+      const uint64_t key = shapeKey(job->bodies[slot], edge, err);
       std::optional<physics::cloth::Coarse> c;
       if(const auto made = m_coarse.find(key); made != m_coarse.end())
       {
@@ -610,7 +615,7 @@ std::shared_ptr<Dforce::Job> Dforce::prepare(uint64_t) const
       }
       else
       {
-        c           = physics::cloth::coarsen(job->bodies[slot], edge, kCoarseError * edge);
+        c           = physics::cloth::coarsen(job->bodies[slot], edge, err);
         copies[key] = c;
         if(!c)
           continue;
@@ -1098,8 +1103,12 @@ std::vector<std::vector<float>> Dforce::deltasOf(const Job& job, const std::vect
       out[k] = drapeDelta(d.rest, transformPoints(d.back, positions[d.slot]), d.skin, d.pose);
       continue;
     }
-    // a light copy's cloth rides on it, but where it is held to its skin it stays, as the cloth would
-    out[k] = drapeDelta(d.rest, transformPoints(d.back, physics::cloth::ride(*d.light, positions[d.slot])), d.skin, d.pose);
+    // a light copy's cloth rides on it, out of the body where the copy's faces cross a curve of it, and
+    // where it is held to its skin it stays, as the cloth would
+    std::vector<float> at = physics::cloth::ride(*d.light, positions[d.slot]);
+    if(job.bodySlot < positions.size() && job.bodySlot < job.bodies.size())
+      physics::cloth::keepOut(at, d.light->riding.held, job.bodies[job.bodySlot], positions[job.bodySlot]);
+    out[k] = drapeDelta(d.rest, transformPoints(d.back, at), d.skin, d.pose);
     const auto& held = d.light->riding.held;
     for(size_t v = 0; v < held.size() && v * 3 + 2 < out[k].size(); v++)
       if(held[v])

@@ -438,6 +438,14 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
           return true;
       return false;
     };
+    // Light cloth (physics/cloth/coarse.hpp), unfinished and off: FV_DFORCE_LIGHT=<the copy's faces' width,
+    // cm> turns it on for every figure, to try it (it hangs stiffer than the cloth: physics-plan 13d's note)
+#pragma warning(suppress : 4996)  // getenv: read once a figure
+    if(const char* env = std::getenv("FV_DFORCE_LIGHT"); env && *env && std::atof(env) > 0)
+    {
+      f->dforce->lightCloth     = true;
+      f->dforce->lightClothEdge = float(std::atof(env));
+    }
     // off until the Wardrobe toggle (or a scene file) turns it on: a settle costs seconds on a dressed figure
     f->dforce->setEnabled(false);
     // on from the start: a pass is a fraction of a second on the pool, and it is what keeps a garment

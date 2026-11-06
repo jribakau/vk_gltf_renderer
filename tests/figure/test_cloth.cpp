@@ -901,29 +901,47 @@ float sideOf(const std::vector<float>& p, uint32_t a, uint32_t b)
 
 }  // namespace
 
-TEST(ClothLight, aFineClothBecomesALightCopyOfEvenFacesThatKeepsItsSettings)
+TEST(ClothLight, aFineClothBecomesALightCopyOfQuadsAlongItsThreadsThatKeepsItsSettings)
 {
-  // 15 cm square in quads of 0.25 cm (7,200 faces), copied with faces 2 cm wide
+  // 15 cm square in quads of 0.25 cm (3,600 quads), copied with faces 2 cm wide: rings of its quads
+  // collapsed three times, 0.25 to 2 cm, leaving 7 or 8 quads each way
   const Surface fine = sheet(60, 15.f);
   const auto    c    = physics::cloth::coarseCloth(fine, 2.f);
   ASSERT_TRUE(c);
-  const Surface& s = c->surface;
-  // about as many faces as sides of 2 cm take to cover it: 225 / (sqrt(3)/4 * 4) = 130
-  EXPECT_GT(s.tris.size() / 3, 60u);
-  EXPECT_LT(s.tris.size() / 3, 400u);
+  const Surface& s     = c->surface;
+  const size_t   polys = s.polyStart.size() - 1;
+  EXPECT_GE(polys, 40u);
+  EXPECT_LE(polys, 100u);
   EXPECT_EQ(s.kind, Surface::Kind::eDynamic);
-  // even faces: their sides are mostly about as long as asked
+  // quads, two faces each to collide and ride on, their sides along the cloth's threads (x and z)
+  EXPECT_EQ(s.polyVerts.size(), polys * 4);
+  EXPECT_EQ(s.tris.size(), polys * 6);
   std::vector<float> sides;
-  for(size_t t = 0; t + 2 < s.tris.size(); t += 3)
-    for(size_t k = 0; k < 3; k++)
-      sides.push_back(sideOf(s.rest, s.tris[t + k], s.tris[t + (k + 1) % 3]));
+  for(size_t q = 0; q < polys; q++)
+    for(int k = 0; k < 4; k++)
+    {
+      const uint32_t a = uint32_t(s.polyVerts[q * 4 + size_t(k)]), b = uint32_t(s.polyVerts[q * 4 + size_t((k + 1) % 4)]);
+      const float    dx = std::fabs(s.rest[a * 3] - s.rest[b * 3]), dz = std::fabs(s.rest[a * 3 + 2] - s.rest[b * 3 + 2]);
+      EXPECT_LT(std::min(dx, dz), 1e-4f) << "a side across the threads";
+      sides.push_back(std::max(dx, dz));
+    }
   std::sort(sides.begin(), sides.end());
-  EXPECT_GT(sides[sides.size() / 2], 1.f);
+  EXPECT_GT(sides[sides.size() / 2], 1.5f);
   EXPECT_LT(sides[sides.size() / 2], 3.f);
-  EXPECT_LT(sides[size_t(0.95 * double(sides.size() - 1))], 6.f);
-  // its faces are its polygons, and its vertices the cloth's own with what each carries
-  ASSERT_EQ(s.polyStart.size(), s.tris.size() / 3 + 1);
-  EXPECT_EQ(s.polyVerts.size(), s.tris.size());
+  // all of it: its hems are kept
+  float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f};
+  for(size_t v = 0; v < s.vertexCount(); v++)
+    for(int a = 0; a < 2; a++)
+    {
+      lo[a] = std::min(lo[a], s.rest[v * 3 + size_t(a) * 2]);
+      hi[a] = std::max(hi[a], s.rest[v * 3 + size_t(a) * 2]);
+    }
+  for(int a = 0; a < 2; a++)
+  {
+    EXPECT_FLOAT_EQ(lo[a], -7.5f);
+    EXPECT_FLOAT_EQ(hi[a], 7.5f);
+  }
+  // its vertices are the cloth's own, with what each carries
   ASSERT_EQ(s.vertexCount(), c->keep.size());
   EXPECT_TRUE(std::is_sorted(c->keep.begin(), c->keep.end()));
   size_t held = 0;
@@ -1051,4 +1069,23 @@ TEST(ClothLight, theSameCopyOfAClothPosedAnewRidesAsItDid)
   for(size_t i = 0; i < same->keep.size(); i++)
     EXPECT_EQ(same->surface.posed[i * 3 + 1], fine.posed[size_t(same->keep[i]) * 3 + 1] + 1.f);
   EXPECT_FALSE(physics::cloth::sameCloth(sheet(30, 15.f), *c));
+}
+
+TEST(ClothLight, whatRidesIntoTheBodyIsMovedOutToItsOffset)
+{
+  // a body's floor at y = 0 (offset 0.2), and points riding through it: behind it within reach, in
+  // front closer than the offset, in front further, too far behind, and one held to its skin
+  Surface body = Surface::collider({-5, 0, -5, 5, 0, -5, 5, 0, 5, -5, 0, 5}, {-5, 0, -5, 5, 0, -5, 5, 0, 5, -5, 0, 5}, {0, 2, 1, 0, 3, 2}, 0, 0.2f, 0.4f);
+  std::vector<float>   at   = {0, -0.5f, 0, 1, 0.1f, 1, 2, 1.f, 2, -1, -3.f, -1, -2, -0.5f, 2};
+  std::vector<uint8_t> held = {0, 0, 0, 0, 1};
+  const size_t         moved = physics::cloth::keepOut(at, held, body, body.posed);
+  EXPECT_EQ(moved, 2u);
+  EXPECT_NEAR(at[1], 0.2f, 1e-5f);
+  EXPECT_NEAR(at[4], 0.2f, 1e-5f);
+  EXPECT_EQ(at[7], 1.f);
+  EXPECT_EQ(at[10], -3.f);
+  EXPECT_EQ(at[13], -0.5f);
+  // across the floor, not along it
+  EXPECT_EQ(at[0], 0.f);
+  EXPECT_EQ(at[3], 1.f);
 }
