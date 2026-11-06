@@ -9,8 +9,11 @@ namespace fv::physics::cloth {
 
 namespace {
 
-// "FVCJOB" and a version: a file of another version isn't read
-constexpr char     kMagic[8] = {'F', 'V', 'C', 'J', 'O', 'B', '0', '1'};
+// "FVCJOB" and a version: a file of another version isn't read. Version 2 adds the drawn skin
+// (Surface::skinIndex8 and the dual quaternion share); a version 1 file is read without it, its
+// surfaces skinned with the four as when it was written.
+constexpr char     kMagic[8]   = {'F', 'V', 'C', 'J', 'O', 'B', '0', '2'};
+constexpr char     kMagicV1[8] = {'F', 'V', 'C', 'J', 'O', 'B', '0', '1'};
 constexpr uint64_t kMostItems = uint64_t(1) << 32;
 
 struct Writer
@@ -72,7 +75,7 @@ struct Reader
 
 // Every field of a surface, in one order for both ways.
 template <class IO, class S>
-void surface(IO& io, S& m)
+void surface(IO& io, S& m, int version)
 {
   io.list(m.rest);
   io.list(m.posed);
@@ -92,6 +95,13 @@ void surface(IO& io, S& m)
   io.list(m.bones);
   io.list(m.restLocal);
   io.value(m.toSpace);
+  if(version >= 2)
+  {
+    io.list(m.skinIndex8);
+    io.list(m.skinWeight8);
+    io.value(m.dualQuat);
+    io.list(m.dualQuatShare);
+  }
 }
 
 template <class IO, class O>
@@ -120,7 +130,7 @@ bool writeJob(const std::filesystem::path& file, const Job& job)
   o.write(kMagic, sizeof kMagic);
   w.value(uint64_t(job.surfaces.size()));
   for(const Surface& m : job.surfaces)
-    surface(w, m);
+    surface(w, m, 2);
   options(w, job.options);
   w.value(uint64_t(job.drapes.size()));
   for(const auto& [slot, name] : job.drapes)
@@ -135,7 +145,10 @@ std::optional<Job> readJob(const std::filesystem::path& file)
 {
   std::ifstream in(file, std::ios::binary);
   char          magic[sizeof kMagic]{};
-  if(!in || !in.read(magic, sizeof magic) || std::memcmp(magic, kMagic, sizeof magic) != 0)
+  if(!in || !in.read(magic, sizeof magic))
+    return std::nullopt;
+  const int version = std::memcmp(magic, kMagic, sizeof magic) == 0 ? 2 : std::memcmp(magic, kMagicV1, sizeof magic) == 0 ? 1 : 0;
+  if(version == 0)
     return std::nullopt;
   Reader   r{in};
   Job      job;
@@ -145,7 +158,7 @@ std::optional<Job> readJob(const std::filesystem::path& file)
     return std::nullopt;
   job.surfaces.resize(size_t(n));
   for(Surface& m : job.surfaces)
-    surface(r, m);
+    surface(r, m, version);
   options(r, job.options);
   r.value(n);
   if(!r.ok || n > 4096)

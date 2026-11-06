@@ -43,7 +43,6 @@ struct Kinematic
 {
   bool                  skinned = false;
   std::vector<BonePose> from, to;
-  std::vector<Mat34>    at;     // toSpace * bone(t), per bone, for the current t
   std::vector<int>      verts;  // global indices of the vertices this moves
   std::vector<int>      soft;   // and of the free vertices tethered to where it would put them
 };
@@ -143,7 +142,6 @@ void Island::State::bindKinematics()
       for(const Mat4& b : m.bones)
         k.to.push_back(poseOf(b));
       k.from.assign(m.bones.size(), poseOf(Mat4{}));
-      k.at.resize(m.bones.size());
     }
   }
   for(int i : kinematicVerts)
@@ -191,39 +189,21 @@ void Island::State::kinematicAt(float t, std::vector<float>& out, std::vector<fl
         lerp(k.soft, *anchors);
       continue;
     }
+    // the bones swept to t, then each vertex skinned as SurfaceSkin has it (as drawn, or the four linearly)
+    std::vector<Mat4> bones(k.to.size());
     for(size_t b = 0; b < k.to.size(); b++)
-      k.at[b] = Mat34::of(m.toSpace * sweepAt(k.from[b], k.to[b], t));
-    const int  o    = base[mi];
-    const auto skin = [&](const std::vector<int>& verts, std::vector<float>& dst) {
+      bones[b] = sweepAt(k.from[b], k.to[b], t);
+    const SurfaceSkin at(m, std::move(bones));
+    const int         o    = base[mi];
+    const auto        skin = [&](const std::vector<int>& verts, std::vector<float>& dst) {
       jobs::parallelFor(verts.size(), 2048, [&](size_t begin, size_t end) {
         for(size_t vi = begin; vi < end; vi++)
         {
           const int    i = verts[vi];
-          const size_t v = size_t(i - o);
-          float        blend[12] = {};
-          float        wsum      = 0;
-          for(size_t j = 0; j < 4; j++)
-          {
-            const float  w    = m.skinWeight[v * 4 + j];
-            const size_t bone = m.skinIndex[v * 4 + j];
-            if(w == 0 || bone >= k.at.size())
-              continue;
-            wsum += w;
-            for(int c = 0; c < 12; c++)
-              blend[c] += k.at[bone].m[c] * w;
-          }
-          if(wsum <= 0)
-          {
-            const Vec3 p = m.toSpace.transformPoint({m.restLocal[v * 3], m.restLocal[v * 3 + 1], m.restLocal[v * 3 + 2]});
-            dst[i * 3]     = float(p.x);
-            dst[i * 3 + 1] = float(p.y);
-            dst[i * 3 + 2] = float(p.z);
-            continue;
-          }
-          const float px = m.restLocal[v * 3], py = m.restLocal[v * 3 + 1], pz = m.restLocal[v * 3 + 2];
-          dst[i * 3]     = blend[0] * px + blend[3] * py + blend[6] * pz + blend[9];
-          dst[i * 3 + 1] = blend[1] * px + blend[4] * py + blend[7] * pz + blend[10];
-          dst[i * 3 + 2] = blend[2] * px + blend[5] * py + blend[8] * pz + blend[11];
+          const Vec3   p = at.at(size_t(i - o));
+          dst[i * 3]     = float(p.x);
+          dst[i * 3 + 1] = float(p.y);
+          dst[i * 3 + 2] = float(p.z);
         }
       });
     };

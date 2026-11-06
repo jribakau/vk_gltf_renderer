@@ -6,9 +6,12 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include <figure/math/xform.hpp>
+#include <figure/physics/cloth/geometry.hpp>
+#include <figure/physics/skin.hpp>
 
 namespace fv::physics::cloth {
 
@@ -45,6 +48,14 @@ struct Surface
   std::vector<Mat4>     bones;
   std::vector<float>    restLocal;
   Mat4                  toSpace;
+  // The skin as the drawn mesh's skin pass has it (physics::CageSkin): eight influences per vertex
+  // where `skinIndex8` isn't empty, and the dual quaternion share mixed in, so the body the cloth
+  // meets is the body drawn (physics-plan step 13c). All empty: the four above, linearly (a job file
+  // of version 1, a test's surface).
+  std::vector<uint16_t> skinIndex8;
+  std::vector<float>    skinWeight8;
+  float                 dualQuat = 0;
+  std::vector<float>    dualQuatShare;
 
   size_t vertexCount() const { return rest.size() / 3; }
   bool   skinned() const
@@ -52,6 +63,16 @@ struct Surface
     const size_t n = vertexCount();
     return !bones.empty() && skinIndex.size() == n * 4 && skinWeight.size() == n * 4 && restLocal.size() == n * 3;
   }
+  // Skinned as drawn: eight influences or a dual quaternion share, of the right sizes
+  bool drawnSkin() const
+  {
+    const size_t n = vertexCount();
+    if(!skinned() || !(skinIndex8.size() == n * 8 || dualQuat > 0 || dualQuatShare.size() == n))
+      return false;
+    return (skinIndex8.empty() || (skinIndex8.size() == n * 8 && skinWeight8.size() == n * 8))
+           && (dualQuatShare.empty() || dualQuatShare.size() == n);
+  }
+  SkinView skinView() const { return {skinIndex, skinIndex8, skinWeight, skinWeight8, dualQuatShare, dualQuat}; }
   // A collider from positions with the same value on every vertex.
   static Surface collider(std::vector<float> rest, std::vector<float> posed, std::vector<uint32_t> tris, int layer, float offset,
                           float friction, const std::vector<uint8_t>& collide = {});
@@ -75,9 +96,29 @@ bool sameButPose(const Surface& a, const Surface& b);
 // body's contact dents change it with every pose.
 const char* poseFreeDifference(const Surface& a, const Surface& b, bool colliderRest = false);
 
+// A skinned surface at one pose of its bones (their skin matrices in the mesh's space): each vertex's
+// skin into the job's space. As drawn where the surface has the drawn skin (Surface::drawnSkin: eight
+// influences, the dual quaternion share), else four influences, linearly, to the bit as before. The
+// surface and the bones outlive it.
+class SurfaceSkin
+{
+public:
+  SurfaceSkin(const Surface& m, std::vector<Mat4> bones);
+  // vertex v at the pose, in the job's space (its rest cage there when it has no weight)
+  Vec3 at(size_t v) const;
+  // vertex v's skin into the job's space (toSpace times its blended matrix); false when it has no weight
+  bool matrix(size_t v, Mat4& out) const;
+
+private:
+  const Surface&            m_mesh;
+  std::vector<Mat4>         m_bones;  // in the mesh's space
+  std::vector<Mat34>        m_linear;  // toSpace * bone: the four, linearly
+  std::vector<Mat4>         m_linear4;  // the same in doubles, for matrix()
+  std::optional<SkinBlend>  m_blend;   // the drawn skin
+};
+
 // A skinned surface's vertices at these bones (its skin matrices in the mesh's space), in the job's
-// space; an unskinned one gives its `posed`. `out` is xyz per vertex. Four influences, linearly: the
-// body cloth meets is dForce's own, for parity, until physics-plan step 13c.
+// space, as SurfaceSkin has them; an unskinned one gives its `posed`. `out` is xyz per vertex.
 void skin(const Surface& m, const std::vector<Mat4>& bones, float* out);
 
 }  // namespace fv::physics::cloth

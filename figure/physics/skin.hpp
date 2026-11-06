@@ -10,6 +10,7 @@
 // cage vertices; subdivided vertices are the stencil of those deltas, then skinned with their own
 // weights. A port of src/lib/dforce/skin.ts.
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -52,6 +53,48 @@ struct CageSkin
   std::vector<float>    dualQuatShare;  // per vertex; empty: dualQuat for every vertex
 };
 CageSkin cageSkin(const mesh::SkinInput& in);
+
+// A skin's influences seen in place: a CageSkin's, or a cloth surface's (cloth::Surface::skinView).
+// Four per vertex, and eight where `index8` isn't empty; the dual quaternion share per vertex, or
+// `dualQuat` for every vertex when `dualQuatShare` is empty.
+struct SkinView
+{
+  std::span<const uint16_t> index, index8;
+  std::span<const float>    weight, weight8, dualQuatShare;
+  float                     dualQuat = 0;
+
+  static SkinView of(const CageSkin& s) { return {s.index, s.index8, s.weight, s.weight8, s.dualQuatShare, s.dualQuat}; }
+  bool            dualQuats() const { return dualQuat > 0 || !dualQuatShare.empty(); }
+};
+
+namespace detail {
+// A skin matrix as a unit dual quaternion (x y z w each) and the stretch left over (rows), as
+// rs::jointDualQuat takes the GPU's joints apart, in doubles
+struct JointDq
+{
+  std::array<double, 4> q{0, 0, 0, 1}, d{0, 0, 0, 0};
+  std::array<double, 9> k{1, 0, 0, 0, 1, 0, 0, 0, 1};
+};
+}  // namespace detail
+
+// One pose's skin as the drawn mesh's skin pass has it: the skin matrices (each bone's, in the mesh's
+// space) taken apart for the dual quaternion share once, then each vertex's skin as one matrix, the
+// weighted sum of its matrices mixed with its dual quaternion skin by its share. skinLocal and
+// drapeDelta blend with it, and so does the cloth's kinematic sweep. The views and the matrices are
+// borrowed: they outlive it.
+class SkinBlend
+{
+public:
+  SkinBlend(std::span<const Mat4> bones, const SkinView& skin);
+  // vertex v's skin into `out` (column-major, as Mat4::e); the vertex's weight total, which is 0 (and
+  // `out` meaningless) when it has none
+  double vertex(size_t v, std::array<double, 16>& out) const;
+
+private:
+  std::span<const Mat4>        m_bones;
+  SkinView                     m_skin;
+  std::vector<detail::JointDq> m_dqs;
+};
 
 // Each bone's skin matrix in the mesh's space: bindInverse * bone * bind.
 std::vector<Mat4> skinMatrices(const SkinPose& pose);

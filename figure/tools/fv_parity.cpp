@@ -1465,6 +1465,37 @@ int main(int argc, char** argv)
             std::fill(m.selfCollide.begin(), m.selfCollide.end(), uint8_t(0));
         if(p->bodies.empty() || p->bodies[0].kind != fv::physics::cloth::Surface::Kind::eCollider)
           throw std::runtime_error("the body is not the first collider");
+        // How far the drawn body (eight influences, the dual quaternion share) lies from the four blended
+        // linearly at the target pose, which is the body cloth met before physics-plan step 13c; and with
+        // "linearBody": true the job meets that body again (every surface's drawn skin left out), for A/B
+        Json bodyShift;
+        {
+          fv::physics::cloth::Surface linear = p->bodies[0];
+          linear.skinIndex8.clear();
+          linear.skinWeight8.clear();
+          linear.dualQuatShare.clear();
+          linear.dualQuat = 0;
+          if(p->bodies[0].drawnSkin())
+          {
+            std::vector<float> a(linear.rest.size()), b(linear.rest.size());
+            fv::physics::cloth::skin(linear, linear.bones, a.data());
+            fv::physics::cloth::skin(p->bodies[0], p->bodies[0].bones, b.data());
+            std::vector<double> dist(a.size() / 3);
+            for(size_t v = 0; v < dist.size(); v++)
+              dist[v] = std::hypot(double(a[v * 3] - b[v * 3]), double(a[v * 3 + 1] - b[v * 3 + 1]), double(a[v * 3 + 2] - b[v * 3 + 2]));
+            std::sort(dist.begin(), dist.end());
+            const auto at = [&](double q) { return dist.empty() ? 0.0 : dist[size_t(q * double(dist.size() - 1))]; };
+            bodyShift = {{"p50", at(0.5)}, {"p90", at(0.9)}, {"p99", at(0.99)}, {"max", at(1.0)}, {"over1cm", size_t(dist.end() - std::upper_bound(dist.begin(), dist.end(), 1.0))}};
+          }
+        }
+        if(step.value("linearBody", false))
+          for(fv::physics::cloth::Surface& m : p->bodies)
+          {
+            m.skinIndex8.clear();
+            m.skinWeight8.clear();
+            m.dualQuatShare.clear();
+            m.dualQuat = 0;
+          }
         const std::optional<std::filesystem::path> objDir =
             step.contains("obj") ? std::optional<std::filesystem::path>(root / pathOf(step["obj"].get<std::string>().c_str())) : std::nullopt;
         const auto meshName = [&](int mesh) { return fileSafe(scene.meshes[size_t(mesh)].name); };
@@ -1544,6 +1575,9 @@ int main(int argc, char** argv)
         {
           Json report    = drapeReport(sim.model(), size_t(slot), p->bodies[size_t(slot)], out[size_t(slot)], p->bodies[0], out[0]);
           report["mesh"] = scene.meshes[size_t(mesh)].name;
+          // inside the body as drawn at the target pose (its posed cage is the drawn skin), whatever body
+          // the job met
+          report["insideDrawn"] = fv::physics::cloth::insideBody(p->bodies[0], p->bodies[0].posed, out[size_t(slot)]);
           items.push_back(report);
           if(objDir)
           {
@@ -1632,6 +1666,8 @@ int main(int argc, char** argv)
           }
         std::cerr << "dforce " << label << ": " << items.dump() << "\n";
         Json dump = {{"dforce", items}, {"substeps", sim.substepsPerFrame()}, {"transition", r(sim.transitionSeconds())}, {"ms", r(simMs)}};
+        if(!bodyShift.is_null())
+          dump["bodyShiftCm"] = bodyShift;
         if(step.value("apply", false))
         {
           // the driver's own path: the settle on the pool, the drape written as a morph, and the

@@ -7,6 +7,83 @@
 
 namespace fv::physics::cloth {
 
+SurfaceSkin::SurfaceSkin(const Surface& m, std::vector<Mat4> bones)
+    : m_mesh(m)
+    , m_bones(std::move(bones))
+{
+  if(m.drawnSkin())
+    m_blend.emplace(m_bones, m.skinView());
+  else
+  {
+    m_linear.resize(m_bones.size());
+    m_linear4.resize(m_bones.size());
+    for(size_t b = 0; b < m_bones.size(); b++)
+    {
+      m_linear4[b] = m.toSpace * m_bones[b];
+      m_linear[b]  = Mat34::of(m_linear4[b]);
+    }
+  }
+}
+
+Vec3 SurfaceSkin::at(size_t v) const
+{
+  const Surface& m  = m_mesh;
+  const double   px = m.restLocal[v * 3], py = m.restLocal[v * 3 + 1], pz = m.restLocal[v * 3 + 2];
+  if(m_blend)
+  {
+    std::array<double, 16> b;
+    if(m_blend->vertex(v, b) <= 0)
+      return m.toSpace.transformPoint({px, py, pz});
+    return m.toSpace.transformPoint({b[0] * px + b[4] * py + b[8] * pz + b[12], b[1] * px + b[5] * py + b[9] * pz + b[13],
+                                     b[2] * px + b[6] * py + b[10] * pz + b[14]});
+  }
+  // the four, linearly, in floats as before
+  float blend[12] = {};
+  float wsum      = 0;
+  for(size_t j = 0; j < 4; j++)
+  {
+    const float  w    = m.skinWeight[v * 4 + j];
+    const size_t bone = m.skinIndex[v * 4 + j];
+    if(w == 0 || bone >= m_linear.size())
+      continue;
+    wsum += w;
+    for(int c = 0; c < 12; c++)
+      blend[c] += m_linear[bone].m[c] * w;
+  }
+  const float fx = m.restLocal[v * 3], fy = m.restLocal[v * 3 + 1], fz = m.restLocal[v * 3 + 2];
+  if(wsum <= 0)
+    return m.toSpace.transformPoint({fx, fy, fz});
+  return {blend[0] * fx + blend[3] * fy + blend[6] * fz + blend[9], blend[1] * fx + blend[4] * fy + blend[7] * fz + blend[10],
+          blend[2] * fx + blend[5] * fy + blend[8] * fz + blend[11]};
+}
+
+bool SurfaceSkin::matrix(size_t v, Mat4& out) const
+{
+  const Surface& m = m_mesh;
+  if(m_blend)
+  {
+    Mat4 local;
+    if(m_blend->vertex(v, local.e) <= 0)
+      return false;
+    out = m.toSpace * local;
+    return true;
+  }
+  // the four, linearly: the weighted sum of toSpace * bone, in doubles as the GPU solver's carry had it
+  float wsum = 0;
+  out.e.fill(0);
+  for(size_t j = 0; j < 4; j++)
+  {
+    const float  w    = m.skinWeight[v * 4 + j];
+    const size_t bone = m.skinIndex[v * 4 + j];
+    if(w == 0 || bone >= m_linear4.size())
+      continue;
+    wsum += w;
+    for(size_t c = 0; c < 16; c++)
+      out.e[c] += m_linear4[bone].e[c] * w;
+  }
+  return wsum > 0;
+}
+
 void skin(const Surface& m, const std::vector<Mat4>& bones, float* out)
 {
   const size_t n = m.vertexCount();
@@ -15,38 +92,16 @@ void skin(const Surface& m, const std::vector<Mat4>& bones, float* out)
     std::copy(m.posed.begin(), m.posed.end(), out);
     return;
   }
-  std::vector<Mat34> at(bones.size());
-  for(size_t b = 0; b < bones.size(); b++)
-    at[b] = Mat34::of(m.toSpace * bones[b]);
+  const SurfaceSkin s(m, bones);
   // on the pool, each vertex its own: the same numbers on any number of threads (a body and a dress are
   // 67k vertices, skinned twice a frame for the GPU solver)
   jobs::parallelFor(n, 2048, [&](size_t begin, size_t end) {
     for(size_t v = begin; v < end; v++)
     {
-      float blend[12] = {};
-      float wsum      = 0;
-      for(size_t j = 0; j < 4; j++)
-      {
-        const float  w    = m.skinWeight[v * 4 + j];
-        const size_t bone = m.skinIndex[v * 4 + j];
-        if(w == 0 || bone >= at.size())
-          continue;
-        wsum += w;
-        for(int c = 0; c < 12; c++)
-          blend[c] += at[bone].m[c] * w;
-      }
-      const float px = m.restLocal[v * 3], py = m.restLocal[v * 3 + 1], pz = m.restLocal[v * 3 + 2];
-      if(wsum <= 0)
-      {
-        const Vec3 p = m.toSpace.transformPoint({px, py, pz});
-        out[v * 3]     = float(p.x);
-        out[v * 3 + 1] = float(p.y);
-        out[v * 3 + 2] = float(p.z);
-        continue;
-      }
-      out[v * 3]     = blend[0] * px + blend[3] * py + blend[6] * pz + blend[9];
-      out[v * 3 + 1] = blend[1] * px + blend[4] * py + blend[7] * pz + blend[10];
-      out[v * 3 + 2] = blend[2] * px + blend[5] * py + blend[8] * pz + blend[11];
+      const Vec3 p   = s.at(v);
+      out[v * 3]     = float(p.x);
+      out[v * 3 + 1] = float(p.y);
+      out[v * 3 + 2] = float(p.z);
     }
   });
 }
@@ -89,6 +144,10 @@ const char* poseFreeDifference(const Surface& a, const Surface& b, bool collider
   FV_DIFFERS(visible)
   FV_DIFFERS(skinIndex)
   FV_DIFFERS(skinWeight)
+  FV_DIFFERS(skinIndex8)
+  FV_DIFFERS(skinWeight8)
+  FV_DIFFERS(dualQuat)
+  FV_DIFFERS(dualQuatShare)
   FV_DIFFERS(bones.size())
   FV_DIFFERS(toSpace.e)
 #undef FV_DIFFERS

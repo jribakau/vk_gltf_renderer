@@ -387,15 +387,21 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t) const
   };
   // The skin as the solver takes it, so the pose transition turns the mesh's bones rather than
   // sliding its vertices along chords: the bones' skin matrices in the mesh's space, the rest cage
-  // there, and the matrix into the job's space.
+  // there, and the matrix into the job's space. With the drawn skin's eight influences and dual
+  // quaternion share, so the body the cloth meets through a step is the body drawn (a bent hip,
+  // knee or elbow keeps the volume linear blending loses there).
   const auto attachSkin = [](cloth::Surface& out, const Skinned& s, const Mat4& to) {
     if(!s.skinned)
       return;
-    out.skinIndex  = s.skin.index;
-    out.skinWeight = s.skin.weight;
-    out.bones      = skinMatrices(s.pose);
-    out.restLocal  = s.rest;
-    out.toSpace    = to;
+    out.skinIndex     = s.skin.index;
+    out.skinWeight    = s.skin.weight;
+    out.skinIndex8    = s.skin.index8;
+    out.skinWeight8   = s.skin.weight8;
+    out.dualQuat      = s.skin.dualQuat;
+    out.dualQuatShare = s.skin.dualQuatShare;
+    out.bones         = skinMatrices(s.pose);
+    out.restLocal     = s.rest;
+    out.toSpace       = to;
   };
   // The cage's rest shape and its skinned pose, both in the mesh's local centimetres.
   const auto skinCage = [&](int mesh, const mesh::RenderTarget* except) -> std::optional<Skinned> {

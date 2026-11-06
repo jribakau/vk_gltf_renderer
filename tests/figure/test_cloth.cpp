@@ -24,6 +24,7 @@
 #include <figure/physics/cloth/report.hpp>
 #include <figure/physics/collide/tri_grid.hpp>
 #include <figure/physics/collide/sweep_grid.hpp>
+#include <figure/physics/skin.hpp>
 
 namespace {
 
@@ -424,6 +425,17 @@ TEST(ClothJob, aJobReadsBackAsItWasWritten)
   physics::cloth::Job job;
   job.surfaces = {strip(3, shifted(2)), sheet(4)};
   job.surfaces[1].kind = Surface::Kind::eAddon;
+  // the drawn skin goes with it (version 2)
+  {
+    Surface&     m = job.surfaces[0];
+    const size_t n = m.vertexCount();
+    m.skinIndex8.assign(n * 8, 0);
+    m.skinWeight8.assign(n * 8, 0.f);
+    for(size_t v = 0; v < n; v++)
+      m.skinWeight8[v * 8] = 1;
+    m.dualQuat = 0.25f;
+    m.dualQuatShare.assign(n, 0.5f);
+  }
   job.options.stretchSweeps = 3;
   job.options.transition    = 0.5f;
   job.options.recoverLost   = false;
@@ -446,6 +458,10 @@ TEST(ClothJob, aJobReadsBackAsItWasWritten)
     EXPECT_EQ(a.gravity, b.gravity);
     EXPECT_EQ(a.skinIndex, b.skinIndex);
     EXPECT_EQ(a.skinWeight, b.skinWeight);
+    EXPECT_EQ(a.skinIndex8, b.skinIndex8);
+    EXPECT_EQ(a.skinWeight8, b.skinWeight8);
+    EXPECT_EQ(a.dualQuat, b.dualQuat);
+    EXPECT_EQ(a.dualQuatShare, b.dualQuatShare);
     ASSERT_EQ(a.bones.size(), b.bones.size());
     for(size_t i = 0; i < a.bones.size(); i++)
       EXPECT_EQ(a.bones[i].e, b.bones[i].e);
@@ -464,6 +480,128 @@ TEST(ClothJob, aJobReadsBackAsItWasWritten)
   }
   EXPECT_FALSE(physics::cloth::readJob(file).has_value());
   std::filesystem::remove(file);
+}
+
+// A collider skinned by two bones from `in`'s influences, its vertices `rest` (mesh-local), into the
+// job's space by `to`; the drawn skin (eight influences, the dual quaternion share) when `drawn`.
+Surface twoBoneCollider(const std::vector<float>& rest, const mesh::SkinInput& in, const std::vector<Mat4>& bones, const Mat4& to, bool drawn)
+{
+  const physics::CageSkin skin = physics::cageSkin(in);
+  std::vector<uint32_t>   tris;
+  Surface                 m = Surface::collider(physics::transformPoints(to, rest), physics::transformPoints(to, rest), tris, 0, 0.2f, 0.4f);
+  m.skinIndex  = skin.index;
+  m.skinWeight = skin.weight;
+  if(drawn)
+  {
+    m.skinIndex8    = skin.index8;
+    m.skinWeight8   = skin.weight8;
+    m.dualQuat      = skin.dualQuat;
+    m.dualQuatShare = skin.dualQuatShare;
+  }
+  m.bones     = bones;
+  m.restLocal = rest;
+  m.toSpace   = to;
+  return m;
+}
+
+// The body cloth meets is skinned as the drawn mesh's skin pass skins it (physics-plan step 13c): its
+// eight influences and its dual quaternion share, as physics::skinLocal (the drawn skin on the CPU,
+// which drapeDelta inverts), into the job's space; a vertex's matrix gives the same point
+TEST(ClothSurface, theBodyClothMeetsIsSkinnedAsDrawn)
+{
+  const double pi = std::acos(-1.0);
+  // a figure's root in metres and moved: the job's space is centimetres
+  const Mat4               to    = compose(Vec3{3, -1, 2}, quatFromEuler(0, 0.3, 0, "XYZ"), Vec3{100, 100, 100});
+  const std::vector<Mat4>  bones = {compose(Vec3{0.1, 0, 0}, quatFromEuler(0.2, 0, 0, "XYZ"), Vec3{1, 1, 1}),
+                                    compose(Vec3{0, 0.05, 0}, quatFromEuler(0, 0, pi / 2, "XYZ"), Vec3{1, 1, 1})};
+  // vertex 0 on one bone; 1 half and half; 2 spread over six influences of the two (the eight's slots)
+  mesh::SkinInput in;
+  in.start  = {0, 1, 3, 9};
+  in.bone   = {0, 0, 1, 0, 1, 0, 1, 0, 1};
+  in.weight = {1.f, 0.5f, 0.5f, 0.3f, 0.2f, 0.15f, 0.15f, 0.1f, 0.1f};
+  const std::vector<float> rest{0.01f, 0.02f, 0.f, 0.f, 0.03f, 0.f, -0.02f, 0.01f, 0.04f};
+  physics::SkinPose pose;
+  pose.bones = bones;
+  for(const float share : {0.f, 0.6f, 1.f})
+  {
+    in.dualQuat           = share;
+    const Surface m       = twoBoneCollider(rest, in, bones, to, true);
+    ASSERT_TRUE(m.drawnSkin()) << share;
+    const auto drawn      = physics::transformPoints(to, physics::skinLocal(rest, physics::cageSkin(in), pose));
+    std::vector<float> out(rest.size());
+    physics::cloth::skin(m, bones, out.data());
+    const physics::cloth::SurfaceSkin s(m, bones);
+    for(size_t v = 0; v < 3; v++)
+    {
+      for(int c = 0; c < 3; c++)
+        EXPECT_NEAR(out[v * 3 + c], drawn[v * 3 + c], 1e-4) << share << " " << v;
+      Mat4 mv;
+      ASSERT_TRUE(s.matrix(v, mv));
+      const Vec3 p = mv.transformPoint({rest[v * 3], rest[v * 3 + 1], rest[v * 3 + 2]});
+      EXPECT_NEAR(p.x, out[v * 3], 1e-4);
+      EXPECT_NEAR(p.y, out[v * 3 + 1], 1e-4);
+      EXPECT_NEAR(p.z, out[v * 3 + 2], 1e-4);
+    }
+  }
+}
+
+// Why: at a bent elbow the linear blend of the two bones pulls the skin in towards the joint, so the
+// drawn arm is fuller there than the body the cloth was kept off. A ring vertex half on each bone, the
+// second bent a quarter turn about the joint, keeps its distance with dual quaternions; the four,
+// linearly, take it to 0.71 of it
+TEST(ClothSurface, aDualQuaternionBodyKeepsABentJointsVolume)
+{
+  const double            pi    = std::acos(-1.0);
+  const std::vector<Mat4> bones = {Mat4{}, compose(Vec3{0, 0, 0}, quatFromEuler(0, 0, pi / 2, "XYZ"), Vec3{1, 1, 1})};
+  mesh::SkinInput         in;
+  in.start  = {0, 2};
+  in.bone   = {0, 1};
+  in.weight = {0.5f, 0.5f};
+  const std::vector<float> rest{0, 5, 0};  // 5 cm from the joint
+  for(const float share : {0.f, 1.f})
+  {
+    in.dualQuat     = share;
+    const Surface m = twoBoneCollider(rest, in, bones, Mat4{}, share > 0);
+    float         p[3];
+    physics::cloth::skin(m, bones, p);
+    EXPECT_NEAR(std::hypot(p[0], p[1], p[2]), share > 0 ? 5.0 : 5.0 * std::sqrt(0.5), 1e-4) << share;
+  }
+}
+
+// A surface without the drawn skin (a version 1 job, a test's) is skinned as before: the four,
+// linearly, in floats, to the bit
+TEST(ClothSurface, withoutTheDrawnSkinTheFourBlendLinearlyAsBefore)
+{
+  const double            pi    = std::acos(-1.0);
+  const Mat4              to    = compose(Vec3{1, 2, 3}, Quat{}, Vec3{100, 100, 100});
+  const std::vector<Mat4> bones = {compose(Vec3{0.1, 0, 0}, Quat{}, Vec3{1, 1, 1}), compose(Vec3{0, 0, 0}, quatFromEuler(0, 0, pi / 3, "XYZ"), Vec3{1, 1, 1})};
+  mesh::SkinInput         in;
+  in.start  = {0, 2, 3};
+  in.bone   = {0, 1, 1};
+  in.weight = {0.25f, 0.75f, 1.f};
+  in.dualQuat = 1;  // left out below: the surface has only the four
+  const std::vector<float> rest{0.01f, 0.05f, 0.f, -0.02f, 0.f, 0.03f};
+  const Surface            m = twoBoneCollider(rest, in, bones, to, false);
+  ASSERT_FALSE(m.drawnSkin());
+  float out[6];
+  physics::cloth::skin(m, bones, out);
+  for(size_t v = 0; v < 2; v++)
+  {
+    float blend[12] = {};
+    for(size_t j = 0; j < 4; j++)
+    {
+      const float w = m.skinWeight[v * 4 + j];
+      if(w == 0)
+        continue;
+      const physics::cloth::Mat34 a = physics::cloth::Mat34::of(to * bones[m.skinIndex[v * 4 + j]]);
+      for(int c = 0; c < 12; c++)
+        blend[c] += a.m[c] * w;
+    }
+    const float px = rest[v * 3], py = rest[v * 3 + 1], pz = rest[v * 3 + 2];
+    EXPECT_EQ(out[v * 3], blend[0] * px + blend[3] * py + blend[6] * pz + blend[9]);
+    EXPECT_EQ(out[v * 3 + 1], blend[1] * px + blend[4] * py + blend[7] * pz + blend[10]);
+    EXPECT_EQ(out[v * 3 + 2], blend[2] * px + blend[5] * py + blend[8] * pz + blend[11]);
+  }
 }
 
 TEST(ClothSurface, sameButPoseLooksPastThePoseAlone)

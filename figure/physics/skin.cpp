@@ -34,13 +34,7 @@ bool invertBlend(const std::array<double, 3>& offset, const std::array<double, 9
   return true;
 }
 
-// A skin matrix as a unit dual quaternion (x y z w each) and the stretch left over (rows), as
-// rs::jointDualQuat takes the GPU's joints apart, in doubles
-struct JointDq
-{
-  std::array<double, 4> q{0, 0, 0, 1}, d{0, 0, 0, 0};
-  std::array<double, 9> k{1, 0, 0, 0, 1, 0, 0, 0, 1};
-};
+using detail::JointDq;
 
 using V3 = std::array<double, 3>;
 double dot3(const V3& a, const V3& b)
@@ -109,36 +103,55 @@ JointDq jointDq(const Mat4& m)
   return out;
 }
 
-std::vector<JointDq> jointDqs(const std::vector<Mat4>& S, const CageSkin& skin)
+}  // namespace
+
+SkinBlend::SkinBlend(std::span<const Mat4> bones, const SkinView& skin)
+    : m_bones(bones)
+    , m_skin(skin)
 {
-  std::vector<JointDq> out;
-  if(skin.dualQuat > 0 || !skin.dualQuatShare.empty())
-    for(const Mat4& m : S)
-      out.push_back(jointDq(m));
-  return out;
+  if(skin.dualQuats())
+  {
+    m_dqs.reserve(bones.size());
+    for(const Mat4& m : bones)
+      m_dqs.push_back(jointDq(m));
+  }
 }
 
 // the vertex's skin as one matrix: the weighted sum of its skin matrices (eight with DAZ's skinning),
 // mixed with its dual quaternion skin by its share; the weight total says whether it has any
-double blend(const std::vector<Mat4>& S, const std::vector<JointDq>& dqs, const CageSkin& skin, size_t v, std::array<double, 16>& out)
+double SkinBlend::vertex(size_t v, std::array<double, 16>& out) const
 {
+  const auto&         S    = m_bones;
+  const auto&         dqs  = m_dqs;
+  const SkinView&     skin = m_skin;
   out.fill(0);
   const bool   eight = !skin.index8.empty();
   const size_t per   = eight ? 8 : 4;
   const auto&  index = eight ? skin.index8 : skin.index;
   const auto&  wt    = eight ? skin.weight8 : skin.weight;
-  double       wsum  = 0;
-  for(size_t j = 0; j < per; j++)
-  {
-    const double w = wt[v * per + j];
-    const size_t k = index[v * per + j];
-    if(w == 0 || k >= S.size())
-      continue;
-    wsum += w;
-    for(size_t c = 0; c < 16; c++)
-      out[c] += S[k].e[c] * w;
-  }
   const double share = dqs.size() != S.size() ? 0.0 : v < skin.dualQuatShare.size() ? skin.dualQuatShare[v] : skin.dualQuat;
+  // A vertex all dual quaternion (most of a figure) takes nothing of the linear blend's 3x4 (it is
+  // multiplied by 0 below), so that is summed only where it counts; its bottom row always is
+  const auto linear = [&](bool whole) {
+    double sum = 0;
+    for(size_t j = 0; j < per; j++)
+    {
+      const double w = wt[v * per + j];
+      const size_t k = index[v * per + j];
+      if(w == 0 || k >= S.size())
+        continue;
+      sum += w;
+      if(whole)
+        for(size_t c = 0; c < 16; c++)
+          out[c] += S[k].e[c] * w;
+      else
+        for(size_t c = 3; c < 16; c += 4)
+          out[c] += S[k].e[c] * w;
+    }
+    return sum;
+  };
+  const bool   allDq = share == 1.0;
+  const double wsum  = linear(!allDq);
   if(wsum <= 0 || share <= 0)
     return wsum;
   std::array<double, 4> b0{}, b1{}, first{};
@@ -165,7 +178,15 @@ double blend(const std::vector<Mat4>& S, const std::vector<JointDq>& dqs, const 
   }
   const double len = std::sqrt(b0[0] * b0[0] + b0[1] * b0[1] + b0[2] * b0[2] + b0[3] * b0[3]);
   if(len <= 0)
+  {
+    // no rotation to blend: the linear blend alone, whole
+    if(allDq)
+    {
+      out.fill(0);
+      linear(true);
+    }
     return wsum;
+  }
   const double x = b0[0] / len, y = b0[1] / len, z = b0[2] / len, w = b0[3] / len;
   const V3     qv{x, y, z}, dv{b1[0] / len, b1[1] / len, b1[2] / len};
   const double dw = b1[3] / len;
@@ -188,8 +209,6 @@ double blend(const std::vector<Mat4>& S, const std::vector<JointDq>& dqs, const 
   }
   return wsum;
 }
-
-}  // namespace
 
 std::vector<int> nodeOfMesh(const SceneGraph& scene)
 {
@@ -303,14 +322,14 @@ CageSkin cageSkin(const mesh::SkinInput& in)
 std::vector<float> skinLocal(const std::vector<float>& rest, const CageSkin& skin, const SkinPose& pose)
 {
   const size_t       n   = rest.size() / 3;
-  const auto         S   = skinMatrices(pose);
-  const auto         dqs = jointDqs(S, skin);
+  const auto         S = skinMatrices(pose);
+  const SkinBlend    blend(S, SkinView::of(skin));
   std::vector<float> out(rest.size());
   std::array<double, 16> m;
   for(size_t v = 0; v < n; v++)
   {
     const double x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
-    if(blend(S, dqs, skin, v, m) <= 0)
+    if(blend.vertex(v, m) <= 0)
     {
       out[v * 3] = rest[v * 3];
       out[v * 3 + 1] = rest[v * 3 + 1];
@@ -326,8 +345,8 @@ std::vector<float> skinLocal(const std::vector<float>& rest, const CageSkin& ski
 
 std::vector<float> skinLocal(std::span<const float> rest, const CageSkin& skin, const SkinPose& pose, std::span<const uint32_t> vertices)
 {
-  const auto             S   = skinMatrices(pose);
-  const auto             dqs = jointDqs(S, skin);
+  const auto             S = skinMatrices(pose);
+  const SkinBlend        blend(S, SkinView::of(skin));
   std::vector<float>     out(vertices.size() * 3);
   std::array<double, 16> m;
   for(size_t k = 0; k < vertices.size(); k++)
@@ -336,7 +355,7 @@ std::vector<float> skinLocal(std::span<const float> rest, const CageSkin& skin, 
     if(v * 3 + 2 >= rest.size())
       continue;
     const double x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
-    if(blend(S, dqs, skin, v, m) <= 0)
+    if(blend.vertex(v, m) <= 0)
     {
       out[k * 3]     = rest[v * 3];
       out[k * 3 + 1] = rest[v * 3 + 1];
@@ -353,8 +372,8 @@ std::vector<float> skinLocal(std::span<const float> rest, const CageSkin& skin, 
 std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<float>& simulated, const CageSkin& skin, const SkinPose& pose)
 {
   const size_t       n   = rest.size() / 3;
-  const auto         S   = skinMatrices(pose);
-  const auto         dqs = jointDqs(S, skin);
+  const auto         S = skinMatrices(pose);
+  const SkinBlend    blend(S, SkinView::of(skin));
   std::vector<float> out(rest.size(), 0.f);
   // each vertex on its own, on the pool: a light copy's whole dress (the Kai Dress's 42,687 vertices)
   // took 16.6 ms of a live step on one thread with the riding
@@ -362,7 +381,7 @@ std::vector<float> drapeDelta(const std::vector<float>& rest, const std::vector<
     std::array<double, 16> m;
     for(size_t v = begin; v < end; v++)
     {
-      const double          wsum = blend(S, dqs, skin, v, m);
+      const double          wsum = blend.vertex(v, m);
       const double          x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
       double                sx, sy, sz;
       std::array<double, 9> m3{1, 0, 0, 0, 1, 0, 0, 0, 1};

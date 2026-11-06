@@ -86,6 +86,10 @@ Coarse copyOf(const Surface& collider, const std::vector<uint32_t>& faces)
   s.gravity       = collider.gravity;
   s.skinIndex     = take(collider.skinIndex, 4);
   s.skinWeight    = take(collider.skinWeight, 4);
+  s.skinIndex8    = take(collider.skinIndex8, 8);
+  s.skinWeight8   = take(collider.skinWeight8, 8);
+  s.dualQuat      = collider.dualQuat;
+  s.dualQuatShare = take(collider.dualQuatShare, 1);
   s.bones         = collider.bones;
   s.restLocal     = take(collider.restLocal, 3);
   s.toSpace       = collider.toSpace;

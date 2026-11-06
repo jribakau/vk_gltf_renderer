@@ -300,6 +300,25 @@ struct ClothGpu::Impl
 
   // ---- a frame
   void kinematicAt(float t, std::vector<float>& out);
+  // The last two poses kinematicAt skinned, each with the bones it swept every skinned mesh to and its
+  // t (an unskinned mesh's lerp): a pose asked for again is copied, not skinned. A frame's start is the
+  // last frame's end (a settle's next transition frame; a live step's start, the last step's target),
+  // and a live step skins its ends once to measure its move and again to simulate them. Emptied when a
+  // rest cage moves or the state starts over.
+  struct SkinnedPose
+  {
+    std::vector<std::vector<Mat4>> bones;
+    float                          t    = -1;
+    uint64_t                       used = 0;
+    std::vector<float>             out;
+  };
+  std::array<SkinnedPose, 2> skinned{};
+  uint64_t                   skinnedUses = 0;
+  void                       forgetSkinned()
+  {
+    for(SkinnedPose& p : skinned)
+      p = {};
+  }
   bool buildGrid(const std::vector<float>& start, const std::vector<float>& end, shaderio::ClothGpuModel& m);
   // a grid into its buffers, made larger when it outgrew them; false when they could not be made
   bool uploadGrid(const fv::physics::SweepGrid& g, nvvk::Buffer& cellBuf, size_t& cellCap, nvvk::Buffer& itemBuf, size_t& itemCap);
@@ -485,6 +504,7 @@ bool ClothGpu::Impl::prepare()
 
 void ClothGpu::Impl::posePrepare()
 {
+  forgetSkinned();
   // the pose's hold on each mesh, swept from the memorized pose to the target it came with
   kin.assign(meshes.size(), Kinematic{});
   for(size_t mi = 0; mi < meshes.size(); mi++)
@@ -634,6 +654,7 @@ bool ClothGpu::Impl::create()
 
 void ClothGpu::Impl::resetState()
 {
+  forgetSkinned();
   if(startPending)
   {
     // as prepare() makes it: the rest shape, with what overlaps the body moved out of it
@@ -699,29 +720,84 @@ void ClothGpu::Impl::destroy()
 // anchors), into `out` (only those entries).
 void ClothGpu::Impl::kinematicAt(float t, std::vector<float>& out)
 {
-  std::vector<float> tmp;
+  // a vertex the pose doesn't place: the solver's
+  const auto free = [&](size_t i) { return model.dynamic[i] && model.inv[i] > 0 && model.attAlpha[i] <= 0; };
+  // every skinned mesh's bones swept to t
+  std::vector<std::vector<Mat4>> bones(meshes.size());
+  bool                           lerped = false;
+  for(size_t mi = 0; mi < meshes.size(); mi++)
+  {
+    if(!kin[mi].skinned)
+    {
+      lerped = true;
+      continue;
+    }
+    bones[mi].resize(kin[mi].to.size());
+    for(size_t b = 0; b < bones[mi].size(); b++)
+      bones[mi][b] = sweepAt(kin[mi].from[b], kin[mi].to[b], t);
+  }
+  const auto sameBones = [](const std::vector<std::vector<Mat4>>& a, const std::vector<std::vector<Mat4>>& b) {
+    if(a.size() != b.size())
+      return false;
+    for(size_t mi = 0; mi < a.size(); mi++)
+    {
+      if(a[mi].size() != b[mi].size())
+        return false;
+      for(size_t k = 0; k < a[mi].size(); k++)
+        if(a[mi][k].e != b[mi][k].e)
+          return false;
+    }
+    return true;
+  };
+  // the same pose skinned already: its entries again, to the bit
+  for(SkinnedPose& p : skinned)
+    if(p.out.size() == out.size() && (!lerped || p.t == t) && sameBones(p.bones, bones))
+    {
+      p.used = ++skinnedUses;
+      for(size_t i = 0; i < size_t(model.nv); i++)
+        if(!free(i))
+          for(size_t c = 0; c < 3; c++)
+            out[i * 3 + c] = p.out[i * 3 + c];
+      return;
+    }
   for(size_t mi = 0; mi < meshes.size(); mi++)
   {
     const cloth::Surface& m = meshes[mi];
-    const int         o = model.base[mi];
-    const size_t      n = m.vertexCount();
-    if(kin[mi].skinned)
+    const size_t          o = size_t(model.base[mi]);
+    const size_t          n = m.vertexCount();
+    if(!kin[mi].skinned)
     {
-      std::vector<Mat4> bones(kin[mi].to.size());
-      for(size_t b = 0; b < bones.size(); b++)
-        bones[b] = sweepAt(kin[mi].from[b], kin[mi].to[b], t);
-      tmp.resize(n * 3);
-      cloth::skin(m, bones, tmp.data());
+      for(size_t v = 0; v < n; v++)
+        if(!free(o + v))
+          for(int c = 0; c < 3; c++)
+          {
+            const size_t i = o + v;
+            out[i * 3 + c] = (1 - t) * model.rest[i * 3 + c] + t * model.posed[i * 3 + c];
+          }
+      continue;
     }
-    for(size_t v = 0; v < n; v++)
-    {
-      const int i = o + int(v);
-      if(model.dynamic[i] && model.inv[i] > 0 && model.attAlpha[size_t(i)] <= 0)
-        continue;
-      for(int c = 0; c < 3; c++)
-        out[size_t(i) * 3 + c] = kin[mi].skinned ? tmp[v * 3 + c] : (1 - t) * model.rest[size_t(i) * 3 + c] + t * model.posed[size_t(i) * 3 + c];
-    }
+    // the pose's vertices alone (a body, a garment's pinned and tethered ones), each its own on the pool:
+    // the free cloth is the solver's
+    const cloth::SurfaceSkin skin(m, bones[mi]);
+    fv::jobs::parallelFor(n, 2048, [&](size_t begin, size_t end) {
+      for(size_t v = begin; v < end; v++)
+      {
+        if(free(o + v))
+          continue;
+        const Vec3   p = skin.at(v);
+        const size_t i = o + v;
+        out[i * 3]     = float(p.x);
+        out[i * 3 + 1] = float(p.y);
+        out[i * 3 + 2] = float(p.z);
+      }
+    });
   }
+  // kept in place of the pose used longest ago
+  SkinnedPose& keep = skinned[0].used <= skinned[1].used ? skinned[0] : skinned[1];
+  keep.bones        = std::move(bones);
+  keep.t            = t;
+  keep.used         = ++skinnedUses;
+  keep.out          = out;
 }
 
 // The body's faces over their sweep through the frame, into the open-addressed cell table
@@ -1311,34 +1387,21 @@ void ClothGpu::Impl::carry(float t)
     std::vector<Mat4> from(kin[mi].to.size()), at(kin[mi].to.size());
     for(size_t b = 0; b < from.size(); b++)
     {
-      from[b] = m.toSpace * sweepAt(kin[mi].from[b], kin[mi].to[b], 0);
-      at[b]   = m.toSpace * sweepAt(kin[mi].from[b], kin[mi].to[b], t);
+      from[b] = sweepAt(kin[mi].from[b], kin[mi].to[b], 0);
+      at[b]   = sweepAt(kin[mi].from[b], kin[mi].to[b], t);
     }
-    const size_t o = size_t(model.base[mi]);
+    // each vertex's skin into the job's space at the sweep's start and at t, as the body is skinned
+    // (cloth::SurfaceSkin: as drawn, or the four linearly)
+    const cloth::SurfaceSkin skinFrom(m, std::move(from)), skinAt(m, std::move(at));
+    const size_t             o = size_t(model.base[mi]);
     fv::jobs::parallelFor(m.vertexCount(), 1024, [&](size_t begin, size_t end) {
       for(size_t v = begin; v < end; v++)
       {
         const size_t i = o + v;
         if(!model.dynamic[i] || model.inv[i] <= 0)
           continue;
-        Mat4  a, b;
-        float wsum = 0;
-        a.e.fill(0);
-        b.e.fill(0);
-        for(size_t j = 0; j < 4; j++)
-        {
-          const float  w    = m.skinWeight[v * 4 + j];
-          const size_t bone = m.skinIndex[v * 4 + j];
-          if(w == 0 || bone >= from.size())
-            continue;
-          wsum += w;
-          for(size_t c = 0; c < 16; c++)
-          {
-            a.e[c] += from[bone].e[c] * w;
-            b.e[c] += at[bone].e[c] * w;
-          }
-        }
-        if(wsum <= 0)
+        Mat4 a, b;
+        if(!skinFrom.matrix(v, a) || !skinAt.matrix(v, b))
           continue;
         const Vec3 p = (b * inverse(a)).transformPoint({xHost[i * 3], xHost[i * 3 + 1], xHost[i * 3 + 2]});
         if(!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
@@ -1375,8 +1438,9 @@ bool ClothGpu::setRest(size_t mesh, std::vector<float> restLocal)
   if(mesh >= s.kin.size() || !s.kin[mesh].skinned || restLocal.size() != s.meshes[mesh].restLocal.size())
     return false;
   s.meshes[mesh].restLocal = std::move(restLocal);
-  // a held frame skins nothing again: this one must
+  // a held frame skins nothing again, nor a pose skinned before: this one must
   s.heldAt = -1;
+  s.forgetSkinned();
   return true;
 }
 
