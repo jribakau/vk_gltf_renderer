@@ -26,7 +26,8 @@
 // end positions and the body's collision grid go up (the host skins the kinematic vertices and
 // builds the grid, as the CPU solver does), the substeps are recorded, the positions come back.
 // A frame is submitted and waited on at once. On a queue of its own (useQueue: a second queue the
-// device gives, compute only on NVIDIA's) any thread may drive it, and the driver settles on the pool:
+// device gives, compute only on NVIDIA's; every figure's simulation shares it, their submits taken one at a
+// time) any thread may drive it, and the driver settles on the pool:
 // the thread that draws never waits on it, and the cloth's compute runs beside the renderer's frames
 // (physics-plan step 13b). Without one it runs on the thread that owns the renderer's queue
 // (ownerThreadOnly), and a step costs that frame its GPU time.

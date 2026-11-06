@@ -26,6 +26,7 @@
 #include <limits>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
@@ -47,7 +48,7 @@ using namespace fv::physics;
 
 namespace {
 
-// As the CPU solver's (figure/physics/cloth/backend.cpp); kept the same so both drape alike.
+// As the CPU island's (figure/physics/cloth/island.cpp); kept the same so both drape alike.
 constexpr float kCell             = 2.f;
 constexpr float kDepth            = 2.f;
 constexpr float kCap              = 2.f;
@@ -62,6 +63,37 @@ constexpr float kRecoverDepth     = 3.f;
 
 // the queue simulations run on, when there is one of their own (ClothGpu::useQueue)
 nvvk::QueueInfo s_queue{};
+// Every simulation submits to that one queue, each from the pool thread its frame runs on, and Vulkan has a queue
+// used by one thread at a time: two figures' cloth stepping at once lost the device (a write to address 0).
+std::mutex s_queueSubmit;
+
+// nvvk::endSingleTimeCommands with the submit alone under s_queueSubmit: not the wait for it, so another
+// simulation's frame goes onto the queue behind this one meanwhile.
+VkResult submitAndWait(VkCommandBuffer cmd, VkDevice device, VkCommandPool pool, VkQueue queue)
+{
+  VkResult result = vkEndCommandBuffer(cmd);
+  VkFence  fence  = VK_NULL_HANDLE;
+  if(result == VK_SUCCESS)
+  {
+    const VkFenceCreateInfo fenceInfo{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    result = vkCreateFence(device, &fenceInfo, nullptr, &fence);
+  }
+  if(result == VK_SUCCESS)
+  {
+    const VkCommandBufferSubmitInfo cmdInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cmd};
+    const VkSubmitInfo2 submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = 1, .pCommandBufferInfos = &cmdInfo};
+    {
+      const std::lock_guard lock(s_queueSubmit);
+      result = vkQueueSubmit2(queue, 1, &submit, fence);
+    }
+    if(result == VK_SUCCESS)
+      result = vkWaitForFences(device, 1, &fence, VK_TRUE, std::numeric_limits<uint64_t>::max());
+  }
+  if(fence)
+    vkDestroyFence(device, fence, nullptr);
+  vkFreeCommandBuffers(device, pool, 1, &cmd);
+  return result;
+}
 
 constexpr VkBufferUsageFlags2 kUsage = VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
                                        | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT;
@@ -1048,7 +1080,7 @@ void ClothGpu::Impl::frame(float t0, float t1, float extraDamping, float seconds
   const auto waitStart = std::chrono::steady_clock::now();
   if(commandPool)
   {
-    NVVK_CHECK(nvvk::endSingleTimeCommands(cmd, alloc->getDevice(), commandPool, queue.queue));
+    NVVK_CHECK(submitAndWait(cmd, alloc->getDevice(), commandPool, queue.queue));
   }
   else
     app->submitAndWaitTempCmdBuffer(cmd);
