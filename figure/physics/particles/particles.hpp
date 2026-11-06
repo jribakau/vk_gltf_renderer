@@ -1,8 +1,8 @@
 #pragma once
 
-// The particle core (docs/physics-plan.md step 7): what cloth is solved with, and strand hair from
-// step 14. Positions are xyz floats in one array, inverse masses one float each (0: held by its
-// owner), and each row's lambda is a double, so a long settle's sums don't drift.
+// The particle core (docs/physics-plan.md step 7): what cloth is solved with, and strand hair since
+// step 14 (its follow-the-leader rows). Positions are xyz floats in one array, inverse masses one float
+// each (0: held by its owner), and each row's lambda is a double, so a long settle's sums don't drift.
 //
 // A sweep runs blocks of the particle range side by side. The block count is fixed, never the
 // machine's, so a drape comes out the same on any number of cores.
@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <figure/jobs/pool.hpp>
+#include <figure/physics/p3.hpp>
 
 namespace fv::physics::particles {
 
@@ -65,6 +66,15 @@ inline void projectAttach(float* x, int i, const float* to, float w, float alpha
   x[i * 3] += dx * s;
   x[i * 3 + 1] += dy * s;
   x[i * 3 + 2] += dz * s;
+}
+
+// One follow-the-leader row (Mueller et al. 2012, "Fast Simulation of Inextensible Hair and Fur"): `child`
+// put back `rest` from `parent` along the unit `dir`, the parent held: it has come to rest above it, so
+// a chain solved root to tip in one pass can't stretch. Strand hair's chains are these (physics/hair),
+// `dir` the span's own leaning towards its authored bend.
+inline void projectLeader(const P3& parent, P3& child, const P3& dir, float rest)
+{
+  child = parent + dir * rest;
 }
 
 // A free particle's step: its velocity (xyz) with gravity's, damped by `damped` (exp(-rate dt)),

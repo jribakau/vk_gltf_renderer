@@ -136,7 +136,7 @@ struct WornItem
   {
     std::optional<bool> on;
     float               strength = 1.f;
-    // strand hair's body: see dforce::StrandSet::volume
+    // strand hair's body: see physics::hair::StrandSet::volume
     float               volume = dson::kStrandVolume;
   };
   Cloth cloth;

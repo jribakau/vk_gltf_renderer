@@ -1405,7 +1405,7 @@ int main(int argc, char** argv)
               for(int c = 0; c < 3; c++)
                 body.push_back(p->bodies[0].posed[v * 3 + size_t(c)]);
             hairs.push_back({{"mesh", fileSafe(scene.meshes[size_t(mesh)].name)}, {"strands", count}, {"points", strands.posed.size() / 3}, {"ms", hairMs}, {"hangingShare", double(hanging) / double(count)},
-                             {"stretchMin", stretch.front()}, {"stretchMax", stretch.back()}, {"tipYMedian", tips[tips.size() / 2]}, {"tipYLowest", tips.front()}, {"tipYHighest", tips.back()}});
+                             {"stretchMin", stretch.front()}, {"stretchMax", stretch.back()}, {"tipYMedian", tips[tips.size() / 2]}, {"tipYLowest", tips.front()}, {"tipYHighest", tips.back()}, {"bits", bitsOf(after)}});
             if(step.contains("hairDump"))
             {
               std::ofstream dump(root / pathOf(step["hairDump"].get<std::string>().c_str()));

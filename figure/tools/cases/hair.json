@@ -1,0 +1,9 @@
+{
+  "about": "Strand hair: Toyen's dForce Long Hair on Addy Florence, settled (the hair report: time, stretch, tips, and the drape's bits), then landed as the app does (the job and the longest call on the main thread). Physics-plan step 14's gate. Run with DAZ_LIBRARY set to the content library.",
+  "library": "$DAZ_LIBRARY",
+  "steps": [
+    {"load": "People/Genesis 9/Characters/Addy Florence.duf"},
+    {"wear": "People/Genesis 9/Hair/Toyen/dForce Long Hair/dForce Long Hair.duf"},
+    {"dforce": "standing", "pump": true}
+  ]
+}

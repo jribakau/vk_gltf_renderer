@@ -26,7 +26,7 @@ enum class DforceKind
   eAddon,
 };
 
-// How much body strand hair keeps until someone says otherwise: see dforce::StrandSet::volume
+// How much body strand hair keeps until someone says otherwise: see physics::hair::StrandSet::volume
 constexpr float kStrandVolume = 0.5f;
 
 // Per-vertex cloth settings, one value per cage vertex.

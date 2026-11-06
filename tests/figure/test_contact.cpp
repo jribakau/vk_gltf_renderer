@@ -9,11 +9,14 @@
 #include <chrono>
 #include <cmath>
 #include <future>
+#include <optional>
 #include <random>
 #include <thread>
 
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/morph/morph_set.hpp>
+#include <figure/physics/cloth/surface.hpp>
+#include <figure/physics/collide/distance_field.hpp>
 #include <figure/physics/collide/surface_index.hpp>
 #include <figure/physics/collide/triangle_set.hpp>
 #include <figure/physics/contact/contact.hpp>
@@ -684,6 +687,56 @@ TEST(Physics, surfaceIndexMatchesBruteForce)
     else
       EXPECT_NEAR(first, nearest, 1e-9);
   }
+}
+
+// The distance field strand hair settles against, a shape of the core since physics-plan step 14: a
+// point near a floor goes up to its gap along the floor's normal, one under it up from as deep as it
+// reaches and no deeper, one far off is left alone, and a face that doesn't collide isn't there.
+TEST(Physics, aDistanceFieldKeepsAPointItsGapOffASurface)
+{
+  // a floor 40 cm square at y = 0, its normal up, in 20 x 20 quads
+  std::vector<float>    floor;
+  std::vector<uint32_t> tris;
+  constexpr int         n = 20;
+  for(int r = 0; r <= n; r++)
+    for(int c = 0; c <= n; c++)
+      floor.insert(floor.end(), {40.f * float(c) / n - 20.f, 0.f, 40.f * float(r) / n - 20.f});
+  for(uint32_t r = 0; r < n; r++)
+    for(uint32_t c = 0; c < n; c++)
+    {
+      const uint32_t a = r * (n + 1) + c, b = a + 1, d = a + n + 1, e = d + 1;
+      tris.insert(tris.end(), {a, d, e, a, e, b});
+    }
+  const cloth::Surface surface = cloth::Surface::collider(floor, floor, tris, cloth::kBodyLayer, 0.2f, 0.4f);
+  const DistanceField  field({surface}, 0.5f, P3{-5, -1, -5}, P3{5, 5, 5});
+  ASSERT_FALSE(field.empty());
+  const auto pushed = [&](P3 p, float gap, P3* normal = nullptr) {
+    P3 n;
+    if(!field.pushOut(p, gap, n))
+      return std::optional<P3>{};
+    if(normal)
+      *normal = n;
+    return std::optional<P3>{p};
+  };
+  // above it, within the gap: up to the gap, along +y
+  P3   normal;
+  auto near = pushed({1.3f, 0.2f, -0.7f}, 0.5f, &normal);
+  ASSERT_TRUE(near);
+  EXPECT_NEAR(near->y, 0.5f, 1e-3f);
+  EXPECT_NEAR(near->x, 1.3f, 1e-3f);
+  EXPECT_NEAR(near->z, -0.7f, 1e-3f);
+  EXPECT_NEAR(normal.y, 1.f, 1e-3f);
+  // under it, two centimetres in: brought back out to the gap
+  auto under = pushed({0.4f, -2.f, 2.1f}, 0.5f);
+  ASSERT_TRUE(under);
+  EXPECT_NEAR(under->y, 0.5f, 1e-3f);
+  // deeper than it brings back from, beyond the gap, or past the box: left where it is
+  EXPECT_FALSE(pushed({0.4f, -DistanceField::kDeepest - 0.5f, 2.1f}, 0.5f));
+  EXPECT_FALSE(pushed({0.4f, 0.8f, 2.1f}, 0.5f));
+  EXPECT_FALSE(pushed({0.4f, 0.2f, 30.f}, 0.5f));
+  // the same floor with Collide off on its vertices: nothing to meet
+  const cloth::Surface off = cloth::Surface::collider(floor, floor, tris, cloth::kBodyLayer, 0.2f, 0.4f, std::vector<uint8_t>(floor.size() / 3, 0));
+  EXPECT_TRUE(DistanceField({off}, 0.5f, P3{-5, -1, -5}, P3{5, 5, 5}).empty());
 }
 
 // Near a dense surface the search passes over cells further off than the nearest face it has found
