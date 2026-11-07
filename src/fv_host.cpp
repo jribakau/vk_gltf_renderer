@@ -98,6 +98,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   });
   cmds.add("prop.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("prop.set", args); }); });
   cmds.add("prop.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("prop.remove", args); }); });
+  // placing (fv_host_place.cpp): each its own step of the history, as prop.set
+  cmds.add("prop.drop", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->propDrop(args); }); });
+  cmds.add("prop.aim", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->propAim(args); }); });
   cmds.add("prop.duplicate", [impl](const Json& args) {
     // a figure loads again, which waits on workers: answered with its job
     return impl->onApp([impl, args] { return impl->propDuplicate(args); });
@@ -451,6 +454,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   });
   s.view->onHelperPick([impl](const glm::vec2& px) { return impl->helperAt(px); });
   s.view->onPull([impl](const std::string& phase, const glm::vec2& px) { return impl->pullAt(phase, px); });
+  s.view->onSolo([impl](const std::vector<std::string>& ids) { impl->setSolo(ids); });
   // camera.set edits the lens of the view in use: the camera looked through keeps it, else the free view
   s.view->onLensChange([impl](const FvView::Lens& lens) {
     if(const auto p = impl->findProp(impl->viewCamera))

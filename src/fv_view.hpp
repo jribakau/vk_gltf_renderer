@@ -28,7 +28,7 @@
 //   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation}   the lens of the view in use
 //   camera.get    {}                         -> {position, target, up, focalLength}
 //   camera.goto   {position, target, up?, focalLength?}
-//   view.set      {display, grid, gizmo, pick, select, transform, helpers, frameAspect}  display: shaded, clay, wireframe, normals;
+//   view.set      {display, grid, gizmo, pick, select, transform, helpers, frameAspect, solo}  display: shaded, clay, wireframe, normals;
 //                                               pick: "object" (the default: a click selects the prop),
 //                                               "mesh" (the node hit), "bone" (the posed bone nearest) or
 //                                               "pull" (a drag on a figure in Physics mode pulls it, the
@@ -39,7 +39,12 @@
 //                                               transform: the gizmo's "move", "rotate" or "scale";
 //                                               helpers: whether camera and light markers show;
 //                                               frameAspect: a frame's width over height the view is
-//                                               widened to hold, with a margin (0: none; fovForFrame)
+//                                               widened to hold, with a margin (0: none; fovForFrame);
+//                                               solo (Isolate): a prop or a list of them that alone show,
+//                                               with what rides on them and what carries them, null for
+//                                               all; a view of the scene, not an edit: the props' own
+//                                               visibility and the history stay. A mesh hidden this way
+//                                               long may be let go under memory pressure, as any hidden one
 //
 // Topics: "selection" ({prop, node, name, mesh, kind, bone, surface}: `node` is null when the prop itself
 // is selected; `bone`, the pose bone id, when a posable bone is; `surface`, after a click on the prop,
@@ -121,6 +126,8 @@ public:
   void setProps(std::vector<PropNodes> props);
   // The prop the selection is in, or "".
   const std::string& selectedProp() const { return m_selectedProp; }
+  // every prop selected, the primary (selectedProp) first
+  std::vector<std::string> selectedProps() const { return m_selectedProp.empty() ? std::vector<std::string>{} : std::vector<std::string>{m_selectedProp}; }
   // the selection, if it is in `prop`, cleared and published (a prop leaving the scene)
   void deselect(const std::string& prop);
   // Whether an entity is a prop root, and which prop's it is.
@@ -138,6 +145,8 @@ public:
   // The Pull tool's drag, in render pixels: "down" (true when it took hold of a figure: the drag is
   // then its, not the camera's), "move", "up".
   void onPull(std::function<bool(const std::string& phase, const glm::vec2& px)> f) { m_pull = std::move(f); }
+  // view.set's solo: the props Isolate shows (empty: all), which the host applies
+  void onSolo(std::function<void(const std::vector<std::string>&)> f) { m_solo = std::move(f); }
 
   // The lens of the view in use: the free view's, or the camera prop's it looks through.
   struct Lens
@@ -197,6 +206,7 @@ private:
   double                                        m_frameAspect = 0;
   std::function<std::string(const glm::vec2&)>  m_helperPick;
   std::function<bool(const std::string&, const glm::vec2&)> m_pull;
+  std::function<void(const std::vector<std::string>&)>      m_solo;
   bool                                          m_pulling = false;  // a Pull drag holds a figure
 
   fv::Json                              m_camera;

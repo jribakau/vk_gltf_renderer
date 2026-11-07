@@ -71,6 +71,13 @@
 //                   focusDistance, locked, targetDistance}, light?: {type, color, intensity, radius, inner, outer}}
 //   prop.remove     {prop}                       what rode on it stays where it was in the world
 //   prop.duplicate  {prop}                       -> {prop}, or {job} for a figure (loaded again, its state put back)
+//   prop.drop       {prop | props: [id]}?        (the selection without either) down, or up out of what it
+//                                                is sunk in, until its lowest point rests on what is under it
+//                                                (rays down from above it against the triangles the contact
+//                                                pass keeps, fv_host_place.cpp), else on the ground; one step.
+//                                                -> {ok, moved: metres}, or {job} while a set is indexed first
+//   prop.aim        {prop, at: prop id | [x, y, z]}   turned so its -Z looks at the prop's middle or the
+//                                                point, once (it doesn't follow); a step of the history
 //   scene.clear     {}                           every prop goes
 //   scene.order     {order: [prop]}              the props in this order (the ones it leaves out after them), one composition
 //   pose.set        {prop, values: {"bone/kind/axis": value}, gesture?}
@@ -261,8 +268,9 @@
 // the next to undo or redo first), "animation" ({clips: {number: {name,
 // duration, order, prop}}, current: number | null, playing, time, speed, loop}), "selection", "camera",
 // "scene" ({props: {id: {kind, name, parent, bone, visible, order, transform: {t, r, e, s}, stats?, source?,
-// format?, generation?, posable?, morphs?, body?, camera?, light?}}, order: [id]}; `morphs` a DAZ object
-// with dials, `body` a character or creature), and per prop "nodes/<prop>"
+// format?, generation?, posable?, morphs?, body?, camera?, light?}}, order: [id], solo: [id]}; `morphs` a
+// DAZ object with dials, `body` a character or creature, `solo` what Isolate shows, empty for all), and per
+// prop "nodes/<prop>"
 // (its hierarchy), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",
 // "wardrobe/<prop>" ({figure, items: {id: {label, kind, rel, visible, own, channels, collision,
 // cloth: {able, native, on, strength}, meshes: [scene mesh], color?: rel | null}}, collision: {enabled,

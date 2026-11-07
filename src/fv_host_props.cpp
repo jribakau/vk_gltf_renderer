@@ -322,7 +322,7 @@ void FvHost::Impl::applyVisible(const Prop& p)
 {
   if(!renderer->feedsHostScene() || !renderer->hostScene().entity(p.root))
     return;
-  renderer->hostScene().setVisible(p.root, p.visible);
+  renderer->hostScene().setVisible(p.root, shownNow(p));
 }
 
 tinygltf::Light FvHost::Impl::lightPayload(const Prop& p) const
@@ -446,7 +446,7 @@ void FvHost::Impl::drawHelpers()
     const glm::vec3 eye = glm::vec3(manip->getEye());
     for(const auto& p : props)
     {
-      if(!p->visible || (p->kind != PropKind::eCamera && p->kind != PropKind::eLight) || p->id == viewCamera)
+      if(!shownNow(*p) || (p->kind != PropKind::eCamera && p->kind != PropKind::eLight) || p->id == viewCamera)
         continue;
       const glm::mat4 world = worldOf(*p);
       const glm::vec3 at    = anchorOf(world);
@@ -547,7 +547,7 @@ std::string FvHost::Impl::helperAt(const glm::vec2& px) const
   float            nearest = 14.f;
   for(const auto& p : props)
   {
-    if(!p->visible || (p->kind != PropKind::eCamera && p->kind != PropKind::eLight) || p->id == viewCamera)
+    if(!shownNow(*p) || (p->kind != PropKind::eCamera && p->kind != PropKind::eLight) || p->id == viewCamera)
       continue;
     const glm::vec4 clip = viewProj * glm::vec4(anchorOf(worldOf(*p)), 1.f);
     if(clip.w <= 1e-6f)
@@ -573,7 +573,12 @@ void FvHost::Impl::publishScene()
     all[p->id] = propJson(*p);
     order.push_back(p->id);
   }
-  protocol->events().snapshot("scene", {{"props", all}, {"order", order}, {"view", viewCamera.empty() ? Json() : Json(viewCamera)}});
+  // what Isolate shows (view.set's solo), of what is still here
+  Json isolated = Json::array();
+  for(const std::string& id : solo)
+    if(findProp(id))
+      isolated.push_back(id);
+  protocol->events().snapshot("scene", {{"props", all}, {"order", order}, {"view", viewCamera.empty() ? Json() : Json(viewCamera)}, {"solo", isolated}});
   movedProps.clear();
 }
 
@@ -780,7 +785,7 @@ void FvHost::Impl::releaseFed()
 
 fv::PropSpec FvHost::Impl::specOf(const Prop& p, bool figureChanged) const
 {
-  fv::PropSpec s{.id = p.id, .number = uint32_t(std::atoi(p.id.c_str() + 2)), .name = p.name, .parent = p.parent, .visible = p.visible};
+  fv::PropSpec s{.id = p.id, .number = uint32_t(std::atoi(p.id.c_str() + 2)), .name = p.name, .parent = p.parent, .visible = shownNow(p)};
   if(const auto up = p.parent.empty() ? nullptr : findProp(p.parent))
     s.parentNode = boneNode(*up, p.bone);
   s.transform = {.translation = p.transform.translation, .rotation = p.transform.rotation, .scale = p.transform.scale};
@@ -1334,6 +1339,7 @@ Json FvHost::Impl::propDuplicate(const Json& args)
 Json FvHost::Impl::sceneClear()
 {
   loadGeneration++;  // loads still running drop their result
+  solo.clear();
   for(auto p : std::vector(props))
     removeProp(p);
   requestCompose("Clearing the scene");

@@ -318,6 +318,24 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
           throw std::runtime_error("transform is move, rotate or scale");
         m_transform = t;
       }
+      // Isolate: a prop, a list of them, or null for all
+      if(args.contains("solo"))
+      {
+        std::vector<std::string> ids;
+        const fv::Json&          solo = args["solo"];
+        if(solo.is_string())
+          ids.push_back(solo.get<std::string>());
+        else if(solo.is_array())
+        {
+          for(const fv::Json& id : solo)
+            if(id.is_string())
+              ids.push_back(id.get<std::string>());
+        }
+        else if(!solo.is_null())
+          throw std::runtime_error("solo is a prop, a list of props, or null");
+        if(m_solo)
+          m_solo(ids);
+      }
       return fv::Json{{"ok", true}};
     });
   });

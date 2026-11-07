@@ -1002,7 +1002,38 @@ struct FvHost::Impl
   // where the bone is in the figure's prop root, posed (identity for none, or before it is fed)
   glm::mat4               boneOffset(const Prop& figure, const std::string& bone) const;
   void                    applyTransform(const Prop& p);
+  // the scene shows it: it is visible, and Isolate (view.set's solo) leaves it in
   void                    applyVisible(const Prop& p);
+  bool                    shownNow(const Prop& p) const;
+  // view.set's solo: only these show, with what rides on them and what carries them; empty, all
+  std::set<std::string>   solo;
+  void                    setSolo(const std::vector<std::string>& ids);
+
+  // ---- placing (fv_host_place.cpp): what a prop takes up in the world, and rays against the scene
+  using Bounds = std::array<glm::vec3, 2>;
+  // a triangle set the contact pass keeps (contactSets, contactMesh) and where it stands
+  struct PlacedSet
+  {
+    std::shared_ptr<const fv::physics::SharedTriangles> set;
+    glm::mat4                                            toWorld{1.f};
+  };
+  struct SceneHit
+  {
+    glm::vec3 at;
+    glm::vec3 normal;  // toward where the ray came from
+  };
+  std::vector<PlacedSet> placedSets(const Prop& p);
+  // its own (a figure posed as it is, a camera or light where it stands), and with what rides on it
+  std::optional<Bounds> ownBounds(const Prop& p);
+  std::optional<Bounds> propBounds(const Prop& p);
+  std::optional<Bounds> selectionBounds(const std::vector<std::shared_ptr<Prop>>& ps);
+  // the nearest surface the ray meets; `madeOnly` skips sets not indexed yet. Safe on any thread
+  static std::optional<SceneHit> rayThrough(const std::vector<PlacedSet>& sets, const glm::vec3& o, const glm::vec3& d, bool madeOnly);
+  float                          groundHeight() const;
+  std::vector<std::shared_ptr<Prop>> movingArg(const Json& args) const;
+  void moveBy(const std::vector<std::shared_ptr<Prop>>& moving, const glm::vec3& delta, const std::string& label);
+  Json propDrop(const Json& args);
+  Json propAim(const Json& args);
   Json                    propJson(const Prop& p) const;
   void                    publishScene();
   // camera frustums and light markers, drawn over the image (GltfRenderer::setHelperLines), and the

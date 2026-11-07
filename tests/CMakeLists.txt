@@ -211,6 +211,7 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_host_physics.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_looks.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_props.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_place.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_scene.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_support.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_vam.cpp

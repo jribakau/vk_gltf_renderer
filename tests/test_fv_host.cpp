@@ -3670,6 +3670,94 @@ TEST(FvHost, aGroupIsAnEmptyCarrier)
   EXPECT_EQ(propOf(rig, light.value("result", Json::object()).value("prop", "")).value("parent", ""), group);
 }
 
+//--------------------------------------------------------------------------------------------------
+// Placing (fv_host_place.cpp): Drop to the ground or onto what is below, Aim, Isolate.
+
+namespace {
+
+float heightOf(HostRig& rig, const std::string& id)
+{
+  return rig.topic("scene")["props"][id]["transform"]["t"][1].get<float>();
+}
+
+}  // namespace
+
+// Dropped with nothing under it, the figure stands on the ground; over a box, on the box's top (2 cm
+// up), whichever way it was off; undone, it is back where it was.
+TEST(FvHost, aDroppedFigureRestsOnWhatIsUnderIt)
+{
+  Seated s;
+  ASSERT_TRUE(s.rig.cmd("lighting.set", {{"ground", {{"height", 0.0}}}}).value("ok", false));
+  // the box far off: the figure comes down onto the ground
+  ASSERT_TRUE(s.rig.cmd("prop.set", {{"prop", s.figure}, {"transform", {{"t", {0.0, 0.5, 0.0}}}}}).value("ok", false));
+  Json dropped = s.rig.cmd("prop.drop", {{"prop", s.figure}});
+  ASSERT_TRUE(dropped.value("ok", false)) << dropped.dump();
+  ASSERT_TRUE(s.rig.settle());
+  const float onGround = heightOf(s.rig, s.figure);
+  EXPECT_LT(onGround, 0.5f);
+  // the box under it, and the figure sunk 10 cm into it: it comes up onto the box's top
+  s.place(0);
+  ASSERT_TRUE(s.rig.cmd("prop.set", {{"prop", s.figure}, {"transform", {{"t", {0.0, onGround - 0.1, 0.0}}}}}).value("ok", false));
+  dropped = s.rig.cmd("prop.drop", {{"prop", s.figure}});
+  ASSERT_TRUE(dropped.value("ok", false)) << dropped.dump();
+  ASSERT_TRUE(s.rig.settle());
+  EXPECT_NEAR(heightOf(s.rig, s.figure), onGround + 0.02f, 0.01f);
+  const Json undo = s.rig.topic("history").value("undo", Json::array());
+  ASSERT_FALSE(undo.empty());
+  EXPECT_EQ(undo[0].get<std::string>(), "Drop Box Figure");
+  s.rig.cmd("history.undo");
+  EXPECT_NEAR(heightOf(s.rig, s.figure), onGround - 0.1f, 1e-4f);
+}
+
+// An aimed light's -Z points at the box's middle, from wherever it stands
+TEST(FvHost, anAimedLightLooksAtTheProp)
+{
+  Seated     s;
+  s.place(0);
+  const Json added = s.rig.cmd("prop.add", {{"kind", "light"}, {"type", "spot"}, {"transform", {{"t", {1.0, 2.0, 1.0}}}}});
+  ASSERT_TRUE(s.rig.settle());
+  const std::string light = added.value("result", Json::object()).value("prop", "");
+  const Json        aimed = s.rig.cmd("prop.aim", {{"prop", light}, {"at", s.box}});
+  ASSERT_TRUE(aimed.value("ok", false)) << aimed.dump();
+  const Json r = s.rig.topic("scene")["props"][light]["transform"]["r"];
+  const glm::quat q(r[3].get<float>(), r[0].get<float>(), r[1].get<float>(), r[2].get<float>());
+  const glm::vec3 looks = q * glm::vec3(0, 0, -1);
+  const glm::vec3 want  = glm::normalize(glm::vec3(0, -0.04f, 0) - glm::vec3(1, 2, 1));
+  EXPECT_NEAR(glm::dot(looks, want), 1.f, 1e-4f);
+  const Json undo = s.rig.topic("history").value("undo", Json::array());
+  ASSERT_FALSE(undo.empty());
+  EXPECT_EQ(undo[0].get<std::string>(), "Aim Spot light at box");
+}
+
+// Isolate shows the box alone: the figure's meshes go from the scene, its own flag and the history
+// untouched; a prop added meanwhile stays out; null shows all again
+TEST(FvHost, isolateShowsOnlyWhatItNames)
+{
+  Seated     s;
+  const auto shownItems = [&] {
+    int n = 0;
+    for(const rs::DrawItem& item : s.rig.renderer.hostScene().drawItems())
+      n += item.shown;
+    return n;
+  };
+  const int all     = shownItems();
+  const auto before = s.rig.topic("history").value("undo", Json::array()).size();
+  ASSERT_TRUE(s.rig.cmd("view.set", {{"solo", s.box}}).value("ok", false));
+  ASSERT_TRUE(s.rig.settle());
+  const int alone = shownItems();
+  EXPECT_LT(alone, all);
+  EXPECT_GT(alone, 0);
+  EXPECT_TRUE(s.rig.topic("scene")["props"][s.figure].value("visible", false));
+  EXPECT_EQ(s.rig.topic("scene").value("solo", Json::array()), Json::array({s.box}));
+  EXPECT_EQ(s.rig.topic("history").value("undo", Json::array()).size(), before);
+  ASSERT_TRUE(s.rig.cmd("prop.add", {{"rel", "Props/Test/Box Stool.duf"}}).value("ok", false));
+  ASSERT_TRUE(s.rig.settle());
+  EXPECT_EQ(shownItems(), alone) << "a prop added while isolated showed";
+  ASSERT_TRUE(s.rig.cmd("view.set", {{"solo", nullptr}}).value("ok", false));
+  ASSERT_TRUE(s.rig.settle());
+  EXPECT_GT(shownItems(), all);
+}
+
 // A figure exported with a dent carries it: the feet stand 2 cm into the box, so the dented body's
 // lowest point is higher than the same export's without the dent.
 TEST(FvHost, exportCarriesTheContactChannel)

@@ -453,6 +453,9 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
   const auto        on   = [&] { return std::string(args.value("on", true) ? "on" : "off"); };
   if(cmd == "prop.set")
   {
+    // what a placing command calls it: "Drop Chair", "Aim Spot at Leyla"
+    if(const auto l = args.find("label"); l != args.end() && l->is_string())
+      return l->get<std::string>();
     if(const auto k = args.find("kind"); k != args.end() && k->is_string())
       return "Treat " + name + " as " + (k->get<std::string>() == "prop" ? "a prop" : k->get<std::string>() == "creature" ? "a creature" : "a " + k->get<std::string>());
     if(args.contains("name"))
@@ -651,7 +654,7 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
                 || (cmd == "pose.set" && !args.contains("label")) || (cmd == "figure.contact" && !args.contains("on") && !args.contains("self")) || (cmd == "physics.set" && (args.contains("strength") || args.contains("parts")) && !args.contains("on"))
                 || (cmd == "physics.secondary" && !args.contains("on")) || (cmd == "physics.soft" && !args.contains("on"));
   if(cmd == "prop.set")
-    merges = !args.contains("kind") && !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
+    merges = !args.contains("label") && !args.contains("kind") && !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
   Json shape = shapeOf(args);
   if(shape.is_object())
     for(const char* k : {"prop", "gesture"})

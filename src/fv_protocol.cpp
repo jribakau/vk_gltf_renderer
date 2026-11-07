@@ -84,7 +84,9 @@ namespace {
 // prop.add's `kind` (the app's reading of the library), prop.set's `kind` (treat a DAZ object as another),
 // scene.state's `kind`, prop.add's kind "group"; wear, collision, dForce, contact and Physics mode name a
 // body (a character or a creature).
-constexpr int kProtocolVersion = 45;
+// 46: placing: prop.drop (rest on what is under it, else the ground), prop.aim (look at a prop or a
+// point), view.set's solo (Isolate) and the scene topic's `solo`, and prop.set's `label`.
+constexpr int kProtocolVersion = 46;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace
