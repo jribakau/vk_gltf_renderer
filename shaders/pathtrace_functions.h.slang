@@ -115,6 +115,7 @@ struct GuideOutput
 #if USE_DLSS_SHADER
   float16_t3 specularAlbedo  = float16_t3(0);
   float      specularHitDist = 0.0f;  // Distance to reflected surface (0=no reflection, 65504=sky reflection)
+  float16_t3 specularDelta   = float16_t3(0);  // How its image moves: previous position less current (mirrorImageDelta)
   float16_t4 nrMask          = float16_t4(1, 1, 1, 1);
   float16_t  responsivity    = float16_t(0);  // RR's responsivity mask (eDlssResponsivity)
   bool       psrValid        = false;      // The primary hit is clear glass with a surface behind it
@@ -132,6 +133,7 @@ struct GuideScratch
 #if USE_DLSS_SHADER
   float16_t3 specularAlbedo     = float16_t3(0);
   float16_t  specularHitDist    = float16_t(0);
+  float16_t3 specularDelta      = float16_t3(0);  // See GuideOutput
   bool       captureSpecularHit = false;
   float16_t4 nrMask             = float16_t4(1, 1, 1, 1);
   float16_t  responsivity       = float16_t(0);  // See GuideOutput
@@ -2534,6 +2536,54 @@ DlssGlassPsr dlssTraceWater(PbrMaterial waterMat, HitState waterHit, float3 dir,
   psr.through        = waterMat.baseColor * waterMat.transmissionTint * dlssWaterThrough(GROUND_WATER_ABSORPTION, floorT);
   return psr;
 }
+
+// The reflection of clear glass or the water's surface, traced as a mirror off its shading normal
+// every DLSS frame: the path takes it on few of its samples (by its Fresnel, a few percent), so
+// DLSS-RR's specular hit distance and reflection motion over windows and water came and went with them.
+// Thin panes on the way are passed and alpha is resolved as the see-through chain does
+// (dlssTraceSkipThinGlass); the floor counts where it is nearer.
+struct DlssMirror
+{
+  float  hitDist = 65504.0f;      // To what it reflects; 65504 for the sky, as the path's capture gives it
+  float3 delta   = float3(0.0f);  // Its image's motion, previous position less current (mirrorImageDelta)
+};
+
+DlssMirror dlssTraceMirror(PbrMaterial mat, HitState surface, float3 dir, float3 surfaceDelta, SceneFrameInfo* frameInfo)
+{
+  DlssMirror   result;
+  const float3 N   = dot(mat.N, dir) < 0.0f ? mat.N : -mat.N;
+  const float3 Ng  = dot(surface.geonrm, dir) < 0.0f ? surface.geonrm : -surface.geonrm;
+  float3       out = reflect(dir, N);
+  if(dot(out, Ng) <= 0.0f)
+    out = reflect(dir, Ng);  // a bump tilted past the view: the face's own
+
+  RayDesc ray;
+  ray.Origin         = safeOffsetRay(surface.pos, Ng, surface.offsetDistance);
+  ray.Direction      = out;
+  ray.TMin           = 0.0f;
+  ray.TMax           = INFINITE;
+  int        glass   = 0;
+  float3     through = float3(1.0f);
+  HitPayload payload = dlssTraceSkipThinGlass(ray, glass, through);
+
+  const float floorT = infinitePlaneCrossing(ray.Origin, out, payload.hitT, frameInfo);
+  if(floorT > 0.0f)
+  {
+    result.hitDist = floorT;
+    result.delta   = mirrorImageDelta(float3(0.0f), surfaceDelta, N);  // the floor stays put
+  }
+  else if(payload.hitT != INFINITE)
+  {
+    GltfRenderNode      node  = pushConst.gltfScene->renderNodes[payload.rnodeID];
+    GltfRenderPrimitive prim  = pushConst.gltfScene->renderPrimitives[payload.rprimID];
+    const float3        barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
+    const float3        pos   = ray.Origin + out * payload.hitT;
+    const float3 hitDelta = dlssPrevHitPos(node, prim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, pos) - pos;
+    result.hitDist        = min(payload.hitT, 65504.0f);  // a half float's range, where the guide keeps it
+    result.delta          = mirrorImageDelta(hitDelta, surfaceDelta, N);
+  }
+  return result;
+}
 #endif  // USE_DLSS_SHADER
 
 
@@ -2963,6 +3013,7 @@ SampleResult packSampleResult(PathTracerState pt)
 #if USE_DLSS_SHADER
   sampleResult.guideOutput.specularAlbedo  = pt.guide.specularAlbedo;
   sampleResult.guideOutput.specularHitDist = pt.guide.specularHitDist;
+  sampleResult.guideOutput.specularDelta   = pt.guide.specularDelta;
 #if MAT_EXT_DLSS_NR
   sampleResult.guideOutput.nrMask = pt.guide.nrMask;
 #endif  // MAT_EXT_DLSS_NR

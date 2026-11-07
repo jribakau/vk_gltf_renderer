@@ -77,7 +77,8 @@ the enum for the authoritative list and formats):
 | `eDlssNormalRoughness` | World-space normal + roughness, packed | `pInNormals` (and `pInRoughness` in packed mode) |
 | `eDlssMotion` | Pixel-space motion vectors (see below) | `pInMotionVectors` |
 | `eDlssDepth` | NDC depth (`z/w`, `1.0` on miss) | `pInDepth` |
-| `eDlssSpecularHitDist` | Specular hit distance, captured at the first reflection bounce; on an eye's tear film, half the film's radius behind it on every sample (`shaders/mirror_image.h.slang`), so the catchlight goes with the eye | `pInSpecularHitDistance` (optional) |
+| `eDlssSpecularHitDist` | Specular hit distance, captured at the first reflection bounce; on clear glass and water, a mirror ray's on every DLSS frame (`dlssTraceMirror`); on an eye's tear film, half the film's radius behind it on every sample (`shaders/mirror_image.h.slang`), so the catchlight goes with the eye | `pInSpecularHitDistance` (optional) |
+| `eDlssSpecularMotion` | The motion of reflections, every pixel: of a reflection's image, or the surface's own where there is none (see [below](#the-motion-of-reflections)) | `pInMotionVectorsReflections` (optional) |
 
 - **DLSS-SR** uses only color + depth + motion — the material guides above are RR-only.
 - **OptiX and OIDN** share one shader path for their guides: `eDenoiserAlbedo` and
@@ -253,6 +254,39 @@ pointers.
 A dolly or orbit of a posed figure is camera motion and was already correct. The rasterizer lacks
 this and also lacks the instance vectors the path tracer has: `vertexMain` in
 `shaders/gltf_raster.slang` multiplies the current position by `prevMVP`.
+
+### The motion of reflections
+
+RR moves a pixel's reflection by the motion it is given in `pInMotionVectorsReflections`
+(`eDlssSpecularMotion`); without it, by its own guess from the specular hit distance and the camera
+matrices (NVIDIA's RR guide, 3.4.8). It takes the field instead of its guess, so the field covers every
+pixel, in pixels like the motion vectors:
+
+- **Where the pixel shows a reflection** (a hit distance was captured): the reflection's image, the hit
+  distance beyond the first hit along the camera ray (`mirrorImagePoint`, `shaders/mirror_image.h.slang`),
+  which is where a flat mirror shows the point and where RR itself puts it. That image moves by
+  `GuideOutput::specularDelta`: the reflected point's own motion (`dlssPrevHitPos`) mirrored in the
+  first hit's plane, plus twice the first hit's motion along its normal (`mirrorImageDelta`). In a still
+  scene this is RR's own guess. The difference is a moving figure seen in a mirror, a window or paint,
+  or a moving mirror. A turning mirror is taken as moving only.
+- **The sky in a reflection** (65504): the image at infinity along the camera ray, moving as the sky
+  does.
+- **An eye's tear film:** its image, half the film's radius behind it, moves with the eye.
+- **No reflection** (a matte pixel, or a sample whose first bounce was diffuse): the surface's own
+  motion, which is RR's guess for a hit distance of 0. On glossy surfaces a pixel switches between the
+  two from frame to frame, as its hit distance already came and went with the sample's lobe.
+
+**Clear glass and water** get their reflection on every DLSS frame: a mirror ray off the first hit's
+shading normal (`dlssTraceMirror`, `shaders/pathtrace_functions.h.slang`), past thin panes and through
+alpha as the see-through chain goes (`dlssTraceSkipThinGlass`), with the floor where it is nearer. The
+path itself reflects there on a few percent of its samples (the Fresnel), so the hit distance over a
+window or water was mostly missing. The image is counted from the glass, where the reflection is,
+whatever depth primary surface replacement gives RR. What a surface behind the glass reflects in turn
+(a metal behind a window) moves with the glass's reflection in this field: one field per pixel.
+
+Cost: one ray a pixel where the first hit is clear glass or water, on DLSS frames only; eyes are left
+out, their tear film's image needs no ray. Checked by `MirrorImage.AFlatMirrorsImageLiesAlongTheView`
+and `MirrorImage.AnImageMovesAsWhatItReflectsAndItsMirror`.
 
 ## Clear glass: primary surface replacement
 

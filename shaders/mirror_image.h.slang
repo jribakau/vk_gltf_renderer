@@ -40,4 +40,25 @@ float mirrorImageDistance(float radius, float replacedDepth)
   return max(image - replacedDepth, 0.05F * image);
 }
 
+// DLSS-RR's motion of reflections (pInMotionVectorsReflections, eDlssSpecularMotion). A flat mirror
+// shows a point H at H's image across its plane, which lies on the camera ray, as far beyond the
+// mirror as H is from it: the point RR itself puts at the specular hit distance. Given a motion field
+// for it, RR follows that instead (NVIDIA's RR guide, 3.4.8), so a reflection also moves when what it
+// shows moves, or when the mirror does.
+
+// The image of a reflection seen at `origin` along the camera ray `viewDir` (unit), `hitDist` beyond it
+float3 mirrorImagePoint(float3 origin, float3 viewDir, float hitDist)
+{
+  return origin + viewDir * hitDist;
+}
+
+// How that image moves since the previous frame (previous position less current): the reflected
+// point's motion `hitDelta` mirrored in the plane of unit `normal`, and the plane moved with the
+// mirror's own motion `mirrorDelta` (an image moves twice as far as its mirror along the normal).
+// A mirror that turns is taken as moving only.
+float3 mirrorImageDelta(float3 hitDelta, float3 mirrorDelta, float3 normal)
+{
+  return hitDelta - 2.0F * normal * dot(normal, hitDelta - mirrorDelta);
+}
+
 #endif  // FV_MIRROR_IMAGE_H

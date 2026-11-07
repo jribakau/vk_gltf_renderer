@@ -727,8 +727,22 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // #DLSS - Capture specular hit distance on depth 1 (first reflection bounce)
     if(pt.guide.captureSpecularHit)
     {
-      pt.guide.specularHitDist    = float16_t(payload.hitT);
+      pt.guide.specularHitDist    = float16_t(min(payload.hitT, 65504.0f));
       pt.guide.captureSpecularHit = false;
+      // How the reflection's image moves (RR's reflection motion): this point's motion mirrored in the
+      // first hit's plane, which moves with the first hit (mirrorImageDelta). The ground and the water
+      // stay put; a first hit seen through glass has its guides elsewhere and no motion of its own here.
+      float3 hitDelta = float3(0.0F);
+      if(!hitInfinitePlane && !hitWater)
+      {
+        const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
+        hitDelta = dlssPrevHitPos(renderNode, renderPrim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos) - hit.pos;
+      }
+      const float3 mirrorDelta = pt.guide.psrValid ? float3(0.0F) : pt.firstHitPosPrev - pt.firstHitPos;
+      const float3 mirrorN     = float3(pt.guide.normalRoughness.xyz);
+      const float  mirrorN2    = dot(mirrorN, mirrorN);
+      // a first hit that left no guide normal: the point's own motion, unmirrored (never a NaN for RR)
+      pt.guide.specularDelta = float16_t3(mirrorN2 > 1e-8F ? mirrorImageDelta(hitDelta, mirrorDelta, mirrorN * rsqrt(mirrorN2)) : hitDelta);
     }
 #endif  // USE_DLSS_SHADER
 
@@ -751,6 +765,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
         pt.firstHitPosPrev = dlssPrevHitPos(renderNode, renderPrim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos);
       }
+      // the hit's own motion, which a reflection in it moves with (primary surface replacement below
+      // puts the surface behind glass in firstHitPosPrev)
+      const float3 firstHitDelta = pt.firstHitPosPrev - hit.pos;
 #endif  // USE_DLSS_SHADER
 
       // Base-color guide albedo (shared by DLSS and the other denoisers). Stored temporarily, written at end to
@@ -802,16 +819,30 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           pt.firstHitPosPrev = pt.guide.psrPos + psr.posDelta;
           replacedDepth      = psr.seenLength;
         }
+        // Its own reflection, on every DLSS frame (dlssTraceMirror): how far it reaches and how its
+        // image moves, for RR's specular hit distance and reflection motion. The bounce below then
+        // captures nothing. Not on an eye: its tear film's image is set below, with no ray.
+        const bool tearFilm = materialIndex >= 0 && materials[materialIndex].chamberIor > 0.0F;
+        if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) && !tearFilm)
+        {
+          const DlssMirror mirror  = dlssTraceMirror(pbrMat, hit, ray.Direction, firstHitDelta, frameInfo);
+          pt.guide.specularHitDist = float16_t(mirror.hitDist);
+          pt.guide.specularDelta   = float16_t3(mirror.delta);
+        }
       }
 #if GLTF_USE_TRANSMISSION
       // #DLSS an eye's tear film: its reflection lies where the curved film shows it, half its radius
       // behind it (mirror_image.h.slang), whichever lobe this sample took, so the catchlight goes
-      // with the eye while the camera moves. The bounce below then captures nothing.
+      // with the eye while the camera moves. The bounce below then captures nothing. That point is
+      // fixed to the eye, so it moves as the film does.
       if(materialIndex >= 0 && hit.frontFace && materials[materialIndex].chamberIor > 0.0F)
       {
         const float radius = dlssHitMirrorRadius(renderNode, renderPrim, payload.primitiveID);
         if(radius > 0.0F)
+        {
           pt.guide.specularHitDist = float16_t(mirrorImageDistance(radius, replacedDepth));
+          pt.guide.specularDelta   = float16_t3(firstHitDelta);
+        }
       }
 #endif
       pt.guide.specularAlbedo = float16_t3(specularAlbedo);
@@ -2031,8 +2062,31 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     }
     float2 motionVec = calculateMotionVector(float4(guidePos, hitW), float4(sampleResult.hitPositionPrev, hitW),
                                              pushConst.frameInfo->prevMVP, pushConst.frameInfo->viewProjMatrix, imageSize);
+    // The motion of the reflection the pixel shows (RR's pInMotionVectorsReflections), which RR then
+    // takes instead of working it out from the specular hit distance, so it must cover every pixel.
+    // A reflection's image lies the hit distance beyond the first hit along the camera ray, as RR puts
+    // it (mirrorImagePoint), and moves as specularDelta says: in a still scene, RR's own. The sky's
+    // lies at infinity that way and moves as the sky does. A pixel with no reflection: its surface's motion.
+    // An eye's distance is counted from its iris (mirrorImageDistance), under a millimetre behind the
+    // film this counts from: a shift along the camera ray, which moves nothing on screen.
+    float2      specularMotion = motionVec;
+    const float specularDist   = sampleResult.guideOutput.specularHitDist;
+    if(hasSolidHit && specularDist > 0.0f)
+    {
+      const float3 viewDir = normalize(sampleResult.hitPosition - pushConst.frameInfo->viewInv[3].xyz);
+      if(specularDist >= 65504.0f)
+        specularMotion = calculateMotionVector(float4(viewDir, 0.0f), float4(viewDir, 0.0f), pushConst.frameInfo->prevMVP,
+                                               pushConst.frameInfo->viewProjMatrix, imageSize);
+      else
+      {
+        const float3 image = mirrorImagePoint(sampleResult.hitPosition, viewDir, specularDist);
+        specularMotion = calculateMotionVector(float4(image, 1.0f), float4(image + float3(sampleResult.guideOutput.specularDelta), 1.0f),
+                                               pushConst.frameInfo->prevMVP, pushConst.frameInfo->viewProjMatrix, imageSize);
+      }
+    }
     outImages[int(OutputImage::eDlssDepth)][int2(samplePos)]           = float4(guideDepth);
     outImages[int(OutputImage::eDlssMotion)][int2(samplePos)]          = float4(motionVec, 0, 0);
+    outImages[int(OutputImage::eDlssSpecularMotion)][int2(samplePos)]  = float4(specularMotion, 0, 0);
     outImages[int(OutputImage::eDlssNormalRoughness)][int2(samplePos)] = sampleResult.guideOutput.normalRoughness;
     // the sky's albedo is 0.5, as NVIDIA's RR guide asks: 0 makes it boil at the silhouette
     float4 guideAlbedo = sampleResult.guideOutput.albedo;

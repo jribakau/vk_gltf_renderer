@@ -1111,8 +1111,8 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
 
   // Output images by shaderio::OutputImage slot, the first outputCount of them bound. Fixed storage:
   // this runs every frame (twice on frame 0). ObjectID is written to the eSelectImage slot as float in .r.
-  std::array<VkDescriptorImageInfo, shaderio::eConvergence + 1> outputImages{};
-  uint32_t                                                 outputCount = 2;
+  std::array<VkDescriptorImageInfo, shaderio::eOutputImageSlots> outputImages{};
+  uint32_t                                                       outputCount = 2;
   outputImages[shaderio::eResultImage] = resources.gBuffers.getColorStorageImageInfo(Resources::eImgRendered);
   outputImages[shaderio::eSelectImage] = resources.gBuffers.getColorStorageImageInfo(Resources::eImgSelection);
 
@@ -1125,8 +1125,9 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
     // values without touching m_innerGBuffer directly.
     static constexpr OutputImage kRrSlots[] = {
         eResultImage, eSelectImage, eDlssAlbedo,          eDlssSpecAlbedo, eDlssNormalRoughness,
-        eDlssMotion,  eDlssDepth,   eDlssSpecularHitDist, eNrMask, eDlssResponsivity,
+        eDlssMotion,  eDlssDepth,   eDlssSpecularHitDist, eNrMask, eDlssResponsivity, eDlssSpecularMotion,
     };
+    static_assert(kRrSlots[std::size(kRrSlots) - 1] < eOutputImageSlots, "an RR slot past the output image array");
     outputCount = static_cast<uint32_t>(kRrSlots[std::size(kRrSlots) - 1]) + 1;
     for(OutputImage slot : kRrSlots)
       outputImages[slot] = m_dlss->getRrAttachment(slot);
@@ -1170,7 +1171,7 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
   // An accumulation's per-pixel convergence (ePtAdaptiveStop); DLSS frames never read it
   if(m_pushConst.flags & shaderio::ePtAdaptiveStop)
   {
-    outputCount                          = shaderio::eConvergence + 1;
+    outputCount                          = std::max<uint32_t>(outputCount, shaderio::eConvergence + 1);
     outputImages[shaderio::eConvergence] = m_convergence.getColorStorageImageInfo(0);
   }
 

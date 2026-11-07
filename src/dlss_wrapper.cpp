@@ -482,6 +482,12 @@ NVSDK_NGX_Result DlssFeature::cmdEvaluate(VkCommandBuffer cmd, NgxContext& conte
     evalParams.pInOutput        = &m_resources[int(ResourceType::eColorOut)];
     evalParams.pInDepth         = &m_resources[int(ResourceType::eDepth)];
     evalParams.pInMotionVectors = &m_resources[int(ResourceType::eMotionVector)];
+    // The motion of reflections (NVIDIA's RR guide, 3.4.8), in pixels as the motion vectors, at the same
+    // scale. Given, RR takes it instead of working it out from the specular hit distance; DLSS-RR's still,
+    // which has no motion, leaves it out.
+    evalParams.pInMotionVectorsReflections = m_resources[int(ResourceType::eSpecularMotionVector)].Resource.ImageViewInfo.ImageView ?
+                                                 &m_resources[int(ResourceType::eSpecularMotionVector)] :
+                                                 nullptr;
 
     evalParams.InJitterOffsetX = jitterX;
     evalParams.InJitterOffsetY = jitterY;

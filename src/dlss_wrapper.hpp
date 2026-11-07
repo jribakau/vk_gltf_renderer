@@ -131,6 +131,7 @@ public:
     eMotionVector,
     eDepth,
     eResponsivityMask,  // RR only (optional): how far each pixel trusts its history, [-1, 1]
+    eSpecularMotionVector,  // RR only (optional): the motion of reflections; RR works it out from the hit distance without
     eResourceTypeCount
   };
 

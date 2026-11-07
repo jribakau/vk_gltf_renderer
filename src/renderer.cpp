@@ -1699,8 +1699,8 @@ void GltfRenderer::createDescriptorSets()
   // 1: Descriptor PUSH: top level acceleration structure and the output image
   m_resources.descriptorBinding[1].addBinding(shaderio::BindingPoints::eTlas,
                                               VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_ALL);
-  m_resources.descriptorBinding[1].addBinding(shaderio::BindingPoints::eOutImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 10,
-                                              VK_SHADER_STAGE_ALL);
+  m_resources.descriptorBinding[1].addBinding(shaderio::BindingPoints::eOutImages, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                              shaderio::OutputImage::eOutputImageSlots, VK_SHADER_STAGE_ALL);
   m_resources.descriptorBinding[1].addBinding(shaderio::BindingPoints::eOutDepth, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
                                               VK_SHADER_STAGE_ALL);
 

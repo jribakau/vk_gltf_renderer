@@ -88,6 +88,9 @@ enum OutputImage
   eConvergence = 9,      // Per pixel of an accumulation (RG32): the mean of its samples' luminance squared, and 1 while it has converged (ePtAdaptiveStop)
   eDlssResponsivity = 9, // DLSS-RR responsivity mask (R16F): ptHairResponsivity where the first hit is hair, 0 elsewhere.
                          // DLSS frames only, so it shares the still's eConvergence slot
+  eDlssSpecularMotion = 10,  // DLSS-RR's motion of reflections (RG16F, pixels, as eDlssMotion): of a reflection's
+                             // image, the surface's own where there is none
+  eOutputImageSlots = 11,    // How many slots the output image binding holds: one past the last above
 };
 
 // Binding points for descriptors

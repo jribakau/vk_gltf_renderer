@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace glm;
@@ -103,4 +104,64 @@ TEST(MirrorImage, TwoViewsOfACatchlightMeetHalfTheRadiusBehind)
   const double s      = (b * e - c * d) / (a * c - b * b);
   const double behind = s - length(pA - cameraA);
   EXPECT_NEAR(behind, mirrorImageDistance(sphereTriangleRadius(float(R)), 0.0f), 0.03 * R / 2);
+}
+
+namespace {
+
+// H's image across the plane through `p` of unit normal `n`
+vec3 imageAcross(vec3 h, vec3 p, vec3 n)
+{
+  return h - 2.0f * n * dot(n, h - p);
+}
+
+vec3 randomUnit(unsigned i)
+{
+  const float z = std::cos(1.3f * float(i) + 0.4f), phi = 2.39996f * float(i);
+  const float r = std::sqrt(std::max(0.0f, 1.0f - z * z));
+  return vec3(r * std::cos(phi), r * std::sin(phi), z);
+}
+
+}  // namespace
+
+// The point DLSS-RR's reflection motion is taken at: on a flat mirror, the reflected point's image lies
+// along the camera ray, the hit distance past the mirror (mirrorImagePoint)
+TEST(MirrorImage, AFlatMirrorsImageLiesAlongTheView)
+{
+  for(unsigned i = 0; i < 64; i++)
+  {
+    const vec3 n = randomUnit(i);
+    vec3       view = randomUnit(i + 101);
+    if(dot(view, n) > 0.0f)
+      view = -view;  // the camera in front of the mirror
+    if(dot(view, n) > -0.05f)
+      continue;
+    const vec3  p    = vec3(0.3f, -1.2f, 2.0f) + 0.1f * randomUnit(i + 7);
+    const float dist = 0.05f + 0.37f * float(i);
+    const vec3  h    = p + reflect(view, n) * dist;  // what the mirror reflects
+    const vec3  got  = mirrorImagePoint(p, view, dist);
+    const vec3  want = imageAcross(h, p, n);
+    EXPECT_NEAR(length(got - want), 0.0f, 2e-5f * (1.0f + dist)) << i;
+  }
+}
+
+// How the image moves (mirrorImageDelta) is the image's own move when the reflected point and the
+// mirror both move: none in a still scene, the point's move mirrored, twice the mirror's along its
+// normal, none for a mirror sliding along itself
+TEST(MirrorImage, AnImageMovesAsWhatItReflectsAndItsMirror)
+{
+  for(unsigned i = 0; i < 64; i++)
+  {
+    const vec3 n       = randomUnit(i);
+    const vec3 p       = vec3(1.0f, 0.5f, -3.0f) + randomUnit(i + 11);
+    const vec3 h       = p + 2.0f * randomUnit(i + 23);
+    const vec3 hMove   = 0.05f * randomUnit(i + 37);
+    const vec3 mirMove = 0.02f * randomUnit(i + 53);
+    const vec3 want    = imageAcross(h + hMove, p + mirMove, n) - imageAcross(h, p, n);
+    EXPECT_NEAR(length(mirrorImageDelta(hMove, mirMove, n) - want), 0.0f, 1e-5f) << i;
+  }
+  const vec3 n(0.0f, 0.0f, 1.0f);
+  EXPECT_EQ(mirrorImageDelta(vec3(0.0f), vec3(0.0f), n), vec3(0.0f));
+  EXPECT_EQ(mirrorImageDelta(vec3(0.1f, 0.2f, 0.3f), vec3(0.0f), n), vec3(0.1f, 0.2f, -0.3f));
+  EXPECT_EQ(mirrorImageDelta(vec3(0.0f), vec3(0.0f, 0.0f, 0.1f), n), vec3(0.0f, 0.0f, 0.2f));
+  EXPECT_EQ(mirrorImageDelta(vec3(0.0f), vec3(0.3f, -0.2f, 0.0f), n), vec3(0.0f));
 }
