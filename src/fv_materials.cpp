@@ -298,6 +298,7 @@ Json FvMaterials::modelItem(int index) const
   const std::optional<Rgb> sheen = m.edits.sheenColor ? m.edits.sheenColor : g.sheen ? std::optional<Rgb>(g.sheen->color) : std::nullopt;
   values["sheenColor"] = sheen && (m.edits.sheenColor || (*sheen)[0] > 0 || (*sheen)[1] > 0 || (*sheen)[2] > 0) ? Json(hexOf(*sheen)) : Json(nullptr);
   values["sheenRoughness"] = m.edits.sheenRoughness ? *m.edits.sheenRoughness : g.sheen ? g.sheen->roughness : 0.5f;
+  values["metal"]          = m.edits.metal ? Json(*m.edits.metal) : Json(nullptr);
   // a model's images are its file's, not the library's: no rel, and none of them can be replaced
   Json textures = Json::array();
   const auto add      = [&](const char* slot, const char* label, int texture) {
@@ -849,6 +850,7 @@ Json FvMaterials::item(int index) const
   values["sweat"]          = v.sweat ? Json(*v.sweat) : Json(nullptr);
   values["bumpStrength"]   = v.bumpStrength ? Json(*v.bumpStrength) : Json(nullptr);
   fv::mat::clothesValues(m.edits, values);
+  values["metal"] = m.edits.metal ? Json(*m.edits.metal) : Json(nullptr);
   // the maps as lowering uses them, the edits' included; one an edit took away has rel ""
   Json textures = Json::array();
   for(const fv::mat::MapSlot& t : fv::mat::mapSlots(s, m.edits))

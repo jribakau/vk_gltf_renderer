@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include <figure/materials/fabric.hpp>
+#include <figure/materials/metals.hpp>
 #include <figure/materials/texture_request.hpp>
 
 namespace fv::mat {
@@ -192,6 +193,20 @@ void applyValue(Edits& e, const std::string& key, const EditsJson& v)
       throw std::runtime_error("fabric is one of " + known + ", or \"\" for none");
     }
   }
+  else if(key == "metal")
+  {
+    if(drop)
+      e.metal.reset();
+    else if(v.is_string() && (v.get<std::string>().empty() || findMetal(v.get<std::string>())))
+      e.metal = v.get<std::string>();
+    else
+    {
+      std::string known;
+      for(const Metal& m : metals())
+        known += (known.empty() ? "" : ", ") + std::string(m.key);
+      throw std::runtime_error("metal is one of " + known + ", or \"\" for none");
+    }
+  }
   else
     throw std::runtime_error("unknown material value " + key);
 }
@@ -214,6 +229,8 @@ EditsJson editedValues(const Edits& e)
     out["doubleSided"] = *e.doubleSided;
   if(e.fabric)
     out["fabric"] = *e.fabric;
+  if(e.metal)
+    out["metal"] = *e.metal;
   return out;
 }
 

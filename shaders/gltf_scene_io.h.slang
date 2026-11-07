@@ -368,6 +368,13 @@ struct GltfShadeMaterial
   float  flakesDensity   = 1;       // eight floats keep the row a multiple of 8
 #endif
 
+#if MAT_EXT_EDGE_TINT
+  // FV_materials_edge_tint: a named metal's reflectance toward grazing, OpenPBR's F82 tint
+  // (PbrMaterial::edgeTint). White unless the extension is present: Schlick's alone.
+  float3 edgeTintFactor = float3(1);
+  float  _edgeTintPad   = 0;  // keeps the row a multiple of 8 with no padding
+#endif
+
 #if MAT_EXT_HAIR
   // FV_materials_hair. hairFactor is 0 unless the extension is present: a ribbon fibre, shaded
   // with a hair BSDF instead of the glTF lobes. Absorption is Chiang's σ_a; the hit's along-UV

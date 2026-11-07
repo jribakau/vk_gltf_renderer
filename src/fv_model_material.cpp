@@ -20,15 +20,17 @@
 #include "fv_model_material.hpp"
 
 #include <figure/materials/material_gltf.hpp>
+#include <figure/materials/metals.hpp>
 
 namespace fv::model {
 
 fv::mat::Material editedMaterial(const fv::mat::Material& original, const fv::mat::Edits& e)
 {
   fv::mat::Material m = original;
-  if(e.color)
-    for(size_t i = 0; i < 3; i++)
-      m.baseColor[i] = (*e.color)[i];
+  // the colour edited, else a named metal's where no map holds the colour
+  const fv::mat::Rgb color = fv::mat::metalColor(e, {m.baseColor[0], m.baseColor[1], m.baseColor[2]}, m.baseColorMap.has());
+  for(size_t i = 0; i < 3; i++)
+    m.baseColor[i] = color[i];
   if(e.opacity)
   {
     m.baseColor[3] = *e.opacity;
@@ -74,6 +76,9 @@ fv::mat::Material editedMaterial(const fv::mat::Material& original, const fv::ma
   }
   if(e.sheenRoughness && m.sheen)
     m.sheen->roughness = *e.sheenRoughness;
+  // a named metal's dip toward grazing, where the model has metal; else its own (a file's, if any)
+  if(const fv::mat::Metal* metal = fv::mat::metalOf(e); metal && m.metallic > 0)
+    m.edgeTint = metal->edgeTint;
   return m;
 }
 

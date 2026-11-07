@@ -294,6 +294,10 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const fv::mat::
   handleTexture(dstMat.flakesColorTexture, flakes.colorMap);
 #endif
 
+#if MAT_EXT_EDGE_TINT
+  dstMat.edgeTintFactor = rgb(srcMat.edgeTint.value_or(Rgb{1, 1, 1}));
+#endif
+
 #if MAT_EXT_HAIR
   if(srcMat.hair)
   {

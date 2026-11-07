@@ -37,7 +37,8 @@
 //                    scleraColor, recolor, recolorStrength, tone, toneStrength, makeupColor,
 //                    makeupWeight, scatterScale, baseMap, opacityMap, normalMap, bumpMap,
 //                    roughnessMap, uvScaleU, uvScaleV, uvOffsetU, uvOffsetV, uvRotation, fabric,
-//                    fabricScale, fabricStrength, microDetail, sweat, sheenColor, sheenRoughness}}   null resets a value
+//                    fabricScale, fabricStrength, microDetail, sweat, sheenColor, sheenRoughness,
+//                    metal}}   null resets a value
 //   material.reset  {material}                    drops the edits of a material (or of all, if none)
 //   Colours are "#rrggbb" in sRGB, as the colour pickers hold them. alphaMode: opaque, cutout, blend.
 //   irisColor and irisStrength (0..1) recolour an eye's iris in its map (the cooker's ir=), and are
@@ -55,8 +56,10 @@
 //   (mat::surfaceUv), KHR_texture_transform. fabric (fabric.hpp's keys, "" none) lays a built-in
 //   weave over the surface as its detail layer, fabricScale its size and fabricStrength its normal's
 //   strength. These are refused on a model. sheenColor and sheenRoughness (0..1) are
-//   KHR_materials_sheen, on figures and models alike. A map chosen again that could not be made
-//   before is tried again.
+//   KHR_materials_sheen, on figures and models alike. metal (metals.hpp's keys, "" none) makes the
+//   surface a named metal, on figures and models alike: its edge tint on the metal lobe (OpenPBR's
+//   F82), and its colour where the colour is neither edited nor a map's. A map chosen again that
+//   could not be made before is tried again.
 //
 // One per prop with materials (a figure, a model); "m:3" is the prop's own third material.
 //
@@ -74,7 +77,7 @@
 // under measured skin (SkinMode::eMeasured) has scatterScale. normalStrength and bumpStrength are
 // null when the surface has no such map. A figure surface has every Clothes key (mat::clothesValues:
 // the maps, fabric and sheenColor null when unset, the numbers their defaults), and a model's has
-// sheenColor and sheenRoughness. `textures` lists the maps: a figure surface's as lowering uses them
+// sheenColor and sheenRoughness. Every surface has `metal`, null when unset. `textures` lists the maps: a figure surface's as lowering uses them
 // (mat::mapSlots), {slot, label, file, rel, edited}, rel "" for one an edit took away; a model's
 // {slot, label, file, edited: false}, with no rel (its images are its file's). A figure's
 // `eyes` is what the host set (setEyes, fv_host.hpp material.eyes): {rel, preset, own, ready,

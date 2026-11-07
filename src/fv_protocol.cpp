@@ -74,7 +74,9 @@ namespace {
 // across the aperture's blades).
 // 41: local exposure, the lighting's tonemap.localShadows and tonemap.localHighlights (dark regions
 // lifted and bright ones held toward mid grey, region by region).
-constexpr int kProtocolVersion = 41;
+// 42: a named metal, material.set's `metal` and the materials topic's values.metal (an older
+// renderer refuses the whole material.set for it, as the looks send it).
+constexpr int kProtocolVersion = 42;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

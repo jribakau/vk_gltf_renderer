@@ -8,6 +8,7 @@
 #include <figure/materials/fabric.hpp>
 #include <figure/materials/hair_strands.hpp>
 #include <figure/materials/lobes.hpp>
+#include <figure/materials/metals.hpp>
 #include <figure/materials/procedural.hpp>
 
 namespace fv::mat {
@@ -277,12 +278,6 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // surface, and for a rough one as far as the BSDF's albedo fit. Left out: the translucency's share,
   // and Diffuse Weight's map.
   const float diffuseScale = refractive ? 1.f : weightedDiffuseScale(s);
-  const Rgb   picked       = e.color.value_or(s.base.color);
-  const Rgb   baseColor{picked[0] * diffuseScale, picked[1] * diffuseScale, picked[2] * diffuseScale};
-  // The eye's wet shells (see the specular below): the tear film, and what lies under it
-  const EyeShell shell    = eyeShell(s);
-  const bool     tearFilm = shell == EyeShell::eMoisture || shell == EyeShell::eMeniscus || (shell == EyeShell::eCornea && !opts.underTearFilm);
-  const bool     underFilm = opts.underTearFilm && (shell == EyeShell::eCornea || s.kind == Kind::eEye);
   // Iray's refraction shows none of the base colour where it refracts, but glTF tints transmitted
   // light by it, so a map on a refracting surface would be looked through, on the way in and out
   // (Tri-X's eye presets put the whole eye's map on the eye moisture). Its colour goes as a flat one does.
@@ -290,6 +285,13 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // Jackson's eyes paint the sclera and iris on the moisture over a black eyeball, clear only where
   // eye1_rf.png is white), which the map left out showed as black eyes.
   const std::string baseMap = refractive && s.refraction->map.empty() ? std::string() : s.base.map;
+  // a named metal's colour where the colour is no map's factor: a map keeps the metal it was painted as
+  const Rgb picked = metalColor(e, s.base.color, !baseMap.empty());
+  const Rgb baseColor{picked[0] * diffuseScale, picked[1] * diffuseScale, picked[2] * diffuseScale};
+  // The eye's wet shells (see the specular below): the tear film, and what lies under it
+  const EyeShell shell    = eyeShell(s);
+  const bool     tearFilm = shell == EyeShell::eMoisture || shell == EyeShell::eMeniscus || (shell == EyeShell::eCornea && !opts.underTearFilm);
+  const bool     underFilm = opts.underTearFilm && (shell == EyeShell::eCornea || s.kind == Kind::eEye);
 
   // base colour: cutouts ride in its alpha, PBRSkin makeup is baked into it (glTF has one base
   // colour), blended in linear light
@@ -568,6 +570,9 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // sheen: the panel's, a cloth's soft rim of light at grazing angles
   if(e.sheenColor && ((*e.sheenColor)[0] > 0 || (*e.sheenColor)[1] > 0 || (*e.sheenColor)[2] > 0))
     out.sheen = Sheen{.color = *e.sheenColor, .roughness = clamp(e.sheenRoughness.value_or(0.5f), 0, 1)};
+  // a named metal's dip toward grazing, on whatever metal the surface has
+  if(const Metal* metal = metalOf(e); metal && metalness > 0)
+    out.edgeTint = metal->edgeTint;
 
   // clearcoat: Iray's top coat, else the tighter dual lobe where it has no lobe of its own, on the
   // same surface detail as the base

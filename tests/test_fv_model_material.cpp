@@ -24,6 +24,8 @@
 
 #include "fv_model_material.hpp"
 
+#include <figure/materials/metals.hpp>
+
 namespace {
 
 double ext(const tinygltf::Material& m, const char* name, const char* key)
@@ -108,4 +110,37 @@ TEST(FvModelMaterial, AnOpacityEditOnAnOpaqueMaterialIsSeen)
   original.alphaMode = "MASK";
   e.alphaMode.reset();
   EXPECT_EQ(fv::model::editedMaterial(original, e).alphaMode, "MASK");
+}
+
+// A named metal on a model: its edge tint, and its colour unless a map holds the colour or the colour
+// is edited. A model with no metal gets no tint, and one a file tinted keeps its own without the edit.
+TEST(FvModelMaterial, ANamedMetalTintsTheEdgeAndColoursAPlainModel)
+{
+  fv::mat::Material original;
+  original.baseColor = {0.5f, 0.5f, 0.5f, 1.f};
+  original.metallic  = 1.f;
+  fv::mat::Edits e;
+  e.metal                        = "chrome";
+  const fv::mat::Metal&   chrome = *fv::mat::findMetal("chrome");
+  const fv::mat::Material m      = fv::model::editedMaterial(original, e);
+  ASSERT_TRUE(m.edgeTint);
+  EXPECT_EQ(*m.edgeTint, chrome.edgeTint);
+  for(size_t c = 0; c < 3; c++)
+    EXPECT_EQ(m.baseColor[c], chrome.f0[c]) << c;
+  EXPECT_EQ(m.baseColor[3], 1.f);
+
+  fv::mat::Material mapped = original;
+  mapped.baseColorMap.index = 3;
+  EXPECT_EQ(fv::model::editedMaterial(mapped, e).baseColor, original.baseColor);
+  e.color = fv::mat::Rgb{0.1f, 0.2f, 0.3f};
+  EXPECT_EQ(fv::model::editedMaterial(original, e).baseColor[1], 0.2f);
+  e.color.reset();
+
+  fv::mat::Material plastic = original;
+  plastic.metallic          = 0.f;
+  EXPECT_FALSE(fv::model::editedMaterial(plastic, e).edgeTint);
+  fv::mat::Material tinted = original;
+  tinted.edgeTint          = fv::mat::Rgb{0.9f, 0.9f, 0.9f};
+  EXPECT_TRUE(fv::model::editedMaterial(tinted, {}) == tinted);
+  EXPECT_TRUE(fv::model::editedMaterial(original, {}) == original);
 }

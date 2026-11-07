@@ -16,6 +16,7 @@ constexpr const char* kSubsurface   = "FV_materials_subsurface";
 constexpr const char* kEye          = "FV_materials_eye";
 constexpr const char* kPane         = "FV_materials_pane";
 constexpr const char* kSpecular2    = "FV_materials_specular2";
+constexpr const char* kEdgeTint     = "FV_materials_edge_tint";
 
 // Reading a value, each leaving `out` alone where the file has none: glTF's defaults are the structs'.
 void read(const tinygltf::Value& v, const char* key, float& out)
@@ -267,6 +268,12 @@ Material fromGltf(const tinygltf::Material& g)
     }
     else if(name == kPane)
       m.pane = true;
+    else if(name == kEdgeTint)
+    {
+      Rgb tint{1, 1, 1};
+      read(v, "edgeTintFactor", tint);
+      m.edgeTint = tint;
+    }
     else if(name == kEye)
     {
       float ior = 0;
@@ -559,6 +566,8 @@ Json materialJson(const Material& m, const char* key)
     ext[kEye] = {{"chamberIor", *m.chamberIor}};
   if(m.pane)
     ext[kPane] = Json::object();
+  if(m.edgeTint)
+    ext[kEdgeTint] = {{"edgeTintFactor", rgbJson(*m.edgeTint)}};
   if(m.anisotropy)
   {
     Json e = {{"anisotropyStrength", m.anisotropy->strength}, {"anisotropyRotation", m.anisotropy->rotation}};

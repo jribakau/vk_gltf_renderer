@@ -71,6 +71,7 @@ Material everything()
   m.detail = Detail{.weight = 0.5f, .roughness = 0.6f, .normalMap = slot(25), .weightMap = slot(26), .roughnessMap = slot(27)};
   m.detail->normalMap.scale = 0.2f;
   m.flakes = Flakes{.weight = 0.7f, .color = {0.8f, 0.3f, 0.25f}, .roughness = 0.3f, .size = 0.01f, .strength = 0.75f, .density = 0.5f, .weightMap = slot(31), .colorMap = slot(32)};
+  m.edgeTint = Rgb{0.74f, 0.75f, 0.82f};
   m.hair = Hair{.longitudinal = 0.3f, .azimuthal = 0.4f, .rootAbsorption = {0.5f, 0.6f, 0.7f}, .tipAbsorption = {0.1f, 0.2f, 0.3f}, .rootFade = 0.06f, .rootV = 1, .specular = 0.5f, .strandRotation = 0.5f};
   m.hair->dye  = HairDye{.rootColor = {0.1f, 0.2f, 0.3f}, .tipColor = {1.5f, 1.6f, 1.7f}, .melaninAbsorption = {0.4f, 0.5f, 0.6f}, .melaninMix = 0.7f, .bias = 0.4f, .gain = 0.15f};
   m.dlssNrMask = Rgba{0.1f, 0.2f, 0.3f, 0.4f};

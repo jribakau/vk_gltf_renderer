@@ -361,6 +361,9 @@ struct Edits
   // KHR_materials_sheen: its colour (none or black: no sheen) and roughness (0.5 when unset)
   std::optional<Rgb>         sheenColor;
   std::optional<float>       sheenRoughness;
+  // A named metal (metals.hpp; "" none): its edge tint on the metal lobe, and its colour where the
+  // colour is neither edited nor a map's
+  std::optional<std::string> metal;
 
   bool empty() const;
   // Fields set in `o` replace those here.

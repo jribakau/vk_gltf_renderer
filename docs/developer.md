@@ -363,7 +363,8 @@ Some things about the transport are worth knowing before touching it:
   (`environmentSampleCompensatedStratified`), which keeps the points stratified; DLSS frames take the
   alias method's O(1) pick. Both give a cell the same pdf.
 - The GGX reflection lobes use the **height-correlated** Smith term; their albedo (the layering's
-  `ggxSchlickAlbedo`, the metal's multiple-scattering compensation `ggxMultiScatterFactor`) comes
+  `ggxSchlickAlbedo`, the metal's multiple-scattering compensation `ggxMultiScatterFactor`, which an
+  edge tint scales, `FV_materials_edge_tint` below) comes
   from a table baked from the lobe (`nvshaders/ggx_albedo_table.h.slang`). Change the lobe, rerun
   `utils/ggx_albedo_table.py`: `BsdfLobes.TheGgxAlbedoFitIsTheLobesIntegral` checks them against
   each other.
@@ -532,6 +533,28 @@ weight; here a flake shows or not by a draw that stays with its cell (`flakeShow
 the chance, so a sparkle keeps still from frame to frame under DLSS rather than averaging to a sheen.
 The Uber's flake thin film, the roughness map and Backface flakes are not read. A GLB export leaves the
 extension out.
+
+### `FV_materials_edge_tint`: a named metal's edge
+
+A vendor extension, `{edgeTintFactor: [r, g, b]}` (`mat::Material::edgeTint`, `PbrMaterial::edgeTint`):
+OpenPBR's F82 tint, its `specular_color` on a metal. glTF's metal is Schlick's from the base colour to
+white, which real metals overshoot toward grazing: measured chrome, iron and titanium reflect 0.15-0.2
+less than Schlick's at 80-85 degrees, aluminium 0.1, and gold and copper keep more of their hue there.
+With a tint the metal lobe takes `f82Fresnel` (nvshaders `bsdf_functions.h.slang`, `BSDF_FRESNEL_F82`):
+Schlick's less a term in mu (1 - mu)^6 that makes it the tint times Schlick's at mu = 1/7, about 82
+degrees, the same head-on and at grazing. Turquin's multiple scattering gives the lost light back by
+the f0 scaled by what the tint leaves of the Fresnel's hemispherical average (`f82AverageShare`,
+closed form).
+A flake keeps Schlick's: it is a metal of its own colour.
+
+Neither DAZ nor glTF authors one. A surface gets it by naming a metal (`Edits::metal`, material.set's
+`metal`), from the table in [`figure/materials/metals.cpp`](../figure/materials/metals.cpp):
+each metal's colour head-on and its tint, from measured optical constants integrated over the visible
+spectrum ([`utils/metal_edge_tints.py`](../utils/metal_edge_tints.py) prints it and names the data). The
+lowering and a model's edits put the tint on a surface with metal, and the metal's colour where the
+colour is neither edited nor a map's. Without a named metal there is no extension, `edgeTintFactor`
+stays white and the lobe is Schlick's, bit for bit (`BsdfLobes.AMetalWithoutAnEdgeTintIsSchlicksBitForBit`).
+The DLSS specular guide still estimates a metal's albedo from Schlick's (`EnvBRDFApprox2`).
 
 ### Woven cutouts
 

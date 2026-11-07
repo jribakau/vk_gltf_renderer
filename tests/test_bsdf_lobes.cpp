@@ -7,8 +7,10 @@
 #define GLM_FORCE_SWIZZLE
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <cstring>
 #include <random>
@@ -135,6 +137,12 @@ std::vector<Case> cases()
   PbrMaterial gaussianPlastic    = base(0.4f);
   gaussianPlastic.gaussianSlopes = true;
   out.push_back({"gaussian plastic", gaussianPlastic});
+  // A named metal's edge tint (OpenPBR's F82), darker than any measured metal's. Last, so the cases
+  // above keep the random numbers the tests that share one stream draw for them.
+  PbrMaterial namedMetal = base(0.3f);
+  namedMetal.metallic    = 1.0f;
+  namedMetal.edgeTint    = vec3(0.6f, 0.75f, 0.9f);
+  out.push_back({"metal with an edge tint", namedMetal});
   return out;
 }
 
@@ -503,6 +511,173 @@ TEST(BsdfLobes, ARoughWhiteMetalKeepsItsEnergy)
     }
   // A dark metal gets back its colour's share of the loss only
   EXPECT_NEAR(ggxMultiScatterFactor(vec3(0.1f), 1.0f, 1.0f).x, 1.0f + 0.1f * (1.0f / ggxSchlickAlbedo(1.0f, 1.0f, 1.0f) - 1.0f), 1e-5f);
+}
+
+namespace {
+
+// pbrt-v4's FrComplex, typed from the Fresnel equations with Snell's law in complex numbers: the
+// unpolarised reflectance of a conductor of index n + ik, from air, at incidence cosine `cosI`
+double conductorReflectance(double cosI, double n, double k)
+{
+  using C       = std::complex<double>;
+  const C eta(n, k);
+  cosI          = std::clamp(cosI, 0.0, 1.0);
+  const C sin2T = (1.0 - cosI * cosI) / (eta * eta);
+  const C cosT  = std::sqrt(1.0 - sin2T);
+  const C rParl = (eta * cosI - cosT) / (eta * cosI + cosT);
+  const C rPerp = (cosI - eta * cosT) / (cosI + eta * cosT);
+  return 0.5 * (std::norm(rParl) + std::norm(rPerp));
+}
+
+// Measured metals at one wavelength: gold at 550 and 450 nm (its blue, whose edge rises most) and
+// chrome at 550 nm (Johnson and Christy 1972, 1974), aluminium at 550 nm (McPeak et al. 2015), and how
+// far off Schlick's from their reflectance head-on is at least, somewhere
+struct Conductor
+{
+  const char* name;
+  float       n, k;
+  double      schlickOff;
+};
+constexpr Conductor kConductors[] = {
+    {"gold at 550 nm", 0.43f, 2.455f, 0.0},
+    {"gold at 450 nm", 1.38f, 1.914f, 0.0},
+    {"chrome at 550 nm", 3.18f, 3.33f, 0.15},
+    {"aluminium at 550 nm", 0.7894f, 5.8519f, 0.05},
+};
+
+constexpr float kMu82 = 1.0f / 7.0f;  // where OpenPBR's F82 tint is defined, about 82 degrees
+
+}  // namespace
+
+// nvshaders' exact conductor Fresnel (fresnel_conductor, the thin film's base) is pbrt's
+TEST(BsdfLobes, TheConductorFresnelIsPbrts)
+{
+  for(const Conductor& c : kConductors)
+    for(float degrees : {0.0f, 30.0f, 60.0f, 75.0f, 82.0f, 88.0f})
+    {
+      const float cosI = std::cos(glm::radians(degrees));
+      vec2        phaseSin, phaseCos;
+      const vec2  sp = fresnel_conductor(phaseSin, phaseCos, 1.0f, c.n, c.k, cosI, 1.0f - cosI * cosI);
+      EXPECT_NEAR(0.5f * (sp.x + sp.y), conductorReflectance(cosI, c.n, c.k), 2e-5) << c.name << " at " << degrees;
+    }
+}
+
+// OpenPBR's F82 through a conductor's reflectance head-on and at 82 degrees follows the conductor at
+// every angle, to 0.025: Schlick's from the same head-on reflectance is up to 0.2 too bright toward
+// grazing (chrome), and 0.08 for aluminium. Head-on and at 82 degrees it is the conductor's.
+TEST(BsdfLobes, F82FollowsAConductorWhereSchlickDoesNot)
+{
+  for(const Conductor& c : kConductors)
+  {
+    const float f0   = float(conductorReflectance(1.0, c.n, c.k));
+    const float at82 = float(conductorReflectance(kMu82, c.n, c.k));
+    const vec3  tint = vec3(at82 / schlickFresnel(f0, 1.0f, kMu82));
+    EXPECT_NEAR(f82Fresnel(vec3(f0), tint, 1.0f).x, f0, 1e-6f) << c.name;
+    EXPECT_NEAR(f82Fresnel(vec3(f0), tint, kMu82).x, at82, 1e-5f) << c.name;
+    double worstF82 = 0.0, worstSchlick = 0.0;
+    for(int degrees = 0; degrees < 90; degrees++)
+    {
+      const float  mu        = std::cos(glm::radians(float(degrees)));
+      const double conductor = conductorReflectance(mu, c.n, c.k);
+      worstF82               = std::max(worstF82, std::abs(f82Fresnel(vec3(f0), tint, mu).x - conductor));
+      worstSchlick           = std::max(worstSchlick, std::abs(schlickFresnel(f0, 1.0f, mu) - conductor));
+    }
+    EXPECT_LT(worstF82, 0.025) << c.name;
+    EXPECT_LE(worstF82, worstSchlick) << c.name;
+    EXPECT_GE(worstSchlick, c.schlickOff) << c.name;
+  }
+  // a tint below white lowers only the edge's middle, and no tint is below 0
+  EXPECT_LT(f82Fresnel(vec3(0.55f), vec3(0.74f), 0.5f).x, schlickFresnel(0.55f, 1.0f, 0.5f));
+  EXPECT_NEAR(f82Fresnel(vec3(0.55f), vec3(0.74f), 0.0f).x, 1.0f, 1e-6f);
+  EXPECT_GE(f82Fresnel(vec3(0.0f), vec3(0.0f), 0.4f).x, 0.0f);
+}
+
+// A rough gold in a white furnace reflects at most what came in: sample for sample no more than a white
+// Schlick metal does, which itself gives back all of it (ARoughWhiteMetalKeepsItsEnergy). The edge tint
+// takes its share off the multiple scattering too (f82AverageShare).
+TEST(BsdfLobes, ARoughGoldStaysUnderOneInAFurnace)
+{
+  // figure/materials/metals.cpp's gold, and chrome's darker tint on it, with the least of the red each
+  // keeps: chrome's tint takes gold's red at 78 degrees to about 0.76
+  const vec3 goldF0(1.0f, 0.7327f, 0.3659f);
+  const struct
+  {
+    vec3  tint;
+    float red;
+  } tints[] = {{vec3(0.9847f, 1.0f, 0.9804f), 0.95f}, {vec3(0.7418f, 0.748f, 0.815f), 0.7f}};
+  for(const auto& [tint, red] : tints)
+    for(float alpha : {0.1f, 0.3f, 0.6f, 1.0f})
+      for(float NoV : {0.2f, 0.5f, 1.0f})
+      {
+        PbrMaterial gold  = defaultPbrMaterial(goldF0, 1.0f, std::sqrt(alpha), vec3(0, 0, 1), vec3(0, 0, 1));
+        gold.edgeTint     = tint;
+        PbrMaterial white = defaultPbrMaterial(vec3(1.0f), 1.0f, std::sqrt(alpha), vec3(0, 0, 1), vec3(0, 0, 1));
+        std::mt19937                          rng(29);
+        std::uniform_real_distribution<float> u(0.0f, 1.0f);
+        const vec3 k1 = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+        const int  N  = 50000;
+        dvec3      carried(0.0);
+        bool       neverMore = true;
+        for(int i = 0; i < N; i++)
+        {
+          BsdfSampleData s;
+          s.k1             = k1;
+          s.xi             = vec3(u(rng), u(rng), u(rng));
+          BsdfSampleData w = s;
+          bsdfSample(s, gold);
+          bsdfSample(w, white);
+          if(s.event_type == BSDF_EVENT_ABSORB)
+            continue;
+          neverMore = neverMore && all(lessThanEqual(s.bsdf_over_pdf, w.bsdf_over_pdf * 1.000001f));
+          carried += dvec3(s.bsdf_over_pdf) / double(N);
+        }
+        EXPECT_TRUE(neverMore) << "alpha " << alpha << " NoV " << NoV;
+        for(int c = 0; c < 3; c++)
+          EXPECT_LE(carried[c], 1.015) << "alpha " << alpha << " NoV " << NoV << " channel " << c;
+        EXPECT_GT(carried.x, red) << "alpha " << alpha << " NoV " << NoV;  // gold's red, its F0 1
+      }
+}
+
+// With no edge tint the metal lobe is today's, bit for bit: Schlick's from the base colour and
+// Turquin's factor from it, as before the tint existed. F82 with a white tint is Schlick's bit for bit
+// too, so a tint taken off leaves nothing behind.
+TEST(BsdfLobes, AMetalWithoutAnEdgeTintIsSchlicksBitForBit)
+{
+  PbrMaterial metal = defaultPbrMaterial(vec3(0.95f, 0.64f, 0.54f), 1.0f, 0.4f, vec3(0, 0, 1), vec3(0, 0, 1));
+  EXPECT_EQ(bsdfLobeFresnel(metal, LOBE_METAL_REFLECTION, 0.5f, metal.baseColor).fresnel, BSDF_FRESNEL_SCHLICK);
+  PbrMaterial tinted = metal;
+  tinted.edgeTint    = vec3(1.0f, 1.0f, 0.99f);
+  EXPECT_EQ(bsdfLobeFresnel(tinted, LOBE_METAL_REFLECTION, 0.5f, tinted.baseColor).fresnel, BSDF_FRESNEL_F82);
+  tinted.iridescence = 0.5f;  // the film keeps the plain base colour
+  EXPECT_EQ(bsdfLobeFresnel(tinted, LOBE_METAL_REFLECTION, 0.5f, tinted.baseColor).fresnel, BSDF_FRESNEL_NONE);
+
+  const auto same = [](vec3 a, vec3 b) { return std::memcmp(&a, &b, sizeof a) == 0; };
+  std::mt19937 rng(37);
+  for(int i = 0; i < 500; i++)
+  {
+    const vec3  k1 = viewAbove(rng), k2 = viewAbove(rng);
+    const float kh = dot(k1, normalize(k1 + k2));
+    // the Schlick path is the expressions it was
+    EXPECT_TRUE(same(bsdfMetalMultiScatter(metal, LOBE_METAL_REFLECTION, metal.baseColor, BSDF_FRESNEL_SCHLICK, k1.z),
+                     ggxMultiScatterFactor(metal.baseColor, 0.5f * (metal.roughness.x + metal.roughness.y), k1.z)));
+    EXPECT_TRUE(same(bsdfMicrofacetFresnel(BSDF_FRESNEL_SCHLICK, 1.0f, metal.baseColor, metal.edgeTint, kh),
+                     schlickFresnel(metal.baseColor, vec3(1.0f), kh)));
+    // and F82 with a white tint gives the same bits, evaluated and sampled
+    EXPECT_TRUE(same(f82Fresnel(metal.baseColor, vec3(1.0f), kh), schlickFresnel(metal.baseColor, vec3(1.0f), kh)));
+    BsdfEvaluateData a, b;
+    a.k1 = b.k1 = k1;
+    a.k2 = b.k2 = k2;
+    a.xi = b.xi = vec3(0.5f);
+    brdf_ggx_smith_eval(a, metal, LOBE_METAL_REFLECTION, metal.baseColor, BSDF_FRESNEL_SCHLICK, 1.0f);
+    brdf_ggx_smith_eval(b, metal, LOBE_METAL_REFLECTION, metal.baseColor, BSDF_FRESNEL_F82, 1.0f);
+    EXPECT_TRUE(same(a.bsdf_glossy, b.bsdf_glossy)) << i;
+    BsdfSampleData s, t;
+    s.k1 = t.k1 = k1;
+    s.xi = t.xi = vec3(float(i % 23) / 23.0f, float(i % 29) / 29.0f, 0.5f);
+    brdf_ggx_smith_sample(s, metal, LOBE_METAL_REFLECTION, metal.baseColor, BSDF_FRESNEL_SCHLICK, 1.0f);
+    brdf_ggx_smith_sample(t, metal, LOBE_METAL_REFLECTION, metal.baseColor, BSDF_FRESNEL_F82, 1.0f);
+    EXPECT_TRUE(same(s.bsdf_over_pdf, t.bsdf_over_pdf)) << i;
+  }
 }
 
 // Glass splits each microfacet's light by its Fresnel: reflection and refraction together keep

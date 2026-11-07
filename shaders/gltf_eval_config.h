@@ -101,6 +101,9 @@ layout off). Each pair has a compile-time guard below.
 #ifndef GLTF_USE_FLAKES
 #define GLTF_USE_FLAKES MAT_EXT_FLAKES
 #endif
+#ifndef GLTF_USE_EDGE_TINT
+#define GLTF_USE_EDGE_TINT MAT_EXT_EDGE_TINT
+#endif
 
 // Compile-time guards: behavior-on while layout-off is illegal.
 // We cannot turn on a GLTF_USE_X if the MAT_EXT_X is disabled.
@@ -133,6 +136,9 @@ layout off). Each pair has a compile-time guard below.
 #endif
 #if GLTF_USE_FLAKES && !MAT_EXT_FLAKES
 #error GLTF_USE_FLAKES requires MAT_EXT_FLAKES
+#endif
+#if GLTF_USE_EDGE_TINT && !MAT_EXT_EDGE_TINT
+#error GLTF_USE_EDGE_TINT requires MAT_EXT_EDGE_TINT
 #endif
 #if GLTF_USE_IRIDESCENCE && !MAT_EXT_IRIDESCENCE
 #error GLTF_USE_IRIDESCENCE requires MAT_EXT_IRIDESCENCE

@@ -295,6 +295,12 @@ struct KHR_materials_diffuse_transmission
 // shaders/flake_noise.h.slang). A build of the renderer's own: a file for other tools leaves it out.
 #define FV_MATERIALS_FLAKES_EXTENSION_NAME "FV_materials_flakes"
 
+// FV_materials_edge_tint (Figure Viewer): {edgeTintFactor: [r, g, b]}, a metal's reflectance toward
+// grazing as OpenPBR's F82 tint (its specular_color on a metal): at cos 1/7, about 82 degrees, the
+// metal reflects Schlick's from its base colour times the factor (fv::mat::Material::edgeTint,
+// nvshaders f82Fresnel). Without it the metal is glTF's, Schlick's alone.
+#define FV_MATERIALS_EDGE_TINT_EXTENSION_NAME "FV_materials_edge_tint"
+
 // FV_texture_flip_green (Figure Viewer): on a normal texture info, an empty object saying the
 // image's green channel points the other way (Y down), so the shader negates the decoded Y.
 // Figure Viewer's texture cache keeps one cooked copy of each normal map for its own viewer and

@@ -264,6 +264,10 @@ struct Material
   std::optional<Detail>              detail;
   std::optional<Procedural>          procedural;
   std::optional<Flakes>              flakes;
+  // A metal's reflectance toward grazing, OpenPBR's F82 tint (FV_materials_edge_tint): at about 82
+  // degrees, Schlick's from the base colour times this, as a named metal measures (metals.hpp). Left
+  // out: Schlick's alone, glTF's metal.
+  std::optional<Rgb>                 edgeTint;
   std::optional<Hair>                hair;
   std::optional<Rgba>                dlssNrMask;  // per-material DLSS NR strengths; left out: 1, 1, 1, 1
   bool                               unlit = false;

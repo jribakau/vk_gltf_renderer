@@ -1,6 +1,11 @@
-// The Clothes tab: map slots, the UV transform, fabrics and sheen; edits and what a surface says it moves.
+// The Clothes tab: map slots, the UV transform, fabrics and sheen; edits and what a surface says it moves; named metals.
 
 #include "materials_test_util.hpp"
+
+#include <map>
+#include <optional>
+
+#include <figure/materials/metals.hpp>
 
 using namespace materials_test;
 
@@ -608,3 +613,113 @@ TEST(Materials, HairShowsTheFibresNumbers)
 // Legacy (3Delight) surfaces: the channels of Age of Armour's Subsurface shader, as in
 // data/Age of Armour/Subsurface Shaders/AoA_Subsurface/AoA_Subsurface.dsf, where labels name other
 // channels' ids, and the id-only layer a figure's scene lays over them (Genesis 3 Female.duf, Torso).
+
+// ---- A named metal: its edge tint on the metal lobe, its colour where nothing else gives one ----
+
+namespace {
+
+// The lowered material's FV_materials_edge_tint factor, none without the extension
+std::optional<fv::mat::Rgb> edgeTintOf(const LoweredJson& l)
+{
+  const nlohmann::json& m = l.material;
+  if(!m.contains("extensions") || !m["extensions"].contains("FV_materials_edge_tint"))
+    return std::nullopt;
+  const nlohmann::json& f = m["extensions"]["FV_materials_edge_tint"]["edgeTintFactor"];
+  return fv::mat::Rgb{f[0].get<float>(), f[1].get<float>(), f[2].get<float>()};
+}
+
+fv::mat::Rgb baseFactorOf(const LoweredJson& l)
+{
+  const nlohmann::json& f = l.material["pbrMetallicRoughness"]["baseColorFactor"];
+  return {f[0].get<float>(), f[1].get<float>(), f[2].get<float>()};
+}
+
+}  // namespace
+
+// The table is measured metals (utils/metal_edge_tints.py): their colours head-on, as the app's
+// chips show them (src/lib/materialLooks.ts METALS holds the same), and tints at or under white,
+// the dark metals' furthest under it, as they dip most below Schlick's toward grazing
+TEST(Materials, TheNamedMetalsAreMeasuredOnes)
+{
+  const std::map<std::string, std::string> colours = {{"gold", "#ffdea3"},      {"silver", "#fefdfc"}, {"copper", "#f6cfbf"},
+                                                      {"brass", "#f4e5ad"},     {"aluminium", "#f4f5f6"}, {"chrome", "#c4c5c4"},
+                                                      {"iron", "#c0beba"},      {"titanium", "#cec8c2"}};
+  ASSERT_EQ(fv::mat::metals().size(), colours.size());
+  for(const fv::mat::Metal& m : fv::mat::metals())
+  {
+    ASSERT_TRUE(colours.count(m.key)) << m.key;
+    EXPECT_EQ(fv::mat::hexOf(m.f0), colours.at(m.key)) << m.key;
+    EXPECT_EQ(fv::mat::findMetal(m.key), &m);
+    for(size_t c = 0; c < 3; c++)
+    {
+      EXPECT_LE(m.f0[c], 1.0f) << m.key;
+      EXPECT_LE(m.edgeTint[c], 1.0f) << m.key;
+      EXPECT_GT(m.edgeTint[c], 0.7f) << m.key;
+    }
+  }
+  EXPECT_EQ(fv::mat::findMetal("unobtainium"), nullptr);
+  EXPECT_LT(fv::mat::findMetal("chrome")->edgeTint[1], 0.8f);
+  EXPECT_GT(fv::mat::findMetal("silver")->edgeTint[1], 0.99f);
+}
+
+// material.set's metal: a key of the table or "" for none, null back to none; a model takes it too
+TEST(Materials, AMetalIsAnEditLikeTheRest)
+{
+  fv::mat::Edits e;
+  fv::mat::applyValue(e, "metal", "copper");
+  EXPECT_EQ(e.metal, "copper");
+  EXPECT_FALSE(e.empty());
+  EXPECT_EQ(fv::mat::editedValues(e)["metal"], "copper");
+  EXPECT_EQ(fv::mat::metalOf(e), fv::mat::findMetal("copper"));
+  fv::mat::applyValue(e, "metal", "");
+  EXPECT_EQ(fv::mat::metalOf(e), nullptr);
+  fv::mat::applyValue(e, "metal", nullptr);
+  EXPECT_FALSE(e.metal);
+  EXPECT_TRUE(e.empty());
+  EXPECT_THROW(fv::mat::applyValue(e, "metal", "unobtainium"), std::runtime_error);
+  EXPECT_THROW(fv::mat::applyValue(e, "metal", 3), std::runtime_error);
+  EXPECT_FALSE(fv::mat::figureOnlyKey("metal"));
+  fv::mat::Edits merged;
+  merged.merge(fv::mat::Edits{.metal = std::string("gold")});
+  EXPECT_EQ(merged.metal, "gold");
+}
+
+// A named metal on a surface: its tint on the lobe and its colour, unless the colour is edited (the
+// edit wins) or a map's (the map keeps the metal it was painted as). Without one, or on a surface with
+// no metal, the lowering is what it was: no tint, the surface's own colour.
+TEST(Materials, ANamedMetalTintsTheEdgeAndColoursAPlainSurface)
+{
+  fv::mat::Surface s;
+  s.name           = "Buckle";
+  s.shader         = fv::mat::Surface::Shader::eIray;
+  s.base.color     = {0.5f, 0.5f, 0.5f};
+  s.metallic.value = 1;
+  fv::mat::Edits e;
+  const LoweredJson plain = loweredJson(s, e, {});
+  EXPECT_FALSE(edgeTintOf(plain));
+  const float scale = baseFactorOf(plain)[0] / 0.5f;  // Iray's diffuse share, which the colour takes too
+
+  const fv::mat::Metal& gold = *fv::mat::findMetal("gold");
+  e.metal                    = "gold";
+  const LoweredJson golden   = loweredJson(s, e, {});
+  ASSERT_TRUE(edgeTintOf(golden));
+  EXPECT_EQ(*edgeTintOf(golden), gold.edgeTint);
+  EXPECT_EQ(golden.effective.color, gold.f0);
+  for(size_t c = 0; c < 3; c++)
+    EXPECT_NEAR(baseFactorOf(golden)[c], gold.f0[c] * scale, 1e-6f) << c;
+
+  e.color = fv::mat::Rgb{0.2f, 0.4f, 0.6f};
+  EXPECT_EQ(loweredJson(s, e, {}).effective.color, *e.color);
+  EXPECT_EQ(*edgeTintOf(loweredJson(s, e, {})), gold.edgeTint);
+  e.color.reset();
+  fv::mat::Surface mapped = s;
+  mapped.base.map         = "/Runtime/Textures/buckle.png";
+  EXPECT_EQ(loweredJson(mapped, e, {}).effective.color, s.base.color);
+  EXPECT_TRUE(edgeTintOf(loweredJson(mapped, e, {})));
+
+  fv::mat::Surface plastic = s;
+  plastic.metallic.value   = 0;
+  EXPECT_FALSE(edgeTintOf(loweredJson(plastic, e, {})));
+  e.metal = "";
+  EXPECT_TRUE(loweredJson(s, e, {}).material == plain.material);
+}

@@ -270,6 +270,11 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
     pbrMat.metallic  = clamp(metallic, 0.0F, 1.0F);
   }
 
+#if GLTF_USE_EDGE_TINT
+  // FV_materials_edge_tint: a named metal's dip toward grazing (f82Fresnel), in OpenPBR's range
+  pbrMat.edgeTint = clamp(material.edgeTintFactor, float3(0.0F), float3(1.0F));
+#endif
+
   pbrMat.occlusion = material.occlusionStrength;
   if(isTexturePresent(material.occlusionTexture))
   {
@@ -780,6 +785,9 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
       }
       pbrMat.baseColor = tint;
       pbrMat.metallic  = 1.0F;
+#if GLTF_USE_EDGE_TINT
+      pbrMat.edgeTint = float3(1.0F);  // a flake is a metal of its own colour, not the surface's named one
+#endif
       // pbrMat.roughness holds alpha = roughness^2
       const float roughness = max(material.flakesRoughness, MICROFACET_MIN_ROUGHNESS);
       pbrMat.roughness      = float2(roughness * roughness);
