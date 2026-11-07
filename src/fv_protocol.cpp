@@ -76,7 +76,9 @@ namespace {
 // lifted and bright ones held toward mid grey, region by region).
 // 42: a named metal, material.set's `metal` and the materials topic's values.metal (an older
 // renderer refuses the whole material.set for it, as the looks send it).
-constexpr int kProtocolVersion = 42;
+// 43: the Shaped tone curve, the lighting's tonemap.method "shaped" and its tonemap.toe and
+// tonemap.shoulder.
+constexpr int kProtocolVersion = 43;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace
