@@ -67,7 +67,8 @@ namespace {
 // 36: haze in the air, the lighting's haze section (enabled, visibility, glow).
 // 37: ptSamplesDlss, the samples a DLSS frame traces (an older renderer refuses the app's whole
 // batch of render parameters for it).
-constexpr int kProtocolVersion = 37;
+// 38: uneven haze, the lighting's haze.height and haze.patches.
+constexpr int kProtocolVersion = 38;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

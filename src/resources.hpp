@@ -282,6 +282,11 @@ struct Settings
   float hazeAnisotropy = 0.7f;
   // A still's scatter point picks its light from this many candidates (SceneFrameInfo::hazeCandidates)
   int hazeCandidates = 4;
+  // Uneven haze: the height in metres it thins over above the floor (0: even through the height), how
+  // patchy it is (0 to 1) and the patches' size in metres (0: from the scene's size)
+  float hazeHeight    = 0.0f;
+  float hazePatches   = 0.0f;
+  float hazePatchSize = 0.0f;
   bool      dlssRrHardwareAvailable = false;  // DLSS Ray Reconstruction hardware/extensions available (set at startup)
   bool dlssSrHardwareAvailable = false;  // DLSS Super Resolution / DLAA hardware/extensions available (set at startup)
   bool serHardwareAvailable    = false;  // VK_EXT_ray_tracing_invocation_reorder enabled on the device (set at startup)

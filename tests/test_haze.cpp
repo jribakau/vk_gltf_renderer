@@ -347,4 +347,200 @@ TEST(Haze, ALightKeptAmongCandidatesCountsForThemAll)
   EXPECT_EQ(hazeReservoirWeight(hazeReservoir(), 4), 0.0F);
 }
 
+//-----------------------------------------------------------------------
+// Uneven haze
+//-----------------------------------------------------------------------
+
+// A ray of the uneven haze's tests and the integral of the height's factor along it by the midpoint rule
+struct HeightRay
+{
+  vec3  o, d;
+  float ta, tb;
+};
+
+double heightDepthByQuadrature(const HazeShape& shape, const HeightRay& r, double upTo, int steps = 200000)
+{
+  const double len = upTo - r.ta, step = len / steps;
+  double       sum = 0;
+  for(int i = 0; i < steps; i++)
+  {
+    const double t = r.ta + (i + 0.5) * step;
+    const double z = double(r.o.y) + double(r.d.y) * t - shape.floorY;
+    sum += z > 0 ? std::exp(-z * shape.invHeight) : 1.0;
+  }
+  return sum * step;
+}
+
+std::vector<HeightRay> heightRays()
+{
+  return {
+      {vec3(0, 1.0F, 0), vec3(1, 0, 0), 0.0F, 20.0F},                           // level, 1 m up
+      {vec3(0, 0.0F, 0), normalize(vec3(1, 0.4F, 0)), 0.0F, 30.0F},             // rising from the floor
+      {vec3(0, 30.0F, 0), normalize(vec3(1, -1.5F, 0.2F)), 0.0F, 21.0F},        // falling from 30 m to near the floor
+      {vec3(0, 1.7F, 0), normalize(vec3(1, -0.08F, 0)), 0.5F, 25.0F},           // an eye looking a little down, through the floor
+      {vec3(0, -0.5F, 0), normalize(vec3(1, 0.3F, 0)), 0.0F, 12.0F},            // from below the floor up out of it
+      {vec3(0, 2.0F, 0), normalize(vec3(1, 1e-6F, 0)), 0.0F, 50.0F},            // all but level
+      {vec3(0, 80.0F, 0), normalize(vec3(0.2F, -1.0F, 0)), 0.0F, 81.0F},        // from far above down to the floor
+  };
+}
+
+// The height's integral along a ray is its quadrature, rising, falling, level and through the floor,
+// and the inversion lands where the integral reaches a given depth
+TEST(Haze, TheHeightsDepthIsItsIntegralAndItsInverse)
+{
+  for(const float height : {0.3F, 1.5F, 20.0F})
+  {
+    const HazeShape shape{0.0F, 1.0F / height, 0.0F, 1.0F};
+    for(const HeightRay& r : heightRays())
+    {
+      const double exact = heightDepthByQuadrature(shape, r, r.tb);
+      const float  depth = hazeHeightDepth(shape, r.o, r.d, r.ta, r.tb);
+      EXPECT_NEAR(depth / exact, 1.0, 1e-3) << "H " << height << ", from y " << r.o.y << " along y " << r.d.y;
+      for(const double share : {0.0, 0.01, 0.3, 0.7, 0.999})
+      {
+        const float t = hazeHeightInvert(shape, r.o, r.d, r.ta, r.tb, float(share * depth));
+        ASSERT_GE(t, r.ta);
+        ASSERT_LE(t, r.tb);
+        EXPECT_NEAR(hazeHeightDepth(shape, r.o, r.d, r.ta, t), share * depth, 2e-4 * depth + 1e-6)
+            << "H " << height << ", from y " << r.o.y << " along y " << r.d.y << ", share " << share;
+      }
+    }
+  }
+  // even through the height: the length
+  const HazeShape even{0.0F, 0.0F, 0.0F, 1.0F};
+  EXPECT_EQ(hazeHeightDepth(even, vec3(0, 3, 0), vec3(1, 0, 0), 2.0F, 9.0F), 7.0F);
+  EXPECT_EQ(hazeHeightInvert(even, vec3(0, 3, 0), vec3(1, 0, 0), 2.0F, 9.0F, 4.0F), 6.0F);
+  EXPECT_TRUE(hazeEven(even));
+  EXPECT_FALSE(hazeEven(HazeShape{0.0F, 0.0F, 0.5F, 1.0F}));
+}
+
+// The patches' noise: within [-1, 1], about 0 on average with a spread, and smooth
+TEST(Haze, ThePatchesAreASmoothNoise)
+{
+  std::mt19937                          rng(5);
+  std::uniform_real_distribution<float> place(-40.0F, 40.0F);
+  double                                sum = 0, sum2 = 0, largestStep = 0;
+  const int                             n   = 200000;
+  for(int i = 0; i < n; i++)
+  {
+    const vec3  p = vec3(place(rng), place(rng), place(rng));
+    const float v = hazeNoise(p);
+    ASSERT_GE(v, -1.0F);
+    ASSERT_LE(v, 1.0F);
+    sum += v;
+    sum2 += double(v) * v;
+    largestStep = std::max(largestStep, double(std::abs(hazeNoise(p + vec3(0.01F, 0, 0)) - v)));
+  }
+  const double mean = sum / n, spread = std::sqrt(sum2 / n - mean * mean);
+  EXPECT_NEAR(mean, 0.0, 0.02);
+  EXPECT_GT(spread, 0.15);
+  EXPECT_LT(largestStep, 0.06);  // a hundredth of a cell moves it by little
+}
+
+// The uneven haze of these tests: a fog layer 0.8 m deep with patches, an eye at 3 m looking down
+// at the floor 10 m away, a point light near where the ray meets it
+struct UnevenScene
+{
+  HazeShape shape{0.0F, 1.0F / 0.8F, 0.6F, 1.0F / 1.5F};
+  float     sigma = 3.912023F / 20.0F;  // a visibility of 20 m at the floor
+  float     g     = 0.7F;
+  vec3      o     = vec3(0.0F, 3.0F, 0.0F);
+  vec3      d     = normalize(vec3(1.0F, -0.29F, 0.1F));
+  float     t0 = 0.0F, t1 = 10.0F;
+  vec3      light     = vec3(8.0F, 0.6F, 1.5F);
+  float     intensity = 2.0F;
+
+  // the light's way to a point: dimmed by the height alone, as the shader's air
+  double air(vec3 x) const
+  {
+    const vec3 toward = light - x;
+    return std::exp(-sigma * hazeHeightDepth(shape, x, normalize(toward), 0.0F, length(toward)));
+  }
+  double lit(vec3 x) const
+  {
+    const vec3   toward = light - x;
+    const double r2     = dot(toward, toward);
+    return henyeyGreenstein(dot(d, toward / float(std::sqrt(r2))), g) * air(x) * intensity / r2;
+  }
+};
+
+// The single scattering by fine quadrature, the patches in the transmittance and the density
+double unevenReference(const UnevenScene& s, double* transmittance = nullptr, int steps = 400000)
+{
+  const double step = (s.t1 - s.t0) / steps;
+  double       tau = 0, sum = 0;
+  for(int i = 0; i < steps; i++)
+  {
+    const float  t       = float(s.t0 + (i + 0.5) * step);
+    const vec3   x       = s.o + s.d * t;
+    const double density = hazeDensity(s.shape, x);
+    sum += s.sigma * density * std::exp(-s.sigma * (tau + 0.5 * density * step)) * s.lit(x) * step;
+    tau += density * step;
+  }
+  if(transmittance)
+    *transmittance = std::exp(-s.sigma * tau);
+  return sum;
+}
+
+// The shader's uneven estimate, guided at the light: the column, the mixture's distance and its weight
+TEST(Haze, AnUnevenHazesHaloMatchesItsSingleScatter)
+{
+  for(const float patches : {0.0F, 0.6F})
+  {
+    UnevenScene s;
+    s.shape.patches = patches;
+    double       exactT = 0;
+    const double ref    = unevenReference(s, &exactT);
+    const HazeGuide guide = hazeGuide(s.o, s.d, s.t0, s.t1, s.light, true);
+    std::mt19937                          rng(21 + int(patches * 10));
+    std::uniform_real_distribution<float> u01(0.0F, 0.99999994F);
+    double                                sum = 0, sumT = 0;
+    const int                             n   = 400000;
+    for(int k = 0; k < n; k++)
+    {
+      const HazeColumn c = hazeColumn(s.shape, s.o, s.d, s.t0, s.t1, u01(rng));
+      sumT += std::exp(-s.sigma * c.total);
+      const float choice = u01(rng), u = u01(rng);
+      const float t = (guide.on && choice < HAZE_GUIDE_SHARE) ? hazeSampleEquiangular(u, s.t0, s.t1, guide)
+                                                               : hazeColumnSampleTransmittance(s.shape, c, s.o, s.d, s.sigma, s.t0, s.t1, u);
+      sum += double(hazeColumnScatterWeight(s.shape, c, s.o, s.d, s.sigma, s.t0, t, guide)) * s.lit(s.o + s.d * t);
+    }
+    std::printf("uneven, patches %.1f: in-scatter %.5g against %.5g, transmittance %.5f against %.5f\n", patches, sum / n, ref,
+                sumT / n, exactT);
+    EXPECT_NEAR(sum / n / ref, 1.0, 0.015) << "patches " << patches;
+    // the column's transmittance: exact without patches, a hair high with them
+    EXPECT_NEAR(sumT / n / exactT, 1.0, patches > 0.0F ? 0.01 : 1e-4) << "patches " << patches;
+  }
+}
+
+// Drawn by the column's transmittance alone, the distances follow hazeColumnDistancePdf
+TEST(Haze, TheUnevenDistancesFollowTheirDensity)
+{
+  UnevenScene      s;
+  const HazeColumn c = hazeColumn(s.shape, s.o, s.d, s.t0, s.t1, 0.37F);
+  const int        bins = 40;
+  std::vector<int> count(bins, 0);
+  std::mt19937     rng(3);
+  std::uniform_real_distribution<float> u01(0.0F, 0.99999994F);
+  const int        n = 800000;
+  for(int k = 0; k < n; k++)
+  {
+    const float t = hazeColumnSampleTransmittance(s.shape, c, s.o, s.d, s.sigma, s.t0, s.t1, u01(rng));
+    count[std::min(int((t - s.t0) / (s.t1 - s.t0) * bins), bins - 1)]++;
+  }
+  for(int b = 0; b < bins; b++)
+  {
+    // the bin's probability by the pdf, midpoint rule inside it
+    double p = 0;
+    for(int j = 0; j < 200; j++)
+    {
+      const float t = s.t0 + (s.t1 - s.t0) * (b + (j + 0.5F) / 200.0F) / bins;
+      p += hazeColumnDistancePdf(s.shape, c, s.o, s.d, s.sigma, s.t0, t, hazeNoGuide());
+    }
+    p *= (s.t1 - s.t0) / bins / 200.0;
+    const double sd = std::sqrt(p * (1 - p) / n);
+    EXPECT_NEAR(double(count[b]) / n, p, 5 * sd + 1e-5) << "bin " << b;
+  }
+}
+
 }  // namespace

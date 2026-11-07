@@ -119,11 +119,24 @@ float hazeSampleTransmittance(float u, float sigma, float t0, float t1)
   return clamp(t, t0, t1);
 }
 
+// A distance on [t0, t1] drawn equiangularly toward the guide (g.on)
+float hazeSampleEquiangular(float u, float t0, float t1, HazeGuide g)
+{
+  return clamp(g.delta + g.h * tan(g.thetaA + u * (g.thetaB - g.thetaA)), t0, t1);
+}
+
+// The density hazeSampleEquiangular draws t with
+float hazeEquiangularPdf(float t, HazeGuide g)
+{
+  const float s = t - g.delta;
+  return g.h / ((g.thetaB - g.thetaA) * (g.h * g.h + s * s));
+}
+
 // The scatter point's distance: `choice` picks the half, `u` places it
 float hazeSampleDistance(float u, float choice, float sigma, float t0, float t1, HazeGuide g)
 {
   if(g.on && choice < HAZE_GUIDE_SHARE)
-    return clamp(g.delta + g.h * tan(g.thetaA + u * (g.thetaB - g.thetaA)), t0, t1);
+    return hazeSampleEquiangular(u, t0, t1, g);
   return hazeSampleTransmittance(u, sigma, t0, t1);
 }
 
@@ -197,6 +210,277 @@ HazeReservoir hazeReservoirTake(HazeReservoir r, float w, float u)
 float hazeReservoirWeight(HazeReservoir r, int count)
 {
   return r.kept > 0.0F ? r.sum / (float(count) * r.kept) : 0.0F;
+}
+
+//-----------------------------------------------------------------------
+// Uneven haze: thicker near the floor, in patches
+//
+// The density relative to the extinction at the floor (hazeExtinction): exp(-(height above the
+// floor) / H), 1 at and below the floor, times 1 + patches x a smooth noise in [-1, 1] (so 0 to 2
+// times it, the same on average). The height's part is integrated exactly along a ray
+// (hazeHeightDepth) and a distance drawn by it exactly (hazeHeightInvert), so a layer of fog at the
+// floor seen from above draws its points inside it. The patches dim the camera's segment by four
+// stratified lookups spread evenly over the haze it crosses (HazeColumn, an estimate of the optical
+// depth that is unbiased, its exponential a hair high where the lookups differ), and the scatter
+// point takes the density where it lands (hazeDensity); a light's way to the point is dimmed by the
+// height alone.
+//-----------------------------------------------------------------------
+
+struct HazeShape
+{
+  float floorY;        // the floor's height
+  float invHeight;     // 1 / H; 0: even through the height
+  float patches;       // 0 to 1: how far the density swings with the noise
+  float invPatchSize;  // the noise's frequency, per metre
+};
+
+bool hazeEven(HazeShape s)
+{
+  return !(s.invHeight > 0.0F) && !(s.patches > 0.0F);
+}
+
+// (1 - e^-x) / x for x >= 0, 1 at 0
+float hazeOneMinusExpOver(float x)
+{
+  return x > 0.0F ? hazeOneMinusExp(x) / x : 1.0F;
+}
+
+// The height's factor at height y
+float hazeHeightFactor(HazeShape s, float y)
+{
+  return s.invHeight > 0.0F ? exp(-max(y - s.floorY, 0.0F) * s.invHeight) : 1.0F;
+}
+
+// The integral of the height's factor along o + t d (d unit) from ta to tb: the stretch below the
+// floor at 1, the rest e^(-z/H) over z rising or falling linearly, from its lower end so nothing
+// overflows
+float hazeHeightDepth(HazeShape s, float3 o, float3 d, float ta, float tb)
+{
+  const float len = max(tb - ta, 0.0F);
+  if(!(s.invHeight > 0.0F) || !(len > 0.0F))
+    return len;
+  const float za = o.y + d.y * ta - s.floorY;
+  const float zb = o.y + d.y * tb - s.floorY;
+  if(za <= 0.0F && zb <= 0.0F)
+    return len;
+  float below = 0.0F;
+  float zLo   = min(za, zb);
+  float zHi   = max(za, zb);
+  if(zLo < 0.0F)
+  {
+    // it crosses the floor (d.y is not 0: the ends' heights differ in sign)
+    const float tf = (s.floorY - o.y) / d.y;
+    below          = za < 0.0F ? tf - ta : tb - tf;
+    below          = clamp(below, 0.0F, len);
+    zLo            = 0.0F;
+  }
+  const float above = len - below;
+  return below + exp(-zLo * s.invHeight) * above * hazeOneMinusExpOver((zHi - zLo) * s.invHeight);
+}
+
+// The length from a point at height z (above the floor) along a ray rising k per unit (k = d.y)
+// over which the height's factor integrates to tau, at most `most`
+float hazeExponentialInvert(float z, float k, float tau, float invHeight, float most)
+{
+  if(!(tau > 0.0F))
+    return 0.0F;
+  const float H = 1.0F / invHeight;
+  const float A = exp(-z * invHeight);  // the factor where it starts
+  float       len;
+  if(abs(k) * most * invHeight < 1e-4F)
+    len = A > 0.0F ? tau / A : most;  // all but level
+  else if(k > 0.0F)
+  {
+    // rising: the factor falls, tau = (H / k) A (1 - e^(-k len / H))
+    const float q = A > 0.0F ? tau * k * invHeight / A : 1.0F;
+    len           = q < 1.0F ? H / k * hazeMinusLogOneMinus(q) : most;
+  }
+  else
+  {
+    // falling: tau = (H / |k|) A (e^(|k| len / H) - 1)
+    const float m = -k;
+    const float p = A > 0.0F ? tau * m * invHeight / A : 1e30F;
+    len           = p < 1e4F ? H / m * hazeMinusLogOneMinus(p / (1.0F + p)) : (H * log(A + tau * m * invHeight) + z) / m;
+  }
+  return clamp(len, 0.0F, most);
+}
+
+// The distance t in [ta, tb] at which hazeHeightDepth from ta reaches tau (0 to its whole)
+float hazeHeightInvert(HazeShape s, float3 o, float3 d, float ta, float tb, float tau)
+{
+  const float len = max(tb - ta, 0.0F);
+  if(!(s.invHeight > 0.0F))
+    return ta + clamp(tau, 0.0F, len);
+  const float za = o.y + d.y * ta - s.floorY;
+  const float zb = o.y + d.y * tb - s.floorY;
+  if(za <= 0.0F && zb <= 0.0F)
+    return ta + clamp(tau, 0.0F, len);
+  if(za < 0.0F)
+  {
+    // below the floor first, then rising out of it
+    const float tf = clamp((s.floorY - o.y) / d.y, ta, tb);
+    if(tau <= tf - ta)
+      return ta + max(tau, 0.0F);
+    return tf + hazeExponentialInvert(0.0F, d.y, tau - (tf - ta), s.invHeight, tb - tf);
+  }
+  if(zb < 0.0F)
+  {
+    // falling to the floor, then below it
+    const float tf    = clamp((s.floorY - o.y) / d.y, ta, tb);
+    const float upper = hazeHeightDepth(s, o, d, ta, tf);
+    if(tau <= upper)
+      return ta + hazeExponentialInvert(za, d.y, tau, s.invHeight, tf - ta);
+    return tf + clamp(tau - upper, 0.0F, tb - tf);
+  }
+  return ta + hazeExponentialInvert(za, d.y, tau, s.invHeight, len);
+}
+
+// A smooth noise in [-1, 1]: two octaves of value noise on an integer lattice, quintic between
+float hazeHash(int x, int y, int z)
+{
+  uint h = uint(x) * 0x8da6b343u ^ uint(y) * 0xd8163841u ^ uint(z) * 0xcb1ab31fu;
+  h ^= h >> 16;
+  h *= 0x7feb352du;
+  h ^= h >> 15;
+  h *= 0x846ca68bu;
+  h ^= h >> 16;
+  return float(h >> 8) * (1.0F / 16777216.0F);
+}
+
+float hazeValueNoise(float3 p)
+{
+  const float3 c = floor(p);
+  const float3 f = p - c;
+  const float3 w = f * f * f * (f * (f * 6.0F - 15.0F) + 10.0F);
+  const int    x = int(c.x);
+  const int    y = int(c.y);
+  const int    z = int(c.z);
+  const float  a = hazeHash(x, y, z) + (hazeHash(x + 1, y, z) - hazeHash(x, y, z)) * w.x;
+  const float  b = hazeHash(x, y + 1, z) + (hazeHash(x + 1, y + 1, z) - hazeHash(x, y + 1, z)) * w.x;
+  const float  e = hazeHash(x, y, z + 1) + (hazeHash(x + 1, y, z + 1) - hazeHash(x, y, z + 1)) * w.x;
+  const float  g = hazeHash(x, y + 1, z + 1) + (hazeHash(x + 1, y + 1, z + 1) - hazeHash(x, y + 1, z + 1)) * w.x;
+  const float  near = a + (b - a) * w.y;
+  const float  far  = e + (g - e) * w.y;
+  return near + (far - near) * w.z;
+}
+
+float hazeNoise(float3 p)
+{
+  return 2.0F * (0.65F * hazeValueNoise(p) + 0.35F * hazeValueNoise(p * 2.03F + float3(17.1F, 9.3F, 41.7F))) - 1.0F;
+}
+
+// The patches' factor at x: 1 + patches x noise, 0 to 2
+float hazePatchFactor(HazeShape s, float3 x)
+{
+  return s.patches > 0.0F ? max(1.0F + s.patches * hazeNoise(x * s.invPatchSize), 0.0F) : 1.0F;
+}
+
+// The density at x relative to the extinction at the floor
+float hazeDensity(HazeShape s, float3 x)
+{
+  return hazeHeightFactor(s, x.y) * hazePatchFactor(s, x);
+}
+
+// The camera's segment as the uneven haze is integrated over it: the height's depth, split in four
+// strata of equal depth, each with the patches' factor at a point of it (the same jitter in each)
+static const int HAZE_STRATA = 4;
+
+struct HazeColumn
+{
+  float depth;    // hazeHeightDepth over the segment
+  float factor0;  // the patches' factor in each stratum (four fields: an array in this struct
+  float factor1;  // costs the shader local memory)
+  float factor2;
+  float factor3;
+  float total;    // the segment's optical depth over the extinction: depth x their mean
+};
+
+float hazeColumnFactor(HazeColumn c, int i)
+{
+  return i == 0 ? c.factor0 : (i == 1 ? c.factor1 : (i == 2 ? c.factor2 : c.factor3));
+}
+
+HazeColumn hazeColumn(HazeShape s, float3 o, float3 d, float t0, float t1, float jitter)
+{
+  HazeColumn c;
+  c.depth   = hazeHeightDepth(s, o, d, t0, t1);
+  c.factor0 = 1.0F;
+  c.factor1 = 1.0F;
+  c.factor2 = 1.0F;
+  c.factor3 = 1.0F;
+  if(s.patches > 0.0F)
+  {
+    const float q = c.depth / float(HAZE_STRATA);
+    c.factor0     = hazePatchFactor(s, o + d * hazeHeightInvert(s, o, d, t0, t1, (0.0F + jitter) * q));
+    c.factor1     = hazePatchFactor(s, o + d * hazeHeightInvert(s, o, d, t0, t1, (1.0F + jitter) * q));
+    c.factor2     = hazePatchFactor(s, o + d * hazeHeightInvert(s, o, d, t0, t1, (2.0F + jitter) * q));
+    c.factor3     = hazePatchFactor(s, o + d * hazeHeightInvert(s, o, d, t0, t1, (3.0F + jitter) * q));
+  }
+  c.total = c.depth * 0.25F * (c.factor0 + c.factor1 + c.factor2 + c.factor3);
+  return c;
+}
+
+// The column's optical depth (over the extinction) up to where the height's depth is tauH
+float hazeColumnDepthTo(HazeColumn c, float tauH)
+{
+  const float q   = c.depth / float(HAZE_STRATA);
+  float       acc = 0.0F;
+  for(int i = 0; i < HAZE_STRATA; i++)
+    acc += hazeColumnFactor(c, i) * clamp(tauH - float(i) * q, 0.0F, q);
+  return acc;
+}
+
+// The patches' factor of the stratum the height's depth tauH falls in
+float hazeColumnFactorAt(HazeColumn c, float tauH)
+{
+  const float q = c.depth / float(HAZE_STRATA);
+  return hazeColumnFactor(c, q > 0.0F ? clamp(int(tauH / q), 0, HAZE_STRATA - 1) : 0);
+}
+
+// The height's depth at which the column's optical depth reaches tauHat (0 to c.total)
+float hazeColumnHeightDepthAt(HazeColumn c, float tauHat)
+{
+  const float q   = c.depth / float(HAZE_STRATA);
+  float       acc = 0.0F;
+  for(int i = 0; i < HAZE_STRATA; i++)
+  {
+    const float f    = hazeColumnFactor(c, i);
+    const float next = acc + f * q;
+    if(tauHat <= next && f > 0.0F)
+      return float(i) * q + (tauHat - acc) / f;
+    acc = next;
+  }
+  return c.depth;
+}
+
+// A distance on the camera's segment drawn by the column's transmittance (the uneven haze's
+// hazeSampleTransmittance), `u` in [0, 1)
+float hazeColumnSampleTransmittance(HazeShape s, HazeColumn c, float3 o, float3 d, float sigma, float t0, float t1, float u)
+{
+  const float tauHat = hazeSampleTransmittance(u, sigma, 0.0F, c.total);
+  return hazeHeightInvert(s, o, d, t0, t1, hazeColumnHeightDepthAt(c, tauHat));
+}
+
+// The density the uneven haze's mixture draws t with (hazeDistancePdf's)
+float hazeColumnDistancePdf(HazeShape s, HazeColumn c, float3 o, float3 d, float sigma, float t0, float t, HazeGuide g)
+{
+  const float tauH            = hazeHeightDepth(s, o, d, t0, t);
+  const float slope           = sigma * hazeHeightFactor(s, o.y + d.y * t) * hazeColumnFactorAt(c, tauH);
+  const float byTransmittance = slope * exp(-sigma * hazeColumnDepthTo(c, tauH)) / hazeOneMinusExp(sigma * c.total);
+  if(!g.on)
+    return byTransmittance;
+  return (1.0F - HAZE_GUIDE_SHARE) * byTransmittance + HAZE_GUIDE_SHARE * hazeEquiangularPdf(t, g);
+}
+
+// The uneven haze's hazeScatterWeight: the density where the point lands (with its patches) and the
+// column's transmittance to it, over the density it was drawn with
+float hazeColumnScatterWeight(HazeShape s, HazeColumn c, float3 o, float3 d, float sigma, float t0, float t, HazeGuide g)
+{
+  const float pdf = hazeColumnDistancePdf(s, c, o, d, sigma, t0, t, g);
+  if(!(pdf > 0.0F))
+    return 0.0F;
+  const float tauHat = hazeColumnDepthTo(c, hazeHeightDepth(s, o, d, t0, t));
+  return sigma * hazeDensity(s, o + d * t) * exp(-sigma * tauHat) / pdf;
 }
 
 #endif  // HAZE_H

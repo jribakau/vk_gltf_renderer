@@ -255,6 +255,20 @@ pinhole's eye, as the aerial perspective).
   density; a ray passing a light at 5 cm on a 10 m segment has a noise 0.9 times its mean a sample,
   5.7 by the transmittance alone. Rendered (a point light 3 m ahead in 20 m visibility, g 0.7, 1024
   samples), rings of pixels from 1 to 26 degrees off it came within 0.1% of the integral.
+- **Uneven** (`hazeHeight`, `hazePatches`, `hazePatchSize`; `HazeShape` in `haze.h.slang`): the
+  density relative to the floor's, exp(-(height above the floor) / H) (1 below it) times 1 + patches
+  x a two-octave value noise in [-1, 1]. The floor is the ground plane's (a body of water's surface)
+  or the scene's lowest point. The height's part is integrated along a ray in closed form
+  (`hazeHeightDepth`, from the segment's lower end so nothing overflows) and inverted to draw a
+  distance (`hazeHeightInvert`), so a layer of fog seen from above draws its points inside it. The
+  patches dim the camera's segment by four lookups stratified over its height-weighted depth
+  (`HazeColumn`: the optical depth unbiased, its exponential a hair high, 0.005% in the test), the
+  transmittance half of the mixture draws by that column and the equiangular half as before, and the
+  scatter point weighs the density where it lands; the light's way to the point is dimmed by the
+  height alone. Both at 0, the closed forms of even haze run, to rounding as before. On the night
+  street at 30 m visibility a still sample went 4.59 → 4.94 ms with a height, 5.11 with patches, 5.68
+  with both. Not ratio tracking, which would multiply everything seen through the haze by its noise.
+  The patches do not move.
 - **Not in it:** the haze's multiple scattering, light bounced off surfaces into it, and its shade on
   what it lights (docs/falcor-ideas.md: the air as its own medium). DLSS-RR has no guide for light in
   the air.

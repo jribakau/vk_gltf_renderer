@@ -245,7 +245,8 @@ HostStruct sceneFrameInfo()
     F(envSamplingGridHeight), F(groundFadeCenterX), F(groundFadeCenterZ), F(groundFadeRadius), F(skySunScale),
     F(envPickEstimate), F(groundWater), F(groundRipples), F(waterDepth), F(waterWaves), F(cloudViewRight),
     F(cloudViewUp), F(cloudViewForward), F(cloudViewUvScaleX), F(cloudViewUvScaleY), F(hazeExtinction),
-    F(hazeAnisotropy), F(hazeCenter), F(hazeRadius), F(hazeCandidates)
+    F(hazeAnisotropy), F(hazeCenter), F(hazeRadius), F(hazeCandidates), F(hazeFloor), F(hazeInvHeight), F(hazePatches),
+    F(hazeInvPatchSize)
   }};
 }
 

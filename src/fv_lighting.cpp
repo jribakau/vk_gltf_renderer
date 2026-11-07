@@ -213,6 +213,11 @@ void patchHaze(Haze& h, const Json& p)
       field(h.visibility, d.visibility, v, [&](const Json& x) { return number(x, key, 1.0, 1e5); });
     else if(k == "glow")
       field(h.glow, d.glow, v, [&](const Json& x) { return number(x, key, 0.0, 0.9); });
+    else if(k == "height")
+      // a few centimetres of fog on a stage to a valley's mist; 0 even
+      field(h.height, d.height, v, [&](const Json& x) { return number(x, key, 0.0, 1000.0); });
+    else if(k == "patches")
+      field(h.patches, d.patches, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else
       reject("unknown key " + key);
   }
@@ -329,7 +334,7 @@ Json toJson(const State& s)
         {"softness", u.softness}}},
       {"clouds",
        {{"coverage", c.coverage}, {"thickness", c.thickness}, {"seed", c.seed}, {"type", c.type}, {"mid", c.mid}, {"high", c.high}}},
-      {"haze", {{"enabled", h.enabled}, {"visibility", h.visibility}, {"glow", h.glow}}},
+      {"haze", {{"enabled", h.enabled}, {"visibility", h.visibility}, {"glow", h.glow}, {"height", h.height}, {"patches", h.patches}}},
       {"ground",
        {{"mode", g.mode},
         {"height", g.autoHeight ? Json("auto") : Json(g.height)},
@@ -695,6 +700,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       // under every environment; 0 is none
       {"hazeVisibility", s.haze.enabled ? s.haze.visibility : 0.0},
       {"hazeAnisotropy", s.haze.glow},
+      {"hazeHeight", s.haze.height},
+      {"hazePatches", s.haze.patches},
       {"tmActive", 1},
       {"tmAutoExposure", 0},
       {"tmMethod", tmMethod(t.method)},

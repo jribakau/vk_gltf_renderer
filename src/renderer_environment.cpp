@@ -706,6 +706,7 @@ void GltfRenderer::fillHaze(shaderio::SceneFrameInfo& finfo) const
   const glm::vec3     eye    = glm::vec3(finfo.viewInv[3]);
   glm::vec3           center = eye;
   float               radius = 0.0F;
+  float               lowest = eye.y;
   if(view.hasContent())
   {
     const nvutils::Bbox bounds = view.bounds();
@@ -713,6 +714,7 @@ void GltfRenderer::fillHaze(shaderio::SceneFrameInfo& finfo) const
     {
       center = bounds.center();
       radius = bounds.radius();
+      lowest = bounds.min().y;
     }
     for(const SceneGpuView::LightInfo& light : view.lights())
       if(!light.directional)
@@ -724,6 +726,13 @@ void GltfRenderer::fillHaze(shaderio::SceneFrameInfo& finfo) const
   finfo.hazeCenter       = center;
   finfo.hazeRadius       = radius * 1.01F + 1e-3F;  // the eye strictly inside
   finfo.hazeCandidates   = std::clamp(settings.hazeCandidates, 1, 16);
+  // Uneven: the floor is the ground's (a body of water's surface over it, fillGround's waterDepth),
+  // or the scene's lowest point where there is none
+  finfo.hazeFloor     = settings.useInfinitePlane ? settings.infinitePlaneDistance + finfo.waterDepth : lowest;
+  finfo.hazeInvHeight = settings.hazeHeight > 0.0F ? 1.0F / settings.hazeHeight : 0.0F;
+  finfo.hazePatches   = std::clamp(settings.hazePatches, 0.0F, 1.0F);
+  const float patch   = settings.hazePatchSize > 0.0F ? settings.hazePatchSize : std::clamp(0.25F * radius, 0.5F, 8.0F);
+  finfo.hazeInvPatchSize = 1.0F / patch;
 }
 
 //--------------------------------------------------------------------------------------------------

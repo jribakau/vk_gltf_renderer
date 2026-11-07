@@ -33,8 +33,9 @@
 //            it veils), the tiers over it, each 0 to 1. The physical sky's only
 //   haze:    enabled, visibility (metres: where the haze leaves 2% of a dark object's contrast),
 //            glow (how much it scatters forward, the halo round a light seen through it:
-//            Henyey-Greenstein g, 0 to 0.9). A thin haze in the air, lit by every light of the
-//            scene, between the eye and what it sees (shaders/haze.h.slang)
+//            Henyey-Greenstein g, 0 to 0.9), height (metres it thins over above the floor, 0
+//            even through the height), patches (0 even to 1). A thin haze in the air, lit by every
+//            light of the scene, between the eye and what it sees (shaders/haze.h.slang)
 //   ground:  mode floor|water|catcher|off, height ("auto" or world units), color, roughness,
 //            darkness, fade, water (0 dry to 1 a sheet of it, on a floor), depth (metres, of the
 //            water mode's body of water), waves (on it, 0 still to 1), ripples (on either, 0 still to 1)
@@ -98,8 +99,10 @@ struct Clouds
 struct Haze
 {
   bool   enabled    = false;
-  double visibility = 100.0;  // beams in a room, the far wall of a hall veiled
+  double visibility = 100.0;  // beams in a room, the far wall of a hall veiled; at the floor
   double glow       = 0.7;
+  double height     = 0.0;  // metres it thins over above the floor; 0: even through the height
+  double patches    = 0.0;
 };
 
 struct Ground

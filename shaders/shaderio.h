@@ -334,6 +334,13 @@ struct SceneFrameInfo
   // A still's scatter point picks its light from this many candidates by what each gives the eye
   // (HazeReservoir); a moving frame takes one. (Appended, per the note above.)
   int hazeCandidates = 1;
+  // Uneven haze (HazeShape): the floor's height, one over the height it thins over above it (0:
+  // even through the height), how patchy it is (0 to 1) and the patches' frequency per metre.
+  // (Appended, per the note above.)
+  float hazeFloor        = 0.0F;
+  float hazeInvHeight    = 0.0F;
+  float hazePatches      = 0.0F;
+  float hazeInvPatchSize = 0.0F;
 };
 
 enum PathtracerFlags

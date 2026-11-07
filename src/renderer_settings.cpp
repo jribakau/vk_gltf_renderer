@@ -514,6 +514,18 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   .help            = "Haze: lights a still's scatter point picks its light from, by what each gives the eye (1: the light pick's own)",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.hazeCandidates, Persist::eNo, 1, 16);
+  m_settings.add({.name            = "hazeHeight",
+                  .help            = "Haze: thicker near the floor, thinning over this many metres above it (0: even through the height)",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.hazeHeight, Persist::eNo, 0.0F, 10000.0F);
+  m_settings.add({.name            = "hazePatches",
+                  .help            = "Haze: how patchy it is, 0 even to 1 (the density swings from none to twice its own)",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.hazePatches, Persist::eNo, 0.0F, 1.0F);
+  m_settings.add({.name            = "hazePatchSize",
+                  .help            = "Haze: the patches' size in metres (0: a quarter of the haze's radius, 0.5 to 8 m)",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.hazePatchSize, Persist::eNo, 0.0F, 10000.0F);
 
   // Register PathTracer-specific command line parameters
   m_pathTracer.registerParameters(&m_settings, [this]() { resetFrame(); });

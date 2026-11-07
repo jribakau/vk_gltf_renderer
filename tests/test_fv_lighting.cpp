@@ -354,6 +354,15 @@ TEST(FvLighting, HazeIsOffUntilSwitchedOnAndKeepsItsValues)
   EXPECT_THROW(L::applyPatch(on, {{"haze", {{"enabled", 1}}}}), std::invalid_argument);
   // the topic replays as a patch
   EXPECT_EQ(L::applyPatch(L::State{}, L::toJson(on)).haze.visibility, 40.0);
+  // uneven (protocol 38): even until set, sent whether on or off, held to their ranges
+  EXPECT_EQ(none["hazeHeight"], 0.0);
+  EXPECT_EQ(none["hazePatches"], 0.0);
+  const L::State low = L::applyPatch(on, {{"haze", {{"height", 1.5}, {"patches", 3.0}}}});
+  EXPECT_EQ(L::rendererParams(low, {})["hazeHeight"], 1.5);
+  EXPECT_EQ(L::rendererParams(low, {})["hazePatches"], 1.0);
+  EXPECT_EQ(L::applyPatch(low, {{"haze", {{"height", -2.0}}}}).haze.height, 0.0);
+  EXPECT_EQ(L::toJson(low)["haze"]["height"], 1.5);
+  EXPECT_EQ(L::applyPatch(L::State{}, L::toJson(low)).haze.patches, 1.0);
 }
 
 // The exposure follows the clouds where the app's camera meters (protocol 35): what they take from the

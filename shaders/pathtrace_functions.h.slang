@@ -2043,14 +2043,29 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
   const float2 seg     = hazeSegment(eye, dir, tEnd, frameInfo->hazeCenter, frameInfo->hazeRadius);
   if(!(seg.y > seg.x))
     return result;
-  const float sigma    = frameInfo->hazeExtinction;
-  result.transmittance = exp(-sigma * (seg.y - seg.x));
+  const float sigma = frameInfo->hazeExtinction;
+  // Uneven haze (haze.h.slang): its column on the segment; even haze takes the closed forms, bit for
+  // bit as before there was any other
+  const HazeShape shape  = {frameInfo->hazeFloor, frameInfo->hazeInvHeight, frameInfo->hazePatches, frameInfo->hazeInvPatchSize};
+  const bool      even   = hazeEven(shape);
+  HazeColumn      column = {0.0F, 1.0F, 1.0F, 1.0F, 1.0F, 0.0F};
+  if(even)
+    result.transmittance = exp(-sigma * (seg.y - seg.x));
+  else
+  {
+    column = hazeColumn(shape, eye, dir, seg.x, seg.y, rand(seed));
+    if(!(column.total > 0.0F))
+      return result;  // the segment runs where the haze has thinned to nothing
+    result.transmittance = exp(-sigma * column.total);
+  }
 
   // The guide: a point on a light drawn from somewhere on the segment. A light at infinity (the
   // environment, a directional light, the sky's sun) has none, and its points go by the transmittance.
   // Drawn in one pass over the lights (lightPickSetDrawn), and only its point: what the light emits
   // there (a textured emitter's material, emission and opacity) is not needed to aim at it.
-  const float3 guideFrom  = eye + dir * hazeSampleTransmittance(rand(seed), sigma, seg.x, seg.y);
+  const float  guideU     = rand(seed);
+  const float3 guideFrom  = eye + dir * (even ? hazeSampleTransmittance(guideU, sigma, seg.x, seg.y)
+                                              : hazeColumnSampleTransmittance(shape, column, eye, dir, sigma, seg.x, seg.y, guideU));
   DirectLight  guideLight = noDirectLight();
   {
     LightDraw          drawn;
@@ -2062,9 +2077,15 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
   const bool      guided = guideLight.pdf != 0.0F && guideLight.distance < 0.5F * INFINITE;
   const HazeGuide guide  = hazeGuide(eye, dir, seg.x, seg.y, guideFrom + guideLight.direction * guideLight.distance, guided);
 
-  const float  choice = rand(seed);
-  const float  t      = hazeSampleDistance(rand(seed), choice, sigma, seg.x, seg.y, guide);
-  const float3 pos    = eye + dir * t;
+  const float choice = rand(seed);
+  const float placeU = rand(seed);
+  float       t;
+  if(even)
+    t = hazeSampleDistance(placeU, choice, sigma, seg.x, seg.y, guide);
+  else
+    t = (guide.on && choice < HAZE_GUIDE_SHARE) ? hazeSampleEquiangular(placeU, seg.x, seg.y, guide)
+                                                : hazeColumnSampleTransmittance(shape, column, eye, dir, sigma, seg.x, seg.y, placeU);
+  const float3 pos = eye + dir * t;
 
   // The point's light: a still's is the one of several candidates that gives the eye the most
   // (HazeReservoir), so the phase function's 180 to 1 at a glow of 0.7 counts in the pick; a moving
@@ -2103,7 +2124,9 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
       continue;
     // the light travels -candidate.direction and leaves toward the eye, -dir
     const float candidatePhase = henyeyGreensteinPdf(dot(dir, candidate.direction), frameInfo->hazeAnisotropy);
-    const float candidateAir   = exp(-sigma * min(candidate.distance, hazeExitDistance(pos, candidate.direction, frameInfo->hazeCenter, frameInfo->hazeRadius)));
+    // the light's way to the point: dimmed by the height (the patches are not looked up on it)
+    const float airLength    = min(candidate.distance, hazeExitDistance(pos, candidate.direction, frameInfo->hazeCenter, frameInfo->hazeRadius));
+    const float candidateAir = exp(-sigma * (even ? airLength : hazeHeightDepth(shape, pos, candidate.direction, 0.0F, airLength)));
     const float w              = candidatePhase * candidateAir * luminance(candidate.radianceOverPdf);
     const float u              = hazeReservoirNeedsDraw(reservoir, w) ? rand(seed) : 0.0F;
     reservoir                  = hazeReservoirTake(reservoir, w, u);
@@ -2125,7 +2148,9 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
   shadowRay.TMin          = 0.0F;
   shadowRay.TMax          = distance;
   const float3 visibility = raytracer.TraceShadow(shadowRay, seed);
-  result.inScatter        = (hazeScatterWeight(t, sigma, seg.x, seg.y, guide) * phase * air) * light * visibility;
+  const float scatter     = even ? hazeScatterWeight(t, sigma, seg.x, seg.y, guide)
+                                 : hazeColumnScatterWeight(shape, column, eye, dir, sigma, seg.x, t, guide);
+  result.inScatter        = (scatter * phase * air) * light * visibility;
   if(count > 1)
     result.inScatter *= hazeReservoirWeight(reservoir, count);
   // A still cuts the haze's rare bright samples to the firefly clamp's level, as it does bounced
