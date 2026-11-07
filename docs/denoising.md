@@ -245,6 +245,24 @@ camera ray at the full chain length, moved by that surface's instance motion, so
 the content rather than the glass. The main depth buffer (`outDepth`, used for picking and
 overlays) still holds the glass.
 
+The surface behind comes as it comes through (`DlssGlassPsr::through`): its albedo and specular albedo
+are multiplied by every glass on the way, each crossing by its base colour (as the BSDF tints
+transmission), by a volume's absorption over the segment inside it, and by the water's
+(`GROUND_WATER_ABSORPTION`) down to a mesh or the floor under it. A thin pane skipped inside the
+traversal tints by its base colour factor, a texture on it not looked up, and counts only if it lies
+in front of the nearest hit: the first `DLSS_PANE_SLOTS` panes are kept with their distance until the
+traversal ends. So a tinted bottle at a bar, or a car's tinted window, tells RR the darker colour the
+pixel holds.
+
+Where the glass's own reflection outweighs what comes through, the guides stay the glass's
+(`dlssReflectionShare`, `shaders/dlss_specular_guide.h.slang`): with F the reflection and T what
+comes through, the share F / (F + (1 - F) luminance(T)) past `DLSS_REFLECTION_KEEPS_SURFACE` (0.5)
+keeps the glass's normal, depth and motion, which the reflection moves with (NVIDIA's RR guide, 3.4.1:
+prefer the reflection at the primary hit). Water switches at about 82 degrees from the vertical, a car
+window of 0.8 a little past 80, a pane too dark to see through (0.02) head-on. The roughness guide
+follows the share. The switch is an edge in the guides: if a line shows across the water from a
+low camera, this is it.
+
 The chain is deterministic, unlike the path. Stochastic alpha in the guides makes them flicker
 frame to frame, which RR turns into speckle. Instead, `dlssTraceSkipThinGlass` resolves alpha with a
 fixed threshold: cut-out texels are skipped, and an alpha-blend texel counts as a surface from half
@@ -263,8 +281,9 @@ surfaces than that allows, the path never reached the surface behind and the pix
 keeps the glass's own guides; otherwise RR gets a bright albedo against a black color and tints the result.
 
 What PSR does not capture: the glass's own reflections and refraction edges are lighting with no
-guide edge, so they stay softer than the reference. Rough, tinted, or partly opaque glass is left
-alone, because there the glass surface is what the camera sees.
+guide edge, so they stay softer than the reference. Rough or partly opaque glass is left alone, because
+there the glass surface is what the camera sees; tinted glass is replaced, with its tint in the guides
+(above).
 
 ## Stochastic alpha
 

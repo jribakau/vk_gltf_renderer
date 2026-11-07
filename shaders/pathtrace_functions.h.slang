@@ -2269,10 +2269,15 @@ bool dlssIsThinWalled(GltfShadeMaterial* mat)
 // path keeps while DLSS denoises, so guides and color agree on which cells are solid.
 // FORCE_NON_OPAQUE makes the (opaque-flagged) glass report candidates.
 //
-// `glassCount` grows by the panes skipped in front of the hit. Candidates arrive in no set order,
-// so a pane is counted when it is nearer than the hit committed so far; one found before a nearer
-// commit is still counted, which only errs toward too many (see dlssTraceClearGlass).
-HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount)
+// `glassCount` grows by the panes skipped in front of the hit, and `through` takes each one's colour
+// (its base colour factor: thin glass tints what it lets through by its base colour, once a
+// crossing; a texture on it is not looked up). Candidates arrive in no set order, so the first
+// DLSS_PANE_SLOTS panes nearer than the hit committed so far are kept with their distance, and count
+// once the traversal has found the nearest hit, if they are in front of it. Panes past the slots count
+// as they come, which errs toward too many (see dlssTraceClearGlass).
+static const int DLSS_PANE_SLOTS = 4;
+
+HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float3 through)
 {
   GltfShadeMaterial*   materials        = pushConst.gltfScene->materials;
   GltfRenderNode*      renderNodes      = pushConst.gltfScene->renderNodes;
@@ -2280,6 +2285,10 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount)
 
   HitPayload payload = {};
   payload.hitT       = INFINITE;
+
+  float  paneT[DLSS_PANE_SLOTS]    = {};
+  float3 paneTint[DLSS_PANE_SLOTS] = {};
+  int    panes                     = 0;
 
   float    committedT = INFINITE;
   RayQuery rayQuery;
@@ -2303,8 +2312,20 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount)
 
     if(clearGlass && opacity >= 0.99f)
     {
-      if(candidateT < committedT)
-        glassCount++;  // Skipped pane in front of the hit so far
+      if(candidateT < committedT)  // a skipped pane in front of the hit so far
+      {
+        if(panes < DLSS_PANE_SLOTS)
+        {
+          paneT[panes]    = candidateT;
+          paneTint[panes] = mat.pbrBaseColorFactor.xyz;
+          panes++;
+        }
+        else
+        {
+          glassCount++;
+          through *= mat.pbrBaseColorFactor.xyz;
+        }
+      }
     }
     else if(u < opacity)
     {
@@ -2312,6 +2333,13 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount)
       committedT = candidateT;
     }
   }
+
+  for(int i = 0; i < panes; i++)
+    if(paneT[i] < committedT)  // the nearest hit's, now
+    {
+      glassCount++;
+      through *= paneTint[i];
+    }
 
   if(rayQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
   {
@@ -2350,6 +2378,7 @@ struct DlssGlassPsr
   float  roughness      = 0.0f;          // Its roughness
   float  pathLength     = 0.0f;          // Distance from the first glass hit to it, along the chain
   float3 posDelta       = float3(0.0f);  // Its instance motion: previous-frame position minus current position
+  float3 through        = float3(1.0f);  // What the glass, the panes and the water let through to it
 };
 
 DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3 dir, bool isInside)
@@ -2359,7 +2388,11 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
   GltfRenderPrimitive* renderPrimitive = pushConst.gltfScene->renderPrimitives;
   GltfTextureInfo*     texInfos        = pushConst.gltfScene->textureInfos;
 
-  DlssGlassPsr result = {false, float3(0.5f), float3(0.0f), float3(0.0f), 0.0f, 0.0f, float3(0.0f)};
+  DlssGlassPsr result = {false, float3(0.5f), float3(0.0f), float3(0.0f), 0.0f, 0.0f, float3(0.0f), float3(1.0f)};
+
+  // Each glass crossed tints what it lets through by its base colour (bsdfLobeFresnel's transmission
+  // tint), a volume absorbs on the way through it: the primary hit's glass first
+  result.through = glassMat.baseColor * glassMat.transmissionTint;
 
   PbrMaterial mat          = glassMat;
   float3      origin       = glassHit.pos;
@@ -2388,10 +2421,14 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     guideRay.Direction = dir;
     guideRay.TMin      = 0.0f;
     guideRay.TMax      = INFINITE;
-    HitPayload payload = dlssTraceSkipThinGlass(guideRay, glassCount);
+    HitPayload payload = dlssTraceSkipThinGlass(guideRay, glassCount, result.through);
     if(payload.hitT == INFINITE || glassCount >= pushConst.maxDepth)
       return result;
     result.pathLength += payload.hitT;
+#if GLTF_USE_VOLUME
+    if(isInside && mat.thickness > 0.0f)  // this segment ran through the glass's own volume
+      result.through *= exp(-volumeExtinction(makeVolumeMedium(mat)) * payload.hitT);
+#endif
 
     GltfRenderNode      node  = renderNodes[payload.rnodeID];
     GltfRenderPrimitive prim  = renderPrimitive[payload.rprimID];
@@ -2410,6 +2447,7 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     if(dlssIsClearGlass(mat))
     {
       glassCount++;
+      result.through *= mat.baseColor * mat.transmissionTint;
       continue;  // Refracting glass, or glass only a texture showed to be clear
     }
 
@@ -2441,7 +2479,10 @@ DlssGlassPsr dlssTraceWater(PbrMaterial waterMat, HitState waterHit, float3 dir,
     return psr;  // reflected whole, or up out of the water: no floor that way
   const float floorT = infinitePlaneCrossing(waterHit.pos, refracted, INFINITE, frameInfo);
   if(floorT < 0.0f || (psr.valid && psr.pathLength <= floorT))
+  {
+    psr.through *= dlssWaterThrough(GROUND_WATER_ABSORPTION, psr.pathLength);  // a mesh under the water
     return psr;
+  }
   // The ground's colour, metal and roughness (groundMaterial's dry ground: the floor under the water)
   const float3      up     = float3(0.0f, 1.0f, 0.0f);
   const PbrMaterial ground = defaultPbrMaterial(frameInfo->infinitePlaneBaseColor, frameInfo->infinitePlaneMetallic,
@@ -2455,6 +2496,7 @@ DlssGlassPsr dlssTraceWater(PbrMaterial waterMat, HitState waterHit, float3 dir,
   psr.roughness      = frameInfo->infinitePlaneRoughness * frameInfo->infinitePlaneRoughness;
   psr.pathLength     = floorT;
   psr.posDelta       = float3(0.0f);
+  psr.through        = waterMat.baseColor * waterMat.transmissionTint * dlssWaterThrough(GROUND_WATER_ABSORPTION, floorT);
   return psr;
 }
 #endif  // USE_DLSS_SHADER

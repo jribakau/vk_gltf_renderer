@@ -928,6 +928,95 @@ TEST(BsdfLobes, SamplesFollowTheReportedPdf)
   }
 }
 
+// Eto and Tokuyoshi's bound takes out of the visible normals only those that reflect below the surface
+// (hvd_ggx_sample_vndf_bounded): a rough lobe loses fewer of its samples there (alpha 1 none, where
+// the visible-normal sampler lost 9-41%), the directions left still follow the pdf it reports, an
+// anisotropic lobe's too, and the light that comes back is the same
+// (TheGgxAlbedoFitIsTheLobesIntegral, TheBoundedSamplerKeepsTheMeanWithLessVariance).
+TEST(BsdfLobes, TheBoundedSamplerLosesFewerReflectionsBelowTheSurface)
+{
+  std::mt19937                          rng(23);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  for(float alpha : {0.1f, 0.3f, 0.6f, 1.0f})
+    for(float NoV : {0.05f, 0.2f, 0.5f})
+    {
+      const vec3 k = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+      const int  N = 200000;
+      int        lostVndf = 0, lostBounded = 0;
+      for(int i = 0; i < N; i++)
+      {
+        const vec2 xi(u(rng), u(rng));
+        const vec3 h0 = hvd_ggx_sample_vndf(k, vec2(alpha), xi);
+        const vec3 h1 = hvd_ggx_sample_vndf_bounded(k, vec2(alpha), xi);
+        lostVndf += (2.0f * dot(k, h0) * h0 - k).z <= 0.0f ? 1 : 0;
+        lostBounded += (h1.z <= 0.0f || (2.0f * dot(k, h1) * h1 - k).z <= 0.0f) ? 1 : 0;
+      }
+      EXPECT_LT(lostBounded, lostVndf) << "alpha " << alpha << " NoV " << NoV;
+      if(alpha >= 0.3f)  // a third of the loss at least, where there is much to lose
+        EXPECT_LT(double(lostBounded), 0.67 * double(lostVndf)) << "alpha " << alpha << " NoV " << NoV;
+    }
+
+  PbrMaterial rough = base(1.0f);
+  rough.metallic    = 1.0f;
+  PbrMaterial aniso = rough;
+  aniso.roughness   = vec2(0.2f, 0.8f);
+  PbrMaterial mid   = rough;
+  mid.roughness     = vec2(0.36f);
+  for(const Case& c : {Case{"rough metal", rough}, Case{"anisotropic metal", aniso}, Case{"mid metal", mid}})
+    for(const vec3& k1 : {normalize(vec3(0.995f, 0.0f, 0.1f)), normalize(vec3(0.6f, 0.6f, 0.2f))})
+    {
+      const SamplingFit fit = samplingFit(c.mat, k1);
+      EXPECT_LT(fit.sigmas, 5.0) << fit.sigmas << " sigmas, " << c.name << " view " << k1.x << "," << k1.y << "," << k1.z;
+      EXPECT_NEAR(fit.missing, fit.absorbed, 0.01) << c.name << " view " << k1.x << "," << k1.y << "," << k1.z;
+    }
+}
+
+// The bound changes how the light is estimated, not what it is: a white rough lobe's albedo through the
+// bounded sampler (brdf_ggx_smith_sample) has the mean the visible-normal sampler had (G2/G1 a sample,
+// as the lobe weighed them before the bound), within the two estimates' noise, with less variance at
+// every view.
+TEST(BsdfLobes, TheBoundedSamplerKeepsTheMeanWithLessVariance)
+{
+  std::mt19937                          rng(29);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  for(float alpha : {0.3f, 0.6f, 1.0f})
+    for(float NoV : {0.1f, 0.3f, 0.7f})
+    {
+      PbrMaterial mat = base(std::sqrt(alpha));
+      const vec3  k1  = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+      const int   N   = 400000;
+      double      sumB = 0.0, sumB2 = 0.0, sumV = 0.0, sumV2 = 0.0;
+      for(int i = 0; i < N; i++)
+      {
+        BsdfSampleData s;
+        s.k1 = k1;
+        s.xi = vec3(u(rng), u(rng), u(rng));
+        brdf_ggx_smith_sample(s, mat, LOBE_SPECULAR_REFLECTION, vec3(1.0f), BSDF_FRESNEL_SCHLICK, 1.0f);
+        const double b = s.event_type != BSDF_EVENT_ABSORB ? double(s.bsdf_over_pdf.x) : 0.0;
+        sumB += b;
+        sumB2 += b * b;
+
+        const vec3 h  = hvd_ggx_sample_vndf(k1, mat.roughness, vec2(s.xi));
+        const vec3 k2 = 2.0f * dot(k1, h) * h - k1;
+        double     v  = 0.0;
+        if(h.z > 0.0f && k2.z > 0.0f)
+        {
+          float       G1, G2;
+          const float G12 = ggx_smith_shadow_mask_correlated(G1, G2, k1, k2, mat.roughness);
+          v               = G12 > 0.0f ? double(G12 / G1) : 0.0;
+        }
+        sumV += v;
+        sumV2 += v * v;
+      }
+      const double meanB = sumB / N, varB = sumB2 / N - meanB * meanB;
+      const double meanV = sumV / N, varV = sumV2 / N - meanV * meanV;
+      const double sigma = std::sqrt((varB + varV) / N);
+      EXPECT_NEAR(meanB, meanV, 4.0 * sigma) << "alpha " << alpha << " NoV " << NoV;
+      // a fifth to two thirds of it (utils/bounded_vndf.py, their numpy twin: x0.18 at alpha 1, NoV 0.7)
+      EXPECT_LT(varB, 0.8 * varV) << "alpha " << alpha << " NoV " << NoV;
+    }
+}
+
 // A layer over a white base gives back about what it was lit with, at every angle and roughness.
 // The lobes weigh their microfacets by the exact Fresnel, and the layers below are charged by the albedo
 // that gives (ggxDielectricAlbedo): charged by Schlick's, this gained 2%, and 3.7% under a coat.
@@ -1806,4 +1895,44 @@ TEST(DlssSpecularGuide, TheShareRunsFromTheViewsFresnelToTheAverage)
   }
   // chrome's rim, polished: about three quarters of Schlick's
   EXPECT_NEAR(dlssEdgeTintShare(chrome.f0, chrome.tint, 0.0f, 0.15f).x, 0.74f, 0.01f);
+}
+
+// The see-through guides take what the pixel is made of: the surface behind clear glass as it comes
+// through (tinted by the glass, dimmed by the water), and the reflecting surface's own normal, depth
+// and motion where its reflection outweighs that (dlssReflectionShare, gltf_pathtrace.slang).
+TEST(DlssSpecularGuide, TheSeeThroughGuidesFollowWhatMakesThePixel)
+{
+  const auto schlick = [](float eta, float mu) {
+    const float f0 = ((eta - 1.0f) / (eta + 1.0f)) * ((eta - 1.0f) / (eta + 1.0f));
+    return f0 + (1.0f - f0) * std::pow(1.0f - mu, 5.0f);
+  };
+  const vec3 behind(0.5f, 0.4f, 0.3f);
+
+  // clear glass head-on: the reflection's share is its Fresnel, the albedo the blend it was
+  const float glass = schlick(1.5f, 1.0f);
+  EXPECT_NEAR(dlssReflectionShare(glass, vec3(1.0f)), glass, 1e-6f);
+  const vec3 clear = dlssSeeThroughAlbedo(behind, vec3(1.0f), glass, vec3(1.0f));
+  EXPECT_NEAR(clear.x, 0.5f + glass * 0.5f, 1e-6f);
+
+  // 7TEST's tinted car window: what is behind it comes through tinted, and still decides the guides
+  const vec3 tint(0.77f, 0.84f, 0.83f);
+  const vec3 tinted = dlssSeeThroughAlbedo(behind, vec3(1.0f), glass, tint);
+  EXPECT_NEAR(tinted.y, (1.0f - glass) * 0.84f * 0.4f + glass, 1e-6f);
+  EXPECT_LT(dlssReflectionShare(glass, tint), DLSS_REFLECTION_KEEPS_SURFACE);
+  // ...but seen edge-on its reflection does: the window keeps its own guides
+  EXPECT_GT(dlssReflectionShare(schlick(1.5f, std::cos(85.0f * 3.14159265f / 180.0f)), tint), DLSS_REFLECTION_KEEPS_SURFACE);
+  // a pane too dark to see through is a mirror, head-on too
+  EXPECT_GT(dlssReflectionShare(glass, vec3(0.02f)), DLSS_REFLECTION_KEEPS_SURFACE);
+
+  // the water: a metre down dims as its absorption says, nothing at its surface
+  const vec3 absorption(0.29f, 0.055f, 0.011f);  // ground.h.slang's GROUND_WATER_ABSORPTION
+  const vec3 metre = dlssWaterThrough(absorption, 1.0f);
+  EXPECT_NEAR(metre.x, std::exp(-0.29f), 1e-6f);
+  EXPECT_NEAR(dlssWaterThrough(absorption, 0.0f).z, 1.0f, 1e-6f);
+  EXPECT_NEAR(dlssWaterThrough(absorption, -1.0f).x, 1.0f, 1e-6f);
+  // from above the floor shows through; from a low camera the sky's reflection takes over
+  const float water = schlick(1.33f, 1.0f);
+  EXPECT_LT(dlssReflectionShare(water, metre), 0.05f);
+  EXPECT_GT(dlssReflectionShare(schlick(1.33f, std::cos(85.0f * 3.14159265f / 180.0f)), metre), DLSS_REFLECTION_KEEPS_SURFACE);
+  EXPECT_LT(dlssReflectionShare(schlick(1.33f, std::cos(60.0f * 3.14159265f / 180.0f)), metre), DLSS_REFLECTION_KEEPS_SURFACE);
 }

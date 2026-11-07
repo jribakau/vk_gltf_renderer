@@ -30,4 +30,37 @@ float3 dlssEdgeTintShare(float3 f0, float3 edgeTint, float alpha, float NoV)
   return lerp(view, f82AverageShare(f0, edgeTint), float3(k));
 }
 
+// The see-through guides (primary surface replacement, gltf_pathtrace.slang): where a camera ray meets
+// clear glass or the water's surface, DLSS-RR is told about the surface behind it, as the pixel holds
+// it. `fresnel` is what the glass or water reflects, `through` what it and every pane, solid glass and
+// water after it let through to that surface (dlssTraceClearGlass: each crossing's colour, a volume's
+// and the water's absorption).
+//
+// The reflection's share of what reaches the eye, for a surface behind of albedo 1:
+// F / (F + (1 - F) luminance(through)). Past DLSS_REFLECTION_KEEPS_SURFACE the guides keep the
+// reflecting surface's own normal, depth and motion, which the reflection moves with (NVIDIA's RR guide,
+// 3.4.1: prefer the reflection at the primary hit): water from a low camera, a window edge-on, a pane
+// too dark to see through.
+static const float DLSS_REFLECTION_KEEPS_SURFACE = 0.5F;
+
+float dlssReflectionShare(float fresnel, float3 through)
+{
+  const float t = (1.0F - fresnel) * (through.x * 0.2126F + through.y * 0.7152F + through.z * 0.0722F);
+  return fresnel / max(fresnel + t, 1e-6F);
+}
+
+// The diffuse albedo guide: the glass's or water's own colour where it reflects, the surface behind
+// as it comes through elsewhere
+float3 dlssSeeThroughAlbedo(float3 behind, float3 surfaceColour, float fresnel, float3 through)
+{
+  return lerp(through * behind, surfaceColour, float3(fresnel));
+}
+
+// The water's absorption over `distance` under its surface (ground.h.slang's GROUND_WATER_ABSORPTION,
+// per channel, a metre at 0.75 / 0.95 / 0.99)
+float3 dlssWaterThrough(float3 absorption, float distance)
+{
+  return exp(-absorption * max(distance, 0.0F));
+}
+
 #endif  // FV_DLSS_SPECULAR_GUIDE_H

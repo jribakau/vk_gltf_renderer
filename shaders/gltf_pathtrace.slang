@@ -773,23 +773,29 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       if(USE_DLSS_TRANSP == 1 && dlssIsClearGlass(pbrMat))
       {
         // #DLSS primary surface replacement: describe what is seen through the glass. The albedo
-        // keeps the glass's Fresnel share; depth and motion come from the replaced surface. What
-        // reflects is the glass's own and, through it, the surface's: a metal or a gloss behind a
-        // window keeps its specular albedo as seen directly. Added, not blended by the Fresnel, which
-        // would leave a matte surface behind glass about F^2 of specular albedo against the glass's
-        // own reflection of F.
+        // keeps the glass's Fresnel share, and the surface behind comes as it comes through: tinted
+        // by every glass and pane on the way, dimmed by a volume's and the water's absorption
+        // (DlssGlassPsr::through). What reflects is the glass's own and, through it, the surface's: a
+        // metal or a gloss behind a window keeps its specular albedo as seen directly. Added, not
+        // blended by the Fresnel, which would leave a matte surface behind glass about F^2 of
+        // specular albedo against the glass's own reflection of F. Depth, normal and motion are the
+        // surface's behind, unless the glass's reflection outweighs what comes through
+        // (dlssReflectionShare: water from a low camera, a window edge-on): then its own, which the
+        // reflection moves with. The roughness follows the share.
         DlssGlassPsr psr     = hitWater ? dlssTraceWater(pbrMat, hit, ray.Direction, frameInfo)
                                         : dlssTraceClearGlass(pbrMat, hit, materialIndex >= 0 ? rayIntoEyeChamber(ray.Direction, pbrMat.N, hit, materials + materialIndex) : ray.Direction, ptIsInside(pt));
         float        ndotv   = saturate(dot(pbrMat.N, -ray.Direction));
         float        fresnel = schlickFresnel((pbrMat.ior2 > 0.0f) ? (pbrMat.ior2 / pbrMat.ior1) : 1.5f, ndotv);
         if(bsdfIsPlate(pbrMat))
           fresnel = 2.0F * fresnel / (1.0F + fresnel);  // a pane's two faces
-        specularAlbedo       = saturate(specularAlbedo + (1.0F - fresnel) * psr.specularAlbedo);
-        guideAlbedo          = dlssEnforceMinAlbedo(lerp(psr.albedo, pbrMat.baseColor.xyz, fresnel), specularAlbedo);
+        specularAlbedo       = saturate(specularAlbedo + (1.0F - fresnel) * psr.through * psr.specularAlbedo);
+        guideAlbedo = dlssEnforceMinAlbedo(dlssSeeThroughAlbedo(psr.albedo, pbrMat.baseColor.xyz, fresnel, psr.through), specularAlbedo);
+        const float reflectionShare = dlssReflectionShare(fresnel, psr.through);
         if(psr.valid)
+          guideRoughness = lerp(sqrt(psr.roughness), guideRoughness, reflectionShare);
+        if(psr.valid && reflectionShare <= DLSS_REFLECTION_KEEPS_SURFACE)
         {
           guideNormal        = psr.normal;
-          guideRoughness     = sqrt(psr.roughness);
           pt.guide.psrValid  = true;
           pt.guide.psrPos    = hit.pos + ray.Direction * psr.pathLength;
           pt.firstHitPosPrev = pt.guide.psrPos + psr.posDelta;

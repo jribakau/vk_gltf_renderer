@@ -560,3 +560,50 @@ driver's cache (<cacheDir>/driver) is keyed by the SPIR-V, not by the exe.
   A new call of a heavy function (a light sample, a shadow ray with its any-hit, a material evaluation)
   costs build time in this measure: put it on an existing call when it can share one.
 
+## Reflection sampling: bounded visible normals
+
+Every GGX reflection lobe draws its bounce by Eto and Tokuyoshi 2023's bounded VNDF sampling
+(`hvd_ggx_sample_vndf_bounded`, nvshaders' `pbr_ggx_microfacet.h.slang`, in `brdf_ggx_smith_sample`
+and `brdf_ggx_smith_eval`). That covers the specular, metal, coat and second specular lobes, and so the
+flakes and the water's Gaussian slopes. Transmission keeps Heitz's sampler, since a refraction can
+leave through the part the bound cuts.
+
+- **The bound:** Dupuy and Benyoub 2023 draw the visible normals from a spherical cap in the lobe's
+  stretched space. The bound (`ggx_vndf_reflection_bound`) cuts the cap where every normal it would
+  give reflects below the surface. An anisotropic lobe takes its smaller alpha, which cuts less and
+  stays exact.
+- **The pdf:** a direction's pdf is the visible normals' with G1 replaced by
+  `ggx_vndf_reflection_g1`, 2 k.z / (bound * k.z + t). The sample's weight is G2 over that, on both
+  MIS sides alike.
+- **What it gives:** fewer samples lost below the surface, so less noise in what rough reflections
+  carry, with the same light. For a white lobe, against the visible-normal sampler
+  (`utils/bounded_vndf.py`):
+
+  | GGX alpha | Samples lost below the surface | Variance of the lobe's albedo estimate |
+  |---|---|---|
+  | 0.3 | 3-9% → 1-4% | ×0.53-0.65 |
+  | 0.6 | 6-23% → 0.4-6% | ×0.38-0.42 |
+  | 1.0 | 9-41% → none | ×0.18-0.35 |
+
+  The albedo is the same to the 4th decimal.
+- **Whole frames:** `scripts/noise-vs-reference.py`'s views against their references, relMSE at 256
+  samples (capped), same seed:
+
+  | View | relMSE |
+  |---|---|
+  | helmet (rough metal) | -6% |
+  | chair | -8% |
+  | alpha cutouts | -1% |
+  | Mirel | +2%, within the noise |
+
+  At 64 samples: -4%, -8%, -0.4%, -2%.
+- **Checked:**
+  - `BsdfLobes.TheBoundedSamplerLosesFewerReflectionsBelowTheSurface`: the lost share, and the
+    chi-square of rough and anisotropic metal at grazing views.
+  - `BsdfLobes.TheBoundedSamplerKeepsTheMeanWithLessVariance`: the mean within 4 sigma of the
+    visible-normal sampler's at 400,000 samples, the variance under 0.8 of it.
+  - The existing pdf, albedo-fit and energy tests.
+  
+  `tests/figure/data/closure_baseline.json` was rewritten: the closure probe's sampled lobe albedos moved by
+  -1.4% to +0.7%, mean -0.14%, as noise of another draw.
+
