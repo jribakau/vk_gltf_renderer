@@ -18,7 +18,7 @@
  */
 
 //
-// DLSS Ray Reconstruction over a still's final image (see rr_still_denoiser.hpp).
+// DLSS Ray Reconstruction over a still's image as it refines and its final one (see rr_still_denoiser.hpp).
 //
 
 #include "rr_still_denoiser.hpp"
@@ -57,13 +57,16 @@ void RrStillDenoiser::deinit(Resources& resources)
 void RrStillDenoiser::registerParameters(SettingsRegistry* settings)
 {
   settings->add({"rrStillEnable",
-                 "DLSS-RR still: denoise the still's final image with DLSS Ray Reconstruction, once the accumulation is complete "
-                 "(it refines undenoised); OptiX and OIDN off"},
+                 "DLSS-RR still: denoise the still with DLSS Ray Reconstruction, every rrStillAutoDenoiseSpp samples per pixel "
+                 "and its final image; OptiX and OIDN off"},
                 &m_settings.enable, Persist::eYes);
   settings->add({"rrStillBlendMax", "DLSS-RR still: share of the raw accumulation mixed back into its output (0 = all RR's)"},
                 &m_settings.blendMax, Persist::eYes, 0.0f, 1.0f);
-  settings->add({"rrStillPasses", "DLSS-RR still: evaluations of the final image, the first with the history reset"},
+  settings->add({"rrStillPasses", "DLSS-RR still: evaluations of an image, the first with the history reset"},
                 &m_settings.passes, Persist::eYes, 1, 16);
+  settings->add({"rrStillAutoDenoiseSpp",
+                 "DLSS-RR still: samples per pixel between its evaluations as the still refines (0 = the final image only)"},
+                &m_settings.autoDenoiseSpp, Persist::eYes, 0, 1000);
 }
 
 void RrStillDenoiser::setContext(NgxContext* ngx, uint32_t preset)
@@ -189,23 +192,44 @@ void RrStillDenoiser::bindResources(Resources& resources)
   own(Type::eDepth, eGBufferDepth);
 }
 
-void RrStillDenoiser::denoiseFinal(VkCommandBuffer       cmd,
-                                   Resources&            resources,
-                                   nvvk::ProfilerGpuTimer* profiler,
-                                   int                   samples,
-                                   bool                  complete,
-                                   const glm::mat4&      view,
-                                   const glm::mat4&      proj)
+void RrStillDenoiser::update(VkCommandBuffer         cmd,
+                             Resources&              resources,
+                             nvvk::ProfilerGpuTimer* profiler,
+                             int                     samples,
+                             int                     handoffEnd,
+                             const glm::mat4&        view,
+                             const glm::mat4&        proj)
 {
-  if(!complete || !isEnabled() || !m_featureCreated || samples <= 0)
+  // guides the path tracer has not written for this accumulation would be garbage
+  if(!canEvaluate(samples) || m_triedSamples == samples)
     return;
-  // once an image, a failed evaluation too (not every idle frame); guides the path tracer has not
-  // written for this accumulation would be garbage
-  if(m_triedSamples == samples)
+  const bool finalImage = samples >= resources.settings.maxSamples;
+  if(!m_schedule.isDue(samples, m_settings.autoDenoiseSpp, finalImage, handoffEnd, resources.settings.maxSamples))
     return;
-  if(!m_guides.isCurrent())
-    return;
+  evaluate(cmd, resources, profiler, samples, finalImage, view, proj);
+}
 
+void RrStillDenoiser::denoiseFinal(VkCommandBuffer         cmd,
+                                   Resources&              resources,
+                                   nvvk::ProfilerGpuTimer* profiler,
+                                   int                     samples,
+                                   const glm::mat4&        view,
+                                   const glm::mat4&        proj)
+{
+  // once an image, a failed evaluation too (not every idle frame)
+  if(!canEvaluate(samples) || m_triedSamples == samples)
+    return;
+  evaluate(cmd, resources, profiler, samples, /*finalImage=*/true, view, proj);
+}
+
+void RrStillDenoiser::evaluate(VkCommandBuffer         cmd,
+                               Resources&              resources,
+                               nvvk::ProfilerGpuTimer* profiler,
+                               int                     samples,
+                               bool                    finalImage,
+                               const glm::mat4&        view,
+                               const glm::mat4&        proj)
+{
   NVVK_DBG_SCOPE(cmd);
   const nvutils::ProfilerTimeline::FrameSectionID section = profiler->cmdFrameBeginSection(cmd, kProfilerSection);
 
@@ -226,7 +250,7 @@ void RrStillDenoiser::denoiseFinal(VkCommandBuffer       cmd,
   if(ok)
   {
     // Keep detail: the raw accumulation mixed back in, as OIDN's (RGBA32F: no half-float clamp)
-    const float blend = sample_schedule::denoiseBlend(m_settings.blendMax, samples, resources.settings.maxSamples, /*finalImage=*/true);
+    const float blend = sample_schedule::denoiseBlend(m_settings.blendMax, samples, resources.settings.maxSamples, finalImage);
     if(blend > 0.0f)
     {
       nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -243,6 +267,7 @@ void RrStillDenoiser::denoiseFinal(VkCommandBuffer       cmd,
   profiler->cmdFrameEndSection(cmd, section);
 
   m_triedSamples    = samples;
+  m_schedule.markDenoised(samples);  // a failed one is not retried every frame
   m_denoisedSamples = samples;
   m_hasValidOutput  = ok;
   if(!ok)

@@ -842,13 +842,10 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
 #endif
 
 #if defined(USE_DLSS)
-  // DLSS-RR's still: the frame that reaches the samples cap, its image the final one
+  // DLSS-RR's still: the refine's checkpoints, and the frame that reaches the samples cap
   if(getEffectiveRrStillEnabled(resources))
-  {
-    const int samples = m_totalSamplesAccumulated + m_frameSamples;
-    m_rrStill->denoiseFinal(cmd, resources, m_profiler, samples, samples >= resources.settings.maxSamples,
-                            resources.cameraManip->getViewMatrix(), resources.cameraManip->getPerspectiveMatrix());
-  }
+    m_rrStill->update(cmd, resources, m_profiler, m_totalSamplesAccumulated + m_frameSamples, handoffEnd(resources),
+                      resources.cameraManip->getViewMatrix(), resources.cameraManip->getPerspectiveMatrix());
 #endif
 
   // DLSS hand-off: the image shown while OptiX or OIDN takes over from DLSS's frame 0
@@ -884,8 +881,8 @@ void PathTracer::onAccumulationComplete(VkCommandBuffer cmd, Resources& resource
 #if defined(USE_DLSS)
   // an accumulation the adaptive stop ended before the cap, or one complete when RR's still came on
   if(rrStillOn())
-    m_rrStill->denoiseFinal(cmd, resources, m_profiler, resources.accumulatedSamples, /*complete=*/true,
-                            resources.cameraManip->getViewMatrix(), resources.cameraManip->getPerspectiveMatrix());
+    m_rrStill->denoiseFinal(cmd, resources, m_profiler, resources.accumulatedSamples, resources.cameraManip->getViewMatrix(),
+                            resources.cameraManip->getPerspectiveMatrix());
 #endif
 }
 
@@ -1838,6 +1835,13 @@ std::optional<DenoiserHandoff::Denoiser> PathTracer::handoffDenoiser(const Resou
                                      .autoDenoise  = m_oidn->isAutoDenoiseActive(),
                                      .denoiseCount = accumulationDenoiseCount()};
 #endif
+#if defined(USE_DLSS)
+  if(getEffectiveRrStillEnabled(resources))
+    return DenoiserHandoff::Denoiser{.view         = DisplayBuffer::eRrStillDenoised,
+                                     .image        = m_rrStill->getDescriptorImageInfo(RrStillDenoiser::eGBufferDenoised),
+                                     .autoDenoise  = m_rrStill->isAutoDenoiseActive(),
+                                     .denoiseCount = accumulationDenoiseCount()};
+#endif
   return std::nullopt;
 }
 
@@ -1850,6 +1854,9 @@ uint32_t PathTracer::accumulationDenoiseCount() const
 #if defined(USE_OIDN_DENOISER)
   count += m_oidn->denoiseCount();
 #endif
+#if defined(USE_DLSS)
+  count += m_rrStill->denoiseCount();
+#endif
   return count;
 }
 
@@ -1861,7 +1868,7 @@ int PathTracer::handoffEnd(const Resources& resources) const
 const VkDescriptorImageInfo* PathTracer::handoffImage(const Resources& resources) const
 {
   const DisplayBuffer view = resources.settings.displayBuffer;
-  if(view != DisplayBuffer::eOptixDenoised && view != DisplayBuffer::eOidnDenoised)
+  if(view != DisplayBuffer::eOptixDenoised && view != DisplayBuffer::eOidnDenoised && view != DisplayBuffer::eRrStillDenoised)
     return nullptr;
   return m_handoff.displayImage();
 }

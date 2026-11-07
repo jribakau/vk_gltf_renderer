@@ -24,8 +24,10 @@
 //-------------------------------------------------------------------------------------------------------
 // RrStillDenoiser
 //
-// DLSS Ray Reconstruction as the denoiser of a still: the accumulation refines undenoised, and once it
-// is complete its final image goes through DLSS-RR once, at native size (DLAA), its history reset.
+// DLSS Ray Reconstruction as the denoiser of a still: the accumulation's image goes through DLSS-RR at
+// native size (DLAA), its history reset, every `autoDenoiseSpp` samples per pixel as it refines (on
+// OptiX's and OIDN's schedule, AutoDenoiseSchedule, the DLSS hand-off included) and once it is complete;
+// with 0, only the final image.
 // The guides are RR's own (the DLSS shader variant's: diffuse and specular albedo, linear roughness,
 // and through clear glass the surface behind it), averaged over the still's samples like the colour
 // (ePtRrStillGuides, into this class's images), so their edges are anti-aliased as the colour's are.
@@ -36,7 +38,8 @@
 //   denoiser.init(resources);                        // once
 //   denoiser.setContext(dlss.ngxContext(), preset);  // every frame: null until NGX is up with RR
 //   denoiser.ensureTargets(resources);               // every frame: images and feature follow the settings
-//   denoiser.denoiseFinal(cmd, resources, ...);      // the frame the accumulation completes, and idle frames
+//   denoiser.update(cmd, resources, ...);            // every accumulation frame: a checkpoint or the final image
+//   denoiser.denoiseFinal(cmd, resources, ...);      // idle frames: the final image, if not yet
 //   denoiser.deinit(resources);                      // before the NGX context goes
 //
 // The images (5 RGBA32F/R32F and a motion image) and the feature exist only while it is enabled.
@@ -74,7 +77,8 @@ public:
   {
     bool  enable   = false;
     float blendMax = 0.0f;  // Keep detail: the raw accumulation mixed back in (sample_schedule::denoiseBlend)
-    int   passes   = 1;     // Evaluations of the final image, the first with the history reset
+    int   passes   = 1;     // Evaluations of an image, the first with the history reset
+    int   autoDenoiseSpp = 0;  // Samples per pixel between the refine's evaluations (0 = the final image only)
   };
 
   void init(Resources& resources);
@@ -95,6 +99,7 @@ public:
     return isEnabled() && m_featureCreated && m_guides.isCurrent() && samples > 0 && m_triedSamples != samples;
   }
   bool hasValidDenoisedOutput() const { return m_hasValidOutput; }
+  bool isAutoDenoiseActive() const { return m_settings.autoDenoiseSpp > 0; }
   int  denoisedSamples() const { return m_denoisedSamples; }
   uint32_t denoiseCount() const { return m_denoiseCount; }
 
@@ -107,9 +112,14 @@ public:
   // when it (re)allocates. Returns true when it did.
   bool ensureTargets(Resources& resources);
 
-  // Denoises the accumulation's final image of `samples` per pixel, once: the frame that completes it
-  // (`complete`), or an idle frame after. view and proj are the camera's, unjittered.
-  void denoiseFinal(VkCommandBuffer cmd, Resources& resources, nvvk::ProfilerGpuTimer* profiler, int samples, bool complete,
+  // An accumulation frame whose image has `samples` per pixel: evaluated at the refine's checkpoints and
+  // on the frame that completes it (samples >= the cap). `handoffEnd` is DLSS's hand-off's (0: none).
+  // view and proj are the camera's, unjittered.
+  void update(VkCommandBuffer cmd, Resources& resources, nvvk::ProfilerGpuTimer* profiler, int samples, int handoffEnd,
+              const glm::mat4& view, const glm::mat4& proj);
+  // An idle frame, the accumulation complete (the adaptive stop may have ended it before the cap): its
+  // final image of `samples`, once
+  void denoiseFinal(VkCommandBuffer cmd, Resources& resources, nvvk::ProfilerGpuTimer* profiler, int samples,
                     const glm::mat4& view, const glm::mat4& proj);
 
   // A new accumulation: the output is of another image
@@ -117,6 +127,7 @@ public:
   {
     m_hasValidOutput = false;
     m_triedSamples   = -1;
+    m_schedule.forgetDenoised();
   }
 
   void disable(Resources& resources);
@@ -124,6 +135,9 @@ public:
 private:
   void release(Resources& resources);
   void bindResources(Resources& resources);
+  bool canEvaluate(int samples) const { return isEnabled() && m_featureCreated && samples > 0 && m_guides.isCurrent(); }
+  void evaluate(VkCommandBuffer cmd, Resources& resources, nvvk::ProfilerGpuTimer* profiler, int samples, bool finalImage,
+                const glm::mat4& view, const glm::mat4& proj);
 
   Settings          m_settings{};
   NgxContext*       m_ngx    = nullptr;
@@ -139,6 +153,7 @@ private:
   int               m_triedSamples    = -1;  // the image last evaluated (or tried), by its samples per pixel
   uint32_t          m_denoiseCount    = 0;
   GuideAccumulation m_guides;
+  AutoDenoiseSchedule m_schedule;  // the refine's checkpoints
 
   VkDevice                    m_device           = VK_NULL_HANDLE;
   nvvk::ResourceAllocator*    m_allocator        = nullptr;

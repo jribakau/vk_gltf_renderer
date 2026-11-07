@@ -139,13 +139,16 @@ They differ in where the work runs:
   its context picks its optional features (tensor cores through `VK_KHR_cooperative_matrix`) from
   the enabled extension list (`Resources::deviceExtensions`).
 
-## DLSS-RR over a still's final image
+## DLSS-RR as the still's denoiser
 
 `RrStillDenoiser` (`src/rr_still_denoiser.{hpp,cpp}`, `--rrStillEnable`; the app's Render tab ›
-Denoiser › Ray reconstruction) makes DLSS-RR the still's denoiser in place of OptiX or OIDN, and
-only at the end: the accumulation refines undenoised, shown as it builds, and the frame that
-completes it (or the idle frame after, when the adaptive stop ended it early) runs RR once over
-the final image. It is its own NGX feature, made in the moving view's NGX context
+Denoiser › Ray reconstruction, its default) makes DLSS-RR the still's denoiser in place of OptiX or
+OIDN. It evaluates the accumulation's image on their schedule (`AutoDenoiseSchedule`, every
+`--rrStillAutoDenoiseSpp` samples; the app sends 8). With DLSS's hand-off, DLSS's last moving image
+stays until the first evaluation and blends into it (`handoffDenoiser`). It also evaluates on the
+frame that completes the still, or on the idle frame after it when the adaptive stop ended it early.
+With an interval of 0 only that final image is evaluated, and the refine shows the raw
+accumulation. It is its own NGX feature, made in the moving view's NGX context
 (`Dlss::ngxContext()`) at DLAA, the input the accumulation at the output's size; the moving view's
 feature is left alone. Its images and feature exist only while it is on.
 
