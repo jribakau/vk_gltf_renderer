@@ -304,7 +304,12 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
   - A surface that only filters the light (alpha, thin glass) multiplies in its expected
     transmission, `(1 - opacity) + opacity * getShadowTransmission`. Glass passes only where it
     is smooth (a clear crossing, which the path's own ray crosses as a null event for MIS); rough
-    or scattering glass blocks.
+    or scattering glass blocks. A thin pane's colour is a crossing's face-on and deepens at a
+    slant, raised to 1 / cos of the refracted angle as the path through the glass lengthens
+    (nvpro_core2 `bsdfThinTintAtSlant`, read off the triangle's face here and the shading normal
+    in the BSDF, which takes it for eval and sample alike): 7TEST's car windows, 0.77 face-on,
+    pass 0.73 at 60 degrees and 0.70 toward grazing. Iray keeps a crossing's colour at every angle;
+    a colourless pane is unchanged.
   - A surface that bounds a medium (`shadowSurfaceBoundsMedium`) keeps the stochastic opacity
     test, since what the rest of the ray travels through depends on it. It is also where the
     Beer-Lambert segment since the previous boundary is charged.

@@ -797,9 +797,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         {
           guideNormal        = psr.normal;
           pt.guide.psrValid  = true;
-          pt.guide.psrPos    = hit.pos + ray.Direction * psr.pathLength;
+          // where the eye sees it: nearer under water and through solid glass (dlssSeenScale)
+          pt.guide.psrPos    = hit.pos + ray.Direction * psr.seenLength;
           pt.firstHitPosPrev = pt.guide.psrPos + psr.posDelta;
-          replacedDepth      = psr.pathLength;
+          replacedDepth      = psr.seenLength;
         }
       }
 #if GLTF_USE_TRANSMISSION

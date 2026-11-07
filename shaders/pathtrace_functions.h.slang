@@ -353,6 +353,17 @@ float2 crossingRoughnessMetallic(GltfShadeMaterial mat, GltfRenderPrimitive rend
   return roughnessMetallic;
 }
 
+// A triangle's geometric normal in world space, unit: what a straight-through crossing's angle is read
+// against (getShadowTransmission, dlssPaneTint)
+float3 triangleWorldNormal(GltfRenderPrimitive renderPrim, uint3 indices, float4x3 worldToObject)
+{
+  float3 v0     = getVertexPosition(renderPrim, indices.x);
+  float3 v1     = getVertexPosition(renderPrim, indices.y);
+  float3 v2     = getVertexPosition(renderPrim, indices.z);
+  float3 normal = normalize(cross(v1 - v0, v2 - v0));
+  return normalize(float3(mul(worldToObject, normal).xyz));
+}
+
 //-----------------------------------------------------------------------
 // Calculate the transmission of a ray through a surface. The medium behind the surface is the
 // caller's to apply (shadowMediumTransmittance); crossing a volume boundary flips `isInside`, and
@@ -437,16 +448,7 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
     return float3(0.0);
   const float metallic = roughnessMetallic.y;
 
-  float3 normal;
-  {
-    float3 v0 = getVertexPosition(renderPrim, indices.x);
-    float3 v1 = getVertexPosition(renderPrim, indices.y);
-    float3 v2 = getVertexPosition(renderPrim, indices.z);
-    float3 e1 = v1 - v0;
-    float3 e2 = v2 - v0;
-    normal    = normalize(cross(e1, e2));
-    normal    = normalize(float3(mul(worldToObject, normal).xyz));
-  }
+  const float3 normal = triangleWorldNormal(renderPrim, indices, worldToObject);
 
   float cosTheta = abs(dot(rayDirection, normal));
 #if GLTF_USE_IOR
@@ -465,7 +467,9 @@ float3 getShadowTransmission(GltfRenderNode      renderNode,
   fresnel = 1.0F - (1.0F - fresnel) * (1.0F - mat.clearcoatFactor * schlickFresnel(1.5F, cosTheta)) * (1.0F - mat.specular2Factor * schlickFresnel(1.5F, cosTheta));
 #endif
 
-  float3 currentTransmission = tFactor * (1.0F - metallic) * mat.pbrBaseColorFactor.rgb;
+  // a pane's colour deepens at a slant, as its BSDF's does (bsdfThinTintAtSlant)
+  const float3 colour = thickness <= 0.0 ? bsdfThinTintAtSlant(mat.pbrBaseColorFactor.rgb, ior, cosTheta) : mat.pbrBaseColorFactor.rgb;
+  float3 currentTransmission = tFactor * (1.0F - metallic) * colour;
   currentTransmission *= (1.0F - fresnel);
 
 #if GLTF_USE_VOLUME
@@ -2270,12 +2274,25 @@ bool dlssIsThinWalled(GltfShadeMaterial* mat)
 // FORCE_NON_OPAQUE makes the (opaque-flagged) glass report candidates.
 //
 // `glassCount` grows by the panes skipped in front of the hit, and `through` takes each one's colour
-// (its base colour factor: thin glass tints what it lets through by its base colour, once a
-// crossing; a texture on it is not looked up). Candidates arrive in no set order, so the first
+// (dlssPaneTint: its base colour factor, deepened at the slant it is crossed at; a texture on it is
+// not looked up). Candidates arrive in no set order, so the first
 // DLSS_PANE_SLOTS panes nearer than the hit committed so far are kept with their distance, and count
 // once the traversal has found the nearest hit, if they are in front of it. Panes past the slots count
 // as they come, which errs toward too many (see dlssTraceClearGlass).
 static const int DLSS_PANE_SLOTS = 4;
+
+// What a skipped pane crossed along `dir` lets through: its base colour factor, deepened at the slant
+// of its face (bsdfThinTintAtSlant, as the shadow rays have it)
+float3 dlssPaneTint(GltfShadeMaterial* mat, GltfRenderPrimitive prim, uint triangleID, float4x3 worldToObject, float3 dir)
+{
+#if GLTF_USE_IOR
+  const float ior = mat.ior;
+#else
+  const float ior = 1.5F;
+#endif
+  const float3 normal = triangleWorldNormal(prim, getTriangleIndices(prim, triangleID), worldToObject);
+  return bsdfThinTintAtSlant(mat.pbrBaseColorFactor.xyz, ior, abs(dot(dir, normal)));
+}
 
 HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float3 through)
 {
@@ -2314,16 +2331,18 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float
     {
       if(candidateT < committedT)  // a skipped pane in front of the hit so far
       {
+        const float3 tint = dlssPaneTint(mat, renderPrimitives[rayQuery.CandidateInstanceID()], rayQuery.CandidatePrimitiveIndex(),
+                                         rayQuery.CandidateWorldToObject4x3(), ray.Direction);
         if(panes < DLSS_PANE_SLOTS)
         {
           paneT[panes]    = candidateT;
-          paneTint[panes] = mat.pbrBaseColorFactor.xyz;
+          paneTint[panes] = tint;
           panes++;
         }
         else
         {
           glassCount++;
-          through *= mat.pbrBaseColorFactor.xyz;
+          through *= tint;
         }
       }
     }
@@ -2379,7 +2398,16 @@ struct DlssGlassPsr
   float  pathLength     = 0.0f;          // Distance from the first glass hit to it, along the chain
   float3 posDelta       = float3(0.0f);  // Its instance motion: previous-frame position minus current position
   float3 through        = float3(1.0f);  // What the glass, the panes and the water let through to it
+  float  seenLength     = 0.0f;          // How far along the camera ray the eye sees it (dlssSeenScale)
 };
+
+// What a clear glass crossed along `dir` lets through: its base colour (bsdfLobeFresnel's transmission
+// tint), a pane's deepened at the slant, as the path's ray takes it
+float3 dlssCrossingTint(PbrMaterial mat, float3 dir)
+{
+  const float3 tint = mat.baseColor * mat.transmissionTint;
+  return bsdfThinPaneTint(mat) ? bsdfThinTintAtSlant(tint, mat.ior2 / mat.ior1, abs(dot(dir, mat.N))) : tint;
+}
 
 DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3 dir, bool isInside)
 {
@@ -2388,17 +2416,18 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
   GltfRenderPrimitive* renderPrimitive = pushConst.gltfScene->renderPrimitives;
   GltfTextureInfo*     texInfos        = pushConst.gltfScene->textureInfos;
 
-  DlssGlassPsr result = {false, float3(0.5f), float3(0.0f), float3(0.0f), 0.0f, 0.0f, float3(0.0f), float3(1.0f)};
+  DlssGlassPsr result = {false, float3(0.5f), float3(0.0f), float3(0.0f), 0.0f, 0.0f, float3(0.0f), float3(1.0f), 0.0f};
 
-  // Each glass crossed tints what it lets through by its base colour (bsdfLobeFresnel's transmission
-  // tint), a volume absorbs on the way through it: the primary hit's glass first
-  result.through = glassMat.baseColor * glassMat.transmissionTint;
+  // Each glass crossed tints what it lets through (dlssCrossingTint), a volume absorbs on the way
+  // through it: the primary hit's glass first
+  result.through = dlssCrossingTint(glassMat, dir);
 
   PbrMaterial mat          = glassMat;
   float3      origin       = glassHit.pos;
   float3      originNormal = glassHit.geonrm;          // The geometric normal at `origin`...
   float       originOffset = glassHit.offsetDistance;  // ...and the step off it (safeOffsetRay)
   int         glassCount   = 1;                        // Glass surfaces crossed, the primary hit included
+  float       seenScale    = 1.0f;                     // n0 / n of the segment (dlssSeenScale)
   for(int layer = 0; layer < DLSS_MAX_GLASS_LAYERS; layer++)
   {
     // Smooth thin-walled transmission does not bend the ray (see bsdfSample); a volume refracts,
@@ -2409,8 +2438,9 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
       const float3 refrDir = refract(dir, N, mat.ior1 / mat.ior2);
       if(dot(refrDir, refrDir) > 0.0f)
       {
-        dir      = refrDir;
-        isInside = !isInside;
+        dir       = refrDir;
+        isInside  = !isInside;
+        seenScale = dlssSeenScale(seenScale, mat.ior1, mat.ior2);
       }
       else
         dir = reflect(dir, N);
@@ -2425,6 +2455,7 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     if(payload.hitT == INFINITE || glassCount >= pushConst.maxDepth)
       return result;
     result.pathLength += payload.hitT;
+    result.seenLength += payload.hitT * seenScale;
 #if GLTF_USE_VOLUME
     if(isInside && mat.thickness > 0.0f)  // this segment ran through the glass's own volume
       result.through *= exp(-volumeExtinction(makeVolumeMedium(mat)) * payload.hitT);
@@ -2447,7 +2478,7 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     if(dlssIsClearGlass(mat))
     {
       glassCount++;
-      result.through *= mat.baseColor * mat.transmissionTint;
+      result.through *= dlssCrossingTint(mat, dir);
       continue;  // Refracting glass, or glass only a texture showed to be clear
     }
 
@@ -2481,6 +2512,9 @@ DlssGlassPsr dlssTraceWater(PbrMaterial waterMat, HitState waterHit, float3 dir,
   if(floorT < 0.0f || (psr.valid && psr.pathLength <= floorT))
   {
     psr.through *= dlssWaterThrough(GROUND_WATER_ABSORPTION, psr.pathLength);  // a mesh under the water
+    // seen moving along the vertical by less, as its depth is seen (dlssSeenDepthRatio)
+    if(psr.valid)
+      psr.posDelta.y *= dlssSeenDepthRatio(abs(dir.y), abs(refracted.y), waterMat.ior2 / waterMat.ior1);
     return psr;
   }
   // The ground's colour, metal and roughness (groundMaterial's dry ground: the floor under the water)
@@ -2495,6 +2529,7 @@ DlssGlassPsr dlssTraceWater(PbrMaterial waterMat, HitState waterHit, float3 dir,
   psr.normal         = float3(0.0f, 1.0f, 0.0f);
   psr.roughness      = frameInfo->infinitePlaneRoughness * frameInfo->infinitePlaneRoughness;
   psr.pathLength     = floorT;
+  psr.seenLength     = floorT * dlssSeenScale(1.0f, waterMat.ior1, waterMat.ior2);
   psr.posDelta       = float3(0.0f);
   psr.through        = waterMat.baseColor * waterMat.transmissionTint * dlssWaterThrough(GROUND_WATER_ABSORPTION, floorT);
   return psr;

@@ -767,6 +767,64 @@ TEST(BsdfLobes, APaneReflectsTwiceAndKeepsItsEnergy)
   }
 }
 
+// A pane's colour is a crossing's face-on; at a slant its path through the glass lengthens as 1 / cos
+// of the refracted angle, so Beer-Lambert raises the colour to that power (bsdfThinTintAtSlant). 7TEST's
+// car glass, 0.77 / 0.84 / 0.83, read 0.73 / 0.81 / 0.80 at 60 degrees and 0.70 toward grazing.
+TEST(BsdfLobes, ATintedPaneDeepensAtASlant)
+{
+  const vec3  glass(0.77f, 0.84f, 0.83f);
+  const float cos60 = 0.5f;
+  EXPECT_NEAR(bsdfThinTintAtSlant(glass, 1.5f, 1.0f).x, 0.77f, 1e-6f);
+  const float cosT60 = std::sqrt(1.0f - 0.75f / 2.25f);
+  EXPECT_NEAR(bsdfThinTintAtSlant(glass, 1.5f, cos60).x, std::pow(0.77f, 1.0f / cosT60), 1e-5f);
+  EXPECT_NEAR(bsdfThinTintAtSlant(glass, 1.5f, cos60).x, 0.726f, 1e-3f);
+  EXPECT_NEAR(bsdfThinTintAtSlant(glass, 1.5f, 0.0f).x, 0.704f, 1e-3f);
+  // either side of the pane alike; a colourless pane stays so; at an index of 1 the path stops growing
+  // at the floor, short of black
+  EXPECT_NEAR(bsdfThinTintAtSlant(glass, 1.0f / 1.5f, cos60).y, bsdfThinTintAtSlant(glass, 1.5f, cos60).y, 1e-6f);
+  for(float c : {1.0f, 0.5f, 0.0f})
+    EXPECT_EQ(bsdfThinTintAtSlant(vec3(1.0f), 1.5f, c).z, 1.0f);
+  EXPECT_NEAR(bsdfThinTintAtSlant(glass, 1.0f, 0.0f).x, std::pow(0.77f, 1.0f / THIN_TINT_COS_FLOOR), 1e-6f);
+
+  // The pane's transmission, sampled and evaluated alike: every sample carries the colour, so the
+  // channels' ratio is the slant's (to the float sums' rounding, sampled; exactly, evaluated). A solid glass's colour is a crossing's whatever the angle
+  // (its medium absorbs on the way), and so is a thin scatter surface's (its colour stands for a medium).
+  for(float roughness : {0.05f, 0.3f})
+  {
+    PbrMaterial pane  = defaultPbrMaterial(glass, 0.0f, roughness, vec3(0, 0, 1), vec3(0, 0, 1));
+    pane.transmission = 1.0f;
+    pane.plate        = true;
+    PbrMaterial solid = pane;
+    solid.plate       = false;
+    solid.thickness   = 0.01f;
+    PbrMaterial thinScatter      = pane;
+    thinScatter.transmissionTint = vec3(1.0f, 0.5f, 0.5f);
+    for(float NoV : {1.0f, cos60, 0.2f})
+    {
+      const float  cosT  = std::sqrt(1.0f - (1.0f - NoV * NoV) / 2.25f);
+      const float  slant = std::pow(0.84f / 0.77f, 1.0f / cosT);
+      const vec3   t     = carriedAt(pane, NoV, 20000).transmitted;
+      ASSERT_GT(t.x, 0.0f) << roughness << ", " << NoV;
+      EXPECT_NEAR(t.y / t.x, slant, 1e-3f) << roughness << ", " << NoV;
+      const vec3 s = carriedAt(solid, NoV, 20000).transmitted;
+      ASSERT_GT(s.x, 0.0f) << roughness << ", " << NoV;
+      EXPECT_NEAR(s.y / s.x, 0.84f / 0.77f, 1e-3f) << roughness << ", " << NoV;
+      const vec3 ts = carriedAt(thinScatter, NoV, 20000).transmitted;
+      ASSERT_GT(ts.x, 0.0f) << roughness << ", " << NoV;
+      EXPECT_NEAR(ts.y / ts.x, 0.84f * 0.5f / 0.77f, 1e-3f) << roughness << ", " << NoV;
+
+      // the light sample's side: straight through the pane
+      BsdfEvaluateData e;
+      e.k1 = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+      e.k2 = -e.k1;
+      e.xi = vec3(0.5f);
+      bsdfEvaluate(e, pane);
+      ASSERT_GT(e.bsdf_glossy.x, 0.0f) << roughness << ", " << NoV;
+      EXPECT_NEAR(e.bsdf_glossy.y / e.bsdf_glossy.x, slant, 1e-4f) << roughness << ", " << NoV;
+    }
+  }
+}
+
 // What a pane's lobe reflects is its GGX lobe weighed by each microfacet's pane Fresnel; the albedo
 // fit (ggxPlateAlbedo) is how often the lobe is picked, and what a base under it is charged. It comes
 // within 12% of the integral, low at middling views on rough panes; the one-face fit
@@ -1935,4 +1993,52 @@ TEST(DlssSpecularGuide, TheSeeThroughGuidesFollowWhatMakesThePixel)
   EXPECT_LT(dlssReflectionShare(water, metre), 0.05f);
   EXPECT_GT(dlssReflectionShare(schlick(1.33f, std::cos(85.0f * 3.14159265f / 180.0f)), metre), DLSS_REFLECTION_KEEPS_SURFACE);
   EXPECT_LT(dlssReflectionShare(schlick(1.33f, std::cos(60.0f * 3.14159265f / 180.0f)), metre), DLSS_REFLECTION_KEEPS_SURFACE);
+}
+
+// Under water the guide point sits where the eye sees the surface behind: through flat surfaces, on the
+// line through it along their normal, which is the camera ray's point at s n0 / n per segment
+// (dlssSeenScale). Built here from Snell's law alone: the ray refracted at the surface, the point that
+// far down it, and where the camera ray's line meets the vertical through that point.
+TEST(DlssSpecularGuide, UnderWaterTheGuideSitsWhereTheEyeSeesIt)
+{
+  const vec3  up(0.0f, 1.0f, 0.0f);
+  const float water = 1.33f, glass = 1.5f;
+  // head-on, the floor 50 cm down looks 38 cm deep
+  EXPECT_NEAR(0.5f * dlssSeenScale(1.0f, 1.0f, water), 0.376f, 1e-3f);
+  EXPECT_NEAR(dlssSeenDepthRatio(1.0f, 1.0f, water), 1.0f / water, 1e-6f);
+
+  for(float degrees : {15.0f, 30.0f, 45.0f, 60.0f, 75.0f})
+  {
+    const float a = degrees * 3.14159265f / 180.0f;
+    const vec3  d(std::sin(a), -std::cos(a), 0.0f);  // the camera ray, meeting the water at the origin
+    // the floor 50 cm down
+    const vec3  t     = refract(d, up, 1.0f / water);
+    const float s     = 0.5f / -t.y;
+    const vec3  floor = s * t;
+    const float seen  = floor.x / d.x;  // the camera ray's point over it
+    EXPECT_NEAR(s * dlssSeenScale(1.0f, 1.0f, water), seen, 1e-5f * seen) << degrees;
+    // that point is the floor with its depth times the ratio, at this view
+    EXPECT_NEAR(seen * -d.y / 0.5f, dlssSeenDepthRatio(-d.y, -t.y, water), 1e-5f) << degrees;
+
+    // through a glass block on the floor of the water, 30 cm down and 5 cm thick: each segment at
+    // its own ratio, the ratios composed refraction by refraction
+    const vec3  t2     = refract(t, up, water / glass);
+    const float s1     = 0.3f / -t.y, s2 = 0.05f / -t2.y;
+    const vec3  bottom = s1 * t + s2 * t2;
+    const float scale1 = dlssSeenScale(1.0f, 1.0f, water), scale2 = dlssSeenScale(scale1, water, glass);
+    EXPECT_NEAR(s1 * scale1 + s2 * scale2, bottom.x / d.x, 1e-5f * bottom.x / d.x) << degrees;
+  }
+
+  // from under the water, looking up through its surface: what is above is seen farther
+  for(float degrees : {15.0f, 30.0f, 45.0f})
+  {
+    const float a = degrees * 3.14159265f / 180.0f;
+    const vec3  d(std::sin(a), std::cos(a), 0.0f);
+    const vec3  t = refract(d, -up, water / 1.0f);
+    ASSERT_GT(t.y, 0.0f) << degrees;
+    const float s    = 0.5f / t.y;
+    const float seen = s * t.x / d.x;
+    EXPECT_NEAR(s * dlssSeenScale(1.0f, water, 1.0f), seen, 1e-5f * seen) << degrees;
+    EXPECT_GT(seen, s);
+  }
 }

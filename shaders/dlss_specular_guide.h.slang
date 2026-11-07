@@ -63,4 +63,25 @@ float3 dlssWaterThrough(float3 absorption, float distance)
   return exp(-absorption * max(distance, 0.0F));
 }
 
+// Under water and through solid glass the eye sees a surface nearer than it is. Through flat surfaces,
+// a point s down a ray refracted from index n0 into n is seen s n0 / n along the camera ray: the image
+// that holds as the eye moves across, on the line through the point along the surfaces' normal (its
+// sideways offset is the point's; Falcor's getRefractionXform squeezes depth by the same ratio).
+// DLSS-RR's depth and motion for the surface behind (gltf_pathtrace.slang's psrPos) are placed there,
+// so the floor and a figure's legs under the water move with the parallax the eye sees. `scale` is
+// n0 / n so far: each refraction from `iorFrom` into `iorTo` takes it on. Thin glass doesn't refract,
+// so it doesn't move it.
+float dlssSeenScale(float scale, float iorFrom, float iorTo)
+{
+  return scale * iorFrom / max(iorTo, 1e-6F);
+}
+
+// Under one flat surface that image is the point with its depth below the surface times this, the
+// camera ray's cosine to the normal above it `cosI`, below it `cosT`, at index ratio `eta`: how far
+// the eye sees something in the water move when it moves along the normal. 1 / eta head-on.
+float dlssSeenDepthRatio(float cosI, float cosT, float eta)
+{
+  return cosI / max(eta * cosT, 1e-6F);
+}
+
 #endif  // FV_DLSS_SPECULAR_GUIDE_H

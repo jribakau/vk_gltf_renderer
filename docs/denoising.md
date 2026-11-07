@@ -241,15 +241,24 @@ window keeps its reflection's colour instead of reading as a texture. Its specul
 the glass's own, less the glass's Fresnel share, not blended with it: a blend would leave a matte surface
 behind glass a specular albedo of about F squared against the glass's reflection of F. Under the water
 (Ground = Water) the floor is the ground's colour, metal and roughness. The DLSS depth and motion vectors use a virtual point along the
-camera ray at the full chain length, moved by that surface's instance motion, so they follow
-the content rather than the glass. The main depth buffer (`outDepth`, used for picking and
-overlays) still holds the glass.
+camera ray where the eye sees that surface, moved by its instance motion, so they follow
+the content rather than the glass. Through thin glass that is the chain's length. Under the water
+and through solid glass the surface is seen nearer: through flat surfaces, a point s down a ray
+refracted from index n0 into n is seen s n0 / n along the camera ray, the image that holds as the
+eye moves across, on the line through the point along the normal (`dlssSeenScale`,
+`DlssGlassPsr::seenLength`; the floor 50 cm under the water looks 38 cm deep head-on, nearer at a
+slant). Something moving in the water is seen moving along the vertical by the same squeeze
+(`dlssSeenDepthRatio`). From under the water, what is above is seen farther. Waves form another
+image, which this leaves out, as Falcor does; an eye's iris, under 1 mm behind its cornea, keeps its
+straight depth. The main depth buffer (`outDepth`, used for picking and overlays) still holds the
+glass.
 
 The surface behind comes as it comes through (`DlssGlassPsr::through`): its albedo and specular albedo
 are multiplied by every glass on the way, each crossing by its base colour (as the BSDF tints
-transmission), by a volume's absorption over the segment inside it, and by the water's
-(`GROUND_WATER_ABSORPTION`) down to a mesh or the floor under it. A thin pane skipped inside the
-traversal tints by its base colour factor, a texture on it not looked up, and counts only if it lies
+transmission, a pane's deepened at the slant it is crossed at, `dlssCrossingTint`), by a
+volume's absorption over the segment inside it, and by the water's (`GROUND_WATER_ABSORPTION`) down
+to a mesh or the floor under it. A thin pane skipped inside the traversal tints by its base colour
+factor at the slant of its face (`dlssPaneTint`), a texture on it not looked up, and counts only if it lies
 in front of the nearest hit: the first `DLSS_PANE_SLOTS` panes are kept with their distance until the
 traversal ends. So a tinted bottle at a bar, or a car's tinted window, tells RR the darker colour the
 pixel holds.
