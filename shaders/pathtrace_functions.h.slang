@@ -701,65 +701,9 @@ struct LightPickSet
 // `cull`: drop the lights below the plane of `normal` (not for a vertex lit from both sides).
 LightPickSet lightPickSet(float3 pos, float3 normal, bool cull)
 {
-  LightPickSet s;
-  const int numPunctual = punctualLightCount();
-  const int sunIndex    = skySunPunctualIndex();
-  s.envEstimate         = environmentPickEstimate();
-  s.uniform             = numPunctual > LIGHT_PICK_MAX_LIGHTS;
-  s.total               = s.envEstimate;
-  s.lights              = 0;
-  float sunEstimate     = 0.0F;
-  s.groups              = !s.uniform && emissiveTreeOn();
-  int emitters          = 0;
-  if(s.uniform)
-    s.lights = numPunctual;
-  else
-  {
-    for(int i = 0; i < numPunctual; i++)
-    {
-      const float e = punctualPickEstimate(getPunctualLight(i), pos, normal, cull);
-      if(e > 0.0F)
-      {
-        s.total += e;
-        s.lights++;
-      }
-      if(i == sunIndex)
-        sunEstimate = e;
-    }
-  }
-  if(s.groups)
-    for(int g = 0; g < pushConst.gltfScene.numEmissiveGroups; g++)
-    {
-      const float e = emissiveGroupPickEstimate(g, pos, normal, cull);
-      if(e > 0.0F)
-      {
-        s.total += e;
-        emitters++;
-      }
-    }
-  const bool hasEnv = s.envEstimate > 0.0F;
-  s.candidates      = s.lights + emitters + (hasEnv ? 1 : 0);
-
-  // Each kind present gets as much as the emissive triangles: a half beside one, a third beside both
-  const int kinds = (hasEnv ? 1 : 0) + (s.lights > 0 ? 1 : 0);
-  s.pick.emissive = (!s.groups && pushConst.gltfScene.numEmissiveTriangles > 0) ? 1.0F / float(1 + kinds) : 0.0F;
-  s.restShare     = 1.0F - s.pick.emissive;
-  s.pick.pos      = pos;
-  s.pick.normal   = cull ? normal : float3(0.0F);
-  s.pick.bsdfOnly = false;
-
-  if(s.uniform)
-  {
-    const float envShare = hasEnv ? 0.5F : 0.0F;
-    s.pick.env           = s.restShare * envShare;
-    s.pick.sun           = (sunIndex >= 0) ? s.restShare * (1.0F - envShare) / float(numPunctual) : 0.0F;
-  }
-  else
-  {
-    s.pick.env = s.restShare * lightPickProbability(s.envEstimate, s.total, s.candidates);
-    s.pick.sun = s.restShare * lightPickProbability(sunEstimate, s.total, s.candidates);
-  }
-  return s;
+  uint      noSeed = 0u;  // no number is drawn
+  LightDraw none;
+  return lightPickScore(pos, normal, cull, /*draw=*/false, noSeed, none);
 }
 
 // A light's share of the rest at this vertex, `estimate` its pick estimate there.
@@ -1135,15 +1079,20 @@ LightDraw lightDrawOf(LightPickSet set, float3 pos, float3 normal, bool bothSide
   return lightDraw(LIGHT_DRAW_NONE, -1, 0.0F, 0.0F);
 }
 
-// lightPickSet and one draw of it in a single pass over the lights, for a draw on its own of
-// random numbers from `seed` (the haze's guide, and its scatter point's one candidate): while it
-// scores, two reservoirs keep a candidate, one with the chance of its estimate, one evenly, and the
+// lightPickSet and, with `draw`, one draw of it in a single pass over the lights, for a draw on its
+// own of random numbers from `seed` (sampleLights' on DLSS frames and where a still's tree is on, the
+// haze's guide, and its scatter point's one candidate): while it scores, two reservoirs keep a
+// candidate, one with the chance of its estimate, one evenly, and the
 // pick's defensive mixture takes one of the two (LIGHT_PICK_DEFENSIVE evenly), so each light is
 // drawn with exactly its lightPickProbability, as lightDrawOf draws it. Without lightDrawOf's walk:
 // a second pass over the lights, which a warp pays to the end for the thread that walks furthest (on
 // 7TEST's 64 cut nodes ~10 ms of the haze's 27 at 4K). Other numbers than lightDrawOf's, so other
 // noise of the same kind. Over LIGHT_PICK_MAX_LIGHTS lights (the even pick) it walks as lightDrawOf.
-LightPickSet lightPickSetDrawn(float3 pos, float3 normal, bool cull, inout uint seed, out LightDraw drawn)
+// Without `draw` it is lightPickSet: the same scoring, no number drawn, `drawn` none. One body for
+// both, so a caller that does either (sampleLights, the haze's candidates) has the pass over the
+// lights inlined once: the driver inlines every call, and the path tracer's build is most of its
+// time in such copies (2026-11-07).
+LightPickSet lightPickScore(float3 pos, float3 normal, bool cull, bool draw, inout uint seed, out LightDraw drawn)
 {
   LightPickSet s;
   const int numPunctual = punctualLightCount();
@@ -1158,7 +1107,7 @@ LightPickSet lightPickSetDrawn(float3 pos, float3 normal, bool cull, inout uint 
   // the draw's reservoirs (PickReservoirs), over the candidates as they are scored: ids are the
   // punctual lights' indices, the cut's nodes' past them, the environment's -2
   PickReservoirs drawing = pickReservoirs();
-  if(s.envEstimate > 0.0F)
+  if(draw && s.envEstimate > 0.0F)
     drawing = pickReservoirsTake(drawing, -2, s.envEstimate, 0.0F);
   if(s.uniform)
     s.lights = numPunctual;
@@ -1171,7 +1120,8 @@ LightPickSet lightPickSetDrawn(float3 pos, float3 normal, bool cull, inout uint 
       {
         s.total += e;
         s.lights++;
-        drawing = pickReservoirsTake(drawing, i, e, min(rand(seed), 0.99999994F));
+        if(draw)
+          drawing = pickReservoirsTake(drawing, i, e, min(rand(seed), 0.99999994F));
       }
       if(i == sunIndex)
         sunEstimate = e;
@@ -1185,7 +1135,8 @@ LightPickSet lightPickSetDrawn(float3 pos, float3 normal, bool cull, inout uint 
       {
         s.total += e;
         emitters++;
-        drawing = pickReservoirsTake(drawing, numPunctual + g, e, min(rand(seed), 0.99999994F));
+        if(draw)
+          drawing = pickReservoirsTake(drawing, numPunctual + g, e, min(rand(seed), 0.99999994F));
       }
     }
   const bool hasEnv = s.envEstimate > 0.0F;
@@ -1212,8 +1163,8 @@ LightPickSet lightPickSetDrawn(float3 pos, float3 normal, bool cull, inout uint 
   }
 
   drawn = lightDraw(LIGHT_DRAW_NONE, -1, 0.0F, 0.0F);
-  if(s.pick.emissive <= 0.0F && s.candidates == 0)
-    return s;  // nothing can light this point
+  if(!draw || (s.pick.emissive <= 0.0F && s.candidates == 0))
+    return s;  // no draw asked for, or nothing can light this point
   const float u = min(rand(seed), 0.99999994F);
   if(s.uniform)
   {
@@ -1401,12 +1352,16 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
 // point as the whole sample for the same numbers: the haze's guide (hazeCameraSegment).
 //
 // A DLSS frame's draw of numbers from `seed` picks its light as the pick is scored
-// (lightPickSetDrawn), with each light's own probability, so without lightDrawOf's second pass over
+// (lightPickScore drawing), with each light's own probability, so without lightDrawOf's second pass over
 // the lights, and so does a still's where the light tree is on (ePtStillPickAsScored), its `xi` then
 // placing the sample on the light but not picking it. The walk inverts the pick's sum, so a Sobol
 // `xi.x` stays spread over the lights; on 7TEST that spread was worth less than the pass (2026-11-07:
 // a still sample 21.7 -> 16.5 ms, its noise 2-11% higher, 13-16% less at equal time). With no tree,
 // or past LIGHT_PICK_MAX_LIGHTS punctual lights, a still keeps the walk.
+//
+// Either way the light is placed by one call of sampleLightDraw: the driver inlines it whole (the
+// emitters, the environment's tables, the tree's descent, the punctual lights) at every call, and a
+// call in each branch made the path tracer's build some 6 s longer (2026-11-07).
 void sampleLights(in float3       pos,
                   float3          normal,
                   in float3       worldRayDirection,
@@ -1425,30 +1380,23 @@ void sampleLights(in float3       pos,
   directLight      = noDirectLight();
 
   const bool bothSides = isVolumeSample || lightsFromBothSides;
-  const bool dlss = hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss);
-  if(dlss ? !given
-          : (hasFlag(pushConst.flags, PathtracerFlags::ePtStillPickAsScored) && emissiveTreeOn()
-             && punctualLightCount() <= LIGHT_PICK_MAX_LIGHTS))
-  {
-    LightDraw          drawn;
-    const LightPickSet scored = lightPickSetDrawn(pos, normal, /*cull=*/!bothSides, seed, drawn);
-    directLight.pick          = scored.pick;
-    if(scored.pick.emissive <= 0.0f && scored.candidates == 0)
-      return;  // nothing can light this point
-    sampleLightDraw(scored, drawn, pos, normal, seed, directLight, isVolumeSample, bothSides, compensatedEnv, xi, pointOnly);
-    return;
-  }
-
-  const LightPickSet set = lightPickSet(pos, normal, /*cull=*/!bothSides);
+  const bool dlss      = hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss);
+  const bool asScored  = dlss ? !given
+                              : (hasFlag(pushConst.flags, PathtracerFlags::ePtStillPickAsScored) && emissiveTreeOn()
+                                 && punctualLightCount() <= LIGHT_PICK_MAX_LIGHTS);
+  LightDraw          drawn;
+  const LightPickSet set = lightPickScore(pos, normal, /*cull=*/!bothSides, /*draw=*/asScored, seed, drawn);
   directLight.pick       = set.pick;
   if(set.pick.emissive <= 0.0f && set.candidates == 0)
     return;  // nothing can light this point
-
-  // rand() can return exactly 1.0; the walk below wants [0, 1)
-  float u = min(given ? xi.x : rand(seed), 0.99999994f);
-  LightDrawWalk walk = lightDrawWalk(set);
-  sampleLightDraw(set, lightDrawOf(set, pos, normal, bothSides, u, walk), pos, normal, seed, directLight, isVolumeSample, bothSides,
-                  compensatedEnv, xi, pointOnly);
+  if(!asScored)
+  {
+    // rand() can return exactly 1.0; the walk below wants [0, 1)
+    float u = min(given ? xi.x : rand(seed), 0.99999994f);
+    LightDrawWalk walk = lightDrawWalk(set);
+    drawn              = lightDrawOf(set, pos, normal, bothSides, u, walk);
+  }
+  sampleLightDraw(set, drawn, pos, normal, seed, directLight, isVolumeSample, bothSides, compensatedEnv, xi, pointOnly);
 }
 
 // The pdf with which sampleLights(), at the vertex `pick` was made at, draws a direction in the
@@ -2076,31 +2024,11 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
 
   // The guide: a point on a light drawn from somewhere on the segment. A light at infinity (the
   // environment, a directional light, the sky's sun) has none, and its points go by the transmittance.
-  // Drawn in one pass over the lights (lightPickSetDrawn), and only its point: what the light emits
-  // there (a textured emitter's material, emission and opacity) is not needed to aim at it.
-  const float  guideU     = rand(seed);
-  const float3 guideFrom  = eye + dir * (even ? hazeSampleTransmittance(guideU, sigma, seg.x, seg.y)
-                                              : hazeColumnSampleTransmittance(shape, column, eye, dir, sigma, seg.x, seg.y, guideU));
-  DirectLight  guideLight = noDirectLight();
-  {
-    LightDraw          drawn;
-    const LightPickSet guideSet = lightPickSetDrawn(guideFrom, dir, /*cull=*/false, seed, drawn);
-    guideLight.pick             = guideSet.pick;
-    sampleLightDraw(guideSet, drawn, guideFrom, dir, seed, guideLight, /*isVolumeSample=*/true, /*bothSides=*/true,
-                    /*compensatedEnv=*/false, float4(-1.0F), /*pointOnly=*/true);
-  }
-  const bool      guided = guideLight.pdf != 0.0F && guideLight.distance < 0.5F * INFINITE;
-  const HazeGuide guide  = hazeGuide(eye, dir, seg.x, seg.y, guideFrom + guideLight.direction * guideLight.distance, guided);
-
-  const float choice = rand(seed);
-  const float placeU = rand(seed);
-  float       t;
-  if(even)
-    t = hazeSampleDistance(placeU, choice, sigma, seg.x, seg.y, guide);
-  else
-    t = (guide.on && choice < HAZE_GUIDE_SHARE) ? hazeSampleEquiangular(placeU, seg.x, seg.y, guide)
-                                                : hazeColumnSampleTransmittance(shape, column, eye, dir, sigma, seg.x, seg.y, placeU);
-  const float3 pos = eye + dir * t;
+  // Drawn in one pass over the lights (lightPickScore drawing), and only its point: what the light
+  // emits there (a textured emitter's material, emission and opacity) is not needed to aim at it.
+  const float  guideU    = rand(seed);
+  const float3 guideFrom = eye + dir * (even ? hazeSampleTransmittance(guideU, sigma, seg.x, seg.y)
+                                             : hazeColumnSampleTransmittance(shape, column, eye, dir, sigma, seg.x, seg.y, guideU));
 
   // The point's light: a still's is the one of several candidates that gives the eye the most
   // (HazeReservoir), so the phase function's 180 to 1 at a glow of 0.7 counts in the pick; a moving
@@ -2114,26 +2042,60 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
   float         phase     = 0.0F;
   float         air       = 0.0F;
   HazeReservoir reservoir = hazeReservoir();
-  // The lights are scored once at the point (lightPickSet, as sampleLights does for a volume sample)
+  // The lights are scored once at the point (lightPickScore, as sampleLights does for a volume sample)
   // and every candidate is drawn from that scoring, the c-th from the c-th of `count` equal slices of
   // it: stratified, so they spread over the lights, and the light weights stay what one draw gives (the
   // slices together are the pick: unbiased with the same weights). Their draws rise with c, so one walk
   // over the lights finds them all (LightDrawWalk). One candidate (a moving frame's) is drawn as the
-  // scoring goes instead (lightPickSetDrawn), with no walk.
-  LightDraw          single = lightDraw(LIGHT_DRAW_NONE, -1, 0.0F, 0.0F);
-  const LightPickSet set = count == 1 ? lightPickSetDrawn(pos, dir, /*cull=*/false, seed, single) : lightPickSet(pos, dir, /*cull=*/false);
-  if(set.pick.emissive <= 0.0F && set.candidates == 0)
-    return result;  // nothing can light this point
-  LightDrawWalk walk = lightDrawWalk(set);
-  for(int c = 0; c < count; c++)
+  // scoring goes instead, with no walk.
+  //
+  // The guide is the loop's first pass (c = -1), its light placed by the same scoring and draw as the
+  // candidates', with the same numbers in the same order as when it had its own: the driver inlines
+  // every call, and the guide's own pair made the path tracer's build some seconds longer (2026-11-07).
+  DirectLight   guideLight = noDirectLight();
+  HazeGuide     guide      = {};
+  float         t          = 0.0F;
+  float3        pos        = eye;
+  LightPickSet  set    = {};  // all three set by the first pass
+  LightDraw     single = lightDraw(LIGHT_DRAW_NONE, -1, 0.0F, 0.0F);
+  LightDrawWalk walk   = {};
+  for(int c = -1; c < count; c++)
   {
+    const bool guiding = c < 0;
+    if(c == 0)
+    {
+      // the scatter point: toward the guide's point, or by the transmittance
+      const bool guided = guideLight.pdf != 0.0F && guideLight.distance < 0.5F * INFINITE;
+      guide = hazeGuide(eye, dir, seg.x, seg.y, guideFrom + guideLight.direction * guideLight.distance, guided);
+      const float choice = rand(seed);
+      const float placeU = rand(seed);
+      if(even)
+        t = hazeSampleDistance(placeU, choice, sigma, seg.x, seg.y, guide);
+      else
+        t = (guide.on && choice < HAZE_GUIDE_SHARE) ? hazeSampleEquiangular(placeU, seg.x, seg.y, guide)
+                                                    : hazeColumnSampleTransmittance(shape, column, eye, dir, sigma, seg.x, seg.y, placeU);
+      pos = eye + dir * t;
+    }
+    const float3 at = guiding ? guideFrom : pos;
+    if(c <= 0)
+    {
+      set = lightPickScore(at, dir, /*cull=*/false, /*draw=*/guiding || count == 1, seed, single);
+      if(!guiding && set.pick.emissive <= 0.0F && set.candidates == 0)
+        return result;  // nothing can light this point
+      walk = lightDrawWalk(set);
+    }
     DirectLight candidate = noDirectLight();
     candidate.pick        = set.pick;
     LightDraw   drawn     = single;
-    if(count > 1)
+    if(!guiding && count > 1)
       drawn = lightDrawOf(set, pos, dir, /*bothSides=*/true, min((float(c) + rand(seed)) / float(count), 0.99999994F), walk);
-    sampleLightDraw(set, drawn, pos, dir, seed, candidate, /*isVolumeSample=*/true, /*bothSides=*/true, /*compensatedEnv=*/false,
-                    float4(-1.0F));
+    sampleLightDraw(set, drawn, at, dir, seed, candidate, /*isVolumeSample=*/true, /*bothSides=*/true, /*compensatedEnv=*/false,
+                    float4(-1.0F), /*pointOnly=*/guiding);
+    if(guiding)
+    {
+      guideLight = candidate;
+      continue;
+    }
     // a spot whose cone misses the point gives nothing (as volumeScatterNEE), and weighs 0
     if(candidate.pdf == 0.0F || all(candidate.radianceOverPdf == 0.0F))
       continue;

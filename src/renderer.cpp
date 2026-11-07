@@ -277,10 +277,16 @@ void GltfRenderer::onAttach(nvapp::Application* app)
     VkPhysicalDeviceProperties gpuProps{};
     vkGetPhysicalDeviceProperties(m_app->getPhysicalDevice(), &gpuProps);
     constexpr uint32_t kNvidiaVendorId = 0x10DE;
-    const int debugInfoLevel = (gpuProps.vendorID == kNvidiaVendorId) ? SLANG_DEBUG_INFO_LEVEL_STANDARD : SLANG_DEBUG_INFO_LEVEL_MINIMAL;
+    int debugInfoLevel = (gpuProps.vendorID == kNvidiaVendorId) ? SLANG_DEBUG_INFO_LEVEL_STANDARD : SLANG_DEBUG_INFO_LEVEL_MINIMAL;
+    int optimization   = SLANG_OPTIMIZATION_LEVEL_NONE;
+    // FV_SLANG_DEBUG / FV_SLANG_OPT (0-3): other levels, to time the driver's build against them
+    if(const char* v = std::getenv("FV_SLANG_DEBUG"); v != nullptr && v[0] >= '0' && v[0] <= '3')
+      debugInfoLevel = v[0] - '0';
+    if(const char* v = std::getenv("FV_SLANG_OPT"); v != nullptr && v[0] >= '0' && v[0] <= '3')
+      optimization = v[0] - '0';
+    LOGI("Slang run-time compile: debug info level %d, optimization level %d\n", debugInfoLevel, optimization);
     m_resources.slangCompiler.addOption({CompilerOptionName::DebugInformation, {CompilerOptionValueKind::Int, debugInfoLevel}});
-    m_resources.slangCompiler.addOption(
-        {CompilerOptionName::Optimization, {CompilerOptionValueKind::Int, SLANG_OPTIMIZATION_LEVEL_NONE}});
+    m_resources.slangCompiler.addOption({CompilerOptionName::Optimization, {CompilerOptionValueKind::Int, optimization}});
 
     // Enable specific capabilities for better performance and features.
     m_resources.slangCompiler.addCapability("spvShaderInvocationReorderEXT");  // SER via VK_EXT_ray_tracing_invocation_reorder

@@ -182,7 +182,7 @@ float lightPickProbability(float estimate, float total, int candidates)
   return (1.0F - LIGHT_PICK_DEFENSIVE) * (estimate / total) + LIGHT_PICK_DEFENSIVE / float(candidates);
 }
 
-// A light pick drawn in the pass that scores it (lightPickSetDrawn), for a draw on its own: two
+// A light pick drawn in the pass that scores it (lightPickScore), for a draw on its own: two
 // reservoirs over the candidates as they come, one keeping a candidate with the chance of its
 // estimate, one evenly, on one number each; then the defensive mixture takes the even one with the
 // chance LIGHT_PICK_DEFENSIVE. So a candidate is drawn with lightPickProbability(its estimate, the

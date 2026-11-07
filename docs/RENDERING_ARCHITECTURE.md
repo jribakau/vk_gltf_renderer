@@ -170,7 +170,7 @@ Device — sample a light at each surface hit (`sampleLights`):
 **One pass or two.** The pick is scored first (`lightPickSet`: every punctual light's estimate and
 every node of the light tree's cut, up to 64) and the light then found by walking those shares again
 to where the draw's number falls (`lightDrawOf`). A DLSS frame's draws pick as they score instead
-(`lightPickSetDrawn`, `PickReservoirs` in `light_pick.h.slang`: a reservoir by estimate and an even
+(`lightPickScore`, `PickReservoirs` in `light_pick.h.slang`: a reservoir by estimate and an even
 one, then the defensive mixture), each light with exactly its probability, and so do a still's
 where the light tree is on (`ptStillPickAsScored`). The walk is a second pass that a warp pays to
 the end for its furthest-walking thread: on 7TEST (117 emitters, a 64-node cut) at 4K the moving
@@ -247,7 +247,7 @@ pinhole's eye, as the aerial perspective).
   the haze's 29.5 ms, the shadow ray ~2 ms, and the largest part of the draws was `lightDrawOf`'s walk:
   a second pass over the 64 nodes that a warp pays to the end for its furthest-walking thread. A
   draw on its own (the guide, a moving frame's one candidate) is now drawn as the lights are scored
-  (`lightPickSetDrawn`, `PickReservoirs` in `light_pick.h.slang`: a reservoir by estimate and an even
+  (`lightPickScore`, `PickReservoirs` in `light_pick.h.slang`: a reservoir by estimate and an even
   one, then the defensive mixture), each light with exactly its `lightPickProbability`, so the noise
   is of the same kind; and the guide takes only its point (`pointOnly`: no material, emission or
   opacity read). Haze's cost there 29.5 → 19.9 ms a moving frame; on the night street one
@@ -493,3 +493,70 @@ the app's Display › Pixel readout, where a click reads out instead of selectin
 - **Checked:** `FvHost.ThePixelReadoutPublishesWhatIsAtThePixel` (the command's pixels, its refusals,
   the topic for a mesh, the ground and nothing, stopping), the layout test, the app's
   `test/pixelReadout.test.ts`. The shader's reading itself is not unit-tested: no GPU in the suite.
+
+## The path tracer's build time
+
+The driver's cold build of the path tracer is what the app's "Building shaders" badge waits on after a
+shader change (the start-up warm-ups, `PathTracer::startPipelineWarm`, a thread for each embedded build)
+and what a variant's first use waits on. A rebuild that leaves the shaders alone builds nothing: the
+driver's cache (<cacheDir>/driver) is keyed by the SPIR-V, not by the exe.
+
+- **What costs:** the ray tracing pipeline's raygen shader is one function. NVIDIA's compiler inlines
+  every call, `[noinline]` (SPIR-V's DontInline) included, which it ignores, so a function called from
+  two places is compiled twice, with everything it calls. The build's time goes with how many such
+  copies there are much more than with the features (2026-11-07, RTX 4080, the still's variant compiled
+  from source, driver cache cold, runs of the same source 15% apart): hair, clearcoat, sheen,
+  iridescence or transmission switched off each moved it within that, while the extra copies of the
+  light sample (the walk's, the shadow catcher's, the haze's) were half of it, 57.6 s against 26.8 s
+  without them.
+- **One call each:**
+  - `processVolumeSegment`, a walk's step with its light sample and shadow ray, called once for a hit
+    and a miss alike. It used to be called at the miss and again at the hit.
+  - `sampleLightDraw`, called once in `sampleLights` instead of in each of its two branches.
+  - `lightPickScore`, the scoring of the lights with or without a draw. It used to be two functions
+    (`lightPickSet` is now its wrapper).
+  - The haze's guide and candidates share one loop, the guide as its first pass.
+  - A lobe's mirrored evaluation under retroreflection is a `[loop]`'s second pass, which the driver
+    does keep (`bsdfEvaluateLobeBlended` and `bsdfEvaluate`, nvshaders). The second copy in line used to
+    double the lobes of every sum over them: next-event estimation's, and the sampler's mixture pdf.
+
+  Each draws the same numbers in the same order as before.
+- **Measured:**
+
+  | Shaders | Cold build of the still's pipeline |
+  |---|---|
+  | Before | 64.9 s, 66.8 s |
+  | The walk's step, `sampleLights`' draw and the scorings one call each | 44.2 s |
+  | Also the haze's guide and candidates in one loop | 42.0 s, 51.0 s |
+  | Also retroreflection's two passes as one loop | 15% less again: 54.7 s to 46.6 s, from one session to the next |
+
+  At start-up the two warm-ups, built side by side with the shaders before the retroreflection loop,
+  took 45.6 s (still) and 56.2 s (DLSS), against about 70 and 83 s before.
+- **Tried, and no use:**
+  - Deferred host operations (`USE_DEFERRED_RTX_COMPILE`): 57-62 s. The driver doesn't split this
+    pipeline over threads, or the raygen shader is all of it.
+  - A separate pipeline for the one-thread modes (the camera medium's probe, the pixel readout): no
+    change.
+  - Slang's debug info off: within the noise once the copies were gone.
+  - Slang `-O2`: Slang itself took 300 s.
+  
+  `FV_SLANG_DEBUG` and `FV_SLANG_OPT` (0-3) set the run-time compile's levels, for such measurements.
+- **The image:** the golden gate's four views differ only in float rounding: at most 7.6e-6, relMSE
+  at most 1.3e-15, in 1-10% of the pixels, where a changed draw shows as 1e-3 or more. The driver orders
+  and contracts the reshaped arithmetic a little differently.
+- **How to measure:**
+  1. Copy the exe into a scratch tree beside its own copy of `shaders/` and `nvshaders/` (it finds
+     them at `../../shaders` from `_bin/Release`), with its own driver cache (fv.Session's `cache_dir`).
+  2. Per variant, edit the sources and give an output a fresh constant, so the SPIR-V is new.
+  3. Call `vk_gltf_reload_shaders` (it compiles from source, bypassing the SPIR-V cache) and read the
+     next frame's `RTX pipeline creation: cache miss ... (N ms)`.
+  
+  Interleave the variants with baselines; an MCP session ends after about 10 minutes.
+- **Copies left, by their measured share:**
+  - The walk's light sample, about 8 s: its own call beside the surface's.
+  - The surface light sample's two BSDF evaluations (`bsdfEvaluateAll` and `bsdfEvaluate`), about 5 s.
+  - `sizedLightHits`, at the miss and at the hit.
+  
+  A new call of a heavy function (a light sample, a shadow ray with its any-hit, a material evaluation)
+  costs build time in this measure: put it on an existing call when it can share one.
+

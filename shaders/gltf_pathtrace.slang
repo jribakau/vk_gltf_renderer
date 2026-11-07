@@ -387,17 +387,28 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       pt.throughput *= exp(-GROUND_WATER_ABSORPTION * payload.hitT);
     }
 
+    // Charge the in-volume segment up to this hit, or the unbounded one of a miss, before anything
+    // else: the sky, the front-face escape test, material evaluation or emission. With scattering an
+    // event is sampled, and a scatter returns here, so a surface the walk never reaches is not shaded;
+    // a walk that leaves the mesh scatters or is lost before the sky is considered (with absorption
+    // only, its transmittance is 0). A walk that survives to an eyeball or a tooth has paid for the
+    // trip, and the front-face clear below then drops the medium. This is the segment's one charge:
+    // what reaches the surface -- its emission included -- comes through the medium's transmittance
+    // once, and nothing below may charge it again (a second call squared the transmittance of every
+    // absorbing medium and of a walk's refractive exit). One call for the hit and the miss alike: the
+    // driver inlines a walk's step, its light sample and shadow ray with it, at each call, and two
+    // calls made the path tracer's build some 8 s longer (2026-11-07).
+    {
+      PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed, freeFlight);
+      if(volumeStep != PathStepResult.eOutOfVolume)
+        return volumeStep;
+    }
+
     //-----------------------------------------------------------------------
     // Hitting the environment
     //-----------------------------------------------------------------------
     if(payload.hitT == INFINITE)
     {
-      // A walk that leaves the mesh pays for the unbounded segment before the sky is considered.
-      // With scattering an event is sampled; with absorption only the transmittance is 0.
-      PathStepResult escaped = processVolumeSegment(raytracer, INFINITE, ray, pt, seed, freeFlight);
-      if(escaped != PathStepResult.eOutOfVolume)
-        return escaped;
-
       // Check if we hit the backplate
       if(firstRay && tryPrimaryMissBackplate(ray, frameInfo, pt))
         return PathStepResult.eBreak;
@@ -483,19 +494,6 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       }
 
       return PathStepResult.eBreak;
-    }
-
-    // Charge the in-volume segment up to this hit before the front-face escape test, material
-    // evaluation or emission. A scatter returns here, so a surface the walk never reaches is not
-    // shaded. A walk that survives to an eyeball or a tooth has paid for the trip, and the
-    // front-face clear below then drops the medium. This is the segment's one charge: what reaches
-    // the surface -- its emission included -- comes through the medium's transmittance once, and
-    // nothing below may charge it again (a second call squared the transmittance of every
-    // absorbing medium and of a walk's refractive exit).
-    {
-      PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed, freeFlight);
-      if(volumeStep != PathStepResult.eOutOfVolume)
-        return volumeStep;
     }
 
     // Sized lights before this hit, by this segment's own state: the medium rules below may leave

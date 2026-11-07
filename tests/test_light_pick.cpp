@@ -380,7 +380,7 @@ TEST(LightPick, ASphereSampleAndItsBsdfHitsGiveItOnce)
   EXPECT_LT(sphereLightHitDistance(pos, -axis, center, radius, 1e30f), 0.0f);
 }
 
-// The pick drawn as it is scored (PickReservoirs, lightPickSetDrawn) draws each candidate with its
+// The pick drawn as it is scored (PickReservoirs, lightPickScore) draws each candidate with its
 // lightPickProbability, as the walk over the scored pick does: a dominant light, a dim one the
 // defensive share keeps, and one alone
 TEST(LightPick, ThePickDrawnAsItIsScoredDrawsEachWithItsProbability)
