@@ -4029,6 +4029,67 @@ TEST(FvHost, theGizmosSpaceAndSnapReachTheRenderer)
   EXPECT_FALSE(rig.cmd("view.set", {{"snap", {{"move", -1}}}}).value("ok", true));
 }
 
+// The pixel a world point is at, as cameraRay casts them: for a test that places by a ray
+glm::vec2 placePixel(HostRig& rig, const glm::vec3& point)
+{
+  auto       manip = rig.renderer.getCameraManipulator();
+  glm::dvec3 eye, center, up;
+  manip->getLookat(eye, center, up);
+  const glm::vec3  f = glm::normalize(glm::vec3(center - eye));
+  const glm::vec3  r = glm::normalize(glm::cross(f, glm::vec3(up)));
+  const glm::vec3  u = glm::cross(r, f);
+  const glm::vec3  d = point - glm::vec3(eye);
+  const float      t = std::tan(glm::radians(float(manip->getFov())) * 0.5f);
+  const VkExtent2D size = rig.renderer.renderSize();
+  const float      aspect = float(size.width) / float(size.height);
+  const float      sx = glm::dot(d, r) / glm::dot(d, f), sy = glm::dot(d, u) / glm::dot(d, f);
+  return {(sx / (t * aspect) + 1) * 0.5f * size.width, (1 - sy / t) * 0.5f * size.height};
+}
+
+// Placed by a ray at the box's top, a light lands there; a drag of two moves is one step; past the
+// box, it lands on the ground ahead
+TEST(FvHost, aPlacedPropLandsWhereThePointerMeetsTheScene)
+{
+  HostRig        rig;
+  const fs::path dir = fs::temp_directory_path() / "fv_place_test";
+  fs::create_directories(dir);
+  writeBox(dir / "box.gltf", {-0.15f, -0.1f, -0.15f}, {0.15f, 0.02f, 0.15f});
+  ASSERT_TRUE(rig.cmd("load", {{"path", (dir / "box.gltf").generic_string()}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"ground", {{"height", -0.1}}}}).value("ok", false));
+  const Json added = rig.cmd("prop.add", {{"kind", "light"}, {"transform", {{"t", {1.0, 2.0, 0.0}}}}});
+  ASSERT_TRUE(rig.settle());
+  const std::string light = added.value("result", Json::object()).value("prop", "");
+  const size_t      steps = undoSteps(rig);
+  const auto        place = [&](const glm::vec3& at, bool end) {
+    const glm::vec2 px = placePixel(rig, at);
+    for(int i = 0; i < 20; i++)  // until the box is indexed on the pool
+    {
+      const Json placed = rig.cmd("prop.place", {{"prop", light}, {"x", px.x}, {"y", px.y}, {"gesture", {{"id", "place:1"}, {"end", end}}}});
+      EXPECT_TRUE(placed.value("ok", false)) << placed.dump();
+      if(placed.value("result", Json::object()).value("hit", false))
+        return;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  };
+  place({0.05f, 0.02f, 0.f}, false);
+  place({0.f, 0.02f, 0.f}, true);
+  const Json t = rig.topic("scene")["props"][light]["transform"]["t"];
+  EXPECT_NEAR(t[0].get<double>(), 0.0, 1e-3) << t.dump();
+  EXPECT_NEAR(t[1].get<double>(), 0.02, 1e-3) << t.dump();
+  EXPECT_NEAR(t[2].get<double>(), 0.0, 1e-3) << t.dump();
+  EXPECT_EQ(undoSteps(rig), steps + 1);
+  EXPECT_EQ(rig.topic("history").at("undo")[0], "Place Point light");
+  // past the box: the ground ahead
+  const glm::vec2 px     = placePixel(rig, {0.f, -0.1f, -1.f});
+  const Json      placed = rig.cmd("prop.place", {{"prop", light}, {"x", px.x}, {"y", px.y}});
+  EXPECT_FALSE(placed.value("result", Json::object()).value("hit", true));
+  const Json g = rig.topic("scene")["props"][light]["transform"]["t"];
+  EXPECT_NEAR(g[1].get<double>(), -0.1, 1e-3) << g.dump();
+  EXPECT_NEAR(g[2].get<double>(), -1.0, 1e-2) << g.dump();
+  fs::remove_all(dir);
+}
+
 // A figure exported with a dent carries it: the feet stand 2 cm into the box, so the dented body's
 // lowest point is higher than the same export's without the dent.
 TEST(FvHost, exportCarriesTheContactChannel)

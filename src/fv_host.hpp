@@ -82,6 +82,12 @@
 //                                                (rays down from above it against the triangles the contact
 //                                                pass keeps, fv_host_place.cpp), else on the ground; one step.
 //                                                -> {ok, moved: metres}, or {job} while a set is indexed first
+//   prop.place      {prop | props?, x, y, w?, h?, gesture?}   (the selection without either) put where the
+//                                                pointer's ray (x, y in a frame of w by h, as /input's; else
+//                                                render pixels) meets the scene but itself,
+//                                                its bottom middle on the surface, else on the ground ahead;
+//                                                the moves of a drag under one gesture are one step.
+//                                                -> {ok, hit}: whether it met a surface
 //   prop.aim        {prop, at: prop id | [x, y, z]}   turned so its -Z looks at the prop's middle or the
 //                                                point, once (it doesn't follow); a step of the history
 //   node.set        {prop, node, visible?: bool | null, transform?: {t (metres), e | r, s} | null}   a node

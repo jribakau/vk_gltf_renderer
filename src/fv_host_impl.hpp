@@ -1049,6 +1049,9 @@ struct FvHost::Impl
   // prop.ungroup {prop}: what it carries on what carried it, and it gone, one step
   Json groupAdd(const Json& args);
   Json propUngroup(const Json& args);
+  // prop.place: the selection where the pointer's ray meets the scene; the sets being indexed for it
+  Json                                                propPlace(const Json& args);
+  std::set<const fv::physics::SharedTriangles*>       placeIndexing;
 
   // ---- a node inside a prop (fv_host_place.cpp): hidden or moved, a set's wall, a car's wheel
   rs::EntityId nodeEntity(const Prop& p, int node) const;

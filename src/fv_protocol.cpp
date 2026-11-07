@@ -91,7 +91,8 @@ namespace {
 // 48: several selected: select's props, add and toggle, the selection topic's `props`, a Ctrl+click
 // toggling, the gizmo moving them together; prop.setMany; prop.add's group `props` and prop.ungroup.
 // 49: the gizmo's space ("world", "local") and snap ({move, rotate, scale} | null) in view.set.
-constexpr int kProtocolVersion = 49;
+// 50: prop.place, the selection put where the pointer's ray meets the scene.
+constexpr int kProtocolVersion = 50;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

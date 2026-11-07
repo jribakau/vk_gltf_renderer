@@ -738,3 +738,70 @@ Json FvHost::Impl::propUngroup(const Json& args)
     selectProp(children.front()->id);
   return {{"ok", true}, {"props", children.size()}};
 }
+
+// ---- placing on a surface (prop.place)
+
+// prop.place {prop | props, x, y, gesture?}: what it names (or the selection) put where the pointer's
+// ray (render pixels, as the input events have them) meets the scene but itself: its bottom middle on
+// the surface hit, else on the ground ahead. Sets not indexed yet are left out of this move and indexed
+// on the pool for the next; a drag's moves, under one gesture, are one step.
+Json FvHost::Impl::propPlace(const Json& args)
+{
+  const auto moving = movingArg(args);
+  if(moving.empty())
+    throw std::runtime_error("nothing is selected to place");
+  // in the pixels of the frame the app asked for (`w`, `h`, as /input's), which the render may not be
+  glm::vec2        px(args.at("x").get<float>(), args.at("y").get<float>());
+  const VkExtent2D size = renderer->renderSize();
+  if(args.value("w", 0.0) > 0 && args.value("h", 0.0) > 0)
+    px *= glm::vec2(float(size.width) / args["w"].get<float>(), float(size.height) / args["h"].get<float>());
+  glm::vec3 o, d;
+  if(!cameraRay(px, o, d))
+    throw std::runtime_error("there is no view to place from");
+  const auto box = selectionBounds(moving);
+  if(!box)
+    throw std::runtime_error("nothing selected takes up room to place");
+  std::vector<PlacedSet> under;
+  for(const auto& q : props)
+  {
+    if(!shown(*q) || std::any_of(moving.begin(), moving.end(), [&](const auto& m) { return m == q || ridesOn(*q, m->id); }))
+      continue;
+    for(PlacedSet& s : placedSets(*q))
+      under.push_back(std::move(s));
+  }
+  for(const PlacedSet& s : under)
+    if(!s.set->made() && placeIndexing.insert(s.set.get()).second)
+      loaders.spawn([this, set = s.set] {
+        set->get();
+        post([this, raw = set.get()] { placeIndexing.erase(raw); });
+      });
+  const auto hit = rayThrough(under, o, d, true);
+  glm::vec3  at;
+  if(hit)
+    at = hit->at;
+  else
+  {
+    // the ground ahead, if the ray goes down to it
+    const float ground = groundHeight();
+    if(std::abs(d.y) < 1e-6f || (ground - o.y) / d.y <= 0)
+      return {{"ok", true}, {"hit", false}};
+    at = o + d * ((ground - o.y) / d.y);
+  }
+  const glm::vec3 lo = (*box)[0], hi = (*box)[1];
+  const glm::vec3 delta = at - glm::vec3((lo.x + hi.x) * 0.5f, lo.y, (lo.z + hi.z) * 0.5f);
+  if(glm::length(delta) < 1e-6f)
+    return {{"ok", true}, {"hit", bool(hit)}};
+  const std::string label = moving.size() == 1 ? "Place " + moving[0]->name : "Place " + std::to_string(moving.size()) + " props";
+  Json              items = Json::array();
+  for(const auto& p : moving)
+  {
+    const glm::vec3 t = p->transform.translation + glm::inverse(glm::mat3(parentWorld(*p))) * delta;
+    items.push_back({{"prop", p->id}, {"transform", {{"t", {t.x, t.y, t.z}}}}});
+  }
+  Json set = items.size() == 1 ? items[0] : Json{{"props", items}};
+  set["label"] = label;
+  if(args.contains("gesture"))
+    set["gesture"] = args["gesture"];
+  edit(items.size() == 1 ? "prop.set" : "prop.setMany", set);
+  return {{"ok", true}, {"hit", bool(hit)}};
+}

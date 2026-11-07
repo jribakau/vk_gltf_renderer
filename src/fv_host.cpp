@@ -107,6 +107,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   // placing (fv_host_place.cpp): each its own step of the history, as prop.set
   cmds.add("prop.drop", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->propDrop(args); }); });
   cmds.add("prop.aim", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->propAim(args); }); });
+  cmds.add("prop.place", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->propPlace(args); }); });
   cmds.add("node.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("node.set", args); }); });
   cmds.add("prop.duplicate", [impl](const Json& args) {
     // a figure loads again, which waits on workers: answered with its job
