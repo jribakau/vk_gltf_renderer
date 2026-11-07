@@ -216,6 +216,9 @@ public:
   // A still's light draws pick as they score where the light tree is on (ePtStillPickAsScored); off,
   // by the walk (measured 2026-11-07: the walk's spread of the Sobol numbers is worth less than it costs)
   bool m_stillPickAsScored{true};
+  // A vertex whose every lobe is a mirror leaves the lights its BSDF ray reaches to that ray, no shadow
+  // ray (ePtSmoothBsdfOnly, smooth_vertex.h.slang); off, it samples them as any vertex
+  bool m_smoothBsdfOnly{true};
   // Surface bounces (PathtracePushConstant::maxDepth): the still's, and the DLSS frames' when lower (0: the
   // still's), set each frame by sample_schedule::frameMaxDepth
   int m_maxDepth{5};

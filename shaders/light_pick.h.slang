@@ -255,4 +255,13 @@ float misPowerWeight(float a, float b)
   return r2 / (1.0F + r2);
 }
 
+// The weight of a BSDF ray of pdf `bsdfPdf` that reached a light, against the light sample of the
+// vertex it left, `lightPdf` that sample's pdf for the same direction. 1 where that vertex left the
+// lights its BSDF ray reaches to that ray (`bsdfOnly`: a smooth vertex, smooth_vertex.h.slang), whatever
+// the pick there would have given the light: no light sample competed for the direction.
+float bsdfHitMisWeight(float bsdfPdf, float lightPdf, bool bsdfOnly)
+{
+  return bsdfOnly ? 1.0F : misPowerWeight(bsdfPdf, lightPdf);
+}
+
 #endif

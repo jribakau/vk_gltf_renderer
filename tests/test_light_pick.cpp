@@ -445,3 +445,66 @@ TEST(LightPick, ASunDiscSampleAndItsBsdfHitsGiveItOnce)
   EXPECT_FALSE(directionalLightHit(beyond, lightDir, sunOmc));
   EXPECT_FALSE(directionalLightHit(lightDir, lightDir, sunOmc));
 }
+
+// A vertex that leaves the lights to its BSDF ray (bsdfOnly: a smooth vertex, smooth_vertex.h.slang)
+// weighs that ray's hit 1, whatever the pick there would have given the light. Its light samples are
+// dropped where the lobe's sampler reaches and kept, at weight 1, past a face that cuts the lobe off
+// (where the sampler's draws are dropped, as bsdfFaceAllows drops them, though the lobe has a value):
+// a narrow lobe on a sphere light's rim then gives the light once, as the two weighed against each
+// other do. Dropping the samples past the face too would lose the light there.
+TEST(LightPick, ALightLeftToTheBsdfRayComesOnce)
+{
+  const float pdfs[] = {1e-30f, 1e-6f, 1.0f, 1e6f, 3e38f};
+  for(float a : pdfs)
+    for(float b : pdfs)
+    {
+      EXPECT_EQ(bsdfHitMisWeight(a, b, true), 1.0f) << a << " " << b;
+      EXPECT_EQ(bsdfHitMisWeight(a, b, false), misPowerWeight(a, b)) << a << " " << b;
+    }
+
+  const float3 pos(0), center(0.3f, 2.0f, 0.1f);
+  const float  radius   = 0.25f;
+  const float  omc      = sizedLightOneMinusCos(false, center, radius, 0.0f, pos);
+  const float3 axis     = normalize(center - pos);
+  const auto   hitsLight = [&](float3 d) { return sphereLightHitDistance(pos, d, center, radius, 1e30f) >= 0.0f; };
+  const float  pl       = conePdf(omc);
+  // A lobe a fifth of the light's solid angle, half a radius off its centre, its value its own pdf; a
+  // face through the vertex tilted into it, so that about a third of the lobe lies past it
+  const TestLobe lobe{normalize(center + float3(0.5f * radius, 0, 0) - pos), 0.2f * omc};
+  const float    sinLobe = std::sqrt(lobe.lobeOmc * (2.0f - lobe.lobeOmc));
+  const float3   across  = normalize(cross(lobe.lobeAxis, float3(0, 0, 1)));
+  const float3   face    = normalize(across + lobe.lobeAxis * (0.3f * sinLobe));
+  const auto     value   = [&](float3 d) { return lobe.pdf(d) * std::max(d.y, 0.0f); };  // the lobe and the receiver's cosine
+  const auto     reaches = [&](float3 d) { return dot(d, face) > 0.0f; };              // where the sampler's draws are kept
+
+  std::mt19937                          rng(17);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const int                             n = 400000;
+  double                                reference = 0.0, weighed = 0.0, leftToBsdf = 0.0, allDropped = 0.0;
+  int                                   past = 0;
+  for(int i = 0; i < n; i++)
+  {
+    const float3 l = sampleCone(axis, omc, u(rng), u(rng));
+    const float  f = value(l) / pl;
+    reference += f;  // the light sample alone, weight 1
+    const float lobePdf = reaches(l) ? lobe.pdf(l) : 0.0f;
+    weighed += f * misPowerWeight(pl, lobePdf);
+    if(!reaches(l))
+    {
+      leftToBsdf += f;  // kept past the face (smoothVertexSamplesLight)
+      past += value(l) > 0.0f ? 1 : 0;
+    }
+    const float3 b = lobe.sample(u(rng), u(rng));
+    if(reaches(b) && hitsLight(b) && lobe.pdf(b) > 0.0f)  // a draw on the cone's rim can round outside it
+    {
+      const float g = value(b) / lobe.pdf(b);
+      weighed += g * bsdfHitMisWeight(lobe.pdf(b), pl, false);
+      leftToBsdf += g * bsdfHitMisWeight(lobe.pdf(b), pl, true);
+      allDropped += g * bsdfHitMisWeight(lobe.pdf(b), pl, true);
+    }
+  }
+  ASSERT_GT(past, 1000);
+  EXPECT_NEAR(weighed / reference, 1.0, 0.01);
+  EXPECT_NEAR(leftToBsdf / reference, 1.0, 0.01);
+  EXPECT_LT(allDropped / reference, 0.85);
+}

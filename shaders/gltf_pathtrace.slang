@@ -1003,6 +1003,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // cornea one sample in forty with a single lobe; past a rough bounce one lobe costs a third less.
     const bool lobeMixture = hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixture)
                              && (!hasFlag(pushConst.flags, PathtracerFlags::ePtLobeMixtureDirect) || pt.pathRoughness <= DIRECT_PATH_ROUGHNESS);
+    // A vertex whose every weighted lobe is a mirror (smoothVertex: clear glass, a tear film, polished
+    // metal), judged after the regularisation above, leaves the lights its BSDF ray reaches to that ray:
+    // no BSDF evaluation and no shadow ray for a sample whose value and MIS weight are next to nothing,
+    // and the ray's hits weigh 1 (LightPick::bsdfOnly), so the image is the same in expectation. The
+    // pick is drawn as before: a punctual light keeps its sample, and so does one where a lobe may
+    // scatter that the BSDF ray never leaves by (smoothVertexSamplesLight), weighed 1 only there
+    // (smoothVertexLightWeight). Not at the last vertex, whose BSDF ray is never traced, nor on a fibre
+    // (ePtSmoothBsdfOnly; off, it samples them as any vertex).
+    const bool smoothHere = hasFlag(pushConst.flags, PathtracerFlags::ePtSmoothBsdfOnly) && !hairOn && !lastVertex && smoothVertex(pbrMat);
     // The normal only culls directional lights below the surface (singleLightContribution). Give it
     // the one bounce.nextEventValid tests, so NEE and the BSDF side (R4) agree on which directions
     // next-event estimation can reach; the BSDF then decides what a light below the shading normal does.
@@ -1012,7 +1021,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     sampleLights(hit.pos, hit.nrm, ray.Direction, seed, directLight, /*isVolumeSample=*/false,
                  /*lightsFromBothSides=*/bothSides, /*compensatedEnv=*/!lastVertex, g_sobol ? nextSobolDecision() : float4(-1.0F));
     // The BSDF ray sampled below is weighed against this vertex's pick when it reaches a light
-    pt.lightPick = directLight.pick;
+    pt.lightPick          = directLight.pick;
+    pt.lightPick.bsdfOnly = smoothHere;
+    if(smoothHere && !smoothVertexSamplesLight(pbrMat, directLight.direction, directLight.pdf))
+      directLight.pdf = 0.0F;  // the BSDF ray's: nothing to evaluate or trace (bounce.nextEventValid)
 
     // Several candidates, one kept (light_ris.h.slang): the first is the sample above, the rest drawn
     // the same way from the seed. Each is weighed by its unshadowed estimate at this vertex, its BSDF
@@ -1023,9 +1035,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // The camera's first surface keeps its kept sample from frame to frame (ePtLightReuse): last
     // frame's record at this pixel (reprojected under DLSS) is one more candidate, re-weighed here, and
     // what this vertex shades is written for the next frame, its W zeroed below if it was shadowed.
-    const bool reuseHere = firstRay && !hairOn && hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuse)
+    // A smooth vertex resamples nothing: its one sample stands (smoothHere)
+    const bool reuseHere = firstRay && !hairOn && !smoothHere && hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuse)
                            && pushConst.lightReservoirs != nullptr;
-    const int        candidates = reuseHere ? clamp(pushConst.lightCandidates, 1, LIGHT_RIS_MAX_CANDIDATES) : lightCandidatesHere(hairOn, pt.surfaceDepth);
+    const int        candidates = reuseHere ? clamp(pushConst.lightCandidates, 1, LIGHT_RIS_MAX_CANDIDATES) :
+                                              (smoothHere ? 1 : lightCandidatesHere(hairOn, pt.surfaceDepth));
     BsdfEvaluateData keptEval   = {};
     if(candidates > 1 || reuseHere)
     {
@@ -1233,8 +1247,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       if(bsdfEvaluated(evalData))
       {
         // Weight for combining light and BSDF sampling strategies (Multiple Importance Sampling);
-        // 1 at the last vertex (above).
-        const float mis_weight = (directLight.pdf == DIRAC || lastVertex) ? 1.0F : misPowerWeight(directLight.pdf, evalData.pdf);
+        // 1 at the last vertex (above). A smooth vertex's kept sample: 1 only where the BSDF ray cannot go.
+        float mis_weight = (directLight.pdf == DIRAC || lastVertex) ? 1.0F : misPowerWeight(directLight.pdf, evalData.pdf);
+        if(smoothHere)
+          mis_weight = smoothVertexLightWeight(directLight.pdf, evalData.pdf);
 
         // sample weight; a kept candidate's scaled by the candidates' mean weight over its own
         const float3 w = pt.throughput * directLight.radianceOverPdf * mis_weight * risScale;

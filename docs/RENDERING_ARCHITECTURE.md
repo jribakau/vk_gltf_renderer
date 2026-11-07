@@ -334,6 +334,21 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
   bending, so the landing does not fold and the floor keeps the light that came in on average.
   Only light samples carry it; a path's own ray refracts through the surface as it is.
 
+**None at a mirror.** A path's vertex whose every weighted lobe is a mirror (`smoothVertex`,
+`shaders/smooth_vertex.h.slang`: GGX alpha at most `SMOOTH_VERTEX_ALPHA`, 5e-4, and no diffuse or
+sheen, judged after the path's regularisation) evaluates no BSDF for its light sample and traces no
+shadow ray: its value and MIS weight there are next to nothing. That is clear glass and bottles at
+roughness 0, the eye's tear film at its 0.02 cap, polished metal. Its BSDF ray's hits weigh 1 instead
+(`LightPick::bsdfOnly`, which the four hit-side weights read before any of them rebuilds the pick from
+its point: the environment, the sky's sun, the emitters with their light tree, the sized lights), so
+the image is the same in expectation. The pick is still drawn. A punctual (DIRAC) light keeps its
+sample, and so does one where a lobe may scatter that the BSDF ray never leaves by (`bsdfFaceAllows`:
+on or past the face for a reflection, above it for a refraction), weighed 1 only where the BSDF's pdf
+is 0 (`smoothVertexLightWeight`). Not at a path's last vertex, whose BSDF ray is never traced. The
+threshold is not the clear crossing's (alpha 0.01): a lobe that wide sees the sun or a lamp's bulb
+better through the light sample. `ptSmoothBsdfOnly`, on; measured 2026-11-07 a still's sample 2.1%
+cheaper at 1TEST's bar, 0.6% in its saved view, nothing measurable in a face or an eye close-up.
+
 The ray tracing pipeline's shadow hit group has no closest-hit shader. The non-SER path traces with
 `RAY_FLAG_SKIP_CLOSEST_HIT_SHADER` and reads the result from `rmissShadow`, which sets
 `ShadowPayload::missed`: if the miss shader never ran, the ray was blocked. The SER path checks

@@ -373,6 +373,7 @@ enum PathtracerFlags
   ePtLightReuseParity    = 1 << 26,  // ...this frame writes the second half of lightReservoirs and reads the first
   ePtSkinFaceOn          = 1 << 27,  // A medium made from its skin map (FV_materials_subsurface) returns the map lit head-on, not averaged over directions
   ePtStillPickAsScored   = 1 << 28,  // A still's light draws pick as they score where the light tree is on (lightPickSetDrawn), not by the walk
+  ePtSmoothBsdfOnly      = 1 << 29,  // A vertex whose lobes are all mirrors (smoothVertex) leaves the lights its BSDF ray reaches to that ray: no shadow ray
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per

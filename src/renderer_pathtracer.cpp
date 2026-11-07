@@ -347,6 +347,12 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "equal time 9-16% higher)",
                  .callbackSuccess = reset},
                 &m_stillPickAsScored, Persist::eNo);
+  settings->add({.name            = "ptSmoothBsdfOnly",
+                 .help            = "PathTracer: A vertex whose every lobe is a mirror (clear glass, a tear film, polished "
+                                    "metal) takes no light sample but a punctual light's, and no shadow ray: its BSDF ray "
+                                    "finds the lights, weighed 1 (the same image). Off: it samples them as any vertex",
+                 .callbackSuccess = reset},
+                &m_smoothBsdfOnly, Persist::eNo);
   settings->add({.name            = "ptLightTree",
                  .help            = "PathTracer: Emissive meshes are picked by how near and how bright they are (a light "
                                     "tree over them); off: by power alone, wherever they are",
@@ -1550,6 +1556,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_skinFaceOn ? shaderio::ePtSkinFaceOn : 0;
   m_pushConst.flags |= m_lightTree ? shaderio::ePtLightTree : 0;
   m_pushConst.flags |= m_stillPickAsScored ? shaderio::ePtStillPickAsScored : 0;
+  m_pushConst.flags |= m_smoothBsdfOnly ? shaderio::ePtSmoothBsdfOnly : 0;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;
   m_pushConst.flags |= (m_sampler == 1 && !useDlss) ? shaderio::ePtSobol : 0;
   m_pushConst.flags |= m_fullLobeEval >= 1 ? shaderio::ePtLobeSumPunctual : 0;

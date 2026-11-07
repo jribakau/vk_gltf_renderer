@@ -18,6 +18,7 @@
 #include "light_tree.h.slang"
 #include "mirror_image.h.slang"
 #include "clear_crossing.h.slang"
+#include "smooth_vertex.h.slang"
 #include "haze.h.slang"
 
 //-----------------------------------------------------------------------
@@ -42,6 +43,10 @@ struct LightPick
   // normal it culled lights by (0: lit from both sides, nothing culled)
   float3 pos;
   float3 normal;
+  // The vertex left every light its BSDF ray can reach to that ray (a smooth vertex, smoothVertex): a
+  // light the ray meets weighs 1 (bsdfHitMisWeight). Every hit-side weight reads it before the shares
+  // above, which the tree's and the sized lights' weights rebuild from `pos` and `normal`.
+  bool bsdfOnly;
 };
 
 struct DirectLight
@@ -740,6 +745,7 @@ LightPickSet lightPickSet(float3 pos, float3 normal, bool cull)
   s.restShare     = 1.0F - s.pick.emissive;
   s.pick.pos      = pos;
   s.pick.normal   = cull ? normal : float3(0.0F);
+  s.pick.bsdfOnly = false;
 
   if(s.uniform)
   {
@@ -971,11 +977,12 @@ float emitterHitSolidAnglePdf(float selection, float3 geoNormal, float3 rayDir, 
 // share of the cut node above the leaf drawn by `renderNodeID` there, as sizedLightNeePdf recovers a
 // sized light's, times the walk's probability from it down to that leaf (emissiveTreeClimb).
 // `selection`: the hit triangle's (emitterSelection), not its texel; 0: it is not in the light list,
-// or never sampled there, and only BSDF rays reach it.
+// or never sampled there, and only BSDF rays reach it. 1 after a vertex that left it to its BSDF ray
+// (LightPick::bsdfOnly), before the tree's share is rebuilt from the pick's point.
 float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float selection, float3 geoNormal, float3 rayDir,
                                  float hitDist, uint renderNodeID)
 {
-  if(lastSamplePdf == DIRAC || !(selection > 0.0f))
+  if(lastSamplePdf == DIRAC || pick.bsdfOnly || !(selection > 0.0f))
     return 1.0f;
   float emitterNeePdf = pick.emissive * emitterHitSolidAnglePdf(selection, geoNormal, rayDir, hitDist, pushConst.gltfScene.emissiveTotalWeight);
   if(emissiveTreeOn() && punctualLightCount() <= LIGHT_PICK_MAX_LIGHTS)
@@ -1002,7 +1009,7 @@ DirectLight noDirectLight()
   directLight.pdf             = 0.0f;
   directLight.distance        = INFINITE;
   directLight.radianceOverPdf = float3(0.0f);
-  directLight.pick            = {0.0F, 0.0F, 0.0F, float3(0.0F), float3(0.0F)};
+  directLight.pick            = {0.0F, 0.0F, 0.0F, float3(0.0F), float3(0.0F), false};
 #if USE_LIGHT_RIS
   directLight.reuseKind  = LIGHT_REUSE_NONE;
   directLight.reuseIndex = 0u;
@@ -1189,6 +1196,7 @@ LightPickSet lightPickSetDrawn(float3 pos, float3 normal, bool cull, inout uint 
   s.restShare     = 1.0F - s.pick.emissive;
   s.pick.pos      = pos;
   s.pick.normal   = cull ? normal : float3(0.0F);
+  s.pick.bsdfOnly = false;
 
   if(s.uniform)
   {
@@ -1486,7 +1494,7 @@ float computeEnvHitMisWeight(float lastSamplePdf, float envPdf, LightPick pick)
 {
   if(lastSamplePdf == DIRAC)
     return 1.0f;
-  return misPowerWeight(lastSamplePdf, pick.env * envPdf);
+  return bsdfHitMisWeight(lastSamplePdf, pick.env * envPdf, pick.bsdfOnly);
 }
 
 // Solid-angle pdf with which sampleLights() lands on the sky's sun at a vertex that picked it with
@@ -1501,7 +1509,7 @@ float skySunNeePdf(LightPick pick)
 // Never called after a delta bounce: the caller adds the disk unweighted there.
 float computeSkySunHitMisWeight(float lastSamplePdf, LightPick pick)
 {
-  return misPowerWeight(lastSamplePdf, skySunNeePdf(pick));
+  return bsdfHitMisWeight(lastSamplePdf, skySunNeePdf(pick), pick.bsdfOnly);
 }
 
 #if USE_LIGHT_RIS
@@ -2540,7 +2548,7 @@ struct PathTracerState
   float   lastSamplePdf = DIRAC;
   // What the last vertex's light pick gave the lights its BSDF ray can also reach, for that ray's MIS
   // weight. Read only when lastSamplePdf is not DIRAC, so only after a vertex that sampled the lights.
-  LightPick lightPick    = {0.0F, 0.0F, 0.0F, float3(0.0F), float3(0.0F)};
+  LightPick lightPick    = {0.0F, 0.0F, 0.0F, float3(0.0F), float3(0.0F), false};
   float2  maxRoughness  = float2(0.0);
   // How rough the path's scattering has been (perceptual roughness, 0..1): the largest of the lobes
   // it sampled, a diffuse one and a scattering walk counting as 1 (Unreal's path roughness). It decides
@@ -2739,7 +2747,10 @@ float3 sizedLightHits(RayDesc ray, float tMax, bool escaped, PathTracerState pt)
     if(all(contrib.intensity == float3(0.0F)))
       continue;
     const float3 radiance = contrib.intensity * evalIesFactor(pushConst.gltfScene, light, vertex) / (M_TWO_PI * max(omc, 1e-10F));
-    const float  w        = delta ? 1.0F : misPowerWeight(pt.lastSamplePdf, sizedLightNeePdf(pt.lightPick, light, omc));
+    // 1 also after a vertex that left the light to this ray (LightPick::bsdfOnly), before its share is rebuilt
+    float w = 1.0F;
+    if(!delta && !pt.lightPick.bsdfOnly)
+      w = misPowerWeight(pt.lastSamplePdf, sizedLightNeePdf(pt.lightPick, light, omc));
     sum += w * radiance;
   }
   return sum;

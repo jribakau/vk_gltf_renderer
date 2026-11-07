@@ -1533,3 +1533,178 @@ TEST(BsdfLobes, FarWaterReflectsTheSkyJustAboveTheHorizon)
   EXPECT_GT(gaussian.total, 1.25 * ggx.total);
   EXPECT_LT(gaussian.total, 1.0);
 }
+
+// Where a path's vertex leaves the lights to its BSDF ray (shaders/smooth_vertex.h.slang): every
+// weighted lobe a mirror, no diffuse, and its light sample dropped only where the BSDF ray stands in.
+#include "../shaders/smooth_vertex.h.slang"
+
+namespace {
+
+// What smoothVertex should say, read off the BSDF's own lobe weights (computeLobeWeights) at three
+// views: no weight on a diffuse lobe or the sheen, and every GGX lobe with weight at most
+// SMOOTH_VERTEX_ALPHA. Retroreflection's blend is kept out whatever its roughness.
+bool mirrorsByTheirWeights(const PbrMaterial& mat)
+{
+  for(float VdotN : {0.15f, 0.5f, 1.0f})
+  {
+    vec3       tint = mat.baseColor;
+    const auto w    = computeLobeWeights(mat, VdotN, tint);
+    if(w[LOBE_DIFFUSE_REFLECTION] > 0.0f || w[LOBE_DIFFUSE_TRANSMISSION] > 0.0f || w[LOBE_SHEEN_REFLECTION] > 0.0f)
+      return false;
+    const float alpha = std::max(mat.roughness.x, mat.roughness.y);
+    if((w[LOBE_SPECULAR_REFLECTION] > 0.0f || w[LOBE_METAL_REFLECTION] > 0.0f || w[LOBE_SPECULAR_TRANSMISSION] > 0.0f)
+       && alpha > SMOOTH_VERTEX_ALPHA)
+      return false;
+    if(w[LOBE_CLEARCOAT_REFLECTION] > 0.0f && mat.clearcoatRoughness * mat.clearcoatRoughness > SMOOTH_VERTEX_ALPHA)
+      return false;
+    if(w[LOBE_SPECULAR2_REFLECTION] > 0.0f && mat.specular2Roughness * mat.specular2Roughness > SMOOTH_VERTEX_ALPHA)
+      return false;
+  }
+  return !(mat.retroreflection > 0.0f);
+}
+
+// A surface of perceptual `roughness`, clamped and squared as gltf_material_eval.h.slang does
+PbrMaterial smoothCase(float roughness, float metallic, float transmission)
+{
+  PbrMaterial mat  = defaultPbrMaterial(vec3(0.9f), metallic, std::max(roughness, 0.0014142f), vec3(0, 0, 1), vec3(0, 0, 1));
+  mat.transmission = transmission;
+  return mat;
+}
+
+}  // namespace
+
+// smoothVertex holds exactly where the BSDF's weights give nothing to a diffuse lobe or the sheen and
+// every weighted GGX lobe is at or under SMOOTH_VERTEX_ALPHA: the bar's glass and bottles (roughness
+// 0), a tear film at the lowering's cap, polished metal under a smooth coat; not the frosted glass at
+// the 0.1 cap, nor 1% of diffuse under glass, nor a rough coat or second lobe over a mirror.
+TEST(SmoothVertex, EveryWeightedLobeIsAMirrorAndNoneDiffuse)
+{
+  struct Row
+  {
+    const char* name;
+    PbrMaterial mat;
+    bool        smooth;
+  };
+  std::vector<Row> rows;
+  rows.push_back({"clear glass, roughness 0", smoothCase(0.0f, 0.0f, 1.0f), true});
+  PbrMaterial film = smoothCase(0.02f, 0.0f, 1.0f);  // the tear film's cap (figure lowering)
+  film.ior2        = 1.33f;
+  film.thickness   = 0.01f;
+  rows.push_back({"tear film at its cap", film, true});
+  PbrMaterial atThreshold = smoothCase(0.0f, 0.0f, 1.0f);
+  atThreshold.roughness   = vec2(SMOOTH_VERTEX_ALPHA);
+  rows.push_back({"glass at the threshold", atThreshold, true});
+  rows.push_back({"glass just past it", smoothCase(0.0245f, 0.0f, 1.0f), false});
+  rows.push_back({"frosted glass at the clear-crossing cap", smoothCase(0.1f, 0.0f, 1.0f), false});
+  rows.push_back({"glass over 1% of diffuse", smoothCase(0.0f, 0.0f, 0.99f), false});
+  PbrMaterial pane = smoothCase(0.0f, 0.0f, 1.0f);
+  pane.plate       = true;
+  rows.push_back({"a pane", pane, true});
+  PbrMaterial sheet               = smoothCase(0.0f, 0.0f, 1.0f);
+  sheet.diffuseTransmissionFactor = 1.0f;  // under transmission 1 it has no weight
+  rows.push_back({"glass with an unweighted diffuse transmission", sheet, true});
+  rows.push_back({"half metal, half glass", smoothCase(0.0f, 0.5f, 1.0f), true});
+  rows.push_back({"polished metal", smoothCase(0.0f, 1.0f, 0.0f), true});
+  rows.push_back({"metal at 0.99", smoothCase(0.0f, 0.99f, 0.0f), false});
+  rows.push_back({"smooth plastic", smoothCase(0.0f, 0.0f, 0.0f), false});
+  PbrMaterial coated        = smoothCase(0.0f, 1.0f, 0.0f);
+  coated.clearcoat          = 1.0f;
+  coated.clearcoatRoughness = 0.01f;
+  rows.push_back({"metal under a smooth coat", coated, true});
+  coated.clearcoatRoughness = 0.3f;
+  rows.push_back({"metal under a rough coat", coated, false});
+  PbrMaterial dual        = smoothCase(0.0f, 1.0f, 0.0f);
+  dual.specular2          = 0.5f;
+  dual.specular2Roughness = 0.3f;
+  rows.push_back({"a rough second lobe over a mirror", dual, false});
+  PbrMaterial velvet = smoothCase(0.0f, 1.0f, 0.0f);
+  velvet.sheenColor     = vec3(0.3f);
+  velvet.sheenRoughness = 0.5f;
+  rows.push_back({"sheen over a mirror", velvet, false});
+  PbrMaterial brushed = smoothCase(0.0f, 1.0f, 0.0f);
+  brushed.roughness.x = 0.01f;
+  rows.push_back({"anisotropic metal, rough across", brushed, false});
+  PbrMaterial retro     = smoothCase(0.0f, 1.0f, 0.0f);
+  retro.retroreflection = 0.5f;
+  rows.push_back({"retroreflective mirror", retro, false});
+  for(const Row& r : rows)
+  {
+    EXPECT_EQ(smoothVertex(r.mat), r.smooth) << r.name;
+    EXPECT_EQ(mirrorsByTheirWeights(r.mat), r.smooth) << r.name << ", by the BSDF's weights";
+  }
+}
+
+// A smooth vertex's light toward any direction is counted once: by its BSDF ray where that ray can go
+// there (its pdf above 0), and otherwise by its light sample, kept (smoothVertexSamplesLight) and
+// weighed 1 (smoothVertexLightWeight), as past the face from where a lobe leaves (bsdfFaceAllows). With
+// the lobe mixture (bsdfEvaluateAll, whose pdf is the density the sampler draws by) and with one lobe
+// picked at random (bsdfEvaluate, each lobe weighed against its own sampler). A punctual light keeps its
+// sample at weight 1. Glass, a thin pane, a tear film, metal and coated metal, flat and with a normal
+// map tilting their lobes 20 degrees past the face, from views all round.
+TEST(SmoothVertex, EachDirectionsLightIsCountedOnce)
+{
+  std::vector<PbrMaterial> flat;
+  flat.push_back(smoothCase(0.0f, 0.0f, 1.0f));
+  PbrMaterial pane = smoothCase(0.0f, 0.0f, 1.0f);
+  pane.plate       = true;
+  flat.push_back(pane);
+  PbrMaterial film = smoothCase(0.02f, 0.0f, 1.0f);
+  film.ior2        = 1.33f;
+  film.thickness   = 0.01f;
+  flat.push_back(film);
+  flat.push_back(smoothCase(0.0f, 1.0f, 0.0f));
+  PbrMaterial coated        = smoothCase(0.0f, 1.0f, 0.0f);
+  coated.clearcoat          = 1.0f;
+  coated.clearcoatRoughness = 0.01f;
+  flat.push_back(coated);
+
+  std::mt19937 rng(53);
+  int          dropped = 0, keptAlone = 0, valued = 0;
+  for(int tilt = 0; tilt < 2; tilt++)
+    for(PbrMaterial mat : flat)
+    {
+      if(tilt)
+      {
+        mat.N  = normalize(vec3(std::sin(radians(20.0f)), 0.0f, std::cos(radians(20.0f))));
+        mat.Nc = normalize(vec3(-0.2f, 0.1f, 1.0f));
+        orthonormalBasis(mat.N, mat.T, mat.B);
+      }
+      ASSERT_TRUE(smoothVertex(mat));
+      for(int i = 0; i < 20000; i++)
+      {
+        const vec3 k1 = viewAbove(rng), k2 = sphere(rng);
+        ASSERT_TRUE(smoothVertexSamplesLight(mat, k2, DIRAC));
+        EXPECT_EQ(smoothVertexLightWeight(DIRAC, 1e6f), 1.0f);
+        const bool kept = smoothVertexSamplesLight(mat, k2, 1.0f);
+        dropped += kept ? 0 : 1;
+        for(int lobe = 0; lobe < 4; lobe++)  // the mixture, then a random lobe at three numbers
+        {
+          BsdfEvaluateData e;
+          e.k1 = k1;
+          e.k2 = k2;
+          e.xi = vec3(0.5f, 0.5f, lobe == 0 ? 0.5f : (float(lobe) - 0.5f) / 3.0f);
+          if(lobe == 0)
+            bsdfEvaluateAll(e, mat);
+          else
+            bsdfEvaluate(e, mat);
+          if(!(sum(e.bsdf_diffuse + e.bsdf_glossy) > 0.0f))
+            continue;
+          valued++;
+          const float lightWeight = kept ? smoothVertexLightWeight(1.0f, e.pdf) : 0.0f;
+          // where the BSDF ray goes, its hit weighs 1 (bsdfHitMisWeight with bsdfOnly: test_light_pick.cpp)
+          const float bsdfWeight = (e.pdf > 0.0f) ? 1.0f : 0.0f;
+          EXPECT_EQ(lightWeight + bsdfWeight, 1.0f) << "tilt " << tilt << ", lobe " << lobe << ", k2 " << k2.x << " " << k2.y << " "
+                                                    << k2.z << ", pdf " << e.pdf;
+          keptAlone += (kept && !(e.pdf > 0.0f)) ? 1 : 0;
+        }
+      }
+    }
+  EXPECT_GT(dropped, 80000);  // of 200000: most of the hemisphere above the face
+  EXPECT_GT(valued, 100000);
+  EXPECT_GT(keptAlone, 100);  // the tilted lobes do reach past the face
+  // Without a face (the ground, the water) the BSDF ray reaches everywhere
+  PbrMaterial loose = smoothCase(0.0f, 0.0f, 1.0f);
+  loose.faceSided   = false;
+  EXPECT_FALSE(smoothVertexSamplesLight(loose, vec3(0, 0, -1), 1.0f));
+  EXPECT_TRUE(smoothVertexSamplesLight(loose, vec3(0, 0, -1), DIRAC));
+}
