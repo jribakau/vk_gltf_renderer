@@ -52,10 +52,12 @@ public:
   // Enums
   //-----------------------------------------------------------------------------
 
+  // eWorld: the handles along the axes of what the object rides on (the world at the scene's root);
+  // eLocal: along the object's own, turned with it, and a turn is about its own axis
   enum class TransformSpace
   {
     eWorld,
-    // eLocal // Not supported yet
+    eLocal,
   };
 
   enum class GizmoComponent

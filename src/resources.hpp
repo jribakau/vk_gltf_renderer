@@ -142,6 +142,8 @@ struct Settings
   float                   gridUnit               = 1.0f;   // Grid base unit (world units)
   float                   snapRotation           = 45.0f;  // Rotation snap increment (degrees)
   float                   snapScale              = 0.1f;   // Scale snap increment
+  float                   snapMove               = 0.1f;   // Move snap increment (world units), apart from the grid's unit
+  bool                    gizmoLocal             = false;  // The gizmo along the object's own axes
   float hdrEnvIntensity         = 1.0f;   // Intensity of the environment (HDR)
   // The environment's orientation: a unit quaternion taking its own frame to world, stored x, y, z, w
   // -- OMI_environment_sky's `rotation`, verbatim, and the only orientation any environment has. It

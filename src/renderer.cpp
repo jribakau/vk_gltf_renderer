@@ -1548,8 +1548,9 @@ void GltfRenderer::renderVisualHelpers(VkCommandBuffer cmd)
   m_visualHelpers.grid.setVisible(m_resources.settings.showGrid);
   m_visualHelpers.grid.style().baseUnit = m_resources.settings.gridUnit;
   m_visualHelpers.transform.setSnapEnabled(m_resources.settings.snapEnabled);
-  m_visualHelpers.transform.setSnapValues(m_resources.settings.gridUnit, m_resources.settings.snapRotation,
-                                          m_resources.settings.snapScale);
+  m_visualHelpers.transform.setSnapValues(m_resources.settings.snapMove, m_resources.settings.snapRotation, m_resources.settings.snapScale);
+  m_visualHelpers.transform.setTransformSpace(m_resources.settings.gizmoLocal ? TransformHelperVk::TransformSpace::eLocal :
+                                                                               TransformHelperVk::TransformSpace::eWorld);
 
   // Sync gizmo attachment from selection state
   updateGizmoAttachment();

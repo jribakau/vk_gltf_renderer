@@ -45,6 +45,7 @@
 #include "fv_journal.hpp"
 #include "fv_protocol.hpp"
 #include "gizmo_pivot.hpp"
+#include "gizmo_snap.hpp"
 #include <figure/dson/dforce.hpp>
 #include <figure/dson/listing.hpp>
 #include <figure/dson/store.hpp>
@@ -4001,6 +4002,31 @@ TEST(FvHost, aGroupsDuplicateHoldsCopies)
   for(const auto& [id, p] : props.items())
     held += p.value("parent", Json()).is_string() && p["parent"].get<std::string>() == copy;
   EXPECT_EQ(held, 2);
+}
+
+// A snapped drag moves by whole steps from where it started, not onto the grid
+TEST(GizmoSnap, StepsFromWhereTheDragStarted)
+{
+  EXPECT_NEAR(gizmo::snapFrom(0.37f, 0.55f, 0.25f), 0.62f, 1e-6f);
+  EXPECT_NEAR(gizmo::snapFrom(0.37f, 0.45f, 0.25f), 0.37f, 1e-6f);
+  EXPECT_NEAR(gizmo::snapFrom(1.f, 1.37f, 0.f), 1.37f, 1e-6f) << "no step moves freely";
+  EXPECT_NEAR(gizmo::snapped(-0.13f, 0.1f), -0.1f, 1e-6f);
+}
+
+// view.set's space and snap reach the gizmo; snap null turns it off and keeps the steps
+TEST(FvHost, theGizmosSpaceAndSnapReachTheRenderer)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("view.set", {{"space", "local"}, {"snap", {{"move", 0.5}, {"rotate", 30}}}}).value("ok", false));
+  EXPECT_TRUE(rig.renderer.gizmoOptions.local);
+  EXPECT_TRUE(rig.renderer.gizmoOptions.snap);
+  EXPECT_FLOAT_EQ(rig.renderer.gizmoOptions.move, 0.5f);
+  EXPECT_FLOAT_EQ(rig.renderer.gizmoOptions.rotate, 30.f);
+  ASSERT_TRUE(rig.cmd("view.set", {{"snap", nullptr}}).value("ok", false));
+  EXPECT_FALSE(rig.renderer.gizmoOptions.snap);
+  EXPECT_FLOAT_EQ(rig.renderer.gizmoOptions.move, 0.5f);
+  EXPECT_FALSE(rig.cmd("view.set", {{"space", "sideways"}}).value("ok", true));
+  EXPECT_FALSE(rig.cmd("view.set", {{"snap", {{"move", -1}}}}).value("ok", true));
 }
 
 // A figure exported with a dent carries it: the feet stand 2 cm into the box, so the dented body's

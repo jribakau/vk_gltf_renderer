@@ -170,6 +170,17 @@ public:
   };
   virtual void setGizmoHooks(GizmoHooks hooks) = 0;
   virtual void setShowGizmo(bool on)           = 0;
+  // The gizmo along the object's own axes (else its parent's), and its snapping: a drag moves by
+  // whole steps of these from where it started (metres, degrees, scale); `snap` off moves freely
+  struct GizmoOptions
+  {
+    bool  local  = false;
+    bool  snap   = false;
+    float move   = 0.1f;
+    float rotate = 15.f;
+    float scale  = 0.1f;
+  };
+  virtual void setGizmoOptions(const GizmoOptions& options) = 0;
   // the gizmo's pointer input in render pixels; true when the gizmo took the event
   virtual bool gizmoInput(glm::vec2 px, bool down, bool pressed, bool released) = 0;
   // world-space segments drawn over the image (a camera's frustum, a light's marker)

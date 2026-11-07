@@ -464,6 +464,7 @@ public:
   /// that ends the drag. (A windowed session edits the glTF node selected, with undo.)
   void setGizmoHooks(GizmoHooks hooks) override;
   void setShowGizmo(bool on) override;
+  void setGizmoOptions(const GizmoOptions& options) override;
   /// World-space line segments a host draws over the image (two vertices each), for what has no
   /// mesh: a camera's frustum, a light's marker. Drawn in both renderers, never in the path-traced
   /// image itself. Application thread only.

@@ -349,6 +349,40 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
           throw std::runtime_error("transform is move, rotate or scale");
         m_transform = t;
       }
+      // the gizmo's axes, the object's own or its parent's, and its snapping (null: none)
+      if(args.contains("space") || args.contains("snap"))
+      {
+        if(args.contains("space"))
+        {
+          const std::string space = args["space"].get<std::string>();
+          if(space != "world" && space != "local")
+            throw std::runtime_error("space is world or local");
+          m_gizmo.local = space == "local";
+        }
+        if(args.contains("snap"))
+        {
+          const fv::Json& snap = args["snap"];
+          m_gizmo.snap         = snap.is_object();
+          if(snap.is_object())
+          {
+            const auto step = [&](const char* key, float& into, float most) {
+              if(snap.contains(key))
+              {
+                const float v = snap[key].get<float>();
+                if(!(v > 0) || v > most)
+                  throw std::runtime_error(std::string("snap.") + key + " is a step above 0, up to " + std::to_string(int(most)));
+                into = v;
+              }
+            };
+            step("move", m_gizmo.move, 100.f);
+            step("rotate", m_gizmo.rotate, 180.f);
+            step("scale", m_gizmo.scale, 10.f);
+          }
+          else if(!snap.is_null())
+            throw std::runtime_error("snap is {move, rotate, scale} or null");
+        }
+        m_renderer->setGizmoOptions(m_gizmo);
+      }
       // Isolate: a prop, a list of them, or null for all
       if(args.contains("solo"))
       {

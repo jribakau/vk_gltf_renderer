@@ -25,6 +25,7 @@
 //
 
 #include "gizmo_transform_vk.hpp"
+#include "gizmo_snap.hpp"
 
 #ifndef NDEBUG
 #endif
@@ -51,7 +52,7 @@ static float snapValue(float value, float step)
   return std::round(value / step) * step;
 }
 
-static glm::vec3 snapVec3(const glm::vec3& value, float step)
+[[maybe_unused]] static glm::vec3 snapVec3(const glm::vec3& value, float step)
 {
   return {snapValue(value.x, step), snapValue(value.y, step), snapValue(value.z, step)};
 }
@@ -733,11 +734,12 @@ void TransformHelperVk::updateDrag(const glm::vec2& mousePos,
         glm::vec3 currentHitPoint = rayOrigin + rayDir * t;
         glm::vec3 worldDelta      = currentHitPoint - m_dragStartHitPoint;
         float     projection      = glm::dot(worldDelta, worldAxis);
-        glm::vec3 worldMovement   = worldAxis * projection;
+        // snapped, it moves along the axis by whole steps from where it was
+        if(m_enableSnapping)
+          projection = gizmo::snapped(projection, m_snapTranslate);
+        glm::vec3 worldMovement = worldAxis * projection;
 
         *m_attachedPosition = m_dragStartPosition + worldDeltaToLocal(worldMovement);
-        if(m_enableSnapping && m_snapTranslate > 0.0f)
-          *m_attachedPosition = snapVec3(*m_attachedPosition, m_snapTranslate);
 
         if(m_onTransformChange)
           m_onTransformChange();
@@ -756,10 +758,11 @@ void TransformHelperVk::updateDrag(const glm::vec2& mousePos,
       {
         glm::vec3 currentHitPoint = rayOrigin + rayDir * t;
         glm::vec3 worldDelta      = currentHitPoint - m_dragStartHitPoint;
+        glm::vec3 delta           = worldDeltaToLocal(worldDelta);
+        if(m_enableSnapping)
+          delta = {gizmo::snapped(delta.x, m_snapTranslate), gizmo::snapped(delta.y, m_snapTranslate), gizmo::snapped(delta.z, m_snapTranslate)};
 
-        *m_attachedPosition = m_dragStartPosition + worldDeltaToLocal(worldDelta);
-        if(m_enableSnapping && m_snapTranslate > 0.0f)
-          *m_attachedPosition = snapVec3(*m_attachedPosition, m_snapTranslate);
+        *m_attachedPosition = m_dragStartPosition + delta;
 
         if(m_onTransformChange)
           m_onTransformChange();
@@ -799,7 +802,14 @@ void TransformHelperVk::updateDrag(const glm::vec2& mousePos,
           if(m_enableSnapping && m_snapRotate > 0.0f)
             angleDeg = snapValue(angleDeg, m_snapRotate);
 
-          *m_attachedRotation = m_dragStartRotation + localAxis * angleDeg;
+          if(m_space == TransformSpace::eLocal)
+          {
+            // about its own axis: the turn after its own, back to the degrees the attachment holds
+            const glm::quat start = glm::quat(glm::radians(m_dragStartRotation));
+            *m_attachedRotation   = glm::degrees(glm::eulerAngles(start * glm::angleAxis(glm::radians(angleDeg), localAxis)));
+          }
+          else
+            *m_attachedRotation = m_dragStartRotation + localAxis * angleDeg;
 
           if(m_onTransformChange)
             m_onTransformChange();
@@ -819,8 +829,8 @@ void TransformHelperVk::updateDrag(const glm::vec2& mousePos,
 
       *m_attachedScale              = m_dragStartScale;
       (*m_attachedScale)[axisIndex] = m_dragStartScale[axisIndex] * scaleFactor;
-      if(m_enableSnapping && m_snapScale > 0.0f)
-        (*m_attachedScale)[axisIndex] = snapValue((*m_attachedScale)[axisIndex], m_snapScale);
+      if(m_enableSnapping)
+        (*m_attachedScale)[axisIndex] = gizmo::snapFrom(m_dragStartScale[axisIndex], (*m_attachedScale)[axisIndex], m_snapScale);
 
       if(m_onTransformChange)
         m_onTransformChange();
@@ -831,8 +841,8 @@ void TransformHelperVk::updateDrag(const glm::vec2& mousePos,
       float scaleFactor = computeScaleFactor(mousePos);
 
       *m_attachedScale = m_dragStartScale * scaleFactor;
-      if(m_enableSnapping && m_snapScale > 0.0f)
-        *m_attachedScale = snapVec3(*m_attachedScale, m_snapScale);
+      if(m_enableSnapping)
+        *m_attachedScale = gizmo::snapFrom(m_dragStartScale, *m_attachedScale, m_snapScale);
 
       if(m_onTransformChange)
         m_onTransformChange();
@@ -963,10 +973,12 @@ glm::mat4 TransformHelperVk::getGizmoTransform() const
     // In TRS decomposition, T is in parent space and independent of the object's
     // own rotation. Use parent orientation only so gizmo axes match the drag
     // directions computed by localAxisToWorld/worldDeltaToLocal.
-    glm::vec3 worldPos = glm::vec3(*m_parentWorldMatrix * glm::vec4(position, 1.0f));
-    glm::vec3 axisX    = glm::normalize(glm::vec3((*m_parentWorldMatrix)[0]));
-    glm::vec3 axisY    = glm::normalize(glm::vec3((*m_parentWorldMatrix)[1]));
-    glm::vec3 axisZ    = glm::normalize(glm::vec3((*m_parentWorldMatrix)[2]));
+    // In local space the object's own turn comes after the parent's.
+    const glm::mat3 own      = m_space == TransformSpace::eLocal ? glm::mat3_cast(rotation) : glm::mat3(1.0f);
+    glm::vec3       worldPos = glm::vec3(*m_parentWorldMatrix * glm::vec4(position, 1.0f));
+    glm::vec3       axisX    = glm::normalize(glm::mat3(*m_parentWorldMatrix) * own[0]);
+    glm::vec3       axisY    = glm::normalize(glm::mat3(*m_parentWorldMatrix) * own[1]);
+    glm::vec3       axisZ    = glm::normalize(glm::mat3(*m_parentWorldMatrix) * own[2]);
     return glm::mat4(glm::vec4(axisX, 0), glm::vec4(axisY, 0), glm::vec4(axisZ, 0), glm::vec4(worldPos, 1));
   }
 
@@ -995,9 +1007,11 @@ glm::vec3 TransformHelperVk::getDisplayPosition() const
 
 glm::vec3 TransformHelperVk::localAxisToWorld(const glm::vec3& localAxis) const
 {
+  // in local space, an axis of the object's own, turned with it
+  const glm::vec3 axis = m_space == TransformSpace::eLocal ? glm::mat3_cast(getAttachedRotation()) * localAxis : localAxis;
   if(m_parentWorldMatrix)
-    return glm::normalize(glm::mat3(*m_parentWorldMatrix) * localAxis);
-  return localAxis;
+    return glm::normalize(glm::mat3(*m_parentWorldMatrix) * axis);
+  return axis;
 }
 
 glm::vec3 TransformHelperVk::worldDeltaToLocal(const glm::vec3& worldDelta) const

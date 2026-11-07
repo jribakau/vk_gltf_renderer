@@ -31,7 +31,7 @@
 //   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation}   the lens of the view in use
 //   camera.get    {}                         -> {position, target, up, focalLength}
 //   camera.goto   {position, target, up?, focalLength?}
-//   view.set      {display, grid, gizmo, pick, select, transform, helpers, frameAspect, solo}  display: shaded, clay, wireframe, normals;
+//   view.set      {display, grid, gizmo, pick, select, transform, space, snap, helpers, frameAspect, solo}  display: shaded, clay, wireframe, normals;
 //                                               pick: "object" (the default: a click selects the prop),
 //                                               "mesh" (the node hit), "bone" (the posed bone nearest) or
 //                                               "pull" (a drag on a figure in Physics mode pulls it, the
@@ -40,6 +40,10 @@
 //                                               off, the selection stays as it is and a double-click
 //                                               still centres the view);
 //                                               transform: the gizmo's "move", "rotate" or "scale";
+//                                               space: its handles along the world's axes (what the prop
+//                                               rides on) or the prop's own ("world", "local");
+//                                               snap: {move (m), rotate (degrees), scale}, a drag going in
+//                                               whole steps from where it started, or null for none;
 //                                               helpers: whether camera and light markers show;
 //                                               frameAspect: a frame's width over height the view is
 //                                               widened to hold, with a margin (0: none; fovForFrame);
@@ -222,6 +226,7 @@ private:
   // the props selected, the primary first (m_selectedProp), and whether the click being picked held Ctrl
   std::vector<std::string> m_selectedProps;
   bool                     m_clickCtrl = false;
+  HostRenderer::GizmoOptions m_gizmo;  // view.set's space and snap
   // a prop in or out of the selection, the primary moving to what is left
   void toggleMember(const std::string& prop);
   const PropNodes* propNodes(const std::string& prop) const;

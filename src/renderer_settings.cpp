@@ -494,6 +494,9 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({"uiSnapEnabled", "Snap gizmo transforms to grid increments"}, &m_resources.settings.snapEnabled, Persist::eYes);
   m_settings.add({"uiSnapRotation", "Rotation snap increment (degrees)"}, &m_resources.settings.snapRotation, Persist::eYes);
   m_settings.add({"uiSnapScale", "Scale snap increment"}, &m_resources.settings.snapScale, Persist::eYes);
+  // the app's view.set space and snap (FvView), which it sends at every start: not kept here
+  m_settings.add({"uiSnapMove", "Move snap increment (world units)"}, &m_resources.settings.snapMove, Persist::eNo);
+  m_settings.add({"uiGizmoLocal", "The gizmo along the object's own axes, not its parent's"}, &m_resources.settings.gizmoLocal, Persist::eNo);
 
   // The ground: the path tracer's infinite plane.
   const auto groundChanged = [this](const nvutils::ParameterBase* const) { resetFrame(); };

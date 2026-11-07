@@ -102,6 +102,8 @@ public:
   void setInspectObserver(std::function<void(const PixelReadout&)> observer) override { inspectObserver = std::move(observer); }
   void setGizmoHooks(GizmoHooks hooks) override { gizmo = std::move(hooks); }
   void setShowGizmo(bool) override {}
+  void setGizmoOptions(const GizmoOptions& options) override { gizmoOptions = options; }
+  GizmoOptions gizmoOptions;
   bool gizmoInput(glm::vec2, bool, bool, bool) override { return false; }
   void setHelperLines(std::vector<shaderio::lines::LineVertex> vertices) override { helperLines = std::move(vertices); }
 

@@ -262,6 +262,19 @@ void GltfRenderer::setShowGizmo(bool on)
   m_resources.settings.showGizmo = on;
 }
 
+// the registered settings (renderer_settings.cpp), which renderVisualHelpers hands the gizmo each frame
+void GltfRenderer::setGizmoOptions(const GizmoOptions& options)
+{
+  m_resources.settings.gizmoLocal  = options.local;
+  m_resources.settings.snapEnabled = options.snap;
+  if(options.move > 0)
+    m_resources.settings.snapMove = options.move;
+  if(options.rotate > 0)
+    m_resources.settings.snapRotation = options.rotate;
+  if(options.scale > 0)
+    m_resources.settings.snapScale = options.scale;
+}
+
 void GltfRenderer::setHelperLines(std::vector<shaderio::lines::LineVertex> vertices)
 {
   m_visualHelpers.lines.setLines(std::move(vertices));
