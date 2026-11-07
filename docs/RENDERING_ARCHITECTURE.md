@@ -612,3 +612,30 @@ leave through the part the bound cuts.
   `tests/figure/data/closure_baseline.json` was rewritten: the closure probe's sampled lobe albedos moved by
   -1.4% to +0.7%, mean -0.14%, as noise of another draw.
 
+## How rough a bounce was
+
+A path carries `pathRoughness`, the roughest event along it so far (perceptual). Three things read it:
+
+- `prefixIndirect`, which says whether the firefly clamp acts on the light a path gathers next;
+- the lobe mixture for direct paths (`ePtLobeMixtureDirect`, up to `DIRECT_PATH_ROUGHNESS` 0.1);
+- the skin's scatter simplification (from `SCATTER_SIMPLIFY_ROUGHNESS` 0.15).
+
+A glossy event counts as the roughness of the lobe that took it. `bsdfSampleCore` returns that lobe,
+and `bsdfLobeRoughness` (nvshaders' `bsdf_functions.h.slang`) gives its roughness:
+
+- the coat's and the second specular lobe's own roughness;
+- the base's larger anisotropic alpha for the specular, metal and transmission lobes;
+- 1 for sheen, which is broad at any roughness.
+
+An impulse counts as 0, a diffuse event as 1, and a fibre's glossy event as its longitudinal
+roughness. This is how Falcor's `isSampleRough` judges a sample.
+
+Until 2026-11-07 a glossy event took the smoothest of the specular, coat and second lobe. A bounce off
+the rough base under a sharp coat (car paint, a PBRSkin top coat, clearcoated leather) then read as
+sharp: the clamp skipped the light it reached, and the lobe mixture and the unsimplified skin walk
+carried on behind it.
+
+Checked by `BsdfLobes.ALobeIsAsRoughAsItsOwnRoughness` (each lobe's roughness) and
+`BsdfLobes.ASampleReturnsTheLobeThatTookIt`. The second test checks three things: lobes come back as
+often as `bsdfLobePick` picks them, each with its own kind of event; under a sharp coat or second lobe,
+some of the glossy samples now read as rough; on sheen cloth, all of them do.

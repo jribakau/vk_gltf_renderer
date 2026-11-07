@@ -244,6 +244,97 @@ TEST(BsdfLobes, TheMixtureSampleReportsTheEveryLobePdf)
     }
 }
 
+// The path tracer judges a bounce by the lobe bsdfSampleCore says took it (bsdfLobeRoughness), not by
+// the material's smoothest lobe: each lobe's own roughness, 1 for the broad ones.
+TEST(BsdfLobes, ALobeIsAsRoughAsItsOwnRoughness)
+{
+  PbrMaterial mat         = base(0.6f);
+  mat.roughness           = vec2(0.04f, 0.36f);  // anisotropic: the larger alpha, perceptual 0.6
+  mat.clearcoat           = 1.0f;
+  mat.clearcoatRoughness  = 0.05f;
+  mat.specular2           = 0.5f;
+  mat.specular2Roughness  = 0.2f;
+  mat.sheenColor          = vec3(0.5f);
+  mat.sheenRoughness      = 0.05f;
+  EXPECT_FLOAT_EQ(bsdfLobeRoughness(mat, LOBE_CLEARCOAT_REFLECTION), 0.05f);
+  EXPECT_FLOAT_EQ(bsdfLobeRoughness(mat, LOBE_SPECULAR2_REFLECTION), 0.2f);
+  EXPECT_FLOAT_EQ(bsdfLobeRoughness(mat, LOBE_SPECULAR_REFLECTION), 0.6f);
+  EXPECT_FLOAT_EQ(bsdfLobeRoughness(mat, LOBE_METAL_REFLECTION), 0.6f);
+  EXPECT_FLOAT_EQ(bsdfLobeRoughness(mat, LOBE_SPECULAR_TRANSMISSION), 0.6f);
+  EXPECT_FLOAT_EQ(bsdfLobeRoughness(mat, LOBE_DIFFUSE_REFLECTION), 1.0f);
+  EXPECT_FLOAT_EQ(bsdfLobeRoughness(mat, LOBE_DIFFUSE_TRANSMISSION), 1.0f);
+  EXPECT_FLOAT_EQ(bsdfLobeRoughness(mat, LOBE_SHEEN_REFLECTION), 1.0f);  // broad at any roughness
+}
+
+// The lobe bsdfSampleCore returns is the one the sample came from: lobes come back as often as
+// bsdfLobePick picks them, each with its own kind of event. Under a sharp coat (car paint, a PBRSkin top
+// coat) the base's glossy samples then read as rough, where the smoothest-lobe rule called every glossy
+// sample sharp.
+TEST(BsdfLobes, ASampleReturnsTheLobeThatTookIt)
+{
+  PbrMaterial paint        = base(0.6f);
+  paint.clearcoat          = 1.0f;
+  paint.clearcoatRoughness = 0.05f;
+  PbrMaterial cloth        = base(0.5f);
+  cloth.sheenColor         = vec3(0.6f);
+  cloth.sheenRoughness     = 0.3f;
+  PbrMaterial skin         = base(0.45f);
+  skin.specular2           = 0.6f;
+  skin.specular2Roughness  = 0.08f;
+  const Case materials[]   = {{"car paint", paint}, {"sheen cloth", cloth}, {"skin's second lobe", skin}};
+
+  std::mt19937                          rng(41);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  for(const Case& c : materials)
+  {
+    const vec3 k1   = normalize(vec3(0.4f, 0.2f, 1.0f));
+    vec3       tint = c.mat.baseColor;
+    const auto s    = computeLobeWeights(c.mat, dot(k1, c.mat.N), tint);
+    const auto P    = bsdfLobePick(c.mat, s, tint);
+
+    const int               N = 200000;
+    std::array<int, LOBE_COUNT> picked{};
+    int                     glossy = 0, roughGlossy = 0;
+    for(int i = 0; i < N; i++)
+    {
+      BsdfSampleData d;
+      d.k1           = k1;
+      d.xi           = vec3(u(rng), u(rng), u(rng));
+      const int lobe = bsdfSampleCore(d, c.mat, false);
+      ASSERT_GE(lobe, 0) << c.name;
+      ASSERT_LT(lobe, LOBE_COUNT) << c.name;
+      picked[lobe]++;
+      if(d.event_type == BSDF_EVENT_ABSORB)
+        continue;
+      if(lobe == LOBE_DIFFUSE_REFLECTION)
+        EXPECT_EQ(d.event_type, BSDF_EVENT_DIFFUSE_REFLECTION) << c.name;
+      else
+        EXPECT_NE(d.event_type & (BSDF_EVENT_GLOSSY | BSDF_EVENT_IMPULSE), 0) << c.name << ", lobe " << lobe;
+      if((d.event_type & BSDF_EVENT_GLOSSY) != 0)
+      {
+        glossy++;
+        roughGlossy += bsdfLobeRoughness(c.mat, lobe) > 0.1f;  // DIRECT_PATH_ROUGHNESS
+      }
+    }
+    for(int l = 0; l < LOBE_COUNT; l++)
+    {
+      const float p = P[l], sigma = std::sqrt(std::max(p * (1.0f - p), 1e-6f) / float(N));
+      EXPECT_NEAR(float(picked[l]) / float(N), p, 5.0f * sigma + 1e-6f) << c.name << ", lobe " << l;
+    }
+    ASSERT_GT(glossy, 0) << c.name;
+    const float roughShare = float(roughGlossy) / float(glossy);
+    if(c.mat.clearcoat > 0.0f || c.mat.specular2 > 0.0f)
+    {
+      // A glossy lobe smoother than 0.1 beside a rougher one: under the old rule every glossy sample
+      // read as smooth. Now the rougher lobe's share does not.
+      EXPECT_GT(roughShare, 0.05f) << c.name;
+      EXPECT_LT(roughShare, 0.95f) << c.name;
+    }
+    else
+      EXPECT_EQ(roughShare, 1.0f) << c.name;  // the sheen and the specular, both rough
+  }
+}
+
 // What sampling carries (the mean of bsdf_over_pdf) is the BSDF's integral over the directions a sample
 // can leave by, as evaluation gives it. Retroreflection sampled twice its value, rough refraction's
 // evaluation lacked eta_t^2 and the clearcoat's evaluation used the base normal's frame.

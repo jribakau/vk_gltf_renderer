@@ -1297,6 +1297,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // random numbers: a Sobol point's, the fourth for the fibre's azimuth
       const float4 bsdfXi = g_sobol ? nextSobolDecision() : float4(rand(seed), rand(seed), rand(seed), 0.0F);
       sampleData.xi       = bsdfXi.xyz;
+      int sampledLobe     = LOBE_DIFFUSE_REFLECTION;  // the lobe the sample came from; a fibre's are its own
 #if GLTF_USE_HAIR
       if(hairOn)
       {
@@ -1308,7 +1309,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // The lobe mixture's pdf, which next-event estimation's bsdfEvaluateAll weighs against. Not at
         // the last vertex: the loop ends before this ray is traced, so nothing reads it.
         const bool mixturePdf = lobeMixture && !lastVertex;
-        bsdfSampleCore(sampleData, pbrMat, mixturePdf);
+        sampledLobe           = bsdfSampleCore(sampleData, pbrMat, mixturePdf);
       }
       // bsdfSampleSimple(sampleData, pbrMat);
       // The exit's Fresnel weighs the sample, not its pdf: both MIS sides keep the cosine lobe's
@@ -1369,21 +1370,14 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       if(sampleData.event_type != BSDF_EVENT_ABSORB)
       {
         // How rough this scattering was (perceptual): a diffuse lobe 1, an impulse 0, a glossy one
-        // its own roughness. The event does not say which glossy lobe it was: take the smoothest of
-        // the specular, the second lobe and the clearcoat, so a wrong guess clamps less, not more. A fibre: its
-        // longitudinal roughness.
+        // the roughness of the lobe that took it (bsdfLobeRoughness): a bounce off the rough base
+        // under a sharp coat is rough, as Falcor's isSampleRough judges it. A fibre: its longitudinal
+        // roughness.
         float eventRoughness = 1.0F;
         if((sampleData.event_type & BSDF_EVENT_IMPULSE) != 0)
           eventRoughness = 0.0F;
         else if((sampleData.event_type & BSDF_EVENT_GLOSSY) != 0)
-        {
-          float alpha = max(pbrMat.roughness.x, pbrMat.roughness.y);
-          if(pbrMat.clearcoat > 0.0F)
-            alpha = min(alpha, pbrMat.clearcoatRoughness * pbrMat.clearcoatRoughness);
-          if(pbrMat.specular2 > 0.0F)
-            alpha = min(alpha, pbrMat.specular2Roughness * pbrMat.specular2Roughness);
-          eventRoughness = sqrt(alpha);
-        }
+          eventRoughness = bsdfLobeRoughness(pbrMat, sampledLobe);
 #if GLTF_USE_HAIR
         if(hairOn && (sampleData.event_type & BSDF_EVENT_GLOSSY) != 0)
           eventRoughness = hairHit.betaM;  // the fibre lobes; its multiple-scattering lobe is diffuse
