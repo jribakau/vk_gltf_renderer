@@ -759,7 +759,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // taken off: skin's (up to 0.95) would leave RR a near-black albedo.
       float3 guideAlbedo = pbrMat.baseColor.xyz;
 #if USE_DLSS_SHADER
-      if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+      if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) || hasFlag(pushConst.flags, PathtracerFlags::ePtRrStillGuides))
         guideAlbedo *= 1.0F - pbrMat.metallic;
       // #DLSS specular guide - specular albedo + clear-glass albedo refinement. DLSS-only quality
       // path; the other denoisers need neither, so it is compiled out of their variant.
@@ -1793,6 +1793,12 @@ float2 gaussianSubpixelJitter(inout uint seed)
 void addDenoiserGuides(SampleResult sampleResult, inout float3 albedoSum, inout float3 normalSum)
 {
   float3 albedo = sampleResult.guideOutput.albedo.xyz;
+#if USE_DLSS_SHADER
+  // DLSS-RR's still: the sky's albedo is 0.5, as on its moving frames (NVIDIA's RR guide)
+  if(sampleResult.radiance.w <= 0.0f && hasFlag(pushConst.flags, PathtracerFlags::ePtRrStillGuides))
+    albedo = float3(0.5f);
+  else
+#endif
   if(sampleResult.radiance.w <= 0.0f)
   {
     const float3 background = max(sampleResult.radiance.xyz, float3(0.0f));
@@ -1802,6 +1808,21 @@ void addDenoiserGuides(SampleResult sampleResult, inout float3 albedoSum, inout 
   albedoSum += albedo;
   normalSum += sampleResult.guideOutput.normalRoughness.xyz;
 }
+
+#if USE_DLSS_SHADER
+// DLSS-RR's still (ePtRrStillGuides): one sample's specular albedo and linear roughness (w), and its guide
+// depth, the surface behind clear glass's (primary surface replacement), far where nothing is hit. The
+// albedo addDenoiserGuides takes is the diffuse one on this variant (the metal's share is the specular's).
+void addRrStillGuides(SampleResult sampleResult, inout float4 specularSum, inout float depthMin)
+{
+  specularSum += float4(float3(sampleResult.guideOutput.specularAlbedo), float(sampleResult.guideOutput.normalRoughness.w));
+  if(sampleResult.radiance.w <= 0.0f)
+    return;
+  const float3 pos  = sampleResult.guideOutput.psrValid ? sampleResult.guideOutput.psrPos : sampleResult.hitPosition;
+  const float4 clip = mul(float4(pos, 1.0), pushConst.frameInfo->viewProjMatrix);
+  depthMin          = min(depthMin, clip.z / clip.w);
+}
+#endif  // USE_DLSS_SHADER
 #endif  // USE_GUIDE_SHADER
 
 //-----------------------------------------------------------------------
@@ -1876,10 +1897,19 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   float3     albedoSum      = float3(0.0f);
   float3     normalSum      = float3(0.0f);
   int        guideCount     = 0;
+#if USE_DLSS_SHADER
+  const bool rrStillGuides = denoiserGuides && hasFlag(pushConst.flags, PathtracerFlags::ePtRrStillGuides);
+  float4     specularSum   = float4(0.0f);
+  float      depthMin      = 1.0f;
+#endif
   if(denoiserGuides)
   {
     addDenoiserGuides(sampleResult, albedoSum, normalSum);
     guideCount++;
+#if USE_DLSS_SHADER
+    if(rrStillGuides)
+      addRrStillGuides(sampleResult, specularSum, depthMin);
+#endif
   }
 #endif
 
@@ -1906,6 +1936,10 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     {
       addDenoiserGuides(sampleResult, albedoSum, normalSum);
       guideCount++;
+#if USE_DLSS_SHADER
+      if(rrStillGuides)
+        addRrStillGuides(sampleResult, specularSum, depthMin);
+#endif
     }
 #endif
   }
@@ -2027,13 +2061,21 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     // so their edges are anti-aliased (and blurred by depth of field) the same way. They have their
     // own sample count: they restart when the denoiser is turned on, while the color goes on. Each
     // denoiser converts them to what it reads.
-    const float3 albedo = albedoSum / float(guideCount);
-    const float3 normal = normalSum / float(guideCount);
-    const int2   pixel  = int2(samplePos);
-    if(firstFrame || pushConst.guideSamples == 0)
+    const float3 albedo  = albedoSum / float(guideCount);
+    const float3 normal  = normalSum / float(guideCount);
+    const int2   pixel   = int2(samplePos);
+    float        normalW = 1.0f;
+#if USE_DLSS_SHADER
+    // DLSS-RR's still reads the roughness packed in the normal's w (RrStillDenoiser)
+    const float4 specular = specularSum / float(guideCount);
+    if(rrStillGuides)
+      normalW = specular.w;
+#endif
+    const bool restart = firstFrame || pushConst.guideSamples == 0;
+    if(restart)
     {
       outImages[int(OutputImage::eDenoiserAlbedo)][pixel] = float4(albedo, 1.0f);
-      outImages[int(OutputImage::eDenoiserNormal)][pixel] = float4(normal, 1.0f);
+      outImages[int(OutputImage::eDenoiserNormal)][pixel] = float4(normal, normalW);
     }
     else
     {
@@ -2041,8 +2083,19 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
       outImages[int(OutputImage::eDenoiserAlbedo)][pixel] =
           lerp(outImages[int(OutputImage::eDenoiserAlbedo)][pixel], float4(albedo, 1.0f), weight);
       outImages[int(OutputImage::eDenoiserNormal)][pixel] =
-          lerp(outImages[int(OutputImage::eDenoiserNormal)][pixel], float4(normal, 1.0f), weight);
+          lerp(outImages[int(OutputImage::eDenoiserNormal)][pixel], float4(normal, normalW), weight);
     }
+#if USE_DLSS_SHADER
+    if(rrStillGuides)
+    {
+      const float4 spec = float4(specular.xyz, 1.0f);
+      outImages[int(OutputImage::eRrStillSpecAlbedo)][pixel] =
+          restart ? spec :
+                    lerp(outImages[int(OutputImage::eRrStillSpecAlbedo)][pixel], spec, float(guideCount) / float(pushConst.guideSamples + guideCount));
+      outImages[int(OutputImage::eRrStillDepth)][pixel] =
+          float4(restart ? depthMin : min(outImages[int(OutputImage::eRrStillDepth)][pixel].x, depthMin));
+    }
+#endif
   }
 #endif  // USE_GUIDE_SHADER
 }

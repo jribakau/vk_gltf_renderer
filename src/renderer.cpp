@@ -471,6 +471,11 @@ int GltfRenderer::displayedImageSamples(DisplayBuffer& source) const
      source == DisplayBuffer::eOidnDenoised && oidn && oidn->hasValidDenoisedOutput())
     return oidn->denoisedSamples();
 #endif
+#if defined(USE_DLSS)
+  if(const RrStillDenoiser* rr = m_pathTracer.getRrStillDenoiser();
+     source == DisplayBuffer::eRrStillDenoised && rr && rr->hasValidDenoisedOutput())
+    return rr->denoisedSamples();
+#endif
   source = DisplayBuffer::eRendered;  // what runTonemapPass falls back to
   return m_resources.accumulatedSamples;
 }
@@ -1211,8 +1216,10 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
       // Not while an image is still decoding: a large file's last texture can land after the first
       // samples are in, and the still begins again with it, so what is saved has every texture (two
       // runs of a 326 MB figure differed where its top's map had landed in one of them only).
+      // Nor before DLSS-RR's still has run, NGX's async start included (a small scene's still can end first).
       const bool decoding = m_resources.retainedGpu && m_resources.retainedGpu->residency().queuedDecodes() > 0;
-      if(isHeadlessMode() && m_parameterParser && m_parameterParser->wasParsed("ptMaxSamples") && m_app && !decoding)
+      if(isHeadlessMode() && m_parameterParser && m_parameterParser->wasParsed("ptMaxSamples") && m_app && !decoding
+         && !m_pathTracer.stillDenoisePending(m_resources))
         m_app->close();
     }
   }
@@ -1379,6 +1386,17 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
     if(oidn && oidn->hasValidDenoisedOutput())
     {
       inputBuffer         = oidn->getDescriptorImageInfo(OidnDenoiser::eGBufferDenoised);
+      inputBuffer.sampler = m_resources.linearSampler;
+    }
+  }
+#endif
+#if defined(USE_DLSS)
+  if(m_resources.settings.displayBuffer == DisplayBuffer::eRrStillDenoised)
+  {
+    const RrStillDenoiser* rr = m_pathTracer.getRrStillDenoiser();
+    if(rr && rr->hasValidDenoisedOutput())
+    {
+      inputBuffer         = rr->getDescriptorImageInfo(RrStillDenoiser::eGBufferDenoised);
       inputBuffer.sampler = m_resources.linearSampler;
     }
   }

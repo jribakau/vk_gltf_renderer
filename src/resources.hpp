@@ -68,6 +68,7 @@ enum class DisplayBuffer
   eRendered,           // Final rendered image (default)
   eOptixDenoised,      // OptiX Denoised output (handled via OptiXDenoiser::getDescriptorImageInfo)
   eOidnDenoised,       // vk_oidn Denoised output (handled via OidnDenoiser::getDescriptorImageInfo)
+  eRrStillDenoised,    // DLSS-RR over the still's final image (RrStillDenoiser::getDescriptorImageInfo)
 };
 
 enum DirtyFlags

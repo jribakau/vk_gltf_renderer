@@ -81,7 +81,10 @@ enum OutputImage
   eNrMask,               // NR per-material control mask (RGBA16F)
   eDenoiserAlbedo = 2,   // Accumulated albedo guide of the denoiser of the accumulation (RGBA32)
   eDenoiserNormal = 3,   // Accumulated world-space normal guide (RGBA32). Both alias DLSS slots: the
-                         // images of the denoiser on (OptiX or OIDN) are bound there, never with DLSS
+                         // images of the denoiser on (OptiX, OIDN or DLSS-RR's still) are bound there, never on DLSS's
+                         // frames; for DLSS-RR's still the normal's w is the accumulated linear roughness
+  eRrStillSpecAlbedo = 4,  // DLSS-RR's still (ePtRrStillGuides): accumulated specular albedo (RGBA32)
+  eRrStillDepth      = 6,  // DLSS-RR's still: the nearest guide depth of its samples (R32), the surface behind clear glass's
   eConvergence = 9,      // Per pixel of an accumulation (RG32): the mean of its samples' luminance squared, and 1 while it has converged (ePtAdaptiveStop)
   eDlssResponsivity = 9, // DLSS-RR responsivity mask (R16F): ptHairResponsivity where the first hit is hair, 0 elsewhere.
                          // DLSS frames only, so it shares the still's eConvergence slot
@@ -346,6 +349,7 @@ struct SceneFrameInfo
 enum PathtracerFlags
 {
   ePtUseDlss             = 1 << 0,
+  ePtRrStillGuides       = 1 << 1,  // An accumulation frame on the DLSS variant averages DLSS-RR's guides into the still's denoiser's images (RrStillDenoiser)
   ePtFirstFrame          = 1 << 2,
   ePtShadowTransmission  = 1 << 3,  // Biased: shadow rays pass straight through transmissive surfaces
   ePtDenoiserGuides      = 1 << 4,  // Accumulate the albedo/normal guides (eDenoiserAlbedo, eDenoiserNormal)

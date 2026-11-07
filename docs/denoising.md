@@ -139,6 +139,36 @@ They differ in where the work runs:
   its context picks its optional features (tensor cores through `VK_KHR_cooperative_matrix`) from
   the enabled extension list (`Resources::deviceExtensions`).
 
+## DLSS-RR over a still's final image
+
+`RrStillDenoiser` (`src/rr_still_denoiser.{hpp,cpp}`, `--rrStillEnable`; the app's Render tab ›
+Denoiser › Ray reconstruction) makes DLSS-RR the still's denoiser in place of OptiX or OIDN, and
+only at the end: the accumulation refines undenoised, shown as it builds, and the frame that
+completes it (or the idle frame after, when the adaptive stop ended it early) runs RR once over
+the final image. It is its own NGX feature, made in the moving view's NGX context
+(`Dlss::ngxContext()`) at DLAA, the input the accumulation at the output's size; the moving view's
+feature is left alone. Its images and feature exist only while it is on.
+
+The guides are RR's own, averaged over the still's samples like the colour, so their edges are
+anti-aliased as the colour's are: its frames run the DLSS shader variant without `ePtUseDlss`
+(nothing of the lighting changes: that variant's other code only writes guides or is gated on the
+flag) and `ePtRrStillGuides` makes the guide accumulation add RR's specular albedo, linear roughness
+(the normal's w, packed) and the nearest guide depth to the diffuse albedo and normal the others
+take; through clear glass they describe the surface behind it, as on the moving view. Motion is
+zero and the history reset: one evaluation (`--rrStillPasses` evaluates the same image again,
+building history on it). Keep detail mixes the raw accumulation back in, as for OIDN
+(`--rrStillBlendMax`). The first still compiles the DLSS variant for the still's settings once.
+
+It turning on or off restarts the still (`keepOneAccumulationDenoiser`), whether from the setting
+or from NGX coming up, which an idle still's frames take with `Dlss::pollInit()` since they do not
+tick DLSS. Without the restart the guides would cover only the samples after it, and the pass
+would skip. A headless run given `--ptMaxSamples` holds its exit while RR's still is wanted and
+NGX is still starting, or its final pass has not run (`PathTracer::stillDenoisePending`). A small
+scene's still otherwise ends before NGX's async start does, and saves the raw image.
+
+Judged on a dim room lit by candles (11-07), against OIDN: the skin and the wallpaper keep their
+texture, where OIDN smooths them.
+
 ## DLSS hand-off
 
 With DLSS-RR and OptiX or OIDN both on, every frame of a moving camera is a frame 0, denoised by

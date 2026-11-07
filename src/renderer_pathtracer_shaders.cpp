@@ -1279,7 +1279,8 @@ PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) co
       resources.settings.visualization != shaderio::Visualization::eRendered,
       wantOpacityMicromapShader(resources),
       resources.settings.optimalShader,
-      isDlssEnabled() && m_dlssShaderFrame,
+      // DLSS's frames, and DLSS-RR's still's, which gather RR's guides
+      dlssVariantFrame(),
       resources.currentFeatureSet.has(nvvkgltf::SceneFeatureSet::eDlssGuide),
       resources.settings.optimalShader ? resources.currentFeatureSet : nvvkgltf::SceneFeatureSet{},
 #if defined(USE_DLSS)

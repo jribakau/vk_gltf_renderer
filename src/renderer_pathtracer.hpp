@@ -66,6 +66,9 @@
 #include "oidn_denoiser.hpp"
 #endif
 
+// DLSS-RR over a still's final image
+#include "rr_still_denoiser.hpp"
+
 
 class PathTracer : public BaseRenderer
 {
@@ -419,6 +422,7 @@ public:
 #endif
   bool m_optixWasOn{false};  // keepOneAccumulationDenoiser(): last frame's state
   bool m_oidnWasOn{false};
+  bool m_rrStillWasOn{false};  // DLSS-RR's still on last frame (keepOneAccumulationDenoiser)
   // DLSS-RR rendered frame 0 of this accumulation, and an accumulation denoiser (OptiX, OIDN) takes the
   // frames after it: DLSS's image is no sample of the accumulation, and the hand-off blends from it
   bool                       m_dlssFrame0{false};
@@ -493,8 +497,12 @@ public:
   // One accumulated-image denoiser at a time (OptiX or OIDN): both would denoise the same image, and
   // only one result can be shown. The one turned on last stays on; when both come on together
   // (ImGui.ini, the command line), OIDN does. Called every frame; returns true when the accumulation
-  // must restart.
+  // must restart. DLSS-RR's still coming on or going off restarts it too.
   bool keepOneAccumulationDenoiser(Resources& resources);
+
+  // A headless run's still is not done yet: DLSS-RR's still is its denoiser and NGX is still starting
+  // (the still begins again once it is up), or its final pass has not run
+  bool stillDenoisePending(const Resources& resources) const;
 
   // Samples per frame the next frame traces before it ends on a stop: Auto SPP's count, the
   // setting (ptSamples), or when DLSS renders every frame dlssFrameSamples()
@@ -549,6 +557,9 @@ public:
   std::unique_ptr<Dlss> m_dlss;
   Dlss*                 getDlss() { return m_dlss.get(); }
   const Dlss*           getDlss() const { return m_dlss.get(); }
+  // DLSS-RR as the still's denoiser: its final image, once (rrStillEnable)
+  std::unique_ptr<RrStillDenoiser> m_rrStill;
+  const RrStillDenoiser*           getRrStillDenoiser() const { return m_rrStill.get(); }
 #endif
 
 
@@ -623,6 +634,16 @@ private:
   bool getEffectiveOptixEnabled(const Resources& resources) const;
   // Determine if OIDN should write its guides and denoise this frame
   bool getEffectiveOidnEnabled(const Resources& resources) const;
+  // DLSS-RR's still: on, OptiX and OIDN off, and this an accumulation's frame (frame 0 and the hand-off
+  // delay's being DLSS's while it is engaged, as for the others)
+  bool getEffectiveRrStillEnabled(const Resources& resources) const;
+  // DLSS-RR's still is the still's denoiser (on, OptiX and OIDN off): its frames gather RR's guides on
+  // the DLSS shader variant
+  bool rrStillOn() const;
+  // Its setting on, OptiX and OIDN off, NGX up or not
+  bool rrStillWanted() const;
+  // The frame runs the DLSS shader variant: DLSS renders it, or DLSS-RR's still gathers its guides
+  bool dlssVariantFrame() const;
   // Upscale selection ID and depth from render resolution to display resolution (OptiX 2x mode)
   void upscaleSelectionAndDepth(VkCommandBuffer cmd, Resources& resources);
   // Size m_depthStaging / m_depthCopyBuffer to the G-buffer (no-op unless m_depthViaStaging).
