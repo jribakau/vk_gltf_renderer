@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <nvutils/logger.hpp>
@@ -63,6 +64,7 @@ void OidnDenoiser::init(Resources& resources)
   m_availability     = Availability::eUnavailable;
   m_device           = resources.allocator.getDevice();
   m_appMemoryTracker = &resources.appMemoryTracker;
+  m_blend.init(m_device);
 
   // Denoised output and the two guides, allocated once the denoiser is enabled (updateSize / ensureTargets)
   NVVK_CHECK(m_target.init({.device = m_device,
@@ -111,6 +113,7 @@ void OidnDenoiser::deinit(Resources& /*resources*/)
   // Release the denoiser and the context before the device
   m_denoiser.reset();
   m_context.reset();
+  m_blend.deinit(m_device);
 
   if(m_appMemoryTracker)
     m_appMemoryTracker->untrack("OIDN/GBuffers", m_target, eGBufferCount);
@@ -132,6 +135,8 @@ void OidnDenoiser::registerParameters(SettingsRegistry* settings)
                 Persist::eYes, 0, 2);
   settings->add({"oidnGuides", "OIDN Denoiser: Guide images [Color:0, Color+Albedo:1, Color+Albedo+Normal:2]"},
                 &m_settings.guides, Persist::eYes, 0, 2);
+  settings->add({"oidnBlendMax", "OIDN Denoiser: Share of the noisy image mixed back in at max frames (0 = fully denoised)"},
+                &m_settings.blendMax, Persist::eYes, 0.0f, 1.0f);
 }
 
 VkDescriptorImageInfo OidnDenoiser::getDescriptorImageInfo(GBufferIndex index) const
@@ -224,7 +229,7 @@ bool OidnDenoiser::ensureTargets(Resources& resources)
 
 //---------------------------------------------------------
 // Records the denoising of the accumulated color (G-buffer eImgRendered) into cmd.
-bool OidnDenoiser::cmdDenoise(VkCommandBuffer cmd, Resources& resources, int samples)
+bool OidnDenoiser::cmdDenoise(VkCommandBuffer cmd, Resources& resources, int samples, bool finalImage)
 {
   if(!m_denoiser)
     return false;
@@ -269,6 +274,19 @@ bool OidnDenoiser::cmdDenoise(VkCommandBuffer cmd, Resources& resources, int sam
     return false;
   }
 
+  // Keep detail: the raw accumulation mixed back in, its share rising to blendMax by the last sample
+  // as OptiX's blendFactor does, written over the denoised image (RGBA32F: no half-float clamp)
+  const float blend = sample_schedule::denoiseBlend(m_settings.blendMax, samples, resources.settings.maxSamples, finalImage);
+  if(blend > 0.0f)
+  {
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    const VkDescriptorImageInfo denoised = m_target.getColorStorageImageInfo(eGBufferDenoised);
+    m_blend.cmdBlend(cmd, denoised, resources.gBuffers.getColorStorageImageInfo(Resources::eImgRendered), denoised,
+                     size, blend, std::numeric_limits<float>::max());
+  }
+
   // After: the denoised image is read by the tonemapper and the preview thumbnail
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -301,7 +319,7 @@ void OidnDenoiser::updateDenoiser(VkCommandBuffer cmd, Resources& resources, nvv
   const bool final = samples >= resources.settings.maxSamples;
   const bool due   = isEnabled() && m_settings.autoDenoiseEnabled
                    && m_autoDenoise.isDue(samples, m_settings.autoDenoiseSpp, final, handoffEnd, resources.settings.maxSamples);
-  const bool denoised                    = due && autoDenoise(cmd, resources, samples);
+  const bool denoised                    = due && autoDenoise(cmd, resources, samples, final);
   m_denoisedInSubFrame[section.subFrame] = denoised;
   profiler->cmdFrameEndSection(cmd, section);
 }
@@ -321,16 +339,16 @@ void OidnDenoiser::denoiseFinal(VkCommandBuffer cmd, Resources& resources, nvvk:
   bool denoised = false;
   if(due && m_denoiser)
   {
-    denoised = autoDenoise(cmd, resources, resources.accumulatedSamples);
+    denoised = autoDenoise(cmd, resources, resources.accumulatedSamples, /*finalImage=*/true);
     m_autoDenoise.markDenoised(resources.accumulatedSamples);  // a failed denoise is not retried every idle frame
   }
   m_denoisedInSubFrame[section.subFrame] = denoised;
   profiler->cmdFrameEndSection(cmd, section);
 }
 
-bool OidnDenoiser::autoDenoise(VkCommandBuffer cmd, Resources& resources, int samples)
+bool OidnDenoiser::autoDenoise(VkCommandBuffer cmd, Resources& resources, int samples, bool finalImage)
 {
-  if(!cmdDenoise(cmd, resources, samples))
+  if(!cmdDenoise(cmd, resources, samples, finalImage))
     return false;
   m_autoDenoise.markDenoised(samples);
   // Automatically switch to display the denoised result
@@ -348,7 +366,7 @@ bool OidnDenoiser::denoiseNow(Resources& resources)
 
   // Commands earlier in submission order are covered by the first barrier of cmdDenoise()
   VkCommandBuffer cmd = resources.app->createTempCmdBuffer();
-  const bool      ok  = cmdDenoise(cmd, resources, resources.accumulatedSamples);
+  const bool      ok  = cmdDenoise(cmd, resources, resources.accumulatedSamples, resources.accumulationComplete());
   resources.app->submitAndWaitTempCmdBuffer(cmd);
   return ok;
 }

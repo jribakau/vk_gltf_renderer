@@ -15,14 +15,25 @@
 - The **path tracer** (`renderer_pathtracer`) is the reference producer of the guide buffers; the
   **rasterizer** produces a subset for DLSS-SR.
 
-## OptiX blend with the accumulation
+## Blend with the accumulation (Keep detail)
 
-The OptiX denoiser runs on the accumulated image, so the further accumulation has converged, the
-less denoising it needs; at full strength it keeps smoothing away detail the samples already resolve
-(skin pores, hair strands). **Blend at max frames** (`--optixBlendMax`, `OptiXDenoiser::Settings::blendMax`)
-mixes the noisy accumulation back in through OptiX's `blendFactor`, rising linearly with the frame
-count from 0 to that share at `ptMaxFrames`. Upscale 2X has no input at output size to blend with, so
-it always shows the fully denoised result.
+The accumulated-image denoisers run on the accumulated image, so the further accumulation has
+converged, the less denoising it needs; at full strength they keep smoothing away detail the samples
+already resolve (skin pores, hair strands). **Blend at max frames** mixes the noisy accumulation back
+in, rising linearly with the samples from 0 to that share at the cap (`sample_schedule::denoiseBlend`):
+OptiX through its `blendFactor` (`--optixBlendMax`, `OptiXDenoiser::Settings::blendMax`); OIDN, which
+has none, by a pass over its output after the network (`--oidnBlendMax`, `OidnDenoiser::Settings::blendMax`,
+`ImageBlend` in `src/denoiser_handoff.hpp`, the hand-off's weighted sum, written over the RGBA32F
+output without the hand-off's half-float clamp). Upscale 2X has no input at output size to blend
+with, so it always shows the fully denoised result.
+
+The app's still is OIDN's since 2026-11-07 (the Render tab's Denoiser, OptiX the other choice). On
+1TEST, a night club lit by candles and bulbs behind glass, at the user's settings and 128 samples:
+the colourful noise left after denoising 17% lower than OptiX's at 1280x827 and 8% at 2160x1395, a
+denoise 10.5 ms of GPU in the frame against OptiX's 64 ms with its copies through CUDA (11 ms of
+invoke), the still 13.6 s against 15.4. The noise there is fireflies of caustics (0.37% of the pixels,
+55% of the raw error), which neither network removes: docs/improvements.md in the app, *Checked and
+rejected*.
 
 ## DLSS startup
 

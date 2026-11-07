@@ -26,6 +26,26 @@
 #include "settings_registry.hpp"
 
 //-------------------------------------------------------------------------------------------------------
+// ImageBlend: out = a * (1 - weight) + b * weight over RGBA storage images in VK_IMAGE_LAYOUT_GENERAL
+// (denoiser_handoff.slang), clamped to +-limit. `out` may be `a`: each pixel reads only itself. The
+// caller orders the writes before it and the reads after it with barriers.
+//-------------------------------------------------------------------------------------------------------
+class ImageBlend
+{
+public:
+  void init(VkDevice device);
+  void deinit(VkDevice device);
+  void cmdBlend(VkCommandBuffer cmd, const VkDescriptorImageInfo& a, const VkDescriptorImageInfo& b,
+                const VkDescriptorImageInfo& out, VkExtent2D size, float weight, float limit);
+
+private:
+  nvvk::DescriptorBindings m_bindings;
+  VkDescriptorSetLayout    m_descriptorSetLayout{};
+  VkPipelineLayout         m_pipelineLayout{};
+  VkPipeline               m_pipeline{};
+};
+
+//-------------------------------------------------------------------------------------------------------
 // DenoiserHandoff
 //
 // DLSS-RR combined with an accumulated-image denoiser (OptiX or OIDN): DLSS denoises frame 0, the image
@@ -111,8 +131,5 @@ private:
 
   nvvk::RenderTarget          m_target;
   nvvkgltf::GpuMemoryTracker* m_appMemoryTracker = nullptr;
-  nvvk::DescriptorBindings    m_bindings;
-  VkDescriptorSetLayout       m_descriptorSetLayout{};
-  VkPipelineLayout            m_pipelineLayout{};
-  VkPipeline                  m_pipeline{};
+  ImageBlend                  m_blend;
 };

@@ -34,18 +34,10 @@
 #include "_autogen/denoiser_handoff.slang.h"
 
 static constexpr const char* kMemoryCategory = "DLSS hand-off";
+static constexpr float       kHalfMax        = 65504.0F;  // Largest half float: the hand-off's output is RGBA16F
 
-void DenoiserHandoff::init(Resources& resources)
+void ImageBlend::init(VkDevice device)
 {
-  const VkDevice device = resources.allocator.getDevice();
-  m_appMemoryTracker    = &resources.appMemoryTracker;
-
-  // Allocated at the first capture (updated by onResize from then on): only DLSS-RR + OptiX/OIDN uses them
-  NVVK_CHECK(m_target.init({.device       = device,
-                            .alloc        = &resources.allocator,
-                            .colorFormats = {VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT},
-                            .debugName    = "DenoiserHandoff"}));
-
   m_bindings.addBinding(shaderio::DenoiserHandoffBindings::eHandoffDlss, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
   m_bindings.addBinding(shaderio::DenoiserHandoffBindings::eHandoffDenoised, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
                         VK_SHADER_STAGE_COMPUTE_BIT);
@@ -82,9 +74,8 @@ void DenoiserHandoff::init(Resources& resources)
   NVVK_DBG_NAME(m_pipeline);
 }
 
-void DenoiserHandoff::deinit(Resources& resources)
+void ImageBlend::deinit(VkDevice device)
 {
-  const VkDevice device = resources.allocator.getDevice();
   vkDestroyPipeline(device, m_pipeline, nullptr);
   vkDestroyPipelineLayout(device, m_pipelineLayout, nullptr);
   vkDestroyDescriptorSetLayout(device, m_descriptorSetLayout, nullptr);
@@ -92,6 +83,39 @@ void DenoiserHandoff::deinit(Resources& resources)
   m_pipeline            = {};
   m_pipelineLayout      = {};
   m_descriptorSetLayout = {};
+}
+
+void ImageBlend::cmdBlend(VkCommandBuffer cmd, const VkDescriptorImageInfo& a, const VkDescriptorImageInfo& b,
+                          const VkDescriptorImageInfo& out, VkExtent2D size, float weight, float limit)
+{
+  nvvk::WriteSetContainer writes;
+  writes.append(m_bindings.getWriteSet(shaderio::DenoiserHandoffBindings::eHandoffDlss), a);
+  writes.append(m_bindings.getWriteSet(shaderio::DenoiserHandoffBindings::eHandoffDenoised), b);
+  writes.append(m_bindings.getWriteSet(shaderio::DenoiserHandoffBindings::eHandoffOut), out);
+  vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, uint32_t(writes.size()), writes.data());
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
+  const shaderio::DenoiserHandoffPushConstant pushConstant{.weight = weight, .limit = limit};
+  vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstant), &pushConstant);
+  const VkExtent2D groups = nvvk::getGroupCounts(size, WORKGROUP_SIZE);
+  vkCmdDispatch(cmd, groups.width, groups.height, 1);
+}
+
+void DenoiserHandoff::init(Resources& resources)
+{
+  const VkDevice device = resources.allocator.getDevice();
+  m_appMemoryTracker    = &resources.appMemoryTracker;
+
+  // Allocated at the first capture (updated by onResize from then on): only DLSS-RR + OptiX/OIDN uses them
+  NVVK_CHECK(m_target.init({.device       = device,
+                            .alloc        = &resources.allocator,
+                            .colorFormats = {VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT},
+                            .debugName    = "DenoiserHandoff"}));
+  m_blend.init(device);
+}
+
+void DenoiserHandoff::deinit(Resources& resources)
+{
+  m_blend.deinit(resources.allocator.getDevice());
 
   if(m_appMemoryTracker)
     m_appMemoryTracker->untrack(kMemoryCategory, m_target, eImageCount);
@@ -194,17 +218,8 @@ void DenoiserHandoff::cmdUpdate(VkCommandBuffer cmd, Resources& resources, const
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_MEMORY_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
-  nvvk::WriteSetContainer writes;
-  writes.append(m_bindings.getWriteSet(shaderio::DenoiserHandoffBindings::eHandoffDlss),
-                m_target.getColorStorageImageInfo(eImageDlss));
-  writes.append(m_bindings.getWriteSet(shaderio::DenoiserHandoffBindings::eHandoffDenoised), denoiser->image);
-  writes.append(m_bindings.getWriteSet(shaderio::DenoiserHandoffBindings::eHandoffOut), m_target.getColorStorageImageInfo(eImageOut));
-  vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, uint32_t(writes.size()), writes.data());
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
-  const shaderio::DenoiserHandoffPushConstant pushConstant{.weight = m_weight};
-  vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstant), &pushConstant);
-  const VkExtent2D groups = nvvk::getGroupCounts(m_target.getSize(), WORKGROUP_SIZE);
-  vkCmdDispatch(cmd, groups.width, groups.height, 1);
+  m_blend.cmdBlend(cmd, m_target.getColorStorageImageInfo(eImageDlss), denoiser->image,
+                   m_target.getColorStorageImageInfo(eImageOut), m_target.getSize(), m_weight, kHalfMax);
 
   // Read by the tonemapper
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,

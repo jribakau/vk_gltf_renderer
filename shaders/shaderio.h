@@ -443,7 +443,8 @@ struct OptixCopyPushConstant
 
 struct DenoiserHandoffPushConstant
 {
-  float weight = 0.0F;  // Share of the denoised image (handoffWeight)
+  float weight = 0.0F;      // Share of the second image (the hand-off: the denoised one, handoffWeight)
+  float limit  = 65504.0F;  // Largest magnitude written: a half float's for an RGBA16F output
 };
 
 struct SilhouettePushConstant

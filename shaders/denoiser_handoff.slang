@@ -17,8 +17,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// DLSS hand-off: the image shown while the accumulation denoiser (OptiX or OIDN) takes over from
-// DLSS-RR, a blend of their two images (see src/denoiser_handoff.hpp).
+// A weighted sum of two images (ImageBlend in src/denoiser_handoff.hpp): the DLSS hand-off, shown while
+// the accumulation denoiser (OptiX or OIDN) takes over from DLSS-RR, and OIDN's Keep detail, the raw
+// accumulation mixed back into its denoised image. Each pixel reads only itself, so the output may be
+// the first input.
 
 #include "shaderio.h"
 
@@ -29,8 +31,6 @@
 
 [[vk::push_constant]] ConstantBuffer<DenoiserHandoffPushConstant> pushConst;
 // clang-format on
-
-static const float kHalfMax = 65504.0;  // Largest half float: the output is RGBA16F
 
 [shader("compute")]
 [numthreads(WORKGROUP_SIZE, WORKGROUP_SIZE, 1)]
@@ -43,8 +43,9 @@ void main(uint3 dispatchThreadID: SV_DispatchThreadID)
     return;
 
   // Written as a weighted sum, not a + (b - a) * w: an infinite input would make that NaN. The HDR
-  // radiance can exceed the half-float range (a sun disk): clamp rather than overflow to infinity.
+  // radiance can exceed the half-float range (a sun disk): an RGBA16F output is clamped to it
+  // (pushConst.limit) rather than overflow to infinity.
   const float  w     = pushConst.weight;
   const float4 color = u_dlss[pixel] * (1.0 - w) + u_denoised[pixel] * w;
-  u_out[pixel]       = clamp(color, -kHalfMax, kHalfMax);
+  u_out[pixel]       = clamp(color, -pushConst.limit, pushConst.limit);
 }

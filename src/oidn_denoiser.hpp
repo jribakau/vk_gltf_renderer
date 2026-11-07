@@ -32,6 +32,7 @@
 // Open Image Denoise on Vulkan (https://github.com/nvpro-samples/vk_oidn)
 #include <vk_oidn/vk_oidn.h>
 
+#include "denoiser_handoff.hpp"
 #include "denoiser_schedule.hpp"
 #include "gpu_memory_tracker.hpp"
 #include "resources.hpp"
@@ -99,6 +100,9 @@ public:
     int  autoDenoiseSpp     = 50;                           // Denoise at 50, 100, 150, ... spp
     int  quality            = int(vkoidn::Quality::eHigh);  // vkoidn::Quality: eFast, eBalanced, eHigh
     int  guides             = eGuidesAlbedoNormal;          // Guides
+    // Keep detail: the share of the raw accumulation mixed back into the denoised image, rising to
+    // this by the last sample (sample_schedule::denoiseBlend, as OptiX's blendFactor); 0 fully denoised
+    float blendMax = 0.0f;
   };
 
   OidnDenoiser()  = default;
@@ -162,8 +166,9 @@ public:
 private:
   void resizeTargets(VkCommandBuffer cmd, VkExtent2D size);
   void createDenoiser(VkCommandBuffer cmd);
-  bool cmdDenoise(VkCommandBuffer cmd, Resources& resources, int samples);
-  bool autoDenoise(VkCommandBuffer cmd, Resources& resources, int samples);
+  // `finalImage`: the accumulation's last image, which takes the whole of blendMax
+  bool cmdDenoise(VkCommandBuffer cmd, Resources& resources, int samples, bool finalImage);
+  bool autoDenoise(VkCommandBuffer cmd, Resources& resources, int samples, bool finalImage);
   void readGpuTime(uint32_t subFrame);
 
   Settings          m_settings{};
@@ -190,4 +195,5 @@ private:
   nvutils::ProfilerTimeline*  m_profilerTimeline = nullptr;
 
   nvvk::RenderTarget         m_target;  // See GBufferIndex
+  ImageBlend                 m_blend;   // Keep detail (blendMax): the raw accumulation mixed into the output
 };
