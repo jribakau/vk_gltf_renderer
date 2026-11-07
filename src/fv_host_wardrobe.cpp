@@ -69,7 +69,7 @@ void FvHost::Impl::publishWardrobe(Loaded& f)
 // or shown as they conform (false).
 Json FvHost::Impl::wardrobeCollision(const Json& args)
 {
-  auto figure = figureArg(args);
+  auto figure = bodyArg(args, "collision with its clothes");
   if(!figure || !figure->collider)
     throw std::runtime_error("no figure with a body is selected");
   figure->collider->setEnabled(args.value("on", true));
@@ -95,7 +95,7 @@ Json FvHost::Impl::wear(const Json& args)
       throw std::runtime_error(path + " is not in a DAZ content library (no data folder above it)");
     rel = lib->second;
   }
-  std::shared_ptr<Loaded> target = onApp([this, args] { return figureArg(args); });
+  std::shared_ptr<Loaded> target = onApp([this, args] { return bodyArg(args, "clothing"); });
   if(!target || !target->fig->pose)
     throw std::runtime_error("Select a figure first: clothing and hair go on a figure with a skeleton.");
   WearRequest request{rel, "", {}};
@@ -983,7 +983,7 @@ void FvHost::Impl::publishDforce(Loaded& f, bool force)
 // dforce.resimulate {prop} settles the cloth now.
 Json FvHost::Impl::dforceCommand(const std::string& cmd, const Json& args)
 {
-  auto figure = figureArg(args);
+  auto figure = bodyArg(args, "dForce");
   if(!figure || !figure->dforce)
     throw std::runtime_error("no figure with dynamic clothing is selected");
   if(cmd == "enable")

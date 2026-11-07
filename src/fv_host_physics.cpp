@@ -432,7 +432,7 @@ Json contactState(const Loaded& f)
 // reaches at least (1 to 10 cm), and the body's share of an overlap with another figure (0 to 1).
 Json FvHost::Impl::figureContact(const Json& args)
 {
-  auto figure = figureArg(args);
+  auto figure = bodyArg(args, "body contact");
   if(!figure || !figure->contact)
     throw std::runtime_error("no figure with a body is selected");
   fv::physics::ContactSettings s = figure->contact->settings();
@@ -723,7 +723,7 @@ Json softState(const Loaded& f)
 // 1 loosest) and how soon it settles (0 to 1). A body with nothing to move keeps the settings.
 Json FvHost::Impl::physicsSoft(const Json& args)
 {
-  auto figure = figureArg(args);
+  auto figure = bodyArg(args, "soft flesh");
   if(!figure || !figure->flesh)
     throw std::runtime_error("no figure with a body is selected");
   fv::physics::FleshSettings s = figure->flesh->settings();
@@ -764,7 +764,7 @@ Json secondaryState(const Loaded& f)
 // without such bones keeps the settings and nothing moves.
 Json FvHost::Impl::physicsSecondary(const Json& args)
 {
-  auto figure = figureArg(args);
+  auto figure = bodyArg(args, "the chest's soft bones");
   if(!figure || !figure->secondary)
     throw std::runtime_error("no figure with a body is selected");
   fv::physics::SecondarySettings s = figure->secondary->settings();
@@ -785,7 +785,7 @@ Json FvHost::Impl::physicsSecondary(const Json& args)
 // fall.
 Json FvHost::Impl::physicsSet(const Json& args)
 {
-  auto figure = figureArg(args);
+  auto figure = bodyArg(args, "Physics mode");
   if(!figure || !figure->physics)
     throw std::runtime_error("no figure with a body is selected");
   fv::physics::PhysicsSettings s = figure->physics->settings();
@@ -873,7 +873,7 @@ Json FvHost::Impl::physicsRestore(const Json& args)
 // hand) held where it is now, its turn too unless rotation is false; on false lets it go.
 Json FvHost::Impl::physicsPin(const Json& args)
 {
-  auto figure = figureArg(args);
+  auto figure = bodyArg(args, "a pin");
   if(!figure || !figure->physics || !figure->physics->settings().on)
     throw std::runtime_error("a pin holds a figure in Physics mode");
   const fv::pose::PoseBone* pb = figure->fig->pose->get(args.value("bone", ""));

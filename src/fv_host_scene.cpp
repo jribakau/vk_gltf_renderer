@@ -670,6 +670,7 @@ Json FvHost::Impl::sceneState(const Json& args)
         if(a.value != a.initial)
           pose.push_back({{"bone", pb.id}, {"kind", fv::pose::kindName(a.kind)}, {"axis", a.axis}, {"value", std::round(a.value * 1e5) / 1e5}});
   Json state = {{"source", prop->figure->source},
+                {"kind", kindName(prop->kind)},
                 {"worn", worn},
                 {"morphs", morphs},
                 {"pose", pose},
@@ -745,6 +746,9 @@ Json FvHost::Impl::sceneRestore(const Json& args)
       notice(problems[i]);
     return {{"ok", true}, {"problems", problems}};
   }
+  // the kind the user treated it as, before what it wears goes on (a body's collider fits it)
+  if(const auto kind = kindOf(args.value("kind", "")); kind && dazKind(*kind) && *kind != prop->kind)
+    setKind(*prop, *kind);
   std::shared_ptr<Loaded> target = prop->figure;
   const uint64_t          jobId  = ++jobs;
   job(jobId, {{"label", "Restoring " + prop->name}, {"state", "running"}});

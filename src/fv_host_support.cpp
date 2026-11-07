@@ -30,8 +30,18 @@ const char* kindName(PropKind k)
 {
   switch(k)
   {
-    case PropKind::eFigure:
-      return "figure";
+    case PropKind::eCharacter:
+      return "character";
+    case PropKind::eCreature:
+      return "creature";
+    case PropKind::eVehicle:
+      return "vehicle";
+    case PropKind::eSet:
+      return "set";
+    case PropKind::eProp:
+      return "prop";
+    case PropKind::eGroup:
+      return "group";
     case PropKind::eModel:
       return "model";
     case PropKind::eCamera:
@@ -40,6 +50,25 @@ const char* kindName(PropKind k)
       return "light";
   }
   return "model";
+}
+
+std::optional<PropKind> kindOf(std::string_view name)
+{
+  for(PropKind k : {PropKind::eCharacter, PropKind::eCreature, PropKind::eVehicle, PropKind::eSet, PropKind::eProp, PropKind::eGroup,
+                    PropKind::eModel, PropKind::eCamera, PropKind::eLight})
+    if(name == kindName(k))
+      return k;
+  return std::nullopt;
+}
+
+bool dazKind(PropKind k)
+{
+  return k == PropKind::eCharacter || k == PropKind::eCreature || k == PropKind::eVehicle || k == PropKind::eSet || k == PropKind::eProp;
+}
+
+bool bodyKind(PropKind k)
+{
+  return k == PropKind::eCharacter || k == PropKind::eCreature;
 }
 
 std::filesystem::path pathOf(const std::string& utf8)

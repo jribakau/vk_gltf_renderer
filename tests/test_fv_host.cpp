@@ -131,7 +131,7 @@ std::string figureId(const Json& scene)
 {
   const Json props = scene.value("props", Json::object());
   for(const auto& [id, p] : props.items())
-    if(p.value("kind", "") == "figure")
+    if(p.value("kind", "") == "character")
       return id;
   return "";
 }
@@ -652,7 +652,7 @@ Json stateOf(HostRig& rig)
   for(auto& [id, p] : scene["props"].items())
   {
     p.erase("stats");
-    if(p.value("kind", "") == "figure")
+    if(p.value("format", "") == "DAZ")
       figures[id] = rig.cmd("scene.state", {{"prop", id}}).at("result");
   }
   Json lighting = rig.topic("lighting");
@@ -803,7 +803,7 @@ TEST(FvHost, UndoingEveryEditPutsTheSceneBackAndRedoingThemBringsItForward)
       {
         const std::string kind = scene["props"][id.get<std::string>()].value("kind", "");
         props.push_back(id);
-        (kind == "figure" ? figures : kind == "camera" ? cameras : lights).push_back(id);
+        (kind == "character" ? figures : kind == "camera" ? cameras : lights).push_back(id);
       }
       const auto any = [&](const std::vector<std::string>& v) { return v.empty() ? std::string("p:0") : v[rng() % v.size()]; };
       const std::string id = any(figures);
@@ -3281,7 +3281,7 @@ TEST(FvHost, TwoFiguresRestoredAtOnceEachGetTheirOwn)
   std::vector<std::string> ids;
   const Json               scene = rig.topic("scene");
   for(const auto& [id, p] : scene.at("props").items())
-    if(p.value("kind", "") == "figure")
+    if(p.value("kind", "") == "character")
       ids.push_back(id);
   ASSERT_EQ(ids.size(), 2u);
 
@@ -3506,7 +3506,7 @@ TEST(FvHost, aDazPropDentsAsItIsPosed)
   std::string stool;
   const Json  props = s.rig.topic("scene").value("props", Json::object());
   for(const auto& [id, p] : props.items())
-    if(p.value("kind", "") == "figure" && id != s.figure)
+    if(p.value("kind", "") == "prop" && id != s.figure)
       stool = id;
   ASSERT_FALSE(stool.empty());
   EXPECT_TRUE(s.rig.topic("contact/" + stool).empty()) << "a prop got dents of its own";
@@ -3522,6 +3522,152 @@ TEST(FvHost, aDazPropDentsAsItIsPosed)
   const Json posed = s.rig.cmd("pose.set", {{"prop", stool}, {"values", {{"head/rotation/x", 60.0}}}});
   ASSERT_TRUE(posed.value("ok", false)) << posed.dump();
   ASSERT_TRUE(s.until([&] { return s.patches() == 0; })) << s.contact().dump();
+}
+
+//--------------------------------------------------------------------------------------------------
+// What a DAZ object is (protocol 45): a character, a creature, a vehicle, a set or a prop, by its file
+// and its library folder; the app's reading of the library sharpens a prop; the user may treat it as
+// another, and a body's machinery comes and goes with it.
+
+namespace {
+
+// a DAZ object added, and its id once it is in the scene
+std::string addDaz(HostRig& rig, const Json& args)
+{
+  const Json before = rig.topic("scene").value("props", Json::object());
+  const Json added  = rig.cmd("prop.add", args);
+  EXPECT_TRUE(added.value("ok", false)) << added.dump();
+  EXPECT_TRUE(rig.settle());
+  const Json after = rig.topic("scene").value("props", Json::object());
+  for(const auto& [id, p] : after.items())
+    if(!before.contains(id))
+      return id;
+  return "";
+}
+
+Json propOf(HostRig& rig, const std::string& id)
+{
+  return rig.topic("scene").value("props", Json::object()).value(id, Json::object());
+}
+
+}  // namespace
+
+TEST(FvHost, aDazObjectsKindComesFromItsFileAndFolder)
+{
+  HostRig           rig;
+  const std::string person = addDaz(rig, {{"rel", "People/Test/Box Figure.duf"}});
+  const std::string stool  = addDaz(rig, {{"rel", "Props/Test/Box Stool.duf"}});
+  const std::string cart   = addDaz(rig, {{"rel", "Vehicles/Test/Box Cart.duf"}});
+  EXPECT_EQ(propOf(rig, person).value("kind", ""), "character");
+  EXPECT_TRUE(propOf(rig, person).value("body", false));
+  EXPECT_TRUE(propOf(rig, person).contains("morphs"));
+  EXPECT_EQ(propOf(rig, stool).value("kind", ""), "prop");
+  EXPECT_FALSE(propOf(rig, stool).value("body", true));
+  EXPECT_TRUE(propOf(rig, stool).value("posable", false)) << "a rigged prop still poses";
+  EXPECT_EQ(propOf(rig, cart).value("kind", ""), "vehicle");
+  // a body collides with its clothes; a prop builds none of that
+  const Json personState = rig.cmd("scene.state", {{"prop", person}}).value("result", Json::object());
+  EXPECT_TRUE(personState.contains("collision")) << personState.dump();
+  EXPECT_EQ(personState.value("kind", ""), "character");
+  const Json stoolState = rig.cmd("scene.state", {{"prop", stool}}).value("result", Json::object());
+  EXPECT_FALSE(stoolState.contains("collision")) << stoolState.dump();
+  EXPECT_FALSE(stoolState.contains("dforce"));
+  EXPECT_EQ(stoolState.value("kind", ""), "prop");
+  EXPECT_TRUE(rig.topic("dforce/" + stool).empty());
+}
+
+TEST(FvHost, theLibrarysKindOnlySharpensAProp)
+{
+  HostRig           rig;
+  const std::string stool  = addDaz(rig, {{"rel", "Props/Test/Box Stool.duf"}, {"kind", "set"}});
+  const std::string person = addDaz(rig, {{"rel", "People/Test/Box Figure.duf"}, {"kind", "prop"}});
+  EXPECT_EQ(propOf(rig, stool).value("kind", ""), "set");
+  EXPECT_EQ(propOf(rig, person).value("kind", ""), "character");
+}
+
+TEST(FvHost, aPropTreatedAsACreatureGainsABodyAndKeepsIt)
+{
+  HostRig           rig;
+  const std::string stool = addDaz(rig, {{"rel", "Props/Test/Box Stool.duf"}});
+  const Json        set   = rig.cmd("prop.set", {{"prop", stool}, {"kind", "creature"}});
+  ASSERT_TRUE(set.value("ok", false)) << set.dump();
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(propOf(rig, stool).value("kind", ""), "creature");
+  EXPECT_TRUE(propOf(rig, stool).value("body", false));
+  Json state = rig.cmd("scene.state", {{"prop", stool}}).value("result", Json::object());
+  EXPECT_EQ(state.value("kind", ""), "creature");
+  EXPECT_TRUE(state.contains("collision")) << "a creature collides with its clothes: " << state.dump();
+  EXPECT_FALSE(state.contains("contact")) << "only a character dents";
+  const Json undo = rig.topic("history").value("undo", Json::array());
+  ASSERT_FALSE(undo.empty());
+  EXPECT_EQ(undo[0].get<std::string>(), "Treat Box Stool as a creature");
+
+  // a copy is what the original is now
+  const Json dup = rig.cmd("prop.duplicate", {{"prop", stool}});
+  ASSERT_TRUE(dup.value("ok", false)) << dup.dump();
+  ASSERT_TRUE(rig.settle());
+  int        creatures = 0;
+  const Json props     = rig.topic("scene").value("props", Json::object());
+  for(const auto& [id, p] : props.items())
+    creatures += p.value("kind", "") == "creature";
+  EXPECT_EQ(creatures, 2);
+
+  // undone, the copy goes, then the stool is a prop again without a body
+  rig.cmd("history.undo");
+  ASSERT_TRUE(rig.settle());
+  rig.cmd("history.undo");
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(propOf(rig, stool).value("kind", ""), "prop");
+  state = rig.cmd("scene.state", {{"prop", stool}}).value("result", Json::object());
+  EXPECT_FALSE(state.contains("collision")) << state.dump();
+
+  // a model, a camera or a group is no DAZ object to treat as one
+  const Json camera = rig.cmd("prop.add", {{"kind", "camera"}});
+  const Json refused = rig.cmd("prop.set", {{"prop", camera.value("result", Json::object()).value("prop", "")}, {"kind", "prop"}});
+  EXPECT_FALSE(refused.value("ok", true)) << refused.dump();
+}
+
+TEST(FvHost, clothAndPhysicsNeedABody)
+{
+  HostRig           rig;
+  const std::string stool = addDaz(rig, {{"rel", "Props/Test/Box Stool.duf"}});
+  const Json        named = rig.cmd("dforce.enable", {{"prop", stool}, {"on", true}});
+  EXPECT_FALSE(named.value("ok", true));
+  EXPECT_NE(named.value("error", "").find("is a prop"), std::string::npos) << named.dump();
+  // with no prop named, the only DAZ object there is no body to drape
+  const Json unnamed = rig.cmd("dforce.enable", {{"on", true}});
+  EXPECT_FALSE(unnamed.value("ok", true)) << unnamed.dump();
+  const Json physics = rig.cmd("physics.set", {{"prop", stool}, {"on", true}});
+  EXPECT_NE(physics.value("error", "").find("is a prop"), std::string::npos) << physics.dump();
+}
+
+// Clothing opened with a chair as the panels' figure goes on the one body there, not on the chair
+TEST(FvHost, clothingNamedForAPropGoesOnTheBody)
+{
+  HostRig           rig;
+  const std::string person = addDaz(rig, {{"rel", "People/Test/Box Figure.duf"}});
+  const std::string stool  = addDaz(rig, {{"rel", "Props/Test/Box Stool.duf"}});
+  const Json        props  = rig.topic("scene").value("props", Json::object());
+  const Json        loaded = rig.cmd("load", {{"rel", "People/Test/Clothing/Box Shirt.duf"}, {"prop", stool}});
+  ASSERT_TRUE(loaded.value("ok", false)) << loaded.dump();
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(rig.topic("scene").value("props", Json::object()).size(), props.size()) << "the shirt became a prop";
+  EXPECT_FALSE(rig.topic("wardrobe/" + person).value("items", Json::object()).empty());
+}
+
+TEST(FvHost, aGroupIsAnEmptyCarrier)
+{
+  HostRig    rig;
+  const Json added = rig.cmd("prop.add", {{"kind", "group"}, {"name", "Lights"}});
+  ASSERT_TRUE(added.value("ok", false)) << added.dump();
+  ASSERT_TRUE(rig.settle());
+  const std::string group = added.value("result", Json::object()).value("prop", "");
+  EXPECT_EQ(propOf(rig, group).value("kind", ""), "group");
+  EXPECT_EQ(propOf(rig, group).value("name", ""), "Lights");
+  const Json light = rig.cmd("prop.add", {{"kind", "light"}});
+  ASSERT_TRUE(rig.cmd("prop.set", {{"prop", light.value("result", Json::object()).value("prop", "")}, {"parent", group}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  EXPECT_EQ(propOf(rig, light.value("result", Json::object()).value("prop", "")).value("parent", ""), group);
 }
 
 // A figure exported with a dent carries it: the feet stand 2 cm into the box, so the dented body's
@@ -3578,7 +3724,7 @@ struct Pressed
     EXPECT_TRUE(rig.settle());
     const Json props = rig.topic("scene").value("props", Json::object());
     for(const auto& [id, p] : props.items())
-      if(p.value("kind", "") == "figure" && id != a)
+      if(p.value("kind", "") == "character" && id != a)
         b = id;
     EXPECT_FALSE(b.empty());
     rig.cmd("prop.set", {{"prop", a}, {"transform", {{"t", {0.0, 0.0, 0.0}}, {"e", {0.0, 45.0, 0.0}}}}});

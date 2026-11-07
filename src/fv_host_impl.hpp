@@ -301,12 +301,33 @@ struct Loaded
   std::optional<FigureAnimation> animation;
 };
 
+// What a prop is to the user. The DAZ kinds (character to prop) all hold a `figure` (a DAZ file's scene
+// graph, dials and rig); character and creature are bodies, which wear, collide with their clothes and
+// drape them; only a character has contact, Physics mode, soft bones and flesh. A group is an empty
+// carrier to put props under. Decided at load (classifyDaz), and the user may change a DAZ kind
+// (prop.set's kind, setKind).
 enum class PropKind
 {
-  eFigure,
+  eCharacter,
+  eCreature,
+  eVehicle,
+  eSet,
+  eProp,
+  eGroup,
   eModel,
   eCamera,
   eLight
+};
+
+// What decides a DAZ prop's kind as it loads (classifyDaz): its library path and the file's
+// asset_info.type; the app's reading of the library, which only turns a prop into something it reads
+// more exactly; or a kind it had before (a restore, a duplicate), which stands.
+struct KindInput
+{
+  std::string             rel;
+  std::string             assetType;
+  std::optional<PropKind> hint;
+  std::optional<PropKind> forced;
 };
 
 // A camera prop: a lens of its own, and how far ahead its orbit target is.
@@ -541,6 +562,11 @@ struct DialTiming
 // ---- helpers (fv_host_support.cpp)
 
 const char* kindName(PropKind k);
+// a kind's name as the protocol sends it, back; none for one it doesn't know
+std::optional<PropKind> kindOf(std::string_view name);
+// a DAZ file's kinds (the prop holds a figure), and of those the bodies (character, creature)
+bool dazKind(PropKind k);
+bool bodyKind(PropKind k);
 
 std::filesystem::path pathOf(const std::string& utf8);
 
@@ -946,8 +972,21 @@ struct FvHost::Impl
   std::shared_ptr<Prop> propArg(const Json& args) const;
   // The figure a command is for: the one it names, else the selected prop when that is a figure,
   // else the only figure in the scene. Null when there is none of those.
+  // Named or selected, any DAZ prop (a rigged chair poses too); the only one in the scene counts
+  // only bodies (a set beside one person leaves that person the figure).
   std::shared_ptr<Prop> figureProp(const Json& args) const;
   std::shared_ptr<Loaded> figureArg(const Json& args) const;
+  // A body a command is for (wear, collision, dForce, contact, Physics mode): the one it names, which
+  // must be a character or creature (else it throws, naming `what`), else the selected prop when it is
+  // one, else the only body. Null when there is none of those.
+  std::shared_ptr<Prop>   bodyProp(const Json& args, const char* what) const;
+  std::shared_ptr<Loaded> bodyArg(const Json& args, const char* what) const;
+  // A DAZ prop becomes another DAZ kind: toward a body it gains a body's machinery (buildBody), away
+  // from one it loses it (dropBody); what it wears stays on
+  void setKind(Prop& p, PropKind kind);
+  PropKind classifyDaz(const Loaded& f, const KindInput& in) const;
+  void     buildBody(Prop& p);
+  void     dropBody(Loaded& f);
   bool                    inScene(const std::shared_ptr<Loaded>& f) const;
   // a new prop at the end; `id` one it had (a restore), else the next
   std::shared_ptr<Prop>   addProp(PropKind kind, const std::string& name, const std::string& id = {});
@@ -992,7 +1031,7 @@ struct FvHost::Impl
   // `iray`: installed Iray presets a 3Delight-era wearable may take as it goes on (WearRequest::iray)
   Json loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
                   std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then = {}, std::vector<std::string> prefetch = {},
-                  std::vector<std::string> iray = {}, std::string id = {}, Json place = {});
+                  std::vector<std::string> iray = {}, std::string id = {}, Json place = {}, KindInput kind = {});
   void install(std::unique_ptr<fv::Figure>                                             f,
                uint64_t                                                                generation,
                uint64_t                                                                jobId,
@@ -1004,7 +1043,8 @@ struct FvHost::Impl
                Json                                                                    source,
                std::function<void(std::shared_ptr<Prop>)>                              then,
                std::string                                                             id,
-               Json                                                                    place);
+               Json                                                                    place,
+               KindInput                                                               kind = {});
   // A figure on a cold texture cache: `requests` (shown with their fallbacks) cooked on a worker, each
   // swapped in as it lands (takeLanded), so the figure ends with every image cooked without a reload
   void cookInPlace(const std::shared_ptr<Loaded>& f, std::vector<fv::build::TextureRequest> requests);

@@ -79,7 +79,12 @@ namespace {
 // 43: the Shaped tone curve, the lighting's tonemap.method "shaped" and its tonemap.toe and
 // tonemap.shoulder.
 // 44: the pixel readout, view.inspect and the inspect topic (what is at a pixel, and how bright).
-constexpr int kProtocolVersion = 44;
+// 45: props by kind: the scene topic's kind is character, creature, vehicle, set, prop, group, model,
+// camera or light (a DAZ file is never "figure"), with `morphs` and `body` beside `posable`; load's and
+// prop.add's `kind` (the app's reading of the library), prop.set's `kind` (treat a DAZ object as another),
+// scene.state's `kind`, prop.add's kind "group"; wear, collision, dForce, contact and Physics mode name a
+// body (a character or a creature).
+constexpr int kProtocolVersion = 45;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

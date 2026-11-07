@@ -130,7 +130,7 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
       return nullptr;
     Json fields = Json::array();
     if(cmd == "prop.set")
-      for(const char* f : {"parent", "name", "visible", "transform", "order"})
+      for(const char* f : {"kind", "parent", "name", "visible", "transform", "order"})
         if(args.contains(f) || (f == std::string_view("parent") && args.contains("bone")))
           fields.push_back(f);
     // a new parent (or bone) keeps the prop where it is in the world: its transform changes with it
@@ -315,6 +315,8 @@ Json FvHost::Impl::journalState(const Json& scope)
       const std::string field = f.get<std::string>();
       if(field == "parent")  // first: a new parent moves the transform, which comes after
         ops.push_back(op("prop.set", {{"prop", id}, {"parent", p->parent.empty() ? Json() : Json(p->parent)}, {"bone", p->bone.empty() ? Json() : Json(p->bone)}}));
+      else if(field == "kind")
+        set["kind"] = kindName(p->kind);
       else if(field == "name")
         set["name"] = p->name;
       else if(field == "visible")
@@ -451,6 +453,8 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
   const auto        on   = [&] { return std::string(args.value("on", true) ? "on" : "off"); };
   if(cmd == "prop.set")
   {
+    if(const auto k = args.find("kind"); k != args.end() && k->is_string())
+      return "Treat " + name + " as " + (k->get<std::string>() == "prop" ? "a prop" : k->get<std::string>() == "creature" ? "a creature" : "a " + k->get<std::string>());
     if(args.contains("name"))
       return "Rename " + name;
     if(args.contains("visible"))
@@ -647,7 +651,7 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
                 || (cmd == "pose.set" && !args.contains("label")) || (cmd == "figure.contact" && !args.contains("on") && !args.contains("self")) || (cmd == "physics.set" && (args.contains("strength") || args.contains("parts")) && !args.contains("on"))
                 || (cmd == "physics.secondary" && !args.contains("on")) || (cmd == "physics.soft" && !args.contains("on"));
   if(cmd == "prop.set")
-    merges = !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
+    merges = !args.contains("kind") && !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
   Json shape = shapeOf(args);
   if(shape.is_object())
     for(const char* k : {"prop", "gesture"})
@@ -1162,6 +1166,9 @@ Json FvHost::Impl::propRemove(const Json& args)
 
 void FvHost::Impl::placeFrom(Prop& p, const Json& rec)
 {
+  // a DAZ object as the user treated it
+  if(const auto kind = kindOf(rec.value("kind", "")); kind && p.figure && dazKind(p.kind) && dazKind(*kind) && *kind != p.kind)
+    setKind(p, *kind);
   p.name    = rec.value("name", p.name);
   p.visible = rec.value("visible", true);
   if(const Json& t = rec.value("transform", Json::object()); t.contains("t") && t.contains("r") && t.contains("s"))
@@ -1219,8 +1226,8 @@ Json FvHost::Impl::propRestore(const Json& args)
   else
   {
     const std::string kind = rec.value("kind", "");
-    if(kind == "camera" || kind == "light")
-      p = addProp(kind == "camera" ? PropKind::eCamera : PropKind::eLight, rec.value("name", ""), id);
+    if(kind == "camera" || kind == "light" || kind == "group")
+      p = addProp(kind == "camera" ? PropKind::eCamera : kind == "light" ? PropKind::eLight : PropKind::eGroup, rec.value("name", ""), id);
     else
     {
       // loaded again from where it came from, under its id, and its scene-file part put back
@@ -1261,7 +1268,8 @@ Json FvHost::Impl::propRestore(const Json& args)
         library = libraryFor(s, pathOf(source["path"].get<std::string>()));
       if(!library)
         throw std::runtime_error(rec.value("name", id) + " can't be loaded again: where it came from isn't known");
-      return loadFigure(s, library->first, library->second, rec.value("name", ""), source, "", true, then, {}, {}, id);
+      // the kind it had, which a scene file of before the kinds ("figure") leaves to the file
+      return loadFigure(s, library->first, library->second, rec.value("name", ""), source, "", true, then, {}, {}, id, {}, KindInput{.forced = kindOf(kind)});
     }
   }
   placeFrom(*p, rec);

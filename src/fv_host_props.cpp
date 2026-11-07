@@ -58,9 +58,31 @@ std::shared_ptr<Prop> FvHost::Impl::figureProp(const Json& args) const
   if(view)
     if(auto p = findProp(view->selectedProp()); p && p->figure)
       return p;
+  return bodyProp(Json::object(), "");
+}
+
+std::shared_ptr<Loaded> FvHost::Impl::figureArg(const Json& args) const
+{
+  auto p = figureProp(args);
+  return p ? p->figure : nullptr;
+}
+
+std::shared_ptr<Prop> FvHost::Impl::bodyProp(const Json& args, const char* what) const
+{
+  for(const char* key : {"prop", "figure"})
+    if(args.contains(key) && args[key].is_string())
+    {
+      auto p = findProp(args[key].get<std::string>());
+      if(p && !(p->figure && bodyKind(p->kind)))
+        throw std::runtime_error(p->name + " is a " + kindName(p->kind) + ": " + what + " needs a character or a creature");
+      return p;
+    }
+  if(view)
+    if(auto p = findProp(view->selectedProp()); p && p->figure && bodyKind(p->kind))
+      return p;
   std::shared_ptr<Prop> only;
   for(const auto& p : props)
-    if(p->figure)
+    if(p->figure && bodyKind(p->kind))
     {
       if(only)
         return nullptr;
@@ -69,9 +91,9 @@ std::shared_ptr<Prop> FvHost::Impl::figureProp(const Json& args) const
   return only;
 }
 
-std::shared_ptr<Loaded> FvHost::Impl::figureArg(const Json& args) const
+std::shared_ptr<Loaded> FvHost::Impl::bodyArg(const Json& args, const char* what) const
 {
-  auto p = figureProp(args);
+  auto p = bodyProp(args, what);
   return p ? p->figure : nullptr;
 }
 
@@ -370,6 +392,14 @@ Json FvHost::Impl::propJson(const Prop& p) const
     out["generation"] = figureGeneration(*p.figure);
     out["posable"]    = bool(p.figure->fig->pose);
     out["format"]     = "DAZ";
+    // what the panels offer it: dials (the Morphs tab) and a body (the Wardrobe and Physics tabs)
+    bool dials = false;
+    if(p.figure->fig->morphs)
+      for(const fv::morph::Channel& c : p.figure->fig->morphs->channels())
+        if((dials = !c.hidden))
+          break;
+    out["morphs"] = dials;
+    out["body"]   = bodyKind(p.kind);
   }
   if(p.model)
   {
@@ -1011,8 +1041,24 @@ Json FvHost::Impl::propAdd(const Json& args)
     return load(asProp);
   }
   const std::string kind = args.value("kind", "");
+  // an empty carrier, to put props under: where the view looks, unless placed
+  if(kind == "group")
+  {
+    auto p = addProp(PropKind::eGroup, args.value("name", std::string("Group")));
+    if(auto manip = renderer->getCameraManipulator(); manip && !args.contains("transform"))
+    {
+      glm::dvec3 eye, center, up;
+      manip->getLookat(eye, center, up);
+      p->transform.translation = glm::vec3(center);
+    }
+    if(args.contains("transform"))
+      propSet({{"prop", p->id}, {"transform", args["transform"]}});
+    placeProp(*p, args.value("place", Json()));
+    requestCompose("Adding " + p->name, [this, id = p->id] { selectProp(id); });
+    return {{"prop", p->id}};
+  }
   if(kind != "camera" && kind != "light")
-    throw std::runtime_error("prop.add wants a path, a rel, or kind camera or light");
+    throw std::runtime_error("prop.add wants a path, a rel, or kind camera, light or group");
   const std::string type = args.value("type", "point");
   if(kind == "light" && type != "point" && type != "spot" && type != "directional")
     throw std::runtime_error("a light is point, spot or directional");
@@ -1076,6 +1122,14 @@ Json FvHost::Impl::propSet(const Json& args)
     throw std::runtime_error("no such prop");
   if(args.contains("name") && args["name"].is_string() && !args["name"].get<std::string>().empty())
     p->name = args["name"].get<std::string>();
+  // what the user treats a DAZ object as: a set read as a prop, a creature read as a character
+  if(args.contains("kind"))
+  {
+    const auto kind = args["kind"].is_string() ? kindOf(args["kind"].get<std::string>()) : std::nullopt;
+    if(!kind)
+      throw std::runtime_error("a kind is character, creature, vehicle, set or prop");
+    setKind(*p, *kind);
+  }
   if(args.contains("transform"))
   {
     const Json& t = args["transform"];
@@ -1238,6 +1292,8 @@ Json FvHost::Impl::propDuplicate(const Json& args)
       library = libraryFor(s, pathOf(source["path"].get<std::string>()));
     if(!library)
       throw std::runtime_error(src->name + " can't be loaded again: where it came from isn't known");
+    // the copy is what the original is now, a kind the user chose included
+    const KindInput kind{.forced = src->kind};
     return loadFigure(s, library->first, library->second, src->name, source, "", true, [this, state, place, name = src->name](std::shared_ptr<Prop> p) {
       place(p);
       p->name = uniqueName(name, p.get());
@@ -1253,7 +1309,7 @@ Json FvHost::Impl::propDuplicate(const Json& args)
       sceneRestore(restore);
       publishScene();
       recordAdded(p, "Duplicate " + name);
-    });
+    }, {}, {}, {}, {}, kind);
   }
   auto p    = addProp(src->kind, src->name);
   p->model  = src->model;

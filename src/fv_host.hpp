@@ -38,9 +38,15 @@
 //
 // Commands (args):
 //   settings.apply  {libraryRoots: [dir], rootId, texServer, maxTextureSize, subdivision, originalTextures}
-//   load            {path} or {rel}, prop?, as?   -> {job}; a figure or model becomes a new prop (the job's
-//                                                end state has its {prop}); a wearable goes on the figure
-//                                                (`prop`, or the selected or only one) unless `as` is "prop";
+//   load            {path} or {rel}, prop?, as?, kind?   -> {job}; a DAZ object or a model becomes a new prop
+//                                                (the job's end state has its {prop}). A DAZ object's kind
+//                                                (FvHost::Impl::classifyDaz): a character (its bones name a
+//                                                Genesis, or it is from People), a creature (Animals), a
+//                                                vehicle (Vehicles), a set (Environments, Scenes, or a file
+//                                                that says it is a scene or a scene subset), else a prop,
+//                                                which `kind` (the app's reading of the library) may make
+//                                                exact. A wearable goes on the body (`prop`, or the selected
+//                                                or only character or creature) unless `as` is "prop";
 //                                                a pose, shape or material preset applies to that figure
 //                                                (a pose file whose keys run over time is also held as its
 //                                                animation, paused at its end); `as` "animation" plays a
@@ -52,9 +58,12 @@
 //                                                people, clip, clips: [{name, duration}]};
 //                                                `prefetch` [rel] names files a figure will wear soon (a
 //                                                scene file's worn list), read from the start of its load
-//   prop.add        {path|rel} as load; or {kind: "camera"|"light", type?: point|spot|directional,
-//                   name?, camera?, transform?}  -> {prop}; a camera stands where the view is
-//   prop.set        {prop, name?, visible?, transform?: {t, e (degrees XYZ) | r (quaternion xyzw), s},
+//   prop.add        {path|rel} as load; or {kind: "camera"|"light"|"group", type?: point|spot|directional,
+//                   name?, camera?, transform?}  -> {prop}; a camera stands where the view is, a group
+//                                                (an empty carrier to put props under) where it looks
+//   prop.set        {prop, kind?: a DAZ kind (the object treated as one: a body gains or loses its
+//                   collider, dForce and, for a character, contact and Physics mode; what it wears stays),
+//                   name?, visible?, transform?: {t, e (degrees XYZ) | r (quaternion xyzw), s},
 //                   parent?: prop id | null, bone?: a posable bone of the parent figure (id or name) |
 //                   null (with a new parent, none unless given; alone, another bone of the same figure):
 //                   it rides on the bone, posed with it, its transform relative to the bone,
@@ -178,7 +187,7 @@
 //                                                (FV_DFORCE_LIGHT=<cm> another width), its own vertices riding on
 //                                                it (figure/physics/cloth/coarse.hpp): a fine garment drapes and
 //                                                follows a clip in a fraction of the time, a little stiffer
-//   scene.state / scene.restore {prop}           a scene file's part of a prop: source, worn, dials, pose,
+//   scene.state / scene.restore {prop}           a scene file's part of a prop: source, kind, worn, dials, pose,
 //                                                material presets, skin, eyes and makeup (rel | null, once
 //                                                chosen), material edits, collision and dForce on/off, dForce's
 //                                                mode and light cloth; restored after the add-ons: presets (eye-only ones as
@@ -252,7 +261,8 @@
 // the next to undo or redo first), "animation" ({clips: {number: {name,
 // duration, order, prop}}, current: number | null, playing, time, speed, loop}), "selection", "camera",
 // "scene" ({props: {id: {kind, name, parent, bone, visible, order, transform: {t, r, e, s}, stats?, source?,
-// format?, generation?, posable?, camera?, light?}}, order: [id]}), and per prop "nodes/<prop>"
+// format?, generation?, posable?, morphs?, body?, camera?, light?}}, order: [id]}; `morphs` a DAZ object
+// with dials, `body` a character or creature), and per prop "nodes/<prop>"
 // (its hierarchy), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",
 // "wardrobe/<prop>" ({figure, items: {id: {label, kind, rel, visible, own, channels, collision,
 // cloth: {able, native, on, strength}, meshes: [scene mesh], color?: rel | null}}, collision: {enabled,

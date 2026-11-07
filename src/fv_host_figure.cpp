@@ -79,8 +79,13 @@ Json FvHost::Impl::load(const Json& args)
       for(const Json& r : args[key])
         if(r.is_string())
           into->push_back(r.get<std::string>());
+  // what the app's library reads it as: a character, a set, a vehicle... (classifyDaz)
+  KindInput kind;
+  if(args.contains("kind") && args["kind"].is_string())
+    if(const auto k = kindOf(args["kind"].get<std::string>()); k && dazKind(*k))
+      kind.hint = k;
   return loadFigure(s, library->first, library->second, fileStem(name), source, target, asProp, {}, std::move(prefetch), std::move(iray), {},
-                    args.value("place", Json()));
+                    args.value("place", Json()), kind);
 }
 
 Json FvHost::Impl::loadAnimation(std::vector<std::filesystem::path> roots, std::string rel, std::string target, Json source, Json resume)
@@ -167,7 +172,7 @@ Json FvHost::Impl::loadAnimation(std::vector<std::filesystem::path> roots, std::
 
 Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem::path> roots, std::string rel, const std::string& name, Json source,
                               std::string target, bool asProp, std::function<void(std::shared_ptr<Prop>)> then, std::vector<std::string> prefetch,
-                              std::vector<std::string> iray, std::string id, Json place)
+                              std::vector<std::string> iray, std::string id, Json place, KindInput kind)
 {
   const uint64_t    jobId      = ++jobs;
   const uint64_t    generation = loadGeneration;
@@ -175,7 +180,8 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
   job(jobId, {{"label", label}, {"state", "running"}});
 
   loaders.spawn([this, s, roots = std::move(roots), rel = std::move(rel), jobId, label, asProp, source = std::move(source), target = std::move(target),
-                 generation, then = std::move(then), prefetch = std::move(prefetch), iray = std::move(iray), id = std::move(id), place = std::move(place)] {
+                 generation, then = std::move(then), prefetch = std::move(prefetch), iray = std::move(iray), id = std::move(id), place = std::move(place),
+                 kind = std::move(kind)]() mutable {
     try
     {
       auto lib   = std::make_shared<fv::dson::Library>(roots);
@@ -200,11 +206,15 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
           });
           return;
         }
-      // clothing, hair and anatomy go on a figure in the scene, as in DAZ Studio
+      // clothing, hair and anatomy go on a body in the scene (a character or a creature), as in DAZ
+      // Studio; a wearable opened with none there becomes a prop of its own
       if(!asProp && doc && fv::dson::isWearable(doc->json))
       {
         const std::string wearer = onApp([this, target] {
-          const auto p = figureProp(target.empty() ? Json::object() : Json{{"prop", target}});
+          // the panels' figure may be a set or a chair: then the body selected, or the only one
+          auto p = target.empty() ? nullptr : findProp(target);
+          if(!(p && p->figure && bodyKind(p->kind)))
+            p = bodyProp(Json::object(), "clothing");
           return p && p->figure->fig->pose ? p->id : std::string();
         });
         if(!wearer.empty())
@@ -217,9 +227,12 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
           startWear(worn, {std::move(request)}, {}, [this, jobId, label] { job(jobId, {{"label", label}, {"state", "done"}}); });
           return;
         }
-        if(onApp([this] { return std::count_if(props.begin(), props.end(), [](const auto& p) { return p->figure && p->figure->fig->pose; }) > 1; }))
+        if(onApp([this] { return std::count_if(props.begin(), props.end(), [](const auto& p) { return p->figure && bodyKind(p->kind) && p->figure->fig->pose; }) > 1; }))
           throw std::runtime_error("Select the figure to put " + fileStem(rel) + " on.");
       }
+      kind.rel = rel;
+      if(doc)
+        kind.assetType = fv::dson::getString(fv::dson::get(&doc->json, "asset_info"), "type");
       const auto t0 = std::chrono::steady_clock::now();
       auto       f = fv::Figure::load(store, rel, {.subdivision = s.subdivision, .cageMorphs = true}, [this, jobId, label](const std::string& step) {
         job(jobId, {{"label", label + ": " + step}, {"state", "running"}});
@@ -266,8 +279,9 @@ Json FvHost::Impl::loadFigure(const HostSettings& s, std::vector<std::filesystem
       auto       shared  = std::make_shared<std::unique_ptr<fv::Figure>>(std::move(f));
       const bool flipped = cooked;
       post([this, shared, generation, jobId, flipped, skin, lib, images = std::move(images), uncooked = std::move(uncooked), source, then,
-            id, place]() mutable {
-        install(std::move(*shared), generation, jobId, flipped, skin, lib, std::move(images), std::move(uncooked), std::move(source), then, id, place);
+            id, place, kind]() mutable {
+        install(std::move(*shared), generation, jobId, flipped, skin, lib, std::move(images), std::move(uncooked), std::move(source), then, id, place,
+                kind);
       });
     }
     catch(const std::exception& e)
@@ -379,7 +393,8 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
                            Json                                                                    source,
                            std::function<void(std::shared_ptr<Prop>)>                              then,
                            std::string                                                             id,
-                           Json                                                                    place)
+                           Json                                                                    place,
+                           KindInput                                                               kind)
 {
   // the scene was cleared meanwhile: this one is dropped, and its job ends
   if(generation != loadGeneration)
@@ -405,9 +420,60 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
   // its add-ons go on once it is in the scene; until then the eyes it will have aren't there to choose
   f->addonsPending = !f->fig->addons.empty() && f->fig->pose;
   // "Mirel.duf" reads as "Mirel"
-  auto p    = addProp(PropKind::eFigure, fileStem(f->fig->loaded.name), id);
+  // "Mirel.duf" reads as "Mirel"; a character, a set, a vehicle... (classifyDaz)
+  auto p    = addProp(classifyDaz(*f, kind), fileStem(f->fig->loaded.name), id);
   f->id     = p->id;
   p->figure = f;
+  // a body wears, collides with and drapes its clothes; a set, a vehicle or a prop builds none of it
+  if(bodyKind(p->kind))
+    buildBody(*p);
+  {
+    std::lock_guard lock(morphMutex);
+    morphFigures.insert(p->id);
+  }
+  placeProp(*p, place);
+  requestCompose("Adding " + p->name, [this, p, f, jobId, then, restored = !id.empty()] {
+    if(!inScene(f))
+    {
+      job(jobId, {{"state", "done"}});
+      return;
+    }
+    job(jobId, {{"state", "done"}, {"prop", p->id}, {"figure", p->id}});
+    selectProp(p->id);
+    // Genesis 9 leaves its eyes, mouth and lashes to add-ons the scene file lists
+    if(!f->fig->addons.empty() && f->fig->pose)
+    {
+      std::vector<WearRequest> requests;
+      for(const fv::dson::PostLoadAddon& a : f->fig->addons)
+        requests.push_back({a.file, a.name, a.presets});
+      f->addonsPending = true;
+      startWear(f, std::move(requests), {}, [this, f] {
+        f->addonsPending = false;
+        if(const auto p = findProp(f->id); p && p->figure == f)
+        {
+          publishEyes(*p);
+          publishSkin(*p);
+        }
+        for(const auto& after : std::exchange(f->afterAddons, {}))
+          after();
+      });
+    }
+    if(then)
+      then(p);
+    // a load is a step of the history; a duplicate's or a restore's `then` says what it is
+    else if(!restored)
+      recordAdded(p, "Add " + p->name);
+  });
+}
+
+// What a body has: dForce over what it wears and the collider that keeps its clothes out of it, and
+// for a character the dents where props press into it, its ragdoll (Physics mode), its chest's soft
+// bones and its flesh. Built once the prop has its kind (install, setKind).
+void FvHost::Impl::buildBody(Prop& p)
+{
+  const std::shared_ptr<Loaded>& f = p.figure;
+  if(!f || f->collider)
+    return;
   if(f->fig->morphs && !f->fig->loaded.morphs.mainMeshes.empty())
   {
     const int body = f->fig->loaded.morphs.meshes[f->fig->loaded.morphs.mainMeshes[0]].mesh;
@@ -482,10 +548,9 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
       const fv::Mesh& m = raw->fig->loaded.scene.meshes[size_t(mesh)];
       return raw->dforce && raw->dforce->enabled() && m.dforce && m.dforce->simulated();
     };
-    // a person's body dents where props press into it; a rigged prop (a posable chair) doesn't. A
-    // person is a figure from the library's People, or one whose bones say which Genesis it is.
-    const std::string from = figureSource(*f);
-    if(from.rfind("People/", 0) == 0 || !figureGeneration(*f).empty())
+    // a person's body dents where props press into it; a creature's or a rigged prop's (a posable
+    // chair) doesn't
+    if(p.kind == PropKind::eCharacter)
     {
       f->contact            = std::make_unique<fv::physics::Contact>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
       f->contact->colliders = [this, raw = f.get()] { return contactColliders(*raw); };
@@ -504,43 +569,83 @@ void FvHost::Impl::install(std::unique_ptr<fv::Figure>                          
       f->dforce->waitWhile   = [raw = f.get()] { return raw->contact && raw->contact->busy(); };
     }
   }
+}
+
+// A body's machinery goes (a character treated as a prop): what it wears stays on and follows its rig,
+// no longer fitted or draped. Each part waits for its own work on the pool as it goes.
+void FvHost::Impl::dropBody(Loaded& f)
+{
+  f.flesh.reset();
+  f.secondary.reset();
+  f.physics.reset();
+  f.contact.reset();
+  f.contactPlaced.reset();
+  f.collider.reset();
+  f.dforce.reset();
+  f.dforceVersion = f.collisionVersion = f.contactVersion = f.physicsVersion = f.secondaryVersion = f.fleshVersion = -1;
+  for(const char* topic : {"dforce/", "contact/", "physics/", "secondary/", "soft/"})
+    protocol->events().drop(topic + f.id);
+  // the wardrobe topic says what collides no more
+  publishWardrobe(f);
+}
+
+namespace {
+
+// The library path's first folder, lower case: "people", "vehicles", "environments"...
+std::string topFolder(const std::string& rel)
+{
+  std::string at = rel;
+  while(!at.empty() && (at.front() == '/' || at.front() == '\\'))
+    at.erase(at.begin());
+  const size_t end = at.find_first_of("/\\");
+  std::string  top = end == std::string::npos ? std::string() : at.substr(0, end);
+  std::transform(top.begin(), top.end(), top.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  return top;
+}
+
+}  // namespace
+
+// A DAZ file's kind: a character when its bones say which Genesis it is or it is from People; else by
+// its library folder (Animals, Vehicles, Environments and Scenes) and what the file says it is (a scene
+// or a scene subset is a set); else a prop, which the app's reading of the library may make more exact.
+PropKind FvHost::Impl::classifyDaz(const Loaded& f, const KindInput& in) const
+{
+  if(in.forced && dazKind(*in.forced))
+    return *in.forced;
+  const std::string top = topFolder(in.rel.empty() ? figureSource(f) : in.rel);
+  if(top == "people" || !figureGeneration(f).empty())
+    return PropKind::eCharacter;
+  PropKind kind = PropKind::eProp;
+  if(top == "animals")
+    kind = PropKind::eCreature;
+  else if(top == "vehicles")
+    kind = PropKind::eVehicle;
+  else if(top == "environments" || top == "scenes" || in.assetType == "scene" || in.assetType == "scene_subset")
+    kind = PropKind::eSet;
+  if(kind == PropKind::eProp && in.hint && dazKind(*in.hint))
+    kind = *in.hint;
+  return kind;
+}
+
+void FvHost::Impl::setKind(Prop& p, PropKind kind)
+{
+  if(!p.figure || !dazKind(p.kind))
+    throw std::runtime_error(p.name + " is a " + kindName(p.kind) + ": only a DAZ object is treated as another kind");
+  if(!dazKind(kind))
+    throw std::runtime_error(std::string("a DAZ object can't be treated as a ") + kindName(kind));
+  if(kind == p.kind)
+    return;
+  const bool wasBody = bodyKind(p.kind);
+  // a character's contact and Physics mode come and go with the kind, so a creature made a character
+  // builds the body again
+  if(wasBody && (!bodyKind(kind) || (p.kind == PropKind::eCharacter) != (kind == PropKind::eCharacter)))
+    dropBody(*p.figure);
+  p.kind = kind;
+  if(bodyKind(kind) && !p.figure->collider)
   {
-    std::lock_guard lock(morphMutex);
-    morphFigures.insert(p->id);
+    buildBody(p);
+    publishFigure(p);
   }
-  placeProp(*p, place);
-  requestCompose("Adding " + p->name, [this, p, f, jobId, then, restored = !id.empty()] {
-    if(!inScene(f))
-    {
-      job(jobId, {{"state", "done"}});
-      return;
-    }
-    job(jobId, {{"state", "done"}, {"prop", p->id}, {"figure", p->id}});
-    selectProp(p->id);
-    // Genesis 9 leaves its eyes, mouth and lashes to add-ons the scene file lists
-    if(!f->fig->addons.empty() && f->fig->pose)
-    {
-      std::vector<WearRequest> requests;
-      for(const fv::dson::PostLoadAddon& a : f->fig->addons)
-        requests.push_back({a.file, a.name, a.presets});
-      f->addonsPending = true;
-      startWear(f, std::move(requests), {}, [this, f] {
-        f->addonsPending = false;
-        if(const auto p = findProp(f->id); p && p->figure == f)
-        {
-          publishEyes(*p);
-          publishSkin(*p);
-        }
-        for(const auto& after : std::exchange(f->afterAddons, {}))
-          after();
-      });
-    }
-    if(then)
-      then(p);
-    // a load is a step of the history; a duplicate's or a restore's `then` says what it is
-    else if(!restored)
-      recordAdded(p, "Add " + p->name);
-  });
 }
 
 // The library path the figure was opened from, a rel when it came from the library.
