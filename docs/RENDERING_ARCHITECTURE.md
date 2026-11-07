@@ -167,6 +167,16 @@ Device — sample a light at each surface hit (`sampleLights`):
    `shaders/pathtrace_functions.h.slang`). Without that, a lobe narrower than the disk — smooth
    glass, a polished mirror — would never show the sun.
 
+**One pass or two.** The pick is scored first (`lightPickSet`: every punctual light's estimate and
+every node of the light tree's cut, up to 64) and the light then found by walking those shares again
+to where the draw's number falls (`lightDrawOf`). A still keeps that walk: it inverts the pick's sum,
+so a Sobol number stays spread over the lights. A DLSS frame's draws, of plain random numbers, pick
+as they score instead (`lightPickSetDrawn`, `PickReservoirs` in `light_pick.h.slang`: a reservoir by
+estimate and an even one, then the defensive mixture), each light with exactly its probability. The
+walk is a second pass that a warp pays to the end for its furthest-walking thread: on 7TEST (117
+emitters, a 64-node cut) at 4K the moving frame's path trace went 42.4 → 33.6 ms (2026-11-07); with
+a light or two there is nothing to save.
+
 **Details / why it's shaped this way**
 
 The list is derived data, regenerated wholesale (never patched). It stores references, but each

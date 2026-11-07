@@ -1390,6 +1390,11 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
 //
 // `pointOnly`: where the sample lands and nothing of its light (sampleLightDraw), the same light and
 // point as the whole sample for the same numbers: the haze's guide (hazeCameraSegment).
+//
+// A DLSS frame's draw of numbers from `seed` picks its light as the pick is scored
+// (lightPickSetDrawn), with each light's own probability, so without lightDrawOf's second pass over
+// the lights; a still's keeps the walk, which inverts the pick's sum, so a Sobol `xi` stays spread
+// over the lights and the still's numbers stay as they were.
 void sampleLights(in float3       pos,
                   float3          normal,
                   in float3       worldRayDirection,
@@ -1407,9 +1412,20 @@ void sampleLights(in float3       pos,
   const bool given = xi.x >= 0.0F;
   directLight      = noDirectLight();
 
-  const bool         bothSides = isVolumeSample || lightsFromBothSides;
-  const LightPickSet set       = lightPickSet(pos, normal, /*cull=*/!bothSides);
-  directLight.pick             = set.pick;
+  const bool bothSides = isVolumeSample || lightsFromBothSides;
+  if(!given && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+  {
+    LightDraw          drawn;
+    const LightPickSet scored = lightPickSetDrawn(pos, normal, /*cull=*/!bothSides, seed, drawn);
+    directLight.pick          = scored.pick;
+    if(scored.pick.emissive <= 0.0f && scored.candidates == 0)
+      return;  // nothing can light this point
+    sampleLightDraw(scored, drawn, pos, normal, seed, directLight, isVolumeSample, bothSides, compensatedEnv, xi, pointOnly);
+    return;
+  }
+
+  const LightPickSet set = lightPickSet(pos, normal, /*cull=*/!bothSides);
+  directLight.pick       = set.pick;
   if(set.pick.emissive <= 0.0f && set.candidates == 0)
     return;  // nothing can light this point
 
