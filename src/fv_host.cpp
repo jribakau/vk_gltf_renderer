@@ -90,6 +90,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
       return impl->load(asProp);
     }
     return impl->onApp([impl, args] {
+      // a group with what goes in it: one step, journaled as it goes
+      if(args.value("kind", "") == "group" && args.contains("props"))
+        return impl->groupAdd(args);
       Json added = impl->propAdd(args);
       if(const auto p = impl->findProp(added.value("prop", "")))
         impl->recordAdded(p, "Add " + p->name);
@@ -97,6 +100,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     });
   });
   cmds.add("prop.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("prop.set", args); }); });
+  // several prop.set's as one step: {props: [{prop, ...prop.set's fields}], label?, gesture?}
+  cmds.add("prop.setMany", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("prop.setMany", args); }); });
+  cmds.add("prop.ungroup", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->propUngroup(args); }); });
   cmds.add("prop.remove", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("prop.remove", args); }); });
   // placing (fv_host_place.cpp): each its own step of the history, as prop.set
   cmds.add("prop.drop", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->propDrop(args); }); });
@@ -514,15 +520,48 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
               auto p = impl->findProp(nodes->id);
               if(!p)
                 return;
+              // the rest of a selection of several go as it goes: what it did in the world, done to
+              // each of them (but what rides on another of them, which its carrier takes along)
+              std::vector<std::shared_ptr<Prop>> others;
+              for(const std::string& id : impl->view->selectedProps())
+                if(auto q = impl->findProp(id); q && q != p)
+                  others.push_back(q);
+              std::erase_if(others, [&](const auto& q) {
+                return impl->ridesOn(*q, p->id) || std::any_of(others.begin(), others.end(), [&](const auto& o) { return o != q && impl->ridesOn(*q, o->id); });
+              });
               // one step of the history from press to release
-              const Json args = {{"prop", p->id}, {"transform", Json::object()}, {"gesture", {{"id", "gizmo:" + std::to_string(impl->gizmoGesture)}, {"end", done}}}};
-              impl->journaled("prop.set", args, [&] {
-                p->transform = {t, glm::normalize(r), p->kind == PropKind::eCamera ? glm::vec3(1.f) : scale};
-                p->euler.reset();
-                impl->applyTransform(*p);
-                impl->movedProps.insert(p->id);
-                if(p->id == impl->viewCamera)
-                  impl->viewFromCamera(*p);
+              const Json gesture = {{"id", "gizmo:" + std::to_string(impl->gizmoGesture)}, {"end", done}};
+              Json       args    = {{"prop", p->id}, {"transform", Json::object()}, {"gesture", gesture}};
+              if(!others.empty())
+              {
+                Json items = Json::array({{{"prop", p->id}, {"transform", Json::object()}}});
+                for(const auto& q : others)
+                  items.push_back({{"prop", q->id}, {"transform", Json::object()}});
+                args = {{"props", items}, {"gesture", gesture}};
+              }
+              const auto place = [&](Prop& q, const fv::composer::Trs& trs) {
+                q.transform = trs;
+                q.euler.reset();
+                impl->applyTransform(q);
+                impl->movedProps.insert(q.id);
+                if(q.id == impl->viewCamera)
+                  impl->viewFromCamera(q);
+              };
+              impl->journaled(others.empty() ? "prop.set" : "prop.setMany", args, [&] {
+                const glm::mat4 before = impl->worldOf(*p);
+                place(*p, {t, glm::normalize(r), p->kind == PropKind::eCamera ? glm::vec3(1.f) : scale});
+                const glm::mat4 delta = impl->worldOf(*p) * glm::inverse(before);
+                for(const auto& q : others)
+                {
+                  const glm::mat4 local = glm::inverse(impl->parentWorld(*q)) * delta * impl->worldOf(*q);
+                  fv::composer::Trs         trs;
+                  glm::vec3       skew;
+                  glm::vec4       perspective;
+                  glm::decompose(local, trs.scale, trs.rotation, trs.translation, skew, perspective);
+                  if(q->kind == PropKind::eCamera)
+                    trs.scale = glm::vec3(1.f);
+                  place(*q, trs);
+                }
                 return Json();
               });
               if(done)

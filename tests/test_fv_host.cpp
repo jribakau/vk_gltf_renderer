@@ -3854,6 +3854,155 @@ TEST(FvHost, aDazPropsHiddenNodeStaysHiddenAsItPoses)
   EXPECT_EQ(shownItems(rig), all);
 }
 
+//--------------------------------------------------------------------------------------------------
+// Several selected: select's props, add and toggle, a Ctrl+click; the gizmo moves them together as one
+// step; a group holds them, ungrouped they keep their place.
+
+namespace {
+
+Json selectedOf(HostRig& rig)
+{
+  return rig.topic("selection").value("props", Json::array());
+}
+
+// two lights and a camera, at known places
+struct Three
+{
+  HostRig     rig;
+  std::string a, b, c;
+  Three()
+  {
+    const auto add = [&](const char* kind, std::array<double, 3> t) {
+      const Json added = rig.cmd("prop.add", {{"kind", kind}, {"transform", {{"t", {t[0], t[1], t[2]}}}}});
+      EXPECT_TRUE(added.value("ok", false)) << added.dump();
+      return added.value("result", Json::object()).value("prop", std::string());
+    };
+    a = add("light", {0, 1, 0});
+    b = add("light", {1, 1, 0});
+    c = add("camera", {0, 1, 3});
+    EXPECT_TRUE(rig.settle());
+  }
+  glm::vec3 at(const std::string& id)
+  {
+    const Json t = rig.topic("scene")["props"][id]["transform"]["t"];
+    return {t[0].get<float>(), t[1].get<float>(), t[2].get<float>()};
+  }
+};
+
+}  // namespace
+
+TEST(FvHost, severalAreSelectedTheFirstThePrimary)
+{
+  Three t;
+  ASSERT_TRUE(t.rig.cmd("select", {{"props", {t.a, t.b}}}).value("ok", false));
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.a, t.b}));
+  EXPECT_EQ(t.rig.topic("selection").value("prop", ""), t.a);
+  // one more, then one out: the primary moves to what is left
+  ASSERT_TRUE(t.rig.cmd("select", {{"prop", t.c}, {"toggle", true}}).value("ok", false));
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.c, t.a, t.b}));
+  ASSERT_TRUE(t.rig.cmd("select", {{"prop", t.c}, {"toggle", true}}).value("ok", false));
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.a, t.b}));
+  // a prop removed leaves the selection
+  ASSERT_TRUE(t.rig.cmd("prop.remove", {{"prop", t.b}}).value("ok", false));
+  ASSERT_TRUE(t.rig.settle());
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.a}));
+  // a plain select is one again
+  ASSERT_TRUE(t.rig.cmd("select", {{"prop", t.c}}).value("ok", false));
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.c}));
+}
+
+// A Ctrl+click on a prop puts it in the selection; on nothing it changes nothing
+TEST(FvHost, aCtrlClickTogglesAPropInTheSelection)
+{
+  Three t;
+  ASSERT_TRUE(t.rig.cmd("view.set", {{"helpers", false}}).value("ok", false));
+  ASSERT_TRUE(t.rig.cmd("select", {{"prop", t.a}}).value("ok", false));
+  t.rig.input(Json::array({{{"t", "down"}, {"x", 100}, {"y", 100}, {"b", 0}}, {{"t", "up"}, {"x", 100}, {"y", 100}, {"b", 0}, {"ctrl", true}}}));
+  ASSERT_TRUE(t.rig.renderer.pickObserver);
+  rs::EntityId lightB;
+  for(const rs::EntityId root : t.rig.renderer.hostScene().roots())
+    if(const rs::Entity* e = t.rig.renderer.hostScene().entity(root); e && e->name == "Point light 2")
+      lightB = root;
+  ASSERT_FALSE(lightB.isNone());
+  t.rig.renderer.pickObserver(HostRenderer::InstancePick{lightB, {}}, glm::vec3(1, 1, 0));
+  t.rig.host->onUpdate();
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.b, t.a})) << t.rig.topic("selection").dump();
+  t.rig.renderer.pickObserver(std::nullopt, glm::vec3(0));
+  t.rig.host->onUpdate();
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.b, t.a}));
+}
+
+// The gizmo on the primary moves the others by as much, and the drag is one step
+TEST(FvHost, theGizmoMovesSeveralAsOneStep)
+{
+  Three t;
+  ASSERT_TRUE(t.rig.cmd("select", {{"props", {t.a, t.b}}}).value("ok", false));
+  const rs::EntityId root  = t.rig.renderer.selectedEntity();
+  const size_t       steps = undoSteps(t.rig);
+  ASSERT_TRUE(t.rig.renderer.gizmo.edit);
+  t.rig.renderer.gizmo.edit(root, {0.f, 1.5f, 0.f}, glm::quat(1.f, 0.f, 0.f, 0.f), glm::vec3(1.f), false);
+  t.rig.renderer.gizmo.edit(root, {0.f, 2.f, 0.f}, glm::quat(1.f, 0.f, 0.f, 0.f), glm::vec3(1.f), true);
+  t.rig.host->onUpdate();
+  EXPECT_NEAR(t.at(t.a).y, 2.f, 1e-5f);
+  EXPECT_NEAR(t.at(t.b).y, 2.f, 1e-5f);
+  EXPECT_NEAR(t.at(t.b).x, 1.f, 1e-5f);
+  EXPECT_NEAR(t.at(t.c).y, 1.f, 1e-5f) << "what isn't selected moved";
+  EXPECT_EQ(undoSteps(t.rig), steps + 1);
+  EXPECT_EQ(t.rig.topic("history").at("undo")[0], "Move 2 props");
+  t.rig.cmd("history.undo");
+  EXPECT_NEAR(t.at(t.b).y, 1.f, 1e-5f);
+}
+
+// Grouped, the lights ride on a group at their bottom middle, in place; one undo takes it back.
+// Ungrouped, they ride on nothing again, still in place, and the group is gone.
+TEST(FvHost, aGroupHoldsWhatItWasGivenInPlace)
+{
+  Three      t;
+  const Json grouped = t.rig.cmd("prop.add", {{"kind", "group"}, {"name", "Lamps"}, {"props", {t.a, t.b}}});
+  ASSERT_TRUE(grouped.value("ok", false)) << grouped.dump();
+  ASSERT_TRUE(t.rig.settle());
+  const std::string g = grouped.value("result", Json::object()).value("prop", "");
+  const Json        props = t.rig.topic("scene")["props"];
+  EXPECT_EQ(props[t.a].value("parent", ""), g);
+  EXPECT_EQ(props[t.b].value("parent", ""), g);
+  EXPECT_NEAR(props[g]["transform"]["t"][0].get<double>(), 0.5, 1e-5);
+  // in place: relative to the group now
+  EXPECT_NEAR(t.at(t.b).x, 0.5f, 1e-5f);
+  EXPECT_EQ(t.rig.topic("history").at("undo")[0], "Group 2 props");
+
+  const Json ungrouped = t.rig.cmd("prop.ungroup", {{"prop", g}});
+  ASSERT_TRUE(ungrouped.value("ok", false)) << ungrouped.dump();
+  ASSERT_TRUE(t.rig.settle());
+  EXPECT_FALSE(t.rig.topic("scene")["props"].contains(g));
+  EXPECT_TRUE(t.rig.topic("scene")["props"][t.b]["parent"].is_null());
+  EXPECT_NEAR(t.at(t.b).x, 1.f, 1e-5f);
+  // both undone: the lights ride on nothing, the group never was
+  t.rig.cmd("history.undo");
+  t.rig.cmd("history.undo");
+  ASSERT_TRUE(t.rig.settle());
+  EXPECT_FALSE(t.rig.topic("scene")["props"].contains(g));
+  EXPECT_TRUE(t.rig.topic("scene")["props"][t.a]["parent"].is_null());
+  EXPECT_NEAR(t.at(t.b).x, 1.f, 1e-5f);
+}
+
+// A group's copy holds copies of what it held
+TEST(FvHost, aGroupsDuplicateHoldsCopies)
+{
+  Three      t;
+  const Json grouped = t.rig.cmd("prop.add", {{"kind", "group"}, {"props", {t.a, t.b}}});
+  ASSERT_TRUE(t.rig.settle());
+  const std::string g   = grouped.value("result", Json::object()).value("prop", "");
+  const Json        dup = t.rig.cmd("prop.duplicate", {{"prop", g}});
+  ASSERT_TRUE(dup.value("ok", false)) << dup.dump();
+  ASSERT_TRUE(t.rig.settle());
+  const std::string copy = dup.value("result", Json::object()).value("prop", "");
+  int               held  = 0;
+  const Json        props = t.rig.topic("scene")["props"];
+  for(const auto& [id, p] : props.items())
+    held += p.value("parent", Json()).is_string() && p["parent"].get<std::string>() == copy;
+  EXPECT_EQ(held, 2);
+}
+
 // A figure exported with a dent carries it: the feet stand 2 cm into the box, so the dented body's
 // lowest point is higher than the same export's without the dent.
 TEST(FvHost, exportCarriesTheContactChannel)

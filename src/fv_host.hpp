@@ -59,8 +59,14 @@
 //                                                `prefetch` [rel] names files a figure will wear soon (a
 //                                                scene file's worn list), read from the start of its load
 //   prop.add        {path|rel} as load; or {kind: "camera"|"light"|"group", type?: point|spot|directional,
-//                   name?, camera?, transform?}  -> {prop}; a camera stands where the view is, a group
-//                                                (an empty carrier to put props under) where it looks
+//                   name?, camera?, transform?, props?}  -> {prop}; a camera stands where the view is, a
+//                                                group (an empty carrier to put props under) where it
+//                                                looks, or with `props` at their bottom middle, they on it
+//                                                in place (one step)
+//   prop.ungroup    {prop}                       what the group carries on what carries it, in place, and
+//                                                the group gone (one step)
+//   prop.setMany    {props: [{prop, ...prop.set's fields}], label?, gesture?}   prop.set for each, one step
+//                                                (the gizmo's drag of several selected is one)
 //   prop.set        {prop, kind?: a DAZ kind (the object treated as one: a body gains or loses its
 //                   collider, dForce and, for a character, contact and Physics mode; what it wears stays),
 //                   name?, visible?, transform?: {t, e (degrees XYZ) | r (quaternion xyzw), s},

@@ -1045,6 +1045,10 @@ struct FvHost::Impl
   void moveBy(const std::vector<std::shared_ptr<Prop>>& moving, const glm::vec3& delta, const std::string& label);
   Json propDrop(const Json& args);
   Json propAim(const Json& args);
+  // prop.add {kind: "group", props: [id]}: a group at their bottom middle with them in it, one step;
+  // prop.ungroup {prop}: what it carries on what carried it, and it gone, one step
+  Json groupAdd(const Json& args);
+  Json propUngroup(const Json& args);
 
   // ---- a node inside a prop (fv_host_place.cpp): hidden or moved, a set's wall, a car's wheel
   rs::EntityId nodeEntity(const Prop& p, int node) const;
@@ -1288,7 +1292,7 @@ struct FvHost::Impl
   std::pair<std::shared_ptr<Loaded>, const fv::pose::PoseBone*> boneAt(rs::EntityId entity) const;
   void                      applyGizmoEdit();
   // where the gizmo turns a prop's root entity, in its own space (GizmoHooks::pivot)
-  std::optional<glm::vec3> gizmoPivot(rs::EntityId entity) const;
+  std::optional<glm::vec3> gizmoPivot(rs::EntityId entity);
   void applyPreset(const fv::dson::Json&                             doc,
                    const std::string&                                kind,
                    uint64_t                                          jobId,

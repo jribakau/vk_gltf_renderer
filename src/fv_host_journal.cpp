@@ -123,6 +123,15 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
       ids.push_back(p->id);
     return {{"kind", "props"}, {"ids", ids}};
   }
+  // several prop.set's: each one's scope
+  if(cmd == "prop.setMany")
+  {
+    Json scopes = Json::array();
+    for(const Json& item : args.value("props", Json::array()))
+      if(Json one = journalScope("prop.set", item); !one.is_null())
+        scopes.push_back(std::move(one));
+    return scopes.empty() ? Json() : Json{{"kind", "many"}, {"scopes", scopes}};
+  }
   if(cmd == "node.set")
   {
     const auto p = args.contains("prop") && args["prop"].is_string() ? findProp(args["prop"].get<std::string>()) : nullptr;
@@ -276,6 +285,13 @@ Json FvHost::Impl::journalState(const Json& scope)
 {
   Json              ops  = Json::array();
   const std::string kind = scope.value("kind", "");
+  if(kind == "many")
+  {
+    for(const Json& one : scope["scopes"])
+      for(Json& o : journalState(one))
+        ops.push_back(std::move(o));
+    return ops;
+  }
   if(kind == "props")
   {
     // each one back as it is now, or away; then what rode on them back on, and the view through one
@@ -494,6 +510,12 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
   }
   if(cmd == "camera.set")
     return "Lens of " + name;
+  if(cmd == "prop.setMany")
+  {
+    if(const auto l = args.find("label"); l != args.end() && l->is_string())
+      return l->get<std::string>();
+    return "Move " + std::to_string(args.value("props", Json::array()).size()) + " props";
+  }
   if(cmd == "node.set")
   {
     const std::string node = p ? nodeName(*p, args.value("node", -1)) : std::string("a node");
@@ -718,6 +740,12 @@ Json FvHost::Impl::applyOp(const Json& o)
   const Json&       args = o.at("args");
   if(cmd == "prop.set")
     return propSet(args);
+  if(cmd == "prop.setMany")
+  {
+    for(const Json& item : args.value("props", Json::array()))
+      propSet(item);
+    return {{"ok", true}};
+  }
   if(cmd == "node.set")
     return nodeSet(args);
   if(cmd == "morph.set")

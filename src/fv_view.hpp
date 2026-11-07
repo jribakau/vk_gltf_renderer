@@ -22,7 +22,10 @@
 // The native viewport's camera, display and selection, beside the scene of props (fv_host.hpp).
 //
 // Commands (application thread; the host runs them there):
-//   select        {prop, node?} or {prop: null}   a prop (its root), or a node of its "nodes/<prop>" topic
+//   select        {prop, node?} or {prop: null}   a prop (its root), or a node of its "nodes/<prop>" topic;
+//                 {props: [id]}                   several, the first the primary (the gizmo's, the panels');
+//                 {prop, add: true} or {prop, toggle: true}   one more, or one in or out (a Ctrl+click
+//                                               in the viewport toggles too)
 //   camera.view   {name}                     front, back, left, right, top, bottom, threeQuarter
 //   camera.frame  {prop?, selected?}         the whole scene, a prop, or the selection
 //   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation}   the lens of the view in use
@@ -46,7 +49,8 @@
 //                                               visibility and the history stay. A mesh hidden this way
 //                                               long may be let go under memory pressure, as any hidden one
 //
-// Topics: "selection" ({prop, node, name, mesh, kind, bone, surface, state}: `node` is null when the prop itself
+// Topics: "selection" ({prop, props, node, name, mesh, kind, bone, surface, state}: `props` every prop
+// selected, `prop` first; `node` is null when the prop itself
 // is selected; `bone`, the pose bone id, when a posable bone is; `state` for another node the Scene
 // tab may change ({visible, t, r, e, s, edited, moves}, metres and degrees, the host's node.set); `surface`, after a click on the prop,
 // the surface it hit as its "materials/<prop>" topic names it, "m:<i>"), "camera" ({position, target, up,
@@ -127,8 +131,9 @@ public:
   void setProps(std::vector<PropNodes> props);
   // The prop the selection is in, or "".
   const std::string& selectedProp() const { return m_selectedProp; }
-  // every prop selected, the primary (selectedProp) first
-  std::vector<std::string> selectedProps() const { return m_selectedProp.empty() ? std::vector<std::string>{} : std::vector<std::string>{m_selectedProp}; }
+  // every prop selected, the primary (selectedProp) first: select's props, add and toggle, and a
+  // Ctrl+click in the viewport, gather several; any other selection is one again
+  const std::vector<std::string>& selectedProps() const { return m_selectedProps; }
   // the selection, if it is in `prop`, cleared and published (a prop leaving the scene)
   void deselect(const std::string& prop);
   // Whether an entity is a prop root, and which prop's it is.
@@ -214,6 +219,12 @@ private:
   std::function<bool(const std::string&, const glm::vec2&)> m_pull;
   std::function<void(const std::vector<std::string>&)>      m_solo;
   std::function<fv::Json(const std::string&, int)>          m_nodeState;
+  // the props selected, the primary first (m_selectedProp), and whether the click being picked held Ctrl
+  std::vector<std::string> m_selectedProps;
+  bool                     m_clickCtrl = false;
+  // a prop in or out of the selection, the primary moving to what is left
+  void toggleMember(const std::string& prop);
+  const PropNodes* propNodes(const std::string& prop) const;
   bool                                          m_pulling = false;  // a Pull drag holds a figure
 
   fv::Json                              m_camera;

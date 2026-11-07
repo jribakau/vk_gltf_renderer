@@ -88,7 +88,9 @@ namespace {
 // point), view.set's solo (Isolate) and the scene topic's `solo`, and prop.set's `label`.
 // 47: a node inside a prop: node.set (hidden, moved, or back), the nodes topic's `hidden`, the
 // selection's `state` for a node, and scene.state's `nodes`.
-constexpr int kProtocolVersion = 47;
+// 48: several selected: select's props, add and toggle, the selection topic's `props`, a Ctrl+click
+// toggling, the gizmo moving them together; prop.setMany; prop.add's group `props` and prop.ungroup.
+constexpr int kProtocolVersion = 48;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

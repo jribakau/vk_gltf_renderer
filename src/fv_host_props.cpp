@@ -1284,12 +1284,15 @@ Json FvHost::Impl::propDuplicate(const Json& args)
   auto src = findProp(args.at("prop").get<std::string>());
   if(!src)
     throw std::runtime_error("no such prop");
-  const auto place = [this, src](const std::shared_ptr<Prop>& p) {
+  // a copy inside a group's copy rides on that, where it is in its own (the group's copy stands where
+  // the group does)
+  const std::string under = args.value("parent", std::string());
+  const auto place = [this, src, under](const std::shared_ptr<Prop>& p) {
     p->transform = src->transform;
     p->euler     = src->euler;
     p->visible   = src->visible;
-    p->parent    = src->parent;
-    p->bone      = src->bone;
+    p->parent    = under.empty() ? src->parent : under;
+    p->bone      = under.empty() ? src->bone : std::string();
   };
   if(src->figure)
   {
@@ -1343,6 +1346,11 @@ Json FvHost::Impl::propDuplicate(const Json& args)
     selectProp(id);
   });
   recordAdded(p, "Duplicate " + src->name);
+  // a group's copy holds a copy of each thing it held (a DAZ object's lands later, a step of its own)
+  if(src->kind == PropKind::eGroup)
+    for(const auto& child : std::vector(props))
+      if(child->parent == src->id && child != p)
+        propDuplicate({{"prop", child->id}, {"parent", p->id}});
   return {{"prop", p->id}};
 }
 

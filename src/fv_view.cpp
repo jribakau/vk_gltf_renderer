@@ -88,6 +88,13 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
 {
   m_renderer->setPickObserver([this](const std::optional<HostRenderer::InstancePick>& pick, const glm::vec3& hit) {
     const fv::HostAddress at = pick ? m_map.pick(pick->entity, pick->material) : fv::HostAddress{};
+    // a Ctrl+click puts a prop in the selection or takes it out, and on nothing changes nothing
+    if(m_clickCtrl && m_pick == "object")
+    {
+      if(at.prop >= 0)
+        toggleMember(m_props[size_t(at.prop)].id);
+      return true;
+    }
     notePick(at);
     // a mesh pick selects the node hit, which the renderer does
     if(at.prop < 0 || m_pick == "mesh")
@@ -101,6 +108,7 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
       m_renderer->selectEntity(entity.isNone() ? p.root : entity);
       return true;
     }
+    m_selectedProps = {p.id};
     m_renderer->selectEntity(p.root);
     return true;
   });
@@ -134,7 +142,30 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
   });
   commands.add("select", [this](const fv::Json& args) {
     return m_onApp([this, args] {
+      // several: the first is the primary
+      if(args.contains("props") && args["props"].is_array())
+      {
+        std::vector<std::string> ids;
+        for(const fv::Json& id : args["props"])
+          if(id.is_string() && propNodes(id.get<std::string>()) && std::find(ids.begin(), ids.end(), id.get<std::string>()) == ids.end())
+            ids.push_back(id.get<std::string>());
+        m_selectedProps = ids;
+        m_renderer->selectEntity(ids.empty() ? rs::EntityId{} : propNodes(ids[0])->root);
+        m_surfaceProp.clear();
+        m_surface.clear();
+        publishSelection(true);
+        return fv::Json{{"ok", true}};
+      }
       const std::string prop = args.contains("prop") && args["prop"].is_string() ? args["prop"].get<std::string>() : "";
+      if(!prop.empty() && (args.value("toggle", false) || args.value("add", false)))
+      {
+        if(!propNodes(prop))
+          throw std::runtime_error("no such prop");
+        if(args.value("toggle", false) || std::find(m_selectedProps.begin(), m_selectedProps.end(), prop) == m_selectedProps.end())
+          toggleMember(prop);
+        return fv::Json{{"ok", true}};
+      }
+      m_selectedProps = prop.empty() ? std::vector<std::string>{} : std::vector<std::string>{prop};
       if(prop.empty())
         m_renderer->selectEntity({});
       else
@@ -346,6 +377,31 @@ void FvView::setProps(std::vector<PropNodes> props)
 {
   m_props = std::move(props);
   m_map.set(m_props);
+  // what went leaves the selection
+  std::erase_if(m_selectedProps, [&](const std::string& id) { return !propNodes(id); });
+  publishSelection(true);
+}
+
+const FvView::PropNodes* FvView::propNodes(const std::string& prop) const
+{
+  const auto it = std::find_if(m_props.begin(), m_props.end(), [&](const PropNodes& p) { return p.id == prop; });
+  return it == m_props.end() ? nullptr : &*it;
+}
+
+void FvView::toggleMember(const std::string& prop)
+{
+  const PropNodes* p = propNodes(prop);
+  if(!p)
+    return;
+  if(const auto it = std::find(m_selectedProps.begin(), m_selectedProps.end(), prop); it != m_selectedProps.end())
+    m_selectedProps.erase(it);
+  else
+    m_selectedProps.insert(m_selectedProps.begin(), prop);
+  // the primary: what came in, else the first left
+  const PropNodes* primary = m_selectedProps.empty() ? nullptr : propNodes(m_selectedProps.front());
+  m_renderer->selectEntity(primary ? primary->root : rs::EntityId{});
+  m_surfaceProp.clear();
+  m_surface.clear();
   publishSelection(true);
 }
 
@@ -428,6 +484,7 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
       const VkExtent2D size = m_renderer->renderSize();
       if(size.width == 0 || size.height == 0)
         continue;
+      m_clickCtrl = e.value("ctrl", false);
       // a camera or light marker under the pointer is the pick; they have nothing the ray could hit
       if(m_helpers && m_helperPick)
         if(const std::string prop = m_helperPick({float(x), float(y)}); !prop.empty())
@@ -435,8 +492,14 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
           const auto it = std::find_if(m_props.begin(), m_props.end(), [&](const PropNodes& p) { return p.id == prop; });
           if(it != m_props.end())
           {
-            notePick({});
-            m_renderer->selectEntity(it->root);
+            if(m_clickCtrl && m_pick == "object")
+              toggleMember(prop);
+            else
+            {
+              notePick({});
+              m_selectedProps = {prop};
+              m_renderer->selectEntity(it->root);
+            }
             continue;
           }
         }
@@ -553,9 +616,17 @@ void FvView::applyDof()
 
 void FvView::deselect(const std::string& prop)
 {
-  if(prop.empty() || m_selectedProp != prop)
+  if(prop.empty() || std::find(m_selectedProps.begin(), m_selectedProps.end(), prop) == m_selectedProps.end())
     return;
-  m_renderer->selectEntity({});
+  if(m_selectedProp != prop)
+  {
+    std::erase(m_selectedProps, prop);
+    publishSelection(true);
+    return;
+  }
+  std::erase(m_selectedProps, prop);
+  const PropNodes* primary = m_selectedProps.empty() ? nullptr : propNodes(m_selectedProps.front());
+  m_renderer->selectEntity(primary ? primary->root : rs::EntityId{});
   publishSelection(true);
 }
 
@@ -642,14 +713,21 @@ void FvView::publishSelection(bool force)
   if(prop < 0)
   {
     m_selectedProp.clear();
-    m_events->snapshot("selection", {{"prop", nullptr}, {"node", nullptr}});
+    m_selectedProps.clear();
+    m_events->snapshot("selection", {{"prop", nullptr}, {"props", fv::Json::array()}, {"node", nullptr}});
     return;
   }
   const PropNodes& p = m_props[size_t(prop)];
   m_selectedProp     = p.id;
+  // the primary first; a selection made some other way (the host's, a mesh pick) is one again
+  if(const auto it = std::find(m_selectedProps.begin(), m_selectedProps.end(), p.id); it == m_selectedProps.end())
+    m_selectedProps = {p.id};
+  else
+    std::rotate(m_selectedProps.begin(), it, it + 1);
   const auto withSurface = [&](fv::Json sel) {
     if(m_surfaceProp == p.id && !m_surface.empty())
       sel["surface"] = m_surface;
+    sel["props"] = m_selectedProps;
     return sel;
   };
   if(node < 0 || node >= int(p.nodes.size()))

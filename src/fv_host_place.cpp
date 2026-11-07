@@ -666,3 +666,75 @@ void FvHost::Impl::restoreNodeEdits(Prop& p, const Json& nodes)
     }
   }
 }
+
+// ---- groups
+
+// prop.add {kind: "group", name?, props: [id]}: an empty carrier at the members' bottom middle, and
+// each of them (but what rides on another of them) on it, keeping its place in the world: one step
+Json FvHost::Impl::groupAdd(const Json& args)
+{
+  const auto        members = movingArg(Json{{"props", args.value("props", Json::array())}});
+  const auto        box     = selectionBounds(members);
+  const std::string name    = args.value("name", std::string("Group"));
+  const std::string label   = members.empty() ? "Add " + name : members.size() == 1 ? "Group " + members[0]->name : "Group " + std::to_string(members.size()) + " props";
+  journal.begin(label);
+  std::shared_ptr<Prop> g;
+  try
+  {
+    g = addProp(PropKind::eGroup, name);
+    if(box)
+      g->transform.translation = {((*box)[0].x + (*box)[1].x) * 0.5f, (*box)[0].y, ((*box)[0].z + (*box)[1].z) * 0.5f};
+    else if(auto manip = renderer->getCameraManipulator())
+    {
+      glm::dvec3 eye, center, up;
+      manip->getLookat(eye, center, up);
+      g->transform.translation = glm::vec3(center);
+    }
+    requestCompose("Adding " + g->name, [this, id = g->id] { selectProp(id); });
+    recordAdded(g, "Add " + g->name);
+    for(const auto& m : members)
+      edit("prop.set", {{"prop", m->id}, {"parent", g->id}});
+  }
+  catch(...)
+  {
+    journal.end();
+    publishHistory();
+    throw;
+  }
+  journal.end();
+  publishHistory();
+  return {{"prop", g->id}};
+}
+
+// prop.ungroup {prop}: what the group carries goes on what carries the group, where it is in the
+// world, and the group goes: one step
+Json FvHost::Impl::propUngroup(const Json& args)
+{
+  const auto g = findProp(args.at("prop").get<std::string>());
+  if(!g)
+    throw std::runtime_error("no such prop");
+  if(g->kind != PropKind::eGroup)
+    throw std::runtime_error(g->name + " is no group");
+  std::vector<std::shared_ptr<Prop>> children;
+  for(const auto& p : props)
+    if(p->parent == g->id)
+      children.push_back(p);
+  journal.begin("Ungroup " + g->name);
+  try
+  {
+    for(const auto& c : children)
+      edit("prop.set", {{"prop", c->id}, {"parent", g->parent.empty() ? Json() : Json(g->parent)}, {"bone", g->bone.empty() ? Json() : Json(g->bone)}});
+    edit("prop.remove", {{"prop", g->id}});
+  }
+  catch(...)
+  {
+    journal.end();
+    publishHistory();
+    throw;
+  }
+  journal.end();
+  publishHistory();
+  if(!children.empty())
+    selectProp(children.front()->id);
+  return {{"ok", true}, {"props", children.size()}};
+}
