@@ -19,7 +19,7 @@
 
 // The tone curve of HDR display output (src/hdr_output.hpp), shared with the unit tests.
 //
-// Every look the app offers ends in an SDR curve: ACES, AgX, filmic and Khronos PBR Neutral each
+// Every look the app offers ends in an SDR curve: ACES, AgX, filmic, Shaped and Khronos PBR Neutral each
 // squeeze the scene's highlights under SDR white. On an HDR display each pixel of the SDR image, graded
 // as it is, is shown brighter by a gain: the curve's value with the display's headroom over its SDR
 // value. Below a knee that gain is 1, so the look is unchanged where the SDR curve doesn't compress.

@@ -106,8 +106,12 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
 
   // Tonemapper. tmBrightness and tmVignette were once tmGamma and
   // tmWhitePoint -- names for fields TonemapperData does not have.
-  m_settings.add({"tmMethod", "Tonemapper: Method [Filmic:0, Uncharted:1, Clip:2, ACES:3, AgX:4, KhronosPBR:5]"},
-                 &m_resources.tonemapperData.method, Persist::eYes, 0, 5);
+  m_settings.add({"tmMethod", "Tonemapper: Method [Filmic:0, Uncharted:1, Clip:2, ACES:3, AgX:4, KhronosPBR:5, Shaped:6]"},
+                 &m_resources.tonemapperData.method, Persist::eYes, 0, 6);
+  m_settings.add({"tmShapedToe", "Tonemapper: the Shaped curve's toe, 0 open shadows to 1 crushed"},
+                 &m_resources.tonemapperData.shapedToe, Persist::eYes, 0.0F, 1.0F);
+  m_settings.add({"tmShapedShoulder", "Tonemapper: the Shaped curve's shoulder, 0 highlights rolling off late to 1 early and gently"},
+                 &m_resources.tonemapperData.shapedShoulder, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({"tmActive", "Tonemapper: Enable tone mapping [Off:0, On:1]"}, &m_resources.tonemapperData.isActive,
                  Persist::eYes, 0, 1);
   // Floor below 0.1, which is not enough headroom for a bright environment with

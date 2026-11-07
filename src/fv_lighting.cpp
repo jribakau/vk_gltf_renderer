@@ -381,7 +381,7 @@ void patchTonemap(Tonemap& t, const Json& p)
     const Json&        v   = it.value();
     const std::string  key = "tonemap." + k;
     if(k == "method")
-      field(t.method, d.method, v, [&](const Json& x) { return oneOf(x, key, {"aces", "agx", "neutral", "filmic"}); });
+      field(t.method, d.method, v, [&](const Json& x) { return oneOf(x, key, {"aces", "agx", "neutral", "filmic", "shaped"}); });
     else if(k == "exposure")
       // the app opens it up as the physical sky's sun goes down: twilight is some 10,000 times
       // darker than the studio (lighting.ts sentExposure)
@@ -426,6 +426,10 @@ void patchTonemap(Tonemap& t, const Json& p)
       field(t.localShadows, d.localShadows, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else if(k == "localHighlights")
       field(t.localHighlights, d.localHighlights, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "toe")
+      field(t.toe, d.toe, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "shoulder")
+      field(t.shoulder, d.shoulder, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else
       reject("unknown key " + key);
   }
@@ -536,7 +540,9 @@ Json toJson(const State& s)
         {"bloom", t.bloom},
         {"star", t.star},
         {"localShadows", t.localShadows},
-        {"localHighlights", t.localHighlights}}},
+        {"localHighlights", t.localHighlights},
+        {"toe", t.toe},
+        {"shoulder", t.shoulder}}},
   };
 }
 
@@ -764,6 +770,8 @@ int tmMethod(const std::string& method)
     return 4;
   if(method == "neutral")
     return 5;
+  if(method == "shaped")
+    return 6;
   return 0;  // filmic
 }
 
@@ -889,6 +897,9 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"tmAutoExposure", 0},
       {"tmMethod", tmMethod(t.method)},
       {"tmExposure", exposure},
+      // the Shaped curve's handles, sent whatever the curve (the others don't read them)
+      {"tmShapedToe", t.toe},
+      {"tmShapedShoulder", t.shoulder},
       // the Image sliders with the look over them (grade)
       {"tmContrast", g2.contrast},
       {"tmSaturation", g2.saturation},

@@ -42,9 +42,9 @@ static const float kHalfMax = 65504.0;  // Largest half float: the output is RGB
 
 // The SDR curve's result for a colour the curve takes, linear and before any grading: applyTonemap's
 // curves, without the grading it does after them
-float3 sdrCurve(int method, float3 c)
+float3 sdrCurve(TonemapperData tm, float3 c)
 {
-  switch(method)
+  switch(tm.method)
   {
     case TONEMAP_METHOD(eFilmic):
       c = tonemapFilmic(c);
@@ -63,6 +63,8 @@ float3 sdrCurve(int method, float3 c)
       break;
     case TONEMAP_METHOD(eKhronosPBR):
       return hdrNeutral(c, 1.0F);
+    case TONEMAP_METHOD(eShaped):
+      return tonemapShapedLinear(c, tm.shapedToe, tm.shapedShoulder);
   }
   return toLinear(saturate(c));
 }
@@ -88,7 +90,7 @@ void tonemapHdr(uint3 dispatchThreadID: SV_DispatchThreadID)
     const float3 sdr  = toLinear(saturate(applyTonemap(tm, color.xyz, float2(pixel), float2(size))));
     const float3 seen = mul(tm.inputMatrix, color.xyz);  // what the curve takes, as in applyTonemap
     // the exposure view's colours stay at SDR white: they mark the SDR curve's clipping, not the display's
-    hdr = tm.falseColor != 0 ? sdr : sdr * hdrGain(tm.method, seen, sdrCurve(tm.method, seen), pc.peak);
+    hdr = tm.falseColor != 0 ? sdr : sdr * hdrGain(tm.method, seen, sdrCurve(tm, seen), pc.peak);
   }
   else
   {

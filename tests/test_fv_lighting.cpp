@@ -537,6 +537,31 @@ TEST(FvLighting, BloomAndItsStarGoToTheRenderer)
   EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"star", "on"}}}}), std::invalid_argument);
 }
 
+// The Shaped curve and its handles go to the renderer (protocol 43); the handles at their middles by default
+TEST(FvLighting, TheShapedCurveAndItsHandlesGoToTheRenderer)
+{
+  const L::State none;
+  EXPECT_EQ(L::toJson(none)["tonemap"]["toe"], 0.5);
+  EXPECT_EQ(L::rendererParams(none, {})["tmShapedShoulder"], 0.5);
+  const L::State s = L::applyPatch(L::State{}, {{"tonemap", {{"method", "shaped"}, {"toe", 0.2}, {"shoulder", 0.9}}}});
+  EXPECT_EQ(s.tonemap.method, "shaped");
+  EXPECT_DOUBLE_EQ(s.tonemap.toe, 0.2);
+  EXPECT_DOUBLE_EQ(s.tonemap.shoulder, 0.9);
+  const Json topic = L::toJson(s);
+  EXPECT_EQ(topic["tonemap"]["method"], "shaped");
+  EXPECT_EQ(topic["tonemap"]["shoulder"], 0.9);
+  EXPECT_EQ(L::toJson(L::applyPatch(L::State{}, topic)), topic);
+  const Json p = L::rendererParams(s, {});
+  EXPECT_EQ(p["tmMethod"], 6);
+  EXPECT_DOUBLE_EQ(p["tmShapedToe"].get<double>(), 0.2);
+  EXPECT_DOUBLE_EQ(p["tmShapedShoulder"].get<double>(), 0.9);
+  // the exposure as Khronos Neutral's: the curve shares its mid grey (no ACES boost)
+  EXPECT_DOUBLE_EQ(p["tmExposure"].get<double>(), L::rendererParams(L::applyPatch(L::State{}, {{"tonemap", {{"method", "neutral"}}}}), {})["tmExposure"].get<double>());
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"toe", 3.0}}}}).tonemap.toe, 1.0);
+  EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"method", "curvy"}}}}), std::invalid_argument);
+  EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"shoulder", "soft"}}}}), std::invalid_argument);
+}
+
 // Local exposure's two amounts go to the renderer, off by default (protocol 41)
 TEST(FvLighting, LocalExposureGoesToTheRenderer)
 {

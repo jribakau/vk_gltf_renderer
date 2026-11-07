@@ -412,3 +412,36 @@ protocol 41; `localExposureShadows`, `localExposureHighlights`), 0 to 1 each.
   before it. The first splat, every pixel on its own, took about 0.6-0.9 ms at 4K; summing a wave's
   pixels of one bin before the atomics (with WaveActiveMin: the Slang profile here has no ballot)
   was slower, 1.7-1.8 ms. The 2x2 blocks took it to 0.53 ms.
+
+## The Shaped tone curve
+
+A film curve with a toe and a shoulder to set (nvshaders `tonemapShaped`, tone mapper method 6,
+`tmShapedToe`, `tmShapedShoulder`; the lighting's `tonemap.method` "shaped", `tonemap.toe` and
+`tonemap.shoulder`, protocol 43): the View tab's Tone curve › Shaped, with Toe and Shoulder under it.
+Our own curve, not Unreal's (`FilmToneMap` is engine code under its EULA): the same idea, toe and
+shoulder handles on a filmic curve, worked out here.
+
+- **In stops:** stops over mid grey in, stops over mid grey out. Mid grey (0.18) comes out at 0.14
+  with a slope of 1.3 stops a stop, as Khronos PBR Neutral (the default curve) gives it, so the
+  exposure means the same under both and the host sends it unboosted (ACES alone gets 1/0.6).
+- **The shoulder:** a rational quadratic Bezier from mid grey, along that slope, to white at 16,
+  which it reaches flat. Its middle point's weight is the Shoulder: 4 at 0 (highlights bright and
+  rolling off late: within 0.03 of Neutral from mid grey up), 1 halfway (between ACES and AgX), a
+  quarter at 1 (rolling off from just over mid grey, gently). A Bezier inside its control polygon
+  cannot fall, so the curve rises for every weight, and it is white by 16, which the firefly clamp's
+  "white anyway" counts on (`fv_lighting.cpp` kFireflyClamp).
+- **The toe:** under mid grey the same slope, steepened past 1.5 stops down (a soft knee a stop
+  wide) by up to 1.5 stops a stop more: Toe 0 leaves the shadows open, 0.5 about as Neutral's, 1
+  crushed. Each handle moves only its own side of mid grey.
+- **Colour:** the brightest channel goes through the curve and the colour is scaled with it, keeping
+  its hue, then eased to white by how much that channel was compressed (Neutral's way, its 0.15), so
+  a bright red pales toward white instead of turning orange as a curve on each channel would.
+- **HDR:** its result is opened toward the display's peak above half of SDR white, as for ACES and
+  AgX (`hdrOpenShoulder`).
+- **Checked:** `tests/test_hdr_output.cpp` (ShapedCurve.*): mid grey and white where they belong for
+  every toe and shoulder, rising with no step from -14 to +6.5 stops, the same slope either side of mid
+  grey, each handle moving its own side only, Toe 0.5 with Shoulder 0 within 0.03 of Neutral (sRGB)
+  from -4 to +4 stops, the hue kept and a bright red eased toward white, and the tone mapper choosing
+  it by its method with its handles. Prototyped in numpy first (scratchpad shaped2.py): a curve of
+  Lottes' form (x^a over b x^ad + c) was tried and dropped, as its shoulder handle moved the shadows
+  too (at -4 stops 0.019 to 0.078) and without it the shoulder barely moved anything.

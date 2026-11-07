@@ -377,3 +377,114 @@ TEST(HdrOutput, TheToneMapperPaintsTheExposureViewAtItsOwnExposure)
   tm.falseColor = 0;
   EXPECT_NE(applyTonemap(tm, float3(0.045F), float2(0.0F), float2(1.0F)), float3(188.F, 55.F, 84.F) / 255.F);
 }
+
+// The Shaped curve (nvshaders tonemapShaped): mid grey and white where the curve is built to put them,
+// for every toe and shoulder; rising everywhere, with no step and no corner at mid grey; each handle
+// moving its own side of mid grey only; and halfway down the toe with the shoulder at its hardest,
+// close to Khronos PBR Neutral, the app's default curve
+namespace {
+float shapedSrgb(float x, float toe, float shoulder)
+{
+  const float y = shapedCurve(x, toe, shoulder);
+  return y <= 0.0031308F ? 12.92F * y : 1.055F * std::pow(y, 1.0F / 2.4F) - 0.055F;
+}
+}  // namespace
+
+TEST(ShapedCurve, MidGreyAndWhiteStayPut)
+{
+  for(float toe : {0.0F, 0.3F, 0.5F, 1.0F})
+    for(float shoulder : {0.0F, 0.25F, 0.5F, 0.75F, 1.0F})
+    {
+      EXPECT_NEAR(shapedCurve(0.18F, toe, shoulder), 0.14F, 1e-5F) << toe << " " << shoulder;
+      EXPECT_EQ(shapedCurve(16.0F, toe, shoulder), 1.0F);
+      EXPECT_EQ(shapedCurve(1e6F, toe, shoulder), 1.0F);
+      EXPECT_EQ(shapedCurve(0.0F, toe, shoulder), 0.0F);
+      EXPECT_LT(shapedCurve(15.0F, toe, shoulder), 1.0F);
+      EXPECT_GT(shapedCurve(15.0F, toe, shoulder), 0.97F) << "white by 16, as the firefly clamp counts on";
+    }
+}
+
+TEST(ShapedCurve, RisesEverywhereWithNoStepOrCorner)
+{
+  for(float toe : {0.0F, 0.5F, 1.0F})
+    for(float shoulder : {0.0F, 0.25F, 0.5F, 0.75F, 1.0F})
+    {
+      float before = 0.0F;
+      for(float u = -14.0F; u <= 6.5F; u += 0.002F)
+      {
+        const float y = shapedCurve(0.18F * std::exp2(u), toe, shoulder);
+        ASSERT_GE(y, before) << "falls at " << u << " stops (" << toe << ", " << shoulder << ")";
+        ASSERT_LE(y - before, 0.005F) << "a step at " << u << " stops";
+        before = y;
+      }
+      // the same slope either side of mid grey: 1.3 stops out a stop in
+      const float e = 1e-3F;
+      const float up = std::log2(shapedCurve(0.18F * std::exp2(e), toe, shoulder) / 0.14F) / e;
+      const float dn = -std::log2(shapedCurve(0.18F * std::exp2(-e), toe, shoulder) / 0.14F) / e;
+      EXPECT_NEAR(up, SHAPED_SLOPE, 0.01F);
+      EXPECT_NEAR(dn, SHAPED_SLOPE, 0.01F);
+    }
+}
+
+TEST(ShapedCurve, EachHandleMovesItsOwnSide)
+{
+  for(float u = -10.0F; u <= 6.0F; u += 0.25F)
+  {
+    const float x = 0.18F * std::exp2(u);
+    if(u < 0.0F)
+    {
+      EXPECT_EQ(shapedCurve(x, 0.5F, 0.0F), shapedCurve(x, 0.5F, 1.0F)) << "the shoulder moved the shadows at " << u;
+      if(u < -SHAPED_TOE_START - SHAPED_TOE_KNEE)
+        EXPECT_GT(shapedCurve(x, 0.0F, 0.5F), shapedCurve(x, 1.0F, 0.5F)) << "a toe of 1 crushes";
+    }
+    else
+    {
+      EXPECT_EQ(shapedCurve(x, 0.0F, 0.5F), shapedCurve(x, 1.0F, 0.5F)) << "the toe moved the highlights at " << u;
+      if(u > 0.5F && u < 6.0F)
+        EXPECT_GT(shapedCurve(x, 0.5F, 0.0F), shapedCurve(x, 0.5F, 1.0F)) << "a shoulder of 1 rolls off earlier";
+    }
+  }
+}
+
+TEST(ShapedCurve, HalfToeHardShoulderIsCloseToNeutral)
+{
+  for(float u = -4.0F; u <= 4.0F; u += 0.5F)
+  {
+    const float x       = 0.18F * std::exp2(u);
+    const float neutral = tonemapKhronosPBR(float3(x)).x;  // sRGB-encoded
+    EXPECT_NEAR(shapedSrgb(x, 0.5F, 0.0F), neutral, 0.03F) << u << " stops";
+  }
+}
+
+// On a colour: the brightest channel through the curve, the hue kept where little is compressed, eased
+// to white where much is; nothing that isn't a colour gets through
+TEST(ShapedCurve, KeepsHueThenGoesToWhite)
+{
+  const float3 dim = tonemapShapedLinear(float3(0.2F, 0.04F, 0.02F), 0.5F, 0.5F);
+  EXPECT_NEAR(dim.y / dim.x, 0.2F, 0.01F);
+  EXPECT_NEAR(dim.z / dim.x, 0.1F, 0.01F);
+  EXPECT_FLOAT_EQ(dim.x, shapedCurve(0.2F, 0.5F, 0.5F));
+  // a bright red: still red, paler, its brightest channel the curve's
+  const float3 red = tonemapShapedLinear(float3(6.0F, 1.2F, 0.6F), 0.5F, 0.5F);
+  EXPECT_FLOAT_EQ(red.x, shapedCurve(6.0F, 0.5F, 0.5F));
+  EXPECT_GT(red.x, red.y);
+  EXPECT_GT(red.y, red.z);
+  EXPECT_GT(red.y / red.x, 0.2F) << "eased toward white";
+  EXPECT_EQ(tonemapShapedLinear(float3(INFINITY, 1.0F, 0.0F), 0.5F, 0.5F), float3(1.0F));
+  EXPECT_EQ(tonemapShapedLinear(float3(0.0F), 0.5F, 0.5F), float3(0.0F));
+  EXPECT_EQ(tonemapShapedLinear(float3(NAN, 0.0F, 0.0F), 0.5F, 0.5F), float3(0.0F));
+  const float3 neg = tonemapShapedLinear(float3(-1.0F, 0.18F, 0.0F), 0.5F, 0.5F);
+  EXPECT_GE(neg.x, 0.0F);  // as a 0, eased toward white a little like any channel
+  EXPECT_LT(neg.x, 0.002F);
+  // and the tone mapper picks it by its method, with its handles
+  TonemapperData tm;
+  tm.inputMatrix    = float3x3(1.0F);
+  tm.method         = int(ToneMapMethod::eShaped);
+  tm.dither         = 0;
+  tm.shapedToe      = 0.2F;
+  tm.shapedShoulder = 0.8F;
+  const float3 graded = applyTonemap(tm, float3(0.5F), float2(0.0F), float2(1.0F));
+  const float3 curve  = tonemapShaped(float3(0.5F), 0.2F, 0.8F);
+  for(int c = 0; c < 3; c++)
+    EXPECT_NEAR(graded[c], curve[c], 1e-5F);
+}

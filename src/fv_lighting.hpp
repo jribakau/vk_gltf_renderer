@@ -39,7 +39,7 @@
 //   ground:  mode floor|water|catcher|off, height ("auto" or world units), color, roughness,
 //            darkness, fade, water (0 dry to 1 a sheet of it, on a floor), depth (metres, of the
 //            water mode's body of water), waves (on it, 0 still to 1), ripples (on either, 0 still to 1)
-//   tonemap: method aces|agx|neutral|filmic, exposure, contrast, saturation, vignette,
+//   tonemap: method aces|agx|neutral|filmic|shaped, exposure, contrast, saturation, vignette,
 //            temperature (Kelvin), tint (Duv), followClouds (the exposure opens up for what the
 //            physical sky's clouds take from the light, as the meter measures it at each bake: the
 //            app's camera metering), skyShare (of a clear sky's light on the figure, the share the
@@ -50,7 +50,9 @@
 //            moved into a glow round bright light, 0 none) and star (0 to 1, the share of that glow
 //            drawn as spikes across the aperture's blades; none for a round aperture), protocol 40;
 //            localShadows and localHighlights (0 to 1 each, 0 none: how far dark regions are lifted and
-//            bright ones held toward mid grey, region by region; src/local_exposure.hpp), protocol 41
+//            bright ones held toward mid grey, region by region; src/local_exposure.hpp), protocol 41;
+//            toe and shoulder (0 to 1 each, the Shaped curve's handles: how deep its shadows go, and
+//            how early and gently its highlights roll off; nvshaders tonemapShaped), protocol 43
 //
 // Colours are "#rrggbb" in sRGB, as the panel shows them. A patch from before protocol 17 (a kept
 // scene's) may also carry sun.shadows and a shadow section, the raster view's shadow map: they are
@@ -173,6 +175,8 @@ struct Tonemap
   double              star         = 0.0;  // of the glow, into the star across the aperture's blades
   double              localShadows    = 0.0;  // dark regions lifted toward mid grey (protocol 41; src/local_exposure.hpp)
   double              localHighlights = 0.0;  // bright regions held toward it
+  double              toe             = 0.5;  // the Shaped curve's handles (protocol 43; tonemapShaped)
+  double              shoulder        = 0.5;
 };
 
 // What the tone mapper grades with: the panel's sliders with the look over them at its strength, each
