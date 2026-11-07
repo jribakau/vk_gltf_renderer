@@ -537,6 +537,27 @@ TEST(FvLighting, BloomAndItsStarGoToTheRenderer)
   EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"star", "on"}}}}), std::invalid_argument);
 }
 
+// Local exposure's two amounts go to the renderer, off by default (protocol 41)
+TEST(FvLighting, LocalExposureGoesToTheRenderer)
+{
+  const L::State none;
+  EXPECT_EQ(L::toJson(none)["tonemap"]["localShadows"], 0.0);
+  EXPECT_EQ(L::rendererParams(none, {})["localExposureShadows"], 0.0);
+  EXPECT_EQ(L::rendererParams(none, {})["localExposureHighlights"], 0.0);
+  const L::State s = L::applyPatch(L::State{}, {{"tonemap", {{"localShadows", 0.6}, {"localHighlights", 0.4}}}});
+  EXPECT_DOUBLE_EQ(s.tonemap.localShadows, 0.6);
+  EXPECT_DOUBLE_EQ(s.tonemap.localHighlights, 0.4);
+  const Json topic = L::toJson(s);
+  EXPECT_EQ(topic["tonemap"]["localShadows"], 0.6);
+  EXPECT_EQ(topic["tonemap"]["localHighlights"], 0.4);
+  EXPECT_EQ(L::toJson(L::applyPatch(L::State{}, topic)), topic);
+  const Json p = L::rendererParams(s, {});
+  EXPECT_DOUBLE_EQ(p["localExposureShadows"].get<double>(), 0.6);
+  EXPECT_DOUBLE_EQ(p["localExposureHighlights"].get<double>(), 0.4);
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"localShadows", 3.0}}}}).tonemap.localShadows, 1.0);
+  EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"localHighlights", "on"}}}}), std::invalid_argument);
+}
+
 // The grade is the sliders with the look over them at its strength
 TEST(FvLighting, TheGradeIsTheSlidersWithTheLookOverThem)
 {

@@ -422,6 +422,10 @@ void patchTonemap(Tonemap& t, const Json& p)
       field(t.bloom, d.bloom, v, [&](const Json& x) { return number(x, key, 0.0, 0.25); });
     else if(k == "star")
       field(t.star, d.star, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "localShadows")
+      field(t.localShadows, d.localShadows, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "localHighlights")
+      field(t.localHighlights, d.localHighlights, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else
       reject("unknown key " + key);
   }
@@ -530,7 +534,9 @@ Json toJson(const State& s)
         {"look", lookJson(t.look)},
         {"lookStrength", t.lookStrength},
         {"bloom", t.bloom},
-        {"star", t.star}}},
+        {"star", t.star},
+        {"localShadows", t.localShadows},
+        {"localHighlights", t.localHighlights}}},
   };
 }
 
@@ -907,6 +913,9 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       // the glow and the star on the image the tone mapper takes (src/bloom.hpp)
       {"bloomShare", t.bloom},
       {"bloomStar", t.star},
+      // the shadows lifted and the highlights held, region by region, after it (src/local_exposure.hpp)
+      {"localExposureShadows", t.localShadows},
+      {"localExposureHighlights", t.localHighlights},
       // the renderer recalibrates this on every load, so the host drops it from what it has applied
       // after a load or an environment change and sends it again
       {"ptFireflyClamp", kFireflyClamp / exposure},

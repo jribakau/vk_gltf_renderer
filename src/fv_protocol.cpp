@@ -72,7 +72,9 @@ namespace {
 // and lighting.preview, a look shown while the app's pointer is on its chip.
 // 40: bloom, the lighting's tonemap.bloom and tonemap.star (a glow round bright light, and a star
 // across the aperture's blades).
-constexpr int kProtocolVersion = 40;
+// 41: local exposure, the lighting's tonemap.localShadows and tonemap.localHighlights (dark regions
+// lifted and bright ones held toward mid grey, region by region).
+constexpr int kProtocolVersion = 41;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -218,6 +218,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   // The frame an HDR display is shown
   m_hdrOutput.init(m_resources);
   m_bloom.init(m_resources);
+  m_localExposure.init(m_resources);
 
 
   // Producer for analytic skies. Its lat-long image feeds the same HdrIbl the HDR file path uses,
@@ -370,6 +371,7 @@ void GltfRenderer::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
   m_pathTracer.onResize(cmd, size, m_resources);
   m_hdrOutput.onResize(cmd, size);
   m_bloom.onResize(cmd, size);
+  m_localExposure.onResize(cmd, size);
   m_resources.tonemappedUi.update(m_resources.gBuffers.getUiImageView(Resources::eImgTonemapped));
 
   // Resize visual helpers (depth buffer + scene depth descriptor set)
@@ -965,7 +967,8 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   gpu_trail::frameStart(cmd, ++m_trailFrames);
   // for refuseFrameSize on the stream's thread
   m_frameBytesPerPixel.store(kPathTracerBytesPerPixel + (m_pathTracer.isDlssEnabled() ? kDlssBytesPerPixel : 0)
-                              + (m_hdrOutput.active() ? HdrOutput::kBytesPerPixel : 0) + (m_bloom.active() ? Bloom::kBytesPerPixel : 0));
+                              + (m_hdrOutput.active() ? HdrOutput::kBytesPerPixel : 0) + (m_bloom.active() ? Bloom::kBytesPerPixel : 0)
+                              + (m_localExposure.active() ? LocalExposure::kBytesPerPixel : 0));
   {
     const VkExtent2D s = renderSize();
     m_frameSizePacked.store(uint64_t(s.width) << 32 | s.height);
@@ -1412,13 +1415,21 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   // the grain moves with each frame drawn, as film's does, and holds on a finished still
   tonemapperData.grainSeed = uint32_t(m_resources.drawnFrameCount);
 
-  // The glow and the star (Bloom), on what the tone mapper and the HDR output take, not on a debug or
-  // guide view; an .exr keeps the image without them (m_tonemapInput below)
+  // The glow and the star (Bloom), then the shadows lifted and the highlights held (local exposure),
+  // on what the tone mapper and the HDR output take, not on a debug or guide view; an .exr keeps the
+  // image without them (m_tonemapInput below)
   const VkDescriptorImageInfo unbloomed = inputBuffer;
-  if(vizNormal && !usingGuideBuffer && !bypassTonemapper && tonemapperData.isActive && m_bloom.active())
+  const bool  picture  = vizNormal && !usingGuideBuffer && !bypassTonemapper && tonemapperData.isActive;
+  const float exposure = tonemapperData.autoExposure ? 1.0F : tonemapperData.exposure;
+  if(picture && m_bloom.active())
   {
     auto bloomSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Bloom");
-    inputBuffer = m_bloom.cmdApply(cmd, m_resources, inputBuffer, gbufSize, tonemapperData.autoExposure ? 1.0F : tonemapperData.exposure);
+    inputBuffer       = m_bloom.cmdApply(cmd, m_resources, inputBuffer, gbufSize, exposure);
+  }
+  if(picture && m_localExposure.active())
+  {
+    auto localSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Local exposure");
+    inputBuffer       = m_localExposure.cmdApply(cmd, m_resources, inputBuffer, gbufSize, exposure, m_profilerGpuTimer);
   }
 
   m_resources.tonemapper.runCompute(cmd, gbufSize, tonemapperData, inputBuffer,
@@ -1767,6 +1778,7 @@ void GltfRenderer::destroyResources()
   m_silhouette.deinit(m_resources);
   m_hdrOutput.deinit(m_resources);
   m_bloom.deinit(m_resources);
+  m_localExposure.deinit(m_resources);
   if(m_wipeFrame.image)
     m_resources.allocator.destroyImage(m_wipeFrame);
   m_wipeFrame = {};

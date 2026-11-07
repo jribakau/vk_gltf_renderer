@@ -58,6 +58,7 @@
 #include "resources.hpp"
 #include "renderer_silhouette.hpp"
 #include "bloom.hpp"
+#include "local_exposure.hpp"
 #include "hdr_output.hpp"
 #include "env_baker.hpp"
 #include "env_image_loader.hpp"
@@ -634,6 +635,7 @@ private:
   Silhouette    m_silhouette;     // Silhouette renderer
   HdrOutput     m_hdrOutput;      // The frame an HDR display is shown, and EXR exports
   Bloom         m_bloom;          // The glow and the star on the image the tone mapper takes
+  LocalExposure m_localExposure;  // Shadows lifted and highlights held, region by region, after the bloom
   // What the last frame's tonemapper took: an .exr export is made from it (saveExr)
   struct TonemapInput
   {

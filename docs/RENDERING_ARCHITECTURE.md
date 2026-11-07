@@ -365,3 +365,50 @@ Star (the lighting's `tonemap.bloom` and `tonemap.star`, protocol 40; `bloomShar
   spikes, the kernels sum to one, the spikes cross the edges. Measured on 1TEST at 3840x2160 while
   orbiting: 0.70 ms a frame for the glow, 0.92 with a six-blade star, against a 150-175 ms path
   trace. Seen on 1TEST's Camera 2: the blue spotlight's halo and the downlights' six-pointed stars.
+
+## Local exposure
+
+Dark regions of the frame lifted and bright ones held back toward mid grey, each region as a whole,
+as a photographer dodges and burns a print (`src/local_exposure.hpp`, `shaders/local_exposure.slang`,
+the grid and the curve in `shaders/local_exposure.h.slang`), on the image the tone mapper and the HDR
+output take, after bloom; an .exr export keeps the image without it. Off by default: the View tab's
+Lift shadows and Hold highlights (the lighting's `tonemap.localShadows` and `tonemap.localHighlights`,
+protocol 41; `localExposureShadows`, `localExposureHighlights`), 0 to 1 each.
+
+- **The regions:** a bilateral grid (Chen, Paris and Durand 2007; Unreal's default local exposure).
+  The luminance of each 2x2 block, in stops from mid grey after the tone mapper's exposure, is summed
+  into a grid of cells (40 down the image's height, even-sided, so the same share of the frame at
+  every size) by 32 bins of 0.75 stops each, from -16 to +8; the grid is blurred 1 2 1 across cells
+  and bins, and each pixel reads it back at its place and its own luminance. That is the level of
+  the region it is in, a region ending where the light jumps by more than a bin or two, so a dark
+  face against a bright wall is one region and the wall another: no halo forms at the edge. The
+  blocks are a quarter of the splat's work; their one cost is the block across an edge, a sample
+  between the two sides, which moves the brighter side's gain by at most 0.07 stops within 8 pixels
+  of an edge both of whose sides are past the knee.
+- **The curve:** within a stop of mid grey nothing moves (the knee bends over a stop); beyond it a
+  region is brought back by 0.6 times the slider of each further stop, at most 3 stops either way.
+  A region's new level never falls as its old one rises (the slope is at least 0.4), and every pixel
+  of a region gets the region's gain, so texture and detail keep their contrast. Lift alone never
+  darkens, Hold alone never brightens.
+- **Why not exposure fusion:** Mertens' fusion of three exposures, the review's first suggestion,
+  was prototyped on 1TEST first. Its curve for a flat region flattens the mid-tones (five stops into
+  one at full strength, a third of their contrast), several weightings let one tone overtake another,
+  and even with weights that follow the curve above it darkened 4.6-7% of the pixels (deep shadow
+  beside brighter ones) when asked only to lift. That overshoot is the method's own: the fine detail
+  comes from the lifted exposure, the region's level from neighbours lifted less. The grid lifts
+  none of them darker.
+- **The firefly clamp:** indirect light is clamped at 16 times white, which the curves show as white
+  anyway. Held highlights can bring a large region that bright back under white, so a clamped caustic
+  pool could read a little flat at a strong Hold; a single clamped pixel in a dark region is lifted
+  with its region, not held.
+- **Checked:** `tests/test_local_exposure.cpp` runs the grid on the CPU: a flat image gets the curve's
+  gain to 0.01 stops, a step from -5 to 0 (or +4) stops gets each side's own gain up to the edge
+  pixel (but for the blocks' fringe above), a half-stop checker in a lifted region keeps more than 80% of its contrast (a curve on each
+  pixel would keep 40%), and the curve keeps tones in order. On the GPU (1TEST, Camera 2, the tone
+  mapper set to Clip so the screen is the exposed light) the image matched a numpy copy of the pass to
+  8-bit rounding (mean 0.34 levels, at most 2, as with it off). Its cost while orbiting: at 3840x2160 1.2-1.5 ms a frame (the splat 0.53, the apply 0.66-0.97), about 1% of the ~135 ms path trace; at 2160x1395 0.35 ms in its cleanest round (splat 0.19, apply 0.15) and 2.6-2.9 ms in three others, while the tone mapper's own time there varied 0.5-1.2 ms: the noise is outside the pass and was not tracked down.
+  The profiler has a section for each pass, and a "Local exposure wait" one before them: a section
+  starts at the top of the pipe, so the first after a barrier would count the wait for the work
+  before it. The first splat, every pixel on its own, took about 0.6-0.9 ms at 4K; summing a wave's
+  pixels of one bin before the atomics (with WaveActiveMin: the Slang profile here has no ballot)
+  was slower, 1.7-1.8 ms. The 2x2 blocks took it to 0.53 ms.
