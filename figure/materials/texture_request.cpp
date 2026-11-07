@@ -61,6 +61,8 @@ std::string requestKey(const TextureRequest& req)
     key += "|bump:" + req.bumpRel + ":" + num(req.bumpStrength);
   if(req.bumpHeight > 0)
     key += "|bh:" + num(req.bumpHeight);
+  if(!req.displaceRel.empty())
+    key += "|disp:" + req.displaceRel + ":" + num(req.displaceHeight);
   if(req.makeup)
   {
     const MakeupRequest& m = *req.makeup;

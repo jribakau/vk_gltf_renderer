@@ -99,6 +99,11 @@ struct TextureRequest
   // A height map's full range in UV units (bumpHeightInUv), which the bake turns into slopes against
   // the map's size: the same bump at any resolution. 0: a fixed slope per texel.
   float bumpHeight = 0;
+  // A second height map summed into the source's before its slopes are taken (channels "bn"): DAZ's
+  // Displacement Strength map under a bump map. `displaceHeight` is its full range in UV units, as
+  // `bumpHeight` is the source's.
+  std::string displaceRel;
+  float       displaceHeight = 0;
   std::optional<MakeupRequest> makeup;
   std::optional<IrisRequest>   iris;
   std::optional<RecolorRequest> recolor;
@@ -109,7 +114,7 @@ struct TextureRequest
   // Whether only the cooker can make it (the renderer reads plain png/jpg/webp itself).
   bool composed() const
   {
-    return !alphaRel.empty() || !channels.empty() || !metalRel.empty() || !bumpRel.empty() || makeup.has_value() || iris.has_value() || recolor.has_value()
+    return !alphaRel.empty() || !channels.empty() || !metalRel.empty() || !bumpRel.empty() || !displaceRel.empty() || makeup.has_value() || iris.has_value() || recolor.has_value()
            || !layers.empty() || !mulRels.empty();
   }
 };

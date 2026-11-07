@@ -125,30 +125,33 @@ Image bakeMakeup(const Image& base, const mat::MakeupRequest& mk, const Image* c
 // The slope per texel a height map gets when its size on the surface is unknown
 constexpr float kBumpSlope = 10.f;
 
-// A normal map from a height map (the pixel's luma), in glTF's green convention for a mesh without
-// tangents; edges wrap, as DAZ maps repeat. `flip`: v runs up the image. `bumpHeight`: the map's full
-// range in UV units (TextureRequest::bumpHeight), so a texel's slope is its height step over its
-// width in UV; 0: kBumpSlope per texel.
-Image bumpToNormal(const Image& src, bool flip, float bumpHeight = 0)
+// A height map's heights: the pixel's luma, 0 to 1
+std::vector<float> lumaHeights(const Image& src)
 {
-  const float        sy = flip ? -1.f : 1.f;
-  const float        su = bumpHeight > 0 ? bumpHeight * float(src.w) : kBumpSlope;
-  const float        sv = bumpHeight > 0 ? bumpHeight * float(src.h) : kBumpSlope;
   std::vector<float> height(size_t(src.w) * size_t(src.h));
   for(size_t i = 0; i < height.size(); i++)
     height[i] = (src.px[i * 4] * 0.299f + src.px[i * 4 + 1] * 0.587f + src.px[i * 4 + 2] * 0.114f) / 255.f;
-  Image out;
-  out.w = src.w;
-  out.h = src.h;
-  out.px.resize(src.px.size());
-  for(int y = 0; y < src.h; y++)
+  return height;
+}
+
+// A normal map from `w` x `h` heights, in glTF's green convention for a mesh without tangents; edges
+// wrap, as DAZ maps repeat. `flip`: v runs up the image. `su`, `sv`: the slope a unit of height
+// difference between neighbouring texels makes along x and y.
+Image normalsFromHeights(const std::vector<float>& height, int w, int h, bool flip, float su, float sv)
+{
+  const float sy = flip ? -1.f : 1.f;
+  Image       out;
+  out.w = w;
+  out.h = h;
+  out.px.resize(size_t(w) * size_t(h) * 4);
+  for(int y = 0; y < h; y++)
   {
-    const int y0 = (y + src.h - 1) % src.h, y1 = (y + 1) % src.h;
-    for(int x = 0; x < src.w; x++)
+    const int y0 = (y + h - 1) % h, y1 = (y + 1) % h;
+    for(int x = 0; x < w; x++)
     {
-      const int   x0 = (x + src.w - 1) % src.w, x1 = (x + 1) % src.w;
-      const float dx = (height[size_t(y) * size_t(src.w) + size_t(x1)] - height[size_t(y) * size_t(src.w) + size_t(x0)]) * 0.5f;
-      const float dy = (height[size_t(y1) * size_t(src.w) + size_t(x)] - height[size_t(y0) * size_t(src.w) + size_t(x)]) * 0.5f;
+      const int   x0 = (x + w - 1) % w, x1 = (x + 1) % w;
+      const float dx = (height[size_t(y) * size_t(w) + size_t(x1)] - height[size_t(y) * size_t(w) + size_t(x0)]) * 0.5f;
+      const float dy = (height[size_t(y1) * size_t(w) + size_t(x)] - height[size_t(y0) * size_t(w) + size_t(x)]) * 0.5f;
       const float nx = -dx * su, ny = sy * dy * sv, nz = 1.f;
       const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
       const auto  enc = [&](float v) { return uint8_t(std::lround(std::clamp((v / len * 0.5f + 0.5f) * 255.f, 0.f, 255.f))); };
@@ -160,6 +163,28 @@ Image bumpToNormal(const Image& src, bool flip, float bumpHeight = 0)
     }
   }
   return out;
+}
+
+// A normal map from a height map (the pixel's luma). `bumpHeight`: the map's full range in UV units
+// (TextureRequest::bumpHeight), so a texel's slope is its height step over its width in UV; 0:
+// kBumpSlope per texel.
+Image bumpToNormal(const Image& src, bool flip, float bumpHeight = 0)
+{
+  const float su = bumpHeight > 0 ? bumpHeight * float(src.w) : kBumpSlope;
+  const float sv = bumpHeight > 0 ? bumpHeight * float(src.h) : kBumpSlope;
+  return normalsFromHeights(lumaHeights(src), src.w, src.h, flip, su, sv);
+}
+
+// A bump and a height map under it (TextureRequest::displaceRel, at the bump's size), each at its own
+// full range in UV units, summed before the slopes are taken, as the cooker does (texcache.rs
+// summed_bump_to_normal)
+Image summedBumpToNormal(const Image& bump, float bumpHeight, const Image& under, float underHeight, bool flip)
+{
+  std::vector<float>       height = lumaHeights(bump);
+  const std::vector<float> lower  = lumaHeights(under);
+  for(size_t i = 0; i < height.size(); i++)
+    height[i] = height[i] * bumpHeight + lower[i] * underHeight;
+  return normalsFromHeights(height, bump.w, bump.h, flip, float(bump.w), float(bump.h));
 }
 
 // Reoriented normal mapping: the detail normal bends the base without flattening it (Stephen Hill,
@@ -345,7 +370,14 @@ std::optional<std::vector<uint8_t>> composeImage(const TextureRequest& req, cons
     img = reorientedNormals(img, detail, req.bumpStrength);
     greenDone = true;
   }
-  if(req.channels == "bn")
+  if(req.channels == "bn" && !req.displaceRel.empty() && req.bumpHeight > 0 && req.displaceHeight > 0)
+  {
+    const auto under = other(req.displaceRel);
+    if(!under)
+      return std::nullopt;
+    img = summedBumpToNormal(img, req.bumpHeight, *under, req.displaceHeight, true);
+  }
+  else if(req.channels == "bn")
     img = bumpToNormal(img, true, req.bumpHeight);
   if(o.bottomUp)
     flipRows(img);

@@ -219,6 +219,10 @@ struct Surface
   // The bump map's full height in metres, as a legacy shader gives it (Negative/Positive Bump,
   // Bump Minimum/Maximum: DAZ's centimetres). None for Iray's, which bakes kBumpHeight.
   std::optional<float> bumpRange;
+  // Displacement Strength's map, which DAZ moves vertices by and the lowering shades by, and its full
+  // height in metres: Maximum less Minimum Displacement times the strength (DAZ's centimetres)
+  std::string displacementMap;
+  float       displacementRange = 0;
 
   // Iray Uber's Base Mixing: the two PBR modes lay the glossy layer over the diffuse with a Fresnel
   // curve; Weighted mixes them by their weights, with no Fresnel. PBRSkin is always the first.

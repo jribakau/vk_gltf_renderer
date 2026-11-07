@@ -300,6 +300,8 @@ CookedTexture cookedTexture(const HostSettings& s, const fv::build::TextureReque
     url += "&bump=" + source(req.bumpRel) + "&bs=" + fmtNumber(req.bumpStrength);
   if(req.bumpHeight > 0)
     url += "&bh=" + fmtNumber(req.bumpHeight);
+  if(!req.displaceRel.empty())
+    url += "&disp=" + source(req.displaceRel) + "&dh=" + fmtNumber(req.displaceHeight);
   if(req.makeup)
   {
     // mk=<base 1|0>|<colour source>|<weight source>|<weight>|<r,g,b tint>|<r,g,b factor>, percent-encoded as a whole
@@ -512,7 +514,7 @@ std::optional<fv::build::TextureImage> fallbackTexture(const HostSettings& s, co
     };
     mix(fv::build::requestKey(req));
     {
-      std::vector<std::string> sources = {req.rel, req.alphaRel, req.metalRel, req.bumpRel};
+      std::vector<std::string> sources = {req.rel, req.alphaRel, req.metalRel, req.bumpRel, req.displaceRel};
       for(const std::string& text : req.layers)
       {
         const fv::mat::MapLayer layer = fv::mat::parseLayer(text);

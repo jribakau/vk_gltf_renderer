@@ -34,13 +34,27 @@ struct Builder
   UvTransform                             uv;             // where the surface's own maps sample (surfaceUv)
   const std::map<std::string, MapTiling>* mapTiling = nullptr;  // Surface::mapTiling
 
+  // Whether two maps tile alike of their own (DAZ texture instances), as a bake that sums them texel
+  // for texel needs
+  bool sameTiling(const std::string& a, const std::string& b) const
+  {
+    const auto of = [&](const std::string& rel) {
+      MapTiling t;
+      if(mapTiling)
+        if(const auto it = mapTiling->find(rel); it != mapTiling->end())
+          t = it->second;
+      return t;
+    };
+    return of(a) == of(b);
+  }
+
   // The tiling of its own a request's images share (a cooked image is sampled once, so its sources
   // must agree, or it keeps the surface's alone), and that a rotated surface transform can take: a
   // map tiled differently across and down would no longer turn with the rest.
   MapTiling tilingOf(const TextureRequest& req) const
   {
     std::optional<MapTiling> shared;
-    std::vector<const std::string*> rels = {&req.rel, &req.alphaRel, &req.metalRel, &req.bumpRel, req.makeup ? &req.makeup->colorRel : nullptr,
+    std::vector<const std::string*> rels = {&req.rel, &req.alphaRel, &req.metalRel, &req.bumpRel, &req.displaceRel, req.makeup ? &req.makeup->colorRel : nullptr,
                                             req.makeup ? &req.makeup->weightRel : nullptr};
     for(const std::string& m : req.mulRels)
       rels.push_back(&m);
@@ -87,6 +101,7 @@ struct Builder
     bottomLayer(req.alphaRel);
     bottomLayer(req.metalRel);
     bottomLayer(req.bumpRel);
+    bottomLayer(req.displaceRel);
     for(std::string& rel : req.mulRels)
       bottomLayer(rel);
     if(req.makeup)
@@ -445,6 +460,16 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     const MapTiling t = b.tilingOf(r);
     return authoredTiles * std::sqrt(std::abs(t.tiles[0] * t.tiles[1]));
   };
+  // Displacement Strength's map, shaded as a height under the bump instead of moving vertices
+  // (Falcor's computeDisplacedTriangleNormal). Iray displaces at the mesh's own density, and 967 of
+  // the library's 969 such surfaces add no subdivision for it, so its grooves show sharper here, as
+  // the height says; silhouettes stay flat. Not under a normal map, which most often carries the same
+  // relief already (a Substance export's normal holds its height): both would double it. Not where it
+  // is the bump's own image, nor where the map's size on the surface is unknown (a slope needs it).
+  const bool displaces = !s.displacementMap.empty() && s.displacementRange > 0 && s.normalMap.empty() && s.displacementMap != s.bumpMap;
+  const auto displaceHeight = [&](const TextureRequest& r) {
+    return displaces ? bumpHeightInUv(opts.metresPerUv, tilesOf(r), s.displacementRange) : 0.f;
+  };
   TextureSlot normal;
   if(!s.normalMap.empty() && !s.bumpMap.empty())
   {
@@ -475,8 +500,37 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     r.srgb       = false;
     r.channels   = "bn";
     r.bumpHeight = bumpHeightInUv(opts.metresPerUv, tilesOf(r), s.bumpRange.value_or(kBumpHeight));
-    normal     = b.info(std::move(r), clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2));
-    eff.bumpStrength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
+    const float strength = clamp(e.bumpStrength.value_or(s.bumpStrength), 0, 2);
+    float       scale    = strength;
+    // with a displacement under it, summed in the bake (TextureRequest::displaceRel), the strength is the bump's
+    // alone: baked into its height, the slot's scale left at 1
+    if(const float under = displaceHeight(r); under > 0 && r.bumpHeight > 0 && b.sameTiling(s.bumpMap, s.displacementMap))
+    {
+      if(strength > 0)
+      {
+        r.bumpHeight *= strength;
+        r.displaceRel    = s.displacementMap;
+        r.displaceHeight = under;
+      }
+      else
+      {
+        r.rel        = s.displacementMap;  // no bump left: the displacement alone
+        r.bumpHeight = under;
+      }
+      scale = 1;
+    }
+    normal           = b.info(std::move(r), scale);
+    eff.bumpStrength = strength;
+  }
+  else if(TextureRequest r; displaces)
+  {
+    // neither map: the displacement in the bump's place
+    r.rel        = s.displacementMap;
+    r.srgb       = false;
+    r.channels   = "bn";
+    r.bumpHeight = displaceHeight(r);
+    if(r.bumpHeight > 0)
+      normal = b.info(std::move(r), 1.0f);
   }
   // A tear film is smooth water: the normal map a preset hands it is the iris's own (Addy Florence's
   // eyes put the iris map on the moisture), which rippled the catchlight. The meniscus keeps its map,

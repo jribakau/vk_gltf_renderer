@@ -318,6 +318,97 @@ TEST(Materials, LegacyBumpRangeScalesTheBakedHeight)
   EXPECT_EQ(fv::mat::bumpHeightInUv(0.43f, 1, 0), 0.f);
 }
 
+// DAZ's Displacement Strength map, which Iray moves vertices by, shaded as a height under the bump:
+// read with its range, then laid in the normal slot by what else the surface has.
+TEST(Materials, ADisplacementMapIsShadedAsAHeightUnderTheBump)
+{
+  const auto uber = [](const std::string& more) {
+    return std::string(R"({"extra":[{"type":"studio/material/uber_iray","channels":[
+      {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1]}})")
+           + more + "]}]}";
+  };
+  const auto parse = [](const std::string& text) { return fv::dson::parseSurface("Suit", channelsOf(text.c_str())); };
+  const std::string disp = R"(,{"channel":{"id":"Displacement Strength","type":"float","current_value":1,"image_file":"/Runtime/Textures/suit_dp.jpg"}})";
+
+  // DAZ's -0.1 to 0.1 cm unless set: 2 mm at strength 1; the strength kept to PBRSkin's 0-2
+  EXPECT_EQ(parse(uber(disp)).displacementMap, "/Runtime/Textures/suit_dp.jpg");
+  EXPECT_NEAR(parse(uber(disp)).displacementRange, 0.002f, 1e-7f);
+  const std::string range = R"(,{"channel":{"id":"Minimum Displacement","type":"float","current_value":-0.2}},
+      {"channel":{"id":"Maximum Displacement","type":"float","current_value":0.3}})";
+  std::string half = disp;
+  half.replace(half.find("\"current_value\":1"), 17, "\"current_value\":0.5");
+  EXPECT_NEAR(parse(uber(half + range)).displacementRange, 0.0025f, 1e-7f);
+  std::string fifteen = disp;
+  fifteen.replace(fifteen.find("\"current_value\":1"), 17, "\"current_value\":15");
+  EXPECT_NEAR(parse(uber(fifteen)).displacementRange, 0.004f, 1e-7f);
+  std::string none = disp;
+  none.replace(none.find("\"current_value\":1"), 17, "\"current_value\":0");
+  EXPECT_TRUE(parse(uber(none)).displacementMap.empty());
+  // a 3Delight surface's: DSON's own displacement channel and its range
+  const auto legacy = fv::dson::parseSurface("Scales", channelsOf(R"({"displacement":{"channel":{"id":"displacement","current_value":0.5,
+      "image_file":"/Runtime/Textures/scales_dp.jpg"}},"displacement_min":{"channel":{"id":"displacement_min","current_value":-0.25}},
+      "displacement_max":{"channel":{"id":"displacement_max","current_value":0.15}}})"));
+  EXPECT_EQ(legacy.displacementMap, "/Runtime/Textures/scales_dp.jpg");
+  EXPECT_NEAR(legacy.displacementRange, 0.002f, 1e-7f);
+
+  fv::mat::LowerOptions o;
+  o.metresPerUv      = 0.43f;
+  const float height = fv::mat::bumpHeightInUv(0.43f, 1, 0.002f);
+  const auto  normalOf = [&](const fv::mat::Surface& s, const fv::mat::LowerOptions& opts) {
+    const auto l = loweredJson(s, {}, opts);
+    const auto r = std::find_if(l.requests.begin(), l.requests.end(), [](const fv::mat::TextureRequest& q) { return q.channels == "bn" || q.channels == "ng"; });
+    const float scale = l.material.contains("normalTexture") ? l.material["normalTexture"].value("scale", 1.0f) : 0.0f;
+    return std::pair{r == l.requests.end() ? std::optional<fv::mat::TextureRequest>{} : std::optional{*r}, scale};
+  };
+
+  // neither a bump nor a normal map: the displacement in the bump's place, at its own height
+  fv::mat::Surface s = parse(uber(disp));
+  auto [alone, aloneScale] = normalOf(s, o);
+  ASSERT_TRUE(alone);
+  EXPECT_EQ(alone->rel, s.displacementMap);
+  EXPECT_EQ(alone->channels, "bn");
+  EXPECT_NEAR(alone->bumpHeight, height, 1e-7f);
+  EXPECT_TRUE(alone->displaceRel.empty());
+  EXPECT_FLOAT_EQ(aloneScale, 1.0f);
+  // the map's size on the surface unknown: no slope to be had, nothing
+  EXPECT_FALSE(normalOf(s, {}).first);
+
+  // under a bump of its own (the Night City bodysuit's): both in one bake, the bump's strength in its
+  // height and the slot at 1
+  s.bumpMap      = "/Runtime/Textures/suit_b.jpg";
+  s.bumpStrength = 2;
+  auto [under, underScale] = normalOf(s, o);
+  ASSERT_TRUE(under);
+  EXPECT_EQ(under->rel, s.bumpMap);
+  EXPECT_NEAR(under->bumpHeight, 2 * fv::mat::bumpHeightInUv(0.43f), 1e-7f);
+  EXPECT_EQ(under->displaceRel, s.displacementMap);
+  EXPECT_NEAR(under->displaceHeight, height, 1e-7f);
+  EXPECT_FLOAT_EQ(underScale, 1.0f);
+  fv::mat::TextureRequest plain = *under;
+  plain.displaceRel.clear();
+  EXPECT_NE(fv::mat::requestKey(*under), fv::mat::requestKey(plain));
+  // the bump's strength at 0: the displacement alone
+  s.bumpStrength = 0;
+  EXPECT_EQ(normalOf(s, o).first->rel, s.displacementMap);
+  EXPECT_TRUE(normalOf(s, o).first->displaceRel.empty());
+  s.bumpStrength = 2;
+  // tiled otherwise than the bump: one bake can't hold both, the bump alone as before
+  s.mapTiling[s.displacementMap] = fv::mat::MapTiling{{2, 2}, {0, 0}};
+  EXPECT_TRUE(normalOf(s, o).first->displaceRel.empty());
+  EXPECT_FLOAT_EQ(normalOf(s, o).second, 2.0f);
+  s.mapTiling.clear();
+  // the bump's own image: nothing to add
+  s.bumpMap = s.displacementMap;
+  EXPECT_TRUE(normalOf(s, o).first->displaceRel.empty());
+  // a normal map, which most often holds the same relief: left out
+  s.bumpMap   = "/Runtime/Textures/suit_b.jpg";
+  s.normalMap = "/Runtime/Textures/suit_n.jpg";
+  EXPECT_TRUE(normalOf(s, o).first->displaceRel.empty());
+  EXPECT_NE(normalOf(s, o).first->rel, s.displacementMap);
+  s.bumpMap.clear();
+  EXPECT_EQ(normalOf(s, o).first->rel, s.normalMap);
+}
+
 // Installed Iray presets for a 3Delight-era item: the one that keeps its look, or none.
 
 TEST(Materials, ChooseIrayPresetKeepsTheItemsLook)

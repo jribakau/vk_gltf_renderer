@@ -747,6 +747,21 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch, mat::Cont
     s.bumpMap      = imageOf(bumpCh);
     s.bumpStrength = float(num(bumpCh, 1));
   }
+  // Displacement Strength (Iray's; DSON's displacement on a 3Delight surface): its map's grey runs
+  // from Minimum to Maximum Displacement, DAZ's centimetres, -0.1 and 0.1 unless set (PBRSkin.dsf's
+  // and Iray's defaults), times the strength, which PBRSkin keeps to 0-2 and so does this (8 library
+  // files ask 15, 3 cm of relief).
+  if(const Channel* dispCh = find({"Displacement Strength", "displacement"}); !imageOf(dispCh).empty())
+  {
+    const double low      = num(find({"Minimum Displacement", "displacement_min"}), -0.1);
+    const double high     = num(find({"Maximum Displacement", "displacement_max"}), 0.1);
+    const double strength = std::clamp(num(dispCh, 1), 0.0, 2.0);
+    if(high > low && strength > 0)
+    {
+      s.displacementMap   = imageOf(dispCh);
+      s.displacementRange = float((high - low) * strength * 0.01);
+    }
+  }
   // PBRSkin's Bump Enable switches its normal map and its bump map together (its brick graph ANDs it
   // into both); the detail layer has its own switch. Iray Uber has none.
   if(!enabled("Bump Enable"))
