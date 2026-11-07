@@ -983,6 +983,11 @@ void FvHost::Impl::compose()
       }
       if(changed)
       {
+        // what the user hid or moved inside it, put on what was fed (a new feed, a new import) again
+        applyNodeEdits(p);
+        for(const auto& [node, edit] : p.nodeEdits)
+          if(edit.visible == std::optional<bool>(false) && described["nodes"].contains(std::to_string(node)))
+            described["nodes"][std::to_string(node)]["hidden"] = true;
         p.stats = described["stats"];
         protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
       }
@@ -1004,6 +1009,11 @@ void FvHost::Impl::compose()
       Json described = FvView::describeModel(nodes, *p.model, p.imported.entities);
       if(changed)
       {
+        // what the user hid or moved inside it, put on what was fed (a new feed, a new import) again
+        applyNodeEdits(p);
+        for(const auto& [node, edit] : p.nodeEdits)
+          if(edit.visible == std::optional<bool>(false) && described["nodes"].contains(std::to_string(node)))
+            described["nodes"][std::to_string(node)]["hidden"] = true;
         p.stats = described["stats"];
         protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
       }

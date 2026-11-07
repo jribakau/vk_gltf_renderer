@@ -78,6 +78,15 @@
 //                                                -> {ok, moved: metres}, or {job} while a set is indexed first
 //   prop.aim        {prop, at: prop id | [x, y, z]}   turned so its -Z looks at the prop's middle or the
 //                                                point, once (it doesn't follow); a step of the history
+//   node.set        {prop, node, visible?: bool | null, transform?: {t (metres), e | r, s} | null}   a node
+//                                                of the prop's "nodes/<prop>" topic hidden, shown or moved
+//                                                in its parent's space; null puts the field back as the
+//                                                file has it. Kept over every step of the feed (a pose, a
+//                                                dial), in scene.state's `nodes` ({"<node>": {visible?,
+//                                                transform?}}) and the history. Refused for a figure's root
+//                                                (the prop's Transform) and what it wears (the Wardrobe's);
+//                                                a posable bone or a skinned mesh hides but doesn't move
+//                                                (the selection's state.moves)
 //   scene.clear     {}                           every prop goes
 //   scene.order     {order: [prop]}              the props in this order (the ones it leaves out after them), one composition
 //   pose.set        {prop, values: {"bone/kind/axis": value}, gesture?}
@@ -271,7 +280,7 @@
 // format?, generation?, posable?, morphs?, body?, camera?, light?}}, order: [id], solo: [id]}; `morphs` a
 // DAZ object with dials, `body` a character or creature, `solo` what Isolate shows, empty for all), and per
 // prop "nodes/<prop>"
-// (its hierarchy), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",
+// (its hierarchy; `hidden` on a node node.set hid), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",
 // "wardrobe/<prop>" ({figure, items: {id: {label, kind, rel, visible, own, channels, collision,
 // cloth: {able, native, on, strength}, meshes: [scene mesh], color?: rel | null}}, collision: {enabled,
 // busy, corrected}}; `color` is the colour preset on the item, from wardrobe.color or the last preset that

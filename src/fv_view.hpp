@@ -46,8 +46,9 @@
 //                                               visibility and the history stay. A mesh hidden this way
 //                                               long may be let go under memory pressure, as any hidden one
 //
-// Topics: "selection" ({prop, node, name, mesh, kind, bone, surface}: `node` is null when the prop itself
-// is selected; `bone`, the pose bone id, when a posable bone is; `surface`, after a click on the prop,
+// Topics: "selection" ({prop, node, name, mesh, kind, bone, surface, state}: `node` is null when the prop itself
+// is selected; `bone`, the pose bone id, when a posable bone is; `state` for another node the Scene
+// tab may change ({visible, t, r, e, s, edited, moves}, metres and degrees, the host's node.set); `surface`, after a click on the prop,
 // the surface it hit as its "materials/<prop>" topic names it, "m:<i>"), "camera" ({position, target, up,
 // focalLength, view, free?}, at most every 33 ms while it moves: `view` is the camera prop looked
 // through or null, and `free` where the free view was left meanwhile). The host publishes "scene" and "nodes/<prop>"
@@ -147,6 +148,11 @@ public:
   void onPull(std::function<bool(const std::string& phase, const glm::vec2& px)> f) { m_pull = std::move(f); }
   // view.set's solo: the props Isolate shows (empty: all), which the host applies
   void onSolo(std::function<void(const std::vector<std::string>&)> f) { m_solo = std::move(f); }
+  // A selected node's place and whether it shows ({visible, t, e, s, edited}), for the selection topic's
+  // `state`; null for one the host doesn't let be edited (a bone, a worn item's)
+  void onNodeState(std::function<fv::Json(const std::string& prop, int node)> f) { m_nodeState = std::move(f); }
+  // the selection topic again, as something about the selected node changed
+  void refreshSelection() { publishSelection(true); }
 
   // The lens of the view in use: the free view's, or the camera prop's it looks through.
   struct Lens
@@ -207,6 +213,7 @@ private:
   std::function<std::string(const glm::vec2&)>  m_helperPick;
   std::function<bool(const std::string&, const glm::vec2&)> m_pull;
   std::function<void(const std::vector<std::string>&)>      m_solo;
+  std::function<fv::Json(const std::string&, int)>          m_nodeState;
   bool                                          m_pulling = false;  // a Pull drag holds a figure
 
   fv::Json                              m_camera;

@@ -3758,6 +3758,102 @@ TEST(FvHost, isolateShowsOnlyWhatItNames)
   EXPECT_GT(shownItems(), all);
 }
 
+//--------------------------------------------------------------------------------------------------
+// A node inside a prop (node.set): hidden or moved, kept in scene.state, one step of the history.
+
+namespace {
+
+int shownItems(HostRig& rig)
+{
+  int n = 0;
+  for(const rs::DrawItem& item : rig.renderer.hostScene().drawItems())
+    n += item.shown;
+  return n;
+}
+
+// the first node of the prop's nodes topic of that kind
+int nodeOfKind(HostRig& rig, const std::string& prop, const std::string& kind)
+{
+  const Json nodes = rig.topic("nodes/" + prop).value("nodes", Json::object());
+  int        best = -1, order = 1 << 30;
+  for(const auto& [id, n] : nodes.items())
+    if(n.value("kind", "") == kind && n.value("order", 0) < order)
+    {
+      best  = std::atoi(id.c_str());
+      order = n.value("order", 0);
+    }
+  return best;
+}
+
+}  // namespace
+
+TEST(FvHost, aModelsNodeHidesAndMovesAndComesBack)
+{
+  Seated     s;
+  const int  all  = shownItems(s.rig);
+  const int  node = nodeOfKind(s.rig, s.box, "mesh");
+  ASSERT_GE(node, 0) << s.rig.topic("nodes/" + s.box).dump();
+  Json set = s.rig.cmd("node.set", {{"prop", s.box}, {"node", node}, {"visible", false}});
+  ASSERT_TRUE(set.value("ok", false)) << set.dump();
+  EXPECT_EQ(shownItems(s.rig), all - 1);
+  EXPECT_TRUE(s.rig.topic("nodes/" + s.box)["nodes"][std::to_string(node)].value("hidden", false));
+  Json state = s.rig.cmd("scene.state", {{"prop", s.box}}).value("result", Json::object());
+  EXPECT_EQ(state["nodes"][std::to_string(node)].value("visible", true), false) << state.dump();
+
+  // moved: the selection shows where it is, in metres
+  set = s.rig.cmd("node.set", {{"prop", s.box}, {"node", node}, {"transform", {{"t", {0.0, 1.0, 0.0}}}}});
+  ASSERT_TRUE(set.value("ok", false)) << set.dump();
+  ASSERT_TRUE(s.rig.cmd("select", {{"prop", s.box}, {"node", node}}).value("ok", false));
+  const Json sel = s.rig.topic("selection");
+  EXPECT_NEAR(sel["state"]["t"][1].get<double>(), 1.0, 1e-5) << sel.dump();
+  EXPECT_TRUE(sel["state"].value("moves", false));
+
+  const Json undo = s.rig.topic("history").value("undo", Json::array());
+  ASSERT_GE(undo.size(), 2u);
+  EXPECT_EQ(undo[0].get<std::string>().rfind("Move ", 0), 0u) << undo.dump();
+  EXPECT_EQ(undo[1].get<std::string>().rfind("Hide ", 0), 0u) << undo.dump();
+  s.rig.cmd("history.undo");
+  s.rig.cmd("history.undo");
+  EXPECT_EQ(shownItems(s.rig), all);
+  state = s.rig.cmd("scene.state", {{"prop", s.box}}).value("result", Json::object());
+  EXPECT_FALSE(state.contains("nodes")) << state.dump();
+}
+
+// A DAZ prop's node stays hidden as the prop is posed (the feed writes the rest of its nodes every
+// step); its root and what is posed are refused
+TEST(FvHost, aDazPropsHiddenNodeStaysHiddenAsItPoses)
+{
+  HostRig           rig;
+  const std::string stool = addDaz(rig, {{"rel", "Props/Test/Box Stool.duf"}});
+  const int         all   = shownItems(rig);
+  int               mesh  = nodeOfKind(rig, stool, "skinned");
+  if(mesh < 0)
+    mesh = nodeOfKind(rig, stool, "mesh");
+  ASSERT_GE(mesh, 0) << rig.topic("nodes/" + stool).dump();
+  ASSERT_TRUE(rig.cmd("node.set", {{"prop", stool}, {"node", mesh}, {"visible", false}}).value("ok", false));
+  EXPECT_LT(shownItems(rig), all);
+  ASSERT_TRUE(rig.cmd("pose.set", {{"prop", stool}, {"values", {{"head/rotation/x", 30.0}}}}).value("ok", false));
+  for(int i = 0; i < 4; i++)
+    rig.host->onUpdate();
+  EXPECT_LT(shownItems(rig), all) << "a pose step showed it again";
+  const Json state = rig.cmd("scene.state", {{"prop", stool}}).value("result", Json::object());
+  EXPECT_EQ(state["nodes"][std::to_string(mesh)].value("visible", true), false) << state.dump();
+  // a skinned mesh or a posed bone isn't moved here
+  const Json moved = rig.cmd("node.set", {{"prop", stool}, {"node", mesh}, {"transform", {{"t", {0.0, 1.0, 0.0}}}}});
+  EXPECT_FALSE(moved.value("ok", true)) << moved.dump();
+  // nor is the figure's root, which is the prop's own Transform
+  int        root  = -1;
+  const Json nodes = rig.topic("nodes/" + stool).value("nodes", Json::object());
+  for(const auto& [id, n] : nodes.items())
+    if(n.value("depth", 1) == 0)
+      root = std::atoi(id.c_str());
+  ASSERT_GE(root, 0);
+  EXPECT_FALSE(rig.cmd("node.set", {{"prop", stool}, {"node", root}, {"visible", false}}).value("ok", true));
+  // shown again with null
+  ASSERT_TRUE(rig.cmd("node.set", {{"prop", stool}, {"node", mesh}, {"visible", nullptr}}).value("ok", false));
+  EXPECT_EQ(shownItems(rig), all);
+}
+
 // A figure exported with a dent carries it: the feet stand 2 cm into the box, so the dented body's
 // lowest point is higher than the same export's without the dent.
 TEST(FvHost, exportCarriesTheContactChannel)

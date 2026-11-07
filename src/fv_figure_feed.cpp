@@ -499,13 +499,40 @@ void FigureFeed::syncNodes(const SceneGraph& figure, int root, const build::Draw
     const rs::Entity*   entity = m_scene.entity(e);
     if(!(entity->local == t))
       m_scene.setLocal(e, t);
-    if(entity->visible != n.visible)
-      m_scene.setVisible(e, n.visible);
+    if(const bool shown = visibleOf(figure, i); entity->visible != shown)
+      m_scene.setVisible(e, shown);
   }
+}
+
+bool FigureFeed::visibleOf(const SceneGraph& figure, int node) const
+{
+  if(const auto o = m_overrides.find(node); o != m_overrides.end() && o->second.visible)
+    return *o->second.visible;
+  return figure.nodes[size_t(node)].visible;
+}
+
+void FigureFeed::setNodeOverride(const SceneGraph& figure, int root, int node, std::optional<rs::Transform> local, std::optional<bool> visible)
+{
+  if(node < 0 || node >= int(figure.nodes.size()))
+    return;
+  if(!local && !visible)
+    m_overrides.erase(node);
+  else
+    m_overrides[node] = {local, visible};
+  const rs::EntityId e = entityOf(node);
+  if(!m_scene.entity(e))
+    return;
+  const rs::Transform t = transformOf(figure, node, root);
+  if(!(m_scene.entity(e)->local == t))
+    m_scene.setLocal(e, t);
+  if(const bool shown = visibleOf(figure, node); m_scene.entity(e)->visible != shown)
+    m_scene.setVisible(e, shown);
 }
 
 rs::Transform FigureFeed::transformOf(const SceneGraph& figure, int node, int root) const
 {
+  if(const auto o = m_overrides.find(node); o != m_overrides.end() && o->second.local)
+    return *o->second.local;
   const Node&   n = figure.nodes[size_t(node)];
   rs::Transform t;
   t.translation = glm::vec3(float(n.position.x), float(n.position.y), float(n.position.z));
@@ -533,8 +560,8 @@ bool FigureFeed::syncTransforms(const SceneGraph& figure, int root, std::span<co
     const rs::Entity*   entity = m_scene.entity(e);
     if(!(entity->local == t))
       m_scene.setLocal(e, t);
-    if(entity->visible != figure.nodes[size_t(i)].visible)
-      m_scene.setVisible(e, figure.nodes[size_t(i)].visible);
+    if(const bool shown = visibleOf(figure, i); entity->visible != shown)
+      m_scene.setVisible(e, shown);
   }
   return all;
 }

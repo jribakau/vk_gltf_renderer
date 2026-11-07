@@ -375,6 +375,17 @@ struct Prop
   rs::ImportResult                       imported;
   rs::LightId                            lightRecord;
   Json                                   stats = Json::object();
+  // what the user changed of nodes inside it (node.set), by topic node: its local transform (in its
+  // parent's units: a DAZ figure's centimetres) and whether it shows; a model's node keeps what its
+  // file had, to go back to
+  struct NodeEdit
+  {
+    std::optional<rs::Transform> local;
+    std::optional<bool>          visible;
+    std::optional<rs::Transform> baseLocal;
+    bool                         baseVisible = true;
+  };
+  std::map<int, NodeEdit> nodeEdits;
 };
 
 // Texture server requests in flight. A cook can take minutes (the read timeout is 600 s), so a
@@ -1034,6 +1045,21 @@ struct FvHost::Impl
   void moveBy(const std::vector<std::shared_ptr<Prop>>& moving, const glm::vec3& delta, const std::string& label);
   Json propDrop(const Json& args);
   Json propAim(const Json& args);
+
+  // ---- a node inside a prop (fv_host_place.cpp): hidden or moved, a set's wall, a car's wheel
+  rs::EntityId nodeEntity(const Prop& p, int node) const;
+  std::string  nodeName(const Prop& p, int node) const;
+  // why it can't be edited (a bone, the root, a worn item's), "" when it can
+  std::string nodeRefusal(const Prop& p, int node) const;
+  Json        nodeSet(const Json& args);
+  void        applyNodeEdit(Prop& p, int node);
+  void        applyNodeEdits(Prop& p);
+  // {visible, t, e, s, edited} as the panels show it (metres, degrees), null for one that can't be edited
+  Json nodeState(const Prop& p, int node);
+  // a node's edit as node.set takes it ({visible?, transform?}), and every one of a prop's
+  Json nodeEditJson(const Prop& p, int node) const;
+  Json nodeEditsJson(const Prop& p) const;
+  void restoreNodeEdits(Prop& p, const Json& nodes);
   Json                    propJson(const Prop& p) const;
   void                    publishScene();
   // camera frustums and light markers, drawn over the image (GltfRenderer::setHelperLines), and the

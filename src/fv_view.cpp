@@ -661,5 +661,8 @@ void FvView::publishSelection(bool force)
   fv::Json       sel = {{"prop", p.id}, {"node", node}, {"name", n.name}, {"mesh", n.mesh}, {"kind", n.kind}};
   if(const auto bone = p.bones.idOf.find(node); bone != p.bones.idOf.end())
     sel["bone"] = bone->second;
+  else if(m_nodeState)
+    if(fv::Json state = m_nodeState(p.id, node); !state.is_null())
+      sel["state"] = std::move(state);
   m_events->snapshot("selection", withSurface(std::move(sel)));
 }

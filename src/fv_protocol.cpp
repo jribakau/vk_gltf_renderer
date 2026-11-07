@@ -86,7 +86,9 @@ namespace {
 // body (a character or a creature).
 // 46: placing: prop.drop (rest on what is under it, else the ground), prop.aim (look at a prop or a
 // point), view.set's solo (Isolate) and the scene topic's `solo`, and prop.set's `label`.
-constexpr int kProtocolVersion = 46;
+// 47: a node inside a prop: node.set (hidden, moved, or back), the nodes topic's `hidden`, the
+// selection's `state` for a node, and scene.state's `nodes`.
+constexpr int kProtocolVersion = 47;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

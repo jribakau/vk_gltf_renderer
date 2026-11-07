@@ -21,7 +21,8 @@
 // Placing props by what they take up and what is under them (fv_host.hpp's prop.drop and prop.aim,
 // view.set's solo): a prop's bounds, and rays against the scene, from the triangle sets the contact
 // pass keeps already (a DAZ object's posed meshes, a model's meshes), so a figure that sits is boxed
-// as it sits, not as it was made. A set is indexed the first time a ray needs it, on the pool.
+// as it sits, not as it was made. A set is indexed the first time a ray needs it, on the pool. And
+// the nodes inside a prop (node.set): a set's wall hidden, a lamp in it moved.
 //
 
 #include "fv_host_impl.hpp"
@@ -418,4 +419,250 @@ void FvHost::Impl::setSolo(const std::vector<std::string>& ids)
   for(const auto& p : props)
     applyVisible(*p);
   publishScene();
+}
+
+// ---- a node inside a prop (node.set)
+
+namespace {
+
+// what a DAZ figure's scene graph counts in: centimetres under its root; a model, its file's metres
+double unitOf(const Prop& p)
+{
+  return p.figure ? kCentimetre : 1.0;
+}
+
+Json transformJson(const rs::Transform& t, double unit)
+{
+  const glm::vec3 e = glm::degrees(glm::eulerAngles(t.rotation));
+  return {{"t", {t.translation.x * unit, t.translation.y * unit, t.translation.z * unit}},
+          {"r", {t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w}},
+          {"e", {e.x, e.y, e.z}},
+          {"s", {t.scale.x, t.scale.y, t.scale.z}}};
+}
+
+glm::vec3 vec3Of(const Json& v)
+{
+  if(!v.is_array() || v.size() != 3)
+    throw std::runtime_error("expected [x, y, z]");
+  return {v[0].get<float>(), v[1].get<float>(), v[2].get<float>()};
+}
+
+}  // namespace
+
+rs::EntityId FvHost::Impl::nodeEntity(const Prop& p, int node) const
+{
+  if(p.figure && p.figure->feed && node >= 0 && node < int(p.figure->fig->loaded.scene.nodes.size()))
+    return p.figure->feed->entityOf(node);
+  if(p.model && node >= 0 && node < int(p.imported.entities.size()))
+    return p.imported.entities[size_t(node)];
+  return {};
+}
+
+std::string FvHost::Impl::nodeName(const Prop& p, int node) const
+{
+  if(p.figure && node >= 0 && node < int(p.figure->fig->loaded.scene.nodes.size()))
+    if(const std::string& name = p.figure->fig->loaded.scene.nodes[size_t(node)].name; !name.empty())
+      return name;
+  if(p.model && node >= 0 && node < int(p.model->nodes.size()))
+    if(const std::string& name = p.model->nodes[size_t(node)].name; !name.empty())
+      return name;
+  return "node " + std::to_string(node);
+}
+
+// What isn't the Scene tab's to change: the figure's root (the prop's own Transform) and what it wears
+// (the Wardrobe's). A posable bone and a skinned mesh can be hidden but not moved here (nodeState's
+// `moves`): the Pose tab moves the one, and the other goes where its bones are.
+std::string FvHost::Impl::nodeRefusal(const Prop& p, int node) const
+{
+  if(nodeEntity(p, node).isNone())
+    return "no such node";
+  if(p.figure)
+  {
+    const fv::Figure&     fig   = *p.figure->fig;
+    const fv::SceneGraph& scene = fig.loaded.scene;
+    if(node == fig.loaded.root)
+      return p.name + "'s root moves with it: use its Transform";
+    for(const fv::WornItem& w : fig.items)
+    {
+      if(w.rel.empty())
+        continue;  // the figure's own parts
+      for(int at = node; at >= 0; at = scene.nodes[size_t(at)].parent)
+        if(std::any_of(w.objects.begin(), w.objects.end(), [&](const auto& o) { return o.first == at; })
+           || (scene.nodes[size_t(at)].mesh >= 0 && std::find(w.meshes.begin(), w.meshes.end(), scene.nodes[size_t(at)].mesh) != w.meshes.end()))
+          return nodeName(p, node) + " is part of " + w.label + ": the Wardrobe shows and hides it";
+    }
+  }
+  return {};
+}
+
+Json FvHost::Impl::nodeState(const Prop& p, int node)
+{
+  if(!nodeRefusal(p, node).empty() || !renderer->feedsHostScene())
+    return Json();
+  rs::RetainedScene& scene = renderer->hostScene();
+  const rs::Entity*  e     = scene.entity(nodeEntity(p, node));
+  if(!e)
+    return Json();
+  Json out       = transformJson(e->local, unitOf(p));
+  out["visible"] = e->visible;
+  out["edited"]  = p.nodeEdits.count(node) > 0;
+  bool moves     = true;
+  if(p.figure)
+  {
+    const fv::SceneGraph& graph = p.figure->fig->loaded.scene;
+    const fv::Node&       n     = graph.nodes[size_t(node)];
+    if(p.figure->fig->pose)
+      for(const auto& pb : p.figure->fig->pose->bones())
+        if(pb.bone == node && !pb.axes.empty())
+          moves = false;
+    if(n.mesh >= 0 && n.mesh < int(graph.meshes.size()) && graph.meshes[size_t(n.mesh)].skinned())
+      moves = false;
+  }
+  else if(p.model && node < int(p.model->nodes.size()) && p.model->nodes[size_t(node)].skin >= 0)
+    moves = false;
+  out["moves"] = moves;
+  return out;
+}
+
+// node.set {prop, node, visible?: bool | null, transform?: {t (metres), e (degrees) | r, s} | null}: a
+// node shown or hidden, moved, or (null) back as its file has it.
+Json FvHost::Impl::nodeSet(const Json& args)
+{
+  const auto p = findProp(args.at("prop").get<std::string>());
+  if(!p)
+    throw std::runtime_error("no such prop");
+  if(!p->figure && !p->model)
+    throw std::runtime_error(p->name + " has no nodes of its own");
+  const int node = args.at("node").get<int>();
+  if(const std::string why = nodeRefusal(*p, node); !why.empty())
+    throw std::runtime_error(why);
+  if(!renderer->feedsHostScene())
+    throw std::runtime_error("the scene isn't fed yet");
+  const Json         state  = nodeState(*p, node);
+  rs::RetainedScene& scene  = renderer->hostScene();
+  const rs::Entity*  entity = scene.entity(nodeEntity(*p, node));
+  Prop::NodeEdit     edit   = p->nodeEdits.count(node) ? p->nodeEdits[node] : Prop::NodeEdit{};
+  // a model's node goes back to what its file had
+  if(p->model && !edit.baseLocal)
+  {
+    edit.baseLocal   = entity->local;
+    edit.baseVisible = entity->visible;
+  }
+  if(args.contains("visible"))
+    edit.visible = args["visible"].is_boolean() ? std::optional<bool>(args["visible"].get<bool>()) : std::nullopt;
+  if(args.contains("transform"))
+  {
+    const Json& t = args["transform"];
+    if(t.is_null())
+      edit.local.reset();
+    else
+    {
+      if(!state.value("moves", false))
+        throw std::runtime_error(nodeName(*p, node) + " goes where its bones are: pose it in the Pose tab");
+      rs::Transform local = edit.local ? *edit.local : entity->local;
+      if(t.contains("t"))
+        local.translation = vec3Of(t["t"]) / float(unitOf(*p));
+      if(t.contains("r") && t["r"].is_array() && t["r"].size() == 4)
+        local.rotation = glm::normalize(glm::quat(t["r"][3].get<float>(), t["r"][0].get<float>(), t["r"][1].get<float>(), t["r"][2].get<float>()));
+      else if(t.contains("e"))
+        local.rotation = glm::quat(glm::radians(vec3Of(t["e"])));
+      if(t.contains("s"))
+      {
+        local.scale = vec3Of(t["s"]);
+        for(int i = 0; i < 3; i++)
+          if(std::abs(local.scale[i]) < 1e-4f)
+            local.scale[i] = 1e-4f;
+      }
+      edit.local = local;
+    }
+  }
+  p->nodeEdits[node] = edit;
+  applyNodeEdit(*p, node);
+  if(!edit.visible && !edit.local)
+    p->nodeEdits.erase(node);
+  // the eye in the Nodes list, and the selected node's fields
+  protocol->events().patch("nodes/" + p->id, {{"nodes", {{std::to_string(node), {{"hidden", edit.visible == std::optional<bool>(false) ? Json(true) : Json()}}}}}});
+  if(view)
+    view->refreshSelection();
+  return {{"ok", true}};
+}
+
+void FvHost::Impl::applyNodeEdit(Prop& p, int node)
+{
+  const auto it = p.nodeEdits.find(node);
+  if(p.figure && p.figure->feed)
+  {
+    const fv::Figure& fig = *p.figure->fig;
+    p.figure->feed->setNodeOverride(fig.loaded.scene, fig.loaded.root, node, it != p.nodeEdits.end() ? it->second.local : std::nullopt,
+                                    it != p.nodeEdits.end() ? it->second.visible : std::nullopt);
+    return;
+  }
+  if(!p.model || it == p.nodeEdits.end() || !renderer->feedsHostScene())
+    return;
+  rs::RetainedScene& scene = renderer->hostScene();
+  const rs::EntityId e     = nodeEntity(p, node);
+  if(!scene.entity(e))
+    return;
+  const Prop::NodeEdit& edit  = it->second;
+  const rs::Transform   local = edit.local ? *edit.local : edit.baseLocal.value_or(scene.entity(e)->local);
+  if(!(scene.entity(e)->local == local))
+    scene.setLocal(e, local);
+  if(const bool shown = edit.visible.value_or(edit.baseVisible); scene.entity(e)->visible != shown)
+    scene.setVisible(e, shown);
+}
+
+void FvHost::Impl::applyNodeEdits(Prop& p)
+{
+  for(const auto& [node, edit] : p.nodeEdits)
+    applyNodeEdit(p, node);
+}
+
+Json FvHost::Impl::nodeEditJson(const Prop& p, int node) const
+{
+  Json out = Json::object();
+  if(const auto it = p.nodeEdits.find(node); it != p.nodeEdits.end())
+  {
+    if(it->second.visible)
+      out["visible"] = *it->second.visible;
+    if(it->second.local)
+    {
+      Json t = transformJson(*it->second.local, unitOf(p));
+      t.erase("e");
+      out["transform"] = std::move(t);
+    }
+  }
+  return out;
+}
+
+Json FvHost::Impl::nodeEditsJson(const Prop& p) const
+{
+  Json out = Json::object();
+  for(const auto& [node, edit] : p.nodeEdits)
+    if(Json e = nodeEditJson(p, node); !e.empty())
+      out[std::to_string(node)] = std::move(e);
+  return out;
+}
+
+// A scene file's or a record's node edits put back, each as node.set does; one that can't be now (a
+// node its file no longer has) is a notice
+void FvHost::Impl::restoreNodeEdits(Prop& p, const Json& nodes)
+{
+  if(!nodes.is_object())
+    return;
+  for(auto it = nodes.begin(); it != nodes.end(); ++it)
+  {
+    Json args = it.value();
+    if(!args.is_object())
+      continue;
+    args["prop"] = p.id;
+    args["node"] = std::atoi(it.key().c_str());
+    try
+    {
+      nodeSet(args);
+    }
+    catch(const std::exception& e)
+    {
+      notice(p.name + ": " + problemOf(e));
+    }
+  }
 }

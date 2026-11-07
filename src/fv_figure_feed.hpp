@@ -91,6 +91,10 @@ public:
   // Brings the retained scene up to `figure` below `root`. A mesh it keeps is compared with the
   // scene's vertices, and what moved is fed again with the tangents near it.
   void sync(const SceneGraph& figure, int root);
+  // A node's place (its local transform, in its parent's units) and whether it shows, as the user set
+  // them (the host's node.set) over what the figure has; none falls back to the figure's. Applied to
+  // its entity at once and kept through every sync after: a dial or a pose step rewrites the rest.
+  void setNodeOverride(const SceneGraph& figure, int root, int node, std::optional<rs::Transform> local, std::optional<bool> visible);
   // `options.build` changed (a texture came, the skin mode or exposure moved): the next sync
   // lowers with these (the narrow syncMaterials waits for it)
   void setOptions(const build::BuildOptions& options)
@@ -220,6 +224,13 @@ private:
   FigureFeedOptions  m_options;
 
   std::vector<rs::EntityId>   m_entities;   // per scene node
+  struct NodeOverride
+  {
+    std::optional<rs::Transform> local;
+    std::optional<bool>          visible;
+  };
+  std::map<int, NodeOverride> m_overrides;  // by scene node (setNodeOverride)
+  bool                        visibleOf(const SceneGraph& figure, int node) const;
   std::vector<FedMesh>        m_meshes;     // per scene mesh
   std::vector<rs::MaterialId> m_materials;  // per scene material
   std::vector<mat::LowerOptions> m_lowering;   // per scene material, what the last sync lowered with

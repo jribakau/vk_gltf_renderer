@@ -123,6 +123,17 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
       ids.push_back(p->id);
     return {{"kind", "props"}, {"ids", ids}};
   }
+  if(cmd == "node.set")
+  {
+    const auto p = args.contains("prop") && args["prop"].is_string() ? findProp(args["prop"].get<std::string>()) : nullptr;
+    if(!p || !args.contains("node") || !args["node"].is_number_integer())
+      return nullptr;
+    Json fields = Json::array();
+    for(const char* f : {"visible", "transform"})
+      if(args.contains(f))
+        fields.push_back(f);
+    return {{"kind", "node"}, {"prop", p->id}, {"node", args["node"]}, {"fields", fields}};
+  }
   if(cmd == "prop.set" || cmd == "camera.set")
   {
     const auto p = args.contains("prop") && args["prop"].is_string() ? findProp(args["prop"].get<std::string>()) : nullptr;
@@ -343,6 +354,15 @@ Json FvHost::Impl::journalState(const Json& scope)
     if(set.size() > 1)
       ops.push_back(op("prop.set", set));
   }
+  else if(kind == "node")
+  {
+    // the node's edit as it stands: a field it has none of goes back to the file's (null)
+    const Json edit = nodeEditJson(*p, scope["node"].get<int>());
+    Json       set  = {{"prop", id}, {"node", scope["node"]}};
+    for(const Json& f : scope["fields"])
+      set[f.get<std::string>()] = edit.contains(f.get<std::string>()) ? edit[f.get<std::string>()] : Json(nullptr);
+    ops.push_back(op("node.set", set));
+  }
   else if(kind == "materials" && p->materials)
     for(const Json& m : scope["materials"])
     {
@@ -474,6 +494,13 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
   }
   if(cmd == "camera.set")
     return "Lens of " + name;
+  if(cmd == "node.set")
+  {
+    const std::string node = p ? nodeName(*p, args.value("node", -1)) : std::string("a node");
+    if(const auto v = args.find("visible"); v != args.end())
+      return (v->is_boolean() && !v->get<bool>() ? "Hide " : "Show ") + node;
+    return (args.contains("transform") && args["transform"].is_null() ? "Put back " : "Move ") + node;
+  }
   if(cmd == "prop.remove")
     return "Remove " + name;
   if(cmd == "preset")
@@ -653,6 +680,8 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
   bool merges = cmd == "morph.set" || cmd == "material.set" || cmd == "lighting.set" || cmd == "camera.set"
                 || (cmd == "pose.set" && !args.contains("label")) || (cmd == "figure.contact" && !args.contains("on") && !args.contains("self")) || (cmd == "physics.set" && (args.contains("strength") || args.contains("parts")) && !args.contains("on"))
                 || (cmd == "physics.secondary" && !args.contains("on")) || (cmd == "physics.soft" && !args.contains("on"));
+  if(cmd == "node.set")
+    merges = !args.contains("visible") && args.contains("transform") && !args["transform"].is_null();
   if(cmd == "prop.set")
     merges = !args.contains("label") && !args.contains("kind") && !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
   Json shape = shapeOf(args);
@@ -689,6 +718,8 @@ Json FvHost::Impl::applyOp(const Json& o)
   const Json&       args = o.at("args");
   if(cmd == "prop.set")
     return propSet(args);
+  if(cmd == "node.set")
+    return nodeSet(args);
   if(cmd == "morph.set")
   {
     auto figure = figureArg(args);
@@ -1245,6 +1276,7 @@ Json FvHost::Impl::propRestore(const Json& args)
         {
           if(q->materials && state.contains("materials"))
             q->materials->restoreEdits(state["materials"]);
+          restoreNodeEdits(*q, state.value("nodes", Json::object()));
         }
         else
         {

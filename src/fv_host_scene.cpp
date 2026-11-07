@@ -630,11 +630,17 @@ Json FvHost::Impl::sceneState(const Json& args)
   if(!prop)
     throw std::runtime_error("no such prop");
   if(prop->model)
-    return {{"source", {{"path", utf8Of(pathOf(prop->path))}}},
-            {"worn", Json::array()},
-            {"morphs", Json::object()},
-            {"pose", Json::array()},
-            {"materials", prop->materials ? prop->materials->editState() : Json::object()}};
+  {
+    Json state = {{"source", {{"path", utf8Of(pathOf(prop->path))}}},
+                  {"worn", Json::array()},
+                  {"morphs", Json::object()},
+                  {"pose", Json::array()},
+                  {"materials", prop->materials ? prop->materials->editState() : Json::object()}};
+    // the nodes inside it hidden or moved; none when none are
+    if(Json nodes = nodeEditsJson(*prop); !nodes.empty())
+      state["nodes"] = std::move(nodes);
+    return state;
+  }
   if(!prop->figure)
     return Json::object();
   fv::Figure& fig  = *prop->figure->fig;
@@ -676,6 +682,9 @@ Json FvHost::Impl::sceneState(const Json& args)
                 {"pose", pose},
                 {"materialPresets", prop->figure->materialPresets},
                 {"materials", prop->materials ? prop->materials->editState() : Json::object()}};
+  // the nodes inside it hidden or moved; none when none are
+  if(Json nodes = nodeEditsJson(*prop); !nodes.empty())
+    state["nodes"] = std::move(nodes);
   // the shader presets chosen for surfaces; none when none are
   if(Json shaders = prop->materials ? prop->materials->shaderState() : Json::object(); !shaders.empty())
     state["shaders"] = std::move(shaders);
@@ -742,6 +751,7 @@ Json FvHost::Impl::sceneRestore(const Json& args)
     std::vector<std::string> problems;
     if(prop->materials && args.contains("materials") && args["materials"].is_object())
       problems = prop->materials->restoreEdits(args["materials"]);
+    restoreNodeEdits(*prop, args.value("nodes", Json::object()));
     for(size_t i = 0; i < problems.size() && i < 5; i++)
       notice(problems[i]);
     return {{"ok", true}, {"problems", problems}};
@@ -749,6 +759,8 @@ Json FvHost::Impl::sceneRestore(const Json& args)
   // the kind the user treated it as, before what it wears goes on (a body's collider fits it)
   if(const auto kind = kindOf(args.value("kind", "")); kind && dazKind(*kind) && *kind != prop->kind)
     setKind(*prop, *kind);
+  // the nodes inside it hidden or moved
+  restoreNodeEdits(*prop, args.value("nodes", Json::object()));
   std::shared_ptr<Loaded> target = prop->figure;
   const uint64_t          jobId  = ++jobs;
   job(jobId, {{"label", "Restoring " + prop->name}, {"state", "running"}});
