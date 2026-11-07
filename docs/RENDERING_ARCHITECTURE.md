@@ -169,13 +169,16 @@ Device — sample a light at each surface hit (`sampleLights`):
 
 **One pass or two.** The pick is scored first (`lightPickSet`: every punctual light's estimate and
 every node of the light tree's cut, up to 64) and the light then found by walking those shares again
-to where the draw's number falls (`lightDrawOf`). A still keeps that walk: it inverts the pick's sum,
-so a Sobol number stays spread over the lights. A DLSS frame's draws, of plain random numbers, pick
-as they score instead (`lightPickSetDrawn`, `PickReservoirs` in `light_pick.h.slang`: a reservoir by
-estimate and an even one, then the defensive mixture), each light with exactly its probability. The
-walk is a second pass that a warp pays to the end for its furthest-walking thread: on 7TEST (117
-emitters, a 64-node cut) at 4K the moving frame's path trace went 42.4 → 33.6 ms (2026-11-07); with
-a light or two there is nothing to save.
+to where the draw's number falls (`lightDrawOf`). A DLSS frame's draws pick as they score instead
+(`lightPickSetDrawn`, `PickReservoirs` in `light_pick.h.slang`: a reservoir by estimate and an even
+one, then the defensive mixture), each light with exactly its probability, and so do a still's
+where the light tree is on (`ptStillPickAsScored`). The walk is a second pass that a warp pays to
+the end for its furthest-walking thread: on 7TEST (117 emitters, a 64-node cut) at 4K the moving
+frame's path trace went 42.4 → 33.6 ms (2026-11-07). The walk inverts the pick's sum, so a still's
+Sobol number stays spread over the lights; picking as scored gives that up. On 7TEST at 1280×720 a
+still sample went 21.7 → 16.5 ms and its noise rose 2-11% (the relMSE at 64 and 256 samples), so
+the error at equal time fell 13-16%. A still with no tree, or past 64 punctual lights, keeps the
+walk; with a light or two there is nothing to save.
 
 **Details / why it's shaped this way**
 

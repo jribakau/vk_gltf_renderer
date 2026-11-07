@@ -213,6 +213,9 @@ public:
   bool m_skinFaceOn{false};
   // The emitters' light tree in the light pick (ePtLightTree, light_tree.h.slang)
   bool m_lightTree{true};
+  // A still's light draws pick as they score where the light tree is on (ePtStillPickAsScored); off,
+  // by the walk (measured 2026-11-07: the walk's spread of the Sobol numbers is worth less than it costs)
+  bool m_stillPickAsScored{true};
   // Surface bounces (PathtracePushConstant::maxDepth): the still's, and the DLSS frames' when lower (0: the
   // still's), set each frame by sample_schedule::frameMaxDepth
   int m_maxDepth{5};

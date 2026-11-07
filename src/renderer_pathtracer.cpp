@@ -340,6 +340,13 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "the skin's albedo averaged over directions, and face-on it returns 6-15% less",
                  .callbackSuccess = reset},
                 &m_skinFaceOn, Persist::eNo);
+  settings->add({.name            = "ptStillPickAsScored",
+                 .help            = "PathTracer: a still's light draws pick their light as the pick is scored where the light tree "
+                                    "is on, as a DLSS frame's do (one pass). Off: by walking the scores again, which spreads "
+                                    "the still's Sobol numbers over the lights (on 7TEST a sample ~30% dearer, the noise at "
+                                    "equal time 9-16% higher)",
+                 .callbackSuccess = reset},
+                &m_stillPickAsScored, Persist::eNo);
   settings->add({.name            = "ptLightTree",
                  .help            = "PathTracer: Emissive meshes are picked by how near and how bright they are (a light "
                                     "tree over them); off: by power alone, wherever they are",
@@ -1542,6 +1549,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= m_walkGuiding ? shaderio::ePtWalkGuiding : 0;
   m_pushConst.flags |= m_skinFaceOn ? shaderio::ePtSkinFaceOn : 0;
   m_pushConst.flags |= m_lightTree ? shaderio::ePtLightTree : 0;
+  m_pushConst.flags |= m_stillPickAsScored ? shaderio::ePtStillPickAsScored : 0;
   m_pushConst.flags |= m_simplifyScatter ? shaderio::ePtSimplifyScatter : 0;
   m_pushConst.flags |= (m_sampler == 1 && !useDlss) ? shaderio::ePtSobol : 0;
   m_pushConst.flags |= m_fullLobeEval >= 1 ? shaderio::ePtLobeSumPunctual : 0;

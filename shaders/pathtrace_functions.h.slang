@@ -1393,8 +1393,11 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
 //
 // A DLSS frame's draw of numbers from `seed` picks its light as the pick is scored
 // (lightPickSetDrawn), with each light's own probability, so without lightDrawOf's second pass over
-// the lights; a still's keeps the walk, which inverts the pick's sum, so a Sobol `xi` stays spread
-// over the lights and the still's numbers stay as they were.
+// the lights, and so does a still's where the light tree is on (ePtStillPickAsScored), its `xi` then
+// placing the sample on the light but not picking it. The walk inverts the pick's sum, so a Sobol
+// `xi.x` stays spread over the lights; on 7TEST that spread was worth less than the pass (2026-11-07:
+// a still sample 21.7 -> 16.5 ms, its noise 2-11% higher, 13-16% less at equal time). With no tree,
+// or past LIGHT_PICK_MAX_LIGHTS punctual lights, a still keeps the walk.
 void sampleLights(in float3       pos,
                   float3          normal,
                   in float3       worldRayDirection,
@@ -1413,7 +1416,10 @@ void sampleLights(in float3       pos,
   directLight      = noDirectLight();
 
   const bool bothSides = isVolumeSample || lightsFromBothSides;
-  if(!given && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+  const bool dlss = hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss);
+  if(dlss ? !given
+          : (hasFlag(pushConst.flags, PathtracerFlags::ePtStillPickAsScored) && emissiveTreeOn()
+             && punctualLightCount() <= LIGHT_PICK_MAX_LIGHTS))
   {
     LightDraw          drawn;
     const LightPickSet scored = lightPickSetDrawn(pos, normal, /*cull=*/!bothSides, seed, drawn);
