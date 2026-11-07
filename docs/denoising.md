@@ -73,7 +73,7 @@ the enum for the authoritative list and formats):
 |---|---|---|
 | `eResultImage` | Noisy 1-spp path-traced radiance (the image being denoised/upscaled) | `pInColor` |
 | `eDlssAlbedo` | Diffuse albedo (base color; see [clear glass](#clear-glass-primary-surface-replacement)) | `pInDiffuseAlbedo` |
-| `eDlssSpecAlbedo` | Specular albedo (`EnvBRDFApprox2` in `shaders/dlss_util.h`) | `pInSpecularAlbedo` |
+| `eDlssSpecAlbedo` | Specular albedo (`dlssSpecularAlbedo` in `shaders/pathtrace_functions.h.slang`: `EnvBRDFApprox2` from `shaders/dlss_util.h`, a named metal's edge tint taken off it by `dlssEdgeTintShare`) | `pInSpecularAlbedo` |
 | `eDlssNormalRoughness` | World-space normal + roughness, packed | `pInNormals` (and `pInRoughness` in packed mode) |
 | `eDlssMotion` | Pixel-space motion vectors (see below) | `pInMotionVectors` |
 | `eDlssDepth` | NDC depth (`z/w`, `1.0` on miss) | `pInDepth` |
@@ -235,7 +235,12 @@ replacement (PSR). `dlssTraceClearGlass` (`shaders/pathtrace_functions.h.slang`)
 transmission direction through every clear-glass layer (`dlssIsClearGlass`). It goes straight
 through thin-walled glass, as the BSDF does, and refracts through glass with a volume. It stops at the
 first surface that is not clear glass, which then provides the albedo (mixed with the glass's Fresnel share),
-normal, and roughness guides. The DLSS depth and motion vectors use a virtual point along the
+specular albedo, normal, and roughness guides. That surface is described as it would be seen directly
+(`dlssSpecularAlbedo`, its diffuse albedo less its metal on DLSS frames), so a metal or a gloss behind a
+window keeps its reflection's colour instead of reading as a texture. Its specular albedo is added to
+the glass's own, less the glass's Fresnel share, not blended with it: a blend would leave a matte surface
+behind glass a specular albedo of about F squared against the glass's reflection of F. Under the water
+(Ground = Water) the floor is the ground's colour, metal and roughness. The DLSS depth and motion vectors use a virtual point along the
 camera ray at the full chain length, moved by that surface's instance motion, so they follow
 the content rather than the glass. The main depth buffer (`outDepth`, used for picking and
 overlays) still holds the glass.

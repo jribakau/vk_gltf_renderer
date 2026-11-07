@@ -19,6 +19,7 @@
 #include "mirror_image.h.slang"
 #include "clear_crossing.h.slang"
 #include "smooth_vertex.h.slang"
+#include "dlss_specular_guide.h.slang"
 #include "haze.h.slang"
 
 //-----------------------------------------------------------------------
@@ -2244,6 +2245,32 @@ float3 dlssEnforceMinAlbedo(float3 albedo, float3 specularAlbedo)
   return albedo;
 }
 
+// #DLSS specular guide: what a surface reflects, seen along `dir`, as DLSS-RR's specular albedo takes
+// it (RR guide 3.5). KHR_materials_specular's dielectric F0, min(f0_from_ior * specularColor, 1) *
+// specular; a metal's F0 its base colour, less what its edge tint takes where its lobe's Fresnel is
+// F82 (an edge tint and no iridescence: dlssEdgeTintShare), with its multiple scattering as its lobe
+// gives it back (bsdfMetalMultiScatter); the second specular lobe's and the clearcoat's (DAZ skin's
+// top lobe) at 0.04. The first hit's, and a surface's seen through clear glass or water
+// (dlssTraceClearGlass, dlssTraceWater).
+float3 dlssSpecularAlbedo(PbrMaterial mat, float3 dir)
+{
+  const float  ndotv        = dot(mat.N, dir);
+  const float  f0FromIor    = pow((mat.ior2 - mat.ior1) / (mat.ior2 + mat.ior1), 2.0F);
+  const float3 dielectricF0 = min(f0FromIor * mat.specularColor, float3(1.0F)) * mat.specular;
+  const float3 f0           = lerp(dielectricF0, mat.baseColor, mat.metallic);
+  float3       albedo       = EnvBRDFApprox2(f0, mat.roughness.x, ndotv);
+  float3       metal        = ggxMultiScatterFactor(mat.baseColor, mat.roughness.x, abs(ndotv));
+  if(mat.iridescence <= 0.0F && bsdfHasEdgeTint(mat))
+    metal = dlssEdgeTintShare(mat.baseColor, mat.edgeTint, mat.roughness.x, ndotv)
+            * ggxMultiScatterFactor(mat.baseColor * f82AverageShare(mat.baseColor, mat.edgeTint), mat.roughness.x, abs(ndotv));
+  albedo *= lerp(float3(1.0F), metal, mat.metallic);
+  if(mat.specular2 > 0.0F)
+    albedo = saturate(albedo + mat.specular2 * EnvBRDFApprox2(float3(0.04F), mat.specular2Roughness * mat.specular2Roughness, ndotv));
+  if(mat.clearcoat > 0.0F)
+    albedo = saturate(albedo + mat.clearcoat * mat.clearcoatColor * EnvBRDFApprox2(float3(0.04F), mat.clearcoatRoughness * mat.clearcoatRoughness, ndotv));
+  return albedo;
+}
+
 bool dlssIsClearGlass(PbrMaterial pbrMat)
 {
   return (pbrMat.transmission > 0.9f) && (pbrMat.roughness.x < 0.05f) && (pbrMat.opacity >= 0.99f);
@@ -2354,12 +2381,13 @@ static const int DLSS_MAX_GLASS_LAYERS = 8;
 
 struct DlssGlassPsr
 {
-  bool   valid      = false;         // A non-glass surface was found behind the glass
-  float3 albedo     = float3(0.5f);  // Its base color (0.5 grey when the chain left the scene)
-  float3 normal     = float3(0.0f);  // Its shading normal
-  float  roughness  = 0.0f;          // Its roughness
-  float  pathLength = 0.0f;          // Distance from the first glass hit to it, along the chain
-  float3 posDelta   = float3(0.0f);  // Its instance motion: previous-frame position minus current position
+  bool   valid          = false;         // A non-glass surface was found behind the glass
+  float3 albedo         = float3(0.5f);  // Its diffuse albedo (0.5 grey when the chain left the scene)
+  float3 specularAlbedo = float3(0.0f);  // What it reflects, seen along the chain (dlssSpecularAlbedo)
+  float3 normal         = float3(0.0f);  // Its shading normal
+  float  roughness      = 0.0f;          // Its roughness
+  float  pathLength     = 0.0f;          // Distance from the first glass hit to it, along the chain
+  float3 posDelta       = float3(0.0f);  // Its instance motion: previous-frame position minus current position
 };
 
 DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3 dir, bool isInside)
@@ -2369,7 +2397,7 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
   GltfRenderPrimitive* renderPrimitive = pushConst.gltfScene->renderPrimitives;
   GltfTextureInfo*     texInfos        = pushConst.gltfScene->textureInfos;
 
-  DlssGlassPsr result = {false, float3(0.5f), float3(0.0f), 0.0f, 0.0f, float3(0.0f)};
+  DlssGlassPsr result = {false, float3(0.5f), float3(0.0f), float3(0.0f), 0.0f, 0.0f, float3(0.0f)};
 
   PbrMaterial mat          = glassMat;
   float3      origin       = glassHit.pos;
@@ -2423,10 +2451,15 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
       continue;  // Refracting glass, or glass only a texture showed to be clear
     }
 
-    result.valid     = true;
-    result.albedo    = mat.baseColor.xyz;
-    result.normal    = mat.N;
-    result.roughness = mat.roughness.x;
+    // As the surface would be described seen directly (gltf_pathtrace.slang's first hit): a metal's
+    // colour is its reflection's, not a texture under it, where DLSS-RR reads the guides
+    result.valid          = true;
+    result.albedo         = mat.baseColor.xyz;
+    if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+      result.albedo *= 1.0F - mat.metallic;
+    result.specularAlbedo = dlssSpecularAlbedo(mat, dir);
+    result.normal         = mat.N;
+    result.roughness      = mat.roughness.x;
     result.posDelta =
         dlssPrevHitPos(node, prim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos) - hit.pos;
     return result;
@@ -2447,12 +2480,19 @@ DlssGlassPsr dlssTraceWater(PbrMaterial waterMat, HitState waterHit, float3 dir,
   const float floorT = infinitePlaneCrossing(waterHit.pos, refracted, INFINITE, frameInfo);
   if(floorT < 0.0f || (psr.valid && psr.pathLength <= floorT))
     return psr;
-  psr.valid      = true;
-  psr.albedo     = frameInfo->infinitePlaneBaseColor;
-  psr.normal     = float3(0.0f, 1.0f, 0.0f);
-  psr.roughness  = frameInfo->infinitePlaneRoughness * frameInfo->infinitePlaneRoughness;
-  psr.pathLength = floorT;
-  psr.posDelta   = float3(0.0f);
+  // The ground's colour, metal and roughness (groundMaterial's dry ground: the floor under the water)
+  const float3      up     = float3(0.0f, 1.0f, 0.0f);
+  const PbrMaterial ground = defaultPbrMaterial(frameInfo->infinitePlaneBaseColor, frameInfo->infinitePlaneMetallic,
+                                                frameInfo->infinitePlaneRoughness, up, up);
+  psr.valid          = true;
+  psr.albedo         = ground.baseColor;
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+    psr.albedo *= 1.0F - ground.metallic;
+  psr.specularAlbedo = dlssSpecularAlbedo(ground, refracted);
+  psr.normal         = float3(0.0f, 1.0f, 0.0f);
+  psr.roughness      = frameInfo->infinitePlaneRoughness * frameInfo->infinitePlaneRoughness;
+  psr.pathLength     = floorT;
+  psr.posDelta       = float3(0.0f);
   return psr;
 }
 #endif  // USE_DLSS_SHADER

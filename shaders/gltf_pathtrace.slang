@@ -765,20 +765,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         guideAlbedo *= 1.0F - pbrMat.metallic;
       // #DLSS specular guide - specular albedo + clear-glass albedo refinement. DLSS-only quality
       // path; the other denoisers need neither, so it is compiled out of their variant.
-      // KHR_materials_specular: dielectric_f0 = min(f0_from_ior * specularColor, 1.0) * specular; a metal's
-      // F0 is its base colour; the clearcoat (DAZ skin's top lobe) adds its own at 0.04.
-      float  f0_from_ior = pow((pbrMat.ior2 - pbrMat.ior1) / (pbrMat.ior2 + pbrMat.ior1), 2.0F);
-      float3 dielectricF0 = min(f0_from_ior * pbrMat.specularColor, float3(1.0F)) * pbrMat.specular;
-      float3 f0           = lerp(dielectricF0, pbrMat.baseColor.xyz, pbrMat.metallic);
-      const float ndotv   = dot(pbrMat.N, ray.Direction);
-      float3 specularAlbedo = EnvBRDFApprox2(f0, pbrMat.roughness.x, ndotv);
-      // A metal's multiple scattering, as its lobe gives it back (ggxMultiScatterFactor)
-      specularAlbedo *= lerp(float3(1.0F), ggxMultiScatterFactor(pbrMat.baseColor, pbrMat.roughness.x, abs(ndotv)), pbrMat.metallic);
-      if(pbrMat.specular2 > 0.0F)
-        specularAlbedo = saturate(specularAlbedo + pbrMat.specular2 * EnvBRDFApprox2(float3(0.04F), pbrMat.specular2Roughness * pbrMat.specular2Roughness, ndotv));
-      if(pbrMat.clearcoat > 0.0F)
-        specularAlbedo = saturate(specularAlbedo
-                                  + pbrMat.clearcoat * pbrMat.clearcoatColor * EnvBRDFApprox2(float3(0.04F), pbrMat.clearcoatRoughness * pbrMat.clearcoatRoughness, ndotv));
+      float3 specularAlbedo = dlssSpecularAlbedo(pbrMat, ray.Direction);
       float3 guideNormal    = pbrMat.N;
       // RR reads linear (perceptual) roughness; the material keeps GGX alpha
       float  guideRoughness = sqrt(pbrMat.roughness.x);
@@ -788,13 +775,18 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       if(USE_DLSS_TRANSP == 1 && dlssIsClearGlass(pbrMat))
       {
         // #DLSS primary surface replacement: describe what is seen through the glass. The albedo
-        // keeps the glass's Fresnel share; depth and motion come from the replaced surface.
+        // keeps the glass's Fresnel share; depth and motion come from the replaced surface. What
+        // reflects is the glass's own and, through it, the surface's: a metal or a gloss behind a
+        // window keeps its specular albedo as seen directly. Added, not blended by the Fresnel, which
+        // would leave a matte surface behind glass about F^2 of specular albedo against the glass's
+        // own reflection of F.
         DlssGlassPsr psr     = hitWater ? dlssTraceWater(pbrMat, hit, ray.Direction, frameInfo)
                                         : dlssTraceClearGlass(pbrMat, hit, materialIndex >= 0 ? rayIntoEyeChamber(ray.Direction, pbrMat.N, hit, materials + materialIndex) : ray.Direction, ptIsInside(pt));
         float        ndotv   = saturate(dot(pbrMat.N, -ray.Direction));
         float        fresnel = schlickFresnel((pbrMat.ior2 > 0.0f) ? (pbrMat.ior2 / pbrMat.ior1) : 1.5f, ndotv);
         if(bsdfIsPlate(pbrMat))
           fresnel = 2.0F * fresnel / (1.0F + fresnel);  // a pane's two faces
+        specularAlbedo       = saturate(specularAlbedo + (1.0F - fresnel) * psr.specularAlbedo);
         guideAlbedo          = dlssEnforceMinAlbedo(lerp(psr.albedo, pbrMat.baseColor.xyz, fresnel), specularAlbedo);
         if(psr.valid)
         {

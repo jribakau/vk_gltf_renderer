@@ -1708,3 +1708,102 @@ TEST(SmoothVertex, EachDirectionsLightIsCountedOnce)
   EXPECT_FALSE(smoothVertexSamplesLight(loose, vec3(0, 0, -1), 1.0f));
   EXPECT_TRUE(smoothVertexSamplesLight(loose, vec3(0, 0, -1), DIRAC));
 }
+
+// What DLSS-RR's specular albedo guide takes of a named metal (shaders/dlss_specular_guide.h.slang):
+// the share of the Schlick lobe's directional albedo its edge tint leaves, against the metal lobe's own,
+// sampled with each Fresnel from the same random numbers.
+#include "../shaders/dlss_specular_guide.h.slang"
+
+namespace {
+
+// figure/materials/metals.cpp's head-on colours and edge tints: the four the tint takes most from
+struct NamedMetal
+{
+  const char* name;
+  vec3        f0, tint;
+};
+const NamedMetal kTintedMetals[] = {
+    {"chrome", vec3(0.5496f, 0.5561f, 0.5537f), vec3(0.7418f, 0.7480f, 0.8150f)},
+    {"iron", vec3(0.5289f, 0.5136f, 0.4938f), vec3(0.7655f, 0.7669f, 0.8024f)},
+    {"titanium", vec3(0.6170f, 0.5799f, 0.5424f), vec3(0.7696f, 0.7901f, 0.8211f)},
+    {"aluminium", vec3(0.9067f, 0.9161f, 0.9226f), vec3(0.8891f, 0.9179f, 0.9477f)},
+};
+
+// The metal lobe's single-scattering albedo with F82 over that with Schlick's, per channel
+vec3 edgeTintShareOfTheLobe(const NamedMetal& m, float alpha, float NoV, int N = 40000)
+{
+  PbrMaterial mat = defaultPbrMaterial(m.f0, 1.0f, std::sqrt(alpha), vec3(0, 0, 1), vec3(0, 0, 1));
+  mat.edgeTint    = m.tint;
+  std::mt19937                          rng(41);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const vec3 k1 = vec3(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+  dvec3      f82(0.0), schlick(0.0);
+  for(int i = 0; i < N; i++)
+  {
+    BsdfSampleData s;
+    s.k1             = k1;
+    s.xi             = vec3(u(rng), u(rng), u(rng));
+    BsdfSampleData t = s;
+    brdf_ggx_smith_sample(s, mat, LOBE_METAL_REFLECTION, m.f0, BSDF_FRESNEL_F82, 1.0f);
+    brdf_ggx_smith_sample(t, mat, LOBE_METAL_REFLECTION, m.f0, BSDF_FRESNEL_SCHLICK, 1.0f);
+    if(s.event_type != BSDF_EVENT_ABSORB)
+      f82 += dvec3(s.bsdf_over_pdf);
+    if(t.event_type != BSDF_EVENT_ABSORB)
+      schlick += dvec3(t.bsdf_over_pdf);
+  }
+  return vec3(f82 / glm::max(schlick, dvec3(1e-12)));
+}
+
+}  // namespace
+
+// The guide's share is the lobe's within 5% for every named metal, from a mirror to alpha 1 and from
+// head-on to 87 degrees: Schlick's alone (a share of 1) is a third too bright on a polished chrome rim,
+// where the moving view and the still would then disagree.
+TEST(DlssSpecularGuide, TheEdgeTintShareIsTheLobes)
+{
+  double worst = 0.0, worstSchlick = 0.0;
+  for(const NamedMetal& m : kTintedMetals)
+    for(float alpha : {0.001f, 0.03f, 0.1f, 0.2f, 0.4f, 0.7f, 1.0f})
+      for(float NoV : {1.0f, 0.7f, 0.4f, 0.2f, 0.1f, 0.05f})
+      {
+        const vec3 lobe  = edgeTintShareOfTheLobe(m, alpha, NoV);
+        const vec3 guide = dlssEdgeTintShare(m.f0, m.tint, alpha, NoV);
+        for(int c = 0; c < 3; c++)
+        {
+          const double err = std::abs(guide[c] - lobe[c]) / lobe[c];
+          worst            = std::max(worst, err);
+          worstSchlick     = std::max(worstSchlick, std::abs(1.0 - lobe[c]) / lobe[c]);
+          EXPECT_LT(err, 0.05) << m.name << " alpha " << alpha << " NoV " << NoV << " channel " << c << ": guide "
+                               << guide[c] << ", lobe " << lobe[c];
+        }
+      }
+  EXPECT_GT(worstSchlick, 0.3) << "the tint should matter on chrome's rim";
+  EXPECT_LT(worst, 0.05);
+}
+
+// A white tint leaves the guide Schlick's (a share of 1); a mirror takes the Fresnel's own ratio at the
+// view, and from DLSS_EDGE_TINT_ROUGH_ALPHA on a lobe takes the average one, as its multiple
+// scattering does (f82AverageShare).
+TEST(DlssSpecularGuide, TheShareRunsFromTheViewsFresnelToTheAverage)
+{
+  const NamedMetal& chrome = kTintedMetals[0];
+  for(float alpha : {0.0f, 0.1f, 0.5f, 1.0f})
+    for(float NoV : {1.0f, 0.5f, 0.15f, -0.3f})
+    {
+      const vec3 white = dlssEdgeTintShare(chrome.f0, vec3(1.0f), alpha, NoV);
+      EXPECT_NEAR(white.x, 1.0f, 1e-6f) << alpha << " " << NoV;
+      EXPECT_NEAR(white.z, 1.0f, 1e-6f) << alpha << " " << NoV;
+    }
+  for(float NoV : {1.0f, 0.5f, 0.15f, 0.05f})
+  {
+    const vec3 mirror = dlssEdgeTintShare(chrome.f0, chrome.tint, 0.0f, NoV);
+    const vec3 view   = f82Fresnel(chrome.f0, chrome.tint, NoV) / schlickFresnel(chrome.f0, vec3(1.0f), NoV);
+    EXPECT_NEAR(mirror.x, view.x, 1e-6f) << NoV;
+    EXPECT_NEAR(dlssEdgeTintShare(chrome.f0, chrome.tint, 0.0f, -NoV).x, view.x, 1e-6f) << "the far side, " << NoV;
+    for(float alpha : {DLSS_EDGE_TINT_ROUGH_ALPHA, 1.0f})
+      EXPECT_NEAR(dlssEdgeTintShare(chrome.f0, chrome.tint, alpha, NoV).x, f82AverageShare(chrome.f0, chrome.tint).x, 1e-6f)
+          << alpha << " " << NoV;
+  }
+  // chrome's rim, polished: about three quarters of Schlick's
+  EXPECT_NEAR(dlssEdgeTintShare(chrome.f0, chrome.tint, 0.0f, 0.15f).x, 0.74f, 0.01f);
+}

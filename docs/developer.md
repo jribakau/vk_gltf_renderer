@@ -554,7 +554,12 @@ spectrum ([`utils/metal_edge_tints.py`](../utils/metal_edge_tints.py) prints it 
 lowering and a model's edits put the tint on a surface with metal, and the metal's colour where the
 colour is neither edited nor a map's. Without a named metal there is no extension, `edgeTintFactor`
 stays white and the lobe is Schlick's, bit for bit (`BsdfLobes.AMetalWithoutAnEdgeTintIsSchlicksBitForBit`).
-The DLSS specular guide still estimates a metal's albedo from Schlick's (`EnvBRDFApprox2`).
+The DLSS specular guide takes the tint off its Schlick fit (`EnvBRDFApprox2`) by what the tint leaves
+of the lobe's albedo (`dlssEdgeTintShare`, [`shaders/dlss_specular_guide.h.slang`](../shaders/dlss_specular_guide.h.slang)):
+the Fresnel's own ratio at the view for a mirror, its average for a rough lobe, within 5% of the lobe
+from a mirror to alpha 1 and head-on to 87 degrees (`DlssSpecularGuide.TheEdgeTintShareIsTheLobes`;
+[`utils/f82_guide_share.py`](../utils/f82_guide_share.py) integrates it offline). Schlick's alone was a
+third too bright on a polished chrome rim.
 
 ### Woven cutouts
 
