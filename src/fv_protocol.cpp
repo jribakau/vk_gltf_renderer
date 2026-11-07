@@ -70,7 +70,9 @@ namespace {
 // 38: uneven haze, the lighting's haze.height and haze.patches.
 // 39: looks, a grade over the Image sliders: the lighting's tonemap.look and tonemap.lookStrength,
 // and lighting.preview, a look shown while the app's pointer is on its chip.
-constexpr int kProtocolVersion = 39;
+// 40: bloom, the lighting's tonemap.bloom and tonemap.star (a glow round bright light, and a star
+// across the aperture's blades).
+constexpr int kProtocolVersion = 40;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

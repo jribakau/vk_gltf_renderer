@@ -516,6 +516,27 @@ TEST(FvLighting, ALookIsKeptAndTakenOff)
   EXPECT_THROW(L::applyPatch(s, {{"tonemap", {{"look", "noir"}}}}), std::invalid_argument);
 }
 
+// Bloom (protocol 40): the glow's share and the star's, kept in the topic, clamped, and sent on as
+// the renderer's bloom parameters; off by default
+TEST(FvLighting, BloomAndItsStarGoToTheRenderer)
+{
+  const L::State none;
+  EXPECT_EQ(L::toJson(none)["tonemap"]["bloom"], 0.0);
+  EXPECT_EQ(L::rendererParams(none, {})["bloomShare"], 0.0);
+  const L::State s = L::applyPatch(L::State{}, {{"tonemap", {{"bloom", 0.04}, {"star", 0.3}}}});
+  EXPECT_DOUBLE_EQ(s.tonemap.bloom, 0.04);
+  EXPECT_DOUBLE_EQ(s.tonemap.star, 0.3);
+  const Json topic = L::toJson(s);
+  EXPECT_EQ(topic["tonemap"]["bloom"], 0.04);
+  EXPECT_EQ(topic["tonemap"]["star"], 0.3);
+  EXPECT_EQ(L::toJson(L::applyPatch(L::State{}, topic)), topic);
+  const Json p = L::rendererParams(s, {});
+  EXPECT_DOUBLE_EQ(p["bloomShare"].get<double>(), 0.04);
+  EXPECT_DOUBLE_EQ(p["bloomStar"].get<double>(), 0.3);
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"bloom", 2.0}}}}).tonemap.bloom, 0.25);
+  EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"star", "on"}}}}), std::invalid_argument);
+}
+
 // The grade is the sliders with the look over them at its strength
 TEST(FvLighting, TheGradeIsTheSlidersWithTheLookOverThem)
 {

@@ -46,7 +46,9 @@
 //            sky gives rather than the sun, at this sun: the app's measured tables, sunPath.ts);
 //            read-only, cloudLight (the light the clouds leave the figure, against a clear sky's);
 //            look (null, or a grade over those sliders: Look's fields, the vectors [r, g, b]) and
-//            lookStrength (0 to 1, how much of it)
+//            lookStrength (0 to 1, how much of it); bloom (0 to 0.25, the share of the image's light
+//            moved into a glow round bright light, 0 none) and star (0 to 1, the share of that glow
+//            drawn as spikes across the aperture's blades; none for a round aperture), protocol 40
 //
 // Colours are "#rrggbb" in sRGB, as the panel shows them. A patch from before protocol 17 (a kept
 // scene's) may also carry sun.shadows and a shadow section, the raster view's shadow map: they are
@@ -165,6 +167,8 @@ struct Tonemap
   double      skyShare     = 1.0;
   std::optional<Look> look;          // none: the sliders alone (protocol 39)
   double              lookStrength = 1.0;
+  double              bloom        = 0.0;  // of the image's light, into the glow (protocol 40; src/bloom.hpp)
+  double              star         = 0.0;  // of the glow, into the star across the aperture's blades
 };
 
 // What the tone mapper grades with: the panel's sliders with the look over them at its strength, each

@@ -418,6 +418,10 @@ void patchTonemap(Tonemap& t, const Json& p)
     }
     else if(k == "lookStrength")
       field(t.lookStrength, d.lookStrength, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "bloom")
+      field(t.bloom, d.bloom, v, [&](const Json& x) { return number(x, key, 0.0, 0.25); });
+    else if(k == "star")
+      field(t.star, d.star, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else
       reject("unknown key " + key);
   }
@@ -524,7 +528,9 @@ Json toJson(const State& s)
         {"followClouds", t.followClouds},
         {"skyShare", t.skyShare},
         {"look", lookJson(t.look)},
-        {"lookStrength", t.lookStrength}}},
+        {"lookStrength", t.lookStrength},
+        {"bloom", t.bloom},
+        {"star", t.star}}},
   };
 }
 
@@ -898,6 +904,9 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"tmPosterize", g2.posterize},
       {"tmPosterizeMix", g2.posterizeMix},
       {"tmGrain", g2.grain},
+      // the glow and the star on the image the tone mapper takes (src/bloom.hpp)
+      {"bloomShare", t.bloom},
+      {"bloomStar", t.star},
       // the renderer recalibrates this on every load, so the host drops it from what it has applied
       // after a load or an environment change and sends it again
       {"ptFireflyClamp", kFireflyClamp / exposure},

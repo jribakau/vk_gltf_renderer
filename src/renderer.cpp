@@ -217,6 +217,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_silhouette.init(m_resources);
   // The frame an HDR display is shown
   m_hdrOutput.init(m_resources);
+  m_bloom.init(m_resources);
 
 
   // Producer for analytic skies. Its lat-long image feeds the same HdrIbl the HDR file path uses,
@@ -368,6 +369,7 @@ void GltfRenderer::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
   m_resources.appMemoryTracker.track("GBuffers", m_resources.gBuffers, Resources::eImgCount);
   m_pathTracer.onResize(cmd, size, m_resources);
   m_hdrOutput.onResize(cmd, size);
+  m_bloom.onResize(cmd, size);
   m_resources.tonemappedUi.update(m_resources.gBuffers.getUiImageView(Resources::eImgTonemapped));
 
   // Resize visual helpers (depth buffer + scene depth descriptor set)
@@ -963,7 +965,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   gpu_trail::frameStart(cmd, ++m_trailFrames);
   // for refuseFrameSize on the stream's thread
   m_frameBytesPerPixel.store(kPathTracerBytesPerPixel + (m_pathTracer.isDlssEnabled() ? kDlssBytesPerPixel : 0)
-                              + (m_hdrOutput.active() ? HdrOutput::kBytesPerPixel : 0));
+                              + (m_hdrOutput.active() ? HdrOutput::kBytesPerPixel : 0) + (m_bloom.active() ? Bloom::kBytesPerPixel : 0));
   {
     const VkExtent2D s = renderSize();
     m_frameSizePacked.store(uint64_t(s.width) << 32 | s.height);
@@ -1410,6 +1412,15 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   // the grain moves with each frame drawn, as film's does, and holds on a finished still
   tonemapperData.grainSeed = uint32_t(m_resources.drawnFrameCount);
 
+  // The glow and the star (Bloom), on what the tone mapper and the HDR output take, not on a debug or
+  // guide view; an .exr keeps the image without them (m_tonemapInput below)
+  const VkDescriptorImageInfo unbloomed = inputBuffer;
+  if(vizNormal && !usingGuideBuffer && !bypassTonemapper && tonemapperData.isActive && m_bloom.active())
+  {
+    auto bloomSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Bloom");
+    inputBuffer = m_bloom.cmdApply(cmd, m_resources, inputBuffer, gbufSize, tonemapperData.autoExposure ? 1.0F : tonemapperData.exposure);
+  }
+
   m_resources.tonemapper.runCompute(cmd, gbufSize, tonemapperData, inputBuffer,
                                     m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgTonemapped));
 
@@ -1419,7 +1430,7 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   if(!usingGuideBuffer && !bypassTonemapper && !tonemapperData.autoExposure)
     m_hdrOutput.cmdTonemap(cmd, m_resources, gbufSize, tonemapperData, inputBuffer);
   // What an .exr saved from this frame is made from (saveExr)
-  m_tonemapInput = {.image = inputBuffer, .size = gbufSize, .data = tonemapperData};
+  m_tonemapInput = {.image = unbloomed, .size = gbufSize, .data = tonemapperData};
 
   // Barrier: tonemapper compute writes must be visible to both the DLSS-NR compute pass (which
   // reads eImgTonemapped immediately after tonemap()) and the silhouette fragment shader.
@@ -1755,6 +1766,7 @@ void GltfRenderer::destroyResources()
   }
   m_silhouette.deinit(m_resources);
   m_hdrOutput.deinit(m_resources);
+  m_bloom.deinit(m_resources);
   if(m_wipeFrame.image)
     m_resources.allocator.destroyImage(m_wipeFrame);
   m_wipeFrame = {};

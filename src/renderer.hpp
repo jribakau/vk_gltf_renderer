@@ -57,6 +57,7 @@
 #include "renderer_pathtracer.hpp"
 #include "resources.hpp"
 #include "renderer_silhouette.hpp"
+#include "bloom.hpp"
 #include "hdr_output.hpp"
 #include "env_baker.hpp"
 #include "env_image_loader.hpp"
@@ -632,6 +633,7 @@ private:
   BusyState    m_busy;
   Silhouette    m_silhouette;     // Silhouette renderer
   HdrOutput     m_hdrOutput;      // The frame an HDR display is shown, and EXR exports
+  Bloom         m_bloom;          // The glow and the star on the image the tone mapper takes
   // What the last frame's tonemapper took: an .exr export is made from it (saveExr)
   struct TonemapInput
   {

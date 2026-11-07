@@ -338,3 +338,30 @@ The ray tracing pipeline's shadow hit group has no closest-hit shader. The non-S
 `RAY_FLAG_SKIP_CLOSEST_HIT_SHADER` and reads the result from `rmissShadow`, which sets
 `ShadowPayload::missed`: if the miss shader never ran, the ray was blocked. The SER path checks
 `HitObject::IsHit()` instead and never runs closest-hit or miss shaders.
+
+## Bloom
+
+A lens's glow round bright light, and a star when the aperture has blades (`src/bloom.hpp`,
+`shaders/bloom.slang`, the kernels in `shaders/bloom.h.slang`), on the image the tone mapper and the
+HDR output take, after DLSS, the denoisers and the hand-off; an .exr export keeps the image without
+it. Off by default (a camera look, against the physical-accuracy target): the View tab's Bloom and
+Star (the lighting's `tonemap.bloom` and `tonemap.star`, protocol 40; `bloomShare`, `bloomStar`).
+
+- **The glow keeps the light:** `bloom` of each pixel's light (0 to 0.25) moves into a sum of
+  Gaussians: a pyramid of halved levels (Jimenez's 13 bilinear taps) down to an 8-pixel side, at
+  most 8, summed back up through a tent with each coarser level 0.65 of the finer one's weight, so
+  the glow has a long tail. A glow is as strong as the light it comes from: a lamp seen head-on many
+  times white glows, a sign at white barely, and the rest of the frame keeps its look. The pyramid
+  is in the tone mapper's white (its exposure), each tap's largest channel held under 4096 of it, so
+  a sun disk's halo doesn't swamp the frame and half floats hold it.
+- **The star:** spikes across the aperture's straight edges, as a polygon's diffraction draws them:
+  one line through each pair of parallel edges, so an even number of blades gives as many spikes and
+  an odd number twice as many; none for a round aperture. Drawn on the quarter-size level, 32 taps
+  each way along each line, a spike 8% of the frame's height, normalised, so it too moves light
+  rather than adds it. Its share of the glow is `star`; the lens's blades and rotation come with
+  `setDepthOfField`.
+- **Checked:** `tests/test_bloom.cpp` runs the pyramid on the CPU: a bright point keeps its light
+  to 1e-4 with the glow and with a six-blade star, the star's spike outshines the glow between
+  spikes, the kernels sum to one, the spikes cross the edges. Measured on 1TEST at 3840x2160 while
+  orbiting: 0.70 ms a frame for the glow, 0.92 with a six-blade star, against a 150-175 ms path
+  trace. Seen on 1TEST's Camera 2: the blue spotlight's halo and the downlights' six-pointed stars.

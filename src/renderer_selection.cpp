@@ -239,6 +239,7 @@ void GltfRenderer::setPickObserver(std::function<bool(const std::optional<Instan
 void GltfRenderer::setDepthOfField(float focalDistance, float aperture, bool autoFocus, int blades, float bladeRotation)
 {
   m_pathTracer.setDepthOfField(focalDistance, aperture, autoFocus, blades, bladeRotation);
+  m_bloom.setAperture(blades, bladeRotation);  // the star's spikes: across the blades' edges
   resetFrame();
 }
 
