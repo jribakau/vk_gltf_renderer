@@ -1,4 +1,5 @@
 #include <figure/dson/store.hpp>
+#include <figure/dson/script_preset.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -328,6 +329,18 @@ std::shared_ptr<const Doc> Store::fetch(const std::string& file)
   const auto path = m_library->find(file);
   if(!path)
     throw MissingFileError(file);
+  // a script material preset is read as the .duf it stands for; nothing of a script runs
+  if(endsWith(file, ".dsa"))
+  {
+    const std::string text = readMaybeCompressed(*path);
+    auto              json = scriptMaterialsPreset(text);
+    if(!json)
+      throw std::runtime_error(file.substr(file.find_last_of("/\\") + 1) + " is a DAZ script. Scripts aren't run here: only DAZ's material preset scripts open, read as data.");
+    auto doc   = std::make_shared<Doc>();
+    doc->json  = std::move(*json);
+    doc->bytes = text.size();
+    return doc;
+  }
   std::error_code ec;
   const uintmax_t onDisk = std::filesystem::file_size(*path, ec);
   const uintmax_t size   = ec ? 0 : textSize(*path, onDisk);
