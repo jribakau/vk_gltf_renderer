@@ -31,6 +31,13 @@ void expectNear(const glm::vec3& a, const glm::vec3& b, float tol)
   EXPECT_NEAR(a.z, b.z, tol);
 }
 
+void expectNear(const glm::dvec3& a, const glm::dvec3& b)
+{
+  EXPECT_NEAR(a.x, b.x, 1e-12);
+  EXPECT_NEAR(a.y, b.y, 1e-12);
+  EXPECT_NEAR(a.z, b.z, 1e-12);
+}
+
 }  // namespace
 
 TEST(FvLighting, SunDirectionIsLightingTs)
@@ -475,4 +482,126 @@ TEST(FvLighting, FindsTheSunInAnEnvironmentImage)
   // an overcast sky, and a soft studio light a few times the sky, have no sun
   EXPECT_FALSE(fv::lighting::environmentSun(latlong(1024, 512, toSun, 0.0F, 0.0F).data(), 1024, 512));
   EXPECT_FALSE(fv::lighting::environmentSun(latlong(1024, 512, toSun, 6.0F, 20.0F).data(), 1024, 512));
+}
+
+// Looks (protocol 39): a grade over the Image sliders, in the topic and replayed as a patch; null
+// takes it off
+TEST(FvLighting, ALookIsKeptAndTakenOff)
+{
+  EXPECT_TRUE(L::toJson(L::State{})["tonemap"]["look"].is_null());
+  const Json look = {{"id", "noir"}, {"name", "Noir"}, {"contrast", 1.3}, {"mono", 1.0}, {"monoMix", {0.85, 0.25, -0.1}}, {"lift", {0.02, 0.0, -0.01}}, {"grain", 0.3}};
+  L::State   s    = L::applyPatch(L::State{}, {{"tonemap", {{"look", look}, {"lookStrength", 0.6}}}});
+  ASSERT_TRUE(s.tonemap.look.has_value());
+  EXPECT_EQ(s.tonemap.look->name, "Noir");
+  EXPECT_EQ(s.tonemap.look->monoMix, glm::dvec3(0.85, 0.25, -0.1));
+  EXPECT_EQ(s.tonemap.look->gain, glm::dvec3(1.0));  // what it doesn't say stays the identity
+  const Json topic = L::toJson(s);
+  EXPECT_EQ(topic["tonemap"]["look"]["id"], "noir");
+  EXPECT_EQ(topic["tonemap"]["look"]["lift"], Json::array({0.02, 0.0, -0.01}));
+  EXPECT_EQ(topic["tonemap"]["lookStrength"], 0.6);
+  const L::State back = L::applyPatch(L::State{}, topic);
+  EXPECT_EQ(L::toJson(back), topic);
+  // another look sent whole replaces it
+  const L::State other = L::applyPatch(s, {{"tonemap", {{"look", L::toJson(L::State{.tonemap = {.look = L::Look{.id = "warm", .warmth = 40.0}}})["tonemap"]["look"]}}}});
+  EXPECT_EQ(other.tonemap.look->id, "warm");
+  EXPECT_EQ(other.tonemap.look->mono, 0.0);
+  // off
+  EXPECT_FALSE(L::applyPatch(s, {{"tonemap", {{"look", nullptr}}}}).tonemap.look.has_value());
+  // checked and clamped
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"look", {{"gamma", {0.0, 1.0, 9.0}}}}}}}).tonemap.look->gamma, glm::dvec3(0.2, 1.0, 5.0));
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"lookStrength", 4.0}}}}).tonemap.lookStrength, 1.0);
+  EXPECT_THROW(L::applyPatch(s, {{"tonemap", {{"look", {{"sparkle", 1}}}}}}), std::invalid_argument);
+  EXPECT_THROW(L::applyPatch(s, {{"tonemap", {{"look", {{"lift", 0.1}}}}}}), std::invalid_argument);
+  EXPECT_THROW(L::applyPatch(s, {{"tonemap", {{"look", {{"lift", {0.1, 0.2}}}}}}}), std::invalid_argument);
+  EXPECT_THROW(L::applyPatch(s, {{"tonemap", {{"look", "noir"}}}}), std::invalid_argument);
+}
+
+// The grade is the sliders with the look over them at its strength
+TEST(FvLighting, TheGradeIsTheSlidersWithTheLookOverThem)
+{
+  L::Tonemap t;
+  t.contrast    = 1.2;
+  t.saturation  = 0.8;
+  t.vignette    = 0.1;
+  t.temperature = 5000.0;
+  t.tint        = 0.004;
+  // no look: the sliders, the rest the identity
+  L::Grade g = L::grade(t);
+  EXPECT_DOUBLE_EQ(g.contrast, 1.2);
+  EXPECT_DOUBLE_EQ(g.saturation, 0.8);
+  EXPECT_DOUBLE_EQ(g.temperature, 5000.0);
+  EXPECT_EQ(g.lift, glm::dvec3(0.0));
+  EXPECT_EQ(g.gain, glm::dvec3(1.0));
+  EXPECT_EQ(g.mono, 0.0);
+  EXPECT_EQ(g.posterizeMix, 0.0);
+  // a look at full strength: its factors on the sliders, its own values as they are
+  t.look = L::Look{.warmth = 20.0, .tint = -0.002, .contrast = 1.25, .saturation = 1.5, .vibrance = 0.3, .vignette = 0.2, .shadows = -0.1,
+                   .lift = {0.04, 0.02, 0.0}, .gain = {1.1, 1.0, 0.9}, .shadowTint = {0.9, 1.0, 1.1}, .mono = 0.5, .posterize = 6.0, .grain = 0.4};
+  g      = L::grade(t);
+  EXPECT_DOUBLE_EQ(g.contrast, 1.5);
+  EXPECT_DOUBLE_EQ(g.saturation, 1.2);
+  EXPECT_NEAR(g.vignette, 0.3, 1e-12);
+  EXPECT_NEAR(g.tint, 0.002, 1e-12);
+  EXPECT_NEAR(1e6 / g.temperature, 200.0 - 20.0, 1e-9);  // 20 mireds warmer than 5000 K
+  EXPECT_EQ(g.lift, glm::dvec3(0.04, 0.02, 0.0));
+  EXPECT_EQ(g.posterize, 6.0);
+  EXPECT_EQ(g.posterizeMix, 1.0);
+  EXPECT_EQ(g.grain, 0.4);
+  // at half strength, halfway from the identity
+  t.lookStrength = 0.5;
+  g              = L::grade(t);
+  EXPECT_DOUBLE_EQ(g.contrast, 1.2 * 1.125);
+  EXPECT_DOUBLE_EQ(g.vibrance, 0.15);
+  expectNear(g.lift, glm::dvec3(0.02, 0.01, 0.0));
+  expectNear(g.gain, glm::dvec3(1.05, 1.0, 0.95));
+  expectNear(g.shadowTint, glm::dvec3(0.95, 1.0, 1.05));
+  EXPECT_DOUBLE_EQ(g.mono, 0.25);
+  EXPECT_DOUBLE_EQ(g.posterizeMix, 0.5);
+  EXPECT_NEAR(1e6 / g.temperature, 200.0 - 10.0, 1e-9);
+  // nothing at 0, and within the renderer's ranges at the ends
+  t.lookStrength = 0.0;
+  EXPECT_DOUBLE_EQ(L::grade(t).contrast, 1.2);
+  EXPECT_EQ(L::grade(t).grain, 0.0);
+  t.lookStrength = 1.0;
+  t.look->warmth = 300.0;
+  t.temperature  = 10000.0;
+  EXPECT_DOUBLE_EQ(L::grade(t).temperature, 15000.0);
+  t.look->contrast = 2.0;
+  EXPECT_DOUBLE_EQ(L::grade(t).contrast, 2.0);
+}
+
+TEST(FvLighting, TheRendererGradesWithTheLook)
+{
+  L::State s;
+  s.tonemap.look = L::Look{.contrast = 1.25, .lift = {0.04, 0.02, 0.0}, .highlightTint = {1.1, 1.0, 0.9}, .monoMix = {0.5, 0.5, 0.0}, .grain = 0.3};
+  const Json p   = L::rendererParams(s, {});
+  EXPECT_DOUBLE_EQ(p["tmContrast"].get<double>(), 1.25);
+  EXPECT_EQ(p["tmLift"], Json::array({0.04, 0.02, 0.0}));
+  EXPECT_EQ(p["tmWarmColor"], Json::array({1.1, 1.0, 0.9}));
+  EXPECT_EQ(p["tmMonoMix"], Json::array({0.5, 0.5, 0.0}));
+  EXPECT_EQ(p["tmGrain"], 0.3);
+  EXPECT_EQ(p["tmMono"], 0.0);
+  // without one, the grading's own parameters are the identity, so a look taken off goes
+  const Json none = L::rendererParams(L::State{}, {});
+  EXPECT_EQ(none["tmLift"], Json::array({0.0, 0.0, 0.0}));
+  EXPECT_EQ(none["tmCoolColor"], Json::array({1.0, 1.0, 1.0}));
+  EXPECT_EQ(none["tmGrain"], 0.0);
+  EXPECT_EQ(none["tmPosterizeMix"], 0.0);
+}
+
+// lighting.preview: a look in place of the state's, at its own strength or the state's
+TEST(FvLighting, APreviewShowsALookInPlaceOfTheOneOn)
+{
+  L::Tonemap t;
+  t.look         = L::Look{.id = "warm", .warmth = 40.0, .grain = 0.2};
+  t.lookStrength = 0.7;
+  const L::Tonemap p = L::previewed(t, {{"look", {{"id", "noir"}, {"mono", 1.0}}}});
+  ASSERT_TRUE(p.look.has_value());
+  EXPECT_EQ(p.look->id, "noir");
+  EXPECT_EQ(p.look->warmth, 0.0);  // not merged onto the one on
+  EXPECT_EQ(p.lookStrength, 0.7);
+  EXPECT_EQ(L::previewed(t, {{"look", {{"mono", 1.0}}}, {"strength", 1.0}}).lookStrength, 1.0);
+  EXPECT_FALSE(L::previewed(t, {{"look", nullptr}}).look.has_value());
+  EXPECT_THROW(L::previewed(t, Json::object()), std::invalid_argument);
+  EXPECT_THROW(L::previewed(t, {{"look", {{"sparkle", 1}}}}), std::invalid_argument);
 }

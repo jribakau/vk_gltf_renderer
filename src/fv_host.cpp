@@ -419,6 +419,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     });
   });
   cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("lighting.set", args); }); });
+  // a look shown while the app's pointer is on its chip: no history step, no topic change
+  cmds.add("lighting.preview", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->lightingPreview(args); }); });
   // any registered renderer parameter, read or written as nvmcp's parameter tools do
   cmds.add("params.get", [impl](const Json& args) {
     return impl->onApp([impl, args] { return toolJson(nvmcp::detail::getParameters(exposedParameters(impl->registry), args.dump())); });

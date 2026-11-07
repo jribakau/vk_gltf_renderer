@@ -53,9 +53,12 @@ inline Table build(shaderio::TonemapperData tm)
   Table table;
   if(tm.autoExposure != 0 || tm.isActive == 0 || !(tm.exposure > 0.0f))
     return table;
-  // the curve on grey, at the image's centre and without the dither's noise
+  // the curve on grey, at the image's centre and without the dither's or the grain's noise; and
+  // without posterising, whose steps would read as a curve flat between them and steep at each
   tm.dither      = 0;
   tm.vignette    = 0.0f;
+  tm.grain       = 0.0f;
+  tm.posterize   = 0.0f;
   tm.inputMatrix = shaderio::getColorCorrectionMatrix(tm.exposure, tm.temperature, tm.tint);
   const auto shown = [&](float luminance) {
     return shaderio::bt709Luminance(shaderio::applyTonemap(tm, glm::vec3(luminance), glm::vec2(0.5f), glm::vec2(1.0f)));

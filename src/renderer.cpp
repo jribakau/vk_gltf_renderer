@@ -1407,6 +1407,8 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   if(bypassTonemapper)
     tonemapperData.isActive = 0;
   tonemapperData.falseColor = m_falseColor ? 1 : 0;
+  // the grain moves with each frame drawn, as film's does, and holds on a finished still
+  tonemapperData.grainSeed = uint32_t(m_resources.drawnFrameCount);
 
   m_resources.tonemapper.runCompute(cmd, gbufSize, tonemapperData, inputBuffer,
                                     m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgTonemapped));

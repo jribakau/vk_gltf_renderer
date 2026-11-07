@@ -68,7 +68,9 @@ namespace {
 // 37: ptSamplesDlss, the samples a DLSS frame traces (an older renderer refuses the app's whole
 // batch of render parameters for it).
 // 38: uneven haze, the lighting's haze.height and haze.patches.
-constexpr int kProtocolVersion = 38;
+// 39: looks, a grade over the Image sliders: the lighting's tonemap.look and tonemap.lookStrength,
+// and lighting.preview, a look shown while the app's pointer is on its chip.
+constexpr int kProtocolVersion = 39;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

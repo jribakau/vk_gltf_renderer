@@ -117,6 +117,21 @@ TEST(AdaptiveRelax, AClippedCurveStopsWorryingPastWhite)
   EXPECT_EQ(t.relax[4], adaptive_relax::kMaxRelax);  // 2.9, clipped
 }
 
+// A look's grain and posterising are noise and steps on the screen, not the curve: the table is the
+// one without them
+TEST(AdaptiveRelax, GrainAndPosterisingLeaveTheTable)
+{
+  shaderio::TonemapperData tm;
+  const adaptive_relax::Table plain = adaptive_relax::build(tm);
+  tm.grain                          = 1.0f;
+  tm.grainSeed                      = 7;
+  tm.posterize                      = 4.0f;
+  const adaptive_relax::Table looked = adaptive_relax::build(tm);
+  EXPECT_EQ(looked.base, plain.base);
+  for(int i = 0; i < ADAPTIVE_RELAX_STOPS; i++)
+    EXPECT_EQ(looked.relax[i], plain.relax[i]) << i;
+}
+
 TEST(AdaptiveRelax, NoTableWithAutoExposure)
 {
   shaderio::TonemapperData tm;

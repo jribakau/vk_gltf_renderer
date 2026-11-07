@@ -26,6 +26,10 @@
 #define GLM_FORCE_SWIZZLE
 #include <glm/glm.hpp>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+
 #include <gtest/gtest.h>
 
 // GLM declares fma for any type but defines it for scalars only; nvpro's toSrgb() calls it on a float3
@@ -217,6 +221,122 @@ TEST(TonemapGrading, TheGradeAtZeroSaturationIsTheColoursLuminance)
   const float3 out = applyTonemap(tm, c, float2(0.0F), float2(1.0F));
   EXPECT_NEAR(out.x, out.y, 1e-5F);
   EXPECT_NEAR(toLinear(out).x, bt709Luminance(c), 1e-5F);
+}
+
+// Looks (nvshaders/tonemap_functions.h.slang): each tool leaves the image at its default, and does
+// what it says at its ends
+namespace {
+void expectNear3(const float3& got, const float3& want)
+{
+  EXPECT_NEAR(got.x, want.x, 1e-6F);
+  EXPECT_NEAR(got.y, want.y, 1e-6F);
+  EXPECT_NEAR(got.z, want.z, 1e-6F);
+}
+
+TonemapperData plainGrade()
+{
+  TonemapperData tm;
+  tm.method      = int(ToneMapMethod::eClip);
+  tm.dither      = 0;
+  tm.inputMatrix = float3x3(1.0F);
+  return tm;
+}
+}  // namespace
+
+TEST(TonemapLooks, TheirDefaultsLeaveTheImage)
+{
+  const TonemapperData tm = plainGrade();
+  for(const float3 c : {float3(0.6F, 0.05F, 0.02F), float3(0.18F), float3(0.02F, 0.3F, 0.7F), float3(0.0F), float3(1.0F)})
+  {
+    const float3 out  = applyTonemap(tm, c, float2(7.0F, 3.0F), float2(1920.0F, 1080.0F));
+    expectNear3(out, clamp(toSrgb(c), float3(0.0F), float3(1.0F)));
+  }
+}
+
+TEST(TonemapLooks, LiftRaisesBlackGainScalesGammaBendsTheMiddle)
+{
+  const float3 lift = float3(0.1F, 0.0F, 0.05F);
+  expectNear3(liftGammaGain(float3(0.0F), lift, float3(1.0F), float3(1.0F)), lift);
+  EXPECT_EQ(liftGammaGain(float3(1.0F), lift, float3(1.0F), float3(1.0F)), float3(1.0F));  // white stays
+  EXPECT_NEAR(liftGammaGain(float3(0.5F), float3(0.0F), float3(1.0F), float3(0.8F)).x, 0.4F, 1e-6F);
+  EXPECT_EQ(liftGammaGain(float3(0.0F), float3(0.0F), float3(1.0F), float3(0.8F)), float3(0.0F));  // black stays
+  // gamma 2 lifts a quarter to a half, and leaves black and white
+  EXPECT_NEAR(liftGammaGain(float3(0.25F), float3(0.0F), float3(2.0F), float3(1.0F)).x, 0.5F, 1e-6F);
+  EXPECT_EQ(liftGammaGain(float3(1.0F), float3(0.0F), float3(2.0F), float3(1.0F)), float3(1.0F));
+  // a negative lift crushes the blacks to 0, no NaN from the power
+  const float3 crushed = liftGammaGain(float3(0.02F), float3(-0.1F), float3(1.2F), float3(1.0F));
+  EXPECT_EQ(crushed, float3(0.0F));
+}
+
+TEST(TonemapLooks, BlackAndWhiteThroughARedFilter)
+{
+  const float3 red = float3(0.85F, 0.25F, -0.1F);  // a red filter's weights: sum 1
+  // red comes out light, blue dark, grey as it was
+  EXPECT_GT(monoAdjust(float3(1.0F, 0.0F, 0.0F), red, 1.0F).x, 0.9F);
+  expectNear3(monoAdjust(float3(0.0F, 0.0F, 1.0F), red, 1.0F), float3(0.0F));
+  const float3 grey = monoAdjust(float3(0.5F), red, 1.0F);
+  EXPECT_NEAR(grey.x, 0.5F, 1e-5F);
+  EXPECT_NEAR(grey.z, 0.5F, 1e-5F);
+  // the plain weights are the colour's luminance, and half the amount is halfway there
+  const float3 skin = float3(0.80F, 0.62F, 0.55F);
+  const float3 bw   = monoAdjust(skin, float3(0.2126F, 0.7152F, 0.0722F), 1.0F);
+  EXPECT_NEAR(bt709Luminance(toLinear(bw)), bt709Luminance(toLinear(skin)), 1e-5F);
+  EXPECT_NEAR(monoAdjust(skin, red, 0.5F).x, (skin.x + monoAdjust(skin, red, 1.0F).x) * 0.5F, 1e-6F);
+}
+
+TEST(TonemapLooks, PosterisingSnapsEachChannelToItsLevels)
+{
+  expectNear3(posterizeAdjust(float3(0.1F, 0.4F, 0.8F), 2.0F, 1.0F), float3(0.0F, 0.0F, 1.0F));
+  expectNear3(posterizeAdjust(float3(0.1F, 0.4F, 0.8F), 3.0F, 1.0F), float3(0.0F, 0.5F, 1.0F));
+  expectNear3(posterizeAdjust(float3(0.1F, 0.4F, 0.8F), 3.0F, 0.0F), float3(0.1F, 0.4F, 0.8F));
+  // in the grade, fewer than 2 levels is none
+  TonemapperData tm = plainGrade();
+  tm.posterize      = 1.0F;
+  const float3 c    = float3(0.3F);
+  EXPECT_NEAR(applyTonemap(tm, c, float2(0.0F), float2(1.0F)).x, toSrgb(c).x, 1e-6F);
+}
+
+TEST(TonemapLooks, GrainAveragesOutMovesWithTheSeedAndSparesBlack)
+{
+  const float2 size = float2(1920.0F, 1080.0F);
+  const auto   stats = [&](float v, uint32_t seed) {
+    double sum = 0.0, sq = 0.0, most = 0.0;
+    int    n   = 0;
+    for(int y = 0; y < 64; y++)
+      for(int x = 0; x < 64; x++, n++)
+      {
+        const double d = filmGrain(float3(v), 1.0F, float2(float(x), float(y)), size, seed).x - v;
+        sum += d;
+        sq += d * d;
+        most = std::max(most, std::abs(d));
+      }
+    const double mean = sum / n;
+    return std::array<double, 3>{mean, std::sqrt(sq / n - mean * mean), most};
+  };
+  const auto mid = stats(0.5F, 1);
+  EXPECT_LT(std::abs(mid[0]), 0.01);  // no brighter or darker on average
+  EXPECT_GT(mid[1], 0.03);            // but visible
+  EXPECT_LE(mid[2], 0.2 + 1e-6);      // and within its bound
+  EXPECT_LT(stats(0.02F, 1)[1], mid[1] * 0.6);  // less in the shadows
+  // the same seed is the same grain; another seed another
+  const float3 a = filmGrain(float3(0.5F), 1.0F, float2(10.0F, 20.0F), size, 1);
+  EXPECT_EQ(a, filmGrain(float3(0.5F), 1.0F, float2(10.0F, 20.0F), size, 1));
+  int moved = 0;
+  for(int x = 0; x < 32; x++)
+    moved += filmGrain(float3(0.5F), 1.0F, float2(float(x), 5.0F), size, 1) != filmGrain(float3(0.5F), 1.0F, float2(float(x), 5.0F), size, 2);
+  EXPECT_GT(moved, 28);
+  // the same in every channel
+  EXPECT_EQ(a.x, a.y);
+  EXPECT_EQ(a.y, a.z);
+}
+
+TEST(TonemapLooks, TheExposureViewShowsNoGrain)
+{
+  TonemapperData tm = plainGrade();
+  tm.falseColor     = 1;
+  const float3 none = applyTonemap(tm, float3(0.18F), float2(3.0F), float2(1920.0F, 1080.0F));
+  tm.grain          = 1.0F;
+  EXPECT_EQ(applyTonemap(tm, float3(0.18F), float2(3.0F), float2(1920.0F, 1080.0F)), none);
 }
 
 // The exposure view: whole stops around middle grey, a band each, centred on its stop; what the

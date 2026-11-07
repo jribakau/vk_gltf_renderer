@@ -143,6 +143,22 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                        &m_resources.tonemapperData.warmColor, Persist::eYes);
   m_settings.add({"tmSplitBalance", "Tonemapper: Split-toning cool/warm balance"},
                  &m_resources.tonemapperData.splitBalance, Persist::eYes, -0.5F, 0.5F);
+  // Looks (the app's Image › Look): black and white, lift/gamma/gain, posterising, grain
+  m_settings.addVector({"tmMonoMix", "Tonemapper: Black-and-white weights of linear R, G, B (a colour filter's)"},
+                       &m_resources.tonemapperData.monoMix, Persist::eYes);
+  m_settings.add({"tmMono", "Tonemapper: Black and white, 0 colour to 1"}, &m_resources.tonemapperData.mono,
+                 Persist::eYes, 0.0F, 1.0F);
+  m_settings.addVector({"tmLift", "Tonemapper: Lift a channel (added to the shadows)"}, &m_resources.tonemapperData.lift,
+                       Persist::eYes);
+  m_settings.addVector({"tmGamma", "Tonemapper: Gamma a channel (above 1 lighter midtones)"},
+                       &m_resources.tonemapperData.gamma, Persist::eYes);
+  m_settings.addVector({"tmGain", "Tonemapper: Gain a channel"}, &m_resources.tonemapperData.gain, Persist::eYes);
+  m_settings.add({"tmPosterize", "Tonemapper: Posterise to this many levels a channel (under 2 off)"},
+                 &m_resources.tonemapperData.posterize, Persist::eYes, 0.0F, 64.0F);
+  m_settings.add({"tmPosterizeMix", "Tonemapper: How much of the posterised image"},
+                 &m_resources.tonemapperData.posterizeMix, Persist::eYes, 0.0F, 1.0F);
+  m_settings.add({"tmGrain", "Tonemapper: Film grain, 0 none to 1 heavy"}, &m_resources.tonemapperData.grain,
+                 Persist::eYes, 0.0F, 1.0F);
   // Auto exposure (turn off for reproducible headless captures)
   m_settings.add({"tmAutoExposure", "Tonemapper: Auto-exposure [Off:0, On:1]"},
                  &m_resources.tonemapperData.autoExposure, Persist::eYes, 0, 1);

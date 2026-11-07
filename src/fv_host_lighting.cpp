@@ -69,9 +69,22 @@ Json FvHost::Impl::lightingSet(const Json& patch)
   if(next.env.source == "hdr" && next.env.path.empty())
     throw std::invalid_argument("lighting: env.path is required for an hdr environment");
   lighting = std::move(next);
+  lookPreview.reset();  // a set is what the person chose
   fv::timing::Scope t("lighting.set", 20);
   applyLighting(false);
   return lightingTopic();
+}
+
+// {look, strength}: that look graded in place of the state's (null, none) until the next set or a
+// call without `look`, which ends it. Only the tone mapper's parameters change: a still keeps refining.
+Json FvHost::Impl::lightingPreview(const Json& args)
+{
+  if(args.is_object() && args.contains("look"))
+    lookPreview = fv::lighting::previewed(lighting.tonemap, args);  // throws, leaving the one before
+  else
+    lookPreview.reset();
+  applyLighting(false);
+  return {{"ok", true}, {"previewing", lookPreview.has_value()}};
 }
 
 // Writes what changed since the last call (everything, the first time) to the renderer: its
@@ -88,7 +101,14 @@ void FvHost::Impl::applyLighting(bool everything)
     requestEnvironment();
   }
 
-  Json params                     = fv::lighting::rendererParams(lighting, envSize, cloudReading);
+  // the look being previewed graded in place of the state's
+  fv::lighting::State shown = lighting;
+  if(lookPreview)
+  {
+    shown.tonemap.look         = lookPreview->look;
+    shown.tonemap.lookStrength = lookPreview->lookStrength;
+  }
+  Json params                     = fv::lighting::rendererParams(shown, envSize, cloudReading);
   params["infinitePlaneDistance"] = lighting.ground.autoHeight ? double(autoGround) : lighting.ground.height;
   if(const auto still = appliedParams.find("ptFireflyClampStill"); still != appliedParams.end() && still->is_number())
     params["ptFireflyClampStill"] = fv::lighting::stillFireflyClamp(params["ptFireflyClampStill"].get<double>(), still->get<double>());

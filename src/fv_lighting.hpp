@@ -44,7 +44,9 @@
 //            physical sky's clouds take from the light, as the meter measures it at each bake: the
 //            app's camera metering), skyShare (of a clear sky's light on the figure, the share the
 //            sky gives rather than the sun, at this sun: the app's measured tables, sunPath.ts);
-//            read-only, cloudLight (the light the clouds leave the figure, against a clear sky's)
+//            read-only, cloudLight (the light the clouds leave the figure, against a clear sky's);
+//            look (null, or a grade over those sliders: Look's fields, the vectors [r, g, b]) and
+//            lookStrength (0 to 1, how much of it)
 //
 // Colours are "#rrggbb" in sRGB, as the panel shows them. A patch from before protocol 17 (a kept
 // scene's) may also carry sun.shadows and a shadow section, the raster view's shadow map: they are
@@ -122,6 +124,34 @@ struct Ground
   double      waves      = 0.4;
 };
 
+// A look (the app's View › Image › Look): a grade over the panel's own Image sliders, which it moves
+// rather than replaces. Every value is the identity at its default; `id` and `name` are the app's.
+struct Look
+{
+  std::string id;
+  std::string name;
+  double      warmth       = 0.0;  // mireds the white balance moves the picture warmer (below 0 cooler)
+  double      tint         = 0.0;  // Duv added to the panel's tint
+  double      contrast     = 1.0;  // multiplying the panel's
+  double      saturation   = 1.0;  // multiplying the panel's
+  double      vibrance     = 0.0;
+  double      vignette     = 0.0;  // added to the panel's
+  double      shadows      = 0.0;  // the tone biases (smhAdjust)
+  double      midtones     = 0.0;
+  double      highlights   = 0.0;
+  glm::dvec3  lift{0.0};
+  glm::dvec3  gamma{1.0};
+  glm::dvec3  gain{1.0};
+  glm::dvec3  shadowTint{1.0};  // split toning's multipliers (splitToning)
+  glm::dvec3  highlightTint{1.0};
+  double      splitBalance = 0.0;
+  double      mono         = 0.0;  // 0 colour to 1 black and white, through monoMix
+  glm::dvec3  monoMix{0.2126, 0.7152, 0.0722};
+  double      posterize    = 0.0;  // levels a channel; under 2 none
+  double      posterizeMix = 1.0;
+  double      grain        = 0.0;
+};
+
 struct Tonemap
 {
   std::string method      = "neutral";
@@ -133,7 +163,42 @@ struct Tonemap
   double      tint        = 0.0;
   bool        followClouds = false;  // off for an app from before protocol 35, which doesn't send it
   double      skyShare     = 1.0;
+  std::optional<Look> look;          // none: the sliders alone (protocol 39)
+  double              lookStrength = 1.0;
 };
+
+// What the tone mapper grades with: the panel's sliders with the look over them at its strength, each
+// of the look's values that far from its identity. The white balance moves in mireds, so a look's
+// warmth is the same shift at every setting of the slider.
+struct Grade
+{
+  double     temperature = 6500.0;
+  double     tint        = 0.0;
+  double     contrast    = 1.0;
+  double     saturation  = 1.0;
+  double     vignette    = 0.0;
+  double     vibrance    = 0.0;
+  double     shadows     = 0.0;
+  double     midtones    = 0.0;
+  double     highlights  = 0.0;
+  glm::dvec3 lift{0.0};
+  glm::dvec3 gamma{1.0};
+  glm::dvec3 gain{1.0};
+  glm::dvec3 shadowTint{1.0};
+  glm::dvec3 highlightTint{1.0};
+  double     splitBalance = 0.0;
+  double     mono         = 0.0;
+  glm::dvec3 monoMix{0.2126, 0.7152, 0.0722};
+  double     posterize    = 0.0;
+  double     posterizeMix = 0.0;
+  double     grain        = 0.0;
+};
+Grade grade(const Tonemap& t);
+
+// `t` with a look shown in place of its own, for lighting.preview: `preview.look`, a look as
+// tonemap.look takes it or null for none, at `preview.strength` (`t`'s by default). Throws
+// std::invalid_argument as applyPatch does.
+Tonemap previewed(const Tonemap& t, const Json& preview);
 
 // What the physical sky's clouds leave of its light, as the renderer's last full bake measured it
 // (EnvBaker::cloudLight): `sky`, the sky's own light on a figure, with the clouds against without;

@@ -1267,10 +1267,16 @@ struct FvHost::Impl
   // the physical sky's clouds as the renderer's last bake measured them, for the exposure
   fv::lighting::CloudReading cloudReading;
 
+  // a look shown in place of the state's while the app's pointer is on its chip (lighting.preview):
+  // its tone map's look and lookStrength are what the renderer grades with. Not journaled, not in
+  // the topic; a lighting.set ends it
+  std::optional<fv::lighting::Tonemap> lookPreview;
+
   Json lightingTopic() const;
   // a new reading of the clouds, after a bake: the exposure follows it. Every frame.
   void followCloudReading();
   Json lightingSet(const Json& patch);
+  Json lightingPreview(const Json& args);
   void applyLighting(bool everything);
   void requestEnvironment();
   void applySun(bool force);

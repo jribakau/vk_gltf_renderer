@@ -269,6 +269,109 @@ void patchGround(Ground& g, const Json& p)
   }
 }
 
+// [r, g, b], each checked and clamped
+glm::dvec3 triple(const Json& v, const std::string& key, double lo, double hi)
+{
+  if(!v.is_array() || v.size() != 3)
+    reject(key + " must be three numbers, [r, g, b]");
+  return {number(v[0], key, lo, hi), number(v[1], key, lo, hi), number(v[2], key, lo, hi)};
+}
+
+void patchLook(Look& l, const Json& p)
+{
+  const Look d;
+  for(auto it = p.begin(); it != p.end(); ++it)
+  {
+    const std::string& k   = it.key();
+    const Json&        v   = it.value();
+    const std::string  key = "tonemap.look." + k;
+    const auto         num = [&](double& dst, double def, double lo, double hi) {
+      field(dst, def, v, [&](const Json& x) { return number(x, key, lo, hi); });
+    };
+    const auto vec = [&](glm::dvec3& dst, const glm::dvec3& def, double lo, double hi) {
+      field(dst, def, v, [&](const Json& x) { return triple(x, key, lo, hi); });
+    };
+    if(k == "id")
+      field(l.id, d.id, v, [&](const Json& x) { return string(x, key); });
+    else if(k == "name")
+      field(l.name, d.name, v, [&](const Json& x) { return string(x, key); });
+    else if(k == "warmth")
+      num(l.warmth, d.warmth, -300.0, 300.0);
+    else if(k == "tint")
+      num(l.tint, d.tint, -0.03, 0.03);
+    else if(k == "contrast")
+      num(l.contrast, d.contrast, 0.0, 2.0);
+    else if(k == "saturation")
+      num(l.saturation, d.saturation, 0.0, 2.0);
+    else if(k == "vibrance")
+      num(l.vibrance, d.vibrance, -1.0, 1.0);
+    else if(k == "vignette")
+      num(l.vignette, d.vignette, -1.0, 1.0);
+    else if(k == "shadows")
+      num(l.shadows, d.shadows, -1.0, 1.0);
+    else if(k == "midtones")
+      num(l.midtones, d.midtones, -1.0, 1.0);
+    else if(k == "highlights")
+      num(l.highlights, d.highlights, -1.0, 1.0);
+    else if(k == "lift")
+      vec(l.lift, d.lift, -0.5, 0.5);
+    else if(k == "gamma")
+      vec(l.gamma, d.gamma, 0.2, 5.0);
+    else if(k == "gain")
+      vec(l.gain, d.gain, 0.0, 2.0);
+    else if(k == "shadowTint")
+      vec(l.shadowTint, d.shadowTint, 0.0, 2.0);
+    else if(k == "highlightTint")
+      vec(l.highlightTint, d.highlightTint, 0.0, 2.0);
+    else if(k == "splitBalance")
+      num(l.splitBalance, d.splitBalance, -0.5, 0.5);
+    else if(k == "mono")
+      num(l.mono, d.mono, 0.0, 1.0);
+    else if(k == "monoMix")
+      vec(l.monoMix, d.monoMix, -2.0, 2.0);
+    else if(k == "posterize")
+      num(l.posterize, d.posterize, 0.0, 64.0);
+    else if(k == "posterizeMix")
+      num(l.posterizeMix, d.posterizeMix, 0.0, 1.0);
+    else if(k == "grain")
+      num(l.grain, d.grain, 0.0, 1.0);
+    else
+      reject("unknown key " + key);
+  }
+}
+
+Json lookJson(const std::optional<Look>& look)
+{
+  if(!look)
+    return nullptr;
+  const Look& l   = *look;
+  const auto  vec = [](const glm::dvec3& v) { return Json::array({v.x, v.y, v.z}); };
+  return {
+      {"id", l.id},
+      {"name", l.name},
+      {"warmth", l.warmth},
+      {"tint", l.tint},
+      {"contrast", l.contrast},
+      {"saturation", l.saturation},
+      {"vibrance", l.vibrance},
+      {"vignette", l.vignette},
+      {"shadows", l.shadows},
+      {"midtones", l.midtones},
+      {"highlights", l.highlights},
+      {"lift", vec(l.lift)},
+      {"gamma", vec(l.gamma)},
+      {"gain", vec(l.gain)},
+      {"shadowTint", vec(l.shadowTint)},
+      {"highlightTint", vec(l.highlightTint)},
+      {"splitBalance", l.splitBalance},
+      {"mono", l.mono},
+      {"monoMix", vec(l.monoMix)},
+      {"posterize", l.posterize},
+      {"posterizeMix", l.posterizeMix},
+      {"grain", l.grain},
+  };
+}
+
 void patchTonemap(Tonemap& t, const Json& p)
 {
   const Tonemap d;
@@ -299,12 +402,76 @@ void patchTonemap(Tonemap& t, const Json& p)
       field(t.skyShare, d.skyShare, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else if(k == "cloudLight")
       continue;  // read-only, the host's
+    else if(k == "look")
+    {
+      // a merge, as every section's: the app sends a look whole, so one replaces the one before
+      if(v.is_null())
+        t.look.reset();
+      else if(!v.is_object())
+        reject(key + " must be an object or null");
+      else
+      {
+        Look l = t.look.value_or(Look{});
+        patchLook(l, v);
+        t.look = std::move(l);
+      }
+    }
+    else if(k == "lookStrength")
+      field(t.lookStrength, d.lookStrength, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else
       reject("unknown key " + key);
   }
 }
 
 }  // namespace
+
+Grade grade(const Tonemap& t)
+{
+  const Look  none;
+  const Look& k = t.look ? *t.look : none;
+  const double a = t.look ? t.lookStrength : 0.0;
+  // a look's value `a` of the way from its identity
+  const auto by  = [a](double identity, double v) { return identity + (v - identity) * a; };
+  const auto by3 = [a](const glm::dvec3& identity, const glm::dvec3& v) { return identity + (v - identity) * a; };
+  // the renderer's range, 2000 to 15000 K, in mireds
+  const double mired = std::clamp(1e6 / t.temperature - a * k.warmth, 1e6 / 15000.0, 1e6 / 2000.0);
+  return {
+      .temperature   = 1e6 / mired,
+      .tint          = std::clamp(t.tint + a * k.tint, -0.03, 0.03),
+      .contrast      = std::clamp(t.contrast * by(1.0, k.contrast), 0.0, 2.0),
+      .saturation    = std::clamp(t.saturation * by(1.0, k.saturation), 0.0, 2.0),
+      .vignette      = std::clamp(t.vignette + a * k.vignette, -1.0, 1.0),
+      .vibrance      = a * k.vibrance,
+      .shadows       = a * k.shadows,
+      .midtones      = a * k.midtones,
+      .highlights    = a * k.highlights,
+      .lift          = by3(glm::dvec3(0.0), k.lift),
+      .gamma         = by3(glm::dvec3(1.0), k.gamma),
+      .gain          = by3(glm::dvec3(1.0), k.gain),
+      .shadowTint    = by3(glm::dvec3(1.0), k.shadowTint),
+      .highlightTint = by3(glm::dvec3(1.0), k.highlightTint),
+      .splitBalance  = k.splitBalance,
+      .mono          = a * k.mono,
+      .monoMix       = k.monoMix,
+      // the levels stay; the strength takes the posterised image in
+      .posterize     = k.posterize,
+      .posterizeMix  = a * k.posterizeMix,
+      .grain         = a * k.grain,
+  };
+}
+
+Tonemap previewed(const Tonemap& t, const Json& preview)
+{
+  if(!preview.is_object() || !preview.contains("look"))
+    reject("lighting.preview takes a look (or null) and a strength");
+  Tonemap out = t;
+  out.look.reset();
+  Json patch = {{"look", preview["look"]}};
+  if(preview.contains("strength"))
+    patch["lookStrength"] = preview["strength"];
+  patchTonemap(out, patch);
+  return out;
+}
 
 Json toJson(const State& s)
 {
@@ -355,7 +522,9 @@ Json toJson(const State& s)
         {"temperature", t.temperature},
         {"tint", t.tint},
         {"followClouds", t.followClouds},
-        {"skyShare", t.skyShare}}},
+        {"skyShare", t.skyShare},
+        {"look", lookJson(t.look)},
+        {"lookStrength", t.lookStrength}}},
   };
 }
 
@@ -669,9 +838,11 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
   const Tonemap& t = s.tonemap;
   const Ground&  g = s.ground;
   const auto     vec3 = [](const glm::vec3& c) { return Json::array({c.x, c.y, c.z}); };
+  const auto     dvec3 = [](const glm::dvec3& c) { return Json::array({c.x, c.y, c.z}); };
   const glm::vec4 rot = envRotation(e.rotation);
   // what the camera takes: the app's exposure, and what the clouds take from the light given back
   const double exposure = tmExposure(t.method, t.exposure) * cloudExposure(s, clouds);
+  const Grade  g2       = grade(t);
 
   int envSystem = 1;  // studio and hdr are both a lat-long image
   if(e.source == "sky")
@@ -706,11 +877,27 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"tmAutoExposure", 0},
       {"tmMethod", tmMethod(t.method)},
       {"tmExposure", exposure},
-      {"tmContrast", t.contrast},
-      {"tmSaturation", t.saturation},
-      {"tmVignette", t.vignette},
-      {"tmTemperature", t.temperature},
-      {"tmTint", t.tint},
+      // the Image sliders with the look over them (grade)
+      {"tmContrast", g2.contrast},
+      {"tmSaturation", g2.saturation},
+      {"tmVignette", g2.vignette},
+      {"tmTemperature", g2.temperature},
+      {"tmTint", g2.tint},
+      {"tmVibrance", g2.vibrance},
+      {"tmShadowBias", g2.shadows},
+      {"tmMidtoneBias", g2.midtones},
+      {"tmHighlightBias", g2.highlights},
+      {"tmLift", dvec3(g2.lift)},
+      {"tmGamma", dvec3(g2.gamma)},
+      {"tmGain", dvec3(g2.gain)},
+      {"tmCoolColor", dvec3(g2.shadowTint)},
+      {"tmWarmColor", dvec3(g2.highlightTint)},
+      {"tmSplitBalance", g2.splitBalance},
+      {"tmMono", g2.mono},
+      {"tmMonoMix", dvec3(g2.monoMix)},
+      {"tmPosterize", g2.posterize},
+      {"tmPosterizeMix", g2.posterizeMix},
+      {"tmGrain", g2.grain},
       // the renderer recalibrates this on every load, so the host drops it from what it has applied
       // after a load or an environment change and sends it again
       {"ptFireflyClamp", kFireflyClamp / exposure},

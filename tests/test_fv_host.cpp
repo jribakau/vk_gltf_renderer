@@ -742,6 +742,32 @@ TEST(FvHost, AnEditUndoesAndRedoes)
   EXPECT_EQ(rig.topic("history").at("redo"), Json({"Morph Taper"}));
 }
 
+// lighting.preview: a look shown while the app's pointer is on its chip is no step of the history and
+// nothing in the topic; one chosen with lighting.set is a step, and undoes back to none
+TEST(FvHost, ALookPreviewedLeavesNoStepAndAChosenOneUndoes)
+{
+  HostRig    rig;
+  const Json before = rig.topic("lighting");
+  const Json look   = {{"id", "noir"}, {"name", "Noir"}, {"mono", 1.0}, {"contrast", 1.3}};
+  const Json shown  = rig.cmd("lighting.preview", {{"look", look}, {"strength", 1.0}});
+  ASSERT_TRUE(shown.value("ok", false)) << shown.dump();
+  EXPECT_TRUE(shown.at("result").value("previewing", false));
+  EXPECT_EQ(differ(before, rig.topic("lighting")), "");
+  EXPECT_EQ(rig.topic("history").at("undo"), Json::array());
+  // a bad look is refused; no look ends it
+  EXPECT_FALSE(rig.cmd("lighting.preview", {{"look", {{"sparkle", 1}}}}).value("ok", true));
+  EXPECT_FALSE(rig.cmd("lighting.preview").at("result").value("previewing", true));
+
+  rig.cmd("lighting.set", {{"tonemap", {{"look", look}, {"lookStrength", 0.8}}}});
+  EXPECT_EQ(rig.topic("lighting").at("tonemap").at("look").value("id", ""), "noir");
+  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Lighting"}));
+  historyStep(rig, "history.undo");
+  EXPECT_EQ(differ(before, rig.topic("lighting")), "");
+  historyStep(rig, "history.redo");
+  EXPECT_EQ(rig.topic("lighting").at("tonemap").at("look").value("name", ""), "Noir");
+  EXPECT_EQ(rig.topic("lighting").at("tonemap").value("lookStrength", 0.0), 0.8);
+}
+
 // The round-trip oracle over seeded random sequences of edits, with undos and redos among them: the
 // panel edits (C1) and the structural ones (C3: props added, loaded, duplicated, removed, the scene
 // cleared). Undoing the steps since the setup puts the scene back as it was then; undoing every step
