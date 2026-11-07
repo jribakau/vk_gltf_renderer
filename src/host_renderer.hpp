@@ -138,6 +138,19 @@ public:
   };
   // sees every click pick first; true keeps the renderer from changing the selection
   virtual void setPickObserver(std::function<bool(const std::optional<InstancePick>& pick, const glm::vec3& hit)> observer) = 0;
+  // The pixel readout: what is at a normalized viewport position (origin top-left) and how bright it
+  // is, read a frame or two later and again while the still refines (a few times a second), so it
+  // settles as the image does; none: stop reading. Every reading goes to the observer.
+  struct PixelReadout
+  {
+    shaderio::PixelInspect      data{};  // the hit, its material, the image's radiance
+    std::optional<InstancePick> pick;    // the mesh and material hit, when it is one
+    // that radiance's luminance after the last frame's exposure and white balance: what the tone curve
+    // takes, and what the false-colour exposure view bands in stops from middle grey (0.18)
+    float exposed = 0.0F;
+  };
+  virtual void inspectAt(std::optional<glm::vec2> uv)                                        = 0;
+  virtual void setInspectObserver(std::function<void(const PixelReadout& readout)> observer) = 0;
   // the handles the gizmo shows on an entity (TransformHelperVk's flags), and its edits: the
   // entity's new local translation, rotation and scale, `done` on the release that ends the drag
   enum GizmoHandles : uint32_t

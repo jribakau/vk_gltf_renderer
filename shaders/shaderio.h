@@ -374,6 +374,7 @@ enum PathtracerFlags
   ePtSkinFaceOn          = 1 << 27,  // A medium made from its skin map (FV_materials_subsurface) returns the map lit head-on, not averaged over directions
   ePtStillPickAsScored   = 1 << 28,  // A still's light draws pick as they score where the light tree is on (lightPickSetDrawn), not by the walk
   ePtSmoothBsdfOnly      = 1 << 29,  // A vertex whose lobes are all mirrors (smoothVertex) leaves the lights its BSDF ray reaches to that ray: no shadow ray
+  ePtInspectPixel        = 1 << 30,  // Trace nothing but the camera ray through pixel mouseCoord, into PathtracePushConstant::pixelInspect
 };
 
 // The participating medium the camera is in, for every camera path to start in. Written once per
@@ -386,6 +387,25 @@ struct CameraMedium
   float  anisotropy;  // Henyey-Greenstein g
 };
 
+
+// What is at one pixel and how bright it is (the pixel readout, view.inspect): written by the path
+// tracer's own pipeline (ePtInspectPixel, inspectPixel()) for the camera ray through the pixel's centre,
+// the surface evaluated as the paths evaluate it at their first hit (textures, vertex colour, the thin
+// preview and skin flags of the frame), before any regularisation. Every member a 16-byte row, so the
+// host reads it as Slang writes it.
+struct PixelInspect
+{
+  float4 position;   // xyz the hit, world space; w its distance from the camera (0: nothing hit)
+  float4 normal;     // xyz the shading normal; w 1 when the camera sees the surface's front
+  float4 baseColor;  // rgb linear, after textures and vertex colour; a the opacity
+  float4 emission;   // rgb the emitted radiance (the renderer's units); a the transmission
+  float4 surface;    // x metallic, y roughness (perceptual), z the index of refraction, w the specular weight
+  float4 layers;     // x clearcoat, y its roughness, z the sheen (its colour's largest channel), w the thickness (0: thin-walled)
+  float4 medium;     // rgb the scattering medium's colour (subsurface; 0: none), a the diffuse transmission
+  float4 radiance;   // rgb what the frame's image holds at the pixel (a still's mean so far); a the samples in it
+  float4 uv;         // xy the texture coordinates; z the render pixel's x, w its y
+  int4   ids;        // x the instance slot hit (-1: nothing, -2: the ground, -3: the water), y the primitive, z the material, w 1 on a moving (DLSS) frame
+};
 
 // Push constant
 struct PathtracePushConstant
@@ -433,6 +453,7 @@ struct PathtracePushConstant
   float3**        prevVertexPositions;  // #DLSS deformation motion: previous-frame positions per render primitive (null entry = none)
   CameraMedium*   cameraMedium;                 // The medium camera paths start in; null when the scene has none
   uint4*          lightReservoirs;              // ePtLightReuse: two halves of renderSize records, two uint4 a pixel (light_ris.h.slang)
+  PixelInspect*   pixelInspect;                 // ePtInspectPixel: where the pixel readout goes (the last 8 of 256 bytes)
 };
 
 // OptiX: copy of the images to the linear buffers it reads (optix_image_to_buffer.slang)

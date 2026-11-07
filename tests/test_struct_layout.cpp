@@ -229,7 +229,8 @@ HostStruct pathtracePushConstant()
     F(hairRouletteFrom), F(hairCutDlss), F(hairCutTail), F(adaptiveThreshold), F(adaptiveMin), F(hairResponsivity),
     F(glassBudget), F(adaptiveRelax), F(adaptiveRelaxBase), F(hitSignalSlots), F(lightCandidates),
     F(lightCandidatesDepth), F(lightReuseCap), F(lightReusePad), F(hitSignal), F(adaptiveActive), F(frameInfo),
-    F(gltfScene), F(prevRenderNodeObjectToWorld), F(prevVertexPositions), F(cameraMedium), F(lightReservoirs)
+    F(gltfScene), F(prevRenderNodeObjectToWorld), F(prevVertexPositions), F(cameraMedium), F(lightReservoirs),
+    F(pixelInspect)
   }};
 }
 
@@ -289,6 +290,14 @@ HostStruct cameraMedium()
   using Self = CameraMedium;
   return {"CameraMedium", sizeof(Self), {
     F(absorption), F(inside), F(scattering), F(anisotropy)
+  }};
+}
+
+HostStruct pixelInspect()
+{
+  using Self = PixelInspect;
+  return {"PixelInspect", sizeof(Self), {
+    F(position), F(normal), F(baseColor), F(emission), F(surface), F(layers), F(medium), F(radiance), F(uv), F(ids)
   }};
 }
 
@@ -535,6 +544,7 @@ TEST(StructLayout, SceneFrameInfo)
   expectAgree(skyPlainParameters());
   expectAgree(skyGradientParameters());
   expectAgree(cameraMedium());
+  expectAgree(pixelInspect());
 }
 TEST(StructLayout, GltfScene)
 {

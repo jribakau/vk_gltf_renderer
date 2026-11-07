@@ -439,6 +439,8 @@ public:
   /// without ImGui. `center` recenters the camera on the hit instead of selecting. The result is
   /// applied a frame or two later, once the pick's frame has finished (see m_pendingClickPick).
   void pickAt(glm::vec2 uv, bool center) override;
+  void inspectAt(std::optional<glm::vec2> uv) override;
+  void setInspectObserver(std::function<void(const PixelReadout& readout)> observer) override { m_inspectObserver = std::move(observer); }
   /// Shaded, clay, normals and the other debug views (shaderio::Visualization).
   void setVisualization(shaderio::Visualization mode) override;
   void setWireframe(bool on) override;
@@ -565,6 +567,12 @@ private:
   // Applies a completed ray-pick result: selection, and on a double click, camera recenter. One to
   // two frames after the click itself (see m_pendingClickPick's comment for why).
   void applyClickPickResult(const nvvk::RayPicker::PickResult& pickResult, bool isDoubleClick);
+  // The mesh and material of a TLAS instance slot hit at `primitiveID` (a merged group's own material)
+  std::optional<InstancePick> instancePickAt(int instanceID, int primitiveID);
+  // The pixel readout (inspectAt): record a reading at the frame's end when one is due, and hand the
+  // last one to the observer once its frame is done
+  void cmdInspect(VkCommandBuffer cmd, bool traced);
+  void updateInspectState();
 
   // Headless / scripted benchmark (shared automation paths)
   [[nodiscard]] bool                             isHeadlessMode() const;
@@ -756,6 +764,18 @@ private:
     bool                 isDoubleClick;
   };
   std::optional<PendingClickResult> m_pendingClickResult;
+  // The pixel readout: where (none: off), whether a reading is due (a new place), when the last was
+  // recorded and whether a frame was traced since, and the frame that has one in flight
+  struct Inspect
+  {
+    std::optional<glm::vec2>              uv;
+    bool                                  due    = false;
+    bool                                  traced = false;
+    std::chrono::steady_clock::time_point last{};
+    std::optional<nvvk::SemaphoreState>   inFlight;
+  } m_inspect;
+  std::function<void(const PixelReadout&)> m_inspectObserver;
+  static constexpr std::chrono::milliseconds kInspectEvery{250};  // readings while the still refines
 
   // Non-blocking GPU loading pipeline (see timeline_pipeline.hpp for details).
   // Worker threads enqueue command buffers; the main thread calls poll() each frame.

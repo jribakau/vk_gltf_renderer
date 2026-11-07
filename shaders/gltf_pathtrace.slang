@@ -2121,6 +2121,101 @@ void probeCameraMedium(IRaytracer raytracer)
 }
 
 //-----------------------------------------------------------------------
+// The pixel readout (view.inspect, PixelInspect)
+//
+// One thread, with ePtInspectPixel: the camera ray through the centre of render pixel mouseCoord, what
+// it meets first (a mesh, the ground or the water's surface, as the paths find them) evaluated as the
+// paths evaluate their first hit, and what the frame's image holds at that pixel. A fixed draw for
+// stochastic opacity, so a strand or a lash gives the same answer each time it is read. It shares the
+// camera medium's branch in the entry points: a second branch of its own would cost the path tracing
+// kernel as that one does (probeCameraMedium's note).
+//-----------------------------------------------------------------------
+void inspectPixel(IRaytracer raytracer)
+{
+  PixelInspect result = {};
+  const int2   pixel  = clamp(int2(pushConst.mouseCoord), int2(0), max(int2(pushConst.renderSize) - 1, int2(0)));
+  result.ids          = int4(-1, -1, -1, hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) ? 1 : 0);
+  result.uv           = float4(0.0F, 0.0F, float2(pixel));
+  // a still's mean so far, or a moving frame's sample; the host says how many samples it holds
+  result.radiance = float4(outImages[int(OutputImage::eResultImage)][pixel].xyz, float(pushConst.totalSamples));
+
+  SceneFrameInfo* frameInfo      = pushConst.frameInfo;
+  const bool      isOrthographic = hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneIsOrthographic);
+  RayDesc ray = getRay(float2(pixel), float2(0.5F), float2(pushConst.renderSize), frameInfo->projInv, frameInfo->viewInv, isOrthographic);
+  uint    seed = 0x9E3779B9u;
+
+  HitPayload payload;
+  raytracer.Trace(ray, payload, seed, 0xFF, CAMERA_RAY_FLAGS);
+  GltfRenderNode      node = {};
+  GltfRenderPrimitive prim = {};
+  HitState            hit  = {};
+  if(payload.hitT != INFINITE)
+  {
+    node         = pushConst.gltfScene->renderNodes[payload.rnodeID];
+    prim         = pushConst.gltfScene->renderPrimitives[payload.rprimID];
+    float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
+    hit          = getHitState(prim, barys, node.worldToObject, node.objectToWorld, payload.primitiveID, ray.Direction);
+  }
+  bool       hitPlane       = checkInfinitePlaneIntersection(ray, payload, hit, frameInfo, seed);
+  bool       waterFromAbove = false;
+  const bool hitWater       = checkWaterIntersection(ray, payload, hit, frameInfo, waterFromAbove);
+  if(hitWater)
+    hitPlane = false;
+  if(payload.hitT == INFINITE)
+  {
+    *pushConst.pixelInspect = result;
+    return;
+  }
+
+  const RayCone cone      = {0.0F, pushConst.pixelAngle};
+  const float   worldFoot = rayConeWorldFootprint(cone, payload.hitT, hit.geonrm, -ray.Direction);
+  PbrMaterial   mat;
+  bool          front = hit.frontFace;
+  if(hitPlane)
+  {
+    mat        = groundMaterial(hit.pos, worldFoot, frameInfo);
+    front      = ray.Direction.y < 0.0F;
+    result.ids = int4(-2, -1, -1, result.ids.w);
+  }
+  else if(hitWater)
+  {
+    mat        = waterSurfaceMaterial(hit.pos, hit.geonrm, waterFromAbove, worldFoot, frameInfo);
+    front      = waterFromAbove;
+    result.ids = int4(-3, -1, -1, result.ids.w);
+  }
+  else
+  {
+    const int   materialIndex   = max(0, node.materialID);
+    MeshState   mesh            = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, false,
+                                            worldFoot * hit.texelDensity * pushConst.texGradScale);
+    mesh.baseColorVertexMul     = hit.color;
+    mesh.masks                  = hit.masks;
+    mat = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, pushConst.gltfScene->textureInfos,
+                           pushConst.gltfScene->materials, hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin),
+                           hasFlag(pushConst.flags, PathtracerFlags::ePtSkinFaceOn));
+    result.ids  = int4(payload.rnodeID, payload.primitiveID, materialIndex, result.ids.w);
+    result.uv.xy = hit.uv[0];
+  }
+
+  result.position  = float4(hit.pos, payload.hitT);
+  result.normal    = float4(mat.N, front ? 1.0F : 0.0F);
+  result.baseColor = float4(mat.baseColor, mat.opacity);
+  result.emission  = float4(mat.emissive, mat.transmission);
+  result.surface   = float4(mat.metallic, sqrt(max(mat.roughness.x, 0.0F)), mat.ior2, mat.specular);
+  result.layers    = float4(mat.clearcoat, mat.clearcoatRoughness, max(mat.sheenColor.x, max(mat.sheenColor.y, mat.sheenColor.z)), mat.thickness);
+  result.medium    = float4(0.0F, 0.0F, 0.0F, mat.diffuseTransmissionFactor);
+#if GLTF_USE_VOLUME
+  // a scattering medium's single-scattering albedo (skin's, wax's), where it scatters at all
+  if(max(mat.scatterCoefficient.x, max(mat.scatterCoefficient.y, mat.scatterCoefficient.z)) > 0.0F)
+  {
+    const VolumeMedium medium = makeVolumeMedium(mat);
+    result.medium.xyz = float3(medium.scatterCoefficient) / max(float3(medium.scatterCoefficient + medium.absorption), float3(1e-12F));
+  }
+#endif
+  *pushConst.pixelInspect = result;
+}
+
+//-----------------------------------------------------------------------
 // RAY-QUERY COMPUTE
 //-----------------------------------------------------------------------
 [shader("compute")]
@@ -2133,10 +2228,16 @@ void computeMain(uint3 threadIdx: SV_DispatchThreadID)
   RAYQUERY_USE_OPACITY_MICROMAP(computeMain);
   // The render size, not the output image's: OptiX 2x upscale traces only its top-left quarter.
   RayQueryRaytracer raytracer;
-  if(hasFlag(pushConst.flags, PathtracerFlags::ePtProbeCameraMedium))
+  // the one-thread modes, in one branch (inspectPixel's note)
+  if(hasFlag(pushConst.flags, int(PathtracerFlags::ePtProbeCameraMedium) | int(PathtracerFlags::ePtInspectPixel)))
   {
     if(all(threadIdx.xy == 0))
-      probeCameraMedium(raytracer);
+    {
+      if(hasFlag(pushConst.flags, PathtracerFlags::ePtProbeCameraMedium))
+        probeCameraMedium(raytracer);
+      else
+        inspectPixel(raytracer);
+    }
     return;
   }
   float2 samplePos = (float2)threadIdx.xy;
@@ -2154,10 +2255,16 @@ void rgenMain()
 {
   RAYQUERY_USE_OPACITY_MICROMAP(rgenMain);  // Ray queries here too (e.g. dlssTraceSkipThinGlass)
   TraditionalRaytracer raytracer;
-  if(hasFlag(pushConst.flags, PathtracerFlags::ePtProbeCameraMedium))
+  // the one-thread modes, in one branch (inspectPixel's note)
+  if(hasFlag(pushConst.flags, int(PathtracerFlags::ePtProbeCameraMedium) | int(PathtracerFlags::ePtInspectPixel)))
   {
     if(all(DispatchRaysIndex().xy == 0))
-      probeCameraMedium(raytracer);
+    {
+      if(hasFlag(pushConst.flags, PathtracerFlags::ePtProbeCameraMedium))
+        probeCameraMedium(raytracer);
+      else
+        inspectPixel(raytracer);
+    }
     return;
   }
   float2 samplePos = (float2)DispatchRaysIndex().xy;

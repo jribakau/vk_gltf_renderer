@@ -104,6 +104,34 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
     m_renderer->selectEntity(p.root);
     return true;
   });
+  m_renderer->setInspectObserver([this](const HostRenderer::PixelReadout& readout) { publishInspect(readout); });
+  // The pixel readout: what is at a pixel of the view (x, y and the frame's w, h, as the input events
+  // give them; without w, h the render's own pixels) and how bright it is, published as `inspect` a
+  // frame or two later and again as the still refines; x null stops it
+  commands.add("view.inspect", [this](const fv::Json& args) {
+    return m_onApp([this, args] {
+      if(!args.contains("x") || args["x"].is_null())
+      {
+        m_inspectAt.reset();
+        m_renderer->inspectAt(std::nullopt);
+        m_events->snapshot("inspect", nullptr);
+        return fv::Json{{"ok", true}};
+      }
+      if(!args["x"].is_number() || !args.contains("y") || !args["y"].is_number())
+        throw std::runtime_error("x and y are the pixel's place in the view, as input events give it; x null stops");
+      const VkExtent2D size  = m_renderer->renderSize();
+      const double     w     = args.value("w", 0.0) > 0 ? args.value("w", 0.0) : double(size.width);
+      const double     h     = args.value("h", 0.0) > 0 ? args.value("h", 0.0) : double(size.height);
+      if(!(w > 0 && h > 0))
+        throw std::runtime_error("the view has no size yet");
+      const glm::dvec2 at(args["x"].get<double>(), args["y"].get<double>());
+      if(!(at.x >= 0 && at.y >= 0 && at.x <= w && at.y <= h))
+        throw std::runtime_error("x and y lie outside the view");
+      m_inspectAt = at;
+      m_renderer->inspectAt(glm::vec2(float(at.x / w), float(at.y / h)));
+      return fv::Json{{"ok", true}};
+    });
+  });
   commands.add("select", [this](const fv::Json& args) {
     return m_onApp([this, args] {
       const std::string prop = args.contains("prop") && args["prop"].is_string() ? args["prop"].get<std::string>() : "";
@@ -523,6 +551,65 @@ void FvView::notePick(const fv::HostAddress& at)
     return;
   m_surfaceProp = m_props[size_t(at.prop)].id;
   m_surface     = "m:" + std::to_string(at.surface);
+}
+
+void FvView::publishInspect(const HostRenderer::PixelReadout& readout)
+{
+  if(!m_inspectAt)
+    return;
+  const shaderio::PixelInspect& d   = readout.data;
+  const auto                    rgb = [](const glm::vec4& v) { return fv::Json::array({v.x, v.y, v.z}); };
+  fv::Json j = {{"x", m_inspectAt->x},
+                {"y", m_inspectAt->y},
+                {"radiance", rgb(d.radiance)},
+                {"samples", int(d.radiance.w)},
+                {"exposed", readout.exposed},
+                {"moving", d.ids.w != 0}};
+  if(!(d.position.w > 0.0F))
+  {
+    j["hit"] = nullptr;
+    m_events->snapshot("inspect", std::move(j));
+    return;
+  }
+  j["hit"]                 = d.ids.x == -2 ? "ground" : d.ids.x == -3 ? "water" : "mesh";
+  j["distance"]            = d.position.w;
+  j["position"]            = rgb(d.position);
+  j["normal"]              = rgb(d.normal);
+  j["front"]               = d.normal.w > 0.5F;
+  j["baseColor"]           = rgb(d.baseColor);
+  j["opacity"]             = d.baseColor.w;
+  j["metallic"]            = d.surface.x;
+  j["roughness"]           = d.surface.y;
+  j["ior"]                 = d.surface.z;
+  j["specular"]            = d.surface.w;
+  j["transmission"]        = d.emission.w;
+  j["emission"]            = rgb(d.emission);
+  j["clearcoat"]           = d.layers.x;
+  j["clearcoatRoughness"]  = d.layers.y;
+  j["sheen"]               = d.layers.z;
+  j["thickness"]           = d.layers.w;
+  j["diffuseTransmission"] = d.medium.w;
+  if(d.medium.x > 0.0F || d.medium.y > 0.0F || d.medium.z > 0.0F)
+    j["subsurface"] = rgb(d.medium);
+  if(d.ids.x >= 0)
+    j["uv"] = fv::Json::array({d.uv.x, d.uv.y});
+  if(readout.pick)
+  {
+    const fv::HostAddress at = m_map.pick(readout.pick->entity, readout.pick->material);
+    if(at.prop >= 0 && at.prop < int(m_props.size()))
+    {
+      const PropNodes& p = m_props[size_t(at.prop)];
+      j["prop"]          = p.id;
+      if(at.node >= 0 && at.node < int(p.nodes.size()))
+      {
+        j["node"] = at.node;
+        j["name"] = p.nodes[size_t(at.node)].name;
+      }
+      if(at.surface >= 0)
+        j["surface"] = "m:" + std::to_string(at.surface);
+    }
+  }
+  m_events->snapshot("inspect", std::move(j));
 }
 
 void FvView::publishSelection(bool force)

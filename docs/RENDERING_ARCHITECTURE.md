@@ -460,3 +460,36 @@ shoulder handles on a filmic curve, worked out here.
   it by its method with its handles. Prototyped in numpy first (scratchpad shaped2.py): a curve of
   Lottes' form (x^a over b x^ad + c) was tried and dropped, as its shoulder handle moved the shadows
   too (at -4 stops 0.019 to 0.078) and without it the shoulder barely moved anything.
+
+## The pixel readout
+
+What is at a pixel and how bright it is (`view.inspect {x, y, w, h}`, the `inspect` topic, protocol 44;
+the app's Display › Pixel readout, where a click reads out instead of selecting).
+
+- **The reading:** one thread of the path tracer's own pipeline (`ePtInspectPixel`, `inspectPixel` in
+  `gltf_pathtrace.slang`), recorded at the frame's end with the last traced frame's constants
+  (`PathTracer::cmdInspectPixel`). The camera ray through the pixel's centre meets a mesh, the ground or
+  the water's surface as the paths do (`checkInfinitePlaneIntersection`, `checkWaterIntersection`), with
+  a fixed draw for stochastic opacity so a strand gives the same answer each time; the surface is
+  evaluated as the paths evaluate their first hit (`evaluateMaterial` with the frame's thin-preview and
+  skin flags, `groundMaterial`, `waterSurfaceMaterial`), before any regularisation. With it, what the
+  frame's image holds at the pixel: a still's mean so far, or a moving frame's single sample.
+  `shaderio::PixelInspect` holds it (its layout checked against the shaders' with the camera medium's, `StructLayout.SceneFrameInfo`), through
+  `PathtracePushConstant::pixelInspect`, which fills the push constant's last 8 of 256 bytes.
+- **No new branch in the kernel:** the camera medium's probe and the readout share the one-thread branch
+  of `computeMain` and `rgenMain`, whose existence alone costs the path tracing kernel 1-2% (the probe's
+  note). Its code still sits in the kernel: a still's sample at 1TEST's bar (2160 x 1395, the user's
+  Render tab) took 64.19-64.37 ms before and 64.41-64.91 ms after (sessions before, after, after,
+  before; the first session's warm-up dropped), +0.35% best to best, +0.5% at the median, against
+  about 0.3% between rounds: at the edge of the noise. A pipeline of its own would take it out of the
+  kernel, at another pipeline per variant.
+- **When:** at once for a new pixel, then every 250 ms while frames are traced, and once after the last,
+  so it settles on the finished still (`GltfRenderer::cmdInspect`); one reading in flight, collected
+  when its frame's semaphore has signalled (`updateInspectState`), as the click pick is. The host adds
+  the mesh and material hit (`instancePickAt`, the pick's) and the exposed luminance: the radiance after
+  the last frame's exposure and white balance (`getColorCorrectionMatrix`), what the false-colour view
+  bands in stops from middle grey. `FvView::publishInspect` names the prop, node and surface as the
+  selection does.
+- **Checked:** `FvHost.ThePixelReadoutPublishesWhatIsAtThePixel` (the command's pixels, its refusals,
+  the topic for a mesh, the ground and nothing, stopping), the layout test, the app's
+  `test/pixelReadout.test.ts`. The shader's reading itself is not unit-tested: no GPU in the suite.

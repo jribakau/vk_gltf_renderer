@@ -3087,6 +3087,86 @@ TEST(FvHost, AWipeKeepsAFrameAndMovesItsDivider)
   EXPECT_FALSE(rig.cmd("view.wipe", {{"at", "left"}}).value("ok", false));
 }
 
+// The pixel readout: view.inspect asks for a pixel in the view's own pixels (as input events give
+// them), each reading the renderer makes is published as `inspect` with the material it found and the
+// image's radiance there, and x null stops it and clears the topic. A pixel outside the view, or no
+// number, is refused.
+TEST(FvHost, ThePixelReadoutPublishesWhatIsAtThePixel)
+{
+  HostRig rig;
+  ASSERT_TRUE(rig.cmd("view.inspect", {{"x", 640}, {"y", 180}}).value("ok", false));
+  ASSERT_EQ(rig.renderer.inspects.size(), 1u);
+  ASSERT_TRUE(rig.renderer.inspects[0]);
+  EXPECT_FLOAT_EQ(rig.renderer.inspects[0]->x, 0.5f);  // of the fake's 1280 x 720
+  EXPECT_FLOAT_EQ(rig.renderer.inspects[0]->y, 0.25f);
+  ASSERT_TRUE(rig.renderer.inspectObserver);
+
+  // the ground, read at 64 samples
+  HostRenderer::PixelReadout ground;
+  ground.data.position  = glm::vec4(0.5f, 0.0f, -2.0f, 3.25f);
+  ground.data.normal    = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f);
+  ground.data.baseColor = glm::vec4(0.5f, 0.4f, 0.3f, 1.0f);
+  ground.data.surface   = glm::vec4(0.0f, 0.6f, 1.5f, 1.0f);
+  ground.data.radiance  = glm::vec4(0.02f, 0.015f, 0.01f, 64.0f);
+  ground.data.ids       = glm::ivec4(-2, -1, -1, 0);
+  ground.exposed        = 0.36f;
+  rig.renderer.inspectObserver(ground);
+  Json j = rig.topic("inspect");
+  EXPECT_EQ(j.value("hit", ""), "ground") << j.dump();
+  EXPECT_DOUBLE_EQ(j.value("x", 0.0), 640.0);
+  EXPECT_NEAR(j.value("distance", 0.0), 3.25, 1e-6);
+  EXPECT_NEAR(j["baseColor"][1].get<double>(), 0.4, 1e-6);
+  EXPECT_NEAR(j.value("roughness", 0.0), 0.6, 1e-6);
+  EXPECT_NEAR(j.value("ior", 0.0), 1.5, 1e-6);
+  EXPECT_NEAR(j["radiance"][0].get<double>(), 0.02, 1e-6);
+  EXPECT_EQ(j.value("samples", 0), 64);
+  EXPECT_NEAR(j.value("exposed", 0.0), 0.36, 1e-6);
+  EXPECT_FALSE(j.value("moving", true));
+  EXPECT_TRUE(j.value("front", false));
+  EXPECT_FALSE(j.contains("uv")) << "the ground has no texture coordinates";
+  EXPECT_FALSE(j.contains("subsurface"));
+  EXPECT_FALSE(j.contains("prop"));
+
+  // a mesh on a moving frame, a scattering medium in it; no pick to name it here
+  HostRenderer::PixelReadout skin = ground;
+  skin.data.ids    = glm::ivec4(7, 120, 3, 1);
+  skin.data.medium = glm::vec4(0.9f, 0.6f, 0.5f, 0.0f);
+  skin.data.uv     = glm::vec4(0.25f, 0.75f, 640.0f, 180.0f);
+  rig.renderer.inspectObserver(skin);
+  j = rig.topic("inspect");
+  EXPECT_EQ(j.value("hit", ""), "mesh");
+  EXPECT_TRUE(j.value("moving", false));
+  EXPECT_NEAR(j["uv"][1].get<double>(), 0.75, 1e-6);
+  EXPECT_NEAR(j["subsurface"][0].get<double>(), 0.9, 1e-6);
+
+  // the sky: nothing hit, the radiance still read
+  HostRenderer::PixelReadout sky;
+  sky.data.radiance = glm::vec4(1.5f, 2.0f, 3.0f, 64.0f);
+  rig.renderer.inspectObserver(sky);
+  j = rig.topic("inspect");
+  EXPECT_TRUE(j.contains("hit") && j["hit"].is_null()) << j.dump();
+  EXPECT_NEAR(j["radiance"][2].get<double>(), 3.0, 1e-6);
+
+  // in the pixels of the frame the app asked for, as its input events are
+  ASSERT_TRUE(rig.cmd("view.inspect", {{"x", 160}, {"y", 270}, {"w", 640}, {"h", 360}}).value("ok", false));
+  ASSERT_EQ(rig.renderer.inspects.size(), 2u);
+  EXPECT_FLOAT_EQ(rig.renderer.inspects[1]->x, 0.25f);
+  EXPECT_FLOAT_EQ(rig.renderer.inspects[1]->y, 0.75f);
+
+  // refused: outside the view, no number
+  EXPECT_FALSE(rig.cmd("view.inspect", {{"x", 2000}, {"y", 10}}).value("ok", false));
+  EXPECT_FALSE(rig.cmd("view.inspect", {{"x", "left"}, {"y", 10}}).value("ok", false));
+  EXPECT_EQ(rig.renderer.inspects.size(), 2u);
+
+  // stopped: the renderer stops reading, the topic goes, and a late reading is not published
+  ASSERT_TRUE(rig.cmd("view.inspect", {{"x", nullptr}}).value("ok", false));
+  ASSERT_EQ(rig.renderer.inspects.size(), 3u);
+  EXPECT_FALSE(rig.renderer.inspects[2]);
+  EXPECT_TRUE(rig.topic("inspect").is_null());
+  rig.renderer.inspectObserver(ground);
+  EXPECT_TRUE(rig.topic("inspect").is_null());
+}
+
 // The frame as a linear image, once it is on disk: the path tracer's, a .hdr
 TEST(FvHost, ACaptureIsAnHdrOfThePathTracersImage)
 {

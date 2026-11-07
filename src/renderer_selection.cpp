@@ -26,6 +26,8 @@
 #include <nvutils/bounding_box.hpp>
 #include <nvutils/logger.hpp>
 
+#include <nvshaders/tonemap_functions.h.slang>  // getColorCorrectionMatrix
+
 #include "gizmo_pivot.hpp"
 #include "renderer.hpp"
 #include "tinygltf_utils.hpp"
@@ -43,22 +45,8 @@ void GltfRenderer::applyClickPickResult(const nvvk::RayPicker::PickResult& pickR
   if(!isDoubleClick)
   {
     std::optional<InstancePick> pick;
-    if(hasHit && m_resources.retainedGpu)
-      if(const rs::Residency::Instance* inst = m_resources.retainedGpu->residency().instance(uint32_t(pickResult.instanceID)))
-      {
-        pick = InstancePick{inst->entity, inst->material};
-        // a prim that draws merged groups (Submesh::mergedInto): the material of the group hit
-        const rs::RetainedScene& scene  = hostScene();
-        const rs::MeshRecord*    record = scene.mesh(inst->mesh);
-        const rs::Entity*        entity = scene.entity(inst->entity);
-        if(record && entity && entity->mesh && inst->submesh < record->submeshes.size())
-        {
-          const uint32_t hit = record->submeshAt(inst->submesh, uint32_t(std::max(pickResult.primitiveID, 0)));
-          for(const rs::MeshPart& part : entity->mesh->parts)
-            if(part.mesh == inst->mesh && hit != inst->submesh && record->submeshes[hit].material < part.materials.size())
-              pick->material = part.materials[record->submeshes[hit].material];
-        }
-      }
+    if(hasHit)
+      pick = instancePickAt(pickResult.instanceID, pickResult.primitiveID);
     // the entity hit, or nothing; the one selected, hit again, is let go
     if(!(m_pickObserver && m_pickObserver(pick, worldPos)))
       selectEntity(pick && pick->entity != m_selectedEntity ? pick->entity : rs::EntityId{});
@@ -139,6 +127,69 @@ void GltfRenderer::pickAt(glm::vec2 uv, bool center)
       .pickPos        = uv,
       .isDoubleClick  = center,
   };
+}
+
+void GltfRenderer::inspectAt(std::optional<glm::vec2> uv)
+{
+  m_inspect.uv  = uv;
+  m_inspect.due = uv.has_value();
+}
+
+std::optional<HostRenderer::InstancePick> GltfRenderer::instancePickAt(int instanceID, int primitiveID)
+{
+  if(instanceID < 0 || !m_resources.retainedGpu)
+    return std::nullopt;
+  const rs::Residency::Instance* inst = m_resources.retainedGpu->residency().instance(uint32_t(instanceID));
+  if(!inst)
+    return std::nullopt;
+  InstancePick pick{inst->entity, inst->material};
+  // a prim that draws merged groups (Submesh::mergedInto): the material of the group hit
+  const rs::RetainedScene& scene  = hostScene();
+  const rs::MeshRecord*    record = scene.mesh(inst->mesh);
+  const rs::Entity*        entity = scene.entity(inst->entity);
+  if(record && entity && entity->mesh && inst->submesh < record->submeshes.size())
+  {
+    const uint32_t hit = record->submeshAt(inst->submesh, uint32_t(std::max(primitiveID, 0)));
+    for(const rs::MeshPart& part : entity->mesh->parts)
+      if(part.mesh == inst->mesh && hit != inst->submesh && record->submeshes[hit].material < part.materials.size())
+        pick.material = part.materials[record->submeshes[hit].material];
+  }
+  return pick;
+}
+
+// A reading at the frame's end: at once for a new place, then every kInspectEvery while frames are
+// traced (the still refining, or the view moving), and once more after the last of them, so the
+// finished image is what it settles on. One in flight at a time.
+void GltfRenderer::cmdInspect(VkCommandBuffer cmd, bool traced)
+{
+  m_inspect.traced = m_inspect.traced || traced;
+  if(!m_inspect.uv || m_inspect.inFlight || !m_app)
+    return;
+  const auto now = std::chrono::steady_clock::now();
+  if(!m_inspect.due && !(m_inspect.traced && now - m_inspect.last >= kInspectEvery))
+    return;
+  if(!m_pathTracer.cmdInspectPixel(cmd, m_resources, *m_inspect.uv))
+    return;
+  m_inspect.due      = false;
+  m_inspect.traced   = false;
+  m_inspect.last     = now;
+  m_inspect.inFlight = nvvk::SemaphoreState::makeFixed(m_app->getFrameSignalSemaphore());
+}
+
+void GltfRenderer::updateInspectState()
+{
+  if(!m_inspect.inFlight || !m_inspect.inFlight->testSignaled(m_device))
+    return;
+  m_inspect.inFlight.reset();
+  if(!m_inspect.uv || !m_inspectObserver)
+    return;
+  PixelReadout readout{.data = m_pathTracer.inspectResult()};
+  readout.pick = instancePickAt(readout.data.ids.x, readout.data.ids.y);
+  // as applyTonemap takes it: mul(inputMatrix, color), which the C++ shim writes v * M
+  const shaderio::TonemapperData& tm   = m_tonemapInput.data;
+  const glm::vec3                 seen = glm::vec3(readout.data.radiance) * shaderio::getColorCorrectionMatrix(tm.exposure, tm.temperature, tm.tint);
+  readout.exposed                      = 0.2126F * seen.x + 0.7152F * seen.y + 0.0722F * seen.z;
+  m_inspectObserver(readout);
 }
 
 void GltfRenderer::setVisualization(shaderio::Visualization mode)

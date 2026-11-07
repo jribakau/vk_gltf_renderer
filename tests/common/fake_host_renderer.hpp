@@ -98,6 +98,8 @@ public:
   {
     pickObserver = std::move(observer);
   }
+  void inspectAt(std::optional<glm::vec2> uv) override { inspects.push_back(uv); }
+  void setInspectObserver(std::function<void(const PixelReadout&)> observer) override { inspectObserver = std::move(observer); }
   void setGizmoHooks(GizmoHooks hooks) override { gizmo = std::move(hooks); }
   void setShowGizmo(bool) override {}
   bool gizmoInput(glm::vec2, bool, bool, bool) override { return false; }
@@ -152,6 +154,8 @@ public:
   std::function<bool(const std::optional<InstancePick>&, const glm::vec3&)>     pickObserver;
   std::vector<shaderio::lines::LineVertex>                                      helperLines;
   std::vector<std::pair<glm::vec2, bool>>                                       picks;  // pickAt(uv, center), in order
+  std::vector<std::optional<glm::vec2>>                                         inspects;  // inspectAt(uv), in order
+  std::function<void(const PixelReadout&)>                                      inspectObserver;
   int stillSamples   = 0;  // what accumulatedSamples() and sampleCap() say
   int stillSampleCap = 0;
   std::filesystem::path savedImage;  // the last saveImage's path

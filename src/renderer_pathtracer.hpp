@@ -180,6 +180,7 @@ public:
   nvvk::RenderTarget m_convergence;          // RG32_SFLOAT, G-buffer size: shaderio::eConvergence
   nvvk::Buffer       m_depthCopyBuffer;      // Bridge for the color -> depth copy (no direct image copy between them)
   nvvk::Buffer       m_cameraMediumBuffer;   // shaderio::CameraMedium: the medium camera paths start in
+  nvvk::Buffer       m_pixelInspectBuffer;   // shaderio::PixelInspect, host-mapped: the pixel readout (cmdInspectPixel)
   // ptCameraMedium: whether to probe it. The probe passes through surfaces that bound no medium, so
   // through an opening (an eye socket, a mouth) it meets a figure's skin from inside and every path
   // starts in the skin; a host whose camera is never inside a medium turns it off.
@@ -593,6 +594,17 @@ private:
   // Find the medium the camera is in (ePtProbeCameraMedium) on the bound pipeline, then push
   // `pushConst` back for the frame.
   void probeCameraMedium(VkCommandBuffer cmd, const shaderio::PathtracePushConstant& pushConst);
+
+public:
+  // The pixel readout (view.inspect): record the camera ray through the render pixel at `uv` (a share
+  // of the view, origin top-left) on the technique's pipeline (ePtInspectPixel), with the last traced
+  // frame's constants, after whatever this frame drew; its PixelInspect is the host's once the frame is
+  // done (inspectResult). One at a time: the caller waits for that frame before recording another.
+  // False with no pipeline (one being rebuilt) or no frame traced yet.
+  bool                   cmdInspectPixel(VkCommandBuffer cmd, Resources& resources, glm::vec2 uv);
+  shaderio::PixelInspect inspectResult() const;
+
+private:
   // `selectionWritten`: the frame traced the selection image (ePtWriteSelection), which then goes to full size
   void denoiseDlss(VkCommandBuffer cmd, Resources& resources, bool selectionWritten);
   // Push this frame's constants; returns what was pushed.

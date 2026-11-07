@@ -51,6 +51,7 @@
 
 #include <chrono>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -60,8 +61,8 @@
 
 #include "fv_events.hpp"
 #include "fv_scene_map.hpp"
+#include "host_renderer.hpp"  // HostRenderer::PixelReadout
 
-class HostRenderer;
 
 // How far a frame guide leaves the frame from the view's edges, as a share of the frame where it is
 // tightest. The app's FRAME_MARGIN (src/lib/frame.ts) is the same number, which it draws the frame with.
@@ -175,6 +176,8 @@ private:
   void publishCamera();
   // A click hit `at` (prop -1: nothing): the surface it hit, for the next selection published
   void notePick(const fv::HostAddress& at);
+  // The pixel readout's topic, `inspect`: what a reading found at m_inspectAt (view.inspect)
+  void publishInspect(const HostRenderer::PixelReadout& readout);
 
   HostRenderer*                                      m_renderer = nullptr;
   fv::EventHub*                                      m_events   = nullptr;
@@ -186,6 +189,7 @@ private:
   rs::EntityId                                  m_lastEntity;
   bool                                          m_publishAgain = true;
   std::string                                   m_surfaceProp, m_surface;  // what the last click hit
+  std::optional<glm::dvec2>                     m_inspectAt;  // the pixel read out (view.inspect), render pixels; none: off
   std::string                                   m_pick      = "object";
   bool                                          m_select    = true;  // a click picks (view.set select)
   std::string                                   m_transform = "move";

@@ -124,6 +124,11 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
   NVVK_CHECK(resources.allocator.createBuffer(m_cameraMediumBuffer, sizeof(shaderio::CameraMedium),
                                               VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT));
   NVVK_DBG_NAME(m_cameraMediumBuffer.buffer);
+  // Written by cmdInspectPixel()'s one thread, read by the host once its frame is done
+  NVVK_CHECK(resources.allocator.createBuffer(m_pixelInspectBuffer, sizeof(shaderio::PixelInspect),
+                                              VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
+                                              VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT));
+  NVVK_DBG_NAME(m_pixelInspectBuffer.buffer);
 
   // The path tracer writes depth as a storage image. nvvk::RenderTarget only gives the G-buffer depth
   // STORAGE usage when the format supports it, which D32_SFLOAT does not on every GPU (AMD); there the
@@ -514,6 +519,7 @@ void PathTracer::onDetach(Resources& resources)
   resources.allocator.destroyBuffer(m_sbtBuffer);
   resources.allocator.destroyBuffer(m_depthCopyBuffer);
   resources.allocator.destroyBuffer(m_cameraMediumBuffer);
+  resources.allocator.destroyBuffer(m_pixelInspectBuffer);
   resources.allocator.destroyBuffer(m_lightReservoirs);
   resources.allocator.destroyBuffer(m_adaptiveActiveBuffer);
   m_adaptiveCounts.clear();
@@ -1362,6 +1368,46 @@ void PathTracer::probeCameraMedium(VkCommandBuffer cmd, const shaderio::Pathtrac
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR);
   vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(pushConst), &pushConst);
+}
+
+//--------------------------------------------------------------------------------------------------
+// The pixel readout (inspectPixel in gltf_pathtrace.slang): one thread of the technique's pipeline,
+// after the frame's passes, with the constants of the last frame traced. The frame info and the images
+// are that frame's: a change of the view or the scene traces a new frame before this records again.
+bool PathTracer::cmdInspectPixel(VkCommandBuffer cmd, Resources& resources, glm::vec2 uv)
+{
+  const VkPipeline pipeline = m_renderTechnique == RenderTechnique::RayQuery ? m_rqPipeline : m_rtxPipeline;
+  const glm::uvec2 traced   = m_pushConst.renderSize;
+  if(pipeline == VK_NULL_HANDLE || traced.x == 0 || traced.y == 0 || m_pushConst.frameInfo == nullptr)
+    return false;
+  auto timerSection = m_profiler->cmdFrameSection(cmd, "Pixel readout");
+
+  // The frame's paths wrote the image it reads
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR);
+  if(!bindTechnique(cmd, resources))
+    return false;
+  shaderio::PathtracePushConstant inspect = m_pushConst;
+  inspect.flags |= shaderio::ePtInspectPixel;
+  inspect.flags &= ~shaderio::ePtProbeCameraMedium;
+  const glm::vec2 at = glm::clamp(uv, glm::vec2(0.0F), glm::vec2(1.0F)) * glm::vec2(traced);
+  inspect.mouseCoord   = glm::min(glm::floor(at), glm::vec2(traced) - 1.0F);
+  // what the image holds: the accumulation's samples, a moving frame's one
+  inspect.totalSamples = (inspect.flags & shaderio::ePtUseDlss) ? 1 : m_totalSamplesAccumulated;
+  inspect.pixelInspect = reinterpret_cast<shaderio::PixelInspect*>(m_pixelInspectBuffer.address);
+  vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(inspect), &inspect);
+  dispatchRays(cmd, {1, 1});
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                         VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_HOST_READ_BIT);
+  return true;
+}
+
+shaderio::PixelInspect PathTracer::inspectResult() const
+{
+  shaderio::PixelInspect result{};
+  if(m_pixelInspectBuffer.mapping)
+    std::memcpy(&result, m_pixelInspectBuffer.mapping, sizeof(result));
+  return result;
 }
 
 void PathTracer::denoiseDlss(VkCommandBuffer cmd, Resources& resources, bool selectionWritten)

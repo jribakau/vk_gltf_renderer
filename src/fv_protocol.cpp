@@ -78,7 +78,8 @@ namespace {
 // renderer refuses the whole material.set for it, as the looks send it).
 // 43: the Shaped tone curve, the lighting's tonemap.method "shaped" and its tonemap.toe and
 // tonemap.shoulder.
-constexpr int kProtocolVersion = 43;
+// 44: the pixel readout, view.inspect and the inspect topic (what is at a pixel, and how bright).
+constexpr int kProtocolVersion = 44;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -1069,6 +1069,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
 
   updateClickPickState();   // Poll the previous click's async ray-pick, apply it once ready (see m_pendingClickPick)
+  updateInspectState();     // ...and the pixel readout's
   // Check for changes
   bool changed{false};
   changed |= m_pathTracer.keepOneAccumulationDenoiser(m_resources);  // OptiX or OIDN, not both
@@ -1091,7 +1092,8 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   // the still converged, or the edits it holds back would wait for an unrelated change
   const bool variantWaiting = m_pathTracer.variantBuilt();
 
-  if(changed || frameChanged || variantWaiting)
+  const bool traced = changed || frameChanged || variantWaiting;
+  if(traced)
   {
     if(m_resources.frameCount == 0)
     {
@@ -1249,6 +1251,8 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
                            .isDoubleClick  = m_pendingClickPick->isDoubleClick};
     m_pendingClickPick.reset();
   }
+  // The pixel readout reads the frame's image as drawn, after every pass that writes it
+  cmdInspect(cmd, traced);
   // The grid and transform gizmo are drawn into the frame: a headless --stream is the native
   // viewport, so the grid shows there.
   if(overlays)
