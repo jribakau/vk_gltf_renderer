@@ -229,6 +229,17 @@ pinhole's eye, as the aerial perspective).
   against one's 2.35 (3.52 with a scoring and a walk each) and haze off's 1.05. A still also cuts the
   haze's samples to the firefly clamp's level, as it does bounced light's. A moving frame keeps the
   pick's one sample and its clamp-free light, bit for bit, for Ray Reconstruction.
+- **What a moving frame pays for it:** two light draws a path, the guide's and the scatter point's,
+  and one shadow ray. On 7TEST (one sun, 117 emitters, a 64-node cut) at 4K the draws were most of
+  the haze's 29.5 ms, the shadow ray ~2 ms, and the largest part of the draws was `lightDrawOf`'s walk:
+  a second pass over the 64 nodes that a warp pays to the end for its furthest-walking thread. A
+  draw on its own (the guide, a moving frame's one candidate) is now drawn as the lights are scored
+  (`lightPickSetDrawn`, `PickReservoirs` in `light_pick.h.slang`: a reservoir by estimate and an even
+  one, then the defensive mixture), each light with exactly its `lightPickProbability`, so the noise
+  is of the same kind; and the guide takes only its point (`pointOnly`: no material, emission or
+  opacity read). Haze's cost there 29.5 → 19.9 ms a moving frame; on the night street one
+  candidate's 2.35 → 1.70 ms a still sample (haze off 1.05). A still's several candidates keep their
+  one walk (stratified).
 - **Checked:** `tests/test_haze.cpp` holds the estimator to a point light's single scattering by
   quadrature (itself held to thin isotropic haze's closed form) and the drawn distances to their
   density; a ray passing a light at 5 cm on a 10 m segment has a noise 0.9 times its mean a sample,

@@ -380,6 +380,45 @@ TEST(LightPick, ASphereSampleAndItsBsdfHitsGiveItOnce)
   EXPECT_LT(sphereLightHitDistance(pos, -axis, center, radius, 1e30f), 0.0f);
 }
 
+// The pick drawn as it is scored (PickReservoirs, lightPickSetDrawn) draws each candidate with its
+// lightPickProbability, as the walk over the scored pick does: a dominant light, a dim one the
+// defensive share keeps, and one alone
+TEST(LightPick, ThePickDrawnAsItIsScoredDrawsEachWithItsProbability)
+{
+  for(const std::vector<float>& estimates :
+      {std::vector<float>{5.0f, 0.02f, 1.0f, 3.0f, 0.5f}, std::vector<float>{1e4f, 1.0f}, std::vector<float>{2.0f}})
+  {
+    float total = 0.0f;
+    for(float e : estimates)
+      total += e;
+    const int                  k = int(estimates.size());
+    std::mt19937               rng(11 + k);
+    std::uniform_real_distribution<float> u01(0.0f, 0.99999994f);
+    std::vector<int>           drawn(estimates.size(), 0);
+    const int                  n = 400000;
+    for(int t = 0; t < n; t++)
+    {
+      PickReservoirs p = pickReservoirs();
+      for(int i = 0; i < k; i++)
+        p = pickReservoirsTake(p, i, estimates[i], u01(rng));
+      const bool even = u01(rng) < LIGHT_PICK_DEFENSIVE;
+      const int  id   = pickReservoirsDrawn(p, even);
+      ASSERT_GE(id, 0);
+      EXPECT_EQ(pickReservoirsDrawnEstimate(p, even), estimates[id]);
+      drawn[id]++;
+    }
+    for(int i = 0; i < k; i++)
+    {
+      const double expected = lightPickProbability(estimates[i], total, k);
+      const double sigma    = std::sqrt(expected * (1.0 - expected) / n);
+      EXPECT_NEAR(double(drawn[i]) / n, expected, 4.0 * sigma + 1e-6) << "candidate " << i << " of " << k;
+    }
+  }
+  // none seen: none drawn
+  EXPECT_EQ(pickReservoirsDrawn(pickReservoirs(), false), -1);
+  EXPECT_EQ(pickReservoirsDrawn(pickReservoirs(), true), -1);
+}
+
 // The same for a directional light's disc, a soft sun of 6 degrees at 40 degrees from the zenith, and
 // a far, small one, whose disc the sine test still finds where 1 - cos would round away.
 TEST(LightPick, ASunDiscSampleAndItsBsdfHitsGiveItOnce)

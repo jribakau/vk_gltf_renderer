@@ -182,6 +182,62 @@ float lightPickProbability(float estimate, float total, int candidates)
   return (1.0F - LIGHT_PICK_DEFENSIVE) * (estimate / total) + LIGHT_PICK_DEFENSIVE / float(candidates);
 }
 
+// A light pick drawn in the pass that scores it (lightPickSetDrawn), for a draw on its own: two
+// reservoirs over the candidates as they come, one keeping a candidate with the chance of its
+// estimate, one evenly, on one number each; then the defensive mixture takes the even one with the
+// chance LIGHT_PICK_DEFENSIVE. So a candidate is drawn with lightPickProbability(its estimate, the
+// sum, the count), what a walk over the scored pick gives, without that walk's second pass.
+// Candidates are the caller's ids; -1: none yet.
+struct PickReservoirs
+{
+  float scored;      // the estimates so far
+  int   seen;        // the candidates so far
+  int   byEstimate;  // kept with the chance of its estimate
+  float byEstimateOf;
+  int   evenly;      // kept evenly
+  float evenlyOf;
+};
+
+PickReservoirs pickReservoirs()
+{
+  PickReservoirs p;
+  p.scored       = 0.0F;
+  p.seen         = 0;
+  p.byEstimate   = -1;
+  p.byEstimateOf = 0.0F;
+  p.evenly       = -1;
+  p.evenlyOf     = 0.0F;
+  return p;
+}
+
+// The reservoirs once they have seen candidate `id` of estimate `e` > 0, `r` in [0, 1)
+PickReservoirs pickReservoirsTake(PickReservoirs p, int id, float e, float r)
+{
+  p.scored += e;
+  p.seen++;
+  if(r * p.scored < e)
+  {
+    p.byEstimate   = id;
+    p.byEstimateOf = e;
+  }
+  if(r * float(p.seen) < 1.0F)
+  {
+    p.evenly   = id;
+    p.evenlyOf = e;
+  }
+  return p;
+}
+
+// The drawn candidate's id and estimate, `even` true with the chance LIGHT_PICK_DEFENSIVE
+int pickReservoirsDrawn(PickReservoirs p, bool even)
+{
+  return even ? p.evenly : p.byEstimate;
+}
+float pickReservoirsDrawnEstimate(PickReservoirs p, bool even)
+{
+  return even ? p.evenlyOf : p.byEstimateOf;
+}
+
 // The power heuristic (exponent 2): the weight of a sample of pdf `a` against the other technique's
 // pdf `b` for the same direction. As a ratio, so a near-delta lobe's pdf is never squared into
 // infinity (Unreal's MISWeightPower). 1 when the other technique cannot produce the sample.
