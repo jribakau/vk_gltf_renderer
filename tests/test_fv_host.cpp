@@ -3511,6 +3511,44 @@ TEST(FvHost, contactSettingsSurviveTheSceneFileAndUndo)
   EXPECT_FALSE(s.contact().value("enabled", true)) << s.contact().dump();
 }
 
+// Rain on the skin (figure/physics/rain/rain.hpp): off for a new person; turned on, a pass lands its
+// drops; the settings are held to their ranges, are steps of the history and part of the scene state;
+// off dries the skin, and a file from before rain opens dry.
+TEST(FvHost, rainLandsAndIsKeptWithTheSceneAndUndo)
+{
+  Seated     s;
+  const auto rain = [&] { return s.rig.topic("rain/" + s.figure); };
+  ASSERT_TRUE(rain().is_object() && !rain().empty()) << "a person has rain";
+  EXPECT_FALSE(rain().value("enabled", true));
+  ASSERT_TRUE(s.rig.cmd("figure.rain", {{"prop", s.figure}, {"on", true}, {"amount", 1.0}, {"time", 20}}).value("ok", false));
+  EXPECT_TRUE(rain().value("enabled", false));
+  ASSERT_TRUE(s.until([&] { return !rain().value("busy", true) && rain().value("landed", 0) > 0; })) << rain().dump();
+  EXPECT_GT(rain().value("beads", 0), 0);
+
+  const Json state = s.rig.cmd("scene.state", {{"prop", s.figure}}).value("result", Json::object());
+  ASSERT_TRUE(state.contains("rain")) << state.dump();
+  EXPECT_TRUE(state["rain"].value("on", false));
+  EXPECT_FLOAT_EQ(state["rain"].value("amount", 0.f), 1.f);
+  EXPECT_FLOAT_EQ(state["rain"].value("time", 0.f), 20.f);
+  ASSERT_TRUE(s.rig.cmd("figure.rain", {{"prop", s.figure}, {"dried", 400}}).value("ok", false));
+  EXPECT_FLOAT_EQ(rain().value("dried", 0.f), 300.f) << "held to its range";
+  ASSERT_TRUE(s.rig.cmd("history.undo").value("ok", false));
+  EXPECT_FLOAT_EQ(rain().value("dried", -1.f), 0.f);
+  ASSERT_TRUE(s.rig.cmd("history.undo").value("ok", false));
+  EXPECT_FALSE(rain().value("enabled", true));
+  EXPECT_TRUE(s.until([&] { return rain().value("beads", 1) == 0; })) << "off dries the skin";
+
+  Json restore    = state;
+  restore["prop"] = s.figure;
+  s.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(s.rig.settle());
+  EXPECT_TRUE(rain().value("enabled", false));
+  restore.erase("rain");
+  s.rig.cmd("scene.restore", restore);
+  ASSERT_TRUE(s.rig.settle());
+  EXPECT_FALSE(rain().value("enabled", true)) << "a file from before rain";
+}
+
 // A DAZ prop (a chair from the library: here the Box Figure's mesh opened from Props, so it has no
 // dents of its own) is met as a model is: placed under the figure's feet it dents them, and posed away
 // from under them it lets them go.

@@ -120,6 +120,7 @@ src/
 │                               #   prim, the TLAS); Vulkan-free, held to tests/common/residency_oracle.*
 ├── scene_material_bits.hpp     # A material's TLAS flags and mask, raster lists and sRGB textures
 ├── scene_gpu_tables.cpp/hpp    # Lights as the shaders read them; the emissive triangles' alias table
+├── scene_water.cpp/hpp         # FV water's table: per material slot a grid over the UVs its domes reach
 ├── scene_gpu_backend.hpp       # rs::GpuBackend: all the retained residency layer will call on the GPU,
 │                               #   Vulkan-free (tests/common/fake_gpu_backend.* is its GPU-free twin)
 ├── scene_residency_vk.cpp/hpp  # VulkanGpuBackend (rs::GpuBackend on the allocator, the frame uploader and
@@ -192,6 +193,7 @@ shaders/
 ├── sobol.h.slang               # Owen-scrambled Sobol points for the accumulation's sampling decisions (ptSampler)
 ├── common.h.slang              # Shared shader utilities
 ├── get_hit.h.slang             # Hit state interpolation
+├── water.h.slang               # FV water at a hit: the domes in its material slot's grid cell
 ├── raytracer_interface.h.slang # RayQuery vs traditional RT abstraction
 ├── dlss_util.h                 # DLSS motion vector / guide buffer utilities
 ├── gizmo_grid.slang            # Infinite grid rendering
@@ -517,6 +519,26 @@ shimmer. A GLB export leaves the extension out; the masks are not exported eithe
 
 A row holds one layer, the first the surface takes (`proceduralOn`): a second at once needs the row's
 fields twice and the evaluation in a loop.
+
+### FV water: rain on the skin
+
+Not a glTF extension: water lying on a surface, kept beside its material record
+(`rs::MaterialRecord::water`, [`figure/materials/water.hpp`](../figure/materials/water.hpp)) rather than in
+it, since a pose moves it and no material edit should cost that. Rain on a person's skin makes it
+([`figure/physics/rain/`](../figure/physics/rain/rain_sim.hpp)): once the pose stops, a seeded replay from a
+dry skin on the posed cage (a `StillPass`), whose beads and stretches of track lie in the skin's UVs as
+domes (spherical caps). Each dome carries the 2x2 that takes an offset in UV to metres along the tangent
+frame the renderer builds (`uvToTangent`, after `vertex_tangents.comp.slang`), so it is round on the skin
+whatever the UVs do there, and its normal needs no tangent of its own. `FigureFeed::setWater` gives each
+surface that takes water (`takesWater`) its layer, v turned when its mesh is fed so.
+
+The residency packs every slot's water into one table (`rs::packWater`, `src/scene_water.*`): per material
+slot a grid over the UVs its domes reach, each cell listing the domes that reach into it, and how damp the
+surface is. At a hit, `sampleWater` ([`shaders/water.h.slang`](../shaders/water.h.slang)) takes the highest
+dome among its cell's; `evaluateMaterial()` lays the damp over the surface as sweat's film is, and a dome as
+a clear coat with the dome's normal. It is drawn by the procedural layer's code, so a material with water
+counts as `eProcedural` (`detectMaterialFeatures`); a shader compiled without it leaves the table unread. As
+a coat, a dome reflects but doesn't bend what is under it. A GLB export leaves it out.
 
 ### `FV_materials_flakes`: Iray Uber's metallic flakes
 

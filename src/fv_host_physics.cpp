@@ -1,6 +1,7 @@
 // Physics on the host's side (docs/physics-plan.md): body contact (figure/physics/contact/
 // contact.hpp): the colliders a figure's pass meets, props and other people, the look each frame at
-// what moved near a figure, the figure.contact command and the contact/<prop> topic; and Physics mode
+// what moved near a figure, the figure.contact command and the contact/<prop> topic; rain on the skin
+// (figure/physics/rain/rain.hpp), figure.rain and the rain/<prop> topic; and Physics mode
 // (figure/physics/rig/figure_physics.hpp), below.
 
 #include "fv_host_impl.hpp"
@@ -459,6 +460,63 @@ Json FvHost::Impl::figureContact(const Json& args)
         other->contact->poke();
   }
   publishContact(*figure);
+  return {{"ok", true}};
+}
+
+//--------------------------------------------------------------------------------------------------
+// Rain on a person's skin (figure/physics/rain/rain.hpp): figure.rain and the rain/<prop> topic. The
+// frame's pump hands its water to the feed (fv_host.cpp).
+
+// Topic "rain/<prop>": {enabled, busy, amount, time, dried, seed, beads, tracks, landed, runs, dripped}:
+// the settings, whether a pass is due or running, and what the last one left.
+void FvHost::Impl::publishRain(Loaded& f)
+{
+  if(!f.rain)
+    return;
+  f.rainVersion                         = f.rain->version();
+  const fv::physics::RainSettings& s    = f.rain->settings();
+  const fv::physics::RainStats&    left = f.rain->stats();
+  protocol->events().snapshot("rain/" + f.id, {{"enabled", s.on},
+                                               {"busy", f.rain->busy()},
+                                               {"amount", s.amount},
+                                               {"time", s.time},
+                                               {"dried", s.dried},
+                                               {"seed", s.seed},
+                                               {"beads", left.beads},
+                                               {"tracks", left.tracks},
+                                               {"landed", left.landed},
+                                               {"runs", left.runs},
+                                               {"dripped", left.dripped}});
+}
+
+Json rainState(const Loaded& f)
+{
+  const fv::physics::RainSettings& s = f.rain->settings();
+  return {{"on", s.on}, {"amount", s.amount}, {"time", s.time}, {"dried", s.dried}, {"seed", s.seed}};
+}
+
+// figure.rain {prop, on?, amount?, time?, dried?, seed?, gesture?}: rain on the skin (off by default),
+// how hard (0.05 to 1), how long it rained (1 to 120 s), how long since it stopped (0 to 300 s), and
+// the seed its drops land by.
+Json FvHost::Impl::figureRain(const Json& args)
+{
+  auto figure = bodyArg(args, "rain");
+  if(!figure || !figure->rain)
+    throw std::runtime_error("no figure with a body is selected");
+  fv::physics::RainSettings s = figure->rain->settings();
+  if(args.contains("on") && args["on"].is_boolean())
+    s.on = args["on"].get<bool>();
+  const auto number = [&](const char* key, float& out) {
+    if(args.contains(key) && args[key].is_number())
+      out = args[key].get<float>();
+  };
+  number("amount", s.amount);
+  number("time", s.time);
+  number("dried", s.dried);
+  if(args.contains("seed") && args["seed"].is_number_integer())
+    s.seed = uint32_t(std::max<int64_t>(0, args["seed"].get<int64_t>()));
+  figure->rain->set(s);
+  publishRain(*figure);
   return {{"ok", true}};
 }
 

@@ -120,8 +120,9 @@ private:
 // `extensions` map contains the corresponding KHR_materials_* key. KHR_texture_transform
 // is checked on core material texture infos and texture-info objects nested inside
 // material extension payloads. Feature dependencies (scatter => volume => transmission)
-// are promoted, so a scene's set is the union of its materials' sets.
-SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& material);
+// are promoted, so a scene's set is the union of its materials' sets. `water`: the material has water
+// lying on it (rs::MaterialRecord::water), which the procedural layer's film and coat draw.
+SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& material, bool water = false);
 SceneFeatureSet detectMaterialFeatures(const tinygltf::Material& material);
 
 // Walk a glTF material list and detect which gated extensions appear: the union of

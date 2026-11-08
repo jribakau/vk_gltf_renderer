@@ -41,6 +41,7 @@
 #include "ies_profile.hpp"
 #include "scene_gpu_tables.hpp"
 #include "scene_skin.hpp"
+#include "scene_water.hpp"
 #include "shaders/gltf_scene_io.h.slang"
 #include "shaders/unit_vector_pack.h.slang"
 
@@ -270,6 +271,11 @@ void Residency::clear()
   retireBuffer(m_emissiveLeafTable);
   retireBuffer(m_iesTable);
   m_lightTable = m_emissiveTable = m_emissiveGroupTable = m_emissiveLeafTable = m_iesTable = {};
+  for(BufferHandle* b : {&m_waterGrids, &m_waterCells, &m_waterRefs, &m_waterItems})
+    retireBuffer(std::exchange(*b, {}));
+  m_waterGridCount = 0;
+  m_waterSlots.clear();
+  m_waterDirty = false;
   m_lightCount = m_emissiveCount = m_emissiveGroupCount = m_emissiveNodeCount = m_emissiveLeafCount = m_iesProfileCount = 0;
   m_emissiveTotalWeight = m_emissiveMeanLum = 0.f;
   m_emissiveStale                           = false;
@@ -1078,6 +1084,8 @@ uint32_t Residency::acquireMaterial(const RetainedScene& scene, MaterialId id)
   m.slot          = slot;
   m.users         = 1;
   m.rev           = scene.material(id) ? scene.material(id)->rev : 0;
+  if(scene.material(id) && scene.material(id)->water)
+    m_waterDirty = true;
   acquireMaterialTextures(scene, id, m);
   if(slot >= m_materialStates.size())
     m_materialStates.resize(size_t(slot) + 1);
@@ -1096,6 +1104,8 @@ void Residency::releaseMaterial(MaterialId id)
   releaseMaterialTextures(it->second);
   m_materials.erase(it);
   m_heldMaterials.erase(id);
+  if(m_waterSlots.count(slot))
+    m_waterDirty = true;
   freeSpan(m_materialStates[slot]->span, m_materialStates[slot]->spanCount);
   m_materialStates[slot].reset();
   m_dirtyMaterials.insert(slot);  // a hole's row: the default material
@@ -3256,6 +3266,11 @@ SyncResult Residency::sync(RetainedScene& scene)
     syncIesProfiles(scene);
     result.changed = true;
   }
+  if(fresh || changes.water || m_waterDirty)
+  {
+    syncWater(scene);
+    result.changed = true;
+  }
   if(fresh || changes.structure || !changes.lights.empty() || !changes.transforms.empty() || !changes.visibility.empty())
   {
     syncLights(scene);
@@ -3791,6 +3806,11 @@ void Residency::writeSceneDesc()
   desc.numEmissiveGroups     = int(m_emissiveGroupCount);
   desc.emissiveLeafOfNode    = (int*)m_gpu.bufferAddress(m_emissiveLeafTable);
   desc.numEmissiveLeafOfNode = int(m_emissiveLeafCount);
+  desc.waterGrids            = (shaderio::WaterGrid*)m_gpu.bufferAddress(m_waterGrids);
+  desc.waterCells            = (glm::uvec2*)m_gpu.bufferAddress(m_waterCells);
+  desc.waterRefs             = (uint32_t*)m_gpu.bufferAddress(m_waterRefs);
+  desc.waterItems            = (shaderio::WaterItem*)m_gpu.bufferAddress(m_waterItems);
+  desc.numWaterGrids         = int(m_waterGridCount);
   m_gpu.upload(m_sceneDesc, 0, bytesOf(desc));
 }
 
@@ -3926,6 +3946,36 @@ void Residency::syncIesProfiles(const RetainedScene& scene)
     m_gpu.upload(m_iesTable, 0, std::as_bytes(std::span(table)));
   m_descDirty |= m_iesProfileCount != scene.iesProfiles().size();
   m_iesProfileCount = uint32_t(scene.iesProfiles().size());
+}
+
+// Every material slot's water, packed again whole (scene_water.hpp). A slot the shader compiled without
+// the procedural layer's code doesn't read is uploaded all the same: it shows once the code comes.
+void Residency::syncWater(const RetainedScene& scene)
+{
+  std::vector<std::pair<uint32_t, const fv::mat::WaterLayer*>> layers;
+  m_waterSlots.clear();
+  for(const auto& [id, slot] : m_materials)
+    if(const MaterialRecord* record = scene.material(id); record && record->water)
+    {
+      layers.emplace_back(slot.slot, record->water.get());
+      m_waterSlots.insert(slot.slot);
+    }
+  const WaterTables tables = layers.empty() ? WaterTables{} : packWater(m_materialHighWater, layers);
+  const auto        put    = [&](BufferHandle& buffer, const auto& rows, const char* name) {
+    const uint64_t bytes = std::span(rows).size_bytes();
+    if(!bytes && !buffer)
+      return;
+    m_descDirty |= fitBuffer(m_gpu, buffer, bytes, name, [this](BufferHandle b) { retireBuffer(b); });
+    if(bytes)
+      m_gpu.upload(buffer, 0, std::as_bytes(std::span(rows)));
+  };
+  put(m_waterGrids, tables.grids, "water grids");
+  put(m_waterCells, tables.cells, "water cells");
+  put(m_waterRefs, tables.refs, "water refs");
+  put(m_waterItems, tables.items, "water items");
+  m_descDirty |= m_waterGridCount != tables.grids.size();
+  m_waterGridCount = uint32_t(tables.grids.size());
+  m_waterDirty     = false;
 }
 
 // The shown instances whose material emits, their triangles from their mesh records, a textured
@@ -4123,7 +4173,7 @@ size_t Residency::liveBuffers() const
     n += p ? (p->indices ? 1 : 0) + (p->micromapIndices ? 1 : 0) : 0;
   for(BufferHandle b : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable,
                         m_emissiveTable, m_emissiveGroupTable, m_emissiveLeafTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable,
-                        m_prevWorldTable, m_chainScratch, m_unitAxes})
+                        m_prevWorldTable, m_chainScratch, m_unitAxes, m_waterGrids, m_waterCells, m_waterRefs, m_waterItems})
     n += b ? 1 : 0;
   return n;
 }
@@ -4204,7 +4254,8 @@ MemoryLedger Residency::ledger() const
     if(std::any_of(hits.bins.begin(), hits.bins.end(), [](uint64_t b) { return b > 0; }))
       out.hits.push_back({hits.owner.prop, hits.owner.local, hits.bins});
   for(BufferHandle s : {m_renderNodes, m_renderPrims, m_sceneDesc, m_materialTable, m_textureInfoTable, m_lightTable, m_emissiveTable, m_emissiveGroupTable,
-                        m_emissiveLeafTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable, m_prevWorldTable})
+                        m_emissiveLeafTable, m_iesTable, m_jointPack, m_normalPack, m_weightPack, m_dualQuatPack, m_prevPositionTable, m_prevWorldTable,
+                        m_waterGrids, m_waterCells, m_waterRefs, m_waterItems})
     out.total.scene += bytes(s);
   out.total.scene += (m_tlas ? m_gpu.accelBytes(m_tlas) : 0) + m_gpu.buildScratchBytes();
   out.retiring = *m_retiring;

@@ -60,8 +60,9 @@ written positions copied for motion; instances for the draw items that came, hol
 went, and their prims, meshes and material slots; the materials edited (an edit the live variant
 can't draw held, D15); the images those need, decoded in one batch; vertex edits uploaded and their
 BLASes refit; the deform passes; capacity grown; material rows and spans; the draw lists; the
-render-node and prim rows and the TLAS; the motion tables; IES profiles, lights and the emissive
-table; the scene descriptor; then a transfer-to-shader barrier. Everything a sync frees goes
+render-node and prim rows and the TLAS; the motion tables; IES profiles, the materials' water
+(`scene_water.*`), lights and the emissive table; the scene descriptor; then a transfer-to-shader
+barrier. Everything a sync frees goes
 through the retire queue; nothing waits for idle.
 
 ### Opacity micromaps (optional)

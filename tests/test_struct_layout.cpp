@@ -163,6 +163,7 @@ void main(uint3 id : SV_DispatchThreadID)
   v += scene.materials[i].pbrRoughnessFactor + float(scene.textureInfos[i].index) + float(scene.renderNodes[i].materialID);
   v += scene.renderPrimitives[i].vertexBuffer.positions[i].x + scene.lights[i].intensity + scene.emissiveTriangles[i].selection;
   v += scene.emissiveGroups[i].weight + float(pushConst.hitSignal[i]) + frame.skyOmi.gradient.sunCurve + frame.skyOmi.plain.color.x;
+  v += scene.waterGrids[i].damp + scene.waterItems[i].height + float(scene.waterCells[i].x + scene.waterRefs[i]);
   output[i] = v;
 }
 )";
@@ -307,7 +308,8 @@ HostStruct gltfScene()
   return {"GltfScene", sizeof(Self), {
     F(materials), F(textureInfos), F(renderNodes), F(renderPrimitives), F(lights), F(numLights),
     F(emissiveTriangles), F(numEmissiveTriangles), F(emissiveTotalWeight), F(emissiveMeanLum), F(numEmissiveGroups),
-    F(emissiveGroups), F(emissiveLeafOfNode), F(numEmissiveLeafOfNode), F(iesProfiles), F(iesProfileSampleCount)
+    F(emissiveGroups), F(emissiveLeafOfNode), F(numEmissiveLeafOfNode), F(iesProfiles), F(iesProfileSampleCount),
+    F(waterGrids), F(waterCells), F(waterRefs), F(waterItems), F(numWaterGrids)
   }};
 }
 
@@ -404,6 +406,18 @@ HostStruct emissiveGroup()
     F(center), F(radius), F(axis), F(cosSpread), F(weight), F(first), F(count), F(renderNodeID), F(left), F(right),
     F(parent), F(pad)
   }};
+}
+
+HostStruct waterGrid()
+{
+  using Self = WaterGrid;
+  return {"WaterGrid", sizeof(Self), {F(uvMin), F(cellsPerUv), F(width), F(height), F(firstCell), F(damp)}};
+}
+
+HostStruct waterItem()
+{
+  using Self = WaterItem;
+  return {"WaterItem", sizeof(Self), {F(toTangent), F(a), F(b), F(radius), F(height), F(_pad)}};
 }
 
 // A struct C++ and Slang lay out apart, as the tests' own check that a disagreement is caught: a
@@ -555,6 +569,8 @@ TEST(StructLayout, GltfScene)
   expectAgree(gltfLight());
   expectAgree(emissiveTriangle());
   expectAgree(emissiveGroup());
+  expectAgree(waterGrid());
+  expectAgree(waterItem());
 }
 TEST(StructLayout, GltfShadeMaterial)
 {

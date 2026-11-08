@@ -54,6 +54,7 @@ static bool doDebug = false;
 
 #include "gltf_material_eval.h.slang"
 #include "gltf_scene_io.h.slang"
+#include "water.h.slang"
 #if GLTF_USE_HAIR
 #include "hair_bsdf.h.slang"
 #endif
@@ -643,6 +644,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       MeshState mesh    = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, ptIsInside(pt), texGrad);
       mesh.baseColorVertexMul = hit.color;
       mesh.masks              = hit.masks;
+#if GLTF_USE_PROCEDURAL
+      mesh.water = sampleWater(pushConst.gltfScene, uint(materialIndex), hit.uv[0]);
+#endif
       pbrMat                  = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, texInfos, materials, simplifyScatter,
                                                  hasFlag(pushConst.flags, PathtracerFlags::ePtSkinFaceOn));
       // Under the water, what is outside a surface is water, not air: submerged skin all but loses its
@@ -2300,6 +2304,9 @@ void inspectPixel(IRaytracer raytracer)
                                             worldFoot * hit.texelDensity * pushConst.texGradScale);
     mesh.baseColorVertexMul     = hit.color;
     mesh.masks                  = hit.masks;
+#if GLTF_USE_PROCEDURAL
+    mesh.water = sampleWater(pushConst.gltfScene, uint(materialIndex), hit.uv[0]);
+#endif
     mat = evaluateMaterial(materialIndex, mesh, allImages, allSamplers, pushConst.gltfScene->textureInfos,
                            pushConst.gltfScene->materials, hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin),
                            hasFlag(pushConst.flags, PathtracerFlags::ePtSkinFaceOn));

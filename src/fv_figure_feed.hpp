@@ -143,6 +143,12 @@ public:
   // material edits). A request never fed is left to the next lowering. False when none was replaced.
   bool retexture(std::span<const mat::TextureRequest> requests);
 
+  // The water on a mesh's surfaces (fv::physics::Rain::layers: per material group, in the mesh's own
+  // UVs) into its materials' records, in the UVs as fed (v turned when the mesh's is); a surface that
+  // doesn't take water (mat::takesWater), or a group with none, is dry. Nothing changes for a material
+  // whose water is the same.
+  void setWater(const SceneGraph& figure, int mesh, const std::map<int, mat::WaterLayer>& layers);
+
   rs::EntityId   entityOf(int node) const;
   rs::MeshId     meshOf(int mesh) const;
   rs::MaterialId materialOf(int material) const;

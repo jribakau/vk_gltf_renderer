@@ -58,6 +58,16 @@ Design notes for the fork:
 -------------------------------------------------------------------------------------------------*/
 #define MICROFACET_MIN_ROUGHNESS 0.0014142f
 
+#if GLTF_USE_PROCEDURAL
+// FV water's response, set by eye as sweat's (figure/materials/procedural.cpp): the damp skin's tint and
+// the roughness its lobes go down to; a dome's coat (water's 2% head on, half the coat's fixed 4%) and
+// its roughness.
+static const float3 WATER_FILM_TINT      = float3(0.88F, 0.86F, 0.85F);
+static const float  WATER_FILM_ROUGHNESS = 0.2F;
+static const float  WATER_COAT           = 0.5F;
+static const float  WATER_DROP_ROUGHNESS = 0.03F;
+#endif
+
 
 struct MeshState
 {
@@ -70,6 +80,7 @@ struct MeshState
   float  texGrad  = 0.0f;  // Ray footprint for SampleGrad; 0 -> mip 0 in path tracer, implicit HW mips in fragment
   float4 baseColorVertexMul = float4(1);  // COLOR_0 multiplier for baseColor or spec-gloss diffuse
   float4 masks              = float4(0);  // where procedural layers land, a channel each
+  float4 water              = float4(0);  // FV water at the point (sampleWater, water.h.slang)
 };
 
 
@@ -394,6 +405,17 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
       pbrMat.roughness += (min(pbrMat.roughness, float2(filmAlpha)) - pbrMat.roughness) * proceduralFilm;
     }
   }
+  // FV water (water.h.slang): rain's beads and tracks over whatever the surface has. The damp is a film
+  // as sweat's is, the skin's own lobes smoothed and a little darker; the domes are clear coats of their
+  // own, in the coat block below. As a coat, a dome reflects but doesn't bend what is under it.
+  const float waterFilm  = state.water.w;
+  const float waterCover = state.water.z;
+  if(waterFilm > 0.0F)
+  {
+    pbrMat.baseColor *= lerp(float3(1.0F), WATER_FILM_TINT, waterFilm);
+    const float filmAlpha = WATER_FILM_ROUGHNESS * WATER_FILM_ROUGHNESS;
+    pbrMat.roughness += (min(pbrMat.roughness, float2(filmAlpha)) - pbrMat.roughness) * waterFilm;
+  }
 #endif
 
   // Emissive term
@@ -527,6 +549,7 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   // The film smooths the tight lobe as it does the broad one. The beads are a coat of their own, a dome
   // each: water, so clear, with no colour and nothing under them changed but what a coat takes.
   pbrMat.specular2Roughness = lerp(pbrMat.specular2Roughness, min(pbrMat.specular2Roughness, material.proceduralFilmRoughness), proceduralFilm);
+  pbrMat.specular2Roughness = lerp(pbrMat.specular2Roughness, min(pbrMat.specular2Roughness, WATER_FILM_ROUGHNESS), waterFilm);
   if(proceduralDrop > 0.0F)
   {
     const float dropAlpha     = material.proceduralDropRoughness * material.proceduralDropRoughness;
@@ -534,6 +557,14 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
     pbrMat.clearcoat          = max(pbrMat.clearcoat, material.proceduralCoat * proceduralDrop);
     pbrMat.clearcoatRoughness = lerp(pbrMat.clearcoatRoughness, coatRoughness, proceduralDrop);
     pbrMat.Nc                 = applyDetailNormal(pbrMat.Nc, state.T, state.B, proceduralDropNormal);
+  }
+  // a rain dome over a sweat bead: the rain's
+  if(waterCover > 0.0F)
+  {
+    pbrMat.clearcoat          = max(pbrMat.clearcoat, WATER_COAT * waterCover);
+    pbrMat.clearcoatRoughness = lerp(pbrMat.clearcoatRoughness, WATER_DROP_ROUGHNESS, waterCover);
+    const float2 slope        = state.water.xy;
+    pbrMat.Nc                 = applyDetailNormal(pbrMat.Nc, state.T, state.B, float3(slope, sqrt(saturate(1.0F - dot(slope, slope)))));
   }
 #endif
 #endif

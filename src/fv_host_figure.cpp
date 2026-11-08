@@ -559,6 +559,9 @@ void FvHost::Impl::buildBody(Prop& p)
       f->contact            = std::make_unique<fv::physics::Contact>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
       f->contact->colliders = [this, raw = f.get()] { return contactColliders(*raw); };
       f->contact->driven    = [this, raw = f.get()] { return renderer->editAnimationControl().play || movesNear(*raw); };
+      // rain on the skin, off until asked; while a clip plays its drops ride the skin
+      f->rain         = std::make_unique<fv::physics::Rain>(f->fig->loaded.scene, *f->fig->morphs, body, f->fig->loaded.root);
+      f->rain->driven = [this] { return renderer->editAnimationControl().play; };
       // and a ragdoll, for Physics mode, and the chest's soft bones, in either
       if(f->fig->pose)
       {

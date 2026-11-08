@@ -84,6 +84,7 @@ set(TEST_SOURCES
     figure/test_hair_strands.cpp
     figure/test_collider.cpp
     figure/test_contact.cpp
+    figure/test_rain.cpp
     figure/test_rigid.cpp
     figure/test_ragdoll.cpp
     figure/test_flesh.cpp
@@ -190,6 +191,9 @@ set(TEST_SOURCES
     test_retained_deform.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_residency.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_gpu_tables.cpp
+    # The water table: a grid per material slot over the UVs its domes reach
+    test_scene_water.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene_water.cpp
     # What the Vulkan backend converts and plans without a device: BLAS scratch batches (I8), TLAS rows, samplers
     test_residency_vk_util.cpp
     ${CMAKE_SOURCE_DIR}/src/scene_residency_vk_util.cpp

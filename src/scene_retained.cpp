@@ -62,7 +62,7 @@ std::array<float, 2> ClipRecord::range() const
 bool SceneChanges::empty() const
 {
   return !structure && transforms.empty() && visibility.empty() && morphWeights.empty() && meshes.empty() && displacements.empty()
-         && materials.empty() && lights.empty() && skins.empty() && !features && !iesProfiles;
+         && materials.empty() && lights.empty() && skins.empty() && !features && !iesProfiles && !water;
 }
 
 RetainedScene::RetainedScene()
@@ -92,7 +92,7 @@ MaterialId RetainedScene::addMaterial(MaterialRecord material)
     for(const TextureRef& ref : *material.textures)
       retain(ref.texture);
   // nothing draws with it yet, so it counts for no feature until an instance names it
-  const nvvkgltf::SceneFeatureSet features = nvvkgltf::detectMaterialFeatures(material.payload);
+  const nvvkgltf::SceneFeatureSet features = nvvkgltf::detectMaterialFeatures(material.payload, material.water != nullptr);
   return m_materials.insert({.value = std::move(material), .features = features});
 }
 
@@ -335,7 +335,7 @@ void RetainedScene::setMaterial(MaterialId id, fv::mat::Material payload)
   assertOwner();
   if(auto* r = m_materials.get(id))
   {
-    const nvvkgltf::SceneFeatureSet features = nvvkgltf::detectMaterialFeatures(payload);
+    const nvvkgltf::SceneFeatureSet features = nvvkgltf::detectMaterialFeatures(payload, r->value.water != nullptr);
     countFeatures(r->features, -int64_t(r->uses));
     countFeatures(features, r->uses);
     r->features      = features;
@@ -343,6 +343,23 @@ void RetainedScene::setMaterial(MaterialId id, fv::mat::Material payload)
     r->value.rev++;
     m_changes.materials.insert(id);
   }
+}
+
+void RetainedScene::setMaterialWater(MaterialId id, std::shared_ptr<const fv::mat::WaterLayer> water)
+{
+  assertOwner();
+  auto* r = m_materials.get(id);
+  if(!r || r->value.water == water || (r->value.water && water && *r->value.water == *water))
+    return;
+  if((r->value.water != nullptr) != (water != nullptr))
+  {
+    const nvvkgltf::SceneFeatureSet features = nvvkgltf::detectMaterialFeatures(r->value.payload, water != nullptr);
+    countFeatures(r->features, -int64_t(r->uses));
+    countFeatures(features, r->uses);
+    r->features = features;
+  }
+  r->value.water  = std::move(water);
+  m_changes.water = true;
 }
 
 void RetainedScene::setMaterial(MaterialId id, fv::mat::Material payload, std::shared_ptr<const TextureTable> textures)

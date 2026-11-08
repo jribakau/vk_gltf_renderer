@@ -631,6 +631,24 @@ std::vector<bool> FigureFeed::tangentGroups(const std::vector<int>& materials) c
   return out;
 }
 
+void FigureFeed::setWater(const SceneGraph& figure, int mesh, const std::map<int, mat::WaterLayer>& layers)
+{
+  if(mesh < 0 || size_t(mesh) >= figure.meshes.size())
+    return;
+  const Mesh& m     = figure.meshes[size_t(mesh)];
+  const bool  flipV = size_t(mesh) < m_meshes.size() && !m_meshes[size_t(mesh)].id.isNone() ? m_meshes[size_t(mesh)].flipV : !m_options.build.texturesFlipped;
+  for(size_t g = 0; g < m.materials.size(); g++)
+  {
+    const int mi = m.materials[g];
+    if(mi < 0 || size_t(mi) >= m_materials.size() || size_t(mi) >= figure.materials.size())
+      continue;
+    std::shared_ptr<const mat::WaterLayer> water;
+    if(const auto it = layers.find(int(g)); it != layers.end() && mat::takesWater(figure.materials[size_t(mi)].surface))
+      water = std::make_shared<const mat::WaterLayer>(flipV ? mat::flippedV(it->second) : it->second);
+    m_scene.setMaterialWater(m_materials[size_t(mi)], std::move(water));
+  }
+}
+
 bool FigureFeed::anyProcedural(const std::vector<int>& materials) const
 {
   for(int mi : materials)

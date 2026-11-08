@@ -179,6 +179,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("wardrobe.keepFull", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.keepFull", args); }); });
   cmds.add("wardrobe.collision", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.collision", args); }); });
   cmds.add("figure.contact", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("figure.contact", args); }); });
+  cmds.add("figure.rain", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("figure.rain", args); }); });
   cmds.add("physics.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.set", args); }); });
   cmds.add("physics.pin", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.pin", args); }); });
   cmds.add("physics.secondary", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.secondary", args); }); });
@@ -785,18 +786,37 @@ void FvHost::onUpdate()
         if(f.contactVersion != f.contact->version())
           s.publishContact(f);
       }
+      // the Transform panel, a gizmo or what it rides on places the figure's entity, not its graph: which
+      // way is down for the cloth and the rain
+      std::optional<fv::Mat4> placed;
+      if((f.dforce || (f.rain && f.rain->enabled())) && s.renderer->feedsHostScene() && s.renderer->hostScene().entity(p->root))
+      {
+        const glm::mat4 world = s.renderer->hostScene().world(p->root);
+        placed.emplace();
+        for(int c = 0; c < 4; c++)
+          for(int r = 0; r < 4; r++)
+            placed->e[size_t(c * 4 + r)] = world[c][r];
+      }
+      // the rain's drops run again on a pose, a shape or a turn that stopped; its water goes to the feed
+      // when a pass lands, and to a new feed
+      if(f.rain)
+      {
+        if(placed)
+          f.rain->setPlacement(*placed);
+        if(posedOrShaped)
+          f.rain->changed(moved, !changes.nodes.empty());
+        if((f.rain->pump() || f.rainFed != f.feed) && f.feed)
+        {
+          f.feed->setWater(f.fig->loaded.scene, f.rain->bodyMesh(), f.rain->layers());
+          f.rainFed = f.feed;
+        }
+        if(f.rainVersion != f.rain->version())
+          s.publishRain(f);
+      }
       if(f.dforce)
       {
-        // the Transform panel, a gizmo or what it rides on places the figure's entity, not its graph
-        if(s.renderer->feedsHostScene() && s.renderer->hostScene().entity(p->root))
-        {
-          const glm::mat4 world = s.renderer->hostScene().world(p->root);
-          fv::Mat4        placed;
-          for(int c = 0; c < 4; c++)
-            for(int r = 0; r < 4; r++)
-              placed.e[size_t(c * 4 + r)] = world[c][r];
-          f.dforce->setPlacement(placed);
-        }
+        if(placed)
+          f.dforce->setPlacement(*placed);
         if(!changes.nodes.empty() || !moved.empty())
           f.dforce->changed(moved, !changes.nodes.empty());
         if(f.dforce->pump())

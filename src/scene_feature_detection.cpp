@@ -156,7 +156,7 @@ int SceneFeatureSet::unusedExtensionCount() const
 
 //--------------------------------------------------------------------------------------------------
 // One material's feature toggles, dependencies promoted
-SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& m)
+SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& m, bool water)
 {
   SceneFeatureSet set{};
 
@@ -192,8 +192,8 @@ SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& m)
     set.enable(SceneFeatureSet::eDetail);
   if(m.hair)
     set.enable(SceneFeatureSet::eHair);
-  // the layer's film is a coat, over lobes it turns down
-  if(m.procedural)
+  // the layer's film is a coat, over lobes it turns down; water on the surface is drawn by its code
+  if(m.procedural || water)
   {
     set.enable(SceneFeatureSet::eProcedural);
     set.enable(SceneFeatureSet::eClearcoat);

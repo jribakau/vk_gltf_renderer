@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <figure/math/noise.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 
 namespace fv::mat {
@@ -57,34 +58,8 @@ constexpr ProceduralDef kDefs[] = {
      .coverMap      = kSweatCoverMap},
 };
 
-double fade(double t)
-{
-  return t * t * (3 - 2 * t);
-}
-
-// A lattice point's value in [0, 1)
-double lattice(int x, int y, int z)
-{
-  uint32_t h = uint32_t(x) * 0x8da6b343u ^ uint32_t(y) * 0xd8163841u ^ uint32_t(z) * 0xcb1ab31fu;
-  h ^= h >> 16;
-  h *= 0x7feb352du;
-  h ^= h >> 15;
-  h *= 0x846ca68bu;
-  h ^= h >> 16;
-  return double(h >> 8) / double(1u << 24);
-}
-
-// Value noise in 3D, so it has no seams on a surface whatever its UVs; in [0, 1]
-double noise3(double x, double y, double z)
-{
-  const double fx = std::floor(x), fy = std::floor(y), fz = std::floor(z);
-  const int    ix = int(fx), iy = int(fy), iz = int(fz);
-  const double sx = fade(x - fx), sy = fade(y - fy), sz = fade(z - fz);
-  const auto   at = [&](int dx, int dy, int dz) { return lattice(ix + dx, iy + dy, iz + dz); };
-  const auto   mix = [](double a, double b, double t) { return a + (b - a) * t; };
-  return mix(mix(mix(at(0, 0, 0), at(1, 0, 0), sx), mix(at(0, 1, 0), at(1, 1, 0), sx), sy),
-             mix(mix(at(0, 0, 1), at(1, 0, 1), sx), mix(at(0, 1, 1), at(1, 1, 1), sx), sy), sz);
-}
+using noise::fade;
+using noise::noise3;
 
 // The patch's share at a point: its whole weight out to half its radius, none past one and a half. A
 // bell curve (exp of minus the distance squared) left most of a forehead at a third of its weight, so

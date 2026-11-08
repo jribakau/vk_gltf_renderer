@@ -200,6 +200,9 @@ struct BuiltMesh
 };
 
 BuiltMesh build(const MeshInput& m);
+// The UV index of every polygon corner (as polyVerts): the vertex's own, unless a seam override gives the
+// corner another.
+std::vector<int32_t> cornerUvs(const MeshInput& m);
 // The mesh again at another level, or with another share of its strands or pieces a segment (Lines::pieces),
 // over `cage`: everything that lives on the cage stays true of it (morphs, a pose, a drape, bindings). Null
 // when it has no source.

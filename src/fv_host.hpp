@@ -198,6 +198,11 @@
 //                                                file's block without it;
 //                                                bulge 0-1 (0.7), reach 1-10 cm (3), softness 0-1 (0.5, the
 //                                                share of an overlap with another figure, not used yet)
+//   figure.rain     {prop, on?, amount?, time?, dried?, seed?, gesture?}   rain on a person's skin
+//                                                (figure/physics/rain/rain.hpp), its drops run down the
+//                                                pose: off by default and for a scene file without the
+//                                                block; amount 0.05-1 (0.6), time it rained 1-120 s (30),
+//                                                dried 0-300 s since it stopped (0), seed (1)
 //   wardrobe.cloth  {prop, item, on?: bool | null, strength?, volume?}   dForce on one item: true drapes it (at the
 //                                                defaults when its file has no simulation settings), false
 //                                                holds it, null leaves it to the file; `strength` scales
@@ -298,7 +303,8 @@
 // busy, corrected}}; `color` is the colour preset on the item, from wardrobe.color or the last preset that
 // reached it, null for its own; absent, it is as it was worn), "dforce/<prop>"
 // ({figure, enabled, mode, active, busy, draped}), "contact/<prop>" ({enabled, busy, patches, softness, bulge,
-// reach}, for a figure with body contact); a prop's topics
+// reach}, for a figure with body contact), "rain/<prop>" ({enabled, busy, amount, time, dried, seed, beads,
+// tracks, landed, runs, dripped}, for a person); a prop's topics
 // are dropped when it leaves the scene. "lighting" is the lighting.set shape, plus read-only
 // env.name, env.size, env.loading. "pose/<prop>" carries `eyes` (whether the figure can look at
 // the camera). "morphs/<prop>" is the visible channels ({label, group, value, min, max, weight,

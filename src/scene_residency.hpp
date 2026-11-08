@@ -640,6 +640,8 @@ private:
   void     buildDrawLists();
   void     syncLights(RetainedScene& scene);
   void     syncIesProfiles(const RetainedScene& scene);
+  // the water table (scene_water.hpp) from every material slot's water
+  void     syncWater(const RetainedScene& scene);
   void     syncEmissive(const RetainedScene& scene);
   bool     emits(const Instance& inst) const;
   void     retireMesh(MeshId id);
@@ -878,6 +880,12 @@ private:
   uint32_t                             m_loggedLightCount   = 0;  // the light count the last [Lights] line said
   uint32_t                             m_lightCount          = 0;
   uint32_t                             m_iesProfileCount     = 0;
+  // the water table (GltfScene::waterGrids...), its grid count, and the slots it has water in; dirty when
+  // a material with water comes or goes
+  BufferHandle                         m_waterGrids, m_waterCells, m_waterRefs, m_waterItems;
+  uint32_t                             m_waterGridCount = 0;
+  std::set<uint32_t>                   m_waterSlots;
+  bool                                 m_waterDirty = false;
   uint32_t                             m_emissiveCount       = 0;
   float                                m_emissiveTotalWeight = 0.f;
   float                                m_emissiveMeanLum     = 0.f;

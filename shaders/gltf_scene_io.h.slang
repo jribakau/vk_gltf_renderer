@@ -506,6 +506,32 @@ struct GltfShadeMaterial
 
 // The scene description is a pointer to the material, render node and render primitive
 // The buffers are all arrays of the above structures
+// FV water (figure/materials/water.hpp): what lies on a surface, per material slot. Its grid covers the
+// UVs its domes reach (cell = floor((uv - uvMin) * cellsPerUv)), each cell a (first, count) run of
+// GltfScene::waterRefs naming the domes that reach into it (scene_water.cpp, water.h.slang).
+struct WaterGrid
+{
+  float2 uvMin;
+  float2 cellsPerUv;
+  uint   width;      // cells; 0: no domes, only the damp
+  uint   height;
+  uint   firstCell;  // into GltfScene::waterCells
+  float  damp;       // how wet the surface is all over, 0..1
+};
+
+// A dome over the skin, a bead (a == b) or a stretch of track (a ridge from a to b): a spherical cap of
+// this contact radius (a track's half width) and height, round on the skin. toTangent (row-major) takes
+// an offset in UV to metres along the hit's tangent and bitangent.
+struct WaterItem
+{
+  float4 toTangent;
+  float2 a;
+  float2 b;
+  float  radius;
+  float  height;
+  float2 _pad;  // 48 bytes
+};
+
 struct GltfScene
 {
   GltfShadeMaterial*   materials;
@@ -530,6 +556,13 @@ struct GltfScene
   // azimuthally averaged (see docs/developer.md > Lighting). GltfLight.iesProfile indexes the profile.
   float* iesProfiles;
   int    iesProfileSampleCount;
+
+  // FV water, per material slot (WaterGrid); a slot at or past numWaterGrids is dry
+  WaterGrid* waterGrids;
+  uint2*     waterCells;  // (first, count) into waterRefs
+  uint*      waterRefs;   // into waterItems
+  WaterItem* waterItems;
+  int        numWaterGrids;
 };
 
 // Defensive emissive selection: blend power-weighted selection (area * luminance) with area-uniform

@@ -36,7 +36,8 @@ std::vector<uint32_t> fan(std::span<const int32_t> start, std::span<const int32_
   return out;
 }
 
-// The UV index of every polygon corner: the vertex's own, unless a seam override gives the corner another.
+}  // namespace
+
 std::vector<int32_t> cornerUvs(const MeshInput& m)
 {
   std::vector<int32_t> out(m.polyVerts);
@@ -52,6 +53,8 @@ std::vector<int32_t> cornerUvs(const MeshInput& m)
   }
   return out;
 }
+
+namespace {
 
 // Box min and max, and the sphere around the box's centre (as three computes them).
 Bounds boundsOf(std::span<const float> position)

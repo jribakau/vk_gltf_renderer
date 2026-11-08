@@ -51,6 +51,7 @@
 #include <tinygltf/tiny_gltf.h>
 
 #include <figure/materials/material.hpp>
+#include <figure/materials/water.hpp>
 
 #include "scene_feature_detection.hpp"
 #include "scene_retained_handles.hpp"
@@ -376,6 +377,9 @@ struct MaterialRecord
   bool favoured = false;
   // marked Keep full: short of GPU memory its images come down only when nothing else can
   bool keepFull = false;
+  // water lying on it (rain's beads and tracks, figure/physics/rain/rain.hpp), in the UVs of the meshes
+  // drawn with it; null: dry. Not part of the payload: a pose moves it, which no material edit should cost
+  std::shared_ptr<const fv::mat::WaterLayer> water;
 };
 
 struct SkinRecord
@@ -537,6 +541,7 @@ struct SceneChanges
   std::set<SkinId>     skins;              // joints or inverse binds edited
   bool                 features    = false;  // features() is not what the last takeChanges() saw
   bool                 iesProfiles = false;  // a profile was added
+  bool                 water       = false;  // a material's water was set (MaterialRecord::water)
   bool                 empty() const;
 };
 
@@ -615,6 +620,8 @@ public:
   void setMaterial(MaterialId id, fv::mat::Material payload);
   // the payload with the table its texture indices now index (its textures referenced, the old ones released)
   void setMaterial(MaterialId id, fv::mat::Material payload, std::shared_ptr<const TextureTable> textures);
+  // the water lying on it (MaterialRecord::water); null dries it. Nothing changes when it is the same
+  void setMaterialWater(MaterialId id, std::shared_ptr<const fv::mat::WaterLayer> water);
   void setLight(LightId id, const tinygltf::Light& payload);
   void setLightIes(LightId id, std::optional<IesLight> ies);
   void setLightShown(LightId id, bool shown);
@@ -685,8 +692,9 @@ public:
   // can fill again); a material only a feed or an importer holds counts for nothing. Kept as a
   // use count per feature, moved as instances come and go (setMeshInstance, destroyEntity), as
   // payloads change (setMaterial) and at a material's last release, never by a rescan; a payload's
-  // own bits (nvvkgltf::detectMaterialFeatures) are worked out once per revision. eDlssGuide is
-  // the renderer's (the denoiser's) and never set here.
+  // own bits (nvvkgltf::detectMaterialFeatures) are worked out once per revision. A material's water
+  // counts too (setMaterialWater), though no export carries it. eDlssGuide is the renderer's (the
+  // denoiser's) and never set here.
   nvvkgltf::SceneFeatureSet features() const;
 
   // ---- change tracking

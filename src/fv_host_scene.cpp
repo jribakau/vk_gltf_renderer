@@ -716,6 +716,8 @@ Json FvHost::Impl::sceneState(const Json& args)
     state["collision"] = prop->figure->collider->enabled();
   if(prop->figure->contact)
     state["contact"] = contactState(*prop->figure);
+  if(prop->figure->rain)
+    state["rain"] = rainState(*prop->figure);
   if(prop->figure->physics)
     state["physics"] = physicsState(*prop->figure);
   if(prop->figure->secondary)
@@ -1160,6 +1162,15 @@ Json FvHost::Impl::sceneRestore(const Json& args)
         contact["self"] = false;
       contact["prop"] = target->id;
       figureContact(contact);
+    }
+    // a file from before rain has no block: dry
+    if(target->rain)
+    {
+      Json rain = args.value("rain", Json());
+      if(!rain.is_object())
+        rain = {{"on", false}};
+      rain["prop"] = target->id;
+      figureRain(rain);
     }
     if(target->dforce && args.contains("dforceMode") && args["dforceMode"].is_string())
     {

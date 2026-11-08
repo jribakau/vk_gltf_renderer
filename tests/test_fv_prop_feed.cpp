@@ -935,6 +935,55 @@ TEST(FvPropFeed, AProceduralLayerGivesItsMeshMasksAndTheyStay)
     ADD_FAILURE() << p;
 }
 
+TEST(FvPropFeed, RainsWaterGoesOnTheSkinsRecordsInTheUvsAsFed)
+{
+  const auto         box = loadBox();
+  rs::RetainedScene  scene;
+  rs::FakeGpuBackend gpu(2);
+  rs::Residency      residency(gpu);
+  fv::FigureFeed     feed(scene, {.cageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); }});
+  fv::SceneGraph&    graph = box->loaded.scene;
+  const int          root  = box->loaded.root;
+  // the first mesh's first surface is skin, everything else not
+  for(fv::Material& m : graph.materials)
+    m.surface.kind = fv::mat::Kind::eOther;
+  ASSERT_FALSE(graph.meshes[0].materials.empty());
+  const int skin                     = graph.meshes[0].materials[0];
+  graph.materials[size_t(skin)].surface.kind = fv::mat::Kind::eSkin;
+  feed.sync(graph, root);
+  residency.replace(scene);
+  ASSERT_FALSE(scene.features().has(nvvkgltf::SceneFeatureSet::eProcedural));
+
+  // a bead on every group of the mesh, as the rain hands them over
+  std::map<int, fv::mat::WaterLayer> layers;
+  for(size_t g = 0; g < graph.meshes[0].materials.size(); g++)
+    layers[int(g)] = {.items = {{.a = {0.25f, 0.2f}, .b = {0.25f, 0.2f}, .toTangent = {1, 0.1f, 0.2f, -1}, .radius = 1e-3f, .height = 7e-4f}}, .damp = 0.6f};
+  feed.setWater(graph, 0, layers);
+  const rs::MaterialRecord* wet = scene.material(feed.materialOf(skin));
+  ASSERT_TRUE(wet && wet->water);
+  EXPECT_FLOAT_EQ(wet->water->damp, 0.6f);
+  // fed with v turned (the options' textures aren't flipped), so is the water
+  ASSERT_EQ(wet->water->items.size(), 1u);
+  EXPECT_FLOAT_EQ(wet->water->items[0].a[1], 0.8f);
+  EXPECT_FLOAT_EQ(wet->water->items[0].toTangent[1], -0.1f);
+  for(size_t g = 1; g < graph.meshes[0].materials.size(); g++)
+    if(graph.meshes[0].materials[g] != skin)
+      EXPECT_FALSE(scene.material(feed.materialOf(graph.meshes[0].materials[g]))->water) << "group " << g << " doesn't take water";
+  // the shaders take the procedural layer's code for it, and the residency its table
+  EXPECT_TRUE(scene.features().has(nvvkgltf::SceneFeatureSet::eProcedural));
+  EXPECT_TRUE(scene.features().has(nvvkgltf::SceneFeatureSet::eClearcoat));
+  EXPECT_TRUE(residency.sync(scene).changed);
+  // the same again changes nothing; dry, it goes
+  feed.setWater(graph, 0, layers);
+  EXPECT_FALSE(scene.takeChanges().water);
+  feed.setWater(graph, 0, {});
+  EXPECT_FALSE(scene.material(feed.materialOf(skin))->water);
+  EXPECT_FALSE(scene.features().has(nvvkgltf::SceneFeatureSet::eProcedural));
+  residency.sync(scene);
+  for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+    ADD_FAILURE() << p;
+}
+
 // An item in the scene comes down a step and back. All that lives on its cage stays, what it was drawn with goes
 // (nothing holds the old mesh, or the memory wasn't given back), and what is drawn is what a wear at that level draws.
 TEST(FvPropFeed, AWornItemComesDownAStepAndBack)

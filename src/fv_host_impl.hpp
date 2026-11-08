@@ -66,6 +66,7 @@
 
 #include <figure/physics/cloth/cloth.hpp>
 #include <figure/physics/contact/contact.hpp>
+#include <figure/physics/rain/rain.hpp>
 #include <figure/physics/rig/figure_physics.hpp>
 #include <figure/physics/flesh/flesh.hpp>
 #include <figure/physics/rig/secondary.hpp>
@@ -197,6 +198,11 @@ struct Loaded
   std::unique_ptr<fv::physics::Contact> contact;
   int                                   contactVersion = -1;
   std::optional<glm::mat4>              contactPlaced;
+  // rain on its skin (figure/physics/rain/rain.hpp); null but for a person, as `contact`. The feed its
+  // water last went to: a feed made since gets it again
+  std::unique_ptr<fv::physics::Rain> rain;
+  int                                rainVersion = -1;
+  const fv::FigureFeed*              rainFed     = nullptr;
   // its ragdoll and Physics mode (figure/physics/rig/figure_physics.hpp); null but for a person, as
   // `contact`
   std::unique_ptr<fv::physics::FigurePhysics> physics;
@@ -705,6 +711,9 @@ std::string figureGeneration(const Loaded& figure);
 // A figure's contact settings as the scene file and the history keep them ({on, softness, bulge,
 // reach}); the figure has a contact pass.
 Json contactState(const Loaded& f);
+// A figure's rain as the scene file and the history keep it ({on, amount, time, dried, seed}); the
+// figure has rain.
+Json rainState(const Loaded& f);
 Json secondaryState(const Loaded& f);
 Json softState(const Loaded& f);
 Json physicsState(const Loaded& f);
@@ -1222,6 +1231,9 @@ struct FvHost::Impl
   void                                                pokeContacts();
   void                                                publishContact(Loaded& f);
   Json                                                figureContact(const Json& args);
+  // rain on a person's skin (fv_host_physics.cpp): figure.rain and its topic
+  void publishRain(Loaded& f);
+  Json figureRain(const Json& args);
   // Physics mode (fv_host_physics.cpp): the frame's step, the Pull, physics.set and physics.restore
   void stepPhysics();
   void publishPhysics(Loaded& f);
