@@ -26,7 +26,8 @@ enum class Generation
 
 const char* label(Generation g);
 
-// Genesis 3, 8 and 8.1 share a polygon topology, so a vertex index on one is the same point on the others.
+// One generation, or Genesis 8 and 8.1, may share a polygon topology, so a vertex index on one is the same
+// point on the other: when their vertex counts are equal too, which a female and a male mesh's aren't.
 bool sameTopology(Generation a, Generation b);
 // Genesis 8 and 8.1 share a skeleton and a mesh: an outfit for one needs no fitting on the other.
 bool sameRig(Generation a, Generation b);

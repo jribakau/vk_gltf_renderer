@@ -21,8 +21,9 @@ const char* label(Generation g)
 
 bool sameTopology(Generation a, Generation b)
 {
-  const auto family = [](Generation g) { return g == Generation::eG3 || g == Generation::eG8 || g == Generation::eG81; };
-  return family(a) && family(b);
+  // Genesis 3 isn't: 17,418 vertices to Genesis 8's 16,556 for the females, none of its polygons in the same order
+  const auto g8 = [](Generation g) { return g == Generation::eG8 || g == Generation::eG81; };
+  return a == b || (g8(a) && g8(b));
 }
 
 bool sameRig(Generation a, Generation b)

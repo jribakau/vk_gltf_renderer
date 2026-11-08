@@ -1217,7 +1217,10 @@ TEST(Fit, IdentifiesTheGenerationAnOutfitWasMadeFor)
   EXPECT_EQ(generationFromBones({"hip", "lThighBend", "lThighTwist"}), std::optional<Generation>(Generation::eG8));
   EXPECT_TRUE(sameRig(Generation::eG8, Generation::eG81));
   EXPECT_FALSE(sameRig(Generation::eG8, Generation::eG9));
-  EXPECT_TRUE(sameTopology(Generation::eG3, Generation::eG81));
+  EXPECT_TRUE(sameTopology(Generation::eG8, Generation::eG81));
+  EXPECT_FALSE(sameTopology(Generation::eG3, Generation::eG81));
+  EXPECT_FALSE(sameTopology(Generation::eG3, Generation::eG8));
+  EXPECT_FALSE(sameTopology(Generation::eG8, Generation::eG9));
 }
 
 // Bones only one generation has decide; then what the item says, a conform target, the path, the first
