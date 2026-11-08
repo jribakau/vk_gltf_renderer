@@ -673,6 +673,15 @@ pose::PoseClip Figure::loadPoseClip(const dson::Json& doc, const std::string& re
   for(pose::PoseClip::Channel& c : own.channels)
     if(c.target.kind == pose::PresetTarget::Kind::eDial)
       clip.channels.push_back(std::move(c));
+  // skipped: what it names that is neither this figure's nor a bone of the skeleton it was made for
+  // ("lThighBend rotation/x" is retargeted, a dial this figure lacks isn't)
+  for(std::string& s : own.skipped)
+  {
+    const size_t      space = s.rfind(' ');
+    const std::string bone  = space == std::string::npos ? std::string() : s.substr(0, space);
+    if(bone.empty() || (bone != "figure" && !from.get(bone)))
+      clip.skipped.push_back(std::move(s));
+  }
   clip.duration = std::max(clip.duration, own.duration);
   if(retargetedFrom)
     *retargetedFrom = source;

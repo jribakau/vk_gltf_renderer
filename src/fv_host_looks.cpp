@@ -170,17 +170,25 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
       // a pose file whose keys run over time is also held as the figure's animation, paused at its
       // end, which is the pose it sets: held first, so it goes back to the pose the figure has now.
       // Many such files are still poses, a rest-to-pose ramp saved for dForce, so it doesn't play.
+      // A still pose made for another Genesis is retargeted as an animation is, and isn't held.
       float              animated = -1;
       std::string        madeFor;  // made for another Genesis: retargeted, and its last frame is the pose
       fv::pose::PoseClip lastFrame;
-      if(kind == "pose preset" && fv::pose::isAnimated(doc))
-        if(fv::pose::PoseClip clip = figure->fig->loadPoseClip(doc, rel, &madeFor); !clip.channels.empty())
-        {
-          animated = clip.duration;
-          if(!madeFor.empty())
-            lastFrame = clip;
-          holdAnimation(*prop, std::move(clip), rel, false, {{"rel", rel}});
-        }
+      if(kind == "pose preset")
+      {
+        const bool moving = fv::pose::isAnimated(doc);
+        if(moving || !fv::pose::namesRigBones(doc, *figure->fig->pose))
+          if(fv::pose::PoseClip clip = figure->fig->loadPoseClip(doc, rel, &madeFor); !clip.channels.empty())
+          {
+            if(!madeFor.empty())
+              lastFrame = clip;
+            if(moving)
+            {
+              animated = clip.duration;
+              holdAnimation(*prop, std::move(clip), rel, false, {{"rel", rel}});
+            }
+          }
+      }
       // a step of the history: the figure's look before and after
       journaled("preset", {{"prop", prop->id}, {"name", name}}, [&] {
         fv::PosePresetResult r;
@@ -198,6 +206,7 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
           if(figure->fig->morphs && !dials.empty())
             figure->fig->morphs->setMany(dials);
           r.applied = int(bones.size() + dials.size());
+          r.skipped = lastFrame.skipped;
         }
         else
           r = figure->fig->applyPosePreset(doc);
@@ -226,6 +235,8 @@ void FvHost::Impl::applyPreset(const fv::dson::Json&                            
           played = std::string(" at its last frame") + (madeFor.empty() ? "" : ", fitted from the " + fv::pose::sourceFigureName(madeFor) + " it was made for")
                    + ". It's an animation (" + length + "): the Anim tab plays it.";
         }
+        else if(!madeFor.empty())
+          played = ", fitted from the " + fv::pose::sourceFigureName(madeFor) + " it was made for.";
         if(!r.applied)
           notice(name + ": nothing in this " + kind + " matches " + prop->name + ".");
         else if(!r.skipped.empty())

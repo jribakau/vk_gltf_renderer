@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <figure/dson/rig.hpp>
@@ -338,6 +339,35 @@ TEST(Retarget, aTPosesArmsAreReAimedOntoAnAPose)
   tpose.apply(own, 0);
   g9.apply(clip, 0);
   EXPECT_GT(degreesBetween(tpose.way("lThighBend", "lShin"), g9.way("l_thigh", "l_shin")), 5);
+}
+
+// A still pose (one key a channel, at 0) made for Genesis 8 poses a Genesis 9 as its own: the host
+// retargets it as it does an animation, whose bones aren't the figure's either
+TEST(Retarget, aStillPoseForAnotherGenesisIsRetargetedToo)
+{
+  Figure               g8(true, 48, 8, 105), g9(false, 44, 2, 97);
+  const Figure         rest(false, 44, 2, 97);
+  const fv::dson::Json file = [] {
+    fv::dson::Json anims = fv::dson::Json::array();
+    for(const auto& [bone, channel, value] : {std::tuple{"lThighBend", "rotation/x", -30.0}, std::tuple{"lShin", "rotation/x", 60.0},
+                                              std::tuple{"lShldrBend", "rotation/z", -25.0}, std::tuple{"head", "rotation/y", 20.0}})
+      anims.push_back({{"url", std::string("name://@selection/") + bone + ":?" + channel + "/value"}, {"keys", {{0, value}}}});
+    return fv::dson::Json{{"asset_info", {{"type", "preset_pose"}}}, {"scene", {{"animations", anims}}}};
+  }();
+  EXPECT_FALSE(fv::pose::isAnimated(file));
+  EXPECT_FALSE(fv::pose::namesRigBones(file, *g9.pose));
+  const fv::pose::PoseClip own  = fv::pose::loadPoseClip(g8.pose.get(), nullptr, file);
+  const fv::pose::PoseClip clip = fv::pose::retargetClip(file, *g8.pose, *g9.pose);
+  ASSERT_FALSE(clip.channels.empty());
+  EXPECT_FLOAT_EQ(clip.duration, 0.f);
+  g8.apply(own, 0);
+  g9.apply(clip, 0);
+  EXPECT_LT(degreesBetween(g8.turned("lThighTwist", rest.way("l_thigh", "l_shin")), g9.way("l_thigh", "l_shin")), 0.5);
+  EXPECT_LT(degreesBetween(g8.turned("lShin", rest.way("l_shin", "l_foot")), g9.way("l_shin", "l_foot")), 0.5);
+  EXPECT_LT(degreesBetween(g8.turned("lShldrTwist", rest.way("l_upperarm", "l_forearm")), g9.way("l_upperarm", "l_forearm")), 0.5);
+  EXPECT_LT(degreesBetween(g8.turned("head", rest.tip("head")), g9.tip("head")), 0.5);
+  // and it isn't the rest pose
+  EXPECT_GT(degreesBetween(rest.way("l_thigh", "l_shin"), g9.way("l_thigh", "l_shin")), 20);
 }
 
 // Which figure a file was made for: by its bones' names, then by its path
