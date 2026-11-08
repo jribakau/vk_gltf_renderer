@@ -139,6 +139,7 @@ VkPipeline createPathTracePipeline(VkDevice              device,
                                    bool                  rayQuery,
                                    int32_t               useSER,
                                    int32_t               transparency,
+                                   int32_t               inlineShadow,
                                    VkPipelineCreateFlags rtxFlags,
                                    VkPipelineCreateFlags rqFlags,
                                    VkResult&             result)
@@ -167,6 +168,7 @@ VkPipeline createPathTracePipeline(VkDevice              device,
   }
   else
   {
+    specialization.add(2, inlineShadow);  // USE_INLINE_SHADOW (raygen only: computeMain traces shadows inline always)
     RtxStages table(module);
     table.stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
     const VkRayTracingPipelineCreateInfoKHR info{
@@ -497,9 +499,10 @@ void PathTracer::startPipelineWarm(Resources& resources)
   const VkPipelineLayout      layout       = m_pipelineLayout;
   const int32_t               useSER       = m_useSER ? 1 : 0;
   const int32_t               transparency = static_cast<int32_t>(m_dlss->getTransparencyMode());
+  const int32_t               inlineShadow = m_inlineShadow ? 1 : 0;
   const VkPipelineCreateFlags flags        = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats);
   const VkPipelineCreateFlags rqFlags = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u;
-  auto warm = [this, layout, useSER, transparency, flags, rqFlags](std::span<const uint32_t> code, const char* build, bool rayQuery) {
+  auto warm = [this, layout, useSER, transparency, inlineShadow, flags, rqFlags](std::span<const uint32_t> code, const char* build, bool rayQuery) {
     const ShaderWarmScope    warming;  // /stats says so
     const auto               start = std::chrono::steady_clock::now();
     VkShaderModuleCreateInfo moduleInfo{
@@ -513,14 +516,15 @@ void PathTracer::startPipelineWarm(Resources& resources)
     VkResult         result   = VK_ERROR_UNKNOWN;
     const auto       built    = std::chrono::steady_clock::now();
     const VkPipeline pipeline = createPathTracePipeline(m_device, m_pipelineCache.getCache(), layout, module, rayQuery,
-                                                        useSER, transparency, flags, rqFlags, result);
+                                                        useSER, transparency, inlineShadow, flags, rqFlags, result);
     const double     ms       = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - built).count();
     vkDestroyPipeline(m_device, pipeline, nullptr);
     vkDestroyShaderModule(m_device, module, nullptr);
     LOGI("%s pipeline warm-up (%s): %s (%.2f ms)\n", rayQuery ? "RQ" : "RTX", build, result == VK_SUCCESS ? "done" : "failed",
          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
     if(result == VK_SUCCESS)
-      notePipelineBuild(nvvk::fnv1a64(code.data(), code.size_bytes()), rayQuery, useSER, transparency, rayQuery ? rqFlags : flags, ms);
+      notePipelineBuild(nvvk::fnv1a64(code.data(), code.size_bytes()), rayQuery, useSER, transparency,
+                        rayQuery ? 0 : inlineShadow, rayQuery ? rqFlags : flags, ms);
     // the creation that follows is a cache hit and saves nothing, so the cache is saved here
     if(result == VK_SUCCESS)
       m_pipelineCache.saveAsync();
@@ -557,7 +561,8 @@ uint64_t PathTracer::moduleCode(VkShaderModule module)
   return it != m_moduleCode.end() ? it->second : 0;
 }
 
-void PathTracer::notePipelineBuild(uint64_t code, bool rayQuery, int32_t useSER, int32_t transparency, VkPipelineCreateFlags flags, double ms)
+void PathTracer::notePipelineBuild(uint64_t code, bool rayQuery, int32_t useSER, int32_t transparency, int32_t inlineShadow,
+                                   VkPipelineCreateFlags flags, double ms)
 {
   if(code == 0)
     return;  // a module made from code nobody hashed
@@ -565,7 +570,8 @@ void PathTracer::notePipelineBuild(uint64_t code, bool rayQuery, int32_t useSER,
   // compile again and take minutes: not the driver's cache full, and no estimate for a normal start
   if(validatedRun().load())
     return;
-  const uint64_t state[] = {code, rayQuery ? 1u : 0u, uint64_t(useSER), uint64_t(transparency), uint64_t(flags), m_driverVersion};
+  const uint64_t state[] = {code,           rayQuery ? 1u : 0u, uint64_t(useSER), uint64_t(transparency), uint64_t(inlineShadow),
+                            uint64_t(flags), m_driverVersion};
   if(m_buildRecord.note(nvvk::fnv1a64(state, sizeof(state)), ms))
     LOGW("[PathTracer] A pipeline built before compiled again (%.0f ms): the driver's shader cache is full, and the next start empties it\n", ms);
 }
@@ -624,7 +630,7 @@ void PathTracer::createRqPipeline(Resources& /*resources*/)
   const auto rqStart    = std::chrono::steady_clock::now();
   NVVK_CHECK(vkCreateComputePipelines(m_device, m_pipelineCache.getCache(), 1, &cpCreateInfo, nullptr, &rqPipeline));
   NVVK_DBG_NAME(rqPipeline);
-  notePipelineBuild(moduleCode(m_shaderModule), true, m_useSER ? 1 : 0, transparencyMode(), cpCreateInfo.flags,
+  notePipelineBuild(moduleCode(m_shaderModule), true, m_useSER ? 1 : 0, transparencyMode(), 0, cpCreateInfo.flags,
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rqStart).count());
 
   {
@@ -709,6 +715,7 @@ void PathTracer::createRtxPipeline(Resources& resources)
 #if defined(USE_DLSS)
   specialization.add(1, static_cast<int32_t>(m_dlss->getTransparencyMode()));  // USE_DLSS_TRANSP
 #endif
+  specialization.add(2, m_inlineShadow ? 1 : 0);  // USE_INLINE_SHADOW
   stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
 
 
@@ -818,8 +825,9 @@ void PathTracer::createRtxPipeline(Resources& resources)
   const char* cacheStatus =
       valid ? ((feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) ? "CACHE HIT" : "cache miss") :
               "cache status unknown";
-  LOGI("RTX pipeline creation: %s, deferred=%s (%.2f ms)\n", cacheStatus, wasDeferred ? "yes" : "no", elapsedMs);
-  notePipelineBuild(moduleCode(m_shaderModule), false, m_useSER ? 1 : 0, transparencyMode(), flags, elapsedMs);
+  LOGI("RTX pipeline creation: %s, deferred=%s, shadow rays %s (%.2f ms)\n", cacheStatus, wasDeferred ? "yes" : "no",
+       m_inlineShadow ? "inline" : "any-hit", elapsedMs);
+  notePipelineBuild(moduleCode(m_shaderModule), false, m_useSER ? 1 : 0, transparencyMode(), m_inlineShadow ? 1 : 0, flags, elapsedMs);
   logPipelineStatistics(rtxPipeline, "RTX");
   // Unknown feedback (the deferred path leaves it unset) is not a hit, so it still saves.
   if((feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) == 0)
@@ -1684,10 +1692,11 @@ PathTracer::VariantBuilt PathTracer::buildVariant(const VariantCompileJob& job)
   VkResult   result     = VK_ERROR_UNKNOWN;
   const auto buildStart = std::chrono::steady_clock::now();
   built.pipeline = createPathTracePipeline(m_device, m_pipelineCache.getCache(), job.layout, built.module, job.rayQuery,
-                                           job.useSER ? 1 : 0, job.key.dlssTransparency, job.rtxFlags, job.rqFlags, result);
+                                           job.useSER ? 1 : 0, job.key.dlssTransparency, m_inlineShadow ? 1 : 0, job.rtxFlags,
+                                           job.rqFlags, result);
   if(built.pipeline)
     notePipelineBuild(moduleCode(built.module), job.rayQuery, job.useSER ? 1 : 0, job.key.dlssTransparency,
-                      job.rayQuery ? job.rqFlags : job.rtxFlags,
+                      job.rayQuery ? 0 : (m_inlineShadow ? 1 : 0), job.rayQuery ? job.rqFlags : job.rtxFlags,
                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStart).count());
   if(!built.pipeline)
   {

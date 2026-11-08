@@ -161,7 +161,8 @@ public:
   uint64_t moduleCode(VkShaderModule module);
   // A pipeline from code of hash `code`, built with this state in `ms`, in the record; a warning when
   // the driver had dropped it since it was last built
-  void notePipelineBuild(uint64_t code, bool rayQuery, int32_t useSER, int32_t transparency, VkPipelineCreateFlags flags, double ms);
+  void notePipelineBuild(uint64_t code, bool rayQuery, int32_t useSER, int32_t transparency, int32_t inlineShadow,
+                         VkPipelineCreateFlags flags, double ms);
 
   // Shader Binding Table (SBT)
   nvvk::Buffer                m_sbtBuffer{};   // Buffer for the Shader Binding Table
@@ -193,6 +194,10 @@ public:
   // so a host need not switch it (and reset the accumulation) when the view stops
   int m_scatterAsThin = 0;
   bool               m_useSER{true};         // Requested SER state; clamped to m_supportSER each frame.
+  // ptInlineShadow: the RTX pipeline's shadow rays as inline ray queries in raygen (USE_INLINE_SHADOW)
+  // rather than through rahitShadow: 15-18% off a moving frame's trace and 12-16% off a still's on
+  // 1TEST, 7TEST and 10TEST (2026-11-08). Read when a pipeline is created, so set on the command line.
+  bool m_inlineShadow{true};
   bool m_shadowTransmission{true};  // Shadow rays pass through transmissive surfaces (biased; see ePtShadowTransmission).
   bool m_volumeDiffuseExit{false};  // Scatter walks gather light only where they leave the surface (ePtVolumeDiffuseExit).
   bool m_diffuseEntry{false};       // Light enters a scatter walk through a Lambertian lobe (ePtDiffuseEntry). Off: the user preferred the refraction entry's look (2026-10-26).

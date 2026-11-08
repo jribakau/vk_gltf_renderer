@@ -487,6 +487,12 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
   // ensureShadersAndPipelines() on the next frame -- which is what makes it settable mid-run, not
   // just on the command line. Silently ignored when the device lacks SER.
   settings->add({"ptUseSER", "PathTracer: Use Shader Execution Reordering (ignored if unsupported)"}, &m_useSER, Persist::eYes);
+  // a specialization constant read only when a pipeline is created, so a command-line switch (an A/B
+  // against the any-hit shadow rays), not a setting a host changes mid-run
+  settings->add({"ptInlineShadow", "PathTracer: The RTX technique traces shadow rays as inline ray queries (default) "
+                                   "instead of through any-hit shaders; read when a pipeline is created, so set it on "
+                                   "the command line"},
+                &m_inlineShadow, Persist::eNo);
   settings->add({"ptAdaptiveSampling", "PathTracer: Enable adaptive sampling"}, &m_adaptiveSampling, Persist::eYes);
   settings->add({.name = "ptPerformanceTarget",
                  .help = "PathTracer: Auto SPP target [Interactive:0, Balanced:1, Quality:2, MaxQuality:3, Throughput:4]. "

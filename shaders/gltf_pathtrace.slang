@@ -181,6 +181,10 @@ static const float SKY_NARROW_LOBE_PDF = 1000.0F;
 // Specialization constants
 [[vk::constant_id(0)]]  int USE_SER = 1;
 [[vk::constant_id(1)]]  int USE_DLSS_TRANSP = 0; // Dlss::TransparencyMode: 1 = primary surface replacement through clear glass
+// ptInlineShadow: the RTX technique's shadow rays as inline ray queries in raygen (traceShadowInline,
+// the default: 12-18% off the path trace on 1TEST, 7TEST and 10TEST) instead of through rahitShadow;
+// the ray-query technique traces them inline always
+[[vk::constant_id(2)]]  int USE_INLINE_SHADOW = 1;
 
 // clang-format on
 

@@ -299,8 +299,12 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
   materials with no transmission, alpha mode `OPAQUE`, no diffuse transmission) never run any-hit.
   Hitting one commits, and the rays use `RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH`, so traversal
   stops at the first such hit instead of searching for the closest.
-- **Other instances** run the any-hit logic (`rahitShadow`, or the candidate loop in the ray-query
-  path), both through `shadowCrossSurface`, and ignore the hit, so the ray keeps going:
+- **Other instances** run the any-hit logic, through `shadowCrossSurface`, and ignore the hit, so
+  the ray keeps going. Both techniques run it in the candidate loop of an inline ray query
+  (`traceShadowInline`). In the RTX pipeline that loop runs in raygen, under the specialization
+  constant `USE_INLINE_SHADOW`, which `--ptInlineShadow` sets when a pipeline is created. On Ada it
+  took 15-18% off a moving frame's path trace and 12-16% off a still's (1TEST, 7TEST, 10TEST,
+  2026-11-08). `--ptInlineShadow 0` brings back the any-hit shader, `rahitShadow`, for an A/B:
   - A surface that only filters the light (alpha, thin glass) multiplies in its expected
     transmission, `(1 - opacity) + opacity * getShadowTransmission`. Glass passes only where it
     is smooth (a clear crossing, which the path's own ray crosses as a null event for MIS); rough

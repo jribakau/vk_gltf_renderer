@@ -85,6 +85,54 @@ interface IRaytracer
   float3 TraceShadow(RayDesc ray, inout uint seed, bool initialInside = false, float3 initialExtinction = float3(0.0));
 }
 
+// A shadow ray as an inline ray query: shadowCrossSurface runs on each candidate in the calling shader, where
+// rahitShadow would run it in an any-hit shader. Both techniques trace their shadow rays here by default
+// (TraditionalRaytracer::TraceShadow under USE_INLINE_SHADOW): on Ada it took 15-18% off the moving frame's
+// path trace and 12-16% off a still's (1TEST, 7TEST, 10TEST at 1080p, 2026-11-08). The same function, so
+// both give the same light; only the order the candidates come in differs, as between any two traversals.
+float3 traceShadowInline(RayDesc ray, inout uint seed, bool initialInside, float3 initialExtinction)
+{
+  const float ground = infinitePlaneShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo);
+  if(ground <= 0.0F)
+    return float3(0.0);
+
+  float3      totalTransmission = float3(1.0);
+  bool        isInside          = initialInside;
+  float3      extinction        = initialExtinction;
+  float       prevHitT          = 0;
+
+  // Visibility needs any occluder, not the closest one: the first committed (opaque) hit ends the
+  // traversal. Transmissive surfaces are never committed -- they only scale the transmission below.
+  RayQuery rayQuery;
+  rayQuery.TraceRayInline(topLevelAS, SHADOW_RAY_FLAGS, 0xFF, ray);
+
+  while(rayQuery.Proceed())
+  {
+    float    hitT          = rayQuery.CandidateTriangleRayT();
+    int      renderPrimID  = rayQuery.CandidateInstanceID();
+    int      instanceID    = rayQuery.CandidateInstanceIndex();
+    int      triangleID    = rayQuery.CandidatePrimitiveIndex();
+    float2   bary          = rayQuery.CandidateTriangleBarycentrics();
+    float4x3 worldToObject = rayQuery.CandidateWorldToObject4x3();
+
+    GltfRenderNode      renderNode = pushConst.gltfScene->renderNodes[instanceID];
+    GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
+
+    float3 barycentrics = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
+    if(!shadowCrossSurface(renderNode, renderPrim, uint(instanceID), triangleID, barycentrics, worldToObject, ray.Direction,
+                           hitT, totalTransmission, isInside, extinction, prevHitT, seed))
+      return float3(0.0);
+  }
+
+  if(rayQuery.CommittedStatus() != COMMITTED_NOTHING)
+  {
+    return float3(0., 0., 0.);
+  }
+
+  return ground * groundWaterShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo) * totalTransmission
+         * shadowTailTransmittance(ray, isInside, extinction, prevHitT);
+}
+
 // Implementation using RayQuery
 struct RayQueryRaytracer : IRaytracer
 {
@@ -157,45 +205,7 @@ struct RayQueryRaytracer : IRaytracer
 
   float3 TraceShadow(RayDesc ray, inout uint seed, bool initialInside = false, float3 initialExtinction = float3(0.0))
   {
-    const float ground = infinitePlaneShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo);
-    if(ground <= 0.0F)
-      return float3(0.0);
-
-    float3      totalTransmission = float3(1.0);
-    bool        isInside          = initialInside;
-    float3      extinction        = initialExtinction;
-    float       prevHitT          = 0;
-
-    // Visibility needs any occluder, not the closest one: the first committed (opaque) hit ends the
-    // traversal. Transmissive surfaces are never committed -- they only scale the transmission below.
-    RayQuery rayQuery;
-    rayQuery.TraceRayInline(topLevelAS, SHADOW_RAY_FLAGS, 0xFF, ray);
-
-    while(rayQuery.Proceed())
-    {
-      float    hitT          = rayQuery.CandidateTriangleRayT();
-      int      renderPrimID  = rayQuery.CandidateInstanceID();
-      int      instanceID    = rayQuery.CandidateInstanceIndex();
-      int      triangleID    = rayQuery.CandidatePrimitiveIndex();
-      float2   bary          = rayQuery.CandidateTriangleBarycentrics();
-      float4x3 worldToObject = rayQuery.CandidateWorldToObject4x3();
-
-      GltfRenderNode      renderNode = pushConst.gltfScene->renderNodes[instanceID];
-      GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
-
-      float3 barycentrics = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-      if(!shadowCrossSurface(renderNode, renderPrim, uint(instanceID), triangleID, barycentrics, worldToObject, ray.Direction,
-                             hitT, totalTransmission, isInside, extinction, prevHitT, seed))
-        return float3(0.0);
-    }
-
-    if(rayQuery.CommittedStatus() != COMMITTED_NOTHING)
-    {
-      return float3(0., 0., 0.);
-    }
-
-    return ground * groundWaterShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo) * totalTransmission
-           * shadowTailTransmittance(ray, isInside, extinction, prevHitT);
+    return traceShadowInline(ray, seed, initialInside, initialExtinction);
   }
 }
 
@@ -263,9 +273,12 @@ struct TraditionalRaytracer : IRaytracer
 
   // Visibility needs any occluder, not the closest one: the first committed hit (opaque, or accepted
   // by rahitShadow once the transmission is spent) ends the traversal; transmissive surfaces are
-  // ignored by rahitShadow and never committed.
+  // ignored by rahitShadow and never committed. Inline (traceShadowInline) unless --ptInlineShadow 0.
   float3 TraceShadow(RayDesc ray, inout uint seed, bool initialInside = false, float3 initialExtinction = float3(0.0))
   {
+    if(USE_INLINE_SHADOW == 1)
+      return traceShadowInline(ray, seed, initialInside, initialExtinction);
+
     const float ground = infinitePlaneShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo);
     if(ground <= 0.0F)
       return float3(0.0);
