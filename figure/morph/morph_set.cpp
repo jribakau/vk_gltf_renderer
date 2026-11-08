@@ -660,6 +660,8 @@ void MorphSet::setMany(const std::vector<std::pair<std::string, double>>& values
       ch->weight = ch->value;
     ch->value = value;
     changed.emplace_back(name, value);
+    if(!ch->hidden)
+      m_dialVersion++;
   }
   if(changed.empty())
     return;

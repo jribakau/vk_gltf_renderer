@@ -101,6 +101,15 @@ bool hiddenMorph(const std::string& name)
   return std::regex_search(name, re);
 }
 
+bool adjustmentMorph(const std::string& id)
+{
+  static const std::regex plumbing(R"((^|_)(bs|cbs|ctrl|jcm|pjcm|facs)_)", std::regex::icase);
+  // FBM/PBM/FHM/PHM, then the morph's own name: "FBMVictoria8", not "FBM" alone
+  static const std::regex copies(R"(^(fbm|pbm|fhm|phm)[a-z0-9]|^fid_)", std::regex::icase);
+  static const std::regex adjusts(R"(loosen|expand|tighten|shrink|adjust|collision|smooth|length|style|open|close|fit(?!ness))", std::regex::icase);
+  return !(std::regex_search(id, plumbing) || std::regex_search(id, copies)) || std::regex_search(id, adjusts);
+}
+
 namespace {
 
 // "...#id?value" as the id, or empty for another property

@@ -212,6 +212,8 @@ public:
   // meshes afresh (refresh) once nothing is left to land.
   void settled(bool itemCopies = false);
   bool loading() const { return !m_loading.empty(); }
+  // Something set hasn't reached the meshes yet: a load, the driver's wait, an item's own copy.
+  bool landing() const { return loading() || m_driverDirty || anyPending(); }
 
   // Applies pending morph changes to the drawn vertices of the meshes (to the cages of cageOnly ones).
   void flush();
@@ -233,6 +235,9 @@ public:
   // Bumped when a dial's value or a channel's applied weight changes (a driver's correctives
   // included), so a reader republishes the values only then. The list's own changes are listVersion().
   int version() const { return m_version; }
+  // Bumped when a dial someone sets changes: not a driver's correctives, nor a hidden channel (a
+  // drape's, the collider's), so it tells a shape or a dial from a pose.
+  int dialVersion() const { return m_dialVersion; }
   // Loads that failed, worth telling the user about (missing files are reported separately).
   std::vector<std::string> takeErrors();
 
@@ -386,6 +391,7 @@ private:
   bool                                                  m_running = false;
   int                                                   m_listVersion = 0;
   int                                                   m_version     = 0;
+  int                                                   m_dialVersion = 0;
   std::vector<std::string>                              m_errors;
   std::map<int, MeshChange>                             m_changes;
   std::vector<std::unique_ptr<FollowerState>>           m_followers;

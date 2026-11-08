@@ -48,6 +48,15 @@ std::vector<std::string> listFiles(const Library& library, const std::string& re
       return it->second.files;
   }
   std::vector<std::string> out;
+  // a folder is under a root, as Library::find's files are: joined to a root, a rooted path ("/Morphs")
+  // would replace it with the drive's own folder, and .. climbs out of it
+  {
+    const fs::path relPath(std::u8string(reinterpret_cast<const char8_t*>(rel.data()), rel.size()));
+    if(relPath.has_root_name() || relPath.has_root_directory())
+      return out;
+    if(const fs::path normal = relPath.lexically_normal(); !normal.empty() && *normal.begin() == "..")
+      return out;
+  }
   std::set<std::string>    seen;
   const std::string        wanted = lower(ext);
   for(const fs::path& root : library.roots())

@@ -132,6 +132,7 @@ struct WornItem
   // that has been worked out for it
   std::vector<int32_t> tightPolys;
   bool                 tightChecked = false;
+  int                  tightDials   = -1;  // MorphSet::dialVersion when the covered skin was measured
   // dForce on this item as the user set it (Figure::setItemCloth): whether its meshes simulate
   // (unset: as the file says, a Dynamic Surface does and anything else conforms) and a dynamics
   // strength: see clothSettings

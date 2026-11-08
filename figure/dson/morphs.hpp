@@ -59,6 +59,11 @@ struct MorphDef
 
 // Morph name prefixes that are bone-driven correctives or pure controllers in Genesis 8/9.
 bool hiddenMorph(const std::string& name);
+// Whether a worn item's own morph that has no figure morph of the same name is worth a slider: fit
+// adjustments and styles are ("Loosen Neck", "Adjust Back"); copies of figure morphs that aren't
+// installed are not: Genesis 9's plumbing (body_bs_, facs_), Genesis 3 and 8's shapes (FBMVictoria8,
+// PBMBreastsSize) and DAZ's hidden figure-ID helpers (FID_Genesis9), unless the name says it adjusts.
+bool adjustmentMorph(const std::string& id);
 
 // Group label from the DAZ folder layout, e.g. ".../Morphs/DAZ 3D/Base Pose Head/x.dsf" -> "Base Pose Head".
 std::string groupFromPath(const std::string& file);

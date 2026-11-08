@@ -104,15 +104,6 @@ bool targetFits(const mesh::RenderTarget& t, int count)
   return std::all_of(t.cageIndices.begin(), t.cageIndices.end(), [&](uint32_t i) { return int(i) < count; });
 }
 
-// Whether an item morph that has no figure morph of the same name is worth a slider: fit adjustments
-// and styles are; copies of figure morphs that aren't installed are not.
-bool isAdjustment(const std::string& id)
-{
-  static const std::regex plumbing(R"((^|_)(bs|cbs|ctrl|jcm|pjcm|facs)_)", std::regex::icase);
-  static const std::regex adjusts(R"(loosen|expand|tighten|shrink|adjust|collision|smooth|length|style|open|close|fit(?!ness))", std::regex::icase);
-  return !std::regex_search(id, plumbing) || std::regex_search(id, adjusts);
-}
-
 // The item's own morph file for a channel, or null. DAZ's morph tools tag each file's modifier id with
 // a hex suffix ("Mirel Head-0xa98947a" on the body, "-0xa989482" on the eyes); the copies share the name
 // and the file stem.
@@ -246,6 +237,10 @@ std::vector<dson::TargetPtr> Figure::activeBodyTargets() const
 const std::map<std::string, std::string>& ownMorphsOf(const dson::Store& store, const std::string& defFile,
                                                       std::map<std::string, std::map<std::string, std::string>>& ownMorphs)
 {
+  // a part with no definition file (built from the wearable itself) has no folder of its own morphs
+  static const std::map<std::string, std::string> none;
+  if(defFile.empty())
+    return none;
   const size_t      slash = defFile.rfind('/');
   const std::string dir   = (slash == std::string::npos ? std::string() : defFile.substr(0, slash)) + "/Morphs";
   auto              it    = ownMorphs.find(dir);
@@ -982,7 +977,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     for(const auto& [stem, file] : own)
     {
       const std::string id = stemOf(file);
-      if(morphs->has(id) || dson::hiddenMorph(id) || !isAdjustment(id))
+      if(morphs->has(id) || dson::hiddenMorph(id) || !dson::adjustmentMorph(id))
         continue;
       const std::string name = id + "@" + worn->key;
       if(morphs->has(name))
@@ -1327,8 +1322,16 @@ bool Figure::refreshTightHidden(bool collisionOn)
       continue;
     }
     if(w.tightChecked)
-      continue;
+    {
+      // a dial moved what it covers (a sleeve shortened, the body reshaped): measured again once the
+      // dial's morphs have landed. A pose's correctives don't count, or every settled pose would
+      if(w.tightDials == morphs->dialVersion() || morphs->landing())
+        continue;
+      w.tightPolys.clear();
+      changed = geo.hiddenPolys.erase(key) > 0 || changed;
+    }
     w.tightChecked = true;
+    w.tightDials   = morphs->dialVersion();
     timing::Scope t("tight: covered skin", 5);
     const auto worlds = scene.worlds();
     const auto nodeOf = physics::nodeOfMesh(scene);

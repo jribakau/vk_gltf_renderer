@@ -348,3 +348,13 @@ TEST(MorphReach, NoFilesNoReach)
 {
   EXPECT_TRUE(fv::pose::auditReach({}).empty());
 }
+
+// A worn item's own morph is a slider when it adjusts the item; a copy of a figure morph the figure
+// doesn't have (Genesis 8's FBMVictoria8 on Genesis 9) or DAZ's hidden figure-ID helper is not
+TEST(MorphNames, AnItemsAdjustmentsAreDialsAndCopiesAreNot)
+{
+  for(const char* dial : {"Loosen Neck", "Adjust Back", "body_bs_Loosen Thighs", "Expand All", "FBMExpandAll", "Sleeve Lift", "Skirt Length"})
+    EXPECT_TRUE(fv::dson::adjustmentMorph(dial)) << dial;
+  for(const char* copy : {"FBMVictoria8", "PBMBreastsSize", "FHMAiko8", "PHMEarsElfLong", "FID_Genesis9", "FBMFitnessSize", "body_bs_ProportionHeight", "facs_bs_EyelidUpper"})
+    EXPECT_FALSE(fv::dson::adjustmentMorph(copy)) << copy;
+}

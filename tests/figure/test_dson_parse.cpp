@@ -403,3 +403,24 @@ TEST(Listing, AFolderOutsideTheSystemsCodePageIsListed)
   fv::dson::clearListings();
   fs::remove_all(dir);
 }
+
+// A folder is listed under a root, as Library::find takes a file: "/Morphs" (a part with no file of its
+// own asked for its own morphs) would be the drive's own folder, and ".." climbs out of the library
+TEST(Listing, ARootedOrClimbingFolderListsNothing)
+{
+  namespace fs       = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "fv_listing_rooted" / "library";
+  fs::remove_all(dir.parent_path());
+  fs::create_directories(dir / "Morphs");
+  fs::create_directories(dir.parent_path() / "Outside");
+  std::ofstream(dir / "Morphs" / "one.dsf").put('x');
+  std::ofstream(dir.parent_path() / "Outside" / "two.dsf").put('x');
+  const fv::dson::Library library({dir});
+  fv::dson::clearListings();
+  EXPECT_EQ(fv::dson::listFiles(library, "Morphs", ".dsf").size(), 1u);
+  EXPECT_TRUE(fv::dson::listFiles(library, "/Morphs", ".dsf").empty());
+  EXPECT_TRUE(fv::dson::listFiles(library, "../Outside", ".dsf").empty());
+  EXPECT_TRUE(fv::dson::listFiles(library, (dir / "Morphs").generic_string(), ".dsf").empty());
+  fv::dson::clearListings();
+  fs::remove_all(dir.parent_path());
+}
