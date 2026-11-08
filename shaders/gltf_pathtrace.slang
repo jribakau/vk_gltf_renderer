@@ -72,6 +72,7 @@ static bool doDebug = false;
 #include "dlss_util.h"
 #include "common.h.slang"
 #include "aerial_perspective.h.slang"
+#include "contribution_roulette.h.slang"
 #include "aperture.h.slang"
 #include "sky_bruneton_radiance.h.slang"
 #include "sky_clouds.h.slang"
@@ -1732,16 +1733,29 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     // unbiased estimate of what actually reaches the air -- so the air inside a helmet, a room or
     // a canyon is dark, and shafts form where the sun gets through. Only the sun's direct term:
     // the multiple scattering is light from the whole sky and is left unshadowed.
+    //
+    // Traced only as often as it can matter (contribution_roulette.h.slang): over a scene's few
+    // metres the air's sun is a sliver of what the pixel holds, so most paths skip the ray and the
+    // ones that trace it count for those that didn't. Unbiased, and the noise it adds stays under
+    // the share (SceneFrameInfo::aerialSunShare) of the pixel; a distant mountain's haze, a large
+    // part of its pixel, is traced every time. A share of 0 traces it on every path, as before (with
+    // a chance of 1 no number is drawn).
     float3 inScatter = march.inScatter;
     if(any(march.sunEstimate > 0.0F))
     {
-      RayDesc shadowRay;
-      shadowRay.Origin        = lerp(eye, pt.firstHitPos, march.sunPoint);
-      shadowRay.Direction     = pushConst.frameInfo->sunDirection;
-      shadowRay.TMin          = 0.0F;
-      shadowRay.TMax          = INFINITE;
-      const float3 visibility = raytracer.TraceShadow(shadowRay, seed);
-      inScatter += visibility * march.sunEstimate - march.sunInScatter;
+      inScatter -= march.sunInScatter;
+      const float chance = contributionTraceChance(luminance(march.sunEstimate), luminance(pt.radiance * march.transmittance + inScatter),
+                                                   pushConst.frameInfo->aerialSunShare);
+      if(chance >= 1.0F || rand(seed) < chance)
+      {
+        RayDesc shadowRay;
+        shadowRay.Origin        = lerp(eye, pt.firstHitPos, march.sunPoint);
+        shadowRay.Direction     = pushConst.frameInfo->sunDirection;
+        shadowRay.TMin          = 0.0F;
+        shadowRay.TMax          = INFINITE;
+        const float3 visibility = raytracer.TraceShadow(shadowRay, seed);
+        inScatter += visibility * march.sunEstimate / chance;
+      }
     }
     pt.radiance = pt.radiance * march.transmittance + inScatter;
   }

@@ -311,6 +311,8 @@ struct Settings
   // `ptEstimator` (debug): what counts the light both a light sample and a BSDF ray reach
   // (SceneFrameInfo::estimator): 0 both (MIS), 1 light samples alone, 2 BSDF rays alone
   int ptEstimator = 0;
+  // the air's sun-shadow ray's roulette (SceneFrameInfo::aerialSunShare)
+  float ptAerialSunShare = 0.05F;
   // `residencyRetireOnReplace` (debug): a stream host's scene replace syncs the new scene into the
   // backend it has, retiring the old one's slots, instead of starting the backend over
   bool residencyRetireOnReplace = false;

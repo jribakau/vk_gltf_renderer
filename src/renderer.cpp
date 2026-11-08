@@ -1178,6 +1178,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     fillGround(finfo);
     fillHaze(finfo);
     finfo.estimator = std::clamp(m_resources.settings.ptEstimator, 0, 2);
+    finfo.aerialSunShare = std::clamp(m_resources.settings.ptAerialSunShare, 0.0F, 1.0F);
     // the Time view: where this frame sums its pixels' time, and the scale a recent frame's gave it
     const PathTracer::PixelTimeFrame pixelTime = m_pathTracer.preparePixelTime(m_resources);
     finfo.pixelTime                            = pixelTime.sums;

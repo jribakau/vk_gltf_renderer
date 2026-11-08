@@ -542,6 +542,12 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                                      "unless a pdf is wrong",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.ptEstimator, Persist::eNo, 0, 2);
+  // The air's sun-shadow ray by its roulette (contribution_roulette.h.slang); 0 for the old ray on every path
+  m_settings.add({.name            = "ptAerialSunShare",
+                  .help            = "PathTracer: the air's sun-shadow ray is traced as often as keeps the noise it adds "
+                                     "under this share of the pixel (physical sky; 0: on every path)",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.ptAerialSunShare, Persist::eNo, 0.0F, 1.0F);
   // Display › Time from a command line (view.set's display "time" in the app): each pixel coloured by how
   // long its thread ran against the frame's average (pixel_time.h.slang); where the frame's time went is
   // logged as it comes back

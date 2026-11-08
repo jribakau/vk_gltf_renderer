@@ -362,6 +362,10 @@ struct SceneFrameInfo
   float pixelTimeScale = 0.0F;
   int   pixelTimeSlots = 0;
   uint* pixelTime;
+  // ptAerialSunShare: the air's sun-shadow ray is traced with a chance that keeps the noise it adds
+  // under this share of the pixel (contribution_roulette.h.slang); 0 traces it on every path.
+  // (Appended, per the note above.)
+  float aerialSunShare = 0.05F;
 };
 
 enum PathtracerFlags

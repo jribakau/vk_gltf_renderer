@@ -438,6 +438,14 @@ which is a scene edit and is recorded like any other transform.
   that is what a volume would replace. An interior a few metres deep needs a single step; with a
   fixed sixteen it was the most expensive feature of a path-traced room (about 1.6 ms of 9 ms with
   RTX+SER, 2.8 ms of 12 ms without SER).
+  The shadow ray goes by a roulette (`contributionTraceChance`, `shaders/contribution_roulette.h.slang`):
+  it is traced always once the air's sun term is at least `ptAerialSunShare` (0.05) of what the sample
+  holds, and otherwise with the chance term / (share × rest), weighed by one over it. That is unbiased,
+  and the noise it adds stays under the share of the pixel. Over a scene a few metres deep the term is a
+  sliver, so most paths skip the ray; distant haze is traced every time. On 10TEST at 1920x1080 (sky
+  and sun, a figure) the still's 4-sample frame went 188.6 → 185.3 ms (−1.8%, ABBA × 3, one outlier
+  of 193.5 left in). The moving frame moved by less than its noise (1.50–1.57 against 1.49–1.65 ms),
+  and the image mean was the same. `--ptAerialSunShare 0` traces it on every path, as before.
 
 Edits are previewed and committed on a settle rather than per frame — see
 [developer.md § Environment Lighting](developer.md#environment-lighting). For the physical sky the
