@@ -1151,6 +1151,29 @@ TEST(Wardrobe, HiddenPolygonsLeaveTheDrawnTriangles)
   EXPECT_EQ(fv::mesh::drawnTriangles(mesh).index.size(), all);
 }
 
+// A geograft's seam pairs and hidden polygons number the mesh it was made for, whose counts it gives: a
+// Genesis 3 graft's mean nothing on Genesis 8's mesh, so there it hides no polygon and joins no seam
+TEST(Wardrobe, AGraftForAnotherMeshHidesNothingByNumber)
+{
+  const auto doc = fv::dson::parseDoc(R"({"graft": {"vertex_count": 17418, "poly_count": 17000,
+    "vertex_pairs": {"count": 1, "values": [[0, 5]]}, "hidden_polys": {"count": 2, "values": [3, 4]}}})");
+  const auto graft = fv::wardrobe::parseGraft(*doc, doc->json);
+  ASSERT_TRUE(graft);
+  EXPECT_EQ(graft->vertexCount, 17418);
+  EXPECT_EQ(graft->polyCount, 17000);
+  EXPECT_EQ(graft->hidden, (std::vector<int32_t>{3, 4}));
+  fv::mesh::BuiltMesh g3, g8;
+  g3.dsonVertexCount = 17418;
+  g3.polyCount       = 17000;
+  g8.dsonVertexCount = 16556;
+  g8.polyCount       = 16368;
+  EXPECT_TRUE(fv::wardrobe::graftFits(*graft, g3));
+  EXPECT_FALSE(fv::wardrobe::graftFits(*graft, g8));
+  // a file that doesn't give the counts is taken at its word
+  const auto bare = fv::dson::parseDoc(R"({"graft": {"hidden_polys": {"count": 1, "values": [3]}}})");
+  EXPECT_TRUE(fv::wardrobe::graftFits(*fv::wardrobe::parseGraft(*bare, bare->json), g8));
+}
+
 // A geograft can hide every polygon of a surface group. The build still writes that group's primitive,
 // with no triangles, and the scene leaves it out rather than make an empty index buffer (which fails
 // to allocate and stops the renderer); the other group is drawn.

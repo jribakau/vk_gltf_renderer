@@ -66,7 +66,16 @@ std::optional<Graft> parseGraft(const dson::Doc& doc, const dson::Json& geo)
         out.hidden.push_back(int32_t(v.get<double>()));
   if(out.pairs.empty() && out.hidden.empty())
     return std::nullopt;
+  if(const dson::Json* n = dson::get(g, "vertex_count"); n && n->is_number())
+    out.vertexCount = n->get<int>();
+  if(const dson::Json* n = dson::get(g, "poly_count"); n && n->is_number())
+    out.polyCount = n->get<int>();
   return out;
+}
+
+bool graftFits(const Graft& graft, const mesh::BuiltMesh& body)
+{
+  return (graft.vertexCount < 0 || graft.vertexCount == body.dsonVertexCount) && (graft.polyCount < 0 || graft.polyCount == body.polyCount);
 }
 
 dson::TargetPtr projectTarget(const SurfaceBinding& binding, const Rigidity* rigidity, const mesh::BuiltMesh& body, int itemVertices,

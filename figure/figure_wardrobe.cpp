@@ -529,7 +529,9 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
             wardrobe::cachedBindStrands(body.cagePositions, body.dsonTris, item.cagePositions, item.cageLineStart, item.cageLineVerts, kStrandReach, f));
         return;
       }
-      const std::span<const int32_t> pairs = part.graft ? std::span<const int32_t>(part.graft->pairs) : std::span<const int32_t>();
+      // a graft's seam pairs number the body it was made for: on another mesh they'd weld it to strangers
+      const std::span<const int32_t> pairs =
+          part.graft && wardrobe::graftFits(*part.graft, body) ? std::span<const int32_t>(part.graft->pairs) : std::span<const int32_t>();
       *slot = std::make_shared<wardrobe::SurfaceBinding>(wardrobe::cachedBindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs, f));
     }));
   }
@@ -962,7 +964,13 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
         timing::Scope ta("addFollower", 5);
         morphs->addFollower(std::move(f));
       }
-      if(part.graft && !part.graft->hidden.empty())
+      if(part.graft && !wardrobe::graftFits(*part.graft, *bodyGeoPtr))
+      {
+        const std::string why = worn->label + " is a geograft made for another figure's mesh: here it can't hide the skin under it or join its seam to the body.";
+        if(std::find(result.warnings.begin(), result.warnings.end(), why) == result.warnings.end())
+          result.warnings.push_back(why);
+      }
+      else if(part.graft && !part.graft->hidden.empty())
       {
         auto& hidden = dst.meshes[size_t(body)].geo->hiddenPolys[worn->key];
         hidden.insert(hidden.end(), part.graft->hidden.begin(), part.graft->hidden.end());

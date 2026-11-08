@@ -40,8 +40,13 @@ struct Graft
 {
   std::vector<int32_t> pairs;
   std::vector<int32_t> hidden;
+  // the vertex and polygon counts of the figure mesh it was made for, -1 when the file doesn't say
+  int vertexCount = -1, polyCount = -1;
 };
 std::optional<Graft> parseGraft(const dson::Doc& doc, const dson::Json& geo);
+// Whether its seam pairs and hidden polygons, which number the vertices and polygons of the mesh it was
+// made for, mean the same on `body`: a Genesis 3 graft's don't on Genesis 8, whose mesh is another.
+bool graftFits(const Graft& graft, const mesh::BuiltMesh& body);
 
 // The item's version of one body morph target, or null when it moves nothing on the item. Both
 // meshes work through their cages' vertices; `scratch` holds body-cage-sized deltas between calls.
