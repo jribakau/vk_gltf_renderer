@@ -89,6 +89,8 @@ struct Shape
   std::vector<uint32_t>  weightStart;
   std::vector<uint16_t>  weightBone;  // into `bones`
   std::vector<float>     weight;
+  // a BSDismemberSkinInstance's body-part slots, one a partition: 32 the body, 37 the feet, 38 the calves...
+  std::vector<uint16_t> bodyParts;
   std::optional<Shader> shader;
   std::optional<Alpha>  alpha;
   // NiStringExtraData on it: name and value (an outfit's body carries "BODYTRI")

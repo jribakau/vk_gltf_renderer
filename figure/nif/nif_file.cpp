@@ -387,6 +387,16 @@ void readSkin(Shape& shape, int32_t skinRef, const Parser& p, const std::unorder
       throw std::runtime_error("a bone of its skin isn't a node in the file");
     shape.bones.push_back(it->second);
   }
+  // the game's biped slots, a flag and a slot a partition
+  if(sb->type == "BSDismemberSkinInstance")
+  {
+    const size_t nParts = r.count(r.u32(), 4);
+    for(size_t i = 0; i < nParts; i++)
+    {
+      r.u16();  // flags
+      shape.bodyParts.push_back(r.u16());
+    }
+  }
 
   std::optional<SkinPartition> part;
   if(const Block* pb = p.block(partRef); pb && pb->type == "NiSkinPartition")

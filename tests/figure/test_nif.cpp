@@ -172,7 +172,8 @@ struct Vert
 // A skinned shape, its vertices in the skin partition (as stream 100 keeps a skinned one's), its skin
 // data with every bone's bind (the inverse of where the bone stands: unturned here) and weights.
 void skinnedShape(Writer& w, int32_t block, const std::string& name, const std::vector<Vert>& verts, const std::vector<uint16_t>& tris,
-                  const std::vector<int32_t>& bones, const std::vector<V3>& boneAt, int32_t shader, int32_t alpha, std::vector<int32_t> extra = {})
+                  const std::vector<int32_t>& bones, const std::vector<V3>& boneAt, int32_t shader, int32_t alpha, std::vector<int32_t> extra = {},
+                  uint16_t slot = 32)
 {
   const int32_t skin = w.reserve("BSDismemberSkinInstance");
   const int32_t data = w.reserve("NiSkinData");
@@ -204,7 +205,7 @@ void skinnedShape(Writer& w, int32_t block, const std::string& name, const std::
       b.i32(n);
     b.u32(1);
     b.u16(257);
-    b.u16(32);
+    b.u16(slot);
     w.set(skin, std::move(b));
   }
   {
@@ -333,7 +334,8 @@ int32_t lightingShader(Writer& w, uint32_t type, const std::vector<std::string>&
 // Scene Root -> NPC COM -> NPC Pelvis -> (L Thigh, R Thigh, Spine); a skirt skinned to the pelvis, the
 // left thigh and the spine with a UV seam, the CBBE body it was built on, and a physics proxy with no material.
 // `standing`: feet under the thighs (at z 5) and a neck on the spine (z 108) that nothing is skinned to.
-std::vector<uint8_t> outfit(bool standing = false)
+// `slot`: the skirt's biped slot (32, the body's).
+std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32)
 {
   Writer        w;
   const int32_t root = w.reserve("NiNode");
@@ -376,7 +378,7 @@ std::vector<uint8_t> outfit(bool standing = false)
       {{-6, 0, 40}, {0.5f, 1}, {{{1, 1.f}, {0, 0}}}},
       {{0, 0, 60}, {1, 0}, {{{2, 1.f}, {1, 0}}}},
   };
-  skinnedShape(w, skirt, "_Test00_Skirt", verts, {0, 1, 2, 3, 4, 5}, {pelvis, lThigh, spine}, {{0, 0, 60}, {-6, 0, 60}, {0, 0, 68}}, dress, alpha);
+  skinnedShape(w, skirt, "_Test00_Skirt", verts, {0, 1, 2, 3, 4, 5}, {pelvis, lThigh, spine}, {{0, 0, 60}, {-6, 0, 60}, {0, 0, 68}}, dress, alpha, {}, slot);
   const int32_t tri = w.reserve("NiStringExtraData");
   {
     Buf b;
@@ -396,7 +398,7 @@ std::vector<uint8_t> outfit(bool standing = false)
 struct Data
 {
   fs::path dir, home, nif;
-  explicit Data(const std::string& name, bool standing = false)
+  explicit Data(const std::string& name, bool standing = false, uint16_t slot = 32)
   {
     dir  = fs::temp_directory_path() / ("fv_nif_" + name);
     home = dir / "library";
@@ -407,7 +409,7 @@ struct Data
     for(const char* t : {"dress_d.dds", "dress_n.dds", "dress_m.dds"})
       std::ofstream(dir / "data" / "textures" / "test" / t, std::ios::binary) << "x";
     nif                        = dir / "data" / "meshes" / "test" / "skirt_1.nif";
-    const std::vector<uint8_t> bytes = outfit(standing);
+    const std::vector<uint8_t> bytes = outfit(standing, slot);
     std::ofstream(nif, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
   }
   ~Data()
@@ -796,4 +798,23 @@ TEST(Nif, ARealOutfitReadsWhole)
   EXPECT_TRUE(w.sourceBase) << "no body found";
   std::error_code ec;
   fs::remove_all(home, ec);
+}
+
+// The game wears a piece on the feet's biped slot (37), not the body's (32), as footwear: so is it
+// fitted, though its bones (as many calf as foot ones on a boot) and a name like "Helga_boots_1"
+// couldn't tell
+TEST(Nif, APieceOnTheFeetsSlotIsFootwear)
+{
+  const Data           shoe("shoe", false, 37);
+  const fv::nif::File  f = fv::nif::readFile(shoe.nif);
+  const auto skirtShape = std::find_if(f.shapes.begin(), f.shapes.end(), [](const fv::nif::Shape& s) { return s.name == "_Test00_Skirt"; });
+  ASSERT_NE(skirtShape, f.shapes.end());
+  EXPECT_EQ(skirtShape->bodyParts, (std::vector<uint16_t>{37}));
+  const fv::dson::LoadResult w = fv::nif::loadWearable(shoe.nif, {}, {shoe.home});
+  ASSERT_EQ(w.items.size(), 1u);
+  EXPECT_EQ(w.items[0].region, std::optional<fv::wardrobe::FitRegion>(fv::wardrobe::FitRegion::eShoe));
+  const Data                 skirt("skirt");
+  const fv::dson::LoadResult body = fv::nif::loadWearable(skirt.nif, {}, {skirt.home});
+  EXPECT_FALSE(body.items[0].region);
+  EXPECT_EQ(fv::wardrobe::regionOf("Skyrim/Helga/meshes/Fuse00/Armor/Helga/Helga_boots_1.nif/Helga boots 1", {}), fv::wardrobe::FitRegion::eBoot);
 }

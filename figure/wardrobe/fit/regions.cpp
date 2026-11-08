@@ -39,6 +39,8 @@ FitRegion regionOf(const std::string& path, const std::vector<std::string>& bone
   std::transform(p.begin(), p.end(), p.begin(), [](unsigned char c) { return char(std::tolower(c)); });
   for(size_t at = p.find("%20"); at != std::string::npos; at = p.find("%20", at + 1))
     p.replace(at, 3, " ");
+  // "Helga_boots_1": an underscore is a word's letter to 
+  std::replace(p.begin(), p.end(), '_', ' ');
   static const std::regex thighHigh(R"(thigh\s*-?\s*high|over\s*-?\s*knee)");
   static const std::regex boot(R"(/boots?\b|\bboots?\b)");
   static const std::regex shoe(R"(/shoes?\b|\bfootwear\b|\bheels?\b|highheels?\b|\bsneakers?\b|\bpumps?\b|\bsandals?\b)");

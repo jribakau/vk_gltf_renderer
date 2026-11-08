@@ -845,6 +845,25 @@ dson::LoadResult loadWearable(const fs::path& file, const dson::LoadOptions& opt
   item.sources.insert(lower(utf8(file)));
   item.rigs.push_back(0);
   item.madeFor = wardrobe::Generation::eSkyrim;
+  // what the game wears it as: on the feet's slot (37) and not the body's (32) it is footwear, a boot
+  // when it reaches the calves. Its bones can't tell: a boot has as many calf bones as foot ones
+  {
+    bool feet = false, body = false, calves = false;
+    for(size_t s : drawn)
+    {
+      for(const uint16_t slot : nif.shapes[s].bodyParts)
+      {
+        feet   = feet || slot == 37;
+        body   = body || slot == 32;
+        calves = calves || slot == 38;
+      }
+      // or is skinned to a calf
+      for(const int node : nif.shapes[s].bones)
+        calves = calves || wardrobe::parseBone(nif.nodes[size_t(node)].name).slot == "shin";
+    }
+    if(feet && !body)
+      item.region = calves ? wardrobe::FitRegion::eBoot : wardrobe::FitRegion::eShoe;
+  }
 
   TextureFinder find{file.parent_path(), wear.textureHome, {}, {}, {}};
   std::vector<int> meshNodes;

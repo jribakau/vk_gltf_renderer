@@ -22,6 +22,7 @@
 #include <figure/scene/graph.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
 #include <figure/wardrobe/fit/heel.hpp>
+#include <figure/wardrobe/fit/regions.hpp>
 #include <figure/wardrobe/follow.hpp>
 
 namespace fv::wardrobe {
@@ -46,6 +47,8 @@ struct Item
   // the figure it says it was made for: its figure node's preferred base ("/Genesis 8/Female"), or
   // Skyrim for a .nif. Its bones can overrule it, its path can't (wardrobe::identifyGeneration)
   std::optional<wardrobe::Generation> madeFor;
+  // what the file says it is, over what its path and bones suggest: a .nif's biped slots
+  std::optional<wardrobe::FitRegion> region;
   // its skeletons (indices into LoadResult::rigs), which follow the figure's pose
   std::vector<int> rigs;
   // its meshes (indices into SceneGraph::meshes)

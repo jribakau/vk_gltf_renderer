@@ -129,7 +129,7 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   std::vector<std::string> boneNames;
   for(const BoneRef& b : itemBones)
     boneNames.push_back(b.name);
-  const FitRegion region = regionOf(rel + "/" + item.label, boneNames);
+  const FitRegion region = item.region ? *item.region : regionOf(rel + "/" + item.label, boneNames);
 
   std::vector<float>       baseMoved;
   std::vector<int16_t>     baseLimbs;
