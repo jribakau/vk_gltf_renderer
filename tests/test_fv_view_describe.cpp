@@ -59,6 +59,11 @@ TEST(FvViewDescribe, ATakenOffItemIsNotInTheFiguresTree)
   EXPECT_EQ(all["stats"]["meshes"], 2);
   EXPECT_EQ(all["stats"]["triangles"], 4);
   EXPECT_EQ(all["stats"]["materials"], 2);
+  // a pick names a mesh by the node that owns it: the figure, the item
+  EXPECT_EQ(worn.nodes[size_t(item + 1)].name, "jacket mesh");
+  EXPECT_EQ(worn.nodes[size_t(item + 1)].label, "Jacket");
+  EXPECT_EQ(worn.nodes[size_t(root + 1)].label, "Genesis 9");
+  EXPECT_EQ(worn.nodes[size_t(item)].label, "Jacket");
 
   scene.nodes[size_t(item)].removed = true;
   FvView::PropNodes off;
@@ -95,6 +100,7 @@ TEST(FvViewDescribe, AModelsNodesAreItsFilesWithNamesFromThere)
   EXPECT_EQ(d["nodes"]["2"]["name"], "Wheel");
   EXPECT_EQ(d["nodes"]["2"]["parent"], 0);
   EXPECT_EQ(out.nodes[2].mesh, 1);
+  EXPECT_EQ(out.nodes[2].label, "Wheel");  // a model's node keeps its own name
   EXPECT_EQ(d["stats"]["meshes"], 2);
 
   // a model the import could not take has no nodes in the scene

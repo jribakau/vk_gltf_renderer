@@ -113,6 +113,9 @@ public:
   {
     std::string name, kind;
     int         mesh = -1;
+    // What a pick at it is called (the pixel readout, the Time view's list): a figure's mesh by the
+    // node that owns it, as a mesh node takes its geometry's name, often just "geometry"
+    std::string label;
   };
   // (root, entityOf and its materials are its fv::PropAddress, what fv::SceneMap reads)
   struct PropNodes : fv::PropAddress

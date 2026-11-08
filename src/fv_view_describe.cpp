@@ -52,6 +52,8 @@ fv::Json FvView::describeFigure(PropNodes& out, const fv::SceneGraph& scene, int
     else if(n.kind == fv::NodeKind::eMesh)
       kind = n.mesh >= 0 && n.mesh < int(scene.meshes.size()) && scene.meshes[n.mesh].skinned() ? "skinned" : "mesh";
     out.nodes[node] = {n.name.empty() ? kind : n.name, kind, n.kind == fv::NodeKind::eMesh ? n.mesh : -1};
+    const fv::Node* owner = n.kind == fv::NodeKind::eMesh && n.parent >= 0 && n.parent < int(scene.nodes.size()) ? &scene.nodes[size_t(n.parent)] : nullptr;
+    out.nodes[node].label = owner && !owner->name.empty() ? owner->name : out.nodes[node].name;
     nodes[std::to_string(node)] = {{"name", out.nodes[node].name}, {"parent", n.parent}, {"kind", kind}, {"order", order++}, {"depth", depth}};
     for(int child : n.children)
       walk(child, depth + 1);
@@ -104,7 +106,7 @@ fv::Json FvView::describeModel(PropNodes& out, const tinygltf::Model& model, std
     const std::string label = !n.name.empty()                              ? n.name :
                               mesh && !model.meshes[size_t(n.mesh)].name.empty() ? model.meshes[size_t(n.mesh)].name :
                                                                                    "Node-" + std::to_string(node);
-    out.nodes[size_t(node)]     = {label, kind, mesh ? n.mesh : -1};
+    out.nodes[size_t(node)]     = {label, kind, mesh ? n.mesh : -1, label};
     nodes[std::to_string(node)] = {{"name", label}, {"parent", parent[size_t(node)]}, {"kind", kind}, {"order", order++}, {"depth", depth}};
     if(mesh && meshes.insert(n.mesh).second)
       for(const tinygltf::Primitive& p : model.meshes[size_t(n.mesh)].primitives)

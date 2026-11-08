@@ -751,7 +751,7 @@ void FvView::publishInspect(const HostRenderer::PixelReadout& readout)
       if(at.node >= 0 && at.node < int(p.nodes.size()))
       {
         j["node"] = at.node;
-        j["name"] = p.nodes[size_t(at.node)].name;
+        j["name"] = p.nodes[size_t(at.node)].label;
       }
       if(at.surface >= 0)
         j["surface"] = "m:" + std::to_string(at.surface);
@@ -801,7 +801,7 @@ void FvView::publishPixelTimes(const HostRenderer::PixelTimes& times)
         {
           key += "/" + std::to_string(at.node);
           line["node"] = at.node;
-          line["name"] = p.nodes[size_t(at.node)].name;
+          line["name"] = p.nodes[size_t(at.node)].label;
         }
         break;
       }
