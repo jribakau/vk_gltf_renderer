@@ -332,19 +332,28 @@ int32_t lightingShader(Writer& w, uint32_t type, const std::vector<std::string>&
 
 // Scene Root -> NPC COM -> NPC Pelvis -> (L Thigh, R Thigh, Spine); a skirt skinned to the pelvis, the
 // left thigh and the spine with a UV seam, the CBBE body it was built on, and a physics proxy with no material.
-std::vector<uint8_t> outfit()
+// `standing`: feet under the thighs (at z 5) and a neck on the spine (z 108) that nothing is skinned to.
+std::vector<uint8_t> outfit(bool standing = false)
 {
   Writer        w;
   const int32_t root = w.reserve("NiNode");
   const int32_t com = w.reserve("NiNode"), pelvis = w.reserve("NiNode"), lThigh = w.reserve("NiNode"), rThigh = w.reserve("NiNode"),
                 spine = w.reserve("NiNode");
+  const int32_t lFoot = standing ? w.reserve("NiNode") : -1, rFoot = standing ? w.reserve("NiNode") : -1, neck = standing ? w.reserve("NiNode") : -1;
   const int32_t skirt = w.reserve("BSTriShape"), body = w.reserve("BSTriShape"), proxy = w.reserve("BSTriShape");
+  const auto    only  = [&](int32_t n) { return n >= 0 ? std::vector<int32_t>{n} : std::vector<int32_t>{}; };
   node(w, root, "Scene Root", {0, 0, 0}, {com, skirt, body, proxy});
   node(w, com, "NPC COM [COM ]", {0, 0, 60}, {pelvis});
   node(w, pelvis, "NPC Pelvis [Pelv]", {0, 0, 0}, {lThigh, rThigh, spine});
-  node(w, lThigh, "NPC L Thigh [LThg]", {-6, 0, 0}, {});
-  node(w, rThigh, "NPC R Thigh [RThg]", {6, 0, 0}, {});
-  node(w, spine, "NPC Spine [Spn0]", {0, 0, 8}, {});
+  node(w, lThigh, "NPC L Thigh [LThg]", {-6, 0, 0}, only(lFoot));
+  node(w, rThigh, "NPC R Thigh [RThg]", {6, 0, 0}, only(rFoot));
+  node(w, spine, "NPC Spine [Spn0]", {0, 0, 8}, only(neck));
+  if(standing)
+  {
+    node(w, lFoot, "NPC L Foot [Lft ]", {0, 0, -55}, {});
+    node(w, rFoot, "NPC R Foot [Rft ]", {0, 0, -55}, {});
+    node(w, neck, "NPC Neck [Neck]", {0, 0, 40}, {});
+  }
   const int32_t dress = lightingShader(w, 1,
                                        {"textures\\test\\dress_d.dds", "textures\\test\\dress_n.dds", "", "", "textures\\cube\\shiny_e.dds",
                                         "textures\\test\\dress_m.dds", "", "", ""});
@@ -387,7 +396,7 @@ std::vector<uint8_t> outfit()
 struct Data
 {
   fs::path dir, home, nif;
-  explicit Data(const std::string& name)
+  explicit Data(const std::string& name, bool standing = false)
   {
     dir  = fs::temp_directory_path() / ("fv_nif_" + name);
     home = dir / "library";
@@ -398,7 +407,7 @@ struct Data
     for(const char* t : {"dress_d.dds", "dress_n.dds", "dress_m.dds"})
       std::ofstream(dir / "data" / "textures" / "test" / t, std::ios::binary) << "x";
     nif                        = dir / "data" / "meshes" / "test" / "skirt_1.nif";
-    const std::vector<uint8_t> bytes = outfit();
+    const std::vector<uint8_t> bytes = outfit(standing);
     std::ofstream(nif, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
   }
   ~Data()
@@ -686,6 +695,65 @@ TEST(Nif, BonesHangAsTheFiguresDoAtItsJoints)
   EXPECT_NEAR(worlds[size_t(thigh)].e[12], 8, 1e-9);
   EXPECT_NEAR(worlds[size_t(thigh)].e[13], 95, 1e-9);
   EXPECT_EQ(w.items[0].key, "w1");
+}
+
+// An outfit stands as tall as the figure by the highest joint both have above the feet: here the neck,
+// which neither it nor its body is skinned to (Skyrim's head is a mesh of its own). With no such joint
+// it keeps Skyrim's size and says so.
+TEST(Nif, ItStandsAsTallAsTheFigureByTheHighestJointBothHave)
+{
+  const auto figureWith = [](bool feet) {
+    auto            out    = std::make_unique<std::pair<fv::SceneGraph, fv::dson::Rig>>();
+    fv::SceneGraph& figure = out->first;
+    fv::dson::Rig&  rig    = out->second;
+    const auto      bone   = [&](const std::string& name, int parent, std::array<double, 3> c) {
+      fv::Node n;
+      n.name                  = name;
+      n.kind                  = fv::NodeKind::eBone;
+      n.joint                 = std::make_shared<fv::JointData>();
+      n.joint->id             = name;
+      n.joint->center         = c;
+      n.joint->centerAuthored = c;
+      const int id            = figure.add(std::move(n), parent);
+      rig.bones.emplace_back(name, id);
+      return id;
+    };
+    rig.root         = bone("Genesis8Female", -1, {0, 0, 0});
+    const int hip    = bone("hip", rig.root, {0, 100, 0});
+    const int pelvis = bone("pelvis", hip, {0, 100, 0});
+    const int lThigh = bone("lThighBend", pelvis, {8, 95, 0});
+    const int rThigh = bone("rThighBend", pelvis, {-8, 95, 0});
+    if(feet)
+    {
+      bone("lFoot", lThigh, {8, 8, 0});
+      bone("rFoot", rThigh, {-8, 8, 0});
+    }
+    const int abdomen = bone("abdomenLower", hip, {0, 105, 0});
+    bone("neckLower", abdomen, {0, 150, 0});
+    return out;
+  };
+  const Data  data("tall", true);
+  const auto  standing = figureWith(true);
+  fv::dson::LoadOptions options;
+  options.attach = fv::dson::AttachTarget{&standing->first, &standing->second, "w1"};
+  const fv::dson::LoadResult w = fv::nif::loadWearable(data.nif, options, {data.home});
+  // neck to feet: 142 cm on the figure, 103 Skyrim units on the outfit
+  const double u     = fv::nif::kUnitCm;
+  const double scale = (150.0 - 8.0) / (103 * u);
+  const int    thigh = nodeNamed(w.scene, "NPC L Thigh [LThg]");
+  ASSERT_GE(thigh, 0);
+  EXPECT_NEAR(w.scene.nodes[size_t(thigh)].joint->centerAuthored[1], 60 * u * scale, 1e-6);
+  EXPECT_GE(nodeNamed(w.scene, "NPC L Foot [Lft ]"), 0) << "a bone nothing is skinned to is kept";
+  for(const std::string& warning : w.warnings)
+    EXPECT_EQ(warning.find("Skyrim's size"), std::string::npos) << warning;
+
+  const auto footless = figureWith(false);
+  options.attach      = fv::dson::AttachTarget{&footless->first, &footless->second, "w1"};
+  const fv::dson::LoadResult same = fv::nif::loadWearable(data.nif, options, {data.home});
+  const int                  t    = nodeNamed(same.scene, "NPC L Thigh [LThg]");
+  ASSERT_GE(t, 0);
+  EXPECT_NEAR(same.scene.nodes[size_t(t)].joint->centerAuthored[1], 60 * u, 1e-6);
+  EXPECT_TRUE(std::any_of(same.warnings.begin(), same.warnings.end(), [](const std::string& s) { return s.find("Skyrim's size") != std::string::npos; }));
 }
 
 // FV_NIF=<an Outfit Studio export with its body, a dress> checks a real file reads whole and consistent.

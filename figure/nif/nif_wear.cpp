@@ -91,8 +91,9 @@ struct Skeleton
   std::unordered_map<std::string, int> byName;
 };
 
-// The bones the shapes skin to, with every node above them up to the file's root (left out): their
-// places from the skins' bind data where a skin has them, else from the node tree.
+// The bones the shapes skin to and the file's other Skyrim bones, with every node above them up to the
+// file's root (left out): their places from the skins' bind data where a skin has them, else from the
+// node tree.
 Skeleton skeletonOf(const File& f, const std::vector<size_t>& shapes)
 {
   std::map<int, D3> bound;  // node -> its bind place, Skyrim's space
@@ -118,6 +119,14 @@ Skeleton skeletonOf(const File& f, const std::vector<size_t>& shapes)
         if(f.nodes[size_t(n)].parent >= 0)
           wanted.insert(n);
   }
+  // and every node named as a bone of Skyrim's skeleton, skinned or not: a joint the fit may measure
+  // or aim by (the feet and neck a dress has no weights on), and the same set for a garment and the
+  // body in its file
+  for(size_t n = 0; n < f.nodes.size(); n++)
+    if(f.nodes[n].name.rfind("NPC ", 0) == 0)
+      for(int k = int(n), guard = 0; k >= 0 && guard < 512; k = f.nodes[size_t(k)].parent, guard++)
+        if(f.nodes[size_t(k)].parent >= 0)
+          wanted.insert(k);
   Skeleton out;
   // depth first from the root's children, so a parent comes before its children
   std::map<int, std::vector<int>> children;
@@ -179,16 +188,36 @@ std::vector<wardrobe::SkelBone> skelBones(const Skeleton& s, double scale)
   return out;
 }
 
-// Head to feet, cm: what the whole is scaled by.
-std::optional<double> standingHeight(const std::vector<wardrobe::SkelBone>& bones)
+// From a landmark's joint down to the feet, cm: what the whole is scaled by.
+std::optional<double> heightOf(const std::vector<wardrobe::SkelBone>& bones, const char* landmark)
 {
-  const wardrobe::SkelBone* head = wardrobe::findSlot(bones, 0, "head");
-  const wardrobe::SkelBone* l    = wardrobe::findSlot(bones, 'l', "foot");
-  const wardrobe::SkelBone* r    = wardrobe::findSlot(bones, 'r', "foot");
-  if(!head || !l || !r)
+  const wardrobe::SkelBone* top = wardrobe::findSlot(bones, 0, landmark);
+  const wardrobe::SkelBone* l   = wardrobe::findSlot(bones, 'l', "foot");
+  const wardrobe::SkelBone* r   = wardrobe::findSlot(bones, 'r', "foot");
+  if(!top || !l || !r)
     return std::nullopt;
-  const double h = head->center[1] - (l->center[1] + r->center[1]) / 2;
+  const double h = top->center[1] - (l->center[1] + r->center[1]) / 2;
   return h > 1 ? std::optional<double>(h) : std::nullopt;
+}
+
+// The scale that makes the item stand as tall as the figure, by the highest landmark both have: the
+// head, else the neck, else the chest. In Skyrim the head is a mesh of its own, so an outfit and its
+// body seldom have a head bone. `own` first, then its body's.
+std::optional<double> heightScale(const std::vector<wardrobe::SkelBone>& own, const std::vector<wardrobe::SkelBone>* body,
+                                  const std::vector<wardrobe::SkelBone>& figure)
+{
+  for(const char* landmark : {"head", "neck1", "spine3"})
+  {
+    const std::optional<double> to = heightOf(figure, landmark);
+    if(!to)
+      continue;
+    std::optional<double> from = heightOf(own, landmark);
+    if(!from && body)
+      from = heightOf(*body, landmark);
+    if(from)
+      return std::clamp(*to / *from, 0.5, 2.0);
+  }
+  return std::nullopt;
 }
 
 // ------------------------------------------------------------------ meshes
@@ -665,13 +694,13 @@ dson::LoadResult loadWearable(const fs::path& file, const dson::LoadOptions& opt
   }
   // one scale for the whole, so the skeleton stands as tall as the figure's: girth with it
   double scale = 1;
+  if(!figure.empty())
   {
-    std::optional<double> from = standingHeight(skelBones(sk, 1));
-    if(!from && base)
-      from = standingHeight(skelBones(base->skeleton, 1));
-    const std::optional<double> to = standingHeight(figure);
-    if(from && to)
-      scale = std::clamp(*to / *from, 0.5, 2.0);
+    const std::vector<wardrobe::SkelBone> body = base ? skelBones(base->skeleton, 1) : std::vector<wardrobe::SkelBone>{};
+    if(const auto s = heightScale(skelBones(sk, 1), base ? &body : nullptr, figure))
+      scale = *s;
+    else
+      out.warnings.push_back(fileName + ": it keeps Skyrim's size, as neither it nor its body has both feet and a head, neck or chest bone to measure the figure by.");
   }
   const std::vector<wardrobe::SkelBone> itemBones = skelBones(sk, scale);
   const std::map<std::string, wardrobe::Rigid> plan = figure.empty() ? std::map<std::string, wardrobe::Rigid>{} : wardrobe::rigidPlan(itemBones, figure);
