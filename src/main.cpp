@@ -314,6 +314,7 @@ auto main(int argc, char** argv) -> int
   VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pipelineExecFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
   VkPhysicalDeviceFaultFeaturesEXT faultFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
   VkPhysicalDeviceAddressBindingReportFeaturesEXT bindingReportFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
+  VkPhysicalDeviceShaderClockFeaturesKHR shaderClockFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
   // clang-format on
 
   // Requesting the extensions and features needed
@@ -334,6 +335,7 @@ auto main(int argc, char** argv) -> int
       {VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, nullptr, false},  // Optional: where a lost device's queue had got to (gpu_crash_trail.hpp)
       {VK_EXT_DEVICE_FAULT_EXTENSION_NAME, &faultFeature, false},             // Optional: what a lost device read or wrote (gpu_crash_trail.hpp)
       {VK_EXT_DEVICE_ADDRESS_BINDING_REPORT_EXTENSION_NAME, &bindingReportFeature, false},  // Optional: what each such address was bound to (gpu_crash_trail.hpp)
+      {VK_KHR_SHADER_CLOCK_EXTENSION_NAME, &shaderClockFeature, false},  // Optional: the Time view's clock (pixel_time.h.slang)
   };
 
   // The graphics queue, and with the GPU cloth solver a second for its compute, so a drape runs beside
@@ -585,6 +587,10 @@ auto main(int argc, char** argv) -> int
       && (addressCmdFeature.deviceAddressCommands == VK_TRUE);  // micromaps are created with vkCreateAccelerationStructure2KHR
   // A scene that carries micromaps on hardware without OMM says so when it loads.
   elemGltfRenderer->setOpacityMicromapAvailable(ommHardware, useOpacityMicromap);
+
+  // The Time view times each pixel by the device's clock: without it Display offers no Time
+  elemGltfRenderer->setShaderClockAvailable(vkContext.hasExtensionEnabled(VK_KHR_SHADER_CLOCK_EXTENSION_NAME)
+                                            && shaderClockFeature.shaderDeviceClock == VK_TRUE);
 
   // Names of the extensions the device was created with (the vk_oidn denoiser picks its features from them)
   {

@@ -356,6 +356,12 @@ struct SceneFrameInfo
   // ptEstimator, a debug check (light_pick.h.slang): which technique counts what both a light sample and
   // a BSDF ray reach, ESTIMATOR_MIS (0, both), _LIGHT (1) or _BSDF (2). (Appended, per the note above.)
   int estimator = 0;
+  // The Time view (USE_PIXEL_TIME, pixel_time.h.slang): one over the clock ticks the frame's average
+  // pixel took a sample, from a recent frame (0: none yet); the slots the frame's sums have, and where
+  // they go (null: not summed). (Appended, per the note above.)
+  float pixelTimeScale = 0.0F;
+  int   pixelTimeSlots = 0;
+  uint* pixelTime;
 };
 
 enum PathtracerFlags

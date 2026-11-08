@@ -12,6 +12,7 @@
 #include <nvshaders/slang_types.h>
 
 #include "../shaders/debug_colors.h.slang"
+#include "../shaders/pixel_time.h.slang"
 
 using shaderio::idColor;
 using shaderio::triangleSizeRamp;
@@ -67,6 +68,21 @@ TEST(DebugColors, ViridisBrightensAllTheWay)
     EXPECT_GT(l, last) << i;
     last = l;
   }
+}
+
+// The Time view's ramp: the frame's average in the middle, an eighth and eight times it at the ends,
+// a doubling a sixth of the way
+TEST(DebugColors, TheTimeRampIsCentredOnTheAverage)
+{
+  using shaderio::pixelTimeColor;
+  using shaderio::pixelTimeRamp;
+  EXPECT_NEAR(pixelTimeRamp(1.0F), 0.5F, 1e-6F);
+  EXPECT_NEAR(pixelTimeRamp(0.125F), 0.0F, 1e-6F);
+  EXPECT_NEAR(pixelTimeRamp(8.0F), 1.0F, 1e-6F);
+  EXPECT_NEAR(pixelTimeRamp(2.0F) - pixelTimeRamp(1.0F), 1.0F / 6.0F, 1e-6F);
+  EXPECT_EQ(pixelTimeRamp(0.0F), 0.0F);
+  EXPECT_EQ(pixelTimeRamp(1000.0F), 1.0F);
+  EXPECT_EQ(pixelTimeColor(1.0F), viridis(0.5F));
 }
 
 // Half a millimetre to half a metre over the ramp, a subdivision level (half the side) a tenth of it

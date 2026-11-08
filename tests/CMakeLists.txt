@@ -222,6 +222,9 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_host_vam.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_wardrobe.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_view.cpp
+    # The Time view's sums read back and its breakdown by share
+    test_pixel_time.cpp
+    ${CMAKE_SOURCE_DIR}/src/pixel_time.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_materials.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_protocol.cpp
     ${CMAKE_SOURCE_DIR}/src/env_image_loader.cpp

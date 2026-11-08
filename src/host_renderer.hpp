@@ -195,6 +195,33 @@ public:
   // The false-colour exposure view in place of the image (TonemapperData::falseColor): the tone
   // mapper's alone, so a still keeps its samples
   virtual void setFalseColor(bool on) = 0;
+  // The Time view (shaders/pixel_time.h.slang): each pixel coloured by how long its thread ran against
+  // the frame's average, the paths as the shaded image traces them. Only on a device with
+  // VK_KHR_shader_clock's device clock (pixelTimeAvailable).
+  virtual bool pixelTimeAvailable() const = 0;
+  virtual void setPixelTime(bool on)      = 0;
+  // While it is on, a frame's time by what its pixels' camera rays met first, a few times a second
+  struct PixelTimes
+  {
+    enum class Kind
+    {
+      eSky,     // nothing: the environment, the sky or a backplate
+      eGround,
+      eWater,
+      eMesh,    // `pick`'s, or one past the slots the frame had (none)
+    };
+    struct Part
+    {
+      Kind                        kind = Kind::eSky;
+      std::optional<InstancePick> pick;
+      uint64_t                    ticks   = 0;  // the device clock's
+      uint64_t                    samples = 0;
+    };
+    std::vector<Part> parts;
+    uint64_t          ticks   = 0;
+    uint64_t          samples = 0;
+  };
+  virtual void setPixelTimeObserver(std::function<void(const PixelTimes& times)> observer) = 0;
   // The wipe against a kept frame: keep the image as the next frame shows it (without the overlays),
   // and show it left of `at` (a share of the view's width from its left edge), the live image right
   // of it. None: no wipe, and the kept frame goes. A resize drops the kept frame too.

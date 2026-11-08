@@ -542,6 +542,14 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                                      "unless a pdf is wrong",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.ptEstimator, Persist::eNo, 0, 2);
+  // Display › Time from a command line (view.set's display "time" in the app): each pixel coloured by how
+  // long its thread ran against the frame's average (pixel_time.h.slang); where the frame's time went is
+  // logged as it comes back
+  m_settings.add({.name            = "pixelTime",
+                  .help            = "Debug: each pixel coloured by its GPU time against the frame's average (the Time view; "
+                                     "needs VK_KHR_shader_clock)",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.pixelTime, Persist::eNo);
   m_settings.add({.name            = "hazeCandidates",
                   .help            = "Haze: lights a still's scatter point picks its light from, by what each gives the eye (1: the light pick's own)",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},

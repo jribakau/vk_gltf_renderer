@@ -32,6 +32,11 @@
 #ifndef USE_OMM
 #define USE_OMM 0
 #endif
+// The Time view (pixel_time.h.slang): each pixel's thread timed by the device's clock. The capability
+// it declares needs VK_KHR_shader_clock, so the host sets it only for that view, where the device has it.
+#ifndef USE_PIXEL_TIME
+#define USE_PIXEL_TIME 0
+#endif
 // clang-format off: the SPIR-V ids (%ommEnable) must stay as written
 #if USE_OMM
 #define RAYQUERY_USE_OPACITY_MICROMAP(entryPoint)                                                                      \
@@ -60,6 +65,7 @@ static bool doDebug = false;
 #endif
 #include "adaptive_stop.h.slang"
 #include "hit_signal.h.slang"
+#include "pixel_time.h.slang"
 #include "gltf_vertex_access.h.slang"
 #include "shaderio.h"
 #include "get_hit.h.slang"
@@ -204,6 +210,9 @@ static uint g_sobolIndex    = 0u;  // the pixel's sample index: the accumulation
 static uint g_sobolPixel    = 0u;  // the pixel's scramble, the same in every frame
 static uint g_sobolDecision = 0u;
 static bool g_hitToCount    = false;  // the pixel counts, and its first hit is still to come (pushConst.hitSignal)
+#if USE_PIXEL_TIME
+static uint g_timeSlot = kPixelTimeUnset;  // the Time view: what the pixel's first camera ray met (pixel_time.h.slang)
+#endif
 #if USE_LIGHT_RIS
 static int2 g_reusePixel       = int2(0);  // ePtLightReuse: the pixel whose record its first hit reads and writes...
 static bool g_reuseFirstSample = true;     // ...its frame's first sample, which reads last frame's record (the rest, this frame's)
@@ -382,6 +391,17 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     const bool hitWater       = checkWaterIntersection(ray, payload, hit, frameInfo, waterFromAbove);
     if(hitWater)
       hitInfinitePlane = false;
+#if USE_PIXEL_TIME
+    // the Time view sums a pixel's time by what its first sample's camera ray met
+    if(firstRay && g_timeSlot == kPixelTimeUnset)
+    {
+      const uint instance = kPixelTimeInstance + uint(payload.rnodeID);
+      g_timeSlot          = hitWater                  ? kPixelTimeWater :
+                            hitInfinitePlane          ? kPixelTimeGround :
+                            payload.hitT == INFINITE  ? kPixelTimeSky :
+                            instance < uint(frameInfo->pixelTimeSlots) ? instance : kPixelTimeOther;
+    }
+#endif
 
     // A segment under the water, outside any mesh's own medium, is charged its absorption. One that
     // never meets the surface or the floor (past the floor's fade) is lost in it.
@@ -1874,11 +1894,50 @@ void addRrStillGuides(SampleResult sampleResult, inout float4 specularSum, inout
 //-----------------------------------------------------------------------
 // Per-pixel accumulation and GBuffer output
 //-----------------------------------------------------------------------
+#if USE_PIXEL_TIME
+// The Time view: adds the pixels' time and samples to the sums of what each met (pixel_time.h.slang),
+// one set of atomics for each slot the warp's pixels hold, a 64-bit sum by the carry of its low half
+void addPixelTime(uint slot, uint ticks, uint samples)
+{
+  uint* sums = pushConst.frameInfo->pixelTime;
+  [loop]
+  for(;;)
+  {
+    if(WaveReadLaneFirst(slot) == slot)
+    {
+      const uint warpTicks   = WaveActiveSum(ticks);
+      const uint warpSamples = WaveActiveSum(samples);
+      if(WaveIsFirstLane())
+      {
+        uint before = 0u;
+        InterlockedAdd(sums[slot * 4u], warpTicks, before);
+        if(before + warpTicks < before)
+          InterlockedAdd(sums[slot * 4u + 1u], 1u);
+        InterlockedAdd(sums[slot * 4u + 2u], warpSamples);
+      }
+      break;
+    }
+  }
+}
+
+uint64_t pixelTimeClock()
+{
+  const uint2 c = getRealtimeClock();
+  return (uint64_t(c.y) << 32) | uint64_t(c.x);
+}
+#endif
+
 void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
 {
   // Check if the sample position is within the image bounds
   if(samplePos.x >= imageSize.x || samplePos.y >= imageSize.y)
     return;
+#if USE_PIXEL_TIME
+  // from here to the result: the samples, the selection ray, the guides' sums (the host leaves the
+  // adaptive stop off, so no warp returns early)
+  const uint64_t clockStart = pixelTimeClock();
+  g_timeSlot                = kPixelTimeUnset;
+#endif
 
   // Check if the sample position is the mouse coordinate
   if(samplePos.x == pushConst.mouseCoord.x && samplePos.y == pushConst.mouseCoord.y)
@@ -2016,6 +2075,31 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   else if(!hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) && ndcDepth < outDepth[int2(samplePos)])
     outDepth[int2(samplePos)] = ndcDepth;
 
+#if USE_PIXEL_TIME
+  // The Time view: the image is the pixel's time a sample against the frame's average, in colour (a
+  // display value, as the debug views' are); an accumulation keeps the mean of its frames' times in the
+  // convergence image (bound for it, its adaptive stop off), a DLSS frame shows its own
+  {
+    const uint64_t elapsed   = pixelTimeClock() - clockStart;
+    const float    perSample = float(elapsed) / float(pushConst.numSamples);
+    float          mean      = perSample;
+    if(!hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+    {
+      if(!firstFrame && pushConst.totalSamples > 0)
+        mean = (outImages[int(OutputImage::eConvergence)][int2(samplePos)].x * float(pushConst.totalSamples)
+                + perSample * float(pushConst.numSamples))
+               / float(pushConst.totalSamples + pushConst.numSamples);
+      outImages[int(OutputImage::eConvergence)][int2(samplePos)] = float4(mean, 0.0F, 0.0F, 0.0F);
+    }
+    // before a frame has been summed, against a tenth of a millisecond of NVIDIA's clock
+    const float scale = pushConst.frameInfo->pixelTimeScale > 0.0F ? pushConst.frameInfo->pixelTimeScale : 1e-5F;
+    pixelColor        = float4(pixelTimeColor(mean * scale), pixelColor.w);
+    if(pushConst.frameInfo->pixelTime != nullptr)
+      addPixelTime(g_timeSlot == kPixelTimeUnset ? kPixelTimeSky : g_timeSlot,
+                   uint(min(elapsed >> kPixelTimeUnitShift, uint64_t(0x7FFFFFFFu))), uint(pushConst.numSamples));
+  }
+  outImages[int(OutputImage::eResultImage)][int2(samplePos)] = pixelColor;
+#else
   // Saving result
   // Nothing accumulated yet (the first frame, or the first after DLSS's frame 0): replace the value in
   // the buffer, never weigh it by 0, which an infinite value would turn into NaN
@@ -2031,6 +2115,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     outImages[int(OutputImage::eResultImage)][int2(samplePos)] =
         (old_color * pushConst.totalSamples + pixelColor * pushConst.numSamples) / totalSamplesAfter;
   }
+#endif
 
   // Whether the pixel's mean has converged, after this frame (adaptiveConverged)
   if(adaptiveStop)
@@ -2353,6 +2438,11 @@ void inspectPixel(IRaytracer raytracer)
 // (subgroup vote and ballot: ePtAdaptiveStop's warp-wide stop and its count of the pixels still sampling, in processPixel)
 [require(spvGroupNonUniformVote)]
 [require(spvGroupNonUniformBallot)]
+#if USE_PIXEL_TIME
+// (the Time view's clock, and its warp sums)
+[require(spvShaderClockKHR)]
+[require(spvGroupNonUniformArithmetic)]
+#endif
 void computeMain(uint3 threadIdx: SV_DispatchThreadID)
 {
   RAYQUERY_USE_OPACITY_MICROMAP(computeMain);
@@ -2381,6 +2471,11 @@ void computeMain(uint3 threadIdx: SV_DispatchThreadID)
 // (subgroup vote and ballot: ePtAdaptiveStop's warp-wide stop and its count of the pixels still sampling, in processPixel)
 [require(spvGroupNonUniformVote)]
 [require(spvGroupNonUniformBallot)]
+#if USE_PIXEL_TIME
+// (the Time view's clock, and its warp sums)
+[require(spvShaderClockKHR)]
+[require(spvGroupNonUniformArithmetic)]
+#endif
 void rgenMain()
 {
   RAYQUERY_USE_OPACITY_MICROMAP(rgenMain);  // Ray queries here too (e.g. dlssTraceSkipThinGlass)

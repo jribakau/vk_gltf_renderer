@@ -1081,6 +1081,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
 
   updateClickPickState();   // Poll the previous click's async ray-pick, apply it once ready (see m_pendingClickPick)
   updateInspectState();     // ...and the pixel readout's
+  updatePixelTimes();       // ...and the Time view's sums
   // Check for changes
   bool changed{false};
   changed |= m_pathTracer.keepOneAccumulationDenoiser(m_resources);  // OptiX or OIDN, not both
@@ -1177,6 +1178,11 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     fillGround(finfo);
     fillHaze(finfo);
     finfo.estimator = std::clamp(m_resources.settings.ptEstimator, 0, 2);
+    // the Time view: where this frame sums its pixels' time, and the scale a recent frame's gave it
+    const PathTracer::PixelTimeFrame pixelTime = m_pathTracer.preparePixelTime(m_resources);
+    finfo.pixelTime                            = pixelTime.sums;
+    finfo.pixelTimeSlots                       = pixelTime.slots;
+    finfo.pixelTimeScale                       = pixelTime.scale;
     // The clouds where the camera looks, while the view image holds the clouds of the moment: it
     // looks where it was baked, which the camera may since have turned from (updateCloudView).
     if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.viewCurrent())
@@ -1434,8 +1440,10 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
 
   // Disable tonemapping for debug buffers or guide buffers (display raw values)
   shaderio::TonemapperData tonemapperData = m_resources.tonemapperData;
+  // (the Time view's colours are display values too, though its paths are the shaded image's)
   const bool               vizNormal      = (m_resources.settings.visualization == shaderio::Visualization::eRendered
-                          || m_resources.settings.visualization == shaderio::Visualization::eClay);
+                          || m_resources.settings.visualization == shaderio::Visualization::eClay)
+                         && !PathTracer::pixelTimeOn(m_resources);
   if(!vizNormal || usingGuideBuffer)
     tonemapperData.isActive = 0;
   if(bypassTonemapper)
@@ -1594,6 +1602,83 @@ void GltfRenderer::setDlssHardwareAvailability(bool rrAvailable, bool srAvailabl
 void GltfRenderer::setSerAvailable(bool available)
 {
   m_resources.settings.serHardwareAvailable = available;
+}
+
+//--------------------------------------------------------------------------------------------------
+// VK_KHR_shader_clock's device clock (shaderDeviceClock): the Time view times each pixel by it
+void GltfRenderer::setShaderClockAvailable(bool available)
+{
+  m_resources.settings.shaderClockAvailable = available;
+}
+
+//--------------------------------------------------------------------------------------------------
+// The Time view: each pixel coloured by how long its thread ran against the frame's average
+// (pixel_time.h.slang), and the frame's time by what the pixels show for the observer
+void GltfRenderer::setPixelTime(bool on)
+{
+  if(m_resources.settings.pixelTime == on)
+    return;
+  m_resources.settings.pixelTime = on;
+  m_pixelTimeLast                = {};
+  resetFrame();
+}
+
+void GltfRenderer::updatePixelTimes()
+{
+  std::optional<pixel_time::Reading> reading = m_pathTracer.takePixelTimeReading();
+  if(!reading || !PathTracer::pixelTimeOn(m_resources))
+    return;
+  // a few times a second: the sums of one frame of millions of pixels hardly move between frames; the
+  // log of a run without a host every few seconds
+  const auto now = std::chrono::steady_clock::now();
+  if(m_pixelTimeLast != std::chrono::steady_clock::time_point{}
+     && now - m_pixelTimeLast < (m_pixelTimeObserver ? kPixelTimeEvery : kPixelTimeLogEvery))
+    return;
+  m_pixelTimeLast = now;
+  if(!m_pixelTimeObserver)
+  {
+    logPixelTimes(*reading);
+    return;
+  }
+  PixelTimes times{.ticks = reading->ticks, .samples = reading->samples};
+  for(const pixel_time::Slot& slot : reading->slots)
+  {
+    PixelTimes::Part part{.ticks = slot.ticks, .samples = slot.samples};
+    if(slot.slot == shaderio::kPixelTimeGround)
+      part.kind = PixelTimes::Kind::eGround;
+    else if(slot.slot == shaderio::kPixelTimeWater)
+      part.kind = PixelTimes::Kind::eWater;
+    else if(slot.slot >= shaderio::kPixelTimeOther)
+    {
+      part.kind = PixelTimes::Kind::eMesh;
+      if(slot.slot >= shaderio::kPixelTimeInstance)
+        part.pick = instancePickAt(int(slot.slot - shaderio::kPixelTimeInstance), 0);
+    }
+    times.parts.push_back(part);
+  }
+  m_pixelTimeObserver(times);
+}
+
+// The Time view's sums in the log, by the entity each instance draws (a run without a host to name props)
+void GltfRenderer::logPixelTimes(const pixel_time::Reading& reading)
+{
+  std::vector<pixel_time::Group> groups;
+  for(const pixel_time::Slot& slot : reading.slots)
+  {
+    std::string key = slot.slot == shaderio::kPixelTimeSky    ? "sky" :
+                      slot.slot == shaderio::kPixelTimeGround ? "ground" :
+                      slot.slot == shaderio::kPixelTimeWater  ? "water" :
+                                                                "other";
+    if(slot.slot >= shaderio::kPixelTimeInstance && m_resources.retainedGpu)
+      if(const rs::Residency::Instance* inst = m_resources.retainedGpu->residency().instance(slot.slot - shaderio::kPixelTimeInstance))
+        if(const rs::Entity* entity = hostScene().entity(inst->entity))
+          key = entity->name.empty() ? "entity " + std::to_string(inst->entity.index) : entity->name;
+    groups.push_back({.key = std::move(key), .ticks = slot.ticks, .samples = slot.samples});
+  }
+  std::string line;
+  for(const pixel_time::Share& share : pixel_time::shares(groups, 8, "the rest"))
+    line += fmt::format("{}{} {:.1f}% (x{:.2f})", line.empty() ? "" : ", ", share.key, 100.0 * share.share, share.cost);
+  LOGI("[time] %llu samples: %s\n", static_cast<unsigned long long>(reading.samples), line.c_str());
 }
 
 //--------------------------------------------------------------------------------------------------

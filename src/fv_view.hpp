@@ -202,6 +202,10 @@ private:
   void notePick(const fv::HostAddress& at);
   // The pixel readout's topic, `inspect`: what a reading found at m_inspectAt (view.inspect)
   void publishInspect(const HostRenderer::PixelReadout& readout);
+  // The Time view's topic, `time`: the frame's time by what its pixels show, the largest kPixelTimeLines
+  // and the rest ({parts: [{what, prop, node, name, share, cost}], samples}; null once the view is off)
+  void                    publishPixelTimes(const HostRenderer::PixelTimes& times);
+  static constexpr size_t kPixelTimeLines = 6;
 
   HostRenderer*                                      m_renderer = nullptr;
   fv::EventHub*                                      m_events   = nullptr;
@@ -214,6 +218,7 @@ private:
   bool                                          m_publishAgain = true;
   std::string                                   m_surfaceProp, m_surface;  // what the last click hit
   std::optional<glm::dvec2>                     m_inspectAt;  // the pixel read out (view.inspect), render pixels; none: off
+  bool                                          m_pixelTime = false;  // the display is the Time view
   std::string                                   m_pick      = "object";
   bool                                          m_select    = true;  // a click picks (view.set select)
   std::string                                   m_transform = "move";

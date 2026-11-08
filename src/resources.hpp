@@ -134,6 +134,7 @@ struct Settings
 {
   shaderio::Visualization visualization          = shaderio::Visualization::eRendered;  // Visualization mode
   bool                    wireframe              = false;                      // Wireframe overlay on rendered meshes
+  bool                    pixelTime              = false;                      // The Time view (GltfRenderer::setPixelTime)
   shaderio::EnvSystem     envSystem              = shaderio::EnvSystem::eSky;  // Environment system: Sky or HDR
   bool                    showAxis               = true;                       // Show the axis (bottom left)
   bool                    showGrid               = false;                      // Show infinite grid
@@ -295,6 +296,7 @@ struct Settings
   bool serHardwareAvailable    = false;  // VK_EXT_ray_tracing_invocation_reorder enabled on the device (set at startup)
   bool opacityMicromapSupported = false;  // VK_KHR_opacity_micromap available (set at startup); gates EXT_mesh_opacity_micromap
   bool opacityMicromapMissing = false;  // --useOpacityMicromap is on but the device lacks VK_KHR_opacity_micromap
+  bool shaderClockAvailable   = false;  // VK_KHR_shader_clock's device clock enabled (set at startup): the Time view
   DisplayBuffer displayBuffer = DisplayBuffer::eRendered;  // Which buffer to display in viewport
 
   // `blasScratchBudgetMB`: the retained scene's BLAS builds of one batch share this much scratch

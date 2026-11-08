@@ -114,6 +114,12 @@ public:
   void setWireframe(bool) override {}
   void setFalseColor(bool on) override { falseColor = on; }
   bool falseColor = false;
+  bool pixelTimeAvailable() const override { return clockAvailable; }
+  void setPixelTime(bool on) override { pixelTime = on; }
+  void setPixelTimeObserver(std::function<void(const PixelTimes&)> observer) override { pixelTimeObserver = std::move(observer); }
+  bool                                   clockAvailable = true;
+  bool                                   pixelTime      = false;
+  std::function<void(const PixelTimes&)> pixelTimeObserver;
   void keepWipeFrame() override { wipeKept++; }
   void setWipe(std::optional<float> at) override { wipeAt = at; }
   int                  wipeKept = 0;

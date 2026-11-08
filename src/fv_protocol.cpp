@@ -95,7 +95,9 @@ namespace {
 // 51: figure.rain and the rain/<prop> topic: rain's drops on a person's skin, run along the pose; the
 // scene file's `rain` block.
 // 52: view.set's display "material", "object", "density" and "facing" (the Display views).
-constexpr int kProtocolVersion = 52;
+// 53: view.set's display "time" (each pixel timed by the GPU's clock) and its `time` topic, the frame's
+// time by what the pixels show.
+constexpr int kProtocolVersion = 53;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -537,6 +537,11 @@ void PathTracer::onDetach(Resources& resources)
   resources.allocator.destroyBuffer(m_adaptiveActiveBuffer);
   m_adaptiveCounts.clear();
   resources.allocator.destroyBuffer(m_hitCounts);
+  resources.allocator.destroyBuffer(m_timeSums);
+  for(nvvk::Buffer& b : m_timeReadback)
+    resources.allocator.destroyBuffer(b);
+  m_timeReadback.clear();
+  m_timeCopied.clear();
   for(nvvk::Buffer& b : m_hitReadback)
     resources.allocator.destroyBuffer(b);
   m_hitReadback.clear();
@@ -788,6 +793,10 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
     dispatchRays(cmd, renderingSize);
   }
 
+  // The Time view's sums, for the host once the frame is done (preparePixelTime)
+  if(m_timeSlots > 0)
+    copyPixelTimes(cmd, resources);
+
   // The adaptive stop's count, for the host once the frame is done (countAdaptivePixels)
   if(pushConst.adaptiveActive != nullptr)
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
@@ -876,6 +885,7 @@ void PathTracer::onAccumulationComplete(VkCommandBuffer cmd, Resources& resource
   if(m_hitFrames > 0)
     copyHitCounts(cmd, resources);
   takeHitCounts(resources);
+  takePixelTimes(resources);  // the accumulation's last frames, as they come back
 #if defined(USE_OPTIX_DENOISER)
   if(getEffectiveOptixEnabled(resources))
     m_optix->denoiseFinal(resources);
@@ -1071,6 +1081,69 @@ void PathTracer::copyHitCounts(VkCommandBuffer cmd, Resources& resources)
   m_hitFrames       = -1;
 }
 
+PathTracer::PixelTimeFrame PathTracer::preparePixelTime(Resources& resources)
+{
+  // far more instances than a scene that fits memory has; those past it are summed as one
+  constexpr uint32_t     kMaxSlots = 1u << 16;
+  constexpr VkDeviceSize kBytes    = VkDeviceSize(kMaxSlots) * pixel_time::kSlotWords * sizeof(uint32_t);
+  m_timeSlots                      = 0;
+  if(!resources.app)
+    return {};
+  takePixelTimes(resources);
+  if(!pixelTimeOn(resources) || !resources.retainedGpu)
+    return {.scale = m_timeScale};
+  const uint32_t frameSlots = std::max(resources.app->getFrameCycleSize(), 1u);
+  if(m_timeReadback.size() != frameSlots)
+  {
+    for(nvvk::Buffer& b : m_timeReadback)
+      resources.allocator.destroyBuffer(b);
+    m_timeReadback.assign(frameSlots, {});
+    for(nvvk::Buffer& b : m_timeReadback)
+    {
+      NVVK_CHECK(resources.allocator.createBuffer(b, kBytes, VK_BUFFER_USAGE_2_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
+                                                  VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT));
+      NVVK_DBG_NAME(b.buffer);
+    }
+    m_timeCopied.assign(frameSlots, 0);
+  }
+  if(!m_timeSums.buffer)
+  {
+    NVVK_CHECK(resources.allocator.createBuffer(m_timeSums, kBytes,
+                                                VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
+                                                    | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
+                                                VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE));
+    NVVK_DBG_NAME(m_timeSums.buffer);
+  }
+  m_timeSlots = int(std::min(shaderio::kPixelTimeInstance + resources.retainedGpu->residency().instanceHighWater(), kMaxSlots));
+  return {.sums = reinterpret_cast<uint32_t*>(m_timeSums.address), .slots = m_timeSlots, .scale = m_timeScale};
+}
+
+void PathTracer::takePixelTimes(Resources& resources)
+{
+  if(m_timeCopied.empty() || !resources.app)
+    return;
+  // The application waited for the frame that last used this slot
+  const uint32_t slot   = resources.app->getFrameCycleIndex() % uint32_t(m_timeCopied.size());
+  const uint32_t copied = std::exchange(m_timeCopied[slot], 0u);
+  if(copied == 0)
+    return;
+  m_timeReading = pixel_time::read({reinterpret_cast<const uint32_t*>(m_timeReadback[slot].mapping), size_t(copied) * pixel_time::kSlotWords});
+  if(const float scale = m_timeReading->scale(); scale > 0.0F)
+    m_timeScale = scale;
+}
+
+void PathTracer::copyPixelTimes(VkCommandBuffer cmd, Resources& resources)
+{
+  const uint32_t     slot  = resources.app->getFrameCycleIndex() % uint32_t(m_timeCopied.size());
+  const VkDeviceSize bytes = VkDeviceSize(m_timeSlots) * pixel_time::kSlotWords * sizeof(uint32_t);
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                         VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+  const VkBufferCopy region{0, 0, bytes};
+  vkCmdCopyBuffer(cmd, m_timeSums.buffer, m_timeReadback[slot].buffer, 1, &region);
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_HOST_READ_BIT);
+  m_timeCopied[slot] = uint32_t(m_timeSlots);
+}
+
 void PathTracer::updateConvergence(VkCommandBuffer cmd, Resources& resources)
 {
   const VkExtent2D size = resources.gBuffers.getSize();
@@ -1174,8 +1247,9 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
 #endif
 
 
-  // An accumulation's per-pixel convergence (ePtAdaptiveStop); DLSS frames never read it
-  if(m_pushConst.flags & shaderio::ePtAdaptiveStop)
+  // An accumulation's per-pixel convergence (ePtAdaptiveStop), or in the Time view the mean of its
+  // frames' times (pixel_time.h.slang); DLSS frames never read it
+  if((m_pushConst.flags & shaderio::ePtAdaptiveStop) || (pixelTimeOn(resources) && !(m_pushConst.flags & shaderio::ePtUseDlss)))
   {
     outputCount                          = std::max<uint32_t>(outputCount, shaderio::eConvergence + 1);
     outputImages[shaderio::eConvergence] = m_convergence.getColorStorageImageInfo(0);
@@ -1633,7 +1707,8 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.hairCutDlss      = m_hairCutDlss;
   m_pushConst.hairCutTail      = m_hairCutTail;
   m_pushConst.hairResponsivity = useDlss ? m_hairResponsivity : 0.0F;
-  m_pushConst.flags |= (m_adaptiveStop && !useDlss) ? shaderio::ePtAdaptiveStop : 0;
+  // not in the Time view: a stopped pixel's time would read as nothing
+  m_pushConst.flags |= (m_adaptiveStop && !useDlss && !pixelTimeOn(resources)) ? shaderio::ePtAdaptiveStop : 0;
   // in displayed brightness, with the exposure the host sets (auto exposure, which it never uses, has none)
   m_pushConst.adaptiveThreshold = resources.tonemapperData.autoExposure ?
                                       m_adaptiveThreshold :
@@ -1647,6 +1722,13 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
                                    nullptr;
   m_pushConst.hitSignalSlots = 0;
   m_pushConst.hitSignal      = countHits(cmd, resources);
+  // the Time view's sums start at nothing each frame (preparePixelTime gave the frame info their address)
+  if(m_timeSlots > 0)
+  {
+    vkCmdFillBuffer(cmd, m_timeSums.buffer, 0, VkDeviceSize(m_timeSlots) * pixel_time::kSlotWords * sizeof(uint32_t), 0);
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+  }
   m_pushConst.flags |= m_lightsVisible ? shaderio::ePtLightsVisible : 0;
   m_pushConst.flags |= m_exitFresnel ? shaderio::ePtExitFresnel : 0;
   m_pushConst.flags |= m_walkGuiding ? shaderio::ePtWalkGuiding : 0;

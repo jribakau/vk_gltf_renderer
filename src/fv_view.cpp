@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -34,6 +35,7 @@
 #include <figure/scene/graph.hpp>
 
 #include "host_renderer.hpp"
+#include "pixel_time.hpp"
 #include "shaders/shaderio.h"
 
 double fovForFrame(double mm, double viewAspect, double frameAspect)
@@ -113,6 +115,7 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
     return true;
   });
   m_renderer->setInspectObserver([this](const HostRenderer::PixelReadout& readout) { publishInspect(readout); });
+  m_renderer->setPixelTimeObserver([this](const HostRenderer::PixelTimes& times) { publishPixelTimes(times); });
   // The pixel readout: what is at a pixel of the view (x, y and the frame's w, h, as the input events
   // give them; without w, h the render's own pixels) and how bright it is, published as `inspect` a
   // frame or two later and again as the still refines; x null stops it
@@ -317,9 +320,22 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
                                                                shaderio::Visualization::eBackFacingNormal);
           m_renderer->setWireframe(false);
         }
+        // how long each pixel took, the paths as the shaded image's
+        else if(display == "time")
+        {
+          if(!m_renderer->pixelTimeAvailable())
+            throw std::runtime_error("this GPU has no shader clock (VK_KHR_shader_clock), so there is no Time view");
+          m_renderer->setVisualization(shaderio::Visualization::eRendered);
+          m_renderer->setWireframe(false);
+        }
         else
-          throw std::runtime_error("display is shaded, clay, wireframe, normals, exposure, material, object, density or facing");
+          throw std::runtime_error("display is shaded, clay, wireframe, normals, exposure, material, object, density, facing or time");
         m_renderer->setFalseColor(display == "exposure");
+        m_renderer->setPixelTime(display == "time");
+        // the last breakdown goes with the view, so the next one starts empty
+        if(m_pixelTime && display != "time")
+          m_events->snapshot("time", nullptr);
+        m_pixelTime = display == "time";
       }
       if(args.contains("grid"))
         m_renderer->setShowGrid(args["grid"].get<bool>());
@@ -742,6 +758,66 @@ void FvView::publishInspect(const HostRenderer::PixelReadout& readout)
     }
   }
   m_events->snapshot("inspect", std::move(j));
+}
+
+void FvView::publishPixelTimes(const HostRenderer::PixelTimes& times)
+{
+  if(!m_pixelTime)
+    return;
+  // What each line is: the sky, the ground, the water, a node of a prop, or a mesh the view can't name
+  std::map<std::string, fv::Json>  what;
+  std::vector<pixel_time::Group> groups;
+  for(const HostRenderer::PixelTimes::Part& part : times.parts)
+  {
+    std::string key;
+    fv::Json    line;
+    switch(part.kind)
+    {
+      case HostRenderer::PixelTimes::Kind::eSky:
+        key  = "sky";
+        line = {{"what", "sky"}};
+        break;
+      case HostRenderer::PixelTimes::Kind::eGround:
+        key  = "ground";
+        line = {{"what", "ground"}};
+        break;
+      case HostRenderer::PixelTimes::Kind::eWater:
+        key  = "water";
+        line = {{"what", "water"}};
+        break;
+      case HostRenderer::PixelTimes::Kind::eMesh:
+      {
+        key  = "mesh";
+        line = {{"what", "mesh"}};
+        if(!part.pick)
+          break;
+        const fv::HostAddress at = m_map.pick(part.pick->entity, part.pick->material);
+        if(at.prop < 0 || at.prop >= int(m_props.size()))
+          break;
+        const PropNodes& p = m_props[size_t(at.prop)];
+        key                = p.id;
+        line               = {{"what", "mesh"}, {"prop", p.id}};
+        if(at.node >= 0 && at.node < int(p.nodes.size()))
+        {
+          key += "/" + std::to_string(at.node);
+          line["node"] = at.node;
+          line["name"] = p.nodes[size_t(at.node)].name;
+        }
+        break;
+      }
+    }
+    what[key] = line;
+    groups.push_back({.key = key, .ticks = part.ticks, .samples = part.samples});
+  }
+  fv::Json parts = fv::Json::array();
+  for(const pixel_time::Share& share : pixel_time::shares(groups, kPixelTimeLines, "rest"))
+  {
+    fv::Json line     = share.key == "rest" && !what.contains("rest") ? fv::Json{{"what", "rest"}} : what[share.key];
+    line["share"]     = std::round(share.share * 1000.0) / 1000.0;
+    line["cost"]      = std::round(share.cost * 100.0) / 100.0;
+    parts.push_back(std::move(line));
+  }
+  m_events->snapshot("time", fv::Json{{"parts", std::move(parts)}, {"samples", times.samples}});
 }
 
 void FvView::publishSelection(bool force)

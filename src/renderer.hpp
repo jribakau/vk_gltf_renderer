@@ -110,6 +110,7 @@ public:
   std::shared_ptr<nvutils::CameraManipulator> getCameraManipulator() override { return m_cameraManip; }
   void                                        setDlssHardwareAvailability(bool rrAvailable, bool srAvailable);
   void                                        setSerAvailable(bool available);
+  void                                        setShaderClockAvailable(bool available);
   void                                        setDeviceExtensions(std::vector<std::string> extensions);
   void                                        setOpacityMicromapAvailable(bool hardware, bool enabled);
   /// Unless --ptMaxSamples was given, raises the cap so the accumulation covers the full headless run (--frames).
@@ -445,6 +446,9 @@ public:
   void setVisualization(shaderio::Visualization mode) override;
   void setWireframe(bool on) override;
   void setFalseColor(bool on) override { m_falseColor = on; }
+  bool pixelTimeAvailable() const override { return m_resources.settings.shaderClockAvailable; }
+  void setPixelTime(bool on) override;
+  void setPixelTimeObserver(std::function<void(const PixelTimes& times)> observer) override { m_pixelTimeObserver = std::move(observer); }
   void keepWipeFrame() override { m_wipeKeep = true; }
   void setWipe(std::optional<float> at) override;
   void setShowGrid(bool on) override;
@@ -777,6 +781,13 @@ private:
   } m_inspect;
   std::function<void(const PixelReadout&)> m_inspectObserver;
   static constexpr std::chrono::milliseconds kInspectEvery{250};  // readings while the still refines
+  // The Time view's sums (setPixelTime): the observer gets a frame's as it comes back, kPixelTimeEvery apart
+  void                                       updatePixelTimes();
+  void                                       logPixelTimes(const pixel_time::Reading& reading);
+  std::function<void(const PixelTimes&)>     m_pixelTimeObserver;
+  std::chrono::steady_clock::time_point      m_pixelTimeLast{};
+  static constexpr std::chrono::milliseconds kPixelTimeEvery{250};
+  static constexpr std::chrono::milliseconds kPixelTimeLogEvery{2000};
 
   // Non-blocking GPU loading pipeline (see timeline_pipeline.hpp for details).
   // Worker threads enqueue command buffers; the main thread calls poll() each frame.

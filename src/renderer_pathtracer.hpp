@@ -31,12 +31,14 @@
 #include <optional>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
 
 // Shader Input/Output
 #include "shaders/shaderio.h"  // Shared between host and device
+#include "shaders/pixel_time.h.slang"  // The Time view's slots
 
 #include <nvvk/sbt_generator.hpp>
 #include <nvutils/profiler.hpp>
@@ -47,6 +49,7 @@
 #include "selection_write.hpp"
 #include "utils.hpp"
 #include "pipeline_cache_util.hpp"
+#include "pixel_time.hpp"
 #include "scene_feature_detection.hpp"
 #include "busy_state.hpp"
 #include "variant_compile_job.hpp"
@@ -116,6 +119,23 @@ public:
   // is (the optimal shader off, or the embedded build standing in for a failed compile)
   // Whether what first hits want is counted (countHits): memory is near full
   void setCountHits(bool on) { m_countHits = on; }
+  // The Time view (shaders/pixel_time.h.slang), for the frame info: where this frame sums its pixels'
+  // time and how many slots it has (none while the view is off), and the scale its image is coloured by.
+  // Before the frame info is written; takes what an earlier frame summed into this frame's slot.
+  struct PixelTimeFrame
+  {
+    uint32_t* sums  = nullptr;
+    int       slots = 0;
+    float     scale = 0.0F;
+  };
+  PixelTimeFrame preparePixelTime(Resources& resources);
+  // The latest frame's sums once it has come back, once
+  std::optional<pixel_time::Reading> takePixelTimeReading() { return std::exchange(m_timeReading, std::nullopt); }
+  // The view is on and the device has the clock
+  static bool pixelTimeOn(const Resources& resources)
+  {
+    return resources.settings.pixelTime && resources.settings.shaderClockAvailable;
+  }
   std::optional<nvvkgltf::SceneFeatureSet> liveShaderFeatures();
   // A pipeline built before compiled again this run: the driver's shader cache is full (PipelineBuildRecord)
   bool driverCacheFull() const { return m_buildRecord.driverDropped(); }
@@ -281,6 +301,14 @@ public:
   nvvk::Buffer              m_hitCounts;            // on the device: every frame's first hits add up here
   std::vector<nvvk::Buffer> m_hitReadback;          // per frame in flight, host-visible
   std::vector<uint8_t>      m_hitCopied;            // per frame in flight: that frame copied a count there
+  // The Time view's sums (preparePixelTime): on the device, cleared and summed by each frame; copied back
+  // per frame in flight, read when the frame cycle reaches that slot again
+  nvvk::Buffer                       m_timeSums;
+  std::vector<nvvk::Buffer>          m_timeReadback;
+  std::vector<uint32_t>              m_timeCopied;  // per frame in flight: the slots that frame copied there (0: none)
+  int                                m_timeSlots{0};  // this frame's (0: the view is off)
+  float                              m_timeScale{0.0F};  // the last reading's, kept while the view is off
+  std::optional<pixel_time::Reading> m_timeReading;
   struct AdaptiveCount
   {
     uint64_t accumulation{0};  // the accumulation (m_accumulationId) that counted into the slot
@@ -306,6 +334,8 @@ public:
     // True when the light samples' resampling and reuse are compiled in (USE_LIGHT_RIS: ptLightCandidates,
     // ptLightReuse). Last, as makeVariantKey() fills the key in order.
     bool lightRis = false;
+    // True when each pixel is timed (USE_PIXEL_TIME, the Time view: pixelTimeOn)
+    bool pixelTime = false;
 
     // Same SPIR-V: every shader macro matches. dlssTransparency is a pipeline specialization
     // constant, not a macro, so it is left out. dlss and dlssGuide are compared in every mode (they
@@ -314,7 +344,8 @@ public:
     bool sameShader(const VariantKey& o) const
     {
       return wireframe == o.wireframe && visualize == o.visualize && omm == o.omm && optimal == o.optimal
-             && dlss == o.dlss && dlssGuide == o.dlssGuide && lightRis == o.lightRis && (optimal ? (features == o.features) : true);
+             && dlss == o.dlss && dlssGuide == o.dlssGuide && lightRis == o.lightRis && pixelTime == o.pixelTime
+             && (optimal ? (features == o.features) : true);
     }
     bool operator==(const VariantKey& o) const { return sameShader(o) && dlssTransparency == o.dlssTransparency; }
     // The fields sameShader() sees differ on, e.g. "omm 0->1, dlss 1->0", for the recompile log.
@@ -666,6 +697,9 @@ private:
   // What a frame copied has come back when the frame cycle reaches its slot again
   void takeHitCounts(Resources& resources);
   void copyHitCounts(VkCommandBuffer cmd, Resources& resources);
+  // The Time view's: what came back to this frame's slot, and this frame's sums copied there
+  void takePixelTimes(Resources& resources);
+  void copyPixelTimes(VkCommandBuffer cmd, Resources& resources);
   // Copy the path-traced depth from m_depthStaging into the G-buffer depth image.
   void cmdCopyStagedDepth(VkCommandBuffer cmd, Resources& resources);
   // Destroy the pipelines for both Ray Query and Ray Tracing

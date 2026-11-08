@@ -410,6 +410,21 @@ Some things about the transport are worth knowing before touching it:
   bit-identical to before the switch. The test turns the firefly clamp off (`--ptFireflyClamp 0`):
   it cuts one technique's rare bright samples more than the other's. A command line's clamp holds
   when the dome loads; before 2026-11-08 `calibrateFireflyClamp` set it again from the dome.
+- **The Time view** (Display › Time, view.set's display `time`, `--pixelTime 1` on a command line)
+  times each pixel's thread by the device's clock (`VK_KHR_shader_clock`, `shaderDeviceClock`, an
+  optional extension) in a variant of its own, `USE_PIXEL_TIME` (`VariantKey::pixelTime`, never
+  embedded). The paths are the shaded image's; `processPixel` reads the clock at its top and before
+  the result, and writes the time against the frame's average in viridis
+  (`shaders/pixel_time.h.slang`), an eighth to eight times, a display value the tone mapper, bloom and
+  local exposure pass by. An accumulation keeps the mean of its frames' times in the convergence
+  image, with its adaptive stop off; a DLSS frame shows its own. Each pixel's time and samples are
+  also summed by what its first camera ray met (the sky, the ground, the water, an instance), one
+  set of atomics for each slot a warp holds, in `SceneFrameInfo::pixelTime`. The host copies the
+  sums back per frame in flight (`PathTracer::preparePixelTime`); the average sample from them
+  scales the next frames, and the host publishes them as the `time` topic by prop and node
+  (`FvView::publishPixelTimes`), or logs them (`[time]`) on a run without one. It is wall time: under
+  SER a thread's time includes its waits in the reorders and for its warp, and a cheap pixel that ran
+  beside dear ones on the same SM reads dearer, so the sky shows blocks. Compare objects, not tiles.
 - Path regularisation (later lobes at least as rough as the roughest material so far) runs only
   where `ePtRegularize` is set (`ptRegularize`: DLSS frames by default), and never on a surface that
   refracts without scattering.

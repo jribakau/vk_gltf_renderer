@@ -1301,6 +1301,8 @@ PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) co
       // none of the dead code's 0.8%, and one variant to build the first time, not two. A camera start or
       // stop stays a cached swap, both variants being in the cache once built.
       lightRisFor(isDlssEnabled() && m_dlssShaderFrame),
+      // the Time view's clock: never embedded, so the view's first switch compiles it, as Clay's does
+      pixelTimeOn(resources),
   };
 }
 
@@ -1318,6 +1320,7 @@ std::string PathTracer::VariantKey::shaderDiff(const VariantKey& to) const
   add("dlss", dlss, to.dlss);
   add("dlssGuide", dlssGuide, to.dlssGuide);
   add("lightRis", lightRis, to.lightRis);
+  add("pixelTime", pixelTime, to.pixelTime);
   if(optimal && to.optimal && features != to.features)
     diff += std::string(diff.empty() ? "" : ", ") + "features [" + features.toString() + "] -> [" + to.features.toString() + "]";
   return diff.empty() ? "no shader field changed" : diff;
@@ -1505,6 +1508,9 @@ std::vector<std::pair<std::string, std::string>> PathTracer::variantMacros(const
       // The light samples' resampling and reuse (light_ris.h.slang): compiled in only when asked for, as
       // the loop costs a frame even switched off
       {"USE_LIGHT_RIS", std::to_string(key.lightRis ? 1 : 0)},
+      // The Time view: each pixel timed by the device's clock (pixel_time.h.slang), whose capability
+      // needs VK_KHR_shader_clock, so only where the device has it
+      {"USE_PIXEL_TIME", std::to_string(key.pixelTime ? 1 : 0)},
   };
   nvvkgltf::SceneFeatureSet guide;
   guide.set(nvvkgltf::SceneFeatureSet::eDlssGuide, key.dlssGuide);

@@ -3087,6 +3087,49 @@ TEST(FvHost, TheExposureViewIsTheToneMappersFalseColour)
   EXPECT_FALSE(rig.renderer.falseColor);
 }
 
+// The Display menu's Time view: the shaded image's paths, each pixel timed; the renderer's sums are
+// published as `time`, the dearest first, until another view clears it. Without the device's clock
+// the view is refused.
+TEST(FvHost, TheTimeViewPublishesWhereTheFramesTimeWent)
+{
+  HostRig rig;
+  EXPECT_TRUE(rig.cmd("view.set", {{"display", "time"}}).value("ok", false));
+  EXPECT_TRUE(rig.renderer.pixelTime);
+  EXPECT_FALSE(rig.renderer.falseColor);
+  ASSERT_TRUE(rig.renderer.pixelTimeObserver);
+
+  using Kind = HostRenderer::PixelTimes::Kind;
+  HostRenderer::PixelTimes times;
+  times.parts = {{.kind = Kind::eSky, .ticks = 100, .samples = 100},
+                 {.kind = Kind::eGround, .ticks = 300, .samples = 100},
+                 {.kind = Kind::eMesh, .ticks = 600, .samples = 50}};  // no pick to name it here
+  times.ticks   = 1000;
+  times.samples = 250;
+  rig.renderer.pixelTimeObserver(times);
+  Json j = rig.topic("time");
+  ASSERT_EQ(j["parts"].size(), 3u) << j.dump();
+  EXPECT_EQ(j["parts"][0].value("what", ""), "mesh");
+  EXPECT_NEAR(j["parts"][0].value("share", 0.0), 0.6, 1e-9);
+  EXPECT_NEAR(j["parts"][0].value("cost", 0.0), 3.0, 1e-9);  // 12 a sample against 4
+  EXPECT_FALSE(j["parts"][0].contains("prop"));
+  EXPECT_EQ(j["parts"][1].value("what", ""), "ground");
+  EXPECT_EQ(j["parts"][2].value("what", ""), "sky");
+  EXPECT_NEAR(j["parts"][2].value("cost", 0.0), 0.25, 1e-9);
+  EXPECT_EQ(j.value("samples", 0), 250);
+
+  // another view: the renderer stops timing, the topic goes, and a late reading isn't published
+  EXPECT_TRUE(rig.cmd("view.set", {{"display", "shaded"}}).value("ok", false));
+  EXPECT_FALSE(rig.renderer.pixelTime);
+  EXPECT_TRUE(rig.topic("time").is_null());
+  rig.renderer.pixelTimeObserver(times);
+  EXPECT_TRUE(rig.topic("time").is_null());
+
+  // no clock on the device: refused, and the view stays as it was
+  rig.renderer.clockAvailable = false;
+  EXPECT_FALSE(rig.cmd("view.set", {{"display", "time"}}).value("ok", false));
+  EXPECT_FALSE(rig.renderer.pixelTime);
+}
+
 // The wipe against a kept frame: keep the image as it is, move the divider, end it; a divider that
 // is no number is refused
 TEST(FvHost, AWipeKeepsAFrameAndMovesItsDivider)
