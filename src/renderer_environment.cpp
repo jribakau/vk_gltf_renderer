@@ -979,8 +979,11 @@ void GltfRenderer::refreshBakedEnvironment()
 void GltfRenderer::calibrateFireflyClamp()
 {
   m_fireflyClampCalibratedFor = int(m_resources.settings.envSystem);
-  // a host owns the clamp (ptFireflyClamp, from its exposure): an environment's kind changing must not take it
-  if(!m_resources.hostFed || m_resources.sceneFromFile)
+  // a host owns the clamp (ptFireflyClamp, from its exposure): an environment's kind changing must not take it.
+  // Nor may a scene's environment take the command line's: a scripted run that asks for a clamp, or for none
+  // (0), renders with it, as --envSystem wins over a scene's sky.
+  const bool fromCommandLine = m_parameterParser && m_parameterParser->wasParsed("ptFireflyClamp");
+  if((!m_resources.hostFed || m_resources.sceneFromFile) && !fromCommandLine)
     m_pathTracer.m_pushConst.fireflyClampThreshold = defaultFireflyClamp();
 }
 

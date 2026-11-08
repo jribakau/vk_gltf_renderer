@@ -407,10 +407,9 @@ Some things about the transport are worth knowing before touching it:
   - one side's account of the other's pdf (a pick, the tree's climb, a table): only MIS moves.
   `tests/render/estimator_agreement.py` renders a scene with every light kind a BSDF ray can reach,
   in each mode at 8 seeds, with the light tree and with the table by power. At 0 the image is
-  bit-identical to before the switch. The test turns the firefly clamp off through
-  `ptFireflyClampStill`: `ptFireflyClamp` is set again from the dome once it loads
-  (`calibrateFireflyClamp`), whatever the command line said, and the clamp cuts one technique's rare
-  bright samples more than the other's.
+  bit-identical to before the switch. The test turns the firefly clamp off (`--ptFireflyClamp 0`):
+  it cuts one technique's rare bright samples more than the other's. A command line's clamp holds
+  when the dome loads; before 2026-11-08 `calibrateFireflyClamp` set it again from the dome.
 - Path regularisation (later lobes at least as rough as the roughest material so far) runs only
   where `ePtRegularize` is set (`ptRegularize`: DLSS frames by default), and never on a surface that
   refracts without scattering.

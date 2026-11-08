@@ -517,7 +517,8 @@ Two things about *which* sun, both learned the hard way:
   a slider settles, and the clamp is a starting point rather than a derived quantity -- it has to
   accommodate emissive materials and punctual lights that the environment integral knows nothing
   about. Recomputing it on a gesture as ordinary as dragging the sun would throw away whatever the
-  user had set. `GltfRenderer::calibrateFireflyClamp` is the single place that sets it.
+  user had set. `GltfRenderer::calibrateFireflyClamp` is the single place that sets it, and it leaves
+  a `--ptFireflyClamp` from the command line alone (a scripted run that asks for a clamp, or for none).
 
 Resulting range for Earth: ~27.6 with the sun down, ~39.4 at zenith.
 
