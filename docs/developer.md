@@ -745,12 +745,17 @@ carries what is lowered; `src/lib/native/quality.ts` joins it with the wardrobe'
 OmniHair strand hair is drawn as flat ribbons. The path tracer shades those with a fibre BSDF
 (Chiang's R, TT and TRT lobes, plus the remaining orders, averaged across the fibre) instead of a
 dielectric sheet. The strand direction is the ribbon's own bitangent, so each hit follows its own
-strand. Root and tip absorption stay separate and are blended by the along-UV. The first stretch of each
+strand. It runs root to tip, as the cuticle's tilt shifts the highlights along it: the mesh's
+bitangent (`HitState::frameSign` undoes the turn `getHitState` gives a back face's frame), against it
+or along it by where the root is (`hairRootV`), the same on both faces of a ribbon (`makeHairHit`).
+Root and tip absorption stay separate and are blended by the along-UV. The first stretch of each
 ribbon narrows in the mesh, so the body stays opaque and does not pay any-hit; a cutout that is
 already blended also fades its opacity there. The panel's roughness and specular edit the fibre
 (β, and the reflecting orders), not only the unused sheet lobe. Fields are on `FV_materials_hair`
-in [`src/tinygltf_utils.hpp`](../src/tinygltf_utils.hpp). Card hair is unchanged (anisotropy from
-the measured strand direction). A glTF written for other tools keeps the old diffuse-transmission
+in [`src/tinygltf_utils.hpp`](../src/tinygltf_utils.hpp). Card hair takes the fibre too
+(`hairFromColor`: each hit's absorption from the colour the card shows), its strand across the
+measured anisotropy rotation; a card's root is not known, so its strands keep the bitangent's way,
+which may tilt its highlights the wrong way along the strand, but one way on both faces. A glTF written for other tools keeps the old diffuse-transmission
 sheet, because they have no fibre BSDF. Gated like the detail layer (`MAT_EXT_HAIR`, `GLTF_USE_HAIR` from `SceneFeatureSet::eHair`).
 
 ### Strand hair the file only guides

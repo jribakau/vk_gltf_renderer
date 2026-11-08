@@ -38,6 +38,10 @@ struct HitState
   float  texelDensity   = 0.0;   // UV-to-world area ratio for ray-footprint texture LOD (0 if no UVs)
   float  offsetDistance = 0.0;   // How far a ray leaving `pos` steps off the surface along `geonrm` (safeOffsetRay)
   bool   frontFace      = true;  // True if the primitive was hit on its front side (CCW from the ray)
+  // -1 where the shading frame was turned to the ray's side (getHitState, a walk's diffuse exit), 1
+  // otherwise: the mesh's own tangent and bitangent are `tangent` and `bitangent` times it. A fibre's
+  // strand needs them, as its direction is the same on both faces (makeHairHit).
+  float  frameSign      = 1.0;
 };
 
 //-----------------------------------------------------------------------
@@ -227,11 +231,13 @@ HitState getHitState(GltfRenderPrimitive renderPrim,  //
 
   // Ensure shading normal and geometric normal are on the same side
   // This prevents lighting artifacts on back-facing surfaces
+  hit.frameSign = 1.0;
   if(dot(hit.geonrm, hit.nrm) < 0)
   {
     hit.nrm       = -hit.nrm;  // Flip shading normal to match geometric normal
     hit.tangent   = -hit.tangent;
     hit.bitangent = -hit.bitangent;
+    hit.frameSign = -1.0;
   }
 
   // For low-tessellated geometry, prevent internal reflection artifacts

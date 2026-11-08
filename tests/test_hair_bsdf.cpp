@@ -78,6 +78,59 @@ TEST(HairBsdf, ADarkFibreReflectsItsFresnelAndNothingElse)
   EXPECT_NEAR(albedo.x, F, 0.03f * F);
 }
 
+// A strand runs from root to tip whichever face of its ribbon a ray meets: a back face's frame comes
+// turned to the ray (HitState::frameSign), and the fibre takes the mesh's own. So both faces answer a
+// pair of directions alike, where the turned frame shifted the highlights the other way (the cuticle's
+// tilt). A strand hair's root is at hairRootV; a card's isn't known, so its strands keep the
+// bitangent's way, on both faces.
+TEST(HairBsdf, AStrandRunsTheSameWayOnBothFacesOfARibbon)
+{
+  // a ribbon in the xy plane, UV v growing along +y: the renderer's bitangent points to smaller v, -y
+  const float3 T(1.0f, 0.0f, 0.0f), B(0.0f, -1.0f, 0.0f), N(0.0f, 0.0f, 1.0f);
+  const auto   same = [](float3 a, float3 b) { return length(a - b) < 1e-6f; };
+
+  GltfShadeMaterial strands{};
+  strands.hairFactor   = 1.0f;
+  strands.hairRootSigma = float3(0.3f, 0.6f, 1.2f);
+  strands.hairTipSigma  = float3(0.3f, 0.6f, 1.2f);
+  strands.hairLongitudinal = 0.3f;
+  strands.hairAzimuthal    = 0.3f;
+  strands.hairSpecular     = 1.0f;
+  strands.hairRootV        = 0.0f;  // the root at v = 0: root to tip is +y
+  HairHit front, back;
+  ASSERT_TRUE(makeHairHit(strands, float2(0.5f), B, T, 1.0f, N, float3(0.5f), front));
+  ASSERT_TRUE(makeHairHit(strands, float2(0.5f), -B, -T, -1.0f, -N, float3(0.5f), back));
+  EXPECT_TRUE(same(front.strand, float3(0.0f, 1.0f, 0.0f)));
+  EXPECT_TRUE(same(back.strand, front.strand));
+  EXPECT_TRUE(same(back.phiY, front.phiY));
+  EXPECT_TRUE(same(back.phiZ, front.phiZ));
+  // the same light, seen the same way: the same response, a reflection and a transmission alike
+  front.h = back.h  = 0.3f;
+  const float3 lit  = normalize(float3(-0.4f, 0.5f, 0.8f));
+  const float3 seen = normalize(float3(0.3f, 0.1f, -0.9f));
+  for(const float3 wi : {lit, seen})
+  {
+    const HairResponse a = hairCombined(kWo, wi, front), b = hairCombined(kWo, wi, back);
+    EXPECT_GT(a.f.x, 0.0f);
+    EXPECT_FLOAT_EQ(a.f.x, b.f.x);
+    EXPECT_FLOAT_EQ(a.pdf, b.pdf);
+  }
+
+  // the root at v = 1 (a figure's UVs turned over as the textures are): along the bitangent
+  strands.hairRootV = 1.0f;
+  ASSERT_TRUE(makeHairHit(strands, float2(0.5f), -B, -T, -1.0f, -N, float3(0.5f), back));
+  EXPECT_TRUE(same(back.strand, B));
+
+  // a card: the bitangent's way on both faces
+  GltfShadeMaterial card = strands;
+  card.hairFromColor     = 1.0f;
+  card.hairRootV         = 0.0f;
+  ASSERT_TRUE(makeHairHit(card, float2(0.5f), B, T, 1.0f, N, float3(0.5f), front));
+  ASSERT_TRUE(makeHairHit(card, float2(0.5f), -B, -T, -1.0f, -N, float3(0.5f), back));
+  EXPECT_TRUE(same(front.strand, B));
+  EXPECT_TRUE(same(back.strand, B));
+}
+
 // The sampler's weights average to the evaluation's integral, and the pdf it reports is the one the
 // evaluation gives the same direction
 TEST(HairBsdf, SamplingCarriesWhatEvaluationIntegrates)

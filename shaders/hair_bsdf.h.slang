@@ -366,10 +366,22 @@ float3 hairLockColor(HairHit hair)
   return exp(-sqrt(hair.sigma) * hairColorFit(hair.betaN));
 }
 
-// `baseColor`: the colour the hit shows, for a card's absorption (hairFromColor)
-bool makeHairHit(GltfShadeMaterial mat, float2 uv, float3 geoBitangent, float3 geoTangent, float3 normal, float3 baseColor, NVSHADERS_OUT_TYPE(HairHit) hair)
+// `geoBitangent`, `geoTangent`: the hit's frame, turned to the ray's side where `frameSign` is -1
+// (HitState::frameSign). `baseColor`: the colour the hit shows, for a card's absorption (hairFromColor)
+bool makeHairHit(GltfShadeMaterial mat, float2 uv, float3 geoBitangent, float3 geoTangent, float frameSign, float3 normal,
+                 float3 baseColor, NVSHADERS_OUT_TYPE(HairHit) hair)
 {
   hair = hairHitZero();
+  // The cuticle's tilt shifts the highlights along the strand (hairTilt, pbrt's frame: root to tip),
+  // so the strand has a direction, and it is the mesh's, whichever face the ray met: turned with the
+  // frame, a back face's highlights shifted the other way, and a lock seen from both sides of its
+  // ribbons spread its band twice the tilt either way. The mesh's bitangent runs towards smaller UV v (the
+  // renderer's tangents: vertex_tangents.comp.slang, tinygltf::utils::computeTangents), and a strand
+  // hair's root is at v = hairRootV, so root to tip is along it with the root at 1 and against it at
+  // 0. A card's root is not known: its strands keep the bitangent's way, the same on both faces.
+  const float way = frameSign * ((mat.hairFromColor == 0.0F && mat.hairRootV < 0.5F) ? -1.0F : 1.0F);
+  geoBitangent *= way;
+  geoTangent *= way;
   // A card's strand is across its measured anisotropy direction, which turns the UV tangent by
   // (cos t, -sin t) in (tangent, bitangent): the strand is (sin t, cos t), UV v at t = 0
   if(mat.hairStrandSin != 0.0F || mat.hairStrandCos != 0.0F)
