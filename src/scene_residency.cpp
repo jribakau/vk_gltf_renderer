@@ -404,7 +404,9 @@ static std::vector<glm::vec3> shapeSample(const MeshRecord& record)
 // tracing: its vertices are, on average, more than this share of its size from where they were, once
 // what they all did together is taken out (going somewhere as one leaves a BVH as good as it was).
 // Toyen's dForce Long Hair falling took a still from 2.4 s to 27 s refit, and 2.3 s built again. A
-// build costs a frame (0.45 s for that hair's 25 M drawn points), and starts this count over.
+// build costs a frame, and starts this count over: on 7TEST at 1080p (2026-11-08), every BLAS of a
+// figure wearing FE Elegant Wave (25 M drawn vertices) built again took the sync from 7.9 to 24.2 ms
+// of GPU time. Built for speed instead (PREFER_FAST_BUILD), it was 0.5-0.9 ms shorter: not kept.
 static bool reshapedFar(const std::vector<glm::vec3>& built, const std::vector<glm::vec3>& now)
 {
   constexpr float kFarShare = 0.02f;
