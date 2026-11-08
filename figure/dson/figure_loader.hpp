@@ -23,6 +23,10 @@
 #include <figure/wardrobe/fit/heel.hpp>
 #include <figure/wardrobe/follow.hpp>
 
+namespace fv::wardrobe {
+struct BaseCage;
+}
+
 namespace fv::dson {
 
 // A worn item: one wearable's nodes, which go on and come off together.
@@ -130,6 +134,9 @@ struct LoadResult
   std::vector<std::string> warnings;
   // library files this load referenced and aren't installed
   std::vector<std::string> missing;
+  // the body an outfit from outside DAZ was built on (a Skyrim mesh's CBBE or UNP body), which the fit
+  // measures it against in place of a Genesis base from the library; null for a DSON load
+  std::shared_ptr<const wardrobe::BaseCage> sourceBase;
 };
 
 // Loads `rel` (library-relative). Throws when nothing could be built, with the reason (a missing

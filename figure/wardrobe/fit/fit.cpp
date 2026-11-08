@@ -127,8 +127,9 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     boneNames.push_back(b.name);
   const FitRegion region = regionOf(rel + "/" + item.label, boneNames);
 
-  // the source base, carried through the same bone transfer, is what the garment was shaped around
-  const auto cage = loadBaseCage(store, source, genderHint(rel));
+  // the source base, carried through the same bone transfer, is what the garment was shaped around:
+  // the body that came with it (a Skyrim outfit's), else its generation's from the library
+  const auto cage = w.sourceBase ? w.sourceBase : loadBaseCage(store, source, genderHint(rel));
   std::vector<float>       baseMoved;
   std::vector<int16_t>     baseLimbs;
   std::optional<Surface>   base;
@@ -224,8 +225,10 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   }
   detail.shaped = base.has_value();
   detail.note   = std::string(label(source)) + " outfit on " + label(target) + ", "
-                + (base ? "refitted to its skeleton and shape" :
-                          std::string("refitted to its skeleton (the ") + label(source) + " base figure isn't installed, so its shape wasn't matched)")
+                + (base                             ? std::string("refitted to its skeleton and shape")
+                   : source == Generation::eSkyrim ? std::string("refitted to its skeleton (no body came with it, so its shape wasn't matched)")
+                                                    : std::string("refitted to its skeleton (the ") + label(source)
+                                                          + " base figure isn't installed, so its shape wasn't matched)")
                 + ".";
   return detail;
 }

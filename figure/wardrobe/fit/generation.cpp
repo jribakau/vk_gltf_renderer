@@ -14,6 +14,7 @@ const char* label(Generation g)
     case Generation::eG8: return "Genesis 8";
     case Generation::eG81: return "Genesis 8.1";
     case Generation::eG9: return "Genesis 9";
+    case Generation::eSkyrim: return "Skyrim";
   }
   return "Genesis";
 }
@@ -71,10 +72,14 @@ std::optional<Generation> generationFromBones(const std::vector<std::string>& na
   static const std::regex heelRe(R"(^[lr]heel$)");
   static const std::regex bendRe(R"(^[lr](thigh|shldr|forearm)(bend|twist)$)");
   static const std::regex plainRe(R"(^[lr]thigh$)");
+  static const std::regex skyrimRe(R"(^npc (l |r )?(pelvis|thigh|calf|spine|upperarm|clavicle) )");
   bool                    bend = false, heel = false, under = false, plain = false;
   for(const std::string& name : names)
   {
     const std::string n = lower(name);
+    // Skyrim's bones, which no DAZ figure's are named like
+    if(std::regex_search(n, skyrimRe))
+      return Generation::eSkyrim;
     if(std::regex_search(n, underscored))
       under = true;
     if(std::regex_search(n, heelRe))

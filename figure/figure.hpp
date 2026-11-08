@@ -263,7 +263,12 @@ public:
   std::vector<dson::TargetPtr> activeBodyTargets() const;
   // Starts reading a wearable's library files on the pool, for a prepareWear() that comes later.
   // Any thread.
-  void prefetchWear(const std::string& rel) const { dson::prefetchScene(m_store, rel); }
+  void prefetchWear(const std::string& rel) const
+  {
+    // a Skyrim mesh (.nif) isn't a library file: prepareWear reads it
+    if(rel.size() < 4 || (rel.compare(rel.size() - 4, 4, ".nif") != 0 && rel.compare(rel.size() - 4, 4, ".NIF") != 0))
+      dson::prefetchScene(m_store, rel);
+  }
   // The wearable's own scene, for resolving its textures before it is merged.
   static const SceneGraph& preparedScene(const PreparedWear& wear);
   static SceneGraph&       preparedScene(PreparedWear& wear);

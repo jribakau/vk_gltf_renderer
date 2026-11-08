@@ -23,6 +23,7 @@
 
 #include "fv_host_impl.hpp"
 
+#include <figure/nif/nif_wear.hpp>
 #include <figure/pose/retarget.hpp>
 
 Json FvHost::Impl::load(const Json& args)
@@ -41,6 +42,9 @@ Json FvHost::Impl::load(const Json& args)
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
     if(ext == ".gltf" || ext == ".glb" || ext == ".obj")
       return importModel(args["path"].get<std::string>(), {}, {}, args.value("place", Json()));
+    // a Skyrim outfit piece, which isn't in a DAZ library: worn by the figure named or selected
+    if(ext == ".nif")
+      return wear(args);
   }
   // an absolute path, or a path in the content folders (a library item)
   std::optional<std::pair<std::vector<std::filesystem::path>, std::string>> library;

@@ -741,6 +741,8 @@ mat::Surface parseSurface(const std::string& name, const Channels& ch, mat::Cont
   {
     s.normalMap      = imageOf(normalCh);
     s.normalStrength = float(num(normalCh, 1));
+    // not a DAZ setting: what nif/nif_wear.cpp marks a game's normal map with
+    s.normalDirectX = normalCh->imageModification.is_object() && normalCh->imageModification.value("fv_directx_normal", false);
   }
   if(!imageOf(bumpCh).empty())
   {

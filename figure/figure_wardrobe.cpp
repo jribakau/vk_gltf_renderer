@@ -17,6 +17,7 @@
 #include <figure/gltf/gltf_build.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
+#include <figure/nif/nif_wear.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/collider.hpp>
@@ -450,7 +451,15 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   timing::Scope     t("prepareWear " + file);
   {
     timing::Scope tl("loadDson");
-    out->loaded = dson::loadDson(*m_store, file, options);
+    // a Skyrim outfit's mesh, from wherever it is: its textures are linked into the first content folder
+    if(nif::isNif(rel))
+    {
+      const auto& roots = m_store->library().roots();
+      out->loaded       = nif::loadWearable(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(rel.data()), rel.size())), options,
+                                            {roots.empty() ? std::filesystem::path() : roots.front()});
+    }
+    else
+      out->loaded = dson::loadDson(*m_store, file, options);
   }
   if(out->loaded.items.empty())
     throw std::runtime_error("Nothing in this file can be worn.");

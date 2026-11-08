@@ -19,6 +19,8 @@ std::vector<std::string> filesOf(Generation g)
       return {"data/DAZ 3D/Genesis 8/Female 8_1/Genesis8_1Female.dsf", "data/DAZ 3D/Genesis 8/Male 8_1/Genesis8_1Male.dsf"};
     case Generation::eG3: return {"data/DAZ 3D/Genesis 3/Female/Genesis3Female.dsf", "data/DAZ 3D/Genesis 3/Male/Genesis3Male.dsf"};
     case Generation::eG2: return {"data/DAZ 3D/Genesis 2/Female/Genesis2Female.dsf", "data/DAZ 3D/Genesis 2/Male/Genesis2Male.dsf"};
+    // its body comes in the outfit's own file (LoadResult::sourceBase)
+    case Generation::eSkyrim: return {};
   }
   return {};
 }

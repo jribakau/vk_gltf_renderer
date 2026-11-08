@@ -489,7 +489,9 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     TextureRequest r;
     r.rel      = s.normalMap;
     r.srgb     = false;
-    r.channels = "ng";
+    // a DirectX map has green the way the renderer reads it already: a normal map as it is (BC5)
+    r.channels = s.normalDirectX ? "" : "ng";
+    r.normal   = s.normalDirectX;
     normal     = b.info(std::move(r), e.normalStrength.value_or(s.normalStrength));
     eff.normalStrength = e.normalStrength.value_or(s.normalStrength);
   }

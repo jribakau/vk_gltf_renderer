@@ -43,6 +43,23 @@ const std::unordered_map<std::string, std::string>& fallbacks()
   return table;
 }
 
+// Skyrim's skeleton, token (its name without "NPC ", the side and the [tag]) -> slot. Its own table:
+// Skyrim's Spine1 is Genesis 9's spine2. Three spine bones to Genesis' four, the chest the third;
+// Finger0x is the thumb, 1x to 4x index to pinky; 3BA's Breast is the pectoral.
+const std::unordered_map<std::string, std::string>& skyrimSlots()
+{
+  static const std::unordered_map<std::string, std::string> table{
+      {"com", "hip"},           {"spine", "spine1"},     {"spine1", "spine2"},          {"spine2", "spine3"},
+      {"neck", "neck1"},        {"clavicle", "collar"},  {"upperarmtwist1", "upperarm"}, {"upperarmtwist2", "upperarm"},
+      {"forearmtwist1", "forearm"}, {"forearmtwist2", "forearm"}, {"calf", "shin"},     {"toe0", "toes"},
+      {"breast", "pectoral"},   {"finger00", "thumb1"},  {"finger01", "thumb2"},        {"finger02", "thumb3"},
+      {"finger10", "index1"},   {"finger11", "index2"},  {"finger12", "index3"},        {"finger20", "mid1"},
+      {"finger21", "mid2"},     {"finger22", "mid3"},    {"finger30", "ring1"},         {"finger31", "ring2"},
+      {"finger32", "ring3"},    {"finger40", "pinky1"},  {"finger41", "pinky2"},        {"finger42", "pinky3"},
+  };
+  return table;
+}
+
 std::string lower(std::string s)
 {
   std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(std::tolower(c)); });
@@ -58,7 +75,27 @@ bool upperOrUnderscore(char c)
 
 ParsedBone parseBone(const std::string& name)
 {
-  ParsedBone  out;
+  ParsedBone out;
+  static const std::regex twist(R"(twist\d?$)");
+  // Skyrim's: "NPC L Thigh [LThg]", "NPC Spine1 [Spn1]", "NPC Head [Head]"
+  if(name.size() > 4 && name.compare(0, 4, "NPC ") == 0)
+  {
+    std::string rest = name.substr(4);
+    if(const size_t tag = rest.find(" ["); tag != std::string::npos)
+      rest.resize(tag);
+    if(rest.size() > 2 && (rest[0] == 'L' || rest[0] == 'R') && rest[1] == ' ')
+    {
+      out.side = rest[0] == 'L' ? 'l' : 'r';
+      rest     = rest.substr(2);
+    }
+    for(char c : lower(rest))
+      if(c != '_' && c != '-' && !std::isspace(static_cast<unsigned char>(c)))
+        out.token += c;
+    const auto it = skyrimSlots().find(out.token);
+    out.slot      = it != skyrimSlots().end() ? it->second : out.token;
+    out.twist     = std::regex_search(out.token, twist);
+    return out;
+  }
   std::string rest = name;
   const auto  prefixed = [&](const char* word, size_t at) {
     // `left` / `right` in any case, followed by an upper-case letter or underscore
@@ -91,8 +128,7 @@ ParsedBone parseBone(const std::string& name)
       out.token += c;
   const auto it = slots().find(out.token);
   out.slot      = it != slots().end() ? it->second : out.token;
-  static const std::regex twist(R"(twist\d?$)");
-  out.twist = std::regex_search(out.token, twist);
+  out.twist     = std::regex_search(out.token, twist);
   return out;
 }
 

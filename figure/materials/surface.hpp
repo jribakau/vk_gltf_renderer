@@ -214,6 +214,9 @@ struct Surface
   // normal map with its strength, and the bump map with DAZ's Bump Strength
   std::string normalMap;
   float       normalStrength = 1;
+  // The normal map is DirectX-style, green pointing down the image (a game's, Skyrim's): the other way
+  // from DAZ's, whose green the lowering flips for the renderer, so this one is taken as it is
+  bool        normalDirectX = false;
   std::string bumpMap;
   float       bumpStrength = 1;
   // The bump map's full height in metres, as a legacy shader gives it (Negative/Positive Bump,

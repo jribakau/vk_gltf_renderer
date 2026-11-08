@@ -23,6 +23,8 @@
 
 #include "fv_host_impl.hpp"
 
+#include <figure/nif/nif_wear.hpp>
+
 //--------------------------------------------------------------------------------------------------
 // Wardrobe
 
@@ -87,10 +89,12 @@ Json FvHost::Impl::wear(const Json& args)
   std::string rel;
   if(args.contains("rel"))
     rel = args["rel"].get<std::string>();
+  else if(const std::string path = args.at("path").get<std::string>(); fv::nif::isNif(path))
+    // a Skyrim outfit piece is worn from where it is (figure/nif/nif_wear.hpp)
+    rel = path;
   else
   {
-    const std::string path = args.at("path").get<std::string>();
-    const auto        lib  = libraryFor(s, pathOf(path));
+    const auto lib = libraryFor(s, pathOf(path));
     if(!lib)
       throw std::runtime_error(path + " is not in a DAZ content library (no data folder above it)");
     rel = lib->second;

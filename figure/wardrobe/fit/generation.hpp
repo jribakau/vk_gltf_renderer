@@ -19,6 +19,8 @@ enum class Generation
   eG8,
   eG81,
   eG9,
+  // Skyrim's human skeleton (NPC Pelvis [Pelv]...): CBBE, UNP and their kin, from a .nif
+  eSkyrim,
 };
 
 const char* label(Generation g);
