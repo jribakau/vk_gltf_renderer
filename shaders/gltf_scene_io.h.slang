@@ -50,10 +50,10 @@ struct GltfRenderNode
 struct VertexBuffers
 {
   float3* positions;
-  float3* normals;
-  uint*   colors;  // packed as 4 uint8_t
-  uint*   masks;   // packed as 4 uint8_t: where a procedural layer lands, a channel each (FV_materials_procedural)
-  float4* tangents;
+  uint*   normals;   // packUnitVector (unit_vector_pack.h.slang): 4 bytes where a float3 took 12
+  uint*   colors;    // packed as 4 uint8_t
+  uint*   masks;     // packed as 4 uint8_t: where a procedural layer lands, a channel each (FV_materials_procedural)
+  uint*   tangents;  // packTangent: the direction and the handedness in 4 bytes, where a float4 took 16
   // TEXCOORD_0 and TEXCOORD_1 as two members, not a `float2* texCoords[2]` array: AMD's Vulkan
   // driver crashes compiling a shader that loads a struct holding an array of buffer pointers.
   // Pick a channel at runtime with vertexTexCoords() (gltf_vertex_access.h.slang).

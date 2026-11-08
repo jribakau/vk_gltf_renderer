@@ -234,7 +234,9 @@ struct DeformDispatch
 {
   DeformKind  kind        = DeformKind::eMorph;
   uint32_t    vertexCount = 0;
-  BufferRange basePositions, baseNormals, baseTangents;  // float3, float3, float4
+  // float3 positions; normals and tangents packed in a uint each (shaders/unit_vector_pack.h.slang),
+  // but for the normals pass's output, which is float3 for the gather that follows
+  BufferRange basePositions, baseNormals, baseTangents;
   BufferRange outPositions, outNormals, outTangents;
   // morph: float3 deltas, and the targets' float weights
   BufferRange positionDeltas, normalDeltas, tangentDeltas, morphWeights;
@@ -259,10 +261,12 @@ struct DeformDispatch
   // normals and uvs, each over the triangles whose corners (3 * triangle + corner)
   // columns[rowStart[v] .. rowStart[v + 1]) names, as tinygltf::utils::computeTangents makes them
   BufferRange rowStart, columns, stencilWeights, stencilOffsets, triangles;  // uint32, uint32, float, float3, uint3
-  // a stencil's offsets turned: per base element where its X and Y axes went (float4, float3), each row's
-  // offset turning as its first column has; none: as they are
+  // a stencil's offsets turned: per base element where its X and Y axes went (a packed tangent and normal,
+  // as the skin writes them), each row's offset turning as its first column has; none: as they are
   BufferRange frameX, frameY;
-  BufferRange uvs;                                                           // float2
+  BufferRange uvs;  // float2
+  // a stencil's rows as packed unit directions (the drawn normals), in place of outPositions
+  BufferRange outUnit;
   uint32_t    sourceCount = 0, triangleCount = 0;
 };
 // The packed normal matrices are glm::mat3 on the host and float3x3 in the shader: 36 bytes apart

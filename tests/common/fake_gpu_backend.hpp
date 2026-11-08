@@ -48,11 +48,40 @@
 
 #include "scene_gpu_backend.hpp"
 
+#include <cstring>
+#include <span>
+
+#include <glm/glm.hpp>
+
+#include "shaders/unit_vector_pack.h.slang"
+
 namespace OffsetAllocator {
 class Allocator;
 }
 
 namespace rs {
+
+// A vertex stream's normals or tangents, a uint each (shaders/unit_vector_pack.h.slang), read back as the
+// shaders read them
+inline std::vector<glm::vec3> streamNormals(std::span<const std::byte> bytes)
+{
+  std::vector<uint32_t> packed(bytes.size() / 4);
+  std::memcpy(packed.data(), bytes.data(), packed.size() * 4);
+  std::vector<glm::vec3> out(packed.size());
+  for(size_t i = 0; i < out.size(); i++)
+    out[i] = shaderio::unpackUnitVector(packed[i]);
+  return out;
+}
+
+inline std::vector<glm::vec4> streamTangents(std::span<const std::byte> bytes)
+{
+  std::vector<uint32_t> packed(bytes.size() / 4);
+  std::memcpy(packed.data(), bytes.data(), packed.size() * 4);
+  std::vector<glm::vec4> out(packed.size());
+  for(size_t i = 0; i < out.size(); i++)
+    out[i] = shaderio::unpackTangent(packed[i]);
+  return out;
+}
 
 class FakeGpuBackend : public GpuBackend
 {

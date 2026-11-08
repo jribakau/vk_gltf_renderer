@@ -28,6 +28,7 @@
 #include <glm/gtx/norm.hpp>
 
 #include "nvshaders/functions.h.slang"
+#include "shaders/unit_vector_pack.h.slang"
 #include "skin_reference.hpp"
 
 #include <nvutils/offset_allocator.hpp>
@@ -645,6 +646,24 @@ struct Span
   explicit operator bool() const { return at != nullptr; }
 };
 
+// A stream's normals and tangents, a uint each (shaders/unit_vector_pack.h.slang), read and written as
+// the shaders do
+struct NormalSpan
+{
+  Span<uint32_t> packed;
+  glm::vec3      get(uint64_t i) const { return shaderio::unpackUnitVector(packed.get(i)); }
+  void           set(uint64_t i, const glm::vec3& v) const { packed.set(i, shaderio::packUnitVector(v)); }
+  explicit       operator bool() const { return bool(packed); }
+};
+
+struct TangentSpan
+{
+  Span<uint32_t> packed;
+  glm::vec4      get(uint64_t i) const { return shaderio::unpackTangent(packed.get(i)); }
+  void           set(uint64_t i, const glm::vec4& v) const { packed.set(i, shaderio::packTangent(v)); }
+  explicit       operator bool() const { return bool(packed); }
+};
+
 }  // namespace
 
 // Runs the pass on the shadow bytes as the shader would: shaders/morph.comp.slang and
@@ -653,7 +672,8 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
 {
   for(const BufferRange* r : {&d.basePositions, &d.baseNormals, &d.baseTangents, &d.outPositions, &d.outNormals, &d.outTangents, &d.positionDeltas,
                               &d.normalDeltas, &d.tangentDeltas, &d.morphWeights, &d.joints, &d.weights, &d.jointMatrices, &d.normalMatrices, &d.joints1,
-                              &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs, &d.frameX, &d.frameY})
+                              &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs, &d.frameX, &d.frameY,
+                              &d.outUnit})
     if(const auto it = m_buffers.find(r->buffer.value); it != m_buffers.end() && it->second.noMemory)
       return;  // as the Vulkan backend: a pass over a buffer that found no memory does nothing
   m_deforms.push_back(d);
@@ -693,13 +713,13 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
   {
     const uint64_t         tc = d.triangleCount;
     const Span<glm::vec3>  pos{range(d.basePositions, 12, n, "base positions", false), n};
-    const Span<glm::vec3>  nrm{range(d.baseNormals, 12, n, "base normals", false), n};
+    const NormalSpan       nrm{{range(d.baseNormals, 4, n, "base normals", false), n}};
     const Span<glm::vec2>  uv{d.uvs.buffer ? range(d.uvs, 8, n, "uvs", false) : nullptr, n};
     const Span<uint32_t>   start{range(d.rowStart, 4, n + 1, "corner starts", false), n + 1};
     const uint64_t         entries = start ? start.get(n) : 0;
     const Span<uint32_t>   corners{range(d.columns, 4, entries, "corners", false), entries};
     const Span<glm::uvec3> tris{range(d.triangles, 12, tc, "triangles", false), tc};
-    const Span<glm::vec4>  out{range(d.outTangents, 16, n, "outputs", true), n};
+    const TangentSpan      out{{range(d.outTangents, 4, n, "outputs", true), n}};
     if(!ok || !pos || !nrm || !start || !tris || !out || (entries && !corners))
     {
       if(ok)
@@ -775,18 +795,27 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
     const Span<uint32_t>  columns{range(d.columns, 4, entries, "columns", false), entries};
     const Span<float>     w{stencil ? range(d.stencilWeights, 4, entries, "stencil weights", false) : nullptr, entries};
     const Span<glm::vec3> offsets{stencil && start ? range(d.stencilOffsets, 12, n, "stencil offsets", false) : nullptr, n};
-    const Span<glm::vec4> frameX{stencil && start && d.stencilOffsets.buffer ? range(d.frameX, 16, m, "frame x", false) : nullptr, m};
-    const Span<glm::vec3> frameY{stencil && start && d.stencilOffsets.buffer ? range(d.frameY, 12, m, "frame y", false) : nullptr, m};
+    const TangentSpan     frameX{{stencil && start && d.stencilOffsets.buffer ? range(d.frameX, 4, m, "frame x", false) : nullptr, m}};
+    const NormalSpan      frameY{{stencil && start && d.stencilOffsets.buffer ? range(d.frameY, 4, m, "frame y", false) : nullptr, m}};
     const Span<glm::uvec3> tris{stencil ? nullptr : range(d.triangles, 12, d.triangleCount, "triangles", false), d.triangleCount};
-    const Span<glm::vec3> out{range(stencil ? d.outPositions : d.outNormals, 12, n, "outputs", true), n};
-    if(!ok || !base || !columns || !out || (!stencil && (!start || !tris)))
+    // a stencil's rows as they are, or as packed unit directions (the drawn normals)
+    const bool            unit = stencil && d.outUnit.buffer;
+    const Span<glm::vec3> out{unit ? nullptr : range(stencil ? d.outPositions : d.outNormals, 12, n, "outputs", true), n};
+    const NormalSpan      units{{unit ? range(d.outUnit, 4, n, "unit outputs", true) : nullptr, n}};
+    const auto            put = [&](uint64_t r, const glm::vec3& v) {
+      if(unit)
+        units.set(r, v);
+      else
+        out.set(r, v);
+    };
+    if(!ok || !base || !columns || !(out || units) || (!stencil && (!start || !tris)))
     {
       if(ok)
         error("dispatchDeform: a figure pass without its base, columns, triangles or output");
       return;
     }
-    if(const BufferRange& to = stencil ? d.outPositions : d.outNormals;
-       to.buffer == d.basePositions.buffer && to.offset < d.basePositions.offset + m * 12 && d.basePositions.offset < to.offset + n * 12)
+    if(const BufferRange& to = unit ? d.outUnit : stencil ? d.outPositions : d.outNormals;
+       to.buffer == d.basePositions.buffer && to.offset < d.basePositions.offset + m * 12 && d.basePositions.offset < to.offset + n * (unit ? 4 : 12))
       error("dispatchDeform: writes the range it reads");
     for(uint64_t r = 0; r < n; r++)
     {
@@ -794,7 +823,7 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
       if(stencil && !start)
       {
         const uint32_t c = columns.get(r);
-        out.set(r, c < m ? base.get(c) : glm::vec3(0.f));
+        put(r, c < m ? base.get(c) : glm::vec3(0.f));
         continue;
       }
       for(uint32_t k = start.get(r); k < start.get(r + 1) && k < entries; k++)
@@ -831,16 +860,16 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
         sum += offset;
       }
       const float l = glm::length(sum);
-      out.set(r, stencil ? sum : l > 0.f ? sum / l : glm::vec3(0.f));
+      put(r, stencil ? sum : l > 0.f ? sum / l : glm::vec3(0.f));
     }
-    const BufferRange& written = stencil ? d.outPositions : d.outNormals;
+    const BufferRange& written = unit ? d.outUnit : stencil ? d.outPositions : d.outNormals;
     m_computeBeforeBuild.insert(written.buffer.value);
     m_computeBeforeCompute.insert(written.buffer.value);
     return;
   }
   const Span<glm::vec3> basePos{range(d.basePositions, 12, n, "base positions", false), n};
-  const Span<glm::vec3> baseNrm{range(d.baseNormals, 12, n, "base normals", false), n};
-  const Span<glm::vec4> baseTan{range(d.baseTangents, 16, n, "base tangents", false), n};
+  const NormalSpan      baseNrm{{range(d.baseNormals, 4, n, "base normals", false), n}};
+  const TangentSpan     baseTan{{range(d.baseTangents, 4, n, "base tangents", false), n}};
   Span<glm::vec3>       posDelta, nrmDelta, tanDelta;
   Span<float>           weights;
   Span<glm::ivec4>      joints, joints1;
@@ -878,8 +907,8 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
       shares = {range(d.dualQuatShares, 4, n, "dual quaternion shares", false), n};
   }
   const Span<glm::vec3> outPos{range(d.outPositions, 12, n, "output positions", true), n};
-  const Span<glm::vec3> outNrm{range(d.outNormals, 12, n, "output normals", true), n};
-  const Span<glm::vec4> outTan{range(d.outTangents, 16, n, "output tangents", true), n};
+  const NormalSpan      outNrm{{range(d.outNormals, 4, n, "output normals", true), n}};
+  const TangentSpan     outTan{{range(d.outTangents, 4, n, "output tangents", true), n}};
   if(!ok || !basePos || !outPos)
   {
     if(ok)
@@ -922,10 +951,11 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
           tan = glm::vec4(glm::vec3(tan) + w * tanDelta.get(i), tan.w);
       }
       outPos.set(v, pos);
+      // their directions, as the shader packs them
       if(hasNormals)
-        outNrm.set(v, glm::normalize(nrm));
+        outNrm.set(v, nrm);
       if(hasTangents)
-        outTan.set(v, glm::vec4(glm::normalize(glm::vec3(tan)), tan.w));
+        outTan.set(v, tan);
       continue;
     }
     if(!joints || !jointWeights || !jointMats || !normalMats)

@@ -34,6 +34,7 @@
 #include "scene_gpu_tables.hpp"
 #include "scene_material_bits.hpp"
 #include "shaders/gltf_scene_io.h.slang"
+#include "shaders/unit_vector_pack.h.slang"
 
 namespace rs {
 
@@ -97,6 +98,19 @@ struct Deformed
   std::vector<glm::vec3> positions, normals;
   std::vector<glm::vec4> tangents;
 };
+
+// A normal or a tangent as a vertex stream holds it (shaders/unit_vector_pack.h.slang): packed where the
+// GPU packs it, read back where it reads it. Each value goes through once, at the step that packs it.
+glm::vec3 viaStream(const glm::vec3& n)
+{
+  return shaderio::unpackUnitVector(shaderio::packUnitVector(n));
+}
+
+glm::vec4 viaStream(const glm::vec4& t)
+{
+  return shaderio::unpackTangent(shaderio::packTangent(t));
+}
+
 // A refined mesh's base as the residency makes it on the GPU from its cage: each level's stencils, the
 // welded normals, the splits; arithmetic as shaders/stencil.comp.slang and vertex_normals.comp.slang
 // do it (and the fake runs them)
@@ -162,7 +176,7 @@ MeshRecord refinedBase(const MeshRecord& r, const std::vector<glm::vec4>* frameX
     const uint32_t from = t.drawnFrom[d];
     out.positions[d]    = from < src.size() ? src[from] : glm::vec3(0.f);
     if(d < out.normals.size())
-      out.normals[d] = from < normals.size() ? normals[from] : glm::vec3(0.f);
+      out.normals[d] = viaStream(from < normals.size() ? normals[from] : glm::vec3(0.f));
   }
   // with tangent tables, the tangents of those positions (the residency makes them when it has the
   // tangent stream; computeTangents' floats, which the fake's tangent pass repeats)
@@ -170,16 +184,29 @@ MeshRecord refinedBase(const MeshRecord& r, const std::vector<glm::vec4>* frameX
   {
     out.tangents.assign(out.positions.size(), glm::vec4(0.f));
     tinygltf::utils::computeTangents(out.positions, out.normals, out.uv0, t.tangentIndices, out.tangents);
+    for(glm::vec4& tangent : out.tangents)
+      tangent = viaStream(tangent);
   }
+  else  // uploaded as the record has them
+    for(glm::vec4& tangent : out.tangents)
+      tangent = viaStream(tangent);
   return out;
 }
 
-Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r, const std::vector<glm::mat4>& ran)
+Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r, const std::vector<glm::mat4>& ran, bool streamed)
 {
   Deformed       out{r.positions, r.normals, r.tangents};
   const Entity&  e = *scene.entity(entity);
   const size_t   n = r.vertexCount();
   const bool     hasNormals = r.hasNormals(), hasTangents = r.tangents.size() == n;
+  // the base streams as uploaded
+  if(!streamed)
+  {
+    for(glm::vec3& normal : out.normals)
+      normal = viaStream(normal);
+    for(glm::vec4& tangent : out.tangents)
+      tangent = viaStream(tangent);
+  }
   // a stream no target has is not morphed (its deltas are not uploaded)
   const bool normalDeltas  = std::any_of(r.targets.begin(), r.targets.end(), [](const MorphTarget& x) { return !x.normals.empty(); });
   const bool tangentDeltas = std::any_of(r.targets.begin(), r.targets.end(), [](const MorphTarget& x) { return !x.tangents.empty(); });
@@ -189,8 +216,8 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
     for(size_t v = 0; v < n; v++)
     {
       glm::vec3 pos = r.positions[v];
-      glm::vec3 nrm = hasNormals ? r.normals[v] : glm::vec3(0.f);
-      glm::vec4 tan = hasTangents ? r.tangents[v] : glm::vec4(0.f);
+      glm::vec3 nrm = hasNormals ? out.normals[v] : glm::vec3(0.f);
+      glm::vec4 tan = hasTangents ? out.tangents[v] : glm::vec4(0.f);
       for(size_t t = 0; t < r.targets.size(); t++)
       {
         const float w = t < source.size() ? source[t] : 0.f;
@@ -204,10 +231,11 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
           tan = glm::vec4(glm::vec3(tan) + w * (target.tangents.size() == n ? target.tangents[v] : glm::vec3(0.f)), tan.w);
       }
       out.positions[v] = pos;
+      // their directions, packed as the morph pass packs them
       if(hasNormals)
-        out.normals[v] = glm::normalize(nrm);
+        out.normals[v] = viaStream(nrm);
       if(hasTangents)
-        out.tangents[v] = glm::vec4(glm::normalize(glm::vec3(tan)), tan.w);
+        out.tangents[v] = viaStream(tan);
     }
   }
   const std::vector<glm::mat4>& joints = ran;
@@ -230,8 +258,8 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
     MeshRecord             posed = r;
     std::vector<glm::vec4> frameX(nc);
     std::vector<glm::vec3> frameY(nc);
-    const glm::vec3        axisY(0.f, 1.f, 0.f);
-    const glm::vec4        axisX(1.f, 0.f, 0.f, 1.f);
+    const glm::vec3        axisY = viaStream(glm::vec3(0.f, 1.f, 0.f));
+    const glm::vec4        axisX = viaStream(glm::vec4(1.f, 0.f, 0.f, 1.f));
     for(size_t v = 0; v < nc; v++)
     {
       const glm::ivec4 j[2]  = {glm::ivec4(r.cageJoints[v]), eight ? glm::ivec4(r.cageJoints1[v]) : glm::ivec4(0)};
@@ -240,8 +268,8 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
       const auto       skinned = skinVertex(r.cage[v], &axisY, &axisX, {j, size_t(eight ? 2 : 1)}, {w, size_t(eight ? 2 : 1)}, {joints, normalMats, dualQuats}, share);
       // and where the flesh has moved on from the skin
       posed.cage[v] = skinned.position + (r.displacement.size() == nc ? r.displacement[v] : glm::vec3(0.f));
-      frameY[v]     = skinned.normal;
-      frameX[v]     = skinned.tangent;
+      frameY[v]     = viaStream(skinned.normal);
+      frameX[v]     = viaStream(skinned.tangent);
     }
     const MeshRecord refined = refinedBase(posed, &frameX, &frameY);
     return {refined.positions, refined.normals, refined.tangents};
@@ -266,9 +294,9 @@ Deformed deformedNow(RetainedScene& scene, EntityId entity, const MeshRecord& r,
                                            {w, size_t(eight ? 2 : 1)}, {joints, normalMats, dualQuats}, share);
     out.positions[v] = s.position + (displaced ? r.displacement[v] : glm::vec3(0.f));
     if(hasNormals)
-      out.normals[v] = s.normal;
+      out.normals[v] = viaStream(s.normal);
     if(hasTangents)
-      out.tangents[v] = s.tangent;
+      out.tangents[v] = viaStream(s.tangent);
   }
   return out;
 }
@@ -456,18 +484,19 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
             out.push_back(at("I22", p) + "its skin last ran with other joints than the entity's now");
             c = 4, j = jointsNow.size();
           }
-      const Deformed want = deformedNow(scene, prim->drawer, *record, ran);
+      const Deformed want = deformedNow(scene, prim->drawer, *record, ran, bool(refined));
       if(!sameBytes(gpu.bytesAt(gpu.bufferAddress(drawer->positions), want.positions.size() * sizeof(glm::vec3)),
                     want.positions.data(), want.positions.size()))
         out.push_back(at("I22", p) + "its drawer's positions are not its mesh deformed as the entity draws it now");
-      if(drawer->normals
-         && !sameBytes(gpu.bytesAt(gpu.bufferAddress(drawer->normals), want.normals.size() * sizeof(glm::vec3)),
-                       want.normals.data(), want.normals.size()))
-        out.push_back(at("I22", p) + "its drawer's normals are not its mesh deformed as the entity draws it now");
-      if(drawer->tangents
-         && !sameBytes(gpu.bytesAt(gpu.bufferAddress(drawer->tangents), want.tangents.size() * sizeof(glm::vec4)),
-                       want.tangents.data(), want.tangents.size()))
-        out.push_back(at("I22", p) + "its drawer's tangents are not its mesh deformed as the entity draws it now");
+      // the normals and tangents packed, read back as the shaders read them
+      if(drawer->normals)
+        if(const std::vector<glm::vec3> got = streamNormals(gpu.bytesAt(gpu.bufferAddress(drawer->normals), want.normals.size() * 4));
+           !sameBytes(std::as_bytes(std::span(got)), want.normals.data(), want.normals.size()))
+          out.push_back(at("I22", p) + "its drawer's normals are not its mesh deformed as the entity draws it now");
+      if(drawer->tangents)
+        if(const std::vector<glm::vec4> got = streamTangents(gpu.bytesAt(gpu.bufferAddress(drawer->tangents), want.tangents.size() * 4));
+           !sameBytes(std::as_bytes(std::span(got)), want.tangents.data(), want.tangents.size()))
+          out.push_back(at("I22", p) + "its drawer's tangents are not its mesh deformed as the entity draws it now");
     }
     if(prim->input.vertexAddress % 4 || prim->input.indexAddress % 4)
       out.push_back(at("I17", p) + "a BLAS input address is not 4-byte aligned");

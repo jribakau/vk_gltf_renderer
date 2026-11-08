@@ -348,7 +348,8 @@ std::vector<T> readBack(const FakeGpuBackend& gpu, BufferHandle b, size_t count,
 }  // namespace
 
 // A deform pass runs on the shadow bytes as the shader would: a morph adds its weighted deltas
-// (target-major), a skin blends its joints, and normals come out normalized.
+// (target-major), a skin blends its joints, and normals come out normalized, packed as the streams
+// hold them.
 TEST(FakeGpuBackend, DeformPassesRunAsTheShadersDo)
 {
   FakeGpuBackend gpu;
@@ -357,8 +358,9 @@ TEST(FakeGpuBackend, DeformPassesRunAsTheShadersDo)
   // two targets of two vertices: target 0 moves both up, target 1 moves the second along x
   const std::vector<glm::vec3> deltas{{0, 1, 0}, {0, 1, 0}, {0, 0, 0}, {2, 0, 0}};
   const std::vector<float>     weights{0.5f, 0.25f};
-  const BufferHandle pos = filled(gpu, base), nrm = filled(gpu, normals), dpos = filled(gpu, deltas), w = filled(gpu, weights);
-  const BufferHandle morphed = gpu.createBuffer({.size = 24, .name = "morphed"}), morphedN = gpu.createBuffer({.size = 24});
+  const std::vector<uint32_t>  packedNormals{shaderio::packUnitVector(normals[0]), shaderio::packUnitVector(normals[1])};
+  const BufferHandle pos = filled(gpu, base), nrm = filled(gpu, packedNormals), dpos = filled(gpu, deltas), w = filled(gpu, weights);
+  const BufferHandle morphed = gpu.createBuffer({.size = 24, .name = "morphed"}), morphedN = gpu.createBuffer({.size = 8});
   gpu.barrier(GpuBarrier::eTransferToShader);
   gpu.dispatchDeform({.kind           = DeformKind::eMorph,
                       .vertexCount    = 2,
@@ -377,7 +379,7 @@ TEST(FakeGpuBackend, DeformPassesRunAsTheShadersDo)
   const std::vector<glm::mat4>  matrices{glm::mat4(1.f), glm::translate(glm::mat4(1.f), glm::vec3(0, 0, 2))};
   const std::vector<glm::mat3>  normalMats{glm::mat3(1.f), glm::mat3(1.f)};
   const BufferHandle j = filled(gpu, joints), jw = filled(gpu, jointWeights), m = filled(gpu, matrices), nm = filled(gpu, normalMats);
-  const BufferHandle skinned = gpu.createBuffer({.size = 24}), skinnedN = gpu.createBuffer({.size = 24});
+  const BufferHandle skinned = gpu.createBuffer({.size = 24}), skinnedN = gpu.createBuffer({.size = 8});
   const DeformDispatch skin{.kind           = DeformKind::eSkin,
                             .vertexCount    = 2,
                             .basePositions  = {morphed},
@@ -397,7 +399,7 @@ TEST(FakeGpuBackend, DeformPassesRunAsTheShadersDo)
   gpu.dispatchDeform(skin);
   EXPECT_EQ(gpu.errors().size(), 2u);
   EXPECT_EQ(readBack<glm::vec3>(gpu, skinned, 2), (std::vector<glm::vec3>{{0, 0.5f, 1}, {1.5f, 0.5f, 2}}));
-  EXPECT_EQ(readBack<glm::vec3>(gpu, skinnedN, 2), normals);
+  EXPECT_EQ(rs::streamNormals(readBack<std::byte>(gpu, skinnedN, 8)), normals);
 
   // the outputs are unfenced for builds and the frame until a compute-to-build barrier
   EXPECT_FALSE(gpu.unfencedForTheFrame().empty());

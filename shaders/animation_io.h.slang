@@ -26,18 +26,20 @@ NAMESPACE_SHADERIO_BEGIN()
 
 #define ANIMATION_WORKGROUP_SIZE 256
 
+// Normals and tangents, in and out, are the vertex streams' (unit_vector_pack.h.slang): packUnitVector
+// and packTangent, 4 bytes each
 struct SkinPushConstant
 {
   float3*   basePositions;
-  float3*   baseNormals;
-  float4*   baseTangents;
+  uint*     baseNormals;
+  uint*     baseTangents;
   float4*   weights;
   int4*     joints;
   float4x4* jointMatrices;
   float3x3* normalMatrices;
   float3*   outPositions;
-  float3*   outNormals;
-  float4*   outTangents;
+  uint*     outNormals;
+  uint*     outTangents;
   // DAZ's skinning (figures; null otherwise): influences five to eight, the joints'
   // dual quaternions (rs::JointDualQuat, five float4s each; null: linear only) and the dual
   // quaternion share per vertex (null: dualQuat for every vertex)
@@ -53,15 +55,15 @@ struct SkinPushConstant
 struct MorphPushConstant
 {
   float3* basePositions;
-  float3* baseNormals;
-  float4* baseTangents;
+  uint*   baseNormals;   // packed, as the skin's
+  uint*   baseTangents;
   float3* positionDeltas;
   float3* normalDeltas;
   float3* tangentDeltas;
   float*  morphWeights;
   float3* outPositions;
-  float3* outNormals;
-  float4* outTangents;
+  uint*   outNormals;
+  uint*   outTangents;
   uint    vertexCount;
   uint    numTargets;
 };
@@ -78,9 +80,12 @@ struct StencilPushConstant
   float*  weights;
   float3* offsets;  // per row, added to its sum; null: none
   // per source element, the axes its offset's X and Y turned to (the skin's tangent and normal of the rest's
-  // axes); a row's offset turns as its first column does. Null: as it is.
-  float4* frameX;
-  float3* frameY;
+  // axes, packed as the skin writes them); a row's offset turns as its first column does. Null: as it is.
+  uint*   frameX;
+  uint*   frameY;
+  // set: each row's value goes here as a unit direction (packUnitVector), not into outValues: the drawn
+  // normals gathered from the refined ones
+  uint*   outUnit;
   uint    rowCount;
   uint    sourceCount;
 };
@@ -105,12 +110,12 @@ struct NormalsPushConstant
 struct TangentsPushConstant
 {
   float3* positions;
-  float3* normals;
+  uint*   normals;  // the drawn normals, packed
   float2* uvs;
   uint3*  triangles;
   uint*   cornerStart;
   uint*   corners;
-  float4* outTangents;
+  uint*   outTangents;  // packTangent
   uint    vertexCount;
   uint    triangleCount;
 };

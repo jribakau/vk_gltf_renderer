@@ -148,7 +148,8 @@ struct MeshCounts
 // makeRefine, makeDeformInputs, acquireDrawer and acquirePrim's indices, without its BLAS
 inline uint64_t meshBufferBytes(const MeshCounts& m)
 {
-  constexpr uint64_t kPosition = 12, kNormal = 12, kTangent = 16, kUv = 8, kColor = 4, kJoints = 16, kWeights = 16, kIndex3 = 12;
+  // a normal and a tangent packed in a uint each (shaders/unit_vector_pack.h.slang); a morph's deltas are float3
+  constexpr uint64_t kPosition = 12, kNormal = 4, kTangent = 4, kDelta = 12, kUv = 8, kColor = 4, kJoints = 16, kWeights = 16, kIndex3 = 12;
   const uint64_t     v = m.vertices;
   const uint64_t     outputs = kPosition + (m.normals ? kNormal : 0) + (m.tangents ? kTangent : 0);
   // the mesh's UVs and colours and indices, and its own vertices unless every drawer poses its cage
@@ -158,7 +159,7 @@ inline uint64_t meshBufferBytes(const MeshCounts& m)
   // its skin and morphs
   if(m.skinned && !m.posed)
     bytes += v * ((kJoints + kWeights) * (m.eightInfluences ? 2 : 1) + (m.dualQuatShares ? 4 : 0));
-  bytes += m.morphTargets * v * (kPosition + (m.morphNormals ? kNormal : 0) + (m.morphTangents ? kTangent : 0));
+  bytes += m.morphTargets * v * (kDelta + (m.morphNormals ? kDelta : 0) + (m.morphTangents ? kDelta : 0));
   // what a drawer makes
   if(m.deforms())
   {

@@ -24,6 +24,7 @@
 // turns and moves (Kavan's two-phase scheme). tests/common/skin_reference.hpp runs the same floats.
 
 #include "animation_io.h.slang"
+#include "unit_vector_pack.h.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<SkinPushConstant> pc;
@@ -55,6 +56,9 @@ void main(uint3 tid: SV_DispatchThreadID)
 
   bool hasNormals  = (pc.baseNormals != nullptr);
   bool hasTangents = (pc.baseTangents != nullptr);
+  // the streams' packed normal and tangent, each read once
+  const float3 baseNrm = hasNormals ? unpackUnitVector(pc.baseNormals[v]) : float3(0);
+  const float4 baseTan = hasTangents ? unpackTangent(pc.baseTangents[v]) : float4(0);
 
   float3 skinnedPos = float3(0);
   float3 skinnedNrm = float3(0);
@@ -78,10 +82,10 @@ void main(uint3 tid: SV_DispatchThreadID)
         skinnedPos += jw * mul(float4(pc.basePositions[v], 1.0), pc.jointMatrices[ji]).xyz;
 
         if(hasNormals)
-          skinnedNrm += jw * mul(pc.baseNormals[v], pc.normalMatrices[ji]);
+          skinnedNrm += jw * mul(baseNrm, pc.normalMatrices[ji]);
 
         if(hasTangents)
-          skinnedTan += jw * mul(pc.baseTangents[v].xyz, (float3x3)pc.jointMatrices[ji]);
+          skinnedTan += jw * mul(baseTan.xyz, (float3x3)pc.jointMatrices[ji]);
       }
     }
   }
@@ -92,10 +96,10 @@ void main(uint3 tid: SV_DispatchThreadID)
     pc.outPositions[v] = skinnedPos;
 
     if(hasNormals)
-      pc.outNormals[v] = normalizeOr(skinnedNrm, pc.baseNormals[v]);
+      pc.outNormals[v] = packUnitVector(normalizeOr(skinnedNrm, baseNrm));
 
     if(hasTangents)
-      pc.outTangents[v] = float4(normalizeOr(skinnedTan, pc.baseTangents[v].xyz), pc.baseTangents[v].w);
+      pc.outTangents[v] = packTangent(float4(normalizeOr(skinnedTan, baseTan.xyz), baseTan.w));
     return;
   }
 
@@ -136,17 +140,17 @@ void main(uint3 tid: SV_DispatchThreadID)
   if(hasNormals)
   {
     // a normal goes by the stretch's inverse transpose: its cofactors, on the determinant's side
-    float3 n     = pc.baseNormals[v];
+    float3 n     = baseNrm;
     float3 c0    = cross(k1, k2), c1 = cross(k2, k0), c2 = cross(k0, k1);
     float  side  = dot(k0, c0) < 0.0 ? -1.0 : 1.0;
     float3 dqNrm = quatRotate(q, side * float3(dot(c0, n), dot(c1, n), dot(c2, n)));
-    pc.outNormals[v] = normalizeOr(normalizeOr(skinnedNrm, n) * (1.0 - share) + normalizeOr(dqNrm, n) * share, n);
+    pc.outNormals[v] = packUnitVector(normalizeOr(normalizeOr(skinnedNrm, n) * (1.0 - share) + normalizeOr(dqNrm, n) * share, n));
   }
 
   if(hasTangents)
   {
-    float3 t     = pc.baseTangents[v].xyz;
+    float3 t     = baseTan.xyz;
     float3 dqTan = quatRotate(q, float3(dot(k0, t), dot(k1, t), dot(k2, t)));
-    pc.outTangents[v] = float4(normalizeOr(normalizeOr(skinnedTan, t) * (1.0 - share) + normalizeOr(dqTan, t) * share, t), pc.baseTangents[v].w);
+    pc.outTangents[v] = packTangent(float4(normalizeOr(normalizeOr(skinnedTan, t) * (1.0 - share) + normalizeOr(dqTan, t) * share, t), baseTan.w));
   }
 }

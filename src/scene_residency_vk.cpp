@@ -397,7 +397,8 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
   // a pass over a buffer that found no memory does nothing
   for(const BufferRange* r : {&d.basePositions, &d.baseNormals, &d.baseTangents, &d.outPositions, &d.outNormals, &d.outTangents, &d.positionDeltas,
                               &d.normalDeltas, &d.tangentDeltas, &d.morphWeights, &d.joints, &d.weights, &d.jointMatrices, &d.normalMatrices, &d.joints1,
-                              &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs, &d.frameX, &d.frameY})
+                              &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs, &d.frameX, &d.frameY,
+                              &d.outUnit})
     if(auto it = r->buffer ? m_buffers.find(r->buffer.value) : m_buffers.end(); it != m_buffers.end() && !it->second.buffer.buffer)
       return;
   // a range's device address; null for none, as the shaders test
@@ -419,8 +420,9 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
     pc.columns     = reinterpret_cast<uint32_t*>(at(d.columns));
     pc.weights     = reinterpret_cast<float*>(at(d.stencilWeights));
     pc.offsets     = reinterpret_cast<glm::vec3*>(at(d.stencilOffsets));
-    pc.frameX      = reinterpret_cast<glm::vec4*>(at(d.frameX));
-    pc.frameY      = reinterpret_cast<glm::vec3*>(at(d.frameY));
+    pc.frameX      = reinterpret_cast<uint32_t*>(at(d.frameX));
+    pc.frameY      = reinterpret_cast<uint32_t*>(at(d.frameY));
+    pc.outUnit     = reinterpret_cast<uint32_t*>(at(d.outUnit));
     pc.rowCount    = d.vertexCount;
     pc.sourceCount = d.sourceCount;
     vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.stencil);
@@ -444,12 +446,12 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
   {
     shaderio::TangentsPushConstant pc{};
     pc.positions     = reinterpret_cast<glm::vec3*>(at(d.basePositions));
-    pc.normals       = reinterpret_cast<glm::vec3*>(at(d.baseNormals));
+    pc.normals       = reinterpret_cast<uint32_t*>(at(d.baseNormals));
     pc.uvs           = reinterpret_cast<glm::vec2*>(at(d.uvs));
     pc.triangles     = reinterpret_cast<glm::uvec3*>(at(d.triangles));
     pc.cornerStart   = reinterpret_cast<uint32_t*>(at(d.rowStart));
     pc.corners       = reinterpret_cast<uint32_t*>(at(d.columns));
-    pc.outTangents   = reinterpret_cast<glm::vec4*>(at(d.outTangents));
+    pc.outTangents   = reinterpret_cast<uint32_t*>(at(d.outTangents));
     pc.vertexCount   = d.vertexCount;
     pc.triangleCount = d.triangleCount;
     vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.tangents);
@@ -459,15 +461,15 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
   {
     shaderio::MorphPushConstant pc{};
     pc.basePositions  = reinterpret_cast<glm::vec3*>(at(d.basePositions));
-    pc.baseNormals    = reinterpret_cast<glm::vec3*>(at(d.baseNormals));
-    pc.baseTangents   = reinterpret_cast<glm::vec4*>(at(d.baseTangents));
+    pc.baseNormals    = reinterpret_cast<uint32_t*>(at(d.baseNormals));
+    pc.baseTangents   = reinterpret_cast<uint32_t*>(at(d.baseTangents));
     pc.positionDeltas = reinterpret_cast<glm::vec3*>(at(d.positionDeltas));
     pc.normalDeltas   = reinterpret_cast<glm::vec3*>(at(d.normalDeltas));
     pc.tangentDeltas  = reinterpret_cast<glm::vec3*>(at(d.tangentDeltas));
     pc.morphWeights   = reinterpret_cast<float*>(at(d.morphWeights));
     pc.outPositions   = reinterpret_cast<glm::vec3*>(at(d.outPositions));
-    pc.outNormals     = reinterpret_cast<glm::vec3*>(at(d.outNormals));
-    pc.outTangents    = reinterpret_cast<glm::vec4*>(at(d.outTangents));
+    pc.outNormals     = reinterpret_cast<uint32_t*>(at(d.outNormals));
+    pc.outTangents    = reinterpret_cast<uint32_t*>(at(d.outTangents));
     pc.vertexCount    = d.vertexCount;
     pc.numTargets     = d.targetCount;
     vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.morph);
@@ -477,15 +479,15 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
   {
     shaderio::SkinPushConstant pc{};
     pc.basePositions  = reinterpret_cast<glm::vec3*>(at(d.basePositions));
-    pc.baseNormals    = reinterpret_cast<glm::vec3*>(at(d.baseNormals));
-    pc.baseTangents   = reinterpret_cast<glm::vec4*>(at(d.baseTangents));
+    pc.baseNormals    = reinterpret_cast<uint32_t*>(at(d.baseNormals));
+    pc.baseTangents   = reinterpret_cast<uint32_t*>(at(d.baseTangents));
     pc.weights        = reinterpret_cast<glm::vec4*>(at(d.weights));
     pc.joints         = reinterpret_cast<glm::ivec4*>(at(d.joints));
     pc.jointMatrices  = reinterpret_cast<glm::mat4*>(at(d.jointMatrices));
     pc.normalMatrices = reinterpret_cast<glm::mat3*>(at(d.normalMatrices));
     pc.outPositions   = reinterpret_cast<glm::vec3*>(at(d.outPositions));
-    pc.outNormals     = reinterpret_cast<glm::vec3*>(at(d.outNormals));
-    pc.outTangents    = reinterpret_cast<glm::vec4*>(at(d.outTangents));
+    pc.outNormals     = reinterpret_cast<uint32_t*>(at(d.outNormals));
+    pc.outTangents    = reinterpret_cast<uint32_t*>(at(d.outTangents));
     pc.joints1        = reinterpret_cast<glm::ivec4*>(at(d.joints1));
     pc.weights1       = reinterpret_cast<glm::vec4*>(at(d.weights1));
     pc.jointDualQuats = reinterpret_cast<glm::vec4*>(at(d.jointDualQuats));

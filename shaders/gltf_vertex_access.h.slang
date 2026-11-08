@@ -26,6 +26,8 @@
 #ifndef VERTEX_ACCESSORS_H
 #define VERTEX_ACCESSORS_H
 
+#include "unit_vector_pack.h.slang"
+
 
 float4 unpackUnorm4x8(uint packed)
 {
@@ -51,7 +53,7 @@ float3 getVertexPosition(GltfRenderPrimitive renderPrim, int vertexID)
 
 float3 getVertexNormal(GltfRenderPrimitive renderPrim, int vertexID)
 {
-  return renderPrim.vertexBuffer.normals[vertexID];
+  return unpackUnitVector(renderPrim.vertexBuffer.normals[vertexID]);
 }
 
 bool hasVertexNormal(GltfRenderPrimitive renderPrim)
@@ -64,11 +66,11 @@ float3 getInterpolatedVertexNormal(GltfRenderPrimitive renderPrim, uint3 idx, fl
   if(!hasVertexNormal(renderPrim))
     return float3(0.0f, 0.0f, 1.0f);
 
-  float3* normals = renderPrim.vertexBuffer.normals;
-  float3  nrm[3];
-  nrm[0] = normals[idx.x];
-  nrm[1] = normals[idx.y];
-  nrm[2] = normals[idx.z];
+  uint*  normals = renderPrim.vertexBuffer.normals;
+  float3 nrm[3];
+  nrm[0] = unpackUnitVector(normals[idx.x]);
+  nrm[1] = unpackUnitVector(normals[idx.y]);
+  nrm[2] = unpackUnitVector(normals[idx.z]);
 
   return mixBary(nrm[0], nrm[1], nrm[2], barycentrics);
 }
@@ -144,7 +146,7 @@ float4 getVertexTangent(GltfRenderPrimitive renderPrim, uint idx)
   if(!hasVertexTangent(renderPrim))
     return float4(1, 0, 0, 1);
 
-  return renderPrim.vertexBuffer.tangents[idx];
+  return unpackTangent(renderPrim.vertexBuffer.tangents[idx]);
 }
 
 float4 getInterpolatedVertexTangent(GltfRenderPrimitive renderPrim, uint3 idx, float3 barycentrics)
@@ -152,11 +154,11 @@ float4 getInterpolatedVertexTangent(GltfRenderPrimitive renderPrim, uint3 idx, f
   if(!hasVertexTangent(renderPrim))
     return float4(1, 0, 0, 1);
 
-  float4* tangents = renderPrim.vertexBuffer.tangents;
-  float4  tng[3];
-  tng[0] = tangents[idx.x];
-  tng[1] = tangents[idx.y];
-  tng[2] = tangents[idx.z];
+  uint*  tangents = renderPrim.vertexBuffer.tangents;
+  float4 tng[3];
+  tng[0] = unpackTangent(tangents[idx.x]);
+  tng[1] = unpackTangent(tangents[idx.y]);
+  tng[2] = unpackTangent(tangents[idx.z]);
 
   // Interpolate only xyz; w is a discrete handedness (+1 / -1) that must not be blended.
   // Take handedness from vertex 0 — the glTF spec guarantees all three vertices of a triangle

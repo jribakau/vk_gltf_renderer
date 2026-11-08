@@ -4,6 +4,7 @@
 
 #include "animation_io.h.slang"
 #include "nvshaders/functions.h.slang"
+#include "unit_vector_pack.h.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<TangentsPushConstant> pc;
@@ -25,7 +26,7 @@ void main(uint3 tid: SV_DispatchThreadID)
     uint3 tri = pc.triangles[f];
     if(tri.x >= pc.vertexCount || tri.y >= pc.vertexCount || tri.z >= pc.vertexCount)
       continue;
-    float3 n0 = pc.normals[tri.x];
+    float3 n0 = unpackUnitVector(pc.normals[tri.x]);
     if(pc.uvs == nullptr)
     {
       t = makeFastTangent(n0);
@@ -48,9 +49,9 @@ void main(uint3 tid: SV_DispatchThreadID)
   }
 
   // the part across the normal; a vertex no triangle touches gets +1 handedness
-  float3 n  = pc.normals[v];
+  float3 n  = unpackUnitVector(pc.normals[v]);
   float3 ot = normalize(t.xyz - dot(n, t.xyz) * n);
   if(dot(ot, ot) < 0.1 || any(isnan(ot)))
     ot = makeFastTangent(n).xyz;
-  pc.outTangents[v] = float4(ot, t.w < 0.0 ? -1.0 : 1.0);
+  pc.outTangents[v] = packTangent(float4(ot, t.w < 0.0 ? -1.0 : 1.0));
 }

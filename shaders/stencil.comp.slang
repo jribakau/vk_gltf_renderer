@@ -8,9 +8,19 @@
 // displacement).
 
 #include "animation_io.h.slang"
+#include "unit_vector_pack.h.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<StencilPushConstant> pc;
+
+// a row's value: as it is, or as a packed unit direction (the drawn normals, outUnit)
+void write(uint row, float3 value)
+{
+  if(pc.outUnit != nullptr)
+    pc.outUnit[row] = packUnitVector(value);
+  else
+    pc.outValues[row] = value;
+}
 
 [shader("compute")]
 [numthreads(ANIMATION_WORKGROUP_SIZE, 1, 1)]
@@ -22,13 +32,13 @@ void main(uint3 tid: SV_DispatchThreadID)
 
   if(pc.rowStart == nullptr && pc.columns == nullptr)
   {
-    pc.outValues[row] = pc.baseValues[row] + (pc.offsets != nullptr ? pc.offsets[row] : float3(0));
+    write(row, pc.baseValues[row] + (pc.offsets != nullptr ? pc.offsets[row] : float3(0)));
     return;
   }
   if(pc.rowStart == nullptr)
   {
-    uint c              = pc.columns[row];
-    pc.outValues[row] = c < pc.sourceCount ? pc.baseValues[c] : float3(0);
+    uint c = pc.columns[row];
+    write(row, c < pc.sourceCount ? pc.baseValues[c] : float3(0));
     return;
   }
 
@@ -45,8 +55,8 @@ void main(uint3 tid: SV_DispatchThreadID)
     if(pc.frameX != nullptr && pc.rowStart[row] < pc.rowStart[row + 1])
     {
       uint   c = pc.columns[pc.rowStart[row]];
-      float3 x = pc.frameX[c].xyz;
-      float3 z = cross(x, pc.frameY[c]);
+      float3 x = unpackTangent(pc.frameX[c]).xyz;
+      float3 z = cross(x, unpackUnitVector(pc.frameY[c]));
       float  l = length(z);
       if(l > 0.0)
       {
@@ -56,5 +66,5 @@ void main(uint3 tid: SV_DispatchThreadID)
     }
     sum += offset;
   }
-  pc.outValues[row] = sum;
+  write(row, sum);
 }

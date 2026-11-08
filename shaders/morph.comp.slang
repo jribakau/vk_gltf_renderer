@@ -21,6 +21,7 @@
 // for positions, normals, and tangents from multiple morph targets.
 
 #include "animation_io.h.slang"
+#include "unit_vector_pack.h.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<MorphPushConstant> pc;
@@ -37,8 +38,8 @@ void main(uint3 tid: SV_DispatchThreadID)
   bool hasTangents = (pc.baseTangents != nullptr);
 
   float3 pos = pc.basePositions[v];
-  float3 nrm = hasNormals ? pc.baseNormals[v] : float3(0);
-  float4 tan = hasTangents ? pc.baseTangents[v] : float4(0);
+  float3 nrm = hasNormals ? unpackUnitVector(pc.baseNormals[v]) : float3(0);
+  float4 tan = hasTangents ? unpackTangent(pc.baseTangents[v]) : float4(0);
 
   for(uint t = 0; t < pc.numTargets; t++)
   {
@@ -62,11 +63,11 @@ void main(uint3 tid: SV_DispatchThreadID)
 
   if(hasNormals && pc.outNormals != nullptr)
   {
-    pc.outNormals[v] = normalize(nrm);
+    pc.outNormals[v] = packUnitVector(nrm);  // its direction: what normalize kept
   }
 
   if(hasTangents && pc.outTangents != nullptr)
   {
-    pc.outTangents[v] = float4(normalize(tan.xyz), tan.w);
+    pc.outTangents[v] = packTangent(tan);
   }
 }

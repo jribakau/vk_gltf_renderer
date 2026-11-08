@@ -702,7 +702,7 @@ TEST(RetainedDeform, TangentsWithNoTablesAreSkinnedFromTheRefinedMesh)
   gpu.beginFrame();
   residency.sync(rig.scene);
   expectClean(rig.scene, residency, gpu);
-  EXPECT_LT(glm::distance(glm::vec3(readBack<glm::vec4>(gpu, d->tangents)[0]), glm::vec3(-1, 0, 0)), 1e-5f);
+  EXPECT_LT(glm::distance(glm::vec3(streamTangents(readBack<std::byte>(gpu, d->tangents))[0]), glm::vec3(-1, 0, 0)), 1e-5f);
 }
 
 // The skin turns the normals by the packed normal matrices, read at their stride as the shader does
@@ -715,14 +715,15 @@ TEST(RetainedDeform, ASkinTurnsTheNormalsByItsBones)
   FakeGpuBackend gpu;
   Residency      residency(gpu);
   residency.replace(rig.scene);
-  const std::vector<glm::vec3> normals = readBack<glm::vec3>(gpu, residency.drawer(rig.body, rig.mesh)->normals);
+  const std::vector<glm::vec3> normals = streamNormals(readBack<std::byte>(gpu, residency.drawer(rig.body, rig.mesh)->normals));
   ASSERT_EQ(normals.size(), 9u);
   const float half = std::sqrt(0.5f);
   for(int y = 0; y <= 2; y++)
   {
     const glm::vec3 left = normals[size_t(y * 3)], middle = normals[size_t(y * 3 + 1)], right = normals[size_t(y * 3 + 2)];
+    // packed in the stream: an axis exact, the half and half within its 16 bits
     EXPECT_NEAR(glm::distance(left, glm::vec3(0, 0, 1)), 0.f, 1e-5f) << y;
-    EXPECT_NEAR(glm::distance(middle, glm::vec3(half, 0, half)), 0.f, 1e-5f) << y;
+    EXPECT_NEAR(glm::distance(middle, glm::vec3(half, 0, half)), 0.f, 1e-4f) << y;
     EXPECT_NEAR(glm::distance(right, glm::vec3(1, 0, 0)), 0.f, 1e-5f) << y;
   }
 }

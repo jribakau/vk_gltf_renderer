@@ -1007,6 +1007,19 @@ its own, and no skin on its drawn vertices (`MeshGpu::hasBase`). They come, refi
 something needs them (`Residency::ensureBase`): a static draw of the mesh, or a drawer that can't pose,
 one with morph targets on the record, or tangents with no tables to make them from.
 
+A vertex stream's normals and tangents are 4 bytes each (`shaders/unit_vector_pack.h.slang`), where
+a `float3` and a `float4` took 12 and 16. A normal is octahedral, 16 bits a coordinate. A tangent is
+octahedral at 16 and 15 bits with its handedness in the top bit. The reserved code `0xFFFF` in the low
+half means no direction and reads back as zero. The worst round trip is under 0.005 degrees for a
+normal and 0.01 for a tangent (`tests/test_unit_vector_pack.cpp`). The residency packs what it
+uploads (`packedNormals`, `packedTangents`). The skin, morph and tangent passes read and write them
+packed, and so does the gather of a refined mesh's drawn normals (`outUnit` in `stencil.comp.slang`).
+A strand ribbon's frames (`frameX`, `frameY`) and the unit axes they come from are packed too.
+Positions, the stencil levels' sums and the welded normals of a refine stay in floats. The fake GPU's
+passes pack as the shaders do (`NormalSpan`, `TangentSpan` in `tests/common/fake_gpu_backend.cpp`).
+The oracle packs each value once, at the pass that packs it, since a packed value need not repack to
+the same bits.
+
 What is new comes a few at a time, since every BVH a sync asks for goes in the frame's one submission: a sync takes
 `ResidencyOptions::arrivalTriangles` of new meshes, and always one however large. The rest wait in `Residency::arriving()`, not drawn and not
 parked, and the next sync takes them with no change in the scene.

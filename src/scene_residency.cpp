@@ -42,6 +42,7 @@
 #include "scene_gpu_tables.hpp"
 #include "scene_skin.hpp"
 #include "shaders/gltf_scene_io.h.slang"
+#include "shaders/unit_vector_pack.h.slang"
 
 namespace rs {
 
@@ -547,16 +548,12 @@ void Residency::ensureUnitAxes(uint64_t count)
     return;
   retireBuffer(m_unitAxes);
   m_unitAxesCount = std::max<uint64_t>(std::bit_ceil(count), 1024);
-  std::vector<std::byte> bytes(m_unitAxesCount * (sizeof(glm::vec3) + sizeof(glm::vec4)));
-  for(uint64_t v = 0; v < m_unitAxesCount; v++)
-  {
-    const glm::vec3 y(0.f, 1.f, 0.f);
-    const glm::vec4 x(1.f, 0.f, 0.f, 1.f);
-    std::memcpy(bytes.data() + v * sizeof(glm::vec3), &y, sizeof(y));
-    std::memcpy(bytes.data() + m_unitAxesCount * sizeof(glm::vec3) + v * sizeof(glm::vec4), &x, sizeof(x));
-  }
-  m_unitAxes = m_gpu.createBuffer({.size = bytes.size(), .usage = eBufferStorage, .name = "unit axes", .mayFail = true});
-  m_gpu.upload(m_unitAxes, 0, bytes);
+  // the normals' Y, then the tangents' X, packed as the skin reads them
+  std::vector<uint32_t> axes(m_unitAxesCount * 2);
+  std::fill_n(axes.begin(), m_unitAxesCount, shaderio::packUnitVector(glm::vec3(0.f, 1.f, 0.f)));
+  std::fill(axes.begin() + ptrdiff_t(m_unitAxesCount), axes.end(), shaderio::packTangent(glm::vec4(1.f, 0.f, 0.f, 1.f)));
+  m_unitAxes = m_gpu.createBuffer({.size = axes.size() * sizeof(uint32_t), .usage = eBufferStorage, .name = "unit axes", .mayFail = true});
+  m_gpu.upload(m_unitAxes, 0, bytesOf(axes));
 }
 
 void Residency::ensureChainScratch(uint64_t bytes)
@@ -580,7 +577,7 @@ void Residency::refineChains(std::span<const RefineRun> runs)
     for(const MeshGpu::Refine::Level& l : t.levels)
       bytes += uint64_t(l.rows) * sizeof(glm::vec3);
     if(run.posedBy)
-      bytes += c * sizeof(glm::vec3) + (t.offsets ? c * (sizeof(glm::vec3) + sizeof(glm::vec4)) + 16 : 0);
+      bytes += c * sizeof(glm::vec3) + (t.offsets ? c * 2 * sizeof(uint32_t) + 16 : 0);
     if(run.posedBy && t.displacement)
       bytes += c * sizeof(glm::vec3);
     return bytes;
@@ -615,14 +612,14 @@ void Residency::refineChains(std::span<const RefineRun> runs)
       const bool turns = t.offsets && t.levels.size() == 1 && m_unitAxes && m_unitAxesCount >= cageCount;
       if(turns)
       {
-        frameY = take(cageCount * sizeof(glm::vec3));
-        frameX = take(cageCount * sizeof(glm::vec4), 16);
+        frameY = take(cageCount * sizeof(uint32_t));
+        frameX = take(cageCount * sizeof(uint32_t), 16);
       }
       m_gpu.dispatchDeform({.kind           = DeformKind::eSkin,
                             .vertexCount    = uint32_t(cageCount),
                             .basePositions  = {t.cage},
                             .baseNormals    = turns ? BufferRange{m_unitAxes} : BufferRange{},
-                            .baseTangents   = turns ? BufferRange{m_unitAxes, m_unitAxesCount * sizeof(glm::vec3)} : BufferRange{},
+                            .baseTangents   = turns ? BufferRange{m_unitAxes, m_unitAxesCount * sizeof(uint32_t)} : BufferRange{},
                             .outPositions   = cage,
                             .outNormals     = frameY,
                             .outTangents    = frameX,
@@ -684,14 +681,16 @@ void Residency::refineChains(std::span<const RefineRun> runs)
                           .sourceCount   = t.refinedCount,
                           .triangleCount = t.triangleCount});
     m_gpu.barrier(GpuBarrier::eComputeToCompute);
-    // the splits: a gather of positions and of normals, each drawn vertex its refined vertex's
-    for(const auto& [from, to] : {std::pair{level, run.positions}, std::pair{refinedNormals, run.normals}})
+    // the splits: a gather of positions and of normals, each drawn vertex its refined vertex's, the
+    // normals packed as the streams hold them
+    for(const auto& [from, to, unit] : {std::tuple{level, run.positions, false}, std::tuple{refinedNormals, run.normals, true}})
       if(to)
         m_gpu.dispatchDeform({.kind          = DeformKind::eStencil,
                               .vertexCount   = mesh.vertexCount,
                               .basePositions = from,
-                              .outPositions  = {to},
+                              .outPositions  = unit ? BufferRange{} : BufferRange{to},
                               .columns       = {t.drawnFrom},
+                              .outUnit       = unit ? BufferRange{to} : BufferRange{},
                               .sourceCount   = t.refinedCount});
     // the tangents, from the drawn positions, normals and UVs
     if(t.tangentTriangles && run.normals && run.tangents)
@@ -709,6 +708,23 @@ void Residency::refineChains(std::span<const RefineRun> runs)
                             .triangleCount = t.tangentTriangleCount});
     }
   }
+}
+
+// The normals and tangents as the vertex streams hold them (shaders/unit_vector_pack.h.slang)
+static std::vector<uint32_t> packedNormals(std::span<const glm::vec3> normals)
+{
+  std::vector<uint32_t> out(normals.size());
+  for(size_t i = 0; i < out.size(); i++)
+    out[i] = shaderio::packUnitVector(normals[i]);
+  return out;
+}
+
+static std::vector<uint32_t> packedTangents(std::span<const glm::vec4> tangents)
+{
+  std::vector<uint32_t> out(tangents.size());
+  for(size_t i = 0; i < out.size(); i++)
+    out[i] = shaderio::packTangent(tangents[i]);
+  return out;
 }
 
 void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool vertices)
@@ -733,9 +749,10 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool verti
   if(gpu.hasBase)
   {
     stream(gpu.positions, bytesOf(record.positions), eBufferVertex | eBufferStorage | eBufferAccelInput, "positions");
-    stream(gpu.normals, bytesOf(record.normals), eBufferStorage, "normals");
-    if(!vertices || gpu.tangentRev != record.tangentRev)
-      stream(gpu.tangents, bytesOf(record.tangents), eBufferStorage, "tangents");
+    if(!(vertices && gpu.refine))  // made on the GPU, as stream() leaves them
+      stream(gpu.normals, bytesOf(packedNormals(record.normals)), eBufferStorage, "normals");
+    if((!vertices || gpu.tangentRev != record.tangentRev) && !(vertices && gpu.refine && gpu.refine->tangentTriangles))
+      stream(gpu.tangents, bytesOf(packedTangents(record.tangents)), eBufferStorage, "tangents");
   }
   gpu.contentRev = record.contentRev;
   gpu.tangentRev = record.tangentRev;
@@ -768,14 +785,14 @@ void Residency::ensureBase(const MeshRecord& record, MeshGpu& gpu)
     m_gpu.upload(buffer, 0, bytes);
   };
   stream(gpu.positions, bytesOf(record.positions), eBufferVertex | eBufferStorage | eBufferAccelInput, "positions");
-  stream(gpu.normals, bytesOf(record.normals), eBufferStorage, "normals");
-  stream(gpu.tangents, bytesOf(record.tangents), eBufferStorage, "tangents");
+  stream(gpu.normals, bytesOf(packedNormals(record.normals)), eBufferStorage, "normals");
+  stream(gpu.tangents, bytesOf(packedTangents(record.tangents)), eBufferStorage, "tangents");
   // none held on the CPU: the refine that follows makes them
   if(record.thinVertices)
   {
     gpu.positions = m_gpu.createBuffer({.size = record.thinVertices * sizeof(glm::vec3), .usage = eBufferVertex | eBufferStorage | eBufferAccelInput, .name = "positions", .mayFail = true});
     if(record.thinNormals)
-      gpu.normals = m_gpu.createBuffer({.size = record.thinVertices * sizeof(glm::vec3), .usage = eBufferStorage, .name = "normals", .mayFail = true});
+      gpu.normals = m_gpu.createBuffer({.size = record.thinVertices * sizeof(uint32_t), .usage = eBufferStorage, .name = "normals", .mayFail = true});
   }
 }
 
@@ -1500,9 +1517,9 @@ void Residency::wake(const RetainedScene& scene, MeshId id)
       };
       output(d.morphedPositions, sizeof(glm::vec3), "morphed positions");
       if(record->hasNormals())
-        output(d.morphedNormals, sizeof(glm::vec3), "morphed normals");
+        output(d.morphedNormals, sizeof(uint32_t), "morphed normals");
       if(!record->tangents.empty())
-        output(d.morphedTangents, sizeof(glm::vec4), "morphed tangents");
+        output(d.morphedTangents, sizeof(uint32_t), "morphed tangents");
       d.lastWeights.clear();
     }
     // no need to compact what is about to move
@@ -2599,17 +2616,18 @@ Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, Entit
     buffer = m_gpu.createBuffer({.size = n * element, .usage = usage, .name = name, .mayFail = true});
   };
   output(d.positions, sizeof(glm::vec3), eBufferVertex | eBufferStorage | eBufferAccelInput, "deformed positions");
+  // the normals and tangents packed (shaders/unit_vector_pack.h.slang), 4 bytes each
   if(record.hasNormals())
-    output(d.normals, sizeof(glm::vec3), eBufferStorage, "deformed normals");
+    output(d.normals, sizeof(uint32_t), eBufferStorage, "deformed normals");
   if(!record.tangents.empty())
-    output(d.tangents, sizeof(glm::vec4), eBufferStorage, "deformed tangents");
+    output(d.tangents, sizeof(uint32_t), eBufferStorage, "deformed tangents");
   if(d.morph && d.skin)
   {
     output(d.morphedPositions, sizeof(glm::vec3), eBufferStorage, "morphed positions");
     if(record.hasNormals())
-      output(d.morphedNormals, sizeof(glm::vec3), eBufferStorage, "morphed normals");
+      output(d.morphedNormals, sizeof(uint32_t), eBufferStorage, "morphed normals");
     if(!record.tangents.empty())
-      output(d.morphedTangents, sizeof(glm::vec4), eBufferStorage, "morphed tangents");
+      output(d.morphedTangents, sizeof(uint32_t), eBufferStorage, "morphed tangents");
   }
   d.prims.assign(record.submeshes.size(), -1);
   m_packsDirty = true;
@@ -3703,8 +3721,8 @@ void Residency::writeRenderPrims(const std::set<uint32_t>& slots)
       const DrawerGpu* d         = prim->drawer.isNone() ? nullptr : &m_drawers.at({prim->drawer, prim->mesh});
       row.indices                = (glm::uvec3*)m_gpu.bufferAddress(prim->indices);
       row.vertexBuffer.positions = (glm::vec3*)m_gpu.bufferAddress(d ? d->positions : mesh.positions);
-      row.vertexBuffer.normals   = (glm::vec3*)m_gpu.bufferAddress(d ? d->normals : mesh.normals);
-      row.vertexBuffer.tangents  = (glm::vec4*)m_gpu.bufferAddress(d ? d->tangents : mesh.tangents);
+      row.vertexBuffer.normals   = (uint32_t*)m_gpu.bufferAddress(d ? d->normals : mesh.normals);
+      row.vertexBuffer.tangents  = (uint32_t*)m_gpu.bufferAddress(d ? d->tangents : mesh.tangents);
       row.vertexBuffer.texCoord0 = (glm::vec2*)m_gpu.bufferAddress(mesh.uv0);
       row.vertexBuffer.texCoord1 = (glm::vec2*)m_gpu.bufferAddress(mesh.uv1);
       row.vertexBuffer.colors    = (glm::uint*)m_gpu.bufferAddress(mesh.colors);

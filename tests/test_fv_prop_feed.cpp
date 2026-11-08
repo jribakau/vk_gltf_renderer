@@ -339,9 +339,9 @@ TEST(FvPropFeed, ASubdividedFigureIsRefinedFromItsCage)
       refined++;
       const size_t           n     = record->positions.size();
       const DrawnBuffers     drawn = drawnBuffers(box->loaded.scene, *feed.fed("p:1")->figure, residency, int(mi));
-      std::vector<glm::vec3> positions(n), normals(n);
+      std::vector<glm::vec3> positions(n);
       std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(drawn.positions), n * 12).data(), n * 12);
-      std::memcpy(normals.data(), gpu.bytesAt(gpu.bufferAddress(drawn.normals), n * 12).data(), n * 12);
+      const std::vector<glm::vec3> normals = rs::streamNormals(gpu.bytesAt(gpu.bufferAddress(drawn.normals), n * 4));
       for(size_t v = 0; v < n; v++)
       {
         ASSERT_LT(glm::distance(positions[v], record->positions[v]), 1e-4f) << when << " vertex " << v;
@@ -430,9 +430,9 @@ TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
     const fv::mesh::BuiltMesh& want  = *reference->loaded.scene.meshes[mi].geo;
     const size_t               n     = want.position.size() / 3;
     const DrawnBuffers         drawnNow = drawnBuffers(box->loaded.scene, figure, residency, int(mi));
-    std::vector<glm::vec3>     positions(n), normals(n);
+    std::vector<glm::vec3>     positions(n);
     std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(drawnNow.positions), n * 12).data(), n * 12);
-    std::memcpy(normals.data(), gpu.bytesAt(gpu.bufferAddress(drawnNow.normals), n * 12).data(), n * 12);
+    const std::vector<glm::vec3> normals = rs::streamNormals(gpu.bytesAt(gpu.bufferAddress(drawnNow.normals), n * 4));
     for(size_t v = 0; v < n; v++)
     {
       ASSERT_LT(glm::distance(positions[v], glm::make_vec3(&want.position[v * 3])), 1e-4f) << "mesh " << mi << " vertex " << v;
@@ -545,9 +545,10 @@ TEST(FvPropFeed, ARefinedNormalMappedFiguresTangentsAreMadeOnTheGpu)
       std::vector<glm::vec3>     positions(n), normals(n);
       std::memcpy(positions.data(), geo.position.data(), n * 12);
       std::memcpy(normals.data(), geo.normal.data(), n * 12);
-      std::vector<glm::vec4> want(n, glm::vec4(0.f)), got(n);
+      std::vector<glm::vec4> want(n, glm::vec4(0.f));
       tinygltf::utils::computeTangents(positions, normals, record->uv0, record->refine->tangentIndices, want);
-      std::memcpy(got.data(), gpu.bytesAt(gpu.bufferAddress(drawnBuffers(box->loaded.scene, figure, residency, int(mi)).tangents), n * 16).data(), n * 16);
+      const std::vector<glm::vec4> got =
+          rs::streamTangents(gpu.bytesAt(gpu.bufferAddress(drawnBuffers(box->loaded.scene, figure, residency, int(mi)).tangents), n * 4));
       for(size_t v = 0; v < n; v++)
       {
         ASSERT_GT(glm::dot(glm::vec3(got[v]), glm::vec3(want[v])), 0.999f) << when << " mesh " << mi << " vertex " << v;
@@ -1449,9 +1450,9 @@ static void strandRibbonsAreRefinedFromTheirPoints(std::vector<fv::mesh::Growth>
     const rs::Residency::MeshGpu* mesh = residency.meshGpu(feed.meshOf(0));
     ASSERT_TRUE(mesh && mesh->refine) << when;
     const size_t           n = geo->position.size() / 3;
-    std::vector<glm::vec3> positions(n), normals(n);
+    std::vector<glm::vec3> positions(n);
     std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(mesh->positions), n * 12).data(), n * 12);
-    std::memcpy(normals.data(), gpu.bytesAt(gpu.bufferAddress(mesh->normals), n * 12).data(), n * 12);
+    const std::vector<glm::vec3> normals = rs::streamNormals(gpu.bytesAt(gpu.bufferAddress(mesh->normals), n * 4));
     for(size_t v = 0; v < n; v++)
     {
       ASSERT_LT(glm::distance(positions[v], glm::make_vec3(&geo->position[v * 3])), 1e-5f) << when << " vertex " << v;
