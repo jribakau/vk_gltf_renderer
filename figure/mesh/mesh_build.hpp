@@ -86,6 +86,10 @@ struct Lines
   // the share of the lines drawn, the file's and the grown alike. The cage keeps them all: the skin,
   // morphs and a simulation run on them as ever
   float keep = 1;
+  // the pieces each segment is drawn in (strandRibbons), 1 or 2: one piece is half the triangles and
+  // vertices for the same shape, as the second piece's point lies on the segment's chord, but looser
+  // boxes for the ray tracer, so it is the memory fit's first step down for a hair (fv::WearQuality)
+  int pieces = 2;
 };
 
 struct MeshInput
@@ -196,9 +200,10 @@ struct BuiltMesh
 };
 
 BuiltMesh build(const MeshInput& m);
-// The mesh again at another level, or with another share of its strands, over `cage`: everything that lives
-// on the cage stays true of it (morphs, a pose, a drape, bindings). Null when it has no source.
-std::shared_ptr<BuiltMesh> remade(const BuiltMesh& mesh, std::span<const float> cage, int level, float keep);
+// The mesh again at another level, or with another share of its strands or pieces a segment (Lines::pieces),
+// over `cage`: everything that lives on the cage stays true of it (morphs, a pose, a drape, bindings). Null
+// when it has no source.
+std::shared_ptr<BuiltMesh> remade(const BuiltMesh& mesh, std::span<const float> cage, int level, float keep, int pieces = 2);
 // Roughly what building it takes of system memory at its peak: from the counts, before it is built, to
 // tell whether several can go side by side.
 uint64_t buildBytes(const MeshInput& m);

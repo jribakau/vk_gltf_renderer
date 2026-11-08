@@ -51,14 +51,17 @@ PosePresetResult applyPosePreset(pose::PoseRig* pose, morph::MorphSet* morphs, c
 // How much of its geometry a wearable is built with: all of it, until it doesn't fit GPU memory.
 struct WearQuality
 {
-  int   subdivision = 0;  // dson::LoadOptions::subdivision
-  float strandKeep  = 1;  // dson::LoadOptions::strandKeep
+  int   subdivision  = 0;  // dson::LoadOptions::subdivision
+  float strandKeep   = 1;  // dson::LoadOptions::strandKeep
+  int   strandPieces = 2;  // dson::LoadOptions::strandPieces
 };
 // Fewer than this and a hair's strands, as wide as they would have to be, read as cards
 constexpr float kLeastStrandKeep = 0.25f;
-// One step down: a subdivision level less and half the strands, as far as each goes.
+// One step down: a subdivision level less, and a hair's segments in one piece (the same shape in half
+// the triangles, traced a little slower), then half the strands; as far as each goes.
 WearQuality oneStepDown(const WearQuality& quality);
-// One step up: as far as every level there is at `subdivision` and all the strands.
+// One step up, back the way down came: as far as every level there is at `subdivision`, all the
+// strands, then two pieces a segment.
 WearQuality oneStepUp(const WearQuality& quality, int subdivision);
 // What these meshes are built at now: the finest level of those subdivided, the largest share of strands
 WearQuality qualityOf(const SceneGraph& scene, const std::vector<int>& meshes);

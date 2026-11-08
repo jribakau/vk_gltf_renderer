@@ -283,17 +283,21 @@ void releaseMesh(Mesh& mesh)
 
 WearQuality oneStepDown(const WearQuality& quality)
 {
-  return {std::max(quality.subdivision - 1, 0), std::max(quality.strandKeep / 2, kLeastStrandKeep)};
+  // a hair gives its second pieces first: no strand is lost
+  const bool pieces = quality.strandPieces > 1;
+  return {std::max(quality.subdivision - 1, 0), pieces ? quality.strandKeep : std::max(quality.strandKeep / 2, kLeastStrandKeep), 1};
 }
 
 WearQuality oneStepUp(const WearQuality& quality, int subdivision)
 {
-  return {std::min(quality.subdivision + 1, std::max(subdivision, quality.subdivision)), std::min(quality.strandKeep * 2, 1.f)};
+  const bool strands = quality.strandKeep < 1;
+  return {std::min(quality.subdivision + 1, std::max(subdivision, quality.subdivision)), std::min(quality.strandKeep * 2, 1.f),
+          strands ? quality.strandPieces : 2};
 }
 
 WearQuality qualityOf(const SceneGraph& scene, const std::vector<int>& meshes)
 {
-  WearQuality out{0, 0};
+  WearQuality out{0, 0, 0};
   bool        strands = false;
   for(int i : meshes)
     if(i >= 0 && i < int(scene.meshes.size()) && scene.meshes[size_t(i)].geo && scene.meshes[size_t(i)].geo->source)
@@ -301,14 +305,18 @@ WearQuality qualityOf(const SceneGraph& scene, const std::vector<int>& meshes)
       const mesh::MeshInput& source = *scene.meshes[size_t(i)].geo->source;
       if(source.lines)
       {
-        out.strandKeep = std::max(out.strandKeep, source.lines->keep);
-        strands        = true;
+        out.strandKeep   = std::max(out.strandKeep, source.lines->keep);
+        out.strandPieces = std::max(out.strandPieces, source.lines->pieces);
+        strands          = true;
       }
       else
         out.subdivision = std::max(out.subdivision, source.level);
     }
   if(!strands)
-    out.strandKeep = 1;
+  {
+    out.strandKeep   = 1;
+    out.strandPieces = 2;
+  }
   return out;
 }
 
@@ -318,7 +326,9 @@ float shareAt(const Mesh& mesh, const WearQuality& quality)
     return 1;
   const mesh::MeshInput& source = *mesh.geo->source;
   if(source.lines)
-    return source.lines->keep > 0 ? quality.strandKeep / source.lines->keep : 1;
+    return source.lines->keep > 0 && source.lines->pieces > 0
+               ? quality.strandKeep / source.lines->keep * float(quality.strandPieces) / float(source.lines->pieces)
+               : 1;
   // a level is four faces for each
   return mesh.geo->subdivisionSurface ? float(std::pow(4.0, quality.subdivision - source.level)) : 1;
 }
@@ -361,7 +371,7 @@ void Figure::buildRemade(RemadeItem& item)
   for(RemadeItem::Part& part : item.parts)
   {
     timing::Scope t("remade", 10);
-    part.made              = mesh::remade(*part.from, part.cage, item.quality.subdivision, item.quality.strandKeep);
+    part.made = mesh::remade(*part.from, part.cage, item.quality.subdivision, item.quality.strandKeep, item.quality.strandPieces);
     part.made->hiddenPolys = part.hidden;
     if(!part.cageSkin.start.empty())
       part.skin = mesh::skin(*part.made, part.cageSkin);
@@ -394,7 +404,8 @@ bool Figure::commitRemade(RemadeItem& item, int subdivision)
 bool wearCanShrink(const SceneGraph& scene, const WearQuality& quality)
 {
   for(const Mesh& m : scene.meshes)
-    if(m.geo && (m.geo->ribbon ? quality.strandKeep > kLeastStrandKeep : m.geo->subdivisionSurface && quality.subdivision > 0))
+    if(m.geo && (m.geo->ribbon ? quality.strandPieces > 1 || quality.strandKeep > kLeastStrandKeep
+                               : m.geo->subdivisionSurface && quality.subdivision > 0))
       return true;
   return false;
 }
@@ -412,6 +423,8 @@ std::string wearShortfall(const SceneGraph& scene, const std::vector<int>& meshe
   std::string out;
   if(strands && quality.strandKeep < 1)
     out = quality.strandKeep > kLeastStrandKeep ? "half its strands" : "a quarter of its strands";
+  else if(strands && quality.strandPieces < 2)
+    out = "its strands in half the triangles";
   if(smooth && quality.subdivision < subdivision)
     out += (out.empty() ? "Subdivision " : " and Subdivision ") + std::to_string(quality.subdivision);
   return out;
@@ -428,7 +441,8 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   out->key = "p" + std::to_string(++s_prepares);
   dson::LoadOptions options;
   options.subdivision = quality.subdivision;
-  options.strandKeep  = quality.strandKeep;
+  options.strandKeep   = quality.strandKeep;
+  options.strandPieces = quality.strandPieces;
   const SceneGraph& scene = *inputs.scene;
   options.attach      = dson::AttachTarget{&scene, inputs.rig.get(), out->key};
   const std::vector<dson::TargetPtr>& bodyTargets = inputs.bodyTargets;

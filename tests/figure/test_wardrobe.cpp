@@ -783,11 +783,14 @@ TEST(Wardrobe, AHairMadeAgainIsAsWideAsItsShareHasToBe)
 TEST(Wardrobe, AnItemsQualityGoesUpAsItCameDown)
 {
   using fv::WearQuality;
-  const auto at = [](const WearQuality& q, int subdivision, float keep) { return q.subdivision == subdivision && q.strandKeep == keep; };
-  EXPECT_TRUE(at(fv::oneStepUp({0, 0.25f}, 2), 1, 0.5f));
-  EXPECT_TRUE(at(fv::oneStepUp({1, 0.5f}, 2), 2, 1.f));
-  EXPECT_TRUE(at(fv::oneStepUp({2, 1.f}, 2), 2, 1.f));
-  EXPECT_TRUE(at(fv::oneStepUp({2, 1.f}, 1), 2, 1.f)) << "a setting lowered since asks nothing of what is finer";
+  const auto at = [](const WearQuality& q, int subdivision, float keep, int pieces) {
+    return q.subdivision == subdivision && q.strandKeep == keep && q.strandPieces == pieces;
+  };
+  EXPECT_TRUE(at(fv::oneStepUp({0, 0.25f, 1}, 2), 1, 0.5f, 1));
+  EXPECT_TRUE(at(fv::oneStepUp({1, 0.5f, 1}, 2), 2, 1.f, 1)) << "all the strands come back before their second pieces";
+  EXPECT_TRUE(at(fv::oneStepUp({2, 1.f, 1}, 2), 2, 1.f, 2));
+  EXPECT_TRUE(at(fv::oneStepUp({2, 1.f, 2}, 2), 2, 1.f, 2));
+  EXPECT_TRUE(at(fv::oneStepUp({2, 1.f, 2}, 1), 2, 1.f, 2)) << "a setting lowered since asks nothing of what is finer";
 
   fv::Mesh smooth, strands, plain;
   smooth.geo                     = std::make_shared<fv::mesh::BuiltMesh>();
@@ -806,14 +809,18 @@ TEST(Wardrobe, AnItemsQualityGoesUpAsItCameDown)
   EXPECT_FLOAT_EQ(fv::shareAt(smooth, {2, 0.25f}), 1.f);
   EXPECT_FLOAT_EQ(fv::shareAt(strands, {0, 0.25f}), 0.5f);
   EXPECT_FLOAT_EQ(fv::shareAt(strands, {0, 1.f}), 2.f);
+  EXPECT_FLOAT_EQ(fv::shareAt(strands, {0, 0.5f, 1}), 0.5f) << "one piece a segment is half the triangles";
   EXPECT_FLOAT_EQ(fv::shareAt(plain, {0, 0.25f}), 1.f);
 
   fv::SceneGraph scene;
   scene.meshes = {smooth, strands, plain};
-  EXPECT_TRUE(at(fv::qualityOf(scene, {0}), 2, 1.f));
-  EXPECT_TRUE(at(fv::qualityOf(scene, {1}), 0, 0.5f));
-  EXPECT_TRUE(at(fv::qualityOf(scene, {2}), 0, 1.f));
-  EXPECT_TRUE(at(fv::qualityOf(scene, {0, 1, 2}), 2, 0.5f));
+  EXPECT_TRUE(at(fv::qualityOf(scene, {0}), 2, 1.f, 2));
+  EXPECT_TRUE(at(fv::qualityOf(scene, {1}), 0, 0.5f, 2));
+  EXPECT_TRUE(at(fv::qualityOf(scene, {2}), 0, 1.f, 2));
+  EXPECT_TRUE(at(fv::qualityOf(scene, {0, 1, 2}), 2, 0.5f, 2));
+  strandInput->lines->pieces = 1;
+  scene.meshes[1].geo->source = strandInput;
+  EXPECT_TRUE(at(fv::qualityOf(scene, {1}), 0, 0.5f, 1));
 }
 
 // A wearable goes down a step at a time, as far as each of its meshes has anywhere to go, and says what
@@ -821,14 +828,19 @@ TEST(Wardrobe, AnItemsQualityGoesUpAsItCameDown)
 TEST(Wardrobe, AWearThatDoesNotFitGoesDownAStepAtATime)
 {
   using fv::WearQuality;
-  const auto at = [](const WearQuality& q, int subdivision, float keep) { return q.subdivision == subdivision && q.strandKeep == keep; };
-  WearQuality q{2, 1.f};
+  const auto at = [](const WearQuality& q, int subdivision, float keep, int pieces) {
+    return q.subdivision == subdivision && q.strandKeep == keep && q.strandPieces == pieces;
+  };
+  // a hair's segments go to one piece before any strand goes
+  WearQuality q{3, 1.f, 2};
   q = fv::oneStepDown(q);
-  EXPECT_TRUE(at(q, 1, 0.5f));
+  EXPECT_TRUE(at(q, 2, 1.f, 1));
   q = fv::oneStepDown(q);
-  EXPECT_TRUE(at(q, 0, 0.25f));
+  EXPECT_TRUE(at(q, 1, 0.5f, 1));
   q = fv::oneStepDown(q);
-  EXPECT_TRUE(at(q, 0, 0.25f));
+  EXPECT_TRUE(at(q, 0, 0.25f, 1));
+  q = fv::oneStepDown(q);
+  EXPECT_TRUE(at(q, 0, 0.25f, 1));
 
   const auto scene = [](bool ribbon, bool subd) {
     fv::SceneGraph s;
@@ -842,15 +854,20 @@ TEST(Wardrobe, AWearThatDoesNotFitGoesDownAStepAtATime)
   };
   const fv::SceneGraph hair = scene(true, false), garment = scene(false, true), prop = scene(false, false);
   EXPECT_TRUE(fv::wearCanShrink(hair, {0, 1.f}));
-  EXPECT_TRUE(fv::wearCanShrink(hair, {0, 0.5f}));
-  EXPECT_FALSE(fv::wearCanShrink(hair, {2, 0.25f}));
+  EXPECT_TRUE(fv::wearCanShrink(hair, {0, 1.f, 1}));
+  EXPECT_TRUE(fv::wearCanShrink(hair, {0, 0.5f, 1}));
+  EXPECT_TRUE(fv::wearCanShrink(hair, {2, 0.25f, 2})) << "its second pieces are still there to give";
+  EXPECT_FALSE(fv::wearCanShrink(hair, {2, 0.25f, 1}));
   EXPECT_TRUE(fv::wearCanShrink(garment, {1, 0.25f}));
   EXPECT_FALSE(fv::wearCanShrink(garment, {0, 1.f}));
   EXPECT_FALSE(fv::wearCanShrink(prop, {2, 1.f}));
 
   const std::vector<int> only{0};
   EXPECT_EQ(fv::wearShortfall(hair, only, {1, 0.5f}, 2), "half its strands");
+  EXPECT_EQ(fv::wearShortfall(hair, only, {1, 0.5f, 1}, 2), "half its strands");
   EXPECT_EQ(fv::wearShortfall(hair, only, {0, 0.25f}, 2), "a quarter of its strands");
+  EXPECT_EQ(fv::wearShortfall(hair, only, {0, 1.f, 1}, 2), "its strands in half the triangles");
+  EXPECT_EQ(fv::wearShortfall(hair, only, {0, 1.f, 2}, 2), "");
   EXPECT_EQ(fv::wearShortfall(garment, only, {1, 0.5f}, 2), "Subdivision 1");
   EXPECT_EQ(fv::wearShortfall(prop, only, {1, 0.5f}, 2), "");
   EXPECT_EQ(fv::wearShortfall(garment, only, {2, 1.f}, 2), "");

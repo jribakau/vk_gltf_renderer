@@ -61,6 +61,8 @@ struct LoadOptions
   // the share of a strand hair's strands drawn (mesh::Lines::keep), each wider by as much, so that
   // the hair covers what it did
   float strandKeep = 1;
+  // the pieces each of its segments is drawn in (mesh::Lines::pieces)
+  int strandPieces = 2;
   std::optional<AttachTarget> attach;
   // morphs move only the cages of the meshes whose drawn vertices are made from them
   // (mesh::drawnFromCage): the GPU makes those

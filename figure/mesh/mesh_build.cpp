@@ -548,10 +548,11 @@ float rootSpacing(std::span<const float> p, const Lines& lines, const std::funct
 // centre, so it lies flat on the hair's volume and faces outward like a card would. Its UVs are its
 // own (across, along), so a texture on the file's UV set does not reach it.
 //
-// Each segment is drawn in pieces (kPieces), split at points the refinement places between its ends,
-// so they follow them through the pose: a ray tracer bounds each triangle with a box, and a long thin
-// segment lying diagonally fills its box with little but air. Halving the length halves how far the
-// boxes of a lock's thousands of strands reach into one another.
+// Each segment is drawn in pieces (Lines::pieces), split at points the refinement places between its
+// ends, so they follow them through the pose: a ray tracer bounds each triangle with a box, and a long
+// thin segment lying diagonally fills its box with little but air. Halving the length halves how far the
+// boxes of a lock's thousands of strands reach into one another. The split points lie on the chord, so
+// one piece draws the same shape in half the triangles: the memory fit's first step down for a hair.
 //
 // The PR hairs a material grows (Growth) are drawn after the file's lines, each a copy of its guide's
 // points moved by a fixed offset in the rest shape (Strands::shift), so the skin and morphs carry
@@ -575,10 +576,11 @@ Strands strandRibbons(const MeshInput& m)
     for(int c = L.start[l]; c + 1 < L.start[l + 1]; c++)
       if(ok(c) && ok(c + 1))
         segments.push_back({c, l});
-  // each segment drawn as this many: 2 took a still frame 57.7 -> 49.0 ms and the moving trace
-  // 18.6 -> 15.3; 4 took the still 3% further for 360 MB more and the moving view nowhere (2026-10-29)
-  constexpr int kPieces = 2;
-  constexpr int kInner  = kPieces - 1;
+  // each segment drawn as this many: 2 (the default) took a still frame 57.7 -> 49.0 ms and the moving
+  // trace 18.6 -> 15.3 against 1; 4 took the still 3% further for 360 MB more and the moving view
+  // nowhere (2026-10-29)
+  const int kPieces = std::clamp(m.lines->pieces, 1, 2);
+  const int kInner  = kPieces - 1;
   const int     total   = points + int(segments.size()) * kInner;  // the lines' points, then the inner points
   // segment s's inner point j (0..kInner-1), at t = (j + 1) / kPieces of the way from its first point
   auto inner = [&](size_t s, int j) { return points + int(s) * kInner + j; };
@@ -1212,7 +1214,7 @@ BuiltMesh build(const MeshInput& m)
   return out;
 }
 
-std::shared_ptr<BuiltMesh> remade(const BuiltMesh& mesh, std::span<const float> cage, int level, float keep)
+std::shared_ptr<BuiltMesh> remade(const BuiltMesh& mesh, std::span<const float> cage, int level, float keep, int pieces)
 {
   if(!mesh.source)
     return nullptr;
@@ -1221,7 +1223,10 @@ std::shared_ptr<BuiltMesh> remade(const BuiltMesh& mesh, std::span<const float> 
   if(input.subdivisionSurface)
     input.level = level;
   if(input.lines)
-    input.lines->keep = keep;
+  {
+    input.lines->keep   = keep;
+    input.lines->pieces = pieces;
+  }
   auto out = std::make_shared<BuiltMesh>(build(input));
   if(out->ribbon && mesh.ribbon && !mesh.ribbon->widths.empty())
   {
@@ -1249,7 +1254,7 @@ uint64_t buildBytes(const MeshInput& m)
       const uint64_t   segments = uint64_t(std::max(l.start[line + 1] - l.start[line] - 1, 0));
       const int32_t    material = line < l.material.size() ? l.material[line] : 0;
       const uint64_t   copies   = material >= 0 && size_t(material) < l.grow.size() ? 1 + uint64_t(std::max(l.grow[size_t(material)].perGuide, 0)) : 1;
-      triangles += segments * 4 * copies;
+      triangles += segments * 2 * uint64_t(std::clamp(l.pieces, 1, 2)) * copies;
     }
     return uint64_t(double(triangles) * std::clamp(double(l.keep), 0.0, 1.0)) * kBytesPerStrandTriangle;
   }

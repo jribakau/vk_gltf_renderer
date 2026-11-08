@@ -1083,14 +1083,30 @@ TEST(FvHostWardrobe, AnItemThatDoesNotFitComesInSmaller)
   const uint64_t hairBytes = rig.renderer.lastGeometry;
   takeOff();
 
+  // a hair's first step keeps every strand, its segments in one piece
   rig.renderer.geometryLimit = hairBytes * 3 / 4;
   wear(hair);
   ASSERT_EQ(items().size(), 1u);
-  EXPECT_EQ(items().begin().value().value("reduced", ""), "half its strands");
+  EXPECT_EQ(items().begin().value().value("reduced", ""), "its strands in half the triangles");
   const uint64_t halfBytes = rig.renderer.lastGeometry;
   EXPECT_LE(halfBytes, rig.renderer.geometryLimit);  // about half: its cage doesn't thin
   EXPECT_GT(halfBytes, hairBytes / 3);
+  EXPECT_NE(rig.topic("notices").dump().find("Box Fan Hair came in with its strands in half the triangles, to fit GPU memory"),
+            std::string::npos)
+      << rig.topic("notices").dump();
+  takeOff();
+
+  // then half its strands
+  rig.renderer.geometryLimit = halfBytes * 3 / 4;
+  wear(hair);
+  ASSERT_EQ(items().size(), 1u);
+  EXPECT_EQ(items().begin().value().value("reduced", ""), "half its strands");
+  EXPECT_LE(rig.renderer.lastGeometry, rig.renderer.geometryLimit);
   EXPECT_NE(rig.topic("notices").dump().find("Box Fan Hair came in with half its strands, to fit GPU memory"), std::string::npos) << rig.topic("notices").dump();
+  takeOff();
+  rig.renderer.geometryLimit = hairBytes * 3 / 4;
+  wear(hair);
+  ASSERT_EQ(items().begin().value().value("reduced", ""), "its strands in half the triangles");
 
   // on again, what it replaces leaves as it comes: all of it needs room only for the difference
   wear(hair);

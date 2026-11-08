@@ -839,7 +839,7 @@ int main(int argc, char** argv)
         if(!loaded)
           throw std::runtime_error("wear before a figure loads");
         const std::string rel = step["wear"].get<std::string>();
-        auto              prepared = loaded->prepareWear(rel, fv::WearQuality{step.value("subdivision", 0), step.value("strandKeep", 1.f)});
+        auto              prepared = loaded->prepareWear(rel, fv::WearQuality{step.value("subdivision", 0), step.value("strandKeep", 1.f), step.value("strandPieces", 2)});
         // as the host does on its worker, so the build after the wear finds the strands measured
         if(step.value("measure", false))
         {

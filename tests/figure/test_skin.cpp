@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <iterator>
@@ -354,6 +355,86 @@ TEST(Skin, AHairDrawsAShareOfItsStrandsAndKeepsThemAllInItsCage)
   EXPECT_NEAR(tris(thinned), tris(grown) / 2, perStrand);
   EXPECT_EQ(thinned.ribbon->shift.size(), thinned.ribbon->along.size() * 3);
   EXPECT_GE(tris(least), perStrand);
+}
+
+// A hair drawn one piece a segment, the memory fit's first step down for it: every strand and the same
+// shape, as the second piece's point lies on the segment's chord, in half the triangles and vertices;
+// the cage and the drawn line points are the same, and made again it is as it was.
+TEST(Skin, AHairInOnePieceASegmentDrawsTheSameShapeInHalfTheTriangles)
+{
+  constexpr int       kStrands = 16, kPoints = 6;
+  fv::mesh::MeshInput input;
+  fv::mesh::Lines     lines;
+  lines.start = {0};
+  for(int s = 0; s < kStrands; s++)
+  {
+    for(int p = 0; p < kPoints; p++)
+    {
+      lines.verts.push_back(int32_t(input.positions.size() / 3));
+      // a curl, so a segment's chord is not the strand's line
+      const float a = 0.7f * float(p) + 0.3f * float(s);
+      input.positions.insert(input.positions.end(), {float(s) * 0.2f + 0.3f * std::cos(a), -float(p), 0.3f * std::sin(a)});
+    }
+    lines.start.push_back(int32_t(lines.verts.size()));
+    lines.material.push_back(0);
+  }
+  input.lines = lines;
+  const auto built = [&](int pieces) {
+    fv::mesh::MeshInput in = input;
+    in.lines->pieces       = pieces;
+    return fv::mesh::build(in);
+  };
+  const fv::mesh::BuiltMesh two = built(2), one = built(1);
+  constexpr int             kSegments = kStrands * (kPoints - 1), kLinePoints = kStrands * kPoints;
+  EXPECT_EQ(two.fullIndex.size() / 3, size_t(kSegments) * 4);
+  EXPECT_EQ(one.fullIndex.size() / 3, size_t(kSegments) * 2);
+  EXPECT_EQ(one.position.size() / 3, size_t(kLinePoints) * 2);
+  EXPECT_EQ(two.position.size() / 3, size_t(kLinePoints + kSegments) * 2);
+  EXPECT_EQ(one.cagePositions, two.cagePositions);
+  EXPECT_EQ(one.cageLineVerts, two.cageLineVerts);
+  EXPECT_EQ(one.dsonVertexCount, two.dsonVertexCount);
+  // what one piece draws, two pieces draw too; the rest of two pieces' points lie on their segments'
+  // chords, halfway, so the shape is the same
+  const auto at = [](const std::vector<float>& p, size_t v) { return std::array<float, 3>{p[v * 3], p[v * 3 + 1], p[v * 3 + 2]}; };
+  std::multiset<std::array<float, 3>> left;
+  for(size_t v = 0; v < two.position.size() / 3; v++)
+    left.insert(at(two.position, v));
+  for(size_t v = 0; v < one.position.size() / 3; v++)
+  {
+    const auto found = left.find(at(one.position, v));
+    ASSERT_NE(found, left.end()) << v;
+    left.erase(found);
+  }
+  ASSERT_EQ(left.size(), size_t(kSegments) * 2);
+  std::vector<std::array<float, 3>> halfway;
+  for(int s = 0; s < kStrands; s++)
+    for(int p = 0; p + 1 < kPoints; p++)
+    {
+      const float* a = &input.positions[size_t(s * kPoints + p) * 3];
+      const float* b = &input.positions[size_t(s * kPoints + p + 1) * 3];
+      halfway.push_back({0.5f * (a[0] + b[0]), 0.5f * (a[1] + b[1]), 0.5f * (a[2] + b[2])});
+    }
+  for(const std::array<float, 3>& q : left)
+  {
+    float nearest = INFINITY;
+    for(const std::array<float, 3>& h : halfway)
+      nearest = std::min(nearest, std::hypot(q[0] - h[0], q[1] - h[1], q[2] - h[2]));
+    EXPECT_LT(nearest, 1e-5f);
+  }
+  EXPECT_EQ(fv::mesh::buildBytes(input) / 2, [&] {
+    fv::mesh::MeshInput in = input;
+    in.lines->pieces       = 1;
+    return fv::mesh::buildBytes(in);
+  }());
+
+  const auto made  = fv::mesh::remade(two, two.cagePositions, 0, 1.f, 1);
+  ASSERT_NE(made, nullptr);
+  EXPECT_EQ(made->fullIndex, one.fullIndex);
+  EXPECT_EQ(made->position, one.position);
+  EXPECT_EQ(made->source->lines->pieces, 1);
+  const auto again = fv::mesh::remade(*made, made->cagePositions, 0, 1.f, 2);
+  EXPECT_EQ(again->fullIndex, two.fullIndex);
+  EXPECT_EQ(again->position, two.position);
 }
 
 // A strand's width grows in from its root over 6% of it, and over no more than 1 cm: as a share alone,

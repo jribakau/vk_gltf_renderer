@@ -545,10 +545,10 @@ std::string geometryKey(const Store::Resolved& geometry)
 }
 // ... and the PR hairs the scene grows on it.
 std::string earlyMeshKey(const Store::Resolved& geometry, const std::optional<Store::Resolved>& uv, int level, float strandKeep,
-                         const std::map<std::string, mesh::Growth>& grow, const mesh::GrowthSurface* surface)
+                         int strandPieces, const std::map<std::string, mesh::Growth>& grow, const mesh::GrowthSurface* surface)
 {
   std::string key = geometryKey(geometry) + "|" + (uv ? lowerCase(uv->file) + "#" + getString(uv->entry, "id") : std::string()) + "|"
-                    + std::to_string(level) + "|" + std::to_string(strandKeep);
+                    + std::to_string(level) + "|" + std::to_string(strandKeep) + "|" + std::to_string(strandPieces);
   const auto add = [&](auto value) { key += "," + std::to_string(value); };
   for(const auto& [group, g] : grow)
   {
@@ -682,7 +682,7 @@ std::shared_future<void> prefetchScene(std::shared_ptr<Store> store, const std::
             const int level = getString(&geo, "type") == "subdivision_surface" ? std::clamp(*subdivision, 0, 3) : 0;
             const auto grow    = prHairsFor(*doc, gres->doc.get(), getString(node, "id"), getString(instance, "id"));
             const auto surface = growthSurfaceFor(*store, *doc, file, *node, grow);
-            key                = earlyMeshKey(*gres, ures, level, 1, grow, surface.get());
+            key                = earlyMeshKey(*gres, ures, level, 1, 2, grow, surface.get());
             if(!EarlyMeshes::of(*store).start(key))
               continue;
             const std::optional<UvSet> uvSet = ures ? std::optional<UvSet>(parseUvSet(*ures->doc, *ures->entry)) : std::nullopt;
@@ -1132,7 +1132,8 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           std::optional<EarlyMesh> early;
           {
             timing::Accum tt("ahead: an early mesh taken");
-            early = EarlyMeshes::of(store).take(earlyMeshKey(*a.gres, ures, level, options.strandKeep, grow, surface.get()));
+            early = EarlyMeshes::of(store).take(
+                earlyMeshKey(*a.gres, ures, level, options.strandKeep, options.strandPieces, grow, surface.get()));
           }
           if(early)
           {
@@ -1146,7 +1147,10 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
             mesh::MeshInput input = meshInput(*a.gres->doc, geo, a.uvSet ? &*a.uvSet : nullptr, level, a.mesh.materialGroups);
             addGrowth(input, a.mesh.materialGroups, grow, surface);
             if(input.lines)
-              input.lines->keep = options.strandKeep;
+            {
+              input.lines->keep   = options.strandKeep;
+              input.lines->pieces = options.strandPieces;
+            }
             a.mesh.geo = builtMesh(input);
           }
           if(job.rig >= 0)
@@ -1307,7 +1311,10 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
           const auto grow = prHairsFor(*docPtr, gres->doc.get(), getString(job.node, "id"), gid);
           addGrowth(input, meshOut.materialGroups, grow, growthSurfaceFor(store, *docPtr, file, *job.node, grow));
           if(input.lines)
-            input.lines->keep = options.strandKeep;
+          {
+            input.lines->keep   = options.strandKeep;
+            input.lines->pieces = options.strandPieces;
+          }
           meshOut.geo = builtMesh(input);
         }
 
