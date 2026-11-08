@@ -1363,6 +1363,25 @@ TEST(Fit, ARigidPlanMovesABoneToTheLeadersJointAndTurnsItOntoItsLimb)
   EXPECT_NEAR(moved[1], 60, 0.5f);
 }
 
+// A dress without shin bones: its thigh turns onto the target's limb by the base's knee, as the base's
+// thigh does, rather than keeping its parent's turn (about 5 cm off at the knee, G8F on G9)
+TEST(Fit, APrunedItemsLimbTurnsByItsBasesJoint)
+{
+  using namespace fv::wardrobe;
+  const std::vector<SkelBone> whole{{"lThighBend", std::nullopt, {0, 90, 0}}, {"lShin", std::string("lThighBend"), {0, 50, 0}}};
+  const std::vector<SkelBone> dress{{"lThighBend", std::nullopt, {0, 90, 0}}};
+  const std::vector<SkelBone> target{{"l_thigh", std::nullopt, {5, 100, 0}}, {"l_shin", std::string("l_thigh"), {10, 60, 0}}};
+  const Rigid  base   = rigidPlan(whole, target).at("lThighBend");
+  const Rigid  pruned = rigidPlan(dress, target, &whole).at("lThighBend");
+  for(size_t i = 0; i < 9; i++)
+    EXPECT_NEAR(pruned.r[i], base.r[i], 1e-12) << i;
+  // without the base it only moves
+  const Rigid alone = rigidPlan(dress, target).at("lThighBend");
+  EXPECT_NEAR(alone.r[0], 1, 1e-12);
+  EXPECT_NEAR(alone.r[4], 1, 1e-12);
+  EXPECT_GT(std::abs(base.r[1]) + std::abs(base.r[3]), 0.05);
+}
+
 // Genesis 8's pectoral joint is deep in the chest and Genesis 9's near its middle: a bust carried from
 // one to the other stood centimetres in front of the body (MantaMade's M7UP Top on Polina 9)
 TEST(Fit, ABustMovesWithTheChestNotOntoTheTargetsPectoralJoint)

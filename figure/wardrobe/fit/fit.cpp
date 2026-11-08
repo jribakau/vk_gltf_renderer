@@ -114,10 +114,14 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   detail.target = target;
   detail.plan   = planLeaders(itemBones, figureNames);
   const std::vector<SkelBone> figureSkeleton = skeletonOf(figure.scene, {&figure.rig});
+  // the source base, carried through the same bone transfer, is what the garment was shaped around:
+  // the body that came with it (a Skyrim outfit's), else its generation's from the library
+  const auto cage = w.sourceBase ? w.sourceBase : loadBaseCage(store, source, genderHint(rel));
   std::vector<const dson::Rig*> itemRigs;
   for(int r : item.rigs)
     itemRigs.push_back(&w.rigs[size_t(r)]);
-  const std::map<std::string, Rigid> rigid = rigidPlan(skeletonOf(w.scene, itemRigs), figureSkeleton);
+  // a pruned item's limbs turn by the base's joints it lacks
+  const std::map<std::string, Rigid> rigid = rigidPlan(skeletonOf(w.scene, itemRigs), figureSkeleton, cage ? &cage->skeleton : nullptr);
 
   const Mesh&            bodyMesh = figure.scene.meshes[size_t(figure.mesh)];
   const mesh::BuiltMesh& body     = *bodyMesh.geo;
@@ -127,9 +131,6 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     boneNames.push_back(b.name);
   const FitRegion region = regionOf(rel + "/" + item.label, boneNames);
 
-  // the source base, carried through the same bone transfer, is what the garment was shaped around:
-  // the body that came with it (a Skyrim outfit's), else its generation's from the library
-  const auto cage = w.sourceBase ? w.sourceBase : loadBaseCage(store, source, genderHint(rel));
   std::vector<float>       baseMoved;
   std::vector<int16_t>     baseLimbs;
   std::optional<Surface>   base;

@@ -72,7 +72,7 @@ const SkelBone* findSlot(const std::vector<SkelBone>& bones, char side, const st
   return twist;
 }
 
-std::map<std::string, Rigid> rigidPlan(const std::vector<SkelBone>& source, const std::vector<SkelBone>& target)
+std::map<std::string, Rigid> rigidPlan(const std::vector<SkelBone>& source, const std::vector<SkelBone>& target, const std::vector<SkelBone>* whole)
 {
   std::vector<std::string> targetNames;
   for(const SkelBone& b : target)
@@ -135,6 +135,8 @@ std::map<std::string, Rigid> rigidPlan(const std::vector<SkelBone>& source, cons
       for(const std::string& slot : next->second)
       {
         const SkelBone* sc = findSlot(source, parsed.side, slot);
+        if(!sc && whole)
+          sc = findSlot(*whole, parsed.side, slot);
         const SkelBone* tc = findSlot(target, parseBone(t->name).side, slot);
         if(!sc || !tc)
           continue;
