@@ -552,6 +552,8 @@ TEST(Nif, WornAsOneItemOnItsBodyWithItsTexturesInTheLibrary)
   const Data             data("wear");
   fv::dson::LoadResult   w = fv::nif::loadWearable(data.nif, {}, {data.home});
   ASSERT_EQ(w.items.size(), 1u);
+  // made for Skyrim, whatever bones it has
+  EXPECT_EQ(w.items[0].madeFor, std::optional<fv::wardrobe::Generation>(fv::wardrobe::Generation::eSkyrim));
   // the body it was built on and the proxy aren't drawn
   ASSERT_EQ(w.items[0].meshes.size(), 1u);
   EXPECT_EQ(w.items[0].label, "skirt 1");

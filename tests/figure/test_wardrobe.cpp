@@ -1219,6 +1219,59 @@ TEST(Fit, IdentifiesTheGenerationAnOutfitWasMadeFor)
   EXPECT_TRUE(sameTopology(Generation::eG3, Generation::eG81));
 }
 
+// Bones only one generation has decide; then what the item says, a conform target, the path, the first
+// its bones allow. Queen's outfit for GF9 keeps its Genesis 8 pieces in a Genesis 9 folder.
+TEST(Fit, BonesAndWhatAnItemSaysComeBeforeItsFolder)
+{
+  using namespace fv::wardrobe;
+  using G = std::optional<Generation>;
+  const std::string queens = "People/Genesis 9/Clothing/3D_Life/Queen's outfit for GF9/Genesis 8/Hoodie GF8.duf";
+  const std::vector<std::string> g8{"hip", "pelvis", "lThighBend", "lShldrBend", "chestUpper"};
+  EXPECT_EQ(identifyGeneration(queens, g8, {}, Generation::eG8), G(Generation::eG8));
+  // saying nothing, its bones still aren't Genesis 9's
+  EXPECT_EQ(identifyGeneration(queens, g8, {}), G(Generation::eG8));
+  // a skirt with only a trunk's bones
+  EXPECT_EQ(identifyGeneration(queens, {"hip", "pelvis", "abdomenLower"}, {}), G(Generation::eG8));
+  // a top pruned of its feet, so of the heel only Genesis 3 has: its folder tells
+  const std::vector<std::string> top{"hip", "chestUpper", "lShldrBend", "lForearmTwist"};
+  EXPECT_EQ(identifyGeneration("People/Genesis 3 Female/Clothing/Top.duf", top, {}), G(Generation::eG3));
+  EXPECT_EQ(identifyGeneration("People/Genesis 3 Female/Clothing/Top.duf", {"lFoot", "lHeel", "lThighBend"}, {}), G(Generation::eG3));
+  EXPECT_EQ(identifyGeneration("data/DAZ 3D/Genesis 8/Female 8_1", g8, {}), G(Generation::eG81));
+  EXPECT_EQ(identifyGeneration("People/Genesis 8 Male/Anatomy/Beard.duf", g8, {}, Generation::eG81), G(Generation::eG81));
+  // bones only Genesis 9 has overrule a statement
+  EXPECT_EQ(identifyGeneration("Props/Choker.duf", {"head", "l_hand"}, {}, Generation::eG8), G(Generation::eG9));
+  // no bones: the statement, then the conform target, then the folder
+  EXPECT_EQ(identifyGeneration("Props/Xivon/Choker.duf", {}, {}, Generation::eG9), G(Generation::eG9));
+  EXPECT_EQ(identifyGeneration("People/Genesis 8 Female/Hat.duf", {}, "/data/DAZ%203D/Genesis%209/Base/Genesis9.dsf"), G(Generation::eG9));
+  EXPECT_EQ(identifyGeneration("People/Genesis 8 Female/Hat.duf", {}, {}), G(Generation::eG8));
+  EXPECT_EQ(identifyGeneration("Props/Hat.duf", {}, {}), G());
+
+  // "8_1" names Genesis 8.1 as a folder or after "Genesis", not inside a file's name
+  EXPECT_EQ(generationFromPath("data/DAZ 3D/Genesis 8/Female 8_1/Genesis8_1Female.dsf"), G(Generation::eG81));
+  EXPECT_EQ(generationFromPath("data/Vendor/Outfit/8_1/Top.dsf"), G(Generation::eG81));
+  EXPECT_EQ(generationFromPath("People/Genesis 8.1 Male/Hair.duf"), G(Generation::eG81));
+  EXPECT_EQ(generationFromPath("People/Genesis 8 Female/Clothing/Vendor/Skirt08_1.duf"), G(Generation::eG8));
+  EXPECT_EQ(generationFromPath("Skyrim/Mod/meshes/armor/Skirt08_1.nif"), G());
+
+  // a Skyrim glove or helmet has only its hands' or its head's bones
+  EXPECT_EQ(generationFromBones({"NPC L Hand [LHnd]", "NPC R Hand [RHnd]"}), G(Generation::eSkyrim));
+  EXPECT_EQ(generationFromBones({"NPC Head [Head]"}), G(Generation::eSkyrim));
+  EXPECT_EQ(identifyGeneration("Skyrim/Helmets/meshes/helmet_1.nif", {}, {}, Generation::eSkyrim), G(Generation::eSkyrim));
+}
+
+// DAZ Studio saves the figure an item was made on as its node's preferred base; a .nif is Skyrim's
+TEST(Fit, AnItemSaysWhatItWasMadeFor)
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  const auto                  figure  = boxFigure();
+  fv::dson::LoadOptions       options;
+  options.attach = fv::dson::AttachTarget{&figure->loaded.scene, &figure->loaded.rigs.at(size_t(figure->loaded.mainRig)), "w1"};
+  fv::dson::Store            store(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library}));
+  const fv::dson::LoadResult w = fv::dson::loadDson(store, kBoxShirt, options);
+  ASSERT_EQ(w.items.size(), 1u);
+  EXPECT_EQ(w.items[0].madeFor, std::optional<fv::wardrobe::Generation>(fv::wardrobe::Generation::eG8));
+}
+
 // Julia Hair has 15 strand bones to its 5 of the figure's. That isn't another figure's skeleton: it is
 // made for this rig. An item whose generation can't be told still has its bones to go by.
 TEST(Fit, AnItemForTheFiguresOwnRigIsMadeForIt)

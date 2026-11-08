@@ -20,6 +20,7 @@
 #include <figure/dson/modifiers.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/scene/graph.hpp>
+#include <figure/wardrobe/fit/generation.hpp>
 #include <figure/wardrobe/fit/heel.hpp>
 #include <figure/wardrobe/follow.hpp>
 
@@ -42,6 +43,9 @@ struct Item
   // a URL in the file that names the figure it was authored on, and the foot poses it sets (a heel)
   std::string                          conformTarget;
   std::vector<wardrobe::FootChannel>   footPose;
+  // the figure it says it was made for: its figure node's preferred base ("/Genesis 8/Female"), or
+  // Skyrim for a .nif. Its bones can overrule it, its path can't (wardrobe::identifyGeneration)
+  std::optional<wardrobe::Generation> madeFor;
   // its skeletons (indices into LoadResult::rigs), which follow the figure's pose
   std::vector<int> rigs;
   // its meshes (indices into SceneGraph::meshes)

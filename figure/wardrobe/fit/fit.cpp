@@ -79,7 +79,7 @@ std::pair<std::optional<Generation>, std::optional<Generation>> identified(const
     figureNames.push_back(figure.scene.nodes[size_t(node)].name);
   for(const BoneRef& b : boneRefs(wearable.scene, wearable, item))
     itemNames.push_back(b.name);
-  return {identifyGeneration(rel, itemNames, item.conformTarget), identifyGeneration(figure.folder, figureNames, {})};
+  return {identifyGeneration(rel, itemNames, item.conformTarget, item.madeFor), identifyGeneration(figure.folder, figureNames, {})};
 }
 
 }  // namespace

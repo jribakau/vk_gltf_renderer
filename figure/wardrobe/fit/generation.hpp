@@ -1,8 +1,9 @@
 #pragma once
 
-// Which Genesis figure an asset was built for. The library path is the reliable signal; bone names
-// cover a file whose path never says, and a conform-target URL covers a wearable that points at the
-// figure it was fitted to. A port of src/lib/wardrobe/fit/generation.ts.
+// Which figure an asset was built for. Bones that only one generation has decide; else what the item
+// says it was made for (its figure node's preferred base, a .nif's Skyrim), then a conform target,
+// then the library path: the first of them its bones allow. A path alone can mislead: a product for
+// Genesis 9 may keep its Genesis 8 pieces in its own folder.
 
 #include <optional>
 #include <string>
@@ -31,9 +32,11 @@ bool sameTopology(Generation a, Generation b);
 bool sameRig(Generation a, Generation b);
 
 std::optional<Generation> generationFromPath(const std::string& path);
+// The bones' best guess: Genesis 3 or 8 bones without a heel read as Genesis 8.
 std::optional<Generation> generationFromBones(const std::vector<std::string>& names);
-// Path, then the conform-target URL, then the skeleton.
-std::optional<Generation> identifyGeneration(const std::string& path, const std::vector<std::string>& bones, const std::string& conformTarget);
+// `stated`: what the item says it was made for (dson::Item::madeFor).
+std::optional<Generation> identifyGeneration(const std::string& path, const std::vector<std::string>& bones, const std::string& conformTarget,
+                                             std::optional<Generation> stated = std::nullopt);
 
 // A URL in the wearable that names the figure it was authored on, or empty.
 std::string conformTargetOf(const dson::Json& doc);

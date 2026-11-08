@@ -1011,6 +1011,9 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     int rig = -1;
     if(resolved && type == "figure")
     {
+      // the figure the item was made on, as DAZ Studio records it
+      if(item >= 0 && !out.items[item].madeFor)
+        out.items[item].madeFor = wardrobe::generationFromPath(getString(get(def, "presentation"), "preferred_base"));
       // the first figure's folder holds the morphs of the figure that is posed
       if(out.morphs.morphDir.empty())
       {

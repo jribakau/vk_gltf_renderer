@@ -48,7 +48,8 @@ std::optional<Generation> generationFromPath(const std::string& path)
   std::string s = lower(path);
   for(size_t at = s.find("%20"); at != std::string::npos; at = s.find("%20", at + 1))
     s.replace(at, 3, " ");
-  static const std::regex g81(R"(genesis\s*8\s*\.\s*1|genesis\s*8_1|genesis8_1|8_1)");
+  // "Genesis 8.1", "Genesis8_1Female.dsf", a "Female 8_1" or "8_1" folder; not "Skirt08_1.nif"
+  static const std::regex g81(R"(genesis\s*8\s*[._]\s*1|(^|/)((fe)?male )?8_1(/|$))");
   static const std::regex g9(R"(genesis\s*9\b|genesis9)");
   static const std::regex g8(R"(genesis\s*8\b|genesis8)");
   static const std::regex g3(R"(genesis\s*3\b|genesis3)");
@@ -66,48 +67,76 @@ std::optional<Generation> generationFromPath(const std::string& path)
   return std::nullopt;
 }
 
-std::optional<Generation> generationFromBones(const std::vector<std::string>& names)
+namespace {
+
+// What the bones tell: a generation when only one has such bones, else whether they are Genesis 3
+// or 8's (Bend/Twist limbs, a lower and upper chest), which share their names but for the heel.
+struct BoneEvidence
+{
+  std::optional<Generation> sure;
+  bool                      g3or8 = false;
+};
+
+BoneEvidence boneEvidence(const std::vector<std::string>& names)
 {
   static const std::regex underscored(R"(^[lr]_(thigh|shin|foot|upperarm|forearm|hand))");
   static const std::regex heelRe(R"(^[lr]heel$)");
   static const std::regex bendRe(R"(^[lr](thigh|shldr|forearm)(bend|twist)$)");
+  static const std::regex trunkRe(R"(^(abdomen|chest|neck)(lower|upper)$)");
   static const std::regex plainRe(R"(^[lr]thigh$)");
-  static const std::regex skyrimRe(R"(^npc (l |r )?(pelvis|thigh|calf|spine|upperarm|clavicle) )");
-  bool                    bend = false, heel = false, under = false, plain = false;
+  bool                    under = false, heel = false, g3or8 = false, plain = false;
   for(const std::string& name : names)
   {
     const std::string n = lower(name);
-    // Skyrim's bones, which no DAZ figure's are named like
-    if(std::regex_search(n, skyrimRe))
-      return Generation::eSkyrim;
-    if(std::regex_search(n, underscored))
-      under = true;
-    if(std::regex_search(n, heelRe))
-      heel = true;
-    if(std::regex_search(n, bendRe))
-      bend = true;
-    if(std::regex_search(n, plainRe))
-      plain = true;
+    // Skyrim's bones ("NPC Head [Head]"), which no DAZ figure's are named like: a glove or a helmet has
+    // only its hand's or head's
+    if(n.rfind("npc ", 0) == 0)
+      return {Generation::eSkyrim, false};
+    under = under || std::regex_search(n, underscored);
+    heel  = heel || std::regex_search(n, heelRe);
+    g3or8 = g3or8 || std::regex_search(n, bendRe) || std::regex_search(n, trunkRe);
+    plain = plain || std::regex_search(n, plainRe);
   }
   // underscored side prefixes (`l_thigh`) are Genesis 9, whose twist helpers would otherwise read as Genesis 8
   if(under)
-    return Generation::eG9;
+    return {Generation::eG9, false};
   if(heel)
-    return Generation::eG3;
-  if(bend)
-    return Generation::eG8;
+    return {Generation::eG3, false};
+  if(g3or8)
+    return {std::nullopt, true};
   if(plain)
-    return Generation::eG2;
-  return std::nullopt;
+    return {Generation::eG2, false};
+  return {};
 }
 
-std::optional<Generation> identifyGeneration(const std::string& path, const std::vector<std::string>& bones, const std::string& conformTarget)
+bool g3or8(Generation g)
 {
-  if(auto g = generationFromPath(path))
-    return g;
-  if(auto g = generationFromPath(conformTarget))
-    return g;
-  return generationFromBones(bones);
+  return g == Generation::eG3 || g == Generation::eG8 || g == Generation::eG81;
+}
+
+}  // namespace
+
+std::optional<Generation> generationFromBones(const std::vector<std::string>& names)
+{
+  const BoneEvidence bones = boneEvidence(names);
+  if(bones.g3or8)
+    return Generation::eG8;
+  return bones.sure;
+}
+
+std::optional<Generation> identifyGeneration(const std::string& path, const std::vector<std::string>& bones, const std::string& conformTarget,
+                                             std::optional<Generation> stated)
+{
+  const BoneEvidence evidence = boneEvidence(bones);
+  if(evidence.sure)
+    return evidence.sure;
+  for(const std::optional<Generation>& g : {stated, generationFromPath(conformTarget), generationFromPath(path)})
+    if(g && (!evidence.g3or8 || g3or8(*g)))
+      return g;
+  // Genesis 3 or 8 bones in a folder that names neither: the heel would have told Genesis 3
+  if(evidence.g3or8)
+    return Generation::eG8;
+  return std::nullopt;
 }
 
 std::string conformTargetOf(const dson::Json& doc)

@@ -815,6 +815,7 @@ dson::LoadResult loadWearable(const fs::path& file, const dson::LoadOptions& opt
   item.nodeNames.insert(stem);
   item.sources.insert(lower(utf8(file)));
   item.rigs.push_back(0);
+  item.madeFor = wardrobe::Generation::eSkyrim;
 
   TextureFinder find{file.parent_path(), wear.textureHome, {}, {}, {}};
   std::vector<int> meshNodes;
