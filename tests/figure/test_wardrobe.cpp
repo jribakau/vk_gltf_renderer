@@ -1761,3 +1761,17 @@ TEST(Wardrobe, AFigureWithoutTexturesStillHasItsSampler)
 }
 
 }  // namespace
+
+// A boot's shaft takes the shape correction, its foot keeps the box fit, the ankle goes between
+TEST(Fit, ABootsShaftTakesTheCorrectionItsFootDoesnt)
+{
+  const std::vector<float>  kept{0, 0, 0, 0, 10, 0, 0, 20, 0};
+  const std::vector<float>  corrected{1, 0, 0, 1, 10, 0, 1, 20, 2};
+  const std::vector<double> onFoot{1, 0.5, 0};
+  const std::vector<float>  out = fv::wardrobe::fadeByFoot(kept, corrected, onFoot);
+  EXPECT_FLOAT_EQ(out[0], 0);
+  EXPECT_FLOAT_EQ(out[3], 0.5f);
+  EXPECT_FLOAT_EQ(out[6], 1);
+  EXPECT_FLOAT_EQ(out[8], 2);
+  EXPECT_FLOAT_EQ(out[7], 20);
+}

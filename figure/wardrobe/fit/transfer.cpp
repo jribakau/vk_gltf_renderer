@@ -164,6 +164,18 @@ std::map<std::string, Rigid> rigidPlan(const std::vector<SkelBone>& source, cons
   return out;
 }
 
+std::vector<float> fadeByFoot(std::span<const float> kept, std::span<const float> corrected, std::span<const double> onFoot)
+{
+  std::vector<float> out(kept.begin(), kept.end());
+  for(size_t v = 0; v < out.size() / 3 && v < onFoot.size() && v * 3 + 2 < corrected.size(); v++)
+  {
+    const double t = 1 - std::clamp(onFoot[v], 0.0, 1.0);
+    for(size_t k = v * 3; k < v * 3 + 3; k++)
+      out[k] = float(kept[k] + (corrected[k] - kept[k]) * t);
+  }
+  return out;
+}
+
 std::vector<float> rigidPositions(std::span<const float> positions, const mesh::SkinInput& skin, const std::vector<const Rigid*>& bones)
 {
   const size_t       n = positions.size() / 3;

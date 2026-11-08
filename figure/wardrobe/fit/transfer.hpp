@@ -64,6 +64,10 @@ std::map<std::string, Rigid> rigidPlan(const std::vector<SkelBone>& source, cons
 // is per bone of the skin (null: no transform).
 std::vector<float> rigidPositions(std::span<const float> positions, const mesh::SkinInput& skin, const std::vector<const Rigid*>& bones);
 
+// A boot's shaft takes the shape correction and its foot doesn't: each vertex goes from `kept` toward
+// `corrected` by 1 less its share on a foot (0 to 1), the ankle in between.
+std::vector<float> fadeByFoot(std::span<const float> kept, std::span<const float> corrected, std::span<const double> onFoot);
+
 struct ShapeOptions
 {
   // a garment vertex within `inner` cm of the base takes all of the correction, beyond `outer` none

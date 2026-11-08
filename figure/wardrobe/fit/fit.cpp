@@ -150,15 +150,16 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     base      = Surface{baseMoved, cage->tris};
   }
   const std::vector<int16_t> bodyLimbs = meshLimbs(figure.scene, bodyMesh);
-  const bool footwear = region == FitRegion::eShoe || region == FitRegion::eBoot || region == FitRegion::eBootThigh;
-  // the base-to-target search does not depend on the garment; footwear never asks for it
+  const bool boot     = region == FitRegion::eBoot || region == FitRegion::eBootThigh;
+  const bool footwear = region == FitRegion::eShoe || boot;
+  // the base-to-target search does not depend on the garment; a shoe never asks for it
   std::optional<SurfaceBinding> pair;
-  if(!footwear && base && cage && !sameTopology(source, target))
+  if(region != FitRegion::eShoe && base && cage && !sameTopology(source, target))
   {
     const auto filter = limbFilter(bodyLimbs, baseLimbs);
     pair              = bindToSurface(bodySurface.positions, bodySurface.tris, base->positions, {}, filter ? &*filter : nullptr);
   }
-  // footwear skips the shape correction, so the foot's proportions come from a box fit
+  // footwear's foot skips the shape correction, so its proportions come from a box fit
   std::vector<std::pair<int16_t, LimbBox>> feet;
   if(footwear && base)
     for(const auto& [side, l] : {std::pair{'l', limb::kLFoot}, std::pair{'r', limb::kRFoot}})
@@ -187,24 +188,29 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
       perBone.push_back(it == rigid.end() ? nullptr : &it->second);
     }
     std::vector<float> positions = rigidPositions(m.geo->cagePositions, skin, perBone);
+    // how much of each vertex rides on a foot
+    std::vector<double> onFoot(positions.size() / 3, 0.0);
     for(const auto& [l, box] : feet)
     {
       std::vector<bool> on;
       for(int b : m.bones)
         on.push_back(limbOfBone(w.scene.nodes[size_t(b)].name) == l);
-      positions = applyLimbBox(box, positions, [&](size_t v) {
+      const auto share = [&](size_t v) {
         double wsum = 0;
         for(int32_t i = skin.start[v]; i < skin.start[v + 1]; i++)
           if(on[size_t(skin.bone[size_t(i)])])
             wsum += skin.weight[size_t(i)];
         return std::min(1.0, wsum);
-      });
+      };
+      for(size_t v = 0; v < onFoot.size(); v++)
+        onFoot[v] = std::max(onFoot[v], share(v));
+      positions = applyLimbBox(box, positions, share);
     }
-    // footwear keeps the bone transfer and the foot box: a heel rests shaped for the foot pose its
-    // file sets (its heel below the floor), not around the flat base a correction measures against,
-    // which would bend it. It is still pushed out of the foot: a sole stays, lying off the foot's
-    // faces rather than behind them
-    if(!footwear)
+    // footwear's foot keeps the bone transfer and the foot box: a heel rests shaped for the foot pose
+    // its file sets (its heel below the floor), not around the flat base a correction measures
+    // against, which would bend it. A boot's shaft takes the correction, fading out onto the foot. It
+    // is all still pushed out of the foot: a sole stays, lying off the foot's faces rather than behind them
+    if(region != FitRegion::eShoe)
     {
       if(base)
       {
@@ -216,7 +222,8 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
         in.baseFilter   = baseFilter ? &*baseFilter : nullptr;
         in.itemFilter   = itemFilter ? &*itemFilter : nullptr;
         in.baseToTarget = pair ? &*pair : nullptr;
-        positions       = shapeCorrection(positions, m.geo->dsonTris, *base, bodySurface, in);
+        const std::vector<float> corrected = shapeCorrection(positions, m.geo->dsonTris, *base, bodySurface, in);
+        positions = boot ? fadeByFoot(positions, corrected, onFoot) : corrected;
       }
     }
     // a dynamic surface owns its collision: dForce drapes it over the body, so it is not pushed out here
