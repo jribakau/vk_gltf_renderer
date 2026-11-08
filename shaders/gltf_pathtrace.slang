@@ -908,9 +908,22 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #if USE_VISUALIZE
     if(frameInfo->visualization != Visualization::eRendered)
     {
-      float3              vizColor;
+      float3     vizColor;
+      const bool onMesh = !hitInfinitePlane && !hitWater;
+      // the hit triangle's size, for the Density view alone: the side of the square of twice its area
+      float triangleSize = 0.0;
+      if(onMesh && frameInfo->visualization == Visualization::eTriangleSize)
+      {
+        const uint3  idx = getTriangleIndices(renderPrim, payload.primitiveID);
+        const float3 p0  = mul(float4(getVertexPosition(renderPrim, idx.x), 1.0), renderNode.objectToWorld).xyz;
+        const float3 p1  = mul(float4(getVertexPosition(renderPrim, idx.y), 1.0), renderNode.objectToWorld).xyz;
+        const float3 p2  = mul(float4(getVertexPosition(renderPrim, idx.z), 1.0), renderNode.objectToWorld).xyz;
+        triangleSize     = sqrt(length(cross(p1 - p0, p2 - p0)));
+      }
       VisualizationResult vizResult = applyVisualization(pbrMat, hit, frameInfo->visualization, payload.rprimID,
-                                                         payload.primitiveID, payload.ommUnknown ? 1 : 0, vizColor);
+                                                         payload.primitiveID, payload.ommUnknown ? 1 : 0,
+                                                         onMesh ? materialIndex : -1, onMesh ? renderNode.ownerID : -1,
+                                                         triangleSize, -ray.Direction, vizColor);
       if(vizResult == VisualizationResult::eColorOverride && firstRay)
       {
         pt.radiance.xyz = vizColor;

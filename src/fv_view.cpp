@@ -308,8 +308,17 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
           m_renderer->setVisualization(shaderio::Visualization::eRendered);
           m_renderer->setWireframe(false);
         }
+        // which material, which part of a prop, how large the triangles are, where a bump turns away
+        else if(display == "material" || display == "object" || display == "density" || display == "facing")
+        {
+          m_renderer->setVisualization(display == "material" ? shaderio::Visualization::eMaterialId :
+                                       display == "object"   ? shaderio::Visualization::eObjectId :
+                                       display == "density"  ? shaderio::Visualization::eTriangleSize :
+                                                               shaderio::Visualization::eBackFacingNormal);
+          m_renderer->setWireframe(false);
+        }
         else
-          throw std::runtime_error("display is shaded, clay, wireframe, normals or exposure");
+          throw std::runtime_error("display is shaded, clay, wireframe, normals, exposure, material, object, density or facing");
         m_renderer->setFalseColor(display == "exposure");
       }
       if(args.contains("grid"))

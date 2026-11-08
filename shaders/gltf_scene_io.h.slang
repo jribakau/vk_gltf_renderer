@@ -44,6 +44,7 @@ struct GltfRenderNode
   float4x4 worldToObject;
   int      materialID;
   int      renderPrimID;
+  int      ownerID;  // the part of a prop its mesh is (renderNodeOwner): the Object view's colour
 };
 
 // This is all the information about a vertex buffer

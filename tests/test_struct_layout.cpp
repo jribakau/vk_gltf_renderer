@@ -361,7 +361,7 @@ HostStruct gltfRenderNode()
 {
   using Self = GltfRenderNode;
   return {"GltfRenderNode", sizeof(Self), {
-    F(objectToWorld), F(worldToObject), F(materialID), F(renderPrimID)
+    F(objectToWorld), F(worldToObject), F(materialID), F(renderPrimID), F(ownerID)
   }};
 }
 

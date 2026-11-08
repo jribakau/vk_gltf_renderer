@@ -21,6 +21,7 @@
 #include "gltf_scene_io.h.slang"
 
 #include "nvshaders/tonemap_functions.h.slang"
+#include "debug_colors.h.slang"
 
 enum VisualizationResult
 {
@@ -40,12 +41,18 @@ hashToColor(uint id)
 }
 
 // Debug visualization override: displays a flat color for the given visualization mode.
+// `materialIndex` and `ownerID`: the hit's material and its render node's owner, -1 for the ground and
+// water; `triangleSize`: the hit triangle's (eTriangleSize alone; 0 elsewhere); `toEye`: back along the ray.
 VisualizationResult applyVisualization(inout PbrMaterial pbrMat,
                                        HitState          hit,
                                        Visualization     vizMethod,
                                        int               rprimID,
                                        int               primitiveID,
                                        int               ommState,
+                                       int               materialIndex,
+                                       int               ownerID,
+                                       float             triangleSize,
+                                       float3            toEye,
                                        out float3        overrideColor)
 {
   overrideColor = float3(0);
@@ -157,6 +164,22 @@ VisualizationResult applyVisualization(inout PbrMaterial pbrMat,
       overrideColor = (ommState > 0) ? float3(0.90, 0.80, 0.10)  // unknown: alpha evaluated at runtime by the any-hit
                                        :
                                        float3(0.15, 0.75, 0.15);  // opaque: resolved by the opacity micromap (any-hit skipped)
+      return VisualizationResult::eColorOverride;
+
+    // Neither a material nor a prop's part (the ground, the water): grey, as nothing has
+    case Visualization::eMaterialId:
+      overrideColor = materialIndex >= 0 ? idColor(uint(materialIndex)) : float3(0.35);
+      return VisualizationResult::eColorOverride;
+    case Visualization::eObjectId:
+      overrideColor = ownerID >= 0 ? idColor(uint(ownerID)) : float3(0.35);
+      return VisualizationResult::eColorOverride;
+    case Visualization::eTriangleSize:
+      overrideColor = triangleSize > 0.0 ? viridis(triangleSizeRamp(triangleSize)) : float3(0.35);
+      return VisualizationResult::eColorOverride;
+    // The surface in grey by how squarely it faces the eye, and in magenta where its shading normal (the
+    // interpolated one, with its normal and detail maps) turns away from the eye though the face doesn't
+    case Visualization::eBackFacingNormal:
+      overrideColor = dot(pbrMat.N, toEye) <= 0.0 ? float3(0.95, 0.2, 0.75) : float3(0.25 + 0.6 * abs(dot(hit.geonrm, toEye)));
       return VisualizationResult::eColorOverride;
 
     default:

@@ -164,6 +164,12 @@ enum Visualization
   eDiffuseTransmissionFactor,
   eDiffuseTransmissionColor,
   eOpacityMicromap,
+  // The app's Display views beyond Clay and Normals (view.set display, fv_view.cpp); appended, as
+  // dbgVisualization is saved by its number
+  eMaterialId,        // which material: a colour each (idColor)
+  eObjectId,          // which part of which prop: a figure's body, each garment, the hair (GltfRenderNode::ownerID)
+  eTriangleSize,      // how large the mesh's triangles are, on a log scale (triangleSizeRamp, viridis)
+  eBackFacingNormal,  // where the shading normal turns away from the eye, the bump past the silhouette
 };
 
 

@@ -3717,6 +3717,8 @@ void Residency::writeRenderNodes(const std::set<uint32_t>& slots)
       row.worldToObject = glm::inverse(inst->world);
       row.materialID    = int(inst->materialSlot);
       row.renderPrimID  = int(inst->prim);
+      if(const auto mesh = m_meshes.find(inst->mesh); mesh != m_meshes.end())
+        row.ownerID = renderNodeOwner(mesh->second.owner);
     }
     m_gpu.upload(m_renderNodes, uint64_t(first) * sizeof(shaderio::GltfRenderNode), bytesOf(rows));
   }

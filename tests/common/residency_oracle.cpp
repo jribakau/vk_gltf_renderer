@@ -408,6 +408,8 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     const auto node = rowAt<shaderio::GltfRenderNode>(gpu, residency.renderNodeTable(), s);
     if(node.objectToWorld != item.world || node.materialID != int(inst.materialSlot) || node.renderPrimID != int(inst.prim))
       out.push_back(at("I3", s) + "its render-node row is not the instance's");
+    if(const MeshRecord* mesh = scene.mesh(inst.mesh); mesh && node.ownerID != Residency::renderNodeOwner(mesh->owner))
+      out.push_back(at("I3", s) + "its render-node row's owner is not its mesh's");
   }
 
   // holes: a zeroed row and a null TLAS row

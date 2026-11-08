@@ -293,6 +293,10 @@ public:
     uint32_t                               users = 0;
   };
   // A draw item
+  // The Object view's id for a mesh's owner (GltfRenderNode::ownerID): its prop and its part of it, ids
+  // one apart for a figure's meshes one apart
+  static int32_t renderNodeOwner(const OwnerTag& owner) { return int32_t((owner.prop * 1024u + uint32_t(owner.local + 1)) & 0x7FFFFFFFu); }
+
   struct Instance
   {
     EntityId   entity;

@@ -94,7 +94,8 @@ namespace {
 // 50: prop.place, the selection put where the pointer's ray meets the scene.
 // 51: figure.rain and the rain/<prop> topic: rain's drops on a person's skin, run along the pose; the
 // scene file's `rain` block.
-constexpr int kProtocolVersion = 51;
+// 52: view.set's display "material", "object", "density" and "facing" (the Display views).
+constexpr int kProtocolVersion = 52;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace
