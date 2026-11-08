@@ -214,12 +214,13 @@ public:
     {
       Kind                        kind = Kind::eSky;
       std::optional<InstancePick> pick;
-      uint64_t                    ticks   = 0;  // the device clock's
+      uint64_t                    ticks   = 0;  // the device clock's, or the count (`counting`)
       uint64_t                    samples = 0;
     };
     std::vector<Part> parts;
-    uint64_t          ticks   = 0;
-    uint64_t          samples = 0;
+    uint64_t          ticks    = 0;
+    uint64_t          samples  = 0;
+    int               counting = 0;  // what `ticks` are: shaderio::kPixelTimeCountClock, or a count (debug pixelTimeCount)
   };
   virtual void setPixelTimeObserver(std::function<void(const PixelTimes& times)> observer) = 0;
   // The wipe against a kept frame: keep the image as the next frame shows it (without the overlays),

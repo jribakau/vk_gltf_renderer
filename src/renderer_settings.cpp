@@ -556,6 +556,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                                      "needs VK_KHR_shader_clock)",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.pixelTime, Persist::eNo);
+  // ...and what it sums in place of the time: how many rays a pixel traces, apart from how dear each is
+  m_settings.add({.name            = "pixelTimeCount",
+                  .help            = "Debug: what the Time view sums [Time:0, Rays:1, Walk steps:2, Shadow rays:3]",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.pixelTimeCount, Persist::eNo, 0, 3);
   m_settings.add({.name            = "hazeCandidates",
                   .help            = "Haze: lights a still's scatter point picks its light from, by what each gives the eye (1: the light pick's own)",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},

@@ -95,6 +95,8 @@ float3 traceShadowInline(RayDesc ray, inout uint seed, bool initialInside, float
   const float ground = infinitePlaneShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo);
   if(ground <= 0.0F)
     return float3(0.0);
+  PIXEL_TIME_COUNT(kPixelTimeCountRays);
+  PIXEL_TIME_COUNT(kPixelTimeCountShadowRays);
 
   float3      totalTransmission = float3(1.0);
   bool        isInside          = initialInside;
@@ -142,6 +144,7 @@ struct RayQueryRaytracer : IRaytracer
 #if USE_VISUALIZE
     payload.ommUnknown = false;  // Clear stale debug state; the OMM viz re-sets it below per ray
 #endif
+    PIXEL_TIME_COUNT(kPixelTimeCountRays);
 
     RayQuery rayQuery;
     rayQuery.TraceRayInline(topLevelAS, rayFlags, instanceMask, ray);
@@ -191,6 +194,7 @@ struct RayQueryRaytracer : IRaytracer
   void TraceLow(RayDesc ray, inout HitPayload payload)
   {
     payload.hitT = INFINITE;
+    PIXEL_TIME_COUNT(kPixelTimeCountRays);
     RayQuery rayQuery;
     rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE, 0xFF, ray);
     while(rayQuery.Proceed())
@@ -218,6 +222,7 @@ struct TraditionalRaytracer : IRaytracer
 #if USE_VISUALIZE
     payload.ommUnknown = false;  // Clear stale debug state; any-hit re-sets it for the OMM viz
 #endif
+    PIXEL_TIME_COUNT(kPixelTimeCountRays);
     if(USE_SER == 1 && AVAILABLE_SER == 1)
     {
       HitObject hitObj = HitObject::TraceRay(topLevelAS, rayFlags, instanceMask, 0, 0, 0, ray, payload);
@@ -251,6 +256,7 @@ struct TraditionalRaytracer : IRaytracer
 
   void TraceLow(RayDesc ray, inout HitPayload payload)
   {
+    PIXEL_TIME_COUNT(kPixelTimeCountRays);
     if(USE_SER == 1 && AVAILABLE_SER == 1)
     {
       HitObject hitObj = HitObject::TraceRay(topLevelAS, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 0, 0, ray, payload);
@@ -282,6 +288,8 @@ struct TraditionalRaytracer : IRaytracer
     const float ground = infinitePlaneShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo);
     if(ground <= 0.0F)
       return float3(0.0);
+    PIXEL_TIME_COUNT(kPixelTimeCountRays);
+    PIXEL_TIME_COUNT(kPixelTimeCountShadowRays);
 
     ShadowPayload shadowPayload = {};
     shadowPayload.seed          = seed;

@@ -366,6 +366,9 @@ struct SceneFrameInfo
   // under this share of the pixel (contribution_roulette.h.slang); 0 traces it on every path.
   // (Appended, per the note above.)
   float aerialSunShare = 0.05F;
+  // What the Time view sums (pixel_time.h.slang kPixelTimeCount*): the clock (0), or a count of rays,
+  // walk steps or shadow rays. (Appended, per the note above.)
+  int pixelTimeCount = 0;
 };
 
 enum PathtracerFlags

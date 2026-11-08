@@ -49,6 +49,23 @@ TEST(PixelTime, TheHalvesMakeOneTimeInTheClocksTicks)
   EXPECT_EQ(r.samples, 50u);
 }
 
+// A count (the debug pixelTimeCount) is summed as many as there were, so the reading takes it unshifted,
+// says what it is, and its scale is one over the average sample's count
+TEST(PixelTime, ACountIsReadAsItWasSummed)
+{
+  const Reading r = pixel_time::read(sums({{120, 4}, {0, 0}, {0, 0}, {0, 0}, {600, 2}}), shaderio::kPixelTimeCountWalkSteps);
+  ASSERT_EQ(r.slots.size(), 2u);
+  EXPECT_EQ(r.slots[0].ticks, 120u);
+  EXPECT_EQ(r.slots[1].ticks, 600u);
+  EXPECT_EQ(r.counting, shaderio::kPixelTimeCountWalkSteps);
+  EXPECT_FLOAT_EQ(r.scale(), 6.0F / 720.0F);
+  EXPECT_STREQ(pixel_time::countingName(r.counting), "walk steps");
+  EXPECT_STREQ(pixel_time::countingName(shaderio::kPixelTimeCountRays), "rays");
+  EXPECT_STREQ(pixel_time::countingName(shaderio::kPixelTimeCountShadowRays), "shadow rays");
+  EXPECT_STREQ(pixel_time::countingName(shaderio::kPixelTimeCountClock), "ticks");
+  EXPECT_EQ(pixel_time::read(sums({{120, 4}})).counting, shaderio::kPixelTimeCountClock);
+}
+
 // The scale is one over the average sample's ticks; nothing summed has none
 TEST(PixelTime, TheScaleIsOneOverTheAverageSample)
 {

@@ -358,6 +358,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         ray.TMax = freeFlight.dist;
     }
 #endif
+#if USE_PIXEL_TIME
+    if(freeFlight.drawn)
+      PIXEL_TIME_COUNT(kPixelTimeCountWalkSteps);
+#endif
 
     // Trace the ray through the scene. A walk's step sees only what can bound its medium: it
     // passes through lashes, hair and clothing that reach under the skin (INSTANCE_MASK_WALK).
@@ -1952,6 +1956,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   // adaptive stop off, so no warp returns early)
   const uint64_t clockStart = pixelTimeClock();
   g_timeSlot                = kPixelTimeUnset;
+  g_timeCount               = 0u;
 #endif
 
   // Check if the sample position is the mouse coordinate
@@ -2093,9 +2098,11 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
 #if USE_PIXEL_TIME
   // The Time view: the image is the pixel's time a sample against the frame's average, in colour (a
   // display value, as the debug views' are); an accumulation keeps the mean of its frames' times in the
-  // convergence image (bound for it, its adaptive stop off), a DLSS frame shows its own
+  // convergence image (bound for it, its adaptive stop off), a DLSS frame shows its own. A count mode
+  // (pixelTimeCount) shows and sums the pixel's count in place of its time, unshifted.
   {
-    const uint64_t elapsed   = pixelTimeClock() - clockStart;
+    const bool     counting  = pushConst.frameInfo->pixelTimeCount != kPixelTimeCountClock;
+    const uint64_t elapsed   = counting ? uint64_t(g_timeCount) : pixelTimeClock() - clockStart;
     const float    perSample = float(elapsed) / float(pushConst.numSamples);
     float          mean      = perSample;
     if(!hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
@@ -2106,12 +2113,12 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
                / float(pushConst.totalSamples + pushConst.numSamples);
       outImages[int(OutputImage::eConvergence)][int2(samplePos)] = float4(mean, 0.0F, 0.0F, 0.0F);
     }
-    // before a frame has been summed, against a tenth of a millisecond of NVIDIA's clock
-    const float scale = pushConst.frameInfo->pixelTimeScale > 0.0F ? pushConst.frameInfo->pixelTimeScale : 1e-5F;
+    // before a frame has been summed, against a tenth of a millisecond of NVIDIA's clock (or ten of a count)
+    const float scale = pushConst.frameInfo->pixelTimeScale > 0.0F ? pushConst.frameInfo->pixelTimeScale : counting ? 0.1F : 1e-5F;
     pixelColor        = float4(pixelTimeColor(mean * scale), pixelColor.w);
     if(pushConst.frameInfo->pixelTime != nullptr)
       addPixelTime(g_timeSlot == kPixelTimeUnset ? kPixelTimeSky : g_timeSlot,
-                   uint(min(elapsed >> kPixelTimeUnitShift, uint64_t(0x7FFFFFFFu))), uint(pushConst.numSamples));
+                   uint(min(counting ? elapsed : elapsed >> kPixelTimeUnitShift, uint64_t(0x7FFFFFFFu))), uint(pushConst.numSamples));
   }
   outImages[int(OutputImage::eResultImage)][int2(samplePos)] = pixelColor;
 #else

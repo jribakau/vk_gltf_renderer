@@ -306,8 +306,10 @@ public:
   nvvk::Buffer                       m_timeSums;
   std::vector<nvvk::Buffer>          m_timeReadback;
   std::vector<uint32_t>              m_timeCopied;  // per frame in flight: the slots that frame copied there (0: none)
+  std::vector<int>                   m_timeCounted;  // ...and what it summed (Settings::pixelTimeCount)
   int                                m_timeSlots{0};  // this frame's (0: the view is off)
   float                              m_timeScale{0.0F};  // the last reading's, kept while the view is off
+  int                                m_timeScaleCounted{0};  // what that reading summed: its scale is for that alone
   std::optional<pixel_time::Reading> m_timeReading;
   struct AdaptiveCount
   {

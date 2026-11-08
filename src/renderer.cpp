@@ -1184,6 +1184,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.pixelTime                            = pixelTime.sums;
     finfo.pixelTimeSlots                       = pixelTime.slots;
     finfo.pixelTimeScale                       = pixelTime.scale;
+    finfo.pixelTimeCount = std::clamp(m_resources.settings.pixelTimeCount, shaderio::kPixelTimeCountClock, shaderio::kPixelTimeCountShadowRays);
     // The clouds where the camera looks, while the view image holds the clouds of the moment: it
     // looks where it was baked, which the camera may since have turned from (updateCloudView).
     if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.viewCurrent())
@@ -1641,7 +1642,7 @@ void GltfRenderer::updatePixelTimes()
     logPixelTimes(*reading);
     return;
   }
-  PixelTimes times{.ticks = reading->ticks, .samples = reading->samples};
+  PixelTimes times{.ticks = reading->ticks, .samples = reading->samples, .counting = reading->counting};
   for(const pixel_time::Slot& slot : reading->slots)
   {
     PixelTimes::Part part{.ticks = slot.ticks, .samples = slot.samples};
@@ -1679,7 +1680,10 @@ void GltfRenderer::logPixelTimes(const pixel_time::Reading& reading)
   std::string line;
   for(const pixel_time::Share& share : pixel_time::shares(groups, 8, "the rest"))
     line += fmt::format("{}{} {:.1f}% (x{:.2f})", line.empty() ? "" : ", ", share.key, 100.0 * share.share, share.cost);
-  LOGI("[time] %llu samples: %s\n", static_cast<unsigned long long>(reading.samples), line.c_str());
+  // the frame's average a sample: the clock's ticks (nanoseconds on NVIDIA), or the count
+  const double perSample = reading.samples > 0 ? double(reading.ticks) / double(reading.samples) : 0.0;
+  LOGI("[time] %llu samples, %s %.2f a sample: %s\n", static_cast<unsigned long long>(reading.samples),
+       pixel_time::countingName(reading.counting), perSample, line.c_str());
 }
 
 //--------------------------------------------------------------------------------------------------

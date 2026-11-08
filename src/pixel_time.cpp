@@ -14,16 +14,33 @@ float Reading::scale() const
   return ticks > 0 ? float(double(samples) / double(ticks)) : 0.0F;
 }
 
-Reading read(std::span<const uint32_t> sums)
+const char* countingName(int counting)
+{
+  switch(counting)
+  {
+    case shaderio::kPixelTimeCountRays:
+      return "rays";
+    case shaderio::kPixelTimeCountWalkSteps:
+      return "walk steps";
+    case shaderio::kPixelTimeCountShadowRays:
+      return "shadow rays";
+    default:
+      return "ticks";
+  }
+}
+
+Reading read(std::span<const uint32_t> sums, int counting)
 {
   Reading out;
+  out.counting         = counting;
+  const uint32_t shift = counting == shaderio::kPixelTimeCountClock ? shaderio::kPixelTimeUnitShift : 0u;
   for(size_t i = 0; i + kSlotWords <= sums.size(); i += kSlotWords)
   {
     const uint64_t samples = sums[i + 2];
     if(samples == 0)
       continue;
     const uint64_t units = (uint64_t(sums[i + 1]) << 32) | sums[i];
-    const Slot     slot{.slot = uint32_t(i / kSlotWords), .ticks = units << shaderio::kPixelTimeUnitShift, .samples = samples};
+    const Slot     slot{.slot = uint32_t(i / kSlotWords), .ticks = units << shift, .samples = samples};
     out.ticks += slot.ticks;
     out.samples += slot.samples;
     out.slots.push_back(slot);

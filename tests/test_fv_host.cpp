@@ -3116,6 +3116,15 @@ TEST(FvHost, TheTimeViewPublishesWhereTheFramesTimeWent)
   EXPECT_EQ(j["parts"][2].value("what", ""), "sky");
   EXPECT_NEAR(j["parts"][2].value("cost", 0.0), 0.25, 1e-9);
   EXPECT_EQ(j.value("samples", 0), 250);
+  EXPECT_NEAR(j.value("perSample", 0.0), 4.0, 1e-9);  // the frame's average, in the clock's ticks
+  EXPECT_EQ(j.value("counting", ""), "ticks");
+
+  // a count in place of the time (the debug pixelTimeCount): the same shares, the average in rays
+  times.counting = 1;  // shaderio::kPixelTimeCountRays
+  rig.renderer.pixelTimeObserver(times);
+  j = rig.topic("time");
+  EXPECT_EQ(j.value("counting", ""), "rays");
+  EXPECT_NEAR(j["parts"][0].value("share", 0.0), 0.6, 1e-9);
 
   // another view: the renderer stops timing, the topic goes, and a late reading isn't published
   EXPECT_TRUE(rig.cmd("view.set", {{"display", "shaded"}}).value("ok", false));

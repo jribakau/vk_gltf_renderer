@@ -23,15 +23,20 @@ struct Slot
 
 struct Reading
 {
-  uint64_t          ticks   = 0;  // every slot's
+  uint64_t          ticks   = 0;  // every slot's: the clock's ticks, or the count (`counting`)
   uint64_t          samples = 0;
-  std::vector<Slot> slots;  // those that took a sample, in slot order
+  std::vector<Slot> slots;         // those that took a sample, in slot order
+  int               counting = 0;  // what was summed: kPixelTimeCountClock, or a count (SceneFrameInfo::pixelTimeCount)
   // One over the average ticks a pixel's sample took (SceneFrameInfo::pixelTimeScale); 0 with nothing summed
   float scale() const;
 };
 
-// The sums as a frame leaves them, kSlotWords a slot
-Reading read(std::span<const uint32_t> sums);
+// What a reading summed, by name: "ticks", "rays", "walk steps", "shadow rays"
+const char* countingName(int counting);
+
+// The sums as a frame leaves them, kSlotWords a slot, of the clock's ticks or, with `counting` (a
+// kPixelTimeCount* but the clock), of a count the shader summed unshifted
+Reading read(std::span<const uint32_t> sums, int counting = 0);
 
 // What the breakdown adds up: one thing the pixels show, by a key the caller gives it
 struct Group

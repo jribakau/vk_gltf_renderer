@@ -135,6 +135,7 @@ struct Settings
   shaderio::Visualization visualization          = shaderio::Visualization::eRendered;  // Visualization mode
   bool                    wireframe              = false;                      // Wireframe overlay on rendered meshes
   bool                    pixelTime              = false;                      // The Time view (GltfRenderer::setPixelTime)
+  int                     pixelTimeCount         = 0;  // `pixelTimeCount` (debug): what it sums (SceneFrameInfo::pixelTimeCount)
   shaderio::EnvSystem     envSystem              = shaderio::EnvSystem::eSky;  // Environment system: Sky or HDR
   bool                    showAxis               = true;                       // Show the axis (bottom left)
   bool                    showGrid               = false;                      // Show infinite grid

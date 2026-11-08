@@ -817,7 +817,13 @@ void FvView::publishPixelTimes(const HostRenderer::PixelTimes& times)
     line["cost"]      = std::round(share.cost * 100.0) / 100.0;
     parts.push_back(std::move(line));
   }
-  m_events->snapshot("time", fv::Json{{"parts", std::move(parts)}, {"samples", times.samples}});
+  // the frame's average a sample, and what it is of: the clock's ticks (nanoseconds on NVIDIA), or a
+  // count the debug pixelTimeCount asked for
+  const double perSample = times.samples > 0 ? double(times.ticks) / double(times.samples) : 0.0;
+  m_events->snapshot("time", fv::Json{{"parts", std::move(parts)},
+                                      {"samples", times.samples},
+                                      {"perSample", std::round(perSample * 100.0) / 100.0},
+                                      {"counting", pixel_time::countingName(times.counting)}});
 }
 
 void FvView::publishSelection(bool force)

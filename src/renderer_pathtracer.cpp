@@ -1090,8 +1090,10 @@ PathTracer::PixelTimeFrame PathTracer::preparePixelTime(Resources& resources)
   if(!resources.app)
     return {};
   takePixelTimes(resources);
+  // the scale of what this frame sums: none yet (the shader's stand-in) after a change of what is counted
+  const float scale = m_timeScaleCounted == resources.settings.pixelTimeCount ? m_timeScale : 0.0F;
   if(!pixelTimeOn(resources) || !resources.retainedGpu)
-    return {.scale = m_timeScale};
+    return {.scale = scale};
   const uint32_t frameSlots = std::max(resources.app->getFrameCycleSize(), 1u);
   if(m_timeReadback.size() != frameSlots)
   {
@@ -1105,6 +1107,7 @@ PathTracer::PixelTimeFrame PathTracer::preparePixelTime(Resources& resources)
       NVVK_DBG_NAME(b.buffer);
     }
     m_timeCopied.assign(frameSlots, 0);
+    m_timeCounted.assign(frameSlots, 0);
   }
   if(!m_timeSums.buffer)
   {
@@ -1115,7 +1118,7 @@ PathTracer::PixelTimeFrame PathTracer::preparePixelTime(Resources& resources)
     NVVK_DBG_NAME(m_timeSums.buffer);
   }
   m_timeSlots = int(std::min(shaderio::kPixelTimeInstance + resources.retainedGpu->residency().instanceHighWater(), kMaxSlots));
-  return {.sums = reinterpret_cast<uint32_t*>(m_timeSums.address), .slots = m_timeSlots, .scale = m_timeScale};
+  return {.sums = reinterpret_cast<uint32_t*>(m_timeSums.address), .slots = m_timeSlots, .scale = scale};
 }
 
 void PathTracer::takePixelTimes(Resources& resources)
@@ -1127,9 +1130,13 @@ void PathTracer::takePixelTimes(Resources& resources)
   const uint32_t copied = std::exchange(m_timeCopied[slot], 0u);
   if(copied == 0)
     return;
-  m_timeReading = pixel_time::read({reinterpret_cast<const uint32_t*>(m_timeReadback[slot].mapping), size_t(copied) * pixel_time::kSlotWords});
+  m_timeReading = pixel_time::read({reinterpret_cast<const uint32_t*>(m_timeReadback[slot].mapping), size_t(copied) * pixel_time::kSlotWords},
+                                   m_timeCounted[slot]);
   if(const float scale = m_timeReading->scale(); scale > 0.0F)
-    m_timeScale = scale;
+  {
+    m_timeScale        = scale;
+    m_timeScaleCounted = m_timeCounted[slot];
+  }
 }
 
 void PathTracer::copyPixelTimes(VkCommandBuffer cmd, Resources& resources)
@@ -1141,7 +1148,8 @@ void PathTracer::copyPixelTimes(VkCommandBuffer cmd, Resources& resources)
   const VkBufferCopy region{0, 0, bytes};
   vkCmdCopyBuffer(cmd, m_timeSums.buffer, m_timeReadback[slot].buffer, 1, &region);
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_HOST_READ_BIT);
-  m_timeCopied[slot] = uint32_t(m_timeSlots);
+  m_timeCopied[slot]  = uint32_t(m_timeSlots);
+  m_timeCounted[slot] = resources.settings.pixelTimeCount;
 }
 
 void PathTracer::updateConvergence(VkCommandBuffer cmd, Resources& resources)

@@ -12,7 +12,7 @@
 NAMESPACE_SHADERIO_BEGIN()
 
 // The frame's sums, four uints a slot: the time's low and high 32 bits (in the clock's ticks shifted
-// down by kPixelTimeUnitShift), the samples taken, and one unused. A slot is what the first camera ray
+// down by kPixelTimeUnitShift, or a count: kPixelTimeCount*), the samples taken, and one unused. A slot is what the first camera ray
 // of the pixel's first sample met:
 static const uint kPixelTimeSky      = 0u;           // nothing: the environment, the sky or a backplate
 static const uint kPixelTimeGround   = 1u;           // the ground
@@ -23,6 +23,15 @@ static const uint kPixelTimeUnset    = 0xFFFFFFFFu;  // no camera ray has met an
 // The sums count 16 of the clock's ticks as one, so a warp's 32 pixels fit a uint even in a frame of a
 // second (NVIDIA's device clock is in nanoseconds); the image keeps every tick
 static const uint kPixelTimeUnitShift = 4u;
+
+// What the view sums in place of the time (SceneFrameInfo::pixelTimeCount, the debug `pixelTimeCount`):
+// the rays a pixel traced -- closest hits, shadow rays and the selection ray alike -- a walk's steps
+// through a scattering medium alone, or its shadow rays alone, each as many as there were (no shift).
+// Counts tell how much a pixel traces from how dear each of its rays is, which the time can't.
+static const int kPixelTimeCountClock      = 0;
+static const int kPixelTimeCountRays       = 1;
+static const int kPixelTimeCountWalkSteps  = 2;
+static const int kPixelTimeCountShadowRays = 3;
 
 // The view's scale: the time of a pixel's sample over the frame's average, from an eighth (0) to eight
 // times it (1) on a log scale, the average in the middle
@@ -39,5 +48,16 @@ inline float3 pixelTimeColor(float ratio)
 }
 
 NAMESPACE_SHADERIO_END()
+
+#if USE_PIXEL_TIME
+// The pixel's count in a count mode, from processPixel's start; the ray tracer (raytracer_interface.h.slang)
+// and the walk's step (pathTraceOneBounce) add to it
+static uint g_timeCount = 0u;
+#define PIXEL_TIME_COUNT(what)                                                                                         \
+  if(pushConst.frameInfo->pixelTimeCount == (what))                                                                    \
+  g_timeCount++
+#else
+#define PIXEL_TIME_COUNT(what)
+#endif
 
 #endif

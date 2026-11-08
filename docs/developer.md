@@ -425,6 +425,14 @@ Some things about the transport are worth knowing before touching it:
   (`FvView::publishPixelTimes`), or logs them (`[time]`) on a run without one. It is wall time: under
   SER a thread's time includes its waits in the reorders and for its warp, and a cheap pixel that ran
   beside dear ones on the same SM reads dearer, so the sky shows blocks. Compare objects, not tiles.
+  The debug `pixelTimeCount` (1 rays, 2 walk steps, 3 shadow rays; `SceneFrameInfo::pixelTimeCount`)
+  sums a count in place of the time, through the same image, sums and topic. Rays are counted where
+  the ray tracer traces them (`PIXEL_TIME_COUNT` in `raytracer_interface.h.slang`), a walk's steps
+  where `pathTraceOneBounce` draws their free flight. Read beside the time, it tells how much a pixel
+  traces from how dear each of its rays is. The topic's `perSample` is the frame's average (the
+  clock's ticks, nanoseconds on NVIDIA, or the count) and `counting` says which. Key a breakdown by
+  `prop` and `node`, never by `name`: two figures' bodies can share one, and summing their lines adds
+  their costs (1TEST's skin read 2.8 times the average sample that way; it is 1.45 and 1.34).
 - Path regularisation (later lobes at least as rough as the roughest material so far) runs only
   where `ePtRegularize` is set (`ptRegularize`: DLSS frames by default), and never on a surface that
   refracts without scattering.

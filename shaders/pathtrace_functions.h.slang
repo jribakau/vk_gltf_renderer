@@ -2311,6 +2311,7 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float
 
   float    committedT = INFINITE;
   RayQuery rayQuery;
+  PIXEL_TIME_COUNT(kPixelTimeCountRays);
   rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, ray);
   while(rayQuery.Proceed())
   {
