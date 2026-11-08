@@ -317,7 +317,7 @@ std::vector<float> shapeCorrection(std::span<const float> item, std::span<const 
     if(!s)
       continue;
     const double dist = std::hypot(item[k] - (*s)[0], item[k + 1] - (*s)[1], item[k + 2] - (*s)[2]);
-    const double w    = dist <= o.near ? 1 : dist >= o.far ? 0 : (o.far - dist) / (o.far - o.near);
+    const double w    = dist <= o.inner ? 1 : dist >= o.outer ? 0 : (o.outer - dist) / (o.outer - o.inner);
     if(w <= 0)
       continue;
     const V3 d = *boundPoint(baseDelta, onBase, v);

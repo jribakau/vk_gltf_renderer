@@ -26,6 +26,7 @@
 
 #include <figure/dson/listing.hpp>
 #include <figure/dson/store.hpp>
+#include <figure/wardrobe/fit/bases.hpp>
 
 //--------------------------------------------------------------------------------------------------
 
@@ -65,6 +66,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     {
       fv::dson::Store::clearShared();
       fv::dson::clearListings();
+      // a Genesis base installed after a wear found it missing
+      fv::wardrobe::clearBaseCages();
     }
     if(args.contains("libraryRoots"))
     {

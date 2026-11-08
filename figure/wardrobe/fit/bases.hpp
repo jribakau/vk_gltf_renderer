@@ -28,5 +28,9 @@ struct BaseCage
 
 // The installed base cage for `generation`, or null when none of its files are in the library.
 std::shared_ptr<const BaseCage> loadBaseCage(dson::Store& store, Generation generation, const std::string& gender);
+// The files loadBaseCage tries, in order: `gender`'s ("female", "male") first.
+std::vector<std::string> baseFiles(Generation generation, const std::string& gender);
+// Forget what was read, a base found missing too: an install or an uninstall changed the library.
+void clearBaseCages();
 
 }  // namespace fv::wardrobe

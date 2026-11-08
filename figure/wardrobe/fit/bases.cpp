@@ -3,7 +3,8 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
-#include <regex>
+
+#include <figure/dson/rig.hpp>
 
 namespace fv::wardrobe {
 
@@ -25,20 +26,20 @@ std::vector<std::string> filesOf(Generation g)
   return {};
 }
 
+// the generation's files, the gender's first
 std::vector<std::string> order(Generation g, const std::string& gender)
 {
-  const auto files = filesOf(g);
+  std::vector<std::string> files = filesOf(g);
   if(gender.empty())
     return files;
-  const std::regex         want(gender == "female" ? "female" : "male(?!.*female)", std::regex::icase);
-  std::vector<std::string> out;
-  for(const std::string& f : files)
-    if(std::regex_search(f, want))
-      out.push_back(f);
-  for(const std::string& f : files)
-    if(!std::regex_search(f, want))
-      out.push_back(f);
-  return out;
+  // "Genesis8Female.dsf" has "male" in it: a male file is one without "female"
+  const auto wanted = [&](std::string f) {
+    std::transform(f.begin(), f.end(), f.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    const bool female = f.find("female") != std::string::npos;
+    return gender == "female" ? female : !female && f.find("male") != std::string::npos;
+  };
+  std::stable_partition(files.begin(), files.end(), wanted);
+  return files;
 }
 
 std::shared_ptr<const BaseCage> build(const dson::Doc& doc)
@@ -118,16 +119,13 @@ std::shared_ptr<const BaseCage> build(const dson::Doc& doc)
             ref = dson::getString(&j, "id");
           const auto id   = dson::decodeUri(ref.substr(ref.find_last_of('#') == std::string::npos ? 0 : ref.find_last_of('#') + 1));
           const auto bone = byId.find(id);
-          const dson::Json* weights = get(get(&j, "node_weights"), "values");
-          if(bone == byId.end() || !weights)
+          if(bone == byId.end())
             continue;
-          const auto pairs = doc.rows(weights);
-          for(int i = 0; i < pairs->count; i++)
-          {
-            const double v = pairs->cell(i, 0), w = pairs->cell(i, 1);
+          // node weights, or Genesis 2's TriAx weights, as its rig reads them
+          dson::jointWeights(doc, j, [&](double v, double w) {
             if(v >= 0 && size_t(v) < count && w > 0)
               lists[size_t(v)].emplace_back(bone->second, float(w));
-          }
+          });
         }
       break;  // the first skin modifier
     }
@@ -143,12 +141,25 @@ std::shared_ptr<const BaseCage> build(const dson::Doc& doc)
   return cage;
 }
 
+// read bases by file; a missing one is kept as null until the content changes (clearBaseCages)
+std::mutex                                             mutex;
+std::map<std::string, std::shared_ptr<const BaseCage>> cache;
+
 }  // namespace
+
+std::vector<std::string> baseFiles(Generation generation, const std::string& gender)
+{
+  return order(generation, gender);
+}
+
+void clearBaseCages()
+{
+  std::lock_guard lock(mutex);
+  cache.clear();
+}
 
 std::shared_ptr<const BaseCage> loadBaseCage(dson::Store& store, Generation generation, const std::string& gender)
 {
-  static std::mutex                                     mutex;
-  static std::map<std::string, std::shared_ptr<const BaseCage>> cache;
   for(const std::string& file : order(generation, gender))
   {
     {

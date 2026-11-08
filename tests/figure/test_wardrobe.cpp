@@ -28,6 +28,7 @@
 #include <figure/physics/flesh/follow.hpp>
 #include <figure/subdiv/catmark.hpp>
 #include <figure/wardrobe/bind.hpp>
+#include <figure/wardrobe/fit/bases.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/fit/fit.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
@@ -1257,6 +1258,53 @@ TEST(Fit, BonesAndWhatAnItemSaysComeBeforeItsFolder)
   EXPECT_EQ(generationFromBones({"NPC L Hand [LHnd]", "NPC R Hand [RHnd]"}), G(Generation::eSkyrim));
   EXPECT_EQ(generationFromBones({"NPC Head [Head]"}), G(Generation::eSkyrim));
   EXPECT_EQ(identifyGeneration("Skyrim/Helmets/meshes/helmet_1.nif", {}, {}, Generation::eSkyrim), G(Generation::eSkyrim));
+}
+
+// A male item measures against the male base, though "Genesis8Female.dsf" has "male" in it. Genesis 2's
+// base is skinned by TriAx weights, which its rig reads too. A base found missing is looked for again
+// once the content changes.
+TEST(Fit, BaseBodiesByGenderSkinnedAndInstalledLater)
+{
+  using namespace fv::wardrobe;
+  EXPECT_EQ(baseFiles(Generation::eG8, "male").front(), "data/DAZ 3D/Genesis 8/Male/Genesis8Male.dsf");
+  EXPECT_EQ(baseFiles(Generation::eG8, "female").front(), "data/DAZ 3D/Genesis 8/Female/Genesis8Female.dsf");
+  EXPECT_EQ(baseFiles(Generation::eG81, "male").front(), "data/DAZ 3D/Genesis 8/Male 8_1/Genesis8_1Male.dsf");
+  EXPECT_EQ(baseFiles(Generation::eG3, "male").front(), "data/DAZ 3D/Genesis 3/Male/Genesis3Male.dsf");
+  EXPECT_EQ(baseFiles(Generation::eG2, "").size(), 2u);
+
+  const std::filesystem::path root = std::filesystem::temp_directory_path() / "fv_test_g2_base";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  const auto store = [&] { return fv::dson::Store(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{root})); };
+  clearBaseCages();
+  {
+    fv::dson::Store none = store();
+    EXPECT_EQ(loadBaseCage(none, Generation::eG2, "female"), nullptr);
+  }
+  const std::filesystem::path file = root / "data/DAZ 3D/Genesis 2/Female/Genesis2Female.dsf";
+  std::filesystem::create_directories(file.parent_path());
+  std::ofstream(file) << R"({"file_version":"0.6.0.0","asset_info":{"id":"/data/DAZ%203D/Genesis%202/Female/Genesis2Female.dsf","type":"figure"},
+"geometry_library":[{"id":"G2F","vertices":{"count":3,"values":[[0,0,0],[1,0,0],[0,1,0]]},"polylist":{"count":1,"values":[[0,0,0,1,2]]}}],
+"node_library":[{"id":"GenesisFemale","name":"GenesisFemale","type":"figure"},
+ {"id":"hip","name":"hip","type":"bone","parent":"#GenesisFemale"},{"id":"lThigh","name":"lThigh","type":"bone","parent":"#hip"}],
+"modifier_library":[{"id":"SkinBinding","skin":{"node":"#GenesisFemale","geometry":"#G2F","vertex_count":3,"joints":[
+ {"id":"hip","node":"#hip","local_weights":{"x":{"count":2,"values":[[0,1],[1,0.4]]},"y":{"count":1,"values":[[1,0.6]]}}},
+ {"id":"lThigh","node":"#lThigh","local_weights":{"z":{"count":1,"values":[[2,1]]}}}]}}]})";
+  fv::dson::Store::clearShared();
+  {
+    // the miss is kept until the content changes
+    fv::dson::Store installed = store();
+    EXPECT_EQ(loadBaseCage(installed, Generation::eG2, "female"), nullptr);
+    clearBaseCages();
+    const auto cage = loadBaseCage(installed, Generation::eG2, "female");
+    ASSERT_NE(cage, nullptr);
+    ASSERT_EQ(cage->skin.start, (std::vector<int32_t>{0, 1, 2, 3}));
+    EXPECT_EQ(cage->skeleton.at(size_t(cage->skin.bone[2])).name, "lThigh");
+    // the strongest axis
+    EXPECT_FLOAT_EQ(cage->skin.weight[1], 0.6f);
+  }
+  clearBaseCages();
+  std::filesystem::remove_all(root);
 }
 
 // DAZ Studio saves the figure an item was made on as its node's preferred base; a .nif is Skyrim's

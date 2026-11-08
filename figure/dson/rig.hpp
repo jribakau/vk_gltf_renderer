@@ -5,6 +5,7 @@
 // bind pose matches the mesh and the figure appears exactly as authored. A port of
 // src/lib/loaders/dson/skin.ts.
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -47,6 +48,10 @@ struct SkinBinding
 // BlendLinearDualQuat blends it with linear by the blend_weights map, read as the dual quaternion
 // share; a uniform map is kept as one value). None without joints.
 std::optional<SkinBinding> skinBinding(const Doc& doc, const Json& modifier, const Rig& rig, int vertexCount);
+
+// One skin joint's (vertex, weight) pairs: its node weights, else Genesis 2's TriAx local weights, the
+// strongest axis per vertex. Zero weights and out-of-range vertices are the caller's to drop.
+void jointWeights(const Doc& doc, const Json& joint, const std::function<void(double vertex, double weight)>& add);
 
 // Strand hair whose skin has no joints: DAZ Studio moves it with a dForce Hair Follow modifier, which
 // rides on the figure's surface. Each strand goes wholly on the bone the skin's selection map names for

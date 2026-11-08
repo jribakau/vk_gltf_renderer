@@ -63,7 +63,9 @@ std::vector<float> rigidPositions(std::span<const float> positions, const mesh::
 
 struct ShapeOptions
 {
-  float near = 1.5f, far = 5, cap = 6;
+  // a garment vertex within `inner` cm of the base takes all of the correction, beyond `outer` none
+  // (not near/far, which windows.h defines away)
+  float inner = 1.5f, outer = 5, cap = 6;
   int   smooth = 8;
 };
 

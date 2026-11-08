@@ -155,6 +155,38 @@ std::optional<Rig> buildRig(SceneGraph& scene, const Json& nodeLibrary, const st
   return rig;
 }
 
+void jointWeights(const Doc& doc, const Json& joint, const std::function<void(double vertex, double weight)>& add)
+{
+  if(const Json* nw = get(&joint, "node_weights"); nw && get(nw, "values"))
+  {
+    const auto pairs = doc.rows(get(nw, "values"));
+    for(int i = 0; i < pairs->count; i++)
+      add(pairs->cell(i, 0), pairs->cell(i, 1));
+  }
+  else if(const Json* local = get(&joint, "local_weights"); local && !local->is_null())
+  {
+    // TriAx (Genesis 2): the strongest axis weight per vertex, in the order first met
+    std::vector<std::pair<double, double>> acc;
+    std::unordered_map<double, size_t>     at;
+    for(const char* axis : {"x", "y", "z"})
+    {
+      const Json* a     = get(local, axis);
+      const auto  pairs = doc.rows(a ? get(a, "values") : nullptr);
+      for(int i = 0; i < pairs->count; i++)
+      {
+        const double v = pairs->cell(i, 0), w = pairs->cell(i, 1);
+        auto [slot, fresh] = at.try_emplace(v, acc.size());
+        if(fresh)
+          acc.emplace_back(v, w);
+        else
+          acc[slot->second].second = std::max(acc[slot->second].second, w);
+      }
+    }
+    for(const auto& [v, w] : acc)
+      add(v, w);
+  }
+}
+
 std::optional<SkinBinding> skinBinding(const Doc& doc, const Json& modifier, const Rig& rig, int vertexCount)
 {
   const Json* skinJson = get(&modifier, "skin");
@@ -193,34 +225,7 @@ std::optional<SkinBinding> skinBinding(const Doc& doc, const Json& modifier, con
         entries.push_back({int(v), bi, float(w)});
       }
     };
-    if(const Json* nw = get(&j, "node_weights"); nw && get(nw, "values"))
-    {
-      const auto pairs = doc.rows(get(nw, "values"));
-      for(int i = 0; i < pairs->count; i++)
-        add(pairs->cell(i, 0), pairs->cell(i, 1));
-    }
-    else if(const Json* local = get(&j, "local_weights"); local && !local->is_null())
-    {
-      // TriAx (Genesis 2) fallback: take the strongest axis weight per vertex, in the order first met
-      std::vector<std::pair<double, double>>   acc;
-      std::unordered_map<double, size_t>       at;
-      for(const char* axis : {"x", "y", "z"})
-      {
-        const Json* a     = get(local, axis);
-        const auto  pairs = doc.rows(a ? get(a, "values") : nullptr);
-        for(int i = 0; i < pairs->count; i++)
-        {
-          const double v = pairs->cell(i, 0), w = pairs->cell(i, 1);
-          auto [slot, fresh] = at.try_emplace(v, acc.size());
-          if(fresh)
-            acc.emplace_back(v, w);
-          else
-            acc[slot->second].second = std::max(acc[slot->second].second, w);
-        }
-      }
-      for(const auto& [v, w] : acc)
-        add(v, w);
-    }
+    jointWeights(doc, j, add);
   }
   if(out.order.empty())
     return std::nullopt;
