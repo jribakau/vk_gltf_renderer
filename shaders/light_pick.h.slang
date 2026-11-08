@@ -255,13 +255,46 @@ float misPowerWeight(float a, float b)
   return r2 / (1.0F + r2);
 }
 
+// Which technique counts a direction that both a light sample and a BSDF ray can reach
+// (SceneFrameInfo::estimator, ptEstimator): both by the power heuristic (the renderer's), or one of them
+// alone, a debug check that each is a whole estimator. A direction only one of them reaches is that
+// one's in every mode, so the three images agree unless a pdf is wrong: a light sampler's or a BSDF
+// sampler's own (the one-technique images split), or the other side's account of it (MIS alone moves).
+#define ESTIMATOR_MIS 0
+#define ESTIMATOR_LIGHT 1  // light samples alone
+#define ESTIMATOR_BSDF 2   // BSDF rays alone
+
+// A light sample's weight, `lightPdf` its pdf and `bsdfPdf` the BSDF's for the same direction
+float misLightWeight(float lightPdf, float bsdfPdf, int estimator)
+{
+  if(!(bsdfPdf > 0.0F))
+    return 1.0F;
+  if(estimator == ESTIMATOR_LIGHT)
+    return 1.0F;
+  if(estimator == ESTIMATOR_BSDF)
+    return 0.0F;
+  return misPowerWeight(lightPdf, bsdfPdf);
+}
+
+// A BSDF ray's weight where it reached a light, `lightPdf` the light sample's pdf for its direction
+float misBsdfWeight(float bsdfPdf, float lightPdf, int estimator)
+{
+  if(!(lightPdf > 0.0F))
+    return 1.0F;
+  if(estimator == ESTIMATOR_LIGHT)
+    return 0.0F;
+  if(estimator == ESTIMATOR_BSDF)
+    return 1.0F;
+  return misPowerWeight(bsdfPdf, lightPdf);
+}
+
 // The weight of a BSDF ray of pdf `bsdfPdf` that reached a light, against the light sample of the
 // vertex it left, `lightPdf` that sample's pdf for the same direction. 1 where that vertex left the
 // lights its BSDF ray reaches to that ray (`bsdfOnly`: a smooth vertex, smooth_vertex.h.slang), whatever
 // the pick there would have given the light: no light sample competed for the direction.
-float bsdfHitMisWeight(float bsdfPdf, float lightPdf, bool bsdfOnly)
+float bsdfHitMisWeight(float bsdfPdf, float lightPdf, bool bsdfOnly, int estimator)
 {
-  return bsdfOnly ? 1.0F : misPowerWeight(bsdfPdf, lightPdf);
+  return bsdfOnly ? 1.0F : misBsdfWeight(bsdfPdf, lightPdf, estimator);
 }
 
 #endif

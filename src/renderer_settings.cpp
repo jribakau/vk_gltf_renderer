@@ -535,6 +535,13 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   .help            = "Haze: how much it scatters forward, the halo round a light (Henyey-Greenstein g, -0.9 to 0.9)",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.hazeAnisotropy, Persist::eNo, -0.9F, 0.9F);
+  // A debug check that light sampling and BSDF sampling each give the whole image (light_pick.h.slang)
+  m_settings.add({.name            = "ptEstimator",
+                  .help            = "PathTracer (debug): what counts light both a light sample and a BSDF ray reach "
+                                     "[Both, weighed (MIS):0, Light samples alone:1, BSDF rays alone:2]; the images agree "
+                                     "unless a pdf is wrong",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.ptEstimator, Persist::eNo, 0, 2);
   m_settings.add({.name            = "hazeCandidates",
                   .help            = "Haze: lights a still's scatter point picks its light from, by what each gives the eye (1: the light pick's own)",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},

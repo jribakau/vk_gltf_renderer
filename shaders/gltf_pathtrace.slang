@@ -1125,7 +1125,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           candidateEval = evaluateSurfaceForLight(pbrMat, -ray.Direction, candidate.direction, candidateAllLobes, exitFresnelEta, seed);
           if(bsdfEvaluated(candidateEval))
           {
-            const float mis = (candidate.pdf == DIRAC || lastVertex) ? 1.0F : misPowerWeight(candidate.pdf, candidateEval.pdf);
+            const float mis = (candidate.pdf == DIRAC || lastVertex) ? 1.0F : misLightWeight(candidate.pdf, candidateEval.pdf, pushConst.frameInfo->estimator);
             weight = luminance(pt.throughput * candidate.radianceOverPdf * mis * (candidateEval.bsdf_diffuse + candidateEval.bsdf_glossy));
           }
         }
@@ -1155,7 +1155,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           const BsdfEvaluateData e = evaluateSurfaceForLight(thereMat, record.view, directLight.direction, lobeMixture, exitFresnelEta, seed);
           if(bsdfEvaluated(e))
           {
-            const float mis = lastVertex ? 1.0F : misPowerWeight(directLight.pdf, e.pdf);
+            const float mis = lastVertex ? 1.0F : misLightWeight(directLight.pdf, e.pdf, pushConst.frameInfo->estimator);
             keptThere       = luminance(pt.throughput * directLight.radianceOverPdf * mis * (e.bsdf_diffuse + e.bsdf_glossy));
           }
         }
@@ -1175,14 +1175,14 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
             reusedEval = evaluateSurfaceForLight(pbrMat, -ray.Direction, reused.direction, lobeMixture, exitFresnelEta, seed);
             if(bsdfEvaluated(reusedEval))
             {
-              const float mis = lastVertex ? 1.0F : misPowerWeight(reused.pdf, reusedEval.pdf);
+              const float mis = lastVertex ? 1.0F : misLightWeight(reused.pdf, reusedEval.pdf, pushConst.frameInfo->estimator);
               recordTarget    = luminance(pt.throughput * reused.radiance * mis * (reusedEval.bsdf_diffuse + reusedEval.bsdf_glossy));
             }
             float                  recordThere = 0.0F;
             const BsdfEvaluateData e           = evaluateSurfaceForLight(thereMat, record.view, reused.direction, lobeMixture, exitFresnelEta, seed);
             if(bsdfEvaluated(e))
             {
-              const float mis = lastVertex ? 1.0F : misPowerWeight(reused.pdf, e.pdf);
+              const float mis = lastVertex ? 1.0F : misLightWeight(reused.pdf, e.pdf, pushConst.frameInfo->estimator);
               recordThere     = luminance(pt.throughput * reused.radiance * mis * (e.bsdf_diffuse + e.bsdf_glossy));
             }
             recordWeight = lightReuseWeight(lightReuseMis(false, float(candidates), recordTarget, recordM, recordThere), recordTarget * record.W);
@@ -1284,7 +1284,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         // Weight for combining light and BSDF sampling strategies (Multiple Importance Sampling);
         // 1 at the last vertex (above). A smooth vertex's kept sample: 1 only where the BSDF ray cannot go.
-        float mis_weight = (directLight.pdf == DIRAC || lastVertex) ? 1.0F : misPowerWeight(directLight.pdf, evalData.pdf);
+        float mis_weight = (directLight.pdf == DIRAC || lastVertex) ? 1.0F : misLightWeight(directLight.pdf, evalData.pdf, pushConst.frameInfo->estimator);
         if(smoothHere)
           mis_weight = smoothVertexLightWeight(directLight.pdf, evalData.pdf);
 

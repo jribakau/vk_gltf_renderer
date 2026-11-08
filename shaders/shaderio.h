@@ -347,6 +347,9 @@ struct SceneFrameInfo
   float hazeInvHeight    = 0.0F;
   float hazePatches      = 0.0F;
   float hazeInvPatchSize = 0.0F;
+  // ptEstimator, a debug check (light_pick.h.slang): which technique counts what both a light sample and
+  // a BSDF ray reach, ESTIMATOR_MIS (0, both), _LIGHT (1) or _BSDF (2). (Appended, per the note above.)
+  int estimator = 0;
 };
 
 enum PathtracerFlags

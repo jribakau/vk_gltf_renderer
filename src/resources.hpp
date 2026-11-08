@@ -306,6 +306,9 @@ struct Settings
   // `blasCompactStatic`: a retained static BLAS is compacted once its size is known (on since P7's
   // measure: Khronos props' BLASes 58% smaller, the image the same)
   bool blasCompactStatic = true;
+  // `ptEstimator` (debug): what counts the light both a light sample and a BSDF ray reach
+  // (SceneFrameInfo::estimator): 0 both (MIS), 1 light samples alone, 2 BSDF rays alone
+  int ptEstimator = 0;
   // `residencyRetireOnReplace` (debug): a stream host's scene replace syncs the new scene into the
   // backend it has, retiring the old one's slots, instead of starting the backend over
   bool residencyRetireOnReplace = false;

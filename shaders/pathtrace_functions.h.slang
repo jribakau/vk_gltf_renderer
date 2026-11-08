@@ -949,7 +949,7 @@ float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float sele
     emitterNeePdf = share
                     * emitterHitSolidAnglePdf(selection, geoNormal, rayDir, hitDist, pushConst.gltfScene.emissiveGroups[leaf].weight);
   }
-  return misPowerWeight(lastSamplePdf, emitterNeePdf);
+  return misBsdfWeight(lastSamplePdf, emitterNeePdf, pushConst.frameInfo->estimator);
 }
 
 // A light sample that is none: pdf 0, nothing to add
@@ -1449,7 +1449,7 @@ float computeEnvHitMisWeight(float lastSamplePdf, float envPdf, LightPick pick)
 {
   if(lastSamplePdf == DIRAC)
     return 1.0f;
-  return bsdfHitMisWeight(lastSamplePdf, pick.env * envPdf, pick.bsdfOnly);
+  return bsdfHitMisWeight(lastSamplePdf, pick.env * envPdf, pick.bsdfOnly, pushConst.frameInfo->estimator);
 }
 
 // Solid-angle pdf with which sampleLights() lands on the sky's sun at a vertex that picked it with
@@ -1464,7 +1464,7 @@ float skySunNeePdf(LightPick pick)
 // Never called after a delta bounce: the caller adds the disk unweighted there.
 float computeSkySunHitMisWeight(float lastSamplePdf, LightPick pick)
 {
-  return bsdfHitMisWeight(lastSamplePdf, skySunNeePdf(pick), pick.bsdfOnly);
+  return bsdfHitMisWeight(lastSamplePdf, skySunNeePdf(pick), pick.bsdfOnly, pushConst.frameInfo->estimator);
 }
 
 #if USE_LIGHT_RIS
@@ -2879,7 +2879,7 @@ float3 sizedLightHits(RayDesc ray, float tMax, bool escaped, PathTracerState pt)
     // 1 also after a vertex that left the light to this ray (LightPick::bsdfOnly), before its share is rebuilt
     float w = 1.0F;
     if(!delta && !pt.lightPick.bsdfOnly)
-      w = misPowerWeight(pt.lastSamplePdf, sizedLightNeePdf(pt.lightPick, light, omc));
+      w = misBsdfWeight(pt.lastSamplePdf, sizedLightNeePdf(pt.lightPick, light, omc), pushConst.frameInfo->estimator);
     sum += w * radiance;
   }
   return sum;

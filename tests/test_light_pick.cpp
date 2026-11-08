@@ -84,9 +84,12 @@ struct TestLobe
 
 // The cosine-weighted radiance of a light of radiance 1 at the origin (normal +y), as the path
 // tracer's two techniques estimate it together: the light's cone sample, and the lobe's sample that
-// hits the light (`hits`), each weighed by the power heuristic against the other's pdf.
+// hits the light (`hits`), each weighed against the other's pdf as `estimator` has it (the power
+// heuristic, or one technique alone where both reach). `lightPdfError`: a light sampler that divides
+// by its pdf times this, the error the estimators' agreement is there to find.
 template <typename Hits>
-double misIrradiance(float3 lightAxis, float lightOmc, const TestLobe& lobe, Hits hits, int n, unsigned seed)
+double misIrradiance(float3 lightAxis, float lightOmc, const TestLobe& lobe, Hits hits, int n, unsigned seed,
+                     int estimator = ESTIMATOR_MIS, float lightPdfError = 1.0f)
 {
   std::mt19937                          rng(seed);
   std::uniform_real_distribution<float> u(0.0f, 1.0f);
@@ -96,11 +99,11 @@ double misIrradiance(float3 lightAxis, float lightOmc, const TestLobe& lobe, Hit
   {
     const float3 l = sampleCone(lightAxis, lightOmc, u(rng), u(rng));
     if(l.y > 0.0f)
-      sum += l.y / pl * misPowerWeight(pl, lobe.pdf(l));
+      sum += l.y / (pl * lightPdfError) * misLightWeight(pl, lobe.pdf(l), estimator);
     const float3 b  = lobe.sample(u(rng), u(rng));
     const float  pb = lobe.pdf(b);
     if(b.y > 0.0f && pb > 0.0f && hits(b))
-      sum += b.y / pb * misPowerWeight(pb, pl);
+      sum += b.y / pb * misBsdfWeight(pb, pl, estimator);
   }
   return sum / n;
 }
@@ -352,6 +355,65 @@ TEST(LightPick, PowerHeuristicWeightsSumToOne)
   EXPECT_EQ(misPowerWeight(2.0f, 0.0f), 1.0f);
 }
 
+// ptEstimator: whatever technique counts a direction both reach, the two weights for it sum to one; a
+// direction only one reaches is that one's, whole; and MIS is the power heuristic, as it was.
+TEST(LightPick, EveryEstimatorCountsADirectionOnce)
+{
+  const float pdfs[] = {0.0f, 1e-30f, 1e-6f, 0.1f, 1.0f, 3.0f, 1e6f, 1e30f};
+  for(int estimator : {ESTIMATOR_MIS, ESTIMATOR_LIGHT, ESTIMATOR_BSDF})
+    for(float light : pdfs)
+      for(float bsdf : pdfs)
+      {
+        const float wl = misLightWeight(light, bsdf, estimator), wb = misBsdfWeight(bsdf, light, estimator);
+        if(!(bsdf > 0.0f))
+          EXPECT_EQ(wl, 1.0f) << estimator << " " << light;
+        if(!(light > 0.0f))
+          EXPECT_EQ(wb, 1.0f) << estimator << " " << bsdf;
+        if(light > 0.0f && bsdf > 0.0f)
+        {
+          EXPECT_NEAR(wl + wb, 1.0f, 1e-6f) << estimator << " " << light << " " << bsdf;
+          if(estimator == ESTIMATOR_LIGHT)
+            EXPECT_EQ(wl, 1.0f);
+          if(estimator == ESTIMATOR_BSDF)
+            EXPECT_EQ(wb, 1.0f);
+        }
+        if(estimator == ESTIMATOR_MIS)
+        {
+          EXPECT_EQ(wl, misPowerWeight(light, bsdf));
+          EXPECT_EQ(wb, misPowerWeight(bsdf, light));
+        }
+      }
+  EXPECT_EQ(bsdfHitMisWeight(1.0f, 1.0f, /*bsdfOnly=*/true, ESTIMATOR_LIGHT), 1.0f);  // a smooth vertex's ray
+}
+
+// A sphere light's irradiance, light samples alone, BSDF rays alone and both: the same through a cosine
+// lobe and through a narrow one that sees half of it, where each technique alone has a part the other
+// can't reach. A light sampler 2% off its pdf splits light samples alone from BSDF rays alone by 2%
+// through the cosine lobe, which reaches all of the light.
+TEST(LightPick, LightSamplesAloneBsdfRaysAloneAndBothGiveOneIrradiance)
+{
+  const float3 pos(0), center(0.3f, 2.0f, 0.1f);
+  const float  radius   = 0.25f;
+  const float  omc      = sizedLightOneMinusCos(false, center, radius, 0.0f, pos);
+  const float3 axis     = normalize(center - pos);
+  const float  sin2     = radius * radius / dot(center, center);
+  const double expected = kPi * sin2 * axis.y;
+  const auto   hits     = [&](float3 d) { return sphereLightHitDistance(pos, d, center, radius, 1e30f) >= 0.0f; };
+  const TestLobe cosine{float3(0, 1, 0), 0.0f};
+  const TestLobe narrow{normalize(center + float3(radius, 0, 0) - pos), omc};
+  for(const TestLobe& lobe : {cosine, narrow})
+    for(int estimator : {ESTIMATOR_MIS, ESTIMATOR_LIGHT, ESTIMATOR_BSDF})
+      // BSDF rays alone through the cosine lobe find a small light rarely: more of them
+      EXPECT_NEAR(misIrradiance(axis, omc, lobe, hits, estimator == ESTIMATOR_BSDF ? 4000000 : 400000, 5 + estimator, estimator) / expected,
+                  1.0, 0.01)
+          << estimator << (lobe.lobeOmc > 0.0f ? " narrow" : " cosine");
+
+  const double light = misIrradiance(axis, omc, cosine, hits, 400000, 9, ESTIMATOR_LIGHT, 1.02f) / expected;
+  const double bsdf  = misIrradiance(axis, omc, cosine, hits, 4000000, 10, ESTIMATOR_BSDF, 1.02f) / expected;
+  EXPECT_NEAR(light, 1.0 / 1.02, 0.004);
+  EXPECT_NEAR(bsdf, 1.0, 0.01);  // no light sample counts: the lobe reaches the whole light
+}
+
 // A sphere light's cone sample and a BSDF ray that hits the sphere, weighed against each other, give
 // its irradiance once: through a cosine lobe, and through a narrow one off the light's centre that
 // catches part of it (the cornea's case). The hit test and the cone the sample draws from agree.
@@ -458,8 +520,8 @@ TEST(LightPick, ALightLeftToTheBsdfRayComesOnce)
   for(float a : pdfs)
     for(float b : pdfs)
     {
-      EXPECT_EQ(bsdfHitMisWeight(a, b, true), 1.0f) << a << " " << b;
-      EXPECT_EQ(bsdfHitMisWeight(a, b, false), misPowerWeight(a, b)) << a << " " << b;
+      EXPECT_EQ(bsdfHitMisWeight(a, b, true, ESTIMATOR_MIS), 1.0f) << a << " " << b;
+      EXPECT_EQ(bsdfHitMisWeight(a, b, false, ESTIMATOR_MIS), misPowerWeight(a, b)) << a << " " << b;
     }
 
   const float3 pos(0), center(0.3f, 2.0f, 0.1f);
@@ -498,9 +560,9 @@ TEST(LightPick, ALightLeftToTheBsdfRayComesOnce)
     if(reaches(b) && hitsLight(b) && lobe.pdf(b) > 0.0f)  // a draw on the cone's rim can round outside it
     {
       const float g = value(b) / lobe.pdf(b);
-      weighed += g * bsdfHitMisWeight(lobe.pdf(b), pl, false);
-      leftToBsdf += g * bsdfHitMisWeight(lobe.pdf(b), pl, true);
-      allDropped += g * bsdfHitMisWeight(lobe.pdf(b), pl, true);
+      weighed += g * bsdfHitMisWeight(lobe.pdf(b), pl, false, ESTIMATOR_MIS);
+      leftToBsdf += g * bsdfHitMisWeight(lobe.pdf(b), pl, true, ESTIMATOR_MIS);
+      allDropped += g * bsdfHitMisWeight(lobe.pdf(b), pl, true, ESTIMATOR_MIS);
     }
   }
   ASSERT_GT(past, 1000);
