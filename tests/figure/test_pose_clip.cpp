@@ -121,3 +121,22 @@ TEST(PoseClip, DialsAndTheFiguresRootAreChannelsAndWhatItLacksIsSkipped)
   EXPECT_EQ(clip.skipped[0], "tail rotation/x");
   EXPECT_EQ(clip.skipped[1], "not a url");
 }
+
+// The Pose tab's groups, from the bone's name with its side taken off: Genesis 9's toes are the leg's
+// though their names have the fingers' in them, its pectorals the torso's, its eyes and ears the face's
+TEST(PoseRig, BonesAreGroupedByWhatTheyAre)
+{
+  using fv::pose::groupOf;
+  EXPECT_EQ(groupOf("Genesis9", true), "Figure");
+  for(const char* toe : {"l_bigtoe1", "l_indextoe1", "l_midtoe2", "l_ringtoe1", "l_pinkytoe1", "lSmallToe2", "lToe", "lMetatarsals", "lHeel"})
+    EXPECT_EQ(groupOf(toe, false), "Left leg") << toe;
+  EXPECT_EQ(groupOf("r_indextoe1", false), "Right leg");
+  for(const char* arm : {"l_index1", "lIndex1", "l_shoulder", "lCollar", "lShldrBend", "l_upperarm", "lCarpal1", "l_thumb1", "l_hand"})
+    EXPECT_EQ(groupOf(arm, false), "Left arm") << arm;
+  for(const char* torso : {"l_pectoral", "rPectoral", "hip", "pelvis", "spine4", "chestUpper", "abdomenLower"})
+    EXPECT_EQ(groupOf(torso, false), "Torso") << torso;
+  for(const char* face : {"l_eye", "r_ear", "lEye", "rEar", "lowerJaw", "rBrowInner", "CenterBrow", "l_eyelidupper"})
+    EXPECT_EQ(groupOf(face, false), "Face") << face;
+  EXPECT_EQ(groupOf("neck2", false), "Head & neck");
+  EXPECT_EQ(groupOf("head", false), "Head & neck");
+}

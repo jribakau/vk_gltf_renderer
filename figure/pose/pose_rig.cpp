@@ -1,5 +1,6 @@
 #include <figure/pose/pose_rig.hpp>
 #include <figure/io/timing.hpp>
+#include <figure/wardrobe/fit/bones.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -44,12 +45,14 @@ std::string groupOf(const std::string& name, bool isRoot)
 {
   if(isRoot)
     return "Figure";
-  std::string n = name;
-  std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-  static const std::regex face(
-      R"(^(l|r)?(eye|ear)|brow|lid|lip|cheek|nose|nostril|jaw|tongue|teeth|mouth|chin|squint|nasolabial|face|forehead|temple|upperfacerig|lowerfacerig|belowjaw|center|lash)");
+  // by the name with its side taken off, as the wardrobe reads it: Genesis 9's "l_eye" is an eye and
+  // "l_indextoe1" a toe, not a finger
+  const wardrobe::ParsedBone p = wardrobe::parseBone(name);
+  const std::string&         n = p.token;
+  static const std::regex    face(
+      R"(^(eye|ear)|brow|lid|lip|cheek|nose|nostril|jaw|tongue|teeth|mouth|chin|squint|nasolabial|face|forehead|temple|upperfacerig|lowerfacerig|belowjaw|center|lash)");
   static const std::regex head(R"(^(head|neck|necklower|neckupper))");
-  static const std::regex torso(R"(^(hip|pelvis|abdomen|chest|spine|lpectoral|rpectoral|pectoral))");
+  static const std::regex torso(R"(^(hip|pelvis|abdomen|chest|spine|pectoral))");
   // G8's lCollar, lShldrBend; G9's l_shoulder, l_upperarm
   static const std::regex arm(R"((collar|shldr|shoulder|upperarm|forearm|hand|carpal|thumb|index|mid|ring|pinky))");
   static const std::regex leg(R"((thigh|shin|foot|toe|metatarsal|heel))");
@@ -59,11 +62,12 @@ std::string groupOf(const std::string& name, bool isRoot)
     return "Head & neck";
   if(std::regex_search(n, torso))
     return "Torso";
-  const std::string side = !n.empty() && n[0] == 'l' ? "Left" : !n.empty() && n[0] == 'r' ? "Right" : "";
-  if(!side.empty() && std::regex_search(n, arm))
-    return side + " arm";
+  const std::string side = p.side == 'l' ? "Left" : p.side == 'r' ? "Right" : "";
+  // the leg first: a toe's name has its finger's in it ("indextoe")
   if(!side.empty() && std::regex_search(n, leg))
     return side + " leg";
+  if(!side.empty() && std::regex_search(n, arm))
+    return side + " arm";
   return "Other";
 }
 
