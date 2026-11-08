@@ -12,10 +12,13 @@
 // the bone transfer then fits each limb. UVs flip to DAZ's (v up), and the normal maps are marked
 // DirectX-style (green down), which they are: their curl is a fifth lower read that way.
 //
-// Textures sit beside the mesh under its Data folder (textures\...), outside the content library.
-// They are linked into the library (hard links where the drive allows, else copies) under
-// Runtime/Textures/FigureViewer/Skyrim/<the Data folder's hash>/, as images.rs does with a picked
-// picture, so the cooker, the renderer's own lookup and saved scenes all find them by library path.
+// Textures sit beside the mesh under its Data folder (textures\...). A mod the app installed is in the
+// content library already (Skyrim/<mod>/, src-tauri/src/skyrim.rs), and its textures are used where
+// they are; a texture its own mod lacks is looked for in the other mods installed there, as the game's
+// one Data folder would have it. A mesh worn from outside the library has its textures linked into it
+// (hard links where the drive allows, else copies) under Runtime/Textures/FigureViewer/Skyrim/<the
+// Data folder's hash>/, as images.rs does with a picked picture, so the cooker, the renderer's own
+// lookup and saved scenes all find them by library path.
 
 #include <filesystem>
 #include <string>
@@ -24,6 +27,9 @@
 #include <figure/nif/nif_file.hpp>
 
 namespace fv::nif {
+
+// The content folder's folder of installed Skyrim mods, one folder each (src-tauri/src/skyrim.rs ROOT).
+inline constexpr const char* kInstalledMods = "Skyrim";
 
 // A Skyrim unit in centimetres: 64 to the yard.
 constexpr double kUnitCm = 2.54 * 36 / 64;
@@ -49,6 +55,10 @@ std::vector<size_t> bodyShapes(const File& nif);
 // Where a texture a NIF names (`textures\x\y.dds`, or without its `textures\`) is on disk: under the
 // first folder up from `meshDir` that holds it. Empty when none does.
 std::filesystem::path findTexture(const std::filesystem::path& meshDir, const std::string& rel);
+
+// A texture a NIF names, in the mods installed in `home` (the content folder) under Skyrim/, the first
+// by folder name that has it. Empty when none does.
+std::filesystem::path findInstalledTexture(const std::filesystem::path& home, const std::string& rel);
 
 // The library path a texture is linked to under `home` (the content folder), linking it there first when
 // it isn't, or is another file. Empty when it can't be (no home, or the drive refuses both a link and a copy).

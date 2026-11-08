@@ -5,6 +5,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <unordered_map>
 
@@ -328,6 +329,22 @@ std::shared_ptr<dson::Channel> channel(const char* label, dson::Json value, std:
   return c;
 }
 
+// `file`'s path under `folder`, forward slashes, when it is inside it.
+std::optional<std::string> insideFolder(const fs::path& folder, const fs::path& file)
+{
+  if(folder.empty())
+    return std::nullopt;
+  std::error_code ec;
+  const fs::path  base = fs::weakly_canonical(folder, ec);
+  const fs::path  full = fs::weakly_canonical(file, ec);
+  if(ec)
+    return std::nullopt;
+  const fs::path rel = full.lexically_relative(base);
+  if(rel.empty() || *rel.begin() == ".." || rel.is_absolute())
+    return std::nullopt;
+  return utf8(rel);
+}
+
 struct TextureFinder
 {
   fs::path                          meshDir, home;
@@ -341,13 +358,19 @@ struct TextureFinder
     const std::string key = lower(forward(rel));
     if(const auto it = done.find(key); it != done.end())
       return it->second;
-    std::string& out   = done[key];
-    const fs::path src = findTexture(meshDir, rel);
+    std::string& out = done[key];
+    fs::path     src = findTexture(meshDir, rel);
+    // not in its own mod: in another installed beside it, as the game's one Data folder would have it
+    if(src.empty())
+      src = findInstalledTexture(home, rel);
     if(src.empty())
     {
       missing.push_back(forward(rel));
       return out;
     }
+    // an installed mod's, in the content folder already: its own library path, nothing linked
+    if(const std::optional<std::string> inside = insideFolder(home, src))
+      return out = encodeRel(*inside);
     // the Data folder: where the texture's own path starts
     fs::path root = src.parent_path();
     for(size_t depth = std::count(key.begin(), key.end(), '/'); depth > 0 && root.has_parent_path(); depth--)
@@ -517,6 +540,28 @@ fs::path findTexture(const fs::path& meshDir, const std::string& rel)
     if(dir == dir.parent_path())
       break;
   }
+  return {};
+}
+
+fs::path findInstalledTexture(const fs::path& home, const std::string& rel)
+{
+  if(home.empty())
+    return {};
+  std::error_code ec;
+  const fs::path  mods = home / kInstalledMods;
+  if(!fs::is_directory(mods, ec))
+    return {};
+  // in name order, so the same texture comes from the same mod every time
+  std::vector<fs::path> dirs;
+  for(const auto& e : fs::directory_iterator(mods, ec))
+    if(e.is_directory(ec))
+      dirs.push_back(e.path());
+  std::sort(dirs.begin(), dirs.end());
+  const std::string r    = forward(rel);
+  const fs::path    tail = lower(r).rfind("textures/", 0) == 0 ? fromUtf8(r) : fs::path("textures") / fromUtf8(r);
+  for(const fs::path& d : dirs)
+    if(const fs::path p = d / tail; fs::is_regular_file(p, ec))
+      return p;
   return {};
 }
 

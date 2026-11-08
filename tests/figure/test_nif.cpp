@@ -616,6 +616,31 @@ TEST(Nif, WornAsOneItemOnItsBodyWithItsTexturesInTheLibrary)
   EXPECT_EQ(*channelOf(again.scene.materials[0], "Diffuse Color")->image, *diffuse->image);
 }
 
+// A mod the app installed (src-tauri/src/skyrim.rs) is in the content folder already: its textures are
+// used where they are, and one its own mod lacks comes from another installed beside it
+TEST(Nif, AnInstalledModsTexturesAreUsedWhereTheyAre)
+{
+  const Data     data("installed");
+  const fs::path mod   = data.home / fv::nif::kInstalledMods / "Helga CBBE";
+  const fs::path other = data.home / fv::nif::kInstalledMods / "A Retexture";
+  fs::create_directories(mod / "meshes" / "test");
+  fs::create_directories(mod / "textures" / "test");
+  fs::create_directories(other / "textures" / "test");
+  fs::copy_file(data.nif, mod / "meshes" / "test" / "skirt_1.nif");
+  for(const char* t : {"dress_d.dds", "dress_n.dds"})
+    std::ofstream(mod / "textures" / "test" / t, std::ios::binary) << "x";
+  std::ofstream(other / "textures" / "test" / "dress_m.dds", std::ios::binary) << "x";
+
+  const fv::dson::LoadResult w = fv::nif::loadWearable(mod / "meshes" / "test" / "skirt_1.nif", {}, {data.home});
+  ASSERT_EQ(w.items.size(), 1u);
+  const fv::Material& mat = w.scene.materials[size_t(w.scene.meshes[size_t(w.items[0].meshes[0])].materials[0])];
+  EXPECT_EQ(mat.surface.base.map, "/Skyrim/Helga%20CBBE/textures/test/dress_d.dds");
+  EXPECT_EQ(mat.surface.normalMap, "/Skyrim/Helga%20CBBE/textures/test/dress_n.dds");
+  EXPECT_EQ(mat.surface.metallic.map, "/Skyrim/A%20Retexture/textures/test/dress_m.dds");
+  EXPECT_FALSE(fs::exists(data.home / "Runtime"));
+  EXPECT_TRUE(w.warnings.empty()) << w.warnings.front();
+}
+
 TEST(Nif, BonesHangAsTheFiguresDoAtItsJoints)
 {
   // a figure: hip -> pelvis -> thighs, hip -> abdomenLower, as Genesis 8 hangs them

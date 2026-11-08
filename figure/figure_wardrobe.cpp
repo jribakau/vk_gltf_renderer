@@ -451,12 +451,20 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   timing::Scope     t("prepareWear " + file);
   {
     timing::Scope tl("loadDson");
-    // a Skyrim outfit's mesh, from wherever it is: its textures are linked into the first content folder
+    // a Skyrim outfit's mesh: one the app installed by its library path, else from wherever it is,
+    // its textures linked into the first content folder
     if(nif::isNif(rel))
     {
-      const auto& roots = m_store->library().roots();
-      out->loaded       = nif::loadWearable(std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(rel.data()), rel.size())), options,
-                                            {roots.empty() ? std::filesystem::path() : roots.front()});
+      const auto&           roots = m_store->library().roots();
+      std::filesystem::path path(std::u8string(reinterpret_cast<const char8_t*>(rel.data()), rel.size()));
+      if(!path.is_absolute())
+      {
+        const auto found = m_store->library().find(file);
+        if(!found)
+          throw std::runtime_error(file + " isn't in the content folders: was its mod uninstalled?");
+        path = *found;
+      }
+      out->loaded = nif::loadWearable(path, options, {roots.empty() ? std::filesystem::path() : roots.front()});
     }
     else
       out->loaded = dson::loadDson(*m_store, file, options);

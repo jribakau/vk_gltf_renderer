@@ -46,6 +46,9 @@ Json FvHost::Impl::load(const Json& args)
     if(ext == ".nif")
       return wear(args);
   }
+  // an installed Skyrim mod's piece, from the Library: worn as one dropped is
+  if(args.contains("rel") && fv::nif::isNif(args["rel"].get<std::string>()))
+    return wear(args);
   // an absolute path, or a path in the content folders (a library item)
   std::optional<std::pair<std::vector<std::filesystem::path>, std::string>> library;
   std::string                                                              name;
