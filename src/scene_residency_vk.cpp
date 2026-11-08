@@ -912,6 +912,8 @@ nvvk::AccelerationStructureGeometryInfo VulkanGpuBackend::geometryOf(const BlasI
   triangles.maxVertex                = input.vertexCount ? input.vertexCount - 1 : 0;
   out.geometry.sType                 = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
   out.geometry.geometryType          = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+  // one any-hit a triangle, as shadowCrossSurface and stochastic opacity need: dropped on every geometry
+  // it traced no faster (7TEST, heavyScene at 1080p, 2026-11-08), the moving view 1-2% slower
   out.geometry.flags = VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR | (input.opaque ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0);
   out.geometry.geometry.triangles = triangles;
   out.rangeInfo.primitiveCount    = input.indexCount / 3;
