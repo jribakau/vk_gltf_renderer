@@ -3497,12 +3497,13 @@ TEST(Dforce, aLateLiveStepCarriesTheClothThroughWhatItCannotSimulate)
 namespace {
 
 // A belt of 3,200 faces (a 6 cm square in quads of 0.15 cm, at y 1.5) between a body (mesh 0) and a veil
-// of 1 cm quads (mesh 2), all skinned to one bone: the belt (mesh 1) is met as a coarse copy.
+// of 1 cm quads (mesh 2), all skinned to one bone: the belt (mesh 1) is met as a coarse copy. `rigid`: the
+// belt has no skin and hangs from the bone, as a prop does
 struct BeltScene
 {
   fv::SceneGraph scene;
   int            rootNode = -1, bone = -1;
-  BeltScene()
+  explicit BeltScene(bool rigid = false)
   {
     rootNode = scene.add(fv::Node{});
     fv::Node boneNode;
@@ -3525,7 +3526,7 @@ struct BeltScene
       return m;
     };
     scene.meshes.push_back(skinned(sceneMesh(grid(8, 0), false)));
-    scene.meshes.push_back(skinned(sceneMesh(belt, false)));
+    scene.meshes.push_back(rigid ? sceneMesh(belt, false) : skinned(sceneMesh(belt, false)));
     scene.meshes.push_back(skinned(sceneMesh(grid(4, 3), true)));
     scene.materials.push_back({});
     for(int i = 0; i < 3; i++)
@@ -3533,7 +3534,7 @@ struct BeltScene
       fv::Node n;
       n.kind = fv::NodeKind::eMesh;
       n.mesh = i;
-      scene.add(n, rootNode);
+      scene.add(n, rigid && i == 1 ? bone : rootNode);
     }
   }
 };
@@ -3678,6 +3679,45 @@ TEST(Dforce, aCollidersCopyIsMadeOnceForEveryPoseAndAgainForADial)
   ASSERT_TRUE(dialled);
   EXPECT_EQ(made, 2);
   EXPECT_NEAR(dialled->rest[1], first->rest[1] + 1.5f, 1e-4f);
+  fv::timing::setSink({});
+}
+
+TEST(Dforce, aPropsCopyIsKeptAsTheBoneItHangsFromTurns)
+{
+  // A collider with no skin, hung from a bone, stands elsewhere in the cloth's space at every pose: its
+  // copy was kept by that rest shape too, so it was made again at each (the Charming Witch's hat on the
+  // head, 21-24 ms a settle in the headless renderer). It is kept by its mesh, as a skinned one is
+  BeltScene       b(true);
+  morph::MorphSet morphs([&](int m) { return b.scene.meshes[size_t(m)].geo.get(); });
+  physics::Cloth  d(b.scene, morphs, 0, b.rootNode);
+  std::mutex      mutex;
+  int             made = 0;
+  fv::timing::setSink([&](const std::string& line) {
+    std::lock_guard lock(mutex);
+    if(line.find(" collides as ") != std::string::npos)
+      made++;
+  });
+  // the belt's slot: the collider with no skin to read
+  const auto belt = [&]() -> std::optional<physics::cloth::Surface> {
+    const auto p = d.prepared();
+    for(size_t slot = 0; p && slot < p->slotMesh.size(); slot++)
+      if(p->slotMesh[slot] < 0 && p->bodies[slot].kind == physics::cloth::Surface::Kind::eCollider)
+        return p->bodies[slot];
+    return std::nullopt;
+  };
+  const auto first = belt();
+  ASSERT_TRUE(first);
+  EXPECT_LT(first->tris.size() / 3, 400u);
+  EXPECT_EQ(made, 1);
+  // the bone it hangs from lifts it 2 cm: the same copy, where the belt is now
+  b.scene.nodes[size_t(b.bone)].position.y += 2;
+  const auto lifted = belt();
+  ASSERT_TRUE(lifted);
+  EXPECT_EQ(made, 1) << "simplified again where the bone took it";
+  EXPECT_EQ(lifted->tris, first->tris);
+  ASSERT_EQ(lifted->rest.size(), first->rest.size());
+  for(size_t v = 0; v < lifted->rest.size() / 3; v++)
+    EXPECT_NEAR(lifted->rest[v * 3 + 1], first->rest[v * 3 + 1] + 2.f, 1e-4f) << v;
   fv::timing::setSink({});
 }
 

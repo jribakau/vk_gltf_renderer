@@ -1,6 +1,7 @@
 #include <figure/wardrobe/collider.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 #include <figure/physics/skin.hpp>
@@ -197,26 +198,37 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
   const Mat4 rootWorld = m_root >= 0 && size_t(m_root) < worlds.size() ? worlds[size_t(m_root)] : Mat4{};
   const Mat4 fromWorld = inverse(rootWorld);
   const auto toSpace = [&](int mesh) { return fromWorld * (nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : Mat4{}); };
+  // its parts, as the timing log shows them where they take a millisecond or more: the morphed cages,
+  // their skinning, and each vertex's limb
+  double     cagesMs = 0, skinMs = 0, limbsMs = 0;
+  const auto timed   = [](double& into, auto&& work) {
+    const auto t0  = std::chrono::steady_clock::now();
+    auto       out = work();
+    into += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    return out;
+  };
   // a mesh's cage in its own space as posed now: skinned when it has a skin, else as it is
   const auto posedCage = [&](int mesh, const std::vector<float>& rest, physics::CageSkin* skin, physics::SkinPose* pose) {
     const Mesh& m = m_scene.meshes[size_t(mesh)];
     if(!m.skinned() || m.cageSkin.start.size() != rest.size() / 3 + 1)
       return rest;
-    physics::CageSkin s = physics::cageSkin(m.cageSkin);
-    physics::SkinPose p = physics::currentSkin(m_scene, worlds, nodeOf, mesh);
-    auto             posed = physics::skinLocal(rest, s, p);
-    if(skin)
-      *skin = std::move(s);
-    if(pose)
-      *pose = std::move(p);
-    return posed;
+    return timed(skinMs, [&] {
+      physics::CageSkin s = physics::cageSkin(m.cageSkin);
+      physics::SkinPose p = physics::currentSkin(m_scene, worlds, nodeOf, mesh);
+      auto             posed = physics::skinLocal(rest, s, p);
+      if(skin)
+        *skin = std::move(s);
+      if(pose)
+        *pose = std::move(p);
+      return posed;
+    });
   };
 
   auto       job      = std::make_shared<Job>();
-  const auto bodyRest = m_morphs.morphedCage(m_bodyMesh);
+  const auto bodyRest = timed(cagesMs, [&] { return m_morphs.morphedCage(m_bodyMesh); });
   job->body           = physics::transformPoints(toSpace(m_bodyMesh), posedCage(m_bodyMesh, bodyRest, nullptr, nullptr));
   job->bodyTris       = body.geo->dsonTris;
-  job->bodyLimbs      = meshLimbs(m_scene, body);
+  job->bodyLimbs      = timed(limbsMs, [&] { return meshLimbs(m_scene, body); });
   job->bodyRest       = physics::transformPoints(toSpace(m_bodyMesh), bodyRest);
 
   std::vector<int> order;
@@ -242,16 +254,19 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
     item.settings = s;
     // the shape under the last correction, so a pass measures the garment, not its own push
     const auto own = m_morphs.cpuTarget(collideChannelOf(mesh), mesh);
-    item.rest      = m_morphs.morphedCage(mesh, own.get());
+    item.rest      = timed(cagesMs, [&] { return m_morphs.morphedCage(mesh, own.get()); });
     const Mat4 to  = toSpace(mesh);
     item.posed     = physics::transformPoints(to, posedCage(mesh, item.rest, &item.skin, &item.pose));
     item.tris      = m.geo->dsonTris;
-    item.limbs     = meshLimbs(m_scene, m);
+    item.limbs     = timed(limbsMs, [&] { return meshLimbs(m_scene, m); });
     item.back      = inverse(to);
     item.restInSpace = physics::transformPoints(to, item.rest);
     item.worn        = placeWorn(mesh);
     job->items.push_back(std::move(item));
   }
+  timing::report("collider: the cages", cagesMs, 1);
+  timing::report("collider: their skins", skinMs, 1);
+  timing::report("collider: their limbs", limbsMs, 1);
   if(job->items.empty())
     return nullptr;
   return job;

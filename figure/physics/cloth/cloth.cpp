@@ -71,7 +71,7 @@ bool sameGravity(const std::array<float, 3>& a, const std::array<float, 3>& b)
 // which collide, its strength and what is in the simulation, the dials' generation, and `edge` (FNV-1a over
 // their bytes). The pose's correctives move a rest shape a little at every new pose, and a copy kept is
 // taken of the shape as it is now (sameCopy, sameCloth); a dial makes a fresh one. A slot with no mesh
-// to know it by (no skin) is known by its rest shape as well
+// to know it by is known by its rest shape as well
 uint64_t shapeKey(const cloth::Surface& s, int mesh, int dials, float edge)
 {
   uint64_t   h   = 1469598103934665603ull;
@@ -125,6 +125,8 @@ struct Cloth::Job
   std::vector<cloth::Surface> bodies;
   // the mesh each body is, for reading its bones again; -1 when it has no skin
   std::vector<int> slotMesh;
+  // the mesh each body was made from, skinned or not: what its coarse copy is kept by (shapeKey)
+  std::vector<int> slotSource;
   // every mesh it was made from, skinned or not, its strand hairs too: what changes the simulation
   std::set<int> from;
   // a coarse copy's vertices of its mesh's cage, per slot (physics/cloth/coarse.hpp); empty: all of them
@@ -595,10 +597,13 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t, bool live) const
       job->slotMesh.push_back(skinned->skinned ? mesh : -1);
     }
   };
+  // the body and its floor are the first slots
+  job->slotSource.assign(job->bodies.size(), m_bodyMesh);
   for(int mesh = 0; mesh < int(m_scene.meshes.size()); mesh++)
   {
     const size_t bodies = job->bodies.size(), hairs = job->hairs.size();
     consider(mesh);
+    job->slotSource.resize(job->bodies.size(), mesh);
     if(job->bodies.size() != bodies || job->hairs.size() != hairs)
       job->from.insert(mesh);
   }
@@ -691,7 +696,9 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t, bool live) const
         continue;
       const size_t   had  = job->bodies[slot].tris.size() / 3;
       const float    err  = kCoarseError * std::min(edge, kCoarseErrorWidth);
-      const uint64_t key  = shapeKey(job->bodies[slot], job->slotMesh[slot], dials, 0);
+      // by the mesh it was made from: a prop that isn't skinned, hung from a bone, stands elsewhere in
+      // the job's space at every pose (the Charming Witch's hat, made again at each: 21-24 ms a settle)
+      const uint64_t key  = shapeKey(job->bodies[slot], job->slotSource[slot], dials, 0);
       const auto     made = keepCopies ? m_coarse.find(key) : m_coarse.end();
       std::optional<physics::cloth::Coarse> c;
       if(made != m_coarse.end() && std::fabs(made->second.edge - edge) <= kCopyEdgeShare * edge)
