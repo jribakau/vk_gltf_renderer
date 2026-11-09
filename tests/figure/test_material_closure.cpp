@@ -160,15 +160,16 @@ namespace {
 constexpr int    kDetailTexture = 2;
 constexpr double kDetailWeight  = 0.6;
 
-tinygltf::Material detailSkin(double roughnessMul = 1.0)
+tinygltf::Material detailSkin(double roughnessMul = 1.0, bool medium = true)
 {
   tinygltf::Material m;
   m.pbrMetallicRoughness.baseColorFactor = {0.8, 0.5, 0.4, 1.0};
   m.pbrMetallicRoughness.metallicFactor  = 0.0;
   m.pbrMetallicRoughness.roughnessFactor = 0.5;
   tinygltf::Value::Object subsurface;
-  subsurface["scatterDistance"]           = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(0.00367), tinygltf::Value(0.00137), tinygltf::Value(0.00068)});
-  m.extensions["FV_materials_subsurface"] = tinygltf::Value(subsurface);
+  subsurface["scatterDistance"] = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(0.00367), tinygltf::Value(0.00137), tinygltf::Value(0.00068)});
+  if(medium)
+    m.extensions["FV_materials_subsurface"] = tinygltf::Value(subsurface);
   tinygltf::Value::Object normal;
   normal["index"] = tinygltf::Value(kDetailTexture);
   normal["scale"] = tinygltf::Value(1.0);
@@ -221,17 +222,35 @@ TEST(MaterialClosure, TheSkinPreviewTakesADetailMapsReliefAsRoughness)
   EXPECT_NEAR(preview.specular2, widened(still.specular2), 1e-4f);
 }
 
-// Only what the footprint's mip still holds: the rest the mip has averaged away for the still as well
-TEST(MaterialClosure, TheSkinPreviewTakesOnlyTheReliefTheStillResolves)
+// A still bends its normal by what the footprint's mip holds of the relief, and takes what the mip has
+// averaged away as roughness, on any surface: at a distance, where a mip holds none of it, all of it
+TEST(MaterialClosure, AStillTakesTheReliefItsMipAveragedAwayAsRoughness)
 {
-  const auto averaged = fv::probe::roughnessOfGltf(detailSkin(), detailMap(true, 0.957f, 0.957f));
-  EXPECT_NEAR(averaged.alpha[0], 0.25f, 1e-5f);
-  const auto  part  = fv::probe::roughnessOfGltf(detailSkin(), detailMap(true, 0.98f, 0.957f));
-  const float added = 2.0f * (toksvig(0.957f) - toksvig(0.98f)) * float(kDetailWeight * kDetailWeight);
-  EXPECT_NEAR(part.alpha[0], std::sqrt(0.0625f + added), 1e-4f);
-  // a map rebuilt unit length (BC5) tells nothing: no roughness, as before it kept its length
+  const float weight2 = float(kDetailWeight * kDetailWeight);
+  for(const bool medium : {true, false})
+  {
+    const auto still = fv::probe::roughnessOfGltf(detailSkin(1.0, medium), detailMap(false, 0.98f, 0.957f));
+    EXPECT_NEAR(still.alpha[0], std::sqrt(0.0625f + 2.0f * toksvig(0.98f) * weight2), 1e-4f) << medium;
+    const auto far = fv::probe::roughnessOfGltf(detailSkin(1.0, medium), detailMap(false, 0.957f, 0.957f));
+    EXPECT_NEAR(far.alpha[0], std::sqrt(0.0625f + 2.0f * toksvig(0.957f) * weight2), 1e-4f) << medium;
+  }
+  // the preview takes the whole map's, wherever its footprint is: what the still resolves and what it averages
+  const auto preview = fv::probe::roughnessOfGltf(detailSkin(), detailMap(true, 0.98f, 0.957f));
+  EXPECT_NEAR(preview.alpha[0], std::sqrt(0.0625f + 2.0f * toksvig(0.957f) * weight2), 1e-4f);
+}
+
+// Only mips the cooker made from unit texels say how the relief varies: a map rebuilt unit length (BC5)
+// says nothing, nor does a raw source shown until its cook lands, whose texels are short themselves
+TEST(MaterialClosure, OnlyACookedLengthKeepingMapReadsAsRoughness)
+{
   const auto unit = fv::probe::roughnessOfGltf(detailSkin(), detailMap(true, 1.0f, 1.0f));
   EXPECT_NEAR(unit.alpha[0], 0.25f, 1e-5f);
+  for(const bool preview : {true, false})
+  {
+    fv::probe::ClosureOptions raw = detailMap(preview, 0.9f, 0.86f);
+    raw.cookedMips                = false;
+    EXPECT_NEAR(fv::probe::roughnessOfGltf(detailSkin(), raw).alpha[0], 0.25f, 1e-5f) << preview;
+  }
 }
 
 // The detail's roughness multiplier holds in the preview as in the still, so the two agree on it

@@ -884,10 +884,11 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
       r.rel                    = d.map;
       r.srgb                   = false;
       r.channels               = d.heightMap ? "bn" : "ng";
-      // Skin with light spreading under it: the moving view's preview takes the relief as roughness,
-      // from how short the map's mean normals are (the shader's toksvigVariance), so the map keeps
-      // their length (BC7, where BC5 holds X and Y and rebuilds them unit length)
-      r.normalLength = out.scatterDistance.has_value();
+      // The relief a mip averages away under a footprint goes into roughness, from how short the mip's
+      // normals are (the shader's toksvigVariance), so the map keeps their length (BC7 from unit
+      // texels, where BC5 holds X and Y and rebuilds them unit length). Skin's thin preview takes
+      // all of it from the last mip.
+      r.normalLength = true;
       if(d.heightMap)
         r.bumpHeight = d.bumpHeight ? *d.bumpHeight : bumpHeightInUv(opts.metresPerUv, std::sqrt(d.tiles[0] * d.tiles[1]));
       de.normalMap = b.info(std::move(r), d.strength, UvTransform{d.tiles, d.offset});

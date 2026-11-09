@@ -511,16 +511,21 @@ leaves the detail layer out, as it does PBRSkin's.
 It also writes it for skin's micro-relief (`skinMicroDetail` in the same file): skin under a random
 walk with no detail map or top coat of its own gets a tiled height map of fine creases and pores, the
 app's like the fabrics'. The walk melts it out of the diffuse light, so what shows is the highlights
-breaking up. The moving view's thin preview leaves a measured skin's detail relief out
-(`evaluateMaterial`), where one sample a pixel would only shimmer, and puts what it spreads the
-still's highlights by into every lobe's roughness instead, after the films: the map's whole slope
-variance less what the footprint's mip has averaged away, both from the length of a mip's mean
-normal (Toksvig, `toksvigVariance`, the whole map's from its last mip, `getTextureMean`), as
-alpha² + 2 × variance × (scale × weight)². So such a map cooks to keep its length (`normalLength`,
-BC7 from unit texels) where BC5 would rebuild it. The detail's roughness multiplier applies in the
-preview as in the still. On 10TEST (HID Kelly, sweat 1: a film at roughness 0.22 over a pore map with
-slopes of 0.21 a side at weight 0.6), the preview's neck showed a wet streak the still didn't, as
-the still's samples over the resolved pores spread the film's highlight to about 0.31.
+breaking up.
+
+Any detail map's relief that a mip averages away under a pixel's footprint becomes roughness on
+every lobe, after the films (`evaluateMaterial`): the variance of the slopes it averaged, from how
+short the mip's mean normal is (Toksvig, `toksvigVariance`), as alpha² + 2 × variance × (scale ×
+weight)². Without it a still lost the relief with distance: of HID Kelly's pore map, a mip 4 texel
+keeps 24% and from mip 6 on nothing, so at a full figure's distance her sweat film (roughness 0.22)
+read almost as wet as with no pores; with all of the relief it spreads to about 0.42. A detail map therefore
+cooks to keep its length (`normalLength`: BC7 from unit texels, where BC5 would rebuild it), and the
+shader reads the length only where the image's mips came with it (`eTexInfoCookedMips`, from the
+residency's `storedLevels`): a raw stand-in's or an Original texture's texels are short themselves.
+
+The moving view's thin preview leaves a measured skin's relief out altogether, where one sample a
+pixel would only shimmer, and takes all of it as roughness: the whole map's variance, from its last
+mip (`getTextureMean`). The detail's roughness multiplier applies there as in the still.
 
 Every other texture a figure surface samples gets the surface's UV transform as
 `KHR_texture_transform` from lowering (`surfaceUv` in

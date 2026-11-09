@@ -160,7 +160,7 @@ TEST(Procedural, AnAmountOnSkinLowersToTheLayerWithItsTileAtItsSize)
   EXPECT_FALSE(height.srgb);
   EXPECT_FLOAT_EQ(height.bumpHeight, fv::mat::kSweatRelief);
   // the shader reads its mips' lengths (Toksvig), so it is cooked whole, not as BC5's X and Y; of the
-  // surface's other maps only the micro-relief's asks for that too (the skin preview reads it), and
+  // surface's other maps only the micro-relief's asks for that too (as every detail map does), and
   // the ask is a request of its own
   EXPECT_TRUE(height.normalLength);
   for(size_t i = 0; i < lowered.requests.size(); i++)

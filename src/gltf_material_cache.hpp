@@ -64,6 +64,10 @@ struct TextureSlotTable
   // (BC5, R8G8, ...). Only known once the images exist, hence the separate vector.
   std::vector<uint8_t> twoChannelSource;
 
+  // Set when the texture's mips came with its image (the cooker's), not made here from a raw source:
+  // eTexInfoCookedMips, without which a normal map's mip lengths aren't read (toksvigVariance)
+  std::vector<uint8_t> cookedMips;
+
   // The source image's mean luminance (linear, Rec. 709), from a grid of its texels; negative where
   // unknown (a compressed or float format). An emissive texture's weight as a light.
   std::vector<float> meanLuminance;
@@ -79,6 +83,11 @@ struct TextureSlotTable
   bool isTwoChannelSource(int texIndex) const
   {
     return texIndex >= 0 && texIndex < static_cast<int>(twoChannelSource.size()) && twoChannelSource[texIndex] != 0;
+  }
+
+  bool hasCookedMips(int texIndex) const
+  {
+    return texIndex >= 0 && texIndex < static_cast<int>(cookedMips.size()) && cookedMips[texIndex] != 0;
   }
 
   // GltfShadeMaterial::emissiveLightScale for an emissive texture: its mean, or 1 where unknown
@@ -100,6 +109,7 @@ struct TextureSlotTable
   {
     samplerSlots.clear();
     twoChannelSource.clear();
+    cookedMips.clear();
     meanLuminance.clear();
     gpuIndex.clear();
   }

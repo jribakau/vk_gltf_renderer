@@ -149,10 +149,13 @@ float4 getTextureMean(Texture2D images[], SamplerState samplers[], GltfTextureIn
 
 // Toksvig: how far a mip's averaged normals spread, from how short their average is. The variance of
 // their slopes along each axis, (1 - |n|) / |n|; a lobe of GGX alpha takes it as alpha^2 + 2 variance
-// (Beckmann's slopes vary by alpha^2 / 2 along each). A normal map has the length only where it was
-// cooked to keep it (normalLength); a two-channel one is rebuilt unit length, so 0.
-float toksvigVariance(float3 n)
+// (Beckmann's slopes vary by alpha^2 / 2 along each). A normal map says so only where the cooker made
+// its mips from unit texels (normalLength, eTexInfoCookedMips): a two-channel one is rebuilt unit
+// length, and a raw source's texels are short themselves (HID Kelly's pore map's average 0.90), so 0.
+float toksvigVariance(float3 n, GltfTextureInfo textureInfo)
 {
+  if((textureInfo.flags & TextureInfoFlagBits::eTexInfoCookedMips) == 0 || (textureInfo.flags & TextureInfoFlagBits::eTexInfoTwoChannelSource) != 0)
+    return 0.0F;
   const float len = min(length(n), 1.0F);
   return (1.0F - len) / max(len, 1e-3F);
 }
@@ -342,9 +345,11 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   float  detailWeight       = 0.0F;
   float3 detailNormal       = float3(0.0F, 0.0F, 1.0F);
   float  detailRoughnessMul = 1.0F;
-  // On skin shaded as the thin preview the relief doesn't bend the normal: a fine relief at one sample
-  // a pixel only shimmers under DLSS. What it spreads the still's highlights by goes into every lobe's
-  // roughness instead, after the films it bends as well (detailVariance, below the coat block).
+  // What a detail map's relief spreads highlights by beyond the normal it bends, as every lobe's
+  // roughness, after the films it bends as well (detailVariance, below the coat block). A mip of the
+  // map averages the relief under a footprint, which the normal can no longer show: that part. On skin
+  // shaded as the thin preview the relief doesn't bend the normal at all (a fine relief at one sample a
+  // pixel only shimmers under DLSS): all of it, as the still's resolved and averaged parts together.
   float detailVariance    = 0.0F;
   bool  reliefAsRoughness = false;
 #if GLTF_USE_SCATTER
@@ -360,19 +365,18 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
     if(isTexturePresent(material.detailNormalTexture))
     {
       GltfTextureInfo detailTexInfo = texInfos[material.detailNormalTexture];
-      detailNormal = getTexture(images, samplers, detailTexInfo, state.tc, state.texGrad).xyz * 2.0F - 1.0F;
-      detailNormal = decodeTangentSpaceNormal(detailNormal, detailTexInfo);
-      const float slopeScale = material.detailNormalScale * detailWeight;
+      const float     slopeScale    = material.detailNormalScale * detailWeight;
       if(reliefAsRoughness)
       {
-        // The still bends its normal by the relief this footprint's mip still holds: the whole map's
-        // variance less what the mip has averaged away, which the still loses as well. Its samples
-        // over a pixel spread a highlight by that, as roughness would.
+        // the whole map's variance: its last mip's
         const float3 mean = decodeTangentSpaceNormal(getTextureMean(images, samplers, detailTexInfo).xyz * 2.0F - 1.0F, detailTexInfo);
-        detailVariance    = max(toksvigVariance(mean) - toksvigVariance(detailNormal), 0.0F) * slopeScale * slopeScale;
+        detailVariance    = toksvigVariance(mean, detailTexInfo) * slopeScale * slopeScale;
       }
       else
       {
+        detailNormal   = getTexture(images, samplers, detailTexInfo, state.tc, state.texGrad).xyz * 2.0F - 1.0F;
+        detailNormal   = decodeTangentSpaceNormal(detailNormal, detailTexInfo);
+        detailVariance = toksvigVariance(detailNormal, detailTexInfo) * slopeScale * slopeScale;
         detailNormal.x *= slopeScale;
         detailNormal.y *= slopeScale;
         pbrMat.N           = applyDetailNormal(pbrMat.N, state.T, state.B, detailNormal);
@@ -605,10 +609,11 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
 #endif
 
 #if GLTF_USE_DETAIL
-  // The thin preview's relief as roughness (detailVariance above), on every lobe the still's relief
-  // bends, films and coats included. A sweat film at roughness 0.22 over HID Kelly's pores (slopes of
-  // 0.21 a side, at her weight 0.6) read as about 0.31 in a close-up still, where a pixel spans 16
-  // texels of the map, and the preview showed it wet at 0.22 without this.
+  // The relief as roughness (detailVariance above), on every lobe it bends, films and coats included. A
+  // sweat film at roughness 0.22 over HID Kelly's pores (slopes of 0.21 a side, at her weight 0.6)
+  // spreads to about 0.42 with all of the relief. A still used to lose what a mip averaged, three
+  // quarters and more of it from mip 4 on, so at a full figure's distance it read almost as wet as
+  // with no pores; the moving view's preview showed it so at any distance.
   if(detailVariance > 0.0F)
   {
     // pbrMat.roughness holds alpha = roughness^2; the coat's and the second lobe's are roughness

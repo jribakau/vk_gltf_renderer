@@ -47,6 +47,8 @@ struct ClosureOptions
   // the interactive preview's closure of a medium: evaluateMaterial's scatterAsThin
   bool thinScatter = false;
   std::vector<ProbeImage> images;
+  // the images' mips came with them, as the cooker's do (eTexInfoCookedMips); off, as a raw stand-in's
+  bool cookedMips = true;
 };
 
 // The roughness evaluateMaterial gives each lobe: GGX alpha for the base along T and B, and the

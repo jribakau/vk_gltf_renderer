@@ -325,6 +325,24 @@ TEST(MaterialCache, BuildResolvesSamplerIndexFromSlots)
   EXPECT_EQ(static_cast<int>(info.samplerIndex), 3);  // propagated from textureSlots.samplerSlots[1]
 }
 
+// A texture whose mips came with its image (the cooker's) says so to the shader, which reads a normal
+// map's mip lengths only then (toksvigVariance); one with mips made here from a raw source doesn't
+TEST(MaterialCache, ATexturesCookedMipsReachItsInfo)
+{
+  tinygltf::Material mat;
+  mat.normalTexture.index    = 0;
+  mat.occlusionTexture.index = 1;
+  nvvkgltf::TextureSlotTable slots;
+  slots.cookedMips = {0, 1};
+  std::vector<shaderio::GltfTextureInfo> infos(1);
+  const shaderio::GltfShadeMaterial      row     = nvvkgltf::MaterialCache::convertOne(mat, slots, 0, infos);
+  const auto                             flagged = [&](uint16_t slot) {
+    return (infos.at(slot).flags & static_cast<uint8_t>(shaderio::TextureInfoFlagBits::eTexInfoCookedMips)) != 0;
+  };
+  EXPECT_FALSE(flagged(uint16_t(row.normalTexture)));
+  EXPECT_TRUE(flagged(uint16_t(row.occlusionTexture)));
+}
+
 TEST(MaterialCache, UpdateMaterialInPlace)
 {
   nvvkgltf::MaterialCache cache;

@@ -2404,6 +2404,7 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
   const size_t n                    = slot.textures.size();
   table.samplerSlots.assign(n, 0);
   table.twoChannelSource.assign(n, 0);
+  table.cookedMips.assign(n, 0);
   table.meanLuminance.assign(n, -1.f);
   table.gpuIndex.assign(n, -1);
   for(size_t i = 0; i < n; i++)
@@ -2415,6 +2416,7 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
     table.gpuIndex[i]                    = int(m_textureSlots.at({texture, srgb, keyOf(sampler)}).slot);
     table.samplerSlots[i]          = int(m_samplerSlots.at(keyOf(sampler)).slot);
     table.twoChannelSource[i]      = image.info.twoChannel ? 1 : 0;
+    table.cookedMips[i]            = image.info.storedLevels ? 1 : 0;
     table.meanLuminance[i]         = image.info.meanLuminance;
   }
   const nvvkgltf::MaterialBits before = state->bits;

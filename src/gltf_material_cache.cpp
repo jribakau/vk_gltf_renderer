@@ -80,6 +80,8 @@ shaderio::GltfTextureInfo getTextureInfoImpl(const fv::mat::TextureSlot& slot, c
   ti.flags        = textureSlots.isTwoChannelSource(slot.index) ?
                         static_cast<uint8_t>(shaderio::TextureInfoFlagBits::eTexInfoTwoChannelSource) :
                         uint8_t{0};
+  if(textureSlots.hasCookedMips(slot.index))
+    ti.flags |= static_cast<uint8_t>(shaderio::TextureInfoFlagBits::eTexInfoCookedMips);
   // Per reference, not per image: the same image can be sampled flipped in one slot and not another.
   if(slot.flipGreen)
     ti.flags |= static_cast<uint8_t>(shaderio::TextureInfoFlagBits::eTexInfoFlipGreen);

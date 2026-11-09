@@ -182,6 +182,11 @@ enum TextureInfoFlagBits
   // (DirectX convention, or rows stored bottom-up as Figure Viewer's texture cache keeps them).
   // The decoded normal's Y is negated, so one image serves both conventions without a second copy.
   eTexInfoFlipGreen = 1 << 1,
+  // The image's mips came with it (the cooker's), not made by the renderer from a raw source (a
+  // stand-in until its cook lands, or Original textures). Only then does a normal map cooked to keep
+  // its length (normalLength: from unit texels) say by how short a mip's normal is how much the
+  // normals under it vary (toksvigVariance); a raw JPEG's texels are short of unit length themselves.
+  eTexInfoCookedMips = 1 << 2,
 };
 
 // Texture info
