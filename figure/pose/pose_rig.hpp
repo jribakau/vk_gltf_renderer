@@ -209,7 +209,9 @@ public:
   std::function<void()> afterPose;
 
   // A worn item's skeleton follows the figure's bones of the same name (and its root the figure
-  // itself), or `plan->follow` when it was made for another generation; the bones are re-posed.
+  // itself), or `plan->follow` when it was made for another generation; the bones are re-posed. A bone
+  // whose item parent follows a figure bone above its own leader's parent takes the figure's joints
+  // between them too (FollowChain).
   // Bones in `plan->inherit` already move with a parent that follows, so they count as matched and
   // are not given the leader's rotation a second time. Returns {matched, total} bones.
   struct FollowPlan
@@ -231,6 +233,8 @@ private:
   Axis*            axis(PoseBone& pb, ChannelKind kind, const std::string& axis);
   const Axis*      axis(const PoseBone& pb, ChannelKind kind, const std::string& axis) const;
   std::vector<int> apply(PoseBone& pb);
+  // a chain follower's local transform: its chain's local transforms one after the other, about its own rest
+  void             writeChain(int node);
   // the posed value plus what formulas add, or `fallback` plus that without the axis
   static double total(const PoseBone& pb, ChannelKind kind, int axis, double fallback);
   // Rotation channels, in degrees, that turn this bone's local +Z toward `worldPoint`.
@@ -253,6 +257,14 @@ private:
   std::unordered_map<int, Vec3>                m_ownScale;
   // the bone that writes a node: its own, or its leader for a follower
   std::unordered_map<int, size_t>              m_writer;
+  // A follower whose item parent follows a figure bone above its leader's parent: a Skyrim neck under
+  // a chest that follows chestLower, past chestUpper; a Genesis 9 forearm under an upper arm that
+  // follows lShldrBend, past lShldrTwist. Copying its leader's local turn alone loses the joints in
+  // between, so it takes the figure's bones from below the one its parent follows down to its leader,
+  // their turns and the pivots they move. By follower node; a chain of one bone (its leader) isn't kept
+  std::unordered_map<int, std::vector<size_t>> m_chain;
+  // per bone, the followers whose chain runs through it
+  std::unordered_map<size_t, std::vector<int>> m_onChain;
   std::set<int>                                m_moved;
   bool                                         m_restMoved   = false;
   int                                          m_restVersion = 0;

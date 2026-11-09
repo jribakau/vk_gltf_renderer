@@ -7,6 +7,8 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <map>
+#include <memory>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -385,4 +387,111 @@ TEST(Retarget, theSourceFigureIsFoundByItsBonesThenItsPath)
   Figure g9(false, 44, 2, 97);
   EXPECT_TRUE(fv::pose::namesRigBones(walkFile(false), *g9.pose));
   EXPECT_FALSE(fv::pose::namesRigBones(walkFile(true), *g9.pose));
+}
+
+namespace {
+
+// A figure and a worn item's skeleton in one scene, the item's bones at the figure's joints (as a fit
+// leaves them), each following the figure bone `follow` names.
+struct Worn
+{
+  fv::SceneGraph                     scene;
+  fv::dson::Rig                      figure, item;
+  std::unique_ptr<fv::pose::PoseRig> pose;
+  std::map<std::string, std::string> follow;
+
+  Worn(const std::string& figureBones, const std::string& itemBones, std::map<std::string, std::string> plan)
+      : follow(std::move(plan))
+  {
+    auto f = fv::dson::buildRig(scene, fv::dson::Json::parse(figureBones), nullptr);
+    auto i = fv::dson::buildRig(scene, fv::dson::Json::parse(itemBones), nullptr);
+    EXPECT_TRUE(f && i);
+    figure = *f;
+    item   = *i;
+    pose   = std::make_unique<fv::pose::PoseRig>(scene, figure, std::vector<const fv::dson::Rig*>{});
+    fv::pose::PoseRig::FollowPlan p;
+    p.follow = &follow;
+    pose->addFollowers(item, p);
+  }
+  fv::Mat4 world(const fv::dson::Rig& rig, const std::string& name) const { return scene.world(rig.find(scene, name)); }
+};
+
+std::string rigOf(const std::string& root, const std::vector<std::string>& bones)
+{
+  std::string out = R"([{"id":")" + root + R"(","type":"figure","name":")" + root + R"(",)" + triple("center_point", {}) + "}";
+  for(const std::string& b : bones)
+    out += "," + b;
+  return out + "]";
+}
+
+void expectSameWorld(const fv::Mat4& a, const fv::Mat4& b, double within, const std::string& what)
+{
+  for(size_t k = 0; k < 16; k++)
+    EXPECT_NEAR(a.e[k], b.e[k], within) << what << " element " << k;
+}
+
+}  // namespace
+
+// A Genesis 9 sleeve on Genesis 8: its forearm follows lForearmBend under an upper arm that follows
+// lShldrBend, past lShldrTwist, and its hand lHand past lForearmTwist. Copying each leader's own turn
+// lost the twists (about 12 cm at an ankle for a thigh's); the item now takes the joints between, and
+// its hand ends where the body's is within a micrometre
+TEST(FollowChain, AnItemsBonesTakeTheFiguresJointsTheyHaveNone)
+{
+  const std::string g8 = rigOf("Genesis8Female", {bone("lShldrBend", "Genesis8Female", {16, 138, 0}, {30, 138, 0}, "yz", "XYZ"),
+                                                  bone("lShldrTwist", "lShldrBend", {30, 138, 0}, {44, 138, 0}, "x", "XYZ"),
+                                                  bone("lForearmBend", "lShldrTwist", {44, 138, 0}, {57, 138, 0}, "y", "XZY"),
+                                                  bone("lForearmTwist", "lForearmBend", {57, 138, 0}, {70, 138, 0}, "x", "XZY"),
+                                                  bone("lHand", "lForearmTwist", {70, 138, 0}, {80, 138, 0}, "xyz", "XYZ")});
+  const std::string g9 = rigOf("Sleeve", {bone("l_upperarm", "Sleeve", {16, 138, 0}, {44, 138, 0}, "xyz", "XYZ"),
+                                          bone("l_upperarmtwist1", "l_upperarm", {16, 138, 0}, {30, 138, 0}, "x", "XYZ"),
+                                          bone("l_forearm", "l_upperarm", {44, 138, 0}, {70, 138, 0}, "xy", "XZY"),
+                                          bone("l_hand", "l_forearm", {70, 138, 0}, {80, 138, 0}, "xyz", "XYZ")});
+  Worn w(g8, g9, {{"l_upperarm", "lShldrBend"}, {"l_upperarmtwist1", "lShldrTwist"}, {"l_forearm", "lForearmBend"}, {"l_hand", "lHand"}});
+  w.pose->setMany({{"lShldrTwist", ChannelKind::eRotation, "x", 45}, {"lForearmBend", ChannelKind::eRotation, "y", 60},
+                   {"lForearmTwist", ChannelKind::eRotation, "x", -30}, {"lShldrBend", ChannelKind::eRotation, "z", -20}});
+  expectSameWorld(w.world(w.item, "l_forearm"), w.world(w.figure, "lForearmBend"), 1e-6, "forearm");
+  expectSameWorld(w.world(w.item, "l_hand"), w.world(w.figure, "lHand"), 1e-6, "hand");
+  // the twist helper turns as the figure's twist bone does (about its own joint, on the same axis)
+  const fv::Mat4 helper = w.world(w.item, "l_upperarmtwist1"), twist = w.world(w.figure, "lShldrTwist");
+  for(const size_t k : {0, 1, 2, 4, 5, 6, 8, 9, 10})
+    EXPECT_NEAR(helper.e[k], twist.e[k], 1e-6) << "twist helper's turn, element " << k;
+  // at rest again, where it was
+  w.pose->setMany({{"lShldrTwist", ChannelKind::eRotation, "x", 0}, {"lForearmBend", ChannelKind::eRotation, "y", 0},
+                   {"lForearmTwist", ChannelKind::eRotation, "x", 0}, {"lShldrBend", ChannelKind::eRotation, "z", 0}});
+  EXPECT_NEAR(w.world(w.item, "l_hand").e[12], 70, 1e-9);
+}
+
+// A Skyrim bodice has no bone for Genesis 8's chestUpper: its neck, under a chest that follows
+// chestLower, turns and moves with chestUpper's bend, its pivot where the body's neck is
+TEST(FollowChain, ASkippedJointMovesTheNextPivot)
+{
+  const std::string g8 = rigOf("Genesis8Female", {bone("chestLower", "Genesis8Female", {0, 120, 0}, {0, 130, 0}, "xyz", "YZX"),
+                                                  bone("chestUpper", "chestLower", {0, 130, 0}, {0, 145, 0}, "xyz", "YZX"),
+                                                  bone("neckLower", "chestUpper", {0, 145, 0}, {0, 150, 0}, "xyz", "YZX")});
+  const std::string sky = rigOf("Bodice", {bone("NPC Spine2 [Spn2]", "Bodice", {0, 120, 0}, {0, 145, 0}, "xyz", "YZX"),
+                                           bone("NPC Neck [Neck]", "NPC Spine2 [Spn2]", {0, 145, 0}, {0, 150, 0}, "xyz", "YZX")});
+  Worn w(g8, sky, {{"NPC Spine2 [Spn2]", "chestLower"}, {"NPC Neck [Neck]", "neckLower"}});
+  w.pose->setMany({{"chestUpper", ChannelKind::eRotation, "x", 10}, {"chestLower", ChannelKind::eRotation, "z", 5}});
+  expectSameWorld(w.world(w.item, "NPC Neck [Neck]"), w.world(w.figure, "neckLower"), 1e-6, "neck");
+  // the neck's pivot came forward with the bend, as the body's did
+  EXPECT_GT(std::abs(w.world(w.item, "NPC Neck [Neck]").e[14]), 1);
+}
+
+// A joint the item skips that is scaled scales what hangs below it on the item too
+TEST(FollowChain, ASkippedJointsScaleCarriesOn)
+{
+  const std::string g8  = rigOf("Genesis8Female", {bone("chestLower", "Genesis8Female", {0, 120, 0}, {0, 130, 0}, "xyz", "YZX"),
+                                                   bone("chestUpper", "chestLower", {0, 130, 0}, {0, 145, 0}, "xyz", "YZX"),
+                                                   bone("neckLower", "chestUpper", {0, 145, 0}, {0, 150, 0}, "xyz", "YZX")});
+  std::string       big = g8;
+  // chestUpper with a scale channel
+  const std::string withScale = R"("rotation_order":"YZX",)";
+  big.replace(big.find(withScale, big.find("\"chestUpper\"")), withScale.size(),
+              withScale + R"("scale":[{"id":"x","value":1,"min":0,"max":10},{"id":"y","value":1,"min":0,"max":10},{"id":"z","value":1,"min":0,"max":10}],)");
+  const std::string sky = rigOf("Bodice", {bone("chest", "Bodice", {0, 120, 0}, {0, 145, 0}, "xyz", "YZX"), bone("neck", "chest", {0, 145, 0}, {0, 150, 0}, "xyz", "YZX")});
+  Worn w(big, sky, {{"chest", "chestLower"}, {"neck", "neckLower"}});
+  w.pose->setMany({{"chestUpper", ChannelKind::eScale, "y", 1.5}});
+  expectSameWorld(w.world(w.item, "neck"), w.world(w.figure, "neckLower"), 1e-6, "neck");
+  EXPECT_NEAR(w.world(w.item, "neck").e[13], 130 + 15 * 1.5, 1e-6);
 }

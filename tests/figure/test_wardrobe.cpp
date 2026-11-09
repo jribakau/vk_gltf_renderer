@@ -1818,3 +1818,22 @@ TEST(Wardrobe, AnItemsOwnCorrectiveFiresOnTheFiguresBone)
   figure->settle();
   EXPECT_NEAR(x4() - before, 0, 1e-4);
 }
+
+// A twist bone follows the figure's twist bone when that is one to pose (Genesis 8's lShldrTwist), so
+// a Genesis 9 or Skyrim sleeve twists on Genesis 8; Genesis 9's numbered helpers, which its formulas
+// turn, still aren't followed by a Genesis 8 twist bone, which moves with its bend
+TEST(Fit, ATwistBoneFollowsATwistBoneToPose)
+{
+  using namespace fv::wardrobe;
+  const std::vector<std::string> g8{"lShldrBend", "lShldrTwist", "lForearmBend", "lForearmTwist"};
+  const auto onG8 = planLeaders({{"l_upperarm", std::nullopt}, {"l_upperarmtwist1", std::string("l_upperarm")}, {"l_forearm", std::string("l_upperarm")},
+                                 {"NPC L ForearmTwist1 [LLt1]", std::string("l_forearm")}},
+                                g8);
+  EXPECT_EQ(onG8.follow.at("l_upperarmtwist1"), "lShldrTwist");
+  EXPECT_EQ(onG8.follow.at("l_forearm"), "lForearmBend");
+  EXPECT_EQ(onG8.follow.at("NPC L ForearmTwist1 [LLt1]"), "lForearmTwist");
+  const std::vector<std::string> g9{"l_upperarm", "l_upperarmtwist1", "l_upperarmtwist2", "l_forearm"};
+  const auto onG9 = planLeaders({{"lShldrBend", std::nullopt}, {"lShldrTwist", std::string("lShldrBend")}}, g9);
+  EXPECT_EQ(onG9.inherit.count("lShldrTwist"), 1u);
+  EXPECT_EQ(onG9.follow.count("lShldrTwist"), 0u);
+}

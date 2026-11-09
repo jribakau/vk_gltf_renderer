@@ -172,10 +172,26 @@ LeaderPlan planLeaders(const std::vector<BoneRef>& bones, const std::vector<std:
   std::map<std::string, const BoneRef*> byName;
   for(const BoneRef& b : bones)
     byName[b.name] = &b;
+  // a twist bone on a figure whose twist is a bone of its own to pose (Genesis 3 and 8's lForearmTwist,
+  // not Genesis 9's numbered helpers, which its formulas turn): it follows that bone, not the bend
+  // matchBone prefers, or a Genesis 9 or Skyrim sleeve wouldn't twist on Genesis 8
+  std::vector<std::pair<std::string, ParsedBone>> posableTwists;
+  for(const std::string& t : targets)
+    if(const ParsedBone p = parseBone(t); p.twist && !p.token.empty() && !std::isdigit(static_cast<unsigned char>(p.token.back())))
+      posableTwists.emplace_back(t, p);
   std::map<std::string, std::string> direct;
   for(const BoneRef& b : bones)
     if(auto leader = matchBone(b.name, targets))
+    {
       direct[b.name] = *leader;
+      if(const ParsedBone p = parseBone(b.name); p.twist)
+        for(const auto& [t, tp] : posableTwists)
+          if(tp.side == p.side && tp.slot == p.slot)
+          {
+            direct[b.name] = t;
+            break;
+          }
+    }
   LeaderPlan plan;
   const auto ancestorLeader = [&](const std::string& name) -> std::optional<std::string> {
     auto                  it = byName.find(name);

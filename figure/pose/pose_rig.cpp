@@ -135,6 +135,7 @@ std::pair<int, int> PoseRig::addFollowers(const dson::Rig& rig, const FollowPlan
 {
   std::set<size_t> touched;
   int              matched = 0, total = 0;
+  std::vector<std::pair<int, size_t>> added;  // follower node, leader
   for(const auto& [id, node] : rig.bones)
   {
     total++;
@@ -164,10 +165,75 @@ std::pair<int, int> PoseRig::addFollowers(const dson::Rig& rig, const FollowPlan
     pb.rest.emplace_back(node, m_scene.nodes[node].position);
     m_restBase[node] = m_scene.nodes[node].position - localOffset(pb);
     touched.insert(leader);
+    added.emplace_back(node, leader);
+  }
+  // the figure's joints between the bone a follower's item parent follows and its own leader
+  for(const auto& [node, leader] : added)
+  {
+    const auto parent = m_writer.find(m_scene.nodes[size_t(node)].parent);
+    if(parent == m_writer.end())
+      continue;
+    std::vector<size_t> chain;
+    bool                reached = false;
+    for(size_t x = leader, guard = 0; guard < 512; guard++)
+    {
+      if(x == parent->second)
+      {
+        reached = true;
+        break;
+      }
+      chain.push_back(x);
+      const auto up = m_byNode.find(m_scene.nodes[size_t(m_bones[x].bone)].parent);
+      if(up == m_byNode.end())
+        break;
+      x = up->second;
+    }
+    // its parent's bone isn't above its leader (or is its leader): it copies its leader's turn
+    if(!reached || chain.size() < 2)
+      continue;
+    std::reverse(chain.begin(), chain.end());
+    for(const size_t x : chain)
+    {
+      m_onChain[x].push_back(node);
+      touched.insert(x);
+    }
+    m_chain[node] = std::move(chain);
   }
   for(size_t i : touched)
     apply(m_bones[i]);
   return {matched, total};
+}
+
+void PoseRig::writeChain(int node)
+{
+  const auto chain  = m_chain.find(node);
+  const auto writer = m_writer.find(node);
+  if(chain == m_chain.end() || writer == m_writer.end())
+    return;
+  const auto restOf = [&](const PoseBone& pb, int n) {
+    for(const auto& [k, rest] : pb.rest)
+      if(k == n)
+        return rest;
+    return m_scene.nodes[size_t(n)].position;
+  };
+  // the chain's local transforms one after the other, and where its pivots stand at rest
+  Vec3 p, p0;
+  Quat q;
+  Vec3 s{1, 1, 1};
+  for(const size_t x : chain->second)
+  {
+    const PoseBone& pb = m_bones[x];
+    const Node&     b  = m_scene.nodes[size_t(pb.bone)];
+    p                  = p + rotate(s * b.position, q);
+    q                  = q * b.quaternion;
+    s                  = s * b.scale;
+    p0                 = p0 + restOf(pb, pb.bone);
+  }
+  Node& f      = m_scene.nodes[size_t(node)];
+  f.position   = restOf(m_bones[writer->second], node) + (p - p0);
+  f.quaternion = q;
+  f.scale      = s;
+  m_moved.insert(node);
 }
 
 void PoseRig::removeFollowers(const dson::Rig& rig)
@@ -175,6 +241,13 @@ void PoseRig::removeFollowers(const dson::Rig& rig)
   std::set<int> nodes;
   for(const auto& [id, node] : rig.bones)
     nodes.insert(node);
+  for(const int n : nodes)
+    if(const auto chain = m_chain.find(n); chain != m_chain.end())
+    {
+      for(const size_t x : chain->second)
+        std::erase(m_onChain[x], n);
+      m_chain.erase(chain);
+    }
   for(PoseBone& pb : m_bones)
   {
     pb.followers.erase(std::remove_if(pb.followers.begin(), pb.followers.end(), [&](int n) { return nodes.count(n) > 0; }), pb.followers.end());
@@ -635,6 +708,9 @@ std::vector<int> PoseRig::apply(PoseBone& pb)
   }
   for(const auto& [node, rest] : pb.rest)
   {
+    // a chain follower is written below, from its chain
+    if(m_chain.count(node))
+      continue;
     Node& b       = m_scene.nodes[node];
     b.quaternion  = q;
     b.position    = rest + t;
@@ -665,6 +741,13 @@ std::vector<int> PoseRig::apply(PoseBone& pb)
       moved.insert(moved.end(), theirs.begin(), theirs.end());
     }
   }
+  // the followers whose chain runs through this bone
+  if(const auto on = m_onChain.find(size_t(&pb - m_bones.data())); on != m_onChain.end())
+    for(const int node : on->second)
+    {
+      writeChain(node);
+      moved.push_back(node);
+    }
   return moved;
 }
 
