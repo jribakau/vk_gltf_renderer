@@ -424,6 +424,91 @@ std::string wearShortfall(const SceneGraph& scene, const std::vector<int>& meshe
   return out;
 }
 
+namespace {
+
+// Every conforming part of `parts` (meshes of `itemScene`) bound to the body's unmorphed cage, side by
+// side on the pool; null for the rest. A skinned part binds limb to limb (its left-thigh vertices to
+// the left thigh): a legging's inner seam is as close to the other leg, and a body morph that moves
+// one leg would then drag the other's cloth. Strand hair binds along each strand.
+std::vector<std::shared_ptr<const wardrobe::SurfaceBinding>> bindParts(const SceneGraph& bodyScene, int bodyMesh, const SceneGraph& itemScene,
+                                                                       const std::vector<dson::ItemPart>& parts)
+{
+  std::vector<std::shared_ptr<const wardrobe::SurfaceBinding>> out(parts.size());
+  timing::Scope tb("bindToSurface");
+  const auto&   body      = *bodyScene.meshes[size_t(bodyMesh)].geo;
+  const auto    bodyLimbs = [&] {
+    timing::Scope tl("body limbs", 5);
+    return wardrobe::meshLimbs(bodyScene, bodyScene.meshes[size_t(bodyMesh)]);
+  }();
+  std::vector<std::future<void>> jobs;
+  auto                           tItems = std::make_unique<timing::Scope>("item limbs", 5);  // the filters, built here before each job
+  for(size_t i = 0; i < parts.size(); i++)
+  {
+    const dson::ItemPart& part = parts[i];
+    if(!part.conforms)
+      continue;
+    const Mesh&            itemMesh = itemScene.meshes[size_t(part.mesh)];
+    const mesh::BuiltMesh& item     = *itemMesh.geo;
+    auto filter = std::make_shared<std::optional<wardrobe::BindFilter>>(wardrobe::limbFilter(bodyLimbs, wardrobe::meshLimbs(itemScene, itemMesh)));
+    jobs.push_back(jobs::pool().submit([&body, &item, &part, filter, slot = &out[i]] {
+      const wardrobe::BindFilter* f = *filter ? &**filter : nullptr;
+      // strand hair binds along each strand (see bindStrands); everything else point by point
+      if(!item.cageLineStart.empty())
+      {
+        *slot = std::make_shared<wardrobe::SurfaceBinding>(
+            wardrobe::cachedBindStrands(body.cagePositions, body.dsonTris, item.cagePositions, item.cageLineStart, item.cageLineVerts, wardrobe::kStrandReach, f));
+        return;
+      }
+      // a graft's seam pairs number the body it was made for: on another mesh they'd weld it to strangers
+      const std::span<const int32_t> pairs =
+          part.graft && wardrobe::graftFits(*part.graft, body) ? std::span<const int32_t>(part.graft->pairs) : std::span<const int32_t>();
+      *slot = std::make_shared<wardrobe::SurfaceBinding>(wardrobe::cachedBindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs, f));
+    }));
+  }
+  tItems.reset();
+  // every job ends before any error is rethrown: they write into `out`
+  for(auto& j : jobs)
+    j.wait();
+  for(auto& j : jobs)
+    j.get();
+  return out;
+}
+
+// The body's dialled-in targets projected onto every bound part, each on a pool thread: what the
+// followers would otherwise project as they are added, on the owning thread.
+std::vector<std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>>> projectParts(const mesh::BuiltMesh& body, const SceneGraph& itemScene,
+                                                                                    const std::vector<dson::ItemPart>& parts,
+                                                                                    const std::vector<std::shared_ptr<const wardrobe::SurfaceBinding>>& bindings,
+                                                                                    const std::vector<dson::TargetPtr>& bodyTargets)
+{
+  std::vector<std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>>> out(parts.size());
+  if(bodyTargets.empty())
+    return out;
+  timing::Scope                  tp("project followers");
+  std::vector<std::future<void>> projections;
+  for(size_t i = 0; i < parts.size() && i < bindings.size(); i++)
+  {
+    const dson::ItemPart& part = parts[i];
+    if(!part.conforms || !bindings[i])
+      continue;
+    auto& slot = out[i];
+    slot.resize(bodyTargets.size());
+    const auto item = itemScene.meshes[size_t(part.mesh)].geo;
+    for(size_t k = 0; k < bodyTargets.size(); k++)
+      projections.push_back(jobs::pool().submit([&body, item, &part, binding = bindings[i], target = bodyTargets[k], cell = &slot[k]] {
+        std::vector<float> scratch;
+        *cell = {target, wardrobe::projectTarget(*binding, part.rigidity ? &*part.rigidity : nullptr, body, item->dsonVertexCount, *target, scratch)};
+      }));
+  }
+  for(auto& j : projections)
+    j.wait();
+  for(auto& j : projections)
+    j.get();
+  return out;
+}
+
+}  // namespace
+
 std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel, const WearQuality& quality, const WearInputs& inputs,
                                                           std::optional<bool> strandsFlipped)
 {
@@ -496,80 +581,14 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
         // measured again after the presets, where an error is reported
       }
     });
-  // every conforming part is bound to the body's unmorphed cage, in parallel. A skinned part binds
-  // limb to limb (its left-thigh vertices to the left thigh): a legging's inner seam is as close to
-  // the other leg, and a body morph that moves one leg would then drag the other's cloth
-  auto          tb        = std::make_unique<timing::Scope>("bindToSurface");
-  const auto&   body      = *scene.meshes[size_t(bodyMesh)].geo;
-  const auto    bodyLimbs = [&] {
-    timing::Scope tl("body limbs", 5);
-    return wardrobe::meshLimbs(scene, scene.meshes[size_t(bodyMesh)]);
-  }();
-  out->bindings.resize(out->loaded.parts.size());
-  std::vector<std::future<void>> jobs;
-  auto                           tItems = std::make_unique<timing::Scope>("item limbs", 5);  // the filters, built here before each job
-  for(size_t i = 0; i < out->loaded.parts.size(); i++)
-  {
-    const dson::ItemPart& part = out->loaded.parts[i];
-    if(!part.conforms)
-      continue;
-    const Mesh&            itemMesh = out->loaded.scene.meshes[size_t(part.mesh)];
-    const mesh::BuiltMesh& item     = *itemMesh.geo;
-    auto filter = std::make_shared<std::optional<wardrobe::BindFilter>>(wardrobe::limbFilter(bodyLimbs, wardrobe::meshLimbs(out->loaded.scene, itemMesh)));
-    jobs.push_back(jobs::pool().submit([&body, &item, &part, filter, slot = &out->bindings[i]] {
-      const wardrobe::BindFilter* f = *filter ? &**filter : nullptr;
-      // strand hair binds along each strand (see bindStrands); everything else point by point
-      if(!item.cageLineStart.empty())
-      {
-        *slot = std::make_shared<wardrobe::SurfaceBinding>(
-            wardrobe::cachedBindStrands(body.cagePositions, body.dsonTris, item.cagePositions, item.cageLineStart, item.cageLineVerts, wardrobe::kStrandReach, f));
-        return;
-      }
-      // a graft's seam pairs number the body it was made for: on another mesh they'd weld it to strangers
-      const std::span<const int32_t> pairs =
-          part.graft && wardrobe::graftFits(*part.graft, body) ? std::span<const int32_t>(part.graft->pairs) : std::span<const int32_t>();
-      *slot = std::make_shared<wardrobe::SurfaceBinding>(wardrobe::cachedBindToSurface(body.cagePositions, body.dsonTris, item.cagePositions, pairs, f));
-    }));
-  }
-  tItems.reset();
-  // every job ends before any error is rethrown: they write into `out`
-  for(auto& j : jobs)
-    j.wait();
-  for(auto& j : jobs)
-    j.get();
-  tb.reset();
+  out->bindings = bindParts(scene, bodyMesh, out->loaded.scene, out->loaded.parts);
   // the wearable's own morph folders, listed here rather than at commit
   {
     timing::Scope tl("list own morphs", 1);
     for(const dson::ItemPart& part : out->loaded.parts)
       ownMorphsOf(*m_store, part.defFile, out->ownMorphs);
   }
-  // the body's dialled-in targets projected onto every conforming part, each on a pool thread:
-  // what the followers would otherwise project at commit, on the owning thread
-  out->preprojected.resize(out->loaded.parts.size());
-  if(!bodyTargets.empty())
-  {
-    timing::Scope                  tp("project followers");
-    std::vector<std::future<void>> projections;
-    for(size_t i = 0; i < out->loaded.parts.size(); i++)
-    {
-      const dson::ItemPart& part = out->loaded.parts[i];
-      if(!part.conforms || !out->bindings[i])
-        continue;
-      auto& slot = out->preprojected[i];
-      slot.resize(bodyTargets.size());
-      const auto item = out->loaded.scene.meshes[size_t(part.mesh)].geo;
-      for(size_t k = 0; k < bodyTargets.size(); k++)
-        projections.push_back(jobs::pool().submit([&body, item, &part, binding = out->bindings[i], target = bodyTargets[k], cell = &slot[k]] {
-          std::vector<float> scratch;
-          *cell = {target, wardrobe::projectTarget(*binding, part.rigidity ? &*part.rigidity : nullptr, body, item->dsonVertexCount, *target, scratch)};
-        }));
-    }
-    for(auto& j : projections)
-      j.wait();
-    for(auto& j : projections)
-      j.get();
-  }
+  out->preprojected = projectParts(*scene.meshes[size_t(bodyMesh)].geo, out->loaded.scene, out->loaded.parts, out->bindings, bodyTargets);
   if(strands.valid())
   {
     timing::Scope ts("strands beside the bind (wait)", 1);
@@ -705,7 +724,6 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   // the wearable's own root is dropped: its objects hang from the figure
   dst.nodes[size_t(nodeBase + w.root)].removed = true;
   const dson::Rig& figureRig = loaded.rigs[size_t(loaded.mainRig)];
-  const int        body      = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
 
   std::vector<int> added;
   // whatever fails from here on takes it off again, as the user would
@@ -923,7 +941,6 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   const auto listOwn = [&](const std::string& defFile) -> const std::map<std::string, std::string>& {
     return ownMorphsOf(*m_store, defFile, p.ownMorphs);
   };
-  const auto&   bodyGeoPtr = dst.meshes[size_t(body)].geo;
   timing::Scope tp("followers and own morphs");
   for(size_t i = 0; i < w.parts.size(); i++)
   {
@@ -932,108 +949,16 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     WornItem*             worn = itemOfMesh(mesh);
     if(!worn)
       continue;
-    const auto& own    = listOwn(part.defFile);
-    // a count, not the mesh: it may be made again (remade) while these live, and the old one should go
-    const int   itemVertices = dst.meshes[size_t(mesh)].geo->dsonVertexCount;
+    const auto&         own = listOwn(part.defFile);
     const dson::MeshRef ref = refOf(mesh);
     if(part.conforms && p.bindings[i])
     {
-      std::erase_if(worn->follows, [&](const WornItem::Follow& had) { return had.mesh == mesh; });
-      if(dst.meshes[size_t(mesh)].geo->cageLineStart.empty())
-        worn->follows.push_back({mesh, p.bindings[i], part.rigidity ? std::make_shared<const wardrobe::Rigidity>(*part.rigidity) : nullptr});
-      morph::Follower f;
-      f.mesh   = mesh;
-      f.source = body;
-      // the scratch is the calling thread's: the morph set projects several targets side by side
-      f.project = [binding = p.bindings[i], rigidity = part.rigidity, bodyGeo = bodyGeoPtr, itemVertices](const mesh::RenderTarget& t) -> dson::TargetPtr {
-        thread_local std::vector<float> scratch;
-        return wardrobe::projectTarget(*binding, rigidity ? &*rigidity : nullptr, *bodyGeo, itemVertices, t, scratch);
-      };
-      // its own copies of the body's morphs were shaped on the figure it was made for: refitted from
-      // another generation (a Genesis 3 item on Genesis 8, whose dials share names), they'd move it as
-      // that figure's T-pose and shape had it, so the body's morphs are projected onto it instead
-      const size_t k       = size_t(std::find(added.begin(), added.end(), worn->id) - added.begin());
-      const bool   refit   = k < p.fits.size() && p.fits[k].has_value();
-      const auto   files   = std::make_shared<const std::map<std::string, std::string>>(refit ? std::map<std::string, std::string>{} : own);
-      f.label          = worn->label;
-      f.hasOwn         = [files](const std::string& channel) { return ownMorphFile(*files, channel) != nullptr; };
-      f.own            = [store = m_store, files, ref, itemVertices](const std::string& channel) -> std::shared_future<std::vector<dson::TargetPtr>> {
-        const std::string* file = ownMorphFile(*files, channel);
-        if(!file)
-          return {};
-        return jobs::pool()
-            .submit([store, file = *file, ref, itemVertices]() -> std::vector<dson::TargetPtr> {
-              std::vector<dson::TargetPtr> out;
-              try
-              {
-                for(const dson::MorphPart& part : dson::loadMorphFile(*store, file, {ref}))
-                  if(part.mesh == ref.mesh && part.target && targetFits(*part.target, itemVertices))
-                    out.push_back(part.target);
-              }
-              catch(const std::exception&)
-              {
-              }
-              return out;
-            })
-            .share();
-      };
-      if(i < p.preprojected.size())
-        f.preprojected = std::move(p.preprojected[i]);
-      {
-        timing::Scope ta("addFollower", 5);
-        morphs->addFollower(std::move(f));
-      }
-      // its own joint correctives, driven by the figure's bones through their formulas: those the
-      // figure has no channel for would never fire (MUO Sweater's forearm twists on Genesis 9).
-      // Made for another generation, they read its bones and its T-pose
-      if(!refit)
-      {
-        std::vector<std::string> correctives;
-        for(const auto& [stem, file] : own)
-          if(dson::hiddenMorph(stemOf(file)))
-            correctives.push_back(file);
-        if(!correctives.empty())
-          addItemCorrectives(correctives, ref);
-      }
-      if(part.graft && !wardrobe::graftFits(*part.graft, *bodyGeoPtr))
-      {
-        const std::string why = worn->label + " is a geograft made for another figure's mesh: here it can't hide the skin under it or join its seam to the body.";
-        if(std::find(result.warnings.begin(), result.warnings.end(), why) == result.warnings.end())
-          result.warnings.push_back(why);
-      }
-      else if(part.graft && !part.graft->hidden.empty())
-      {
-        auto& hidden = dst.meshes[size_t(body)].geo->hiddenPolys[worn->key];
-        hidden.insert(hidden.end(), part.graft->hidden.begin(), part.graft->hidden.end());
-        worn->hiddenPolys.insert(worn->hiddenPolys.end(), part.graft->hidden.begin(), part.graft->hidden.end());
-      }
+      const size_t k     = size_t(std::find(added.begin(), added.end(), worn->id) - added.begin());
+      const bool   refit = k < p.fits.size() && p.fits[k].has_value();
+      followBody(*worn, part, mesh, p.bindings[i], own, ref, refit, i < p.preprojected.size() ? std::move(p.preprojected[i]) : decltype(p.preprojected)::value_type{},
+                 result.warnings);
     }
-    // morphs that aren't copies of a figure morph: fit adjustments ("Loosen Neck") and styles
-    timing::Scope tAdj("adjustment dials", 5);
-    for(const auto& [stem, file] : own)
-    {
-      const std::string id = stemOf(file);
-      if(morphs->has(id) || dson::hiddenMorph(id) || !dson::adjustmentMorph(id))
-        continue;
-      const std::string name = id + "@" + worn->key;
-      if(morphs->has(name))
-        continue;
-      morph::ChannelOptions opts;
-      opts.group = worn->label;
-      opts.label = prettyMorphName(id);
-      morphs->addLazy(
-          name,
-          [store = m_store, file, ref]() -> morph::Finish {
-            auto parts = dson::loadMorphFile(*store, file, {ref});
-            return [parts = std::move(parts)]() mutable {
-              morph::LazyResult r;
-              r.parts = std::move(parts);
-              return r;
-            };
-          },
-          opts);
-      worn->channels.push_back(name);
-    }
+    addAdjustments(*worn, own, ref);
   }
   // dials the wearable brought, besides its adjustments: each leaves with the item whose meshes it
   // moves (the first item when it moves none yet, a file not read)
@@ -1083,6 +1008,160 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   // what the parsed files only this store holds
   m_store->trim();
   return result;
+}
+
+void Figure::followBody(WornItem& worn, const dson::ItemPart& part, int mesh, std::shared_ptr<const wardrobe::SurfaceBinding> binding,
+                        const std::map<std::string, std::string>& own, const dson::MeshRef& ref, bool refit,
+                        std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>> preprojected, std::vector<std::string>& warnings)
+{
+  SceneGraph& dst        = loaded.scene;
+  const int   body       = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
+  const auto& bodyGeoPtr = dst.meshes[size_t(body)].geo;
+  // a count, not the mesh: it may be made again (remade) while these live, and the old one should go
+  const int itemVertices = dst.meshes[size_t(mesh)].geo->dsonVertexCount;
+  std::erase_if(worn.follows, [&](const WornItem::Follow& had) { return had.mesh == mesh; });
+  if(dst.meshes[size_t(mesh)].geo->cageLineStart.empty())
+    worn.follows.push_back({mesh, binding, part.rigidity ? std::make_shared<const wardrobe::Rigidity>(*part.rigidity) : nullptr});
+  morph::Follower f;
+  f.mesh   = mesh;
+  f.source = body;
+  // the scratch is the calling thread's: the morph set projects several targets side by side
+  f.project = [binding, rigidity = part.rigidity, bodyGeo = bodyGeoPtr, itemVertices](const mesh::RenderTarget& t) -> dson::TargetPtr {
+    thread_local std::vector<float> scratch;
+    return wardrobe::projectTarget(*binding, rigidity ? &*rigidity : nullptr, *bodyGeo, itemVertices, t, scratch);
+  };
+  // its own copies of the body's morphs were shaped on the figure it was made for: refitted from
+  // another generation (a Genesis 3 item on Genesis 8, whose dials share names), they'd move it as
+  // that figure's T-pose and shape had it, so the body's morphs are projected onto it instead
+  const auto files = std::make_shared<const std::map<std::string, std::string>>(refit ? std::map<std::string, std::string>{} : own);
+  f.label          = worn.label;
+  f.hasOwn         = [files](const std::string& channel) { return ownMorphFile(*files, channel) != nullptr; };
+  f.own            = [store = m_store, files, ref, itemVertices](const std::string& channel) -> std::shared_future<std::vector<dson::TargetPtr>> {
+    const std::string* file = ownMorphFile(*files, channel);
+    if(!file)
+      return {};
+    return jobs::pool()
+        .submit([store, file = *file, ref, itemVertices]() -> std::vector<dson::TargetPtr> {
+          std::vector<dson::TargetPtr> out;
+          try
+          {
+            for(const dson::MorphPart& part : dson::loadMorphFile(*store, file, {ref}))
+              if(part.mesh == ref.mesh && part.target && targetFits(*part.target, itemVertices))
+                out.push_back(part.target);
+          }
+          catch(const std::exception&)
+          {
+          }
+          return out;
+        })
+        .share();
+  };
+  f.preprojected = std::move(preprojected);
+  {
+    timing::Scope ta("addFollower", 5);
+    morphs->addFollower(std::move(f));
+  }
+  // its own joint correctives, driven by the figure's bones through their formulas: those the
+  // figure has no channel for would never fire (MUO Sweater's forearm twists on Genesis 9).
+  // Made for another generation, they read its bones and its T-pose
+  if(!refit)
+  {
+    std::vector<std::string> correctives;
+    for(const auto& [stem, file] : own)
+      if(dson::hiddenMorph(stemOf(file)))
+        correctives.push_back(file);
+    if(!correctives.empty())
+      addItemCorrectives(correctives, ref);
+  }
+  if(part.graft && !wardrobe::graftFits(*part.graft, *bodyGeoPtr))
+  {
+    const std::string why = worn.label + " is a geograft made for another figure's mesh: here it can't hide the skin under it or join its seam to the body.";
+    if(std::find(warnings.begin(), warnings.end(), why) == warnings.end())
+      warnings.push_back(why);
+  }
+  else if(part.graft && !part.graft->hidden.empty())
+  {
+    auto& hidden = dst.meshes[size_t(body)].geo->hiddenPolys[worn.key];
+    hidden.insert(hidden.end(), part.graft->hidden.begin(), part.graft->hidden.end());
+    worn.hiddenPolys.insert(worn.hiddenPolys.end(), part.graft->hidden.begin(), part.graft->hidden.end());
+  }
+}
+
+void Figure::addAdjustments(WornItem& worn, const std::map<std::string, std::string>& own, const dson::MeshRef& ref)
+{
+  timing::Scope tAdj("adjustment dials", 5);
+  for(const auto& [stem, file] : own)
+  {
+    const std::string id = stemOf(file);
+    if(morphs->has(id) || dson::hiddenMorph(id) || !dson::adjustmentMorph(id))
+      continue;
+    const std::string name = id + "@" + worn.key;
+    if(morphs->has(name))
+      continue;
+    morph::ChannelOptions opts;
+    opts.group = worn.label;
+    opts.label = prettyMorphName(id);
+    morphs->addLazy(
+        name,
+        [store = m_store, file, ref]() -> morph::Finish {
+          auto parts = dson::loadMorphFile(*store, file, {ref});
+          return [parts = std::move(parts)]() mutable {
+            morph::LazyResult r;
+            r.parts = std::move(parts);
+            return r;
+          };
+        },
+        opts);
+    worn.channels.push_back(name);
+  }
+}
+
+void Figure::followSceneItems()
+{
+  if(!morphs || loaded.mainRig < 0 || loaded.morphs.mainMeshes.empty() || items.size() != loaded.items.size())
+    return;
+  bool any = false;
+  for(const dson::ItemPart& part : loaded.parts)
+    any = any || (part.conforms && part.item >= 0);
+  if(!any)
+    return;
+  timing::Scope     t("scene items follow the body");
+  const int         body = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
+  const SceneGraph& scene = loaded.scene;
+  // what the parts bind and project read, on the pool: only this thread changes the scene, after
+  const auto bindings     = bindParts(scene, body, scene, loaded.parts);
+  auto       preprojected = projectParts(*scene.meshes[size_t(body)].geo, scene, loaded.parts, bindings, activeBodyTargets());
+  // an item made for another generation keeps neither its own copies nor its correctives (0a's rule),
+  // as a wear's refit does: DAZ Studio fitted it to this figure by projection
+  const std::string&  morphDir = loaded.morphs.morphDir;
+  wardrobe::FitFigure figure{scene, loaded.rigs[size_t(loaded.mainRig)], body, morphDir.substr(0, morphDir.rfind("/Morphs"))};
+  std::map<std::string, std::map<std::string, std::string>> ownMorphs;
+  const auto before = [&] {
+    std::set<std::string> names;
+    for(const morph::Channel& c : morphs->channels())
+      names.insert(c.name);
+    return names;
+  }();
+  for(size_t i = 0; i < loaded.parts.size(); i++)
+  {
+    const dson::ItemPart& part = loaded.parts[i];
+    if(!part.conforms || part.item < 0 || size_t(part.item) >= items.size() || !bindings[i])
+      continue;
+    WornItem&          worn = items[size_t(part.item)];
+    const dson::Item&  it   = loaded.items[size_t(part.item)];
+    const std::string  from = it.sources.empty() ? std::string() : it.sources.begin()->substr(0, it.sources.begin()->find('#'));
+    const bool         refit = wardrobe::generationsOf(loaded, it, from, figure).has_value();
+    dson::MeshRef      ref;
+    for(const dson::MeshRef& r : loaded.morphs.meshes)
+      if(r.mesh == part.mesh)
+        ref = r;
+    const auto& own = ownMorphsOf(*m_store, part.defFile, ownMorphs);
+    followBody(worn, part, part.mesh, bindings[i], own, ref, refit, std::move(preprojected[i]), loaded.warnings);
+    addAdjustments(worn, own, ref);
+  }
+  morphs->flush();
+  morphs->sort();
+  morphs->markLoaded(before);
 }
 
 bool Figure::setItemKeepFull(int id, bool on)

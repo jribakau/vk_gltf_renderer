@@ -419,6 +419,59 @@ TEST(Wardrobe, AConformingItemKeepsItsBindingForTheFlesh)
   EXPECT_EQ(figure->item(again.items.at(0))->follows.size(), figure->item(again.items.at(0))->meshes.size());
 }
 
+// A shirt a scene file brings on its figure follows the body as one worn there does (wardrobe plan
+// 0r): the figure's dial the scene sets (Stretch, which the shirt has no copy of) is projected onto
+// it, a body dial turned later moves it, its own copy of a dial too, and it keeps its binding for the
+// flesh. Before, it skinned with the bones and nothing of the body's shape reached it.
+TEST(Wardrobe, AnItemTheSceneFileBringsFollowsTheBodyAsAWornOneDoes)
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  fv::dson::LoadOptions       options;
+  options.subdivision = 1;
+  auto dressed = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library})),
+                                  "People/Test/Box Figure Dressed.duf", options);
+  dressed->settle();
+  ASSERT_EQ(dressed->items.size(), 1u);
+  const fv::WornItem& inScene = dressed->items.front();
+  ASSERT_EQ(inScene.label, "Box Shirt");
+  EXPECT_EQ(inScene.follows.size(), inScene.meshes.size());
+
+  const auto           worn  = boxFigure();
+  const fv::WearResult wore  = worn->commitWear(worn->prepareWear(kBoxShirt, 1), kBoxShirt);
+  worn->settle();
+  const fv::WornItem*  shirt = worn->item(wore.items.at(0));
+  ASSERT_NE(shirt, nullptr);
+  const auto& a = *dressed->loaded.scene.meshes[size_t(inScene.meshes.at(0))].geo;
+  const auto& b = *worn->loaded.scene.meshes[size_t(shirt->meshes.at(0))].geo;
+  ASSERT_EQ(a.position.size(), b.position.size());
+  const auto apart = [&] {
+    float most = 0;
+    for(size_t i = 0; i < a.position.size(); i++)
+      most = std::max(most, std::abs(a.position[i] - b.position[i]));
+    return most;
+  };
+  // the shirt's copy of a dial loads on the pool: a frame or so, as the app sees it
+  const auto together = [&] {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while(apart() > 1e-5f && std::chrono::steady_clock::now() < until)
+    {
+      dressed->pump();
+      worn->pump();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return apart();
+  };
+  EXPECT_LT(together(), 1e-5f);
+  for(const char* dial : {"Taper", "Sleeve Lift"})
+  {
+    dressed->morphs->set(dial, 1.0);
+    worn->morphs->set(dial, 1.0);
+    dressed->settle();
+    worn->settle();
+    EXPECT_LT(together(), 1e-5f) << dial;
+  }
+}
+
 // Taken off, an item's built mesh and skin go, so that try-ons don't add up. Its slot stays, the figure
 // still builds, and it can go on again.
 TEST(Wardrobe, TakingAnItemOffLetsGoOfItsMesh)

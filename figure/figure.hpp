@@ -345,6 +345,11 @@ public:
   dson::Store&    store() const { return *m_store; }
   // Lists the items the scene file came with (Figure::load does).
   void indexItems();
+  // The conforming items the scene file came with follow the body as a worn one does (Figure::load
+  // does, after indexItems): each mesh bound to the body's cage, the body's morphs projected onto it
+  // where the scene set no copy of its own, its own copies and correctives, its fit adjustments as
+  // dials, its binding kept for the flesh.
+  void followSceneItems();
 
   // Applies a DAZ pose, shape or property preset to this figure's bones, morph dials and the
   // visibility of what it wears.
@@ -362,6 +367,16 @@ private:
   pose::ChannelOf wornDials();
   Figure() = default;
   void setup(const Progress& progress);
+  // A conforming part's mesh (`mesh`, into the scene) follows the body by `binding`: the body's morphs
+  // projected onto it (`preprojected`: those made ahead), its own copies of them from `own` where it
+  // has one (none when `refit`, made for another generation), its own joint correctives, a graft's
+  // hidden skin; what can't be done goes to `warnings`.
+  void followBody(WornItem& worn, const dson::ItemPart& part, int mesh, std::shared_ptr<const wardrobe::SurfaceBinding> binding,
+                  const std::map<std::string, std::string>& own, const dson::MeshRef& ref, bool refit,
+                  std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>> preprojected, std::vector<std::string>& warnings);
+  // Its own morphs in `own` that aren't copies of a figure morph, fit adjustments ("Loosen Neck") and
+  // styles, as dials of its own ("Loosen Neck@<key>").
+  void addAdjustments(WornItem& worn, const std::map<std::string, std::string>& own, const dson::MeshRef& ref);
   void applyOtherDials(const dson::MorphContext& ctx, const std::vector<dson::Item>& items, const std::vector<const dson::SceneDial*>& dials, const Progress& progress);
   void finishCorrectives();
   // Tells the channels what their files say of them, when that has been read or new channels came,

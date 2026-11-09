@@ -77,6 +77,7 @@ std::unique_ptr<Figure> Figure::load(std::shared_ptr<dson::Store> store, const s
   }
   f->setup(progress);
   f->indexItems();
+  f->followSceneItems();
   if(auto doc = store->load(rel.substr(std::min(rel.find_first_not_of('/'), rel.size()))))
     f->addons = dson::postLoadAddons(doc->json);
   return f;
