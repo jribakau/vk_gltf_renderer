@@ -97,7 +97,9 @@ namespace {
 // 52: view.set's display "material", "object", "density" and "facing" (the Display views).
 // 53: view.set's display "time" (each pixel timed by the GPU's clock) and its `time` topic, the frame's
 // time by what the pixels show.
-constexpr int kProtocolVersion = 54;
+// 55: the pose topic's bones name their counterpart on the other side (`mirror`, read by the
+// skeleton spec), which the Pose tab's mirror swaps by.
+constexpr int kProtocolVersion = 55;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

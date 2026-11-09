@@ -520,6 +520,16 @@ TEST(RigSpec, ANameIsReadIntoASideAndAJoint)
   EXPECT_EQ(fv::rig::parse("lip").side, 0);
 }
 
+// The Pose tab's mirror pairs the sides by the spec: Genesis 9's and 8's names, Skyrim's, a toe's
+// second joint; a name with no side, or whose other side the rig lacks, has no counterpart.
+TEST(RigSpec, EachSideBonePairsWithItsCounterpart)
+{
+  const std::vector<std::string> names{"l_thigh", "r_thigh", "lShldrBend", "rShldrBend", "rEye", "lEye", "hip", "lowerJaw", "lr", "lPectoral",
+                                       "NPC L Calf [LClf]", "NPC R Calf [RClf]", "lBigToe_2", "rBigToe_2"};
+  const std::vector<int>         want{1, 0, 3, 2, 5, 4, -1, -1, -1, -1, 11, 10, 13, 12};
+  EXPECT_EQ(fv::rig::counterparts(names), want);
+}
+
 // The readers that became shims answer as the tables they replaced, on every spelling, and so do the
 // tables derived from the spec (the fitter's aims, the ragdoll's parts) and the family rule.
 TEST(RigSpec, TheShimsAnswerAsTheTablesTheyReplaced)

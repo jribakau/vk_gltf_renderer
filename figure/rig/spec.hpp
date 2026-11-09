@@ -175,6 +175,11 @@ Name parse(const std::string& name);
 // toe) by its slot's ending.
 Limb limbOf(const Name& name);
 
+// Each name's counterpart on the other side among `names` (its index, or -1): the name read the same but
+// for its side, so l_thigh pairs with r_thigh, lShldrBend with rShldrBend and NPC L Calf [LClf] with
+// NPC R Calf [RClf]. A name with no side has none; of two that read the same, the first is taken.
+std::vector<int> counterparts(const std::vector<std::string>& names);
+
 // The joint a Genesis token is (its alias, else the token itself as an id), or null: what the Pose
 // tab groups by the table rather than by the name's words.
 const Joint* genesisJoint(const std::string& token);

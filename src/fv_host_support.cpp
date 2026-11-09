@@ -24,6 +24,8 @@
 
 #include "fv_host_impl.hpp"
 
+#include <figure/rig/spec.hpp>
+
 namespace fvhost {
 
 const char* kindName(PropKind k)
@@ -633,18 +635,29 @@ std::string axisKey(const fv::pose::Axis& a)
 
 Json poseSnapshot(const Loaded& f)
 {
-  Json bones = Json::object();
-  int  order = 0;
+  // the posable bones, each with its counterpart on the other side by the skeleton spec (the Pose
+  // tab's mirror)
+  std::vector<const fv::pose::PoseBone*> posable;
+  std::vector<std::string>               names;
   for(const auto& pb : f.fig->pose->bones())
+    if(!pb.axes.empty())
+    {
+      posable.push_back(&pb);
+      names.push_back(pb.name);
+    }
+  const std::vector<int> mirror = fv::rig::counterparts(names);
+  Json                   bones  = Json::object();
+  for(size_t b = 0; b < posable.size(); b++)
   {
-    if(pb.axes.empty())
-      continue;
-    Json axes = Json::object();
-    int  i    = 0;
+    const auto& pb   = *posable[b];
+    Json        axes = Json::object();
+    int         i    = 0;
     for(const auto& a : pb.axes)
       axes[axisKey(a)] = {{"label", a.label}, {"kind", fv::pose::kindName(a.kind)}, {"axis", a.axis}, {"min", a.min}, {"max", a.max},
                           {"value", a.value}, {"initial", a.initial}, {"order", i++}};
-    bones[pb.id] = {{"name", pb.name}, {"label", pb.label}, {"group", pb.group}, {"order", order++}, {"node", pb.bone}, {"axes", axes}};
+    bones[pb.id] = {{"name", pb.name}, {"label", pb.label}, {"group", pb.group}, {"order", int(b)}, {"node", pb.bone}, {"axes", axes}};
+    if(mirror[b] >= 0)
+      bones[pb.id]["mirror"] = posable[size_t(mirror[b])]->id;
   }
   return {{"figure", f.id}, {"changed", f.fig->pose->changed()}, {"eyes", f.fig->pose->hasEyes()}, {"bones", bones}};
 }

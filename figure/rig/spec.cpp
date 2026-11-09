@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <map>
 #include <regex>
 #include <unordered_map>
 
@@ -191,6 +192,25 @@ Limb limbOf(const Name& name)
   static const std::regex toeN(R"(toe\d$)");
   static const std::regex fingerN(R"(^(thumb|index|mid|ring|pinky)\d$)");
   return std::regex_search(name.slot, toeN) ? Limb::eFoot : std::regex_search(name.slot, fingerN) ? Limb::eHand : Limb::eNone;
+}
+
+std::vector<int> counterparts(const std::vector<std::string>& names)
+{
+  std::vector<Name>                         read;
+  std::map<std::pair<char, std::string>, int> at;
+  read.reserve(names.size());
+  for(size_t i = 0; i < names.size(); i++)
+  {
+    read.push_back(parse(names[i]));
+    if(read.back().side)
+      at.emplace(std::pair{read.back().side, read.back().token}, int(i));
+  }
+  std::vector<int> out(names.size(), -1);
+  for(size_t i = 0; i < names.size(); i++)
+    if(read[i].side)
+      if(const auto it = at.find({read[i].side == 'l' ? 'r' : 'l', read[i].token}); it != at.end())
+        out[i] = it->second;
+  return out;
 }
 
 const Joint* genesisJoint(const std::string& token)
