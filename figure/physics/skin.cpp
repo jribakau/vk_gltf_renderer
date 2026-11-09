@@ -319,53 +319,52 @@ CageSkin cageSkin(const mesh::SkinInput& in)
   return out;
 }
 
+namespace {
+
+// Rest vertex v skinned into `out`, or left as it is where nothing weighs it.
+void skinVertex(const SkinBlend& blend, std::span<const float> rest, size_t v, float* out)
+{
+  std::array<double, 16> m;
+  const double           x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
+  if(blend.vertex(v, m) <= 0)
+  {
+    out[0] = rest[v * 3];
+    out[1] = rest[v * 3 + 1];
+    out[2] = rest[v * 3 + 2];
+    return;
+  }
+  out[0] = float(m[0] * x + m[4] * y + m[8] * z + m[12]);
+  out[1] = float(m[1] * x + m[5] * y + m[9] * z + m[13]);
+  out[2] = float(m[2] * x + m[6] * y + m[10] * z + m[14]);
+}
+
+}  // namespace
+
+// Each vertex on its own, on the pool: the collider skins the body and every garment it pushes as a
+// pass begins, on the thread that owns the figure (wardrobe plan 0m)
 std::vector<float> skinLocal(const std::vector<float>& rest, const CageSkin& skin, const SkinPose& pose)
 {
-  const size_t       n   = rest.size() / 3;
+  const size_t       n = rest.size() / 3;
   const auto         S = skinMatrices(pose);
   const SkinBlend    blend(S, SkinView::of(skin));
   std::vector<float> out(rest.size());
-  std::array<double, 16> m;
-  for(size_t v = 0; v < n; v++)
-  {
-    const double x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
-    if(blend.vertex(v, m) <= 0)
-    {
-      out[v * 3] = rest[v * 3];
-      out[v * 3 + 1] = rest[v * 3 + 1];
-      out[v * 3 + 2] = rest[v * 3 + 2];
-      continue;
-    }
-    out[v * 3]     = float(m[0] * x + m[4] * y + m[8] * z + m[12]);
-    out[v * 3 + 1] = float(m[1] * x + m[5] * y + m[9] * z + m[13]);
-    out[v * 3 + 2] = float(m[2] * x + m[6] * y + m[10] * z + m[14]);
-  }
+  jobs::parallelFor(n, 4096, [&](size_t begin, size_t end) {
+    for(size_t v = begin; v < end; v++)
+      skinVertex(blend, rest, v, &out[v * 3]);
+  });
   return out;
 }
 
 std::vector<float> skinLocal(std::span<const float> rest, const CageSkin& skin, const SkinPose& pose, std::span<const uint32_t> vertices)
 {
-  const auto             S = skinMatrices(pose);
-  const SkinBlend        blend(S, SkinView::of(skin));
-  std::vector<float>     out(vertices.size() * 3);
-  std::array<double, 16> m;
-  for(size_t k = 0; k < vertices.size(); k++)
-  {
-    const size_t v = vertices[k];
-    if(v * 3 + 2 >= rest.size())
-      continue;
-    const double x = rest[v * 3], y = rest[v * 3 + 1], z = rest[v * 3 + 2];
-    if(blend.vertex(v, m) <= 0)
-    {
-      out[k * 3]     = rest[v * 3];
-      out[k * 3 + 1] = rest[v * 3 + 1];
-      out[k * 3 + 2] = rest[v * 3 + 2];
-      continue;
-    }
-    out[k * 3]     = float(m[0] * x + m[4] * y + m[8] * z + m[12]);
-    out[k * 3 + 1] = float(m[1] * x + m[5] * y + m[9] * z + m[13]);
-    out[k * 3 + 2] = float(m[2] * x + m[6] * y + m[10] * z + m[14]);
-  }
+  const auto         S = skinMatrices(pose);
+  const SkinBlend    blend(S, SkinView::of(skin));
+  std::vector<float> out(vertices.size() * 3);
+  jobs::parallelFor(vertices.size(), 4096, [&](size_t begin, size_t end) {
+    for(size_t k = begin; k < end; k++)
+      if(vertices[k] * 3 + 2 < rest.size())
+        skinVertex(blend, rest, vertices[k], &out[k * 3]);
+  });
   return out;
 }
 

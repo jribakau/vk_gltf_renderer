@@ -25,6 +25,7 @@
 #include <figure/gltf/gltf_check.hpp>
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/morph/morph_set.hpp>
+#include <figure/physics/collide/surface_index.hpp>
 #include <figure/physics/flesh/follow.hpp>
 #include <figure/subdiv/catmark.hpp>
 #include <figure/wardrobe/bind.hpp>
@@ -59,6 +60,23 @@ fv::mesh::MeshInput grid(int n, float z)
     }
   m.uvs.assign(size_t(n + 1) * (n + 1) * 2, 0.f);
   return m;
+}
+
+// A body indexed once binds an item as the body's own arrays do: the collider indexes the body at rest
+// once for every item's clearance, and what lies under an item once for all its passes (wardrobe plan 0m)
+TEST(Wardrobe, ABodyIndexedOnceBindsAsItsArraysDo)
+{
+  const auto                      body  = fv::mesh::build(grid(6, 0));
+  const auto                      item  = fv::mesh::build(grid(3, 0.5f));
+  const auto                      plain = fv::wardrobe::bindToSurface(body.cagePositions, body.dsonTris, item.cagePositions);
+  const fv::physics::SurfaceIndex index(body.cagePositions, body.dsonTris);
+  for(int again = 0; again < 2; again++)
+  {
+    const auto indexed = fv::wardrobe::bindToSurface(index, body.dsonTris, body.cagePositions.size() / 3, item.cagePositions);
+    EXPECT_EQ(indexed.verts, plain.verts);
+    EXPECT_EQ(indexed.weights, plain.weights);
+    EXPECT_EQ(indexed.used, plain.used);
+  }
 }
 
 TEST(Wardrobe, BindsEachItemVertexToTheClosestBodyPoint)

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <set>
 
+#include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 
 namespace fv::wardrobe {
@@ -307,7 +308,7 @@ std::vector<float> shapeCorrection(std::span<const float> item, std::span<const 
     const SurfaceBinding* toTarget = in.baseToTarget;
     if(!toTarget)
     {
-      local    = bindToSurface(target.positions, target.tris, base.positions, {}, in.baseFilter);
+      local    = cachedBindToSurface(target.positions, target.tris, base.positions, {}, in.baseFilter);
       toTarget = &local;
     }
     for(size_t v = 0; v < nb; v++)
@@ -323,7 +324,7 @@ std::vector<float> shapeCorrection(std::span<const float> item, std::span<const 
 
   const size_t       n = item.size() / 3;
   std::vector<float> delta(item.size(), 0.f);
-  const auto         onBase = bindToSurface(base.positions, base.tris, item, {}, in.itemFilter);
+  const auto         onBase = cachedBindToSurface(base.positions, base.tris, item, {}, in.itemFilter);
   for(size_t v = 0; v < n; v++)
   {
     const size_t k = v * 3;

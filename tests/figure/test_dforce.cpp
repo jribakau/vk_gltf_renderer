@@ -3961,3 +3961,47 @@ TEST(Dforce, aLightClothSettlesAndGoesLiveWithItsOwnVerticesRidingOnIt)
   EXPECT_NEAR(lo - before, 1.f, 0.3f) << "the veil rose with the body";
   EXPECT_LT(hi - lo, 1.f) << "all of it, not only its copy's vertices";
 }
+
+// A cage skinned on the pool (wardrobe plan 0m: the collider skins the body and every garment it pushes as
+// a pass begins, on the thread that owns the figure) is the one thread's, bit for bit; a vertex nothing
+// weighs stays where it is, and the span form skins the vertices it names
+TEST(Dforce, aCageSkinnedOnThePoolIsTheOneThreadsBitForBit)
+{
+  const size_t       n = 20000;
+  std::vector<float> rest(n * 3);
+  physics::CageSkin  skin;
+  skin.index.assign(n * 4, 0);
+  skin.weight.assign(n * 4, 0.f);
+  for(size_t v = 0; v < n; v++)
+  {
+    rest[v * 3]     = float(std::sin(double(v)));
+    rest[v * 3 + 1] = float(v) * 0.001f;
+    rest[v * 3 + 2] = float(std::cos(double(v)));
+    if(v % 1000 == 0)
+      continue;
+    const float w       = float(v % 7) / 6.f;
+    skin.index[v * 4 + 1] = 1;
+    skin.weight[v * 4]     = w;
+    skin.weight[v * 4 + 1] = 1 - w;
+  }
+  physics::SkinPose pose;
+  pose.bones = {compose({1, 2, 3}, quatFromEuler(0.3, 0, 0, "XYZ"), {1, 1, 1}), compose({-1, 0, 0}, quatFromEuler(0, 0.7, 0.2, "XYZ"), {1, 1, 1})};
+  const auto         pooled = physics::skinLocal(rest, skin, pose);
+  std::vector<float> alone;
+  {
+    const jobs::Serial serial;
+    alone = physics::skinLocal(rest, skin, pose);
+  }
+  EXPECT_TRUE(pooled == alone);
+  for(int c = 0; c < 3; c++)
+    EXPECT_EQ(pooled[size_t(1000 * 3 + c)], rest[size_t(1000 * 3 + c)]);
+  EXPECT_NE(pooled[3], rest[3]);
+  const std::vector<uint32_t> some{0, 999, 1000, 19999, 25000};
+  const auto                  part = physics::skinLocal(std::span<const float>(rest), skin, pose, some);
+  ASSERT_EQ(part.size(), some.size() * 3);
+  for(size_t k = 0; k + 1 < some.size(); k++)
+    for(size_t c = 0; c < 3; c++)
+      EXPECT_EQ(part[k * 3 + c], pooled[size_t(some[k]) * 3 + c]) << some[k];
+  // one the cage hasn't: nothing
+  EXPECT_EQ(part[12], 0.f);
+}

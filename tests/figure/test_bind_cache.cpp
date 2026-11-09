@@ -11,6 +11,7 @@
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
+#include <figure/wardrobe/fit/transfer.hpp>
 
 namespace {
 
@@ -70,6 +71,24 @@ protected:
 };
 
 }  // namespace
+
+// The fitter's searches go through the cache too (wardrobe plan 0m): a garment refitted, on the next
+// scene open or the same base onto the same figure again, reads back the base's search onto the target
+// and its own onto the base
+TEST_F(BindCache, AShapeCorrectionReadsItsSearchesBack)
+{
+  const auto                  base = fv::mesh::build(grid(6, 0)), target = fv::mesh::build(grid(5, 0.2f)), item = fv::mesh::build(grid(3, 0.5f));
+  const fv::wardrobe::Surface onBase{base.cagePositions, base.dsonTris}, onTarget{target.cagePositions, target.dsonTris};
+  const fv::wardrobe::ShapeInputs in;
+  const auto                  before = fv::wardrobe::bindCacheCounts();
+  const auto                  first  = fv::wardrobe::shapeCorrection(item.cagePositions, item.dsonTris, onBase, onTarget, in);
+  EXPECT_EQ(fv::wardrobe::bindCacheCounts().misses, before.misses + 2);
+  EXPECT_EQ(files(), 2u);
+  const auto second = fv::wardrobe::shapeCorrection(item.cagePositions, item.dsonTris, onBase, onTarget, in);
+  EXPECT_EQ(fv::wardrobe::bindCacheCounts().misses, before.misses + 2);
+  EXPECT_EQ(fv::wardrobe::bindCacheCounts().hits, before.hits + 2);
+  EXPECT_EQ(first, second);
+}
 
 TEST_F(BindCache, AMissBindsAndKeepsItAndTheNextBindReadsItBack)
 {

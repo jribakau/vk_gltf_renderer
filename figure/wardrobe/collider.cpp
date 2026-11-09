@@ -4,7 +4,9 @@
 #include <cmath>
 
 #include <figure/physics/skin.hpp>
+#include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
+#include <figure/physics/collide/surface_index.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/fit/collide.hpp>
 #include <figure/wardrobe/fit/regions.hpp>
@@ -52,10 +54,11 @@ std::string collideChannelOf(int mesh)
 }
 
 // How far an item lies from the body in its rest shape: the median signed distance of its cage from
-// the body's, along the skin. The layer order: a bra lies closer than the shirt over it.
-double restClearance(std::span<const float> body, std::span<const uint32_t> bodyTris, std::span<const float> item)
+// the body's, along the skin. The layer order: a bra lies closer than the shirt over it. `index` is the
+// body's, made once for every item.
+double restClearance(const physics::SurfaceIndex& index, std::span<const float> body, std::span<const uint32_t> bodyTris, std::span<const float> item)
 {
-  const SurfaceBinding binding = bindToSurface(body, bodyTris, item);
+  const SurfaceBinding binding = bindToSurface(index, bodyTris, body.size() / 3, item);
   std::vector<double>  dist;
   for(size_t v = 0; v * 3 + 2 < item.size(); v++)
   {
@@ -184,6 +187,8 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
 {
   if(m_bodyMesh < 0 || size_t(m_bodyMesh) >= m_scene.meshes.size() || !settings)
     return nullptr;
+  // on the thread that owns the figure, as every pass begins: what it costs shows in the timing log
+  timing::Scope t("collider: prepare", 1);
   const Mesh& body = m_scene.meshes[size_t(m_bodyMesh)];
   if(!body.geo || body.geo->cagePositions.empty())
     return nullptr;
@@ -293,9 +298,13 @@ bool Collider::pump()
   }
   m_snapshot = job;
   m_job      = jobs::pool().submit([job] {
-    // inside out: closer to the skin first; two within a millimetre in the order worn
-    for(Job::Item& item : job->items)
-      item.clearance = restClearance(job->bodyRest, job->bodyTris, item.restInSpace);
+    // inside out: closer to the skin first; two within a millimetre in the order worn. The body at rest
+    // is indexed once for all of them
+    {
+      const physics::SurfaceIndex rest(job->bodyRest, job->bodyTris);
+      for(Job::Item& item : job->items)
+        item.clearance = restClearance(rest, job->bodyRest, job->bodyTris, item.restInSpace);
+    }
     std::stable_sort(job->items.begin(), job->items.end(), [](const Job::Item& a, const Job::Item& b) {
       if(std::fabs(a.clearance - b.clearance) > 0.1)
         return a.clearance < b.clearance;
@@ -310,6 +319,9 @@ bool Collider::pump()
     {
       std::vector<float> positions = item.posed;
       const Surface      surface{under, underTris};
+      // what lies under it, indexed once for all its passes
+      const physics::SurfaceIndex index(surface.positions, surface.tris);
+      const size_t                underVertices = surface.positions.size() / 3;
       const auto         filter = limbFilter(underLimbs, item.limbs);
       const int          passes = std::clamp(item.settings.collision, 1, 8);
       const int          smooth = std::clamp(item.settings.smoothing, 1, 8);
@@ -321,7 +333,7 @@ bool Collider::pump()
         std::vector<float> pulled = positions;
         for(const float reach : {kTightReach, kTightSecondReach})
         {
-          const SurfaceBinding binding = bindToSurface(surface.positions, surface.tris, pulled, {}, filter ? &*filter : nullptr);
+          const SurfaceBinding binding = bindToSurface(index, surface.tris, underVertices, pulled, {}, filter ? &*filter : nullptr);
           pulled = smoothCorrection(pulled, pullIn(pulled, surface, binding, kTightMargin, 1.f, reach), item.tris, smooth);
         }
         for(size_t i = 0; i < positions.size(); i++)
@@ -329,7 +341,7 @@ bool Collider::pump()
       }
       for(int pass = 0; pass < passes; pass++)
       {
-        const SurfaceBinding binding = bindToSurface(surface.positions, surface.tris, positions, {}, filter ? &*filter : nullptr);
+        const SurfaceBinding binding = bindToSurface(index, surface.tris, underVertices, positions, {}, filter ? &*filter : nullptr);
         std::vector<float>   pushed  = pushOut(positions, surface, binding, margin, kDepth);
         if(std::equal(pushed.begin(), pushed.end(), positions.begin()))
           break;

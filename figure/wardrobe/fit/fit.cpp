@@ -4,6 +4,7 @@
 
 #include <figure/mesh/normals.hpp>
 #include <figure/wardrobe/bind.hpp>
+#include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/fit/bases.hpp>
 #include <figure/wardrobe/fit/collide.hpp>
 #include <figure/wardrobe/fit/regions.hpp>
@@ -66,7 +67,7 @@ void writeCage(mesh::BuiltMesh& geo, const std::vector<float>& positions)
 // Pushes what ended just under the skin back out, smoothing the push over the garment.
 std::vector<float> collide(const std::vector<float>& positions, std::span<const uint32_t> tris, const Surface& body)
 {
-  const SurfaceBinding binding = bindToSurface(body.positions, body.tris, positions);
+  const SurfaceBinding binding = cachedBindToSurface(body.positions, body.tris, positions);
   return smoothCorrection(positions, pushOut(positions, body, binding, 0.15f), tris);
 }
 
@@ -192,7 +193,7 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   if(region != FitRegion::eShoe && base && cage && !sameTopology(source, target))
   {
     const auto filter = limbFilter(bodyLimbs, baseLimbs);
-    pair              = bindToSurface(bodySurface.positions, bodySurface.tris, base->positions, {}, filter ? &*filter : nullptr);
+    pair              = cachedBindToSurface(bodySurface.positions, bodySurface.tris, base->positions, {}, filter ? &*filter : nullptr);
   }
   // footwear's foot skips the shape correction, so its proportions come from a box fit
   std::vector<std::pair<int16_t, LimbBox>> feet;

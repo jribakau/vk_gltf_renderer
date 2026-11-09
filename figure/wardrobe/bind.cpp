@@ -68,14 +68,24 @@ SurfaceBinding bindToSurface(std::span<const float>    P,
                              std::span<const int32_t>  pairs,
                              const BindFilter*         filter)
 {
-  const size_t   nvDst = D.size() / 3;
-  SurfaceBinding out   = blank(nvDst, P.size() / 3);
-  const auto     tGrid = std::chrono::steady_clock::now();
+  const auto         tGrid = std::chrono::steady_clock::now();
   const SurfaceIndex index(P, T);
+  timing::report("grid", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tGrid).count(), 5);
+  return bindToSurface(index, T, P.size() / 3, D, pairs, filter);
+}
+
+SurfaceBinding bindToSurface(const SurfaceIndex&       index,
+                             std::span<const uint32_t> T,
+                             size_t                    bodyVertices,
+                             std::span<const float>    D,
+                             std::span<const int32_t>  pairs,
+                             const BindFilter*         filter)
+{
+  const size_t   nvDst = D.size() / 3;
+  SurfaceBinding out   = blank(nvDst, bodyVertices);
   if(index.empty())
     return out;
   const std::span<const int16_t> limbs = filter ? std::span<const int16_t>(filter->bodyLimb) : std::span<const int16_t>();
-  timing::report("grid", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tGrid).count(), 5);
   // each vertex is found on its own, so the vertices are split among threads
   const auto tSearch = std::chrono::steady_clock::now();
   jobs::parallelFor(nvDst, chunkFor(nvDst, 64), [&](size_t begin, size_t end) {
@@ -90,7 +100,7 @@ SurfaceBinding bindToSurface(std::span<const float>    P,
     }
   });
   timing::report("search", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tSearch).count(), 5);
-  finish(out, pairs, nvDst, P.size() / 3);
+  finish(out, pairs, nvDst, bodyVertices);
   return out;
 }
 

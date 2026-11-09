@@ -4,9 +4,14 @@
 // on the body's unmorphed triangles (a barycentric position on one). A port of
 // src/lib/loaders/dson/bind.ts.
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
+
+namespace fv::physics {
+class SurfaceIndex;
+}
 
 namespace fv::wardrobe {
 
@@ -36,6 +41,14 @@ SurfaceBinding bindToSurface(std::span<const float>    bodyPositions,
                              std::span<const float>    itemPositions,
                              std::span<const int32_t>  pairs  = {},
                              const BindFilter*         filter = nullptr);
+// The same against an index of the body made already (of `bodyTris` and its `bodyVertices`): a body
+// that many items, or one item's passes, are bound to is indexed once.
+SurfaceBinding bindToSurface(const physics::SurfaceIndex& body,
+                             std::span<const uint32_t>    bodyTris,
+                             size_t                       bodyVertices,
+                             std::span<const float>       itemPositions,
+                             std::span<const int32_t>     pairs  = {},
+                             const BindFilter*            filter = nullptr);
 
 // The same for strand hair, polyline by polyline (`lineStart`/`lineVerts`, root first as files store
 // them; a strand whose first point is out of `reach` of the body and whose last is nearer is taken
