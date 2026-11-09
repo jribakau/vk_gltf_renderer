@@ -359,6 +359,55 @@ TEST(RetainedDeform, ASettledMeshHoldsOnlyWhatIsDrawn)
   EXPECT_TRUE(residency.isSettled(rig.mesh));
 }
 
+// What a mesh is said to give back by settling is what it gives back: the fit to memory plans with that
+// number. A deformed BLAS already compacted (blasCompactDeforming) has less left to lose than one as built.
+TEST(RetainedDeform, WhatSettlingIsSaidToFreeIsWhatItFrees)
+{
+  uint64_t bvhFreed[2] = {};
+  for(const bool compactDeforming : {false, true})
+  {
+    SCOPED_TRACE(compactDeforming ? "deformed BLASes compacted" : "deformed BLASes as built");
+    RibbonRig      rig;
+    FakeGpuBackend gpu;
+    Residency      residency(gpu, {.compactDeforming = compactDeforming, .settleQuietFrames = 0});
+    residency.replace(rig.scene);
+    const Residency::DrawerGpu& d = *residency.drawer(rig.body, rig.mesh);
+    Transform t;
+    t.rotation = glm::angleAxis(glm::radians(30.f), glm::vec3(0, 0, 1));
+    rig.scene.setLocal(rig.bone, t);
+    for(int frame = 0; frame < 3; frame++)  // posed, its copy made, and quiet
+    {
+      gpu.beginFrame();
+      residency.sync(rig.scene);
+      drain(gpu);
+    }
+    EXPECT_EQ(gpu.blas(residency.prim(uint32_t(d.prims[0]))->blas)->compacted, compactDeforming);
+
+    const std::vector<std::pair<MeshId, uint64_t>> settleable = residency.settleableMeshes();
+    ASSERT_EQ(settleable.size(), 1u);
+    EXPECT_EQ(settleable[0].first, rig.mesh);
+    const GpuBytes live = residency.ledger().total;
+
+    residency.settle(rig.mesh);
+    // built again, compacted, the old one retired: a quiet scene looks at what waits to settle every 30th frame
+    for(int frame = 0; frame < 36; frame++)
+    {
+      gpu.beginFrame();
+      residency.sync(rig.scene);
+    }
+    drain(gpu);
+    const GpuBytes settled = residency.ledger().total;
+    ASSERT_GT(live.bvh, settled.bvh);
+    const uint64_t freed = (live.bvh + live.remake + live.working + live.unread) - (settled.bvh + settled.remake + settled.working + settled.unread);
+    // the fake's BVH sizes stand for a driver's, and the shares are measured ones: within 2% of the BVH
+    EXPECT_NEAR(double(settleable[0].second), double(freed), 0.02 * double(live.bvh));
+    bvhFreed[compactDeforming] = live.bvh - settled.bvh;
+    EXPECT_TRUE(residency.settleableMeshes().empty());
+    EXPECT_TRUE(gpu.errors().empty());
+  }
+  EXPECT_LT(bvhFreed[1], bvhFreed[0]);
+}
+
 // A pose wakes it, in the sync the pose changes, and from there it is as if it had never settled
 TEST(RetainedDeform, APoseWakesASettledMeshAsIfItHadNeverSettled)
 {

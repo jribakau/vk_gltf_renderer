@@ -491,6 +491,9 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                             retained->setCompactDeforming(m_resources.settings.blasCompactDeforming);
                       }},
                  &m_resources.settings.blasCompactDeforming, Persist::eNo);
+  m_settings.add({.name = "blasTimeBuilds",
+                  .help = "Retained scene (debug): a timing line with the GPU time of a frame's BLAS builds and refits, one frame in a few"},
+                 &m_resources.settings.blasTimeBuilds, Persist::eNo);
   // Debug, live (read at the next scene replace): every composition then retires the old scene's
   // slots and reallocates, so holes, slot reuse, capacity growth and deferred frees run on the GPU
   // before structural edits make them ordinary (daz-viewer docs/retained-scene-plan.md, P4).

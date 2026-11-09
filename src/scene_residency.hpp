@@ -397,6 +397,10 @@ public:
   // it, in the sync it changes. Only a mesh with no static draws.
   void settle(MeshId mesh);
   bool isSettled(MeshId mesh) const;
+  // The meshes that could settle, in the order they would, and what each would give back: what only
+  // remakes it, and what its BVHs lose built again static and compacted (from a compacted refittable
+  // copy, only what is left between the two)
+  std::vector<std::pair<MeshId, uint64_t>> settleableMeshes() const;
   // How many are settled now
   size_t settledCount() const;
   // What is being edited (the selected figure): woken as it becomes so, ready for the edit, and the last to
@@ -633,8 +637,6 @@ private:
   std::set<ImageKey> pinnedImages(const RetainedScene& scene) const;
   // the meshes nothing shows, what each holds
   std::vector<std::pair<MeshId, uint64_t>> hiddenMeshes() const;
-  // the meshes that could settle, in the order they would, what each would give back
-  std::vector<std::pair<MeshId, uint64_t>> settleableMeshes() const;
   // A settled mesh made ready again; nothing is written, so nothing moves
   void wake(const RetainedScene& scene, MeshId id);
   // what changed since the last sync, on what is settled, or what became live

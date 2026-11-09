@@ -579,6 +579,23 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
   m_resources.retainedGpu->setShaderFeatures(drawableFeatures());
   applyMemoryFill(cmd);
   watchMemory();
+  // blasTimeBuilds (debug): one frame's AS builds timed at a time, read once its command buffer has
+  // surely completed (before that the queries still hold the frame timed before it)
+  if(m_resources.settings.blasTimeBuilds)
+  {
+    constexpr uint64_t kFramesToComplete = 8;
+    if(m_blasTimedFrame && m_trailFrames >= *m_blasTimedFrame + kFramesToComplete)
+    {
+      if(const std::optional<rs::BuildTimes> times = m_resources.retainedGpu->buildTimes(); times && times->blasSpans && fv::timing::enabled())
+        fv::timing::line(fmt::format("GPU BLAS frame: {:.3f} ms in {} flushes; TLAS {:.3f} ms", times->blasMs, times->blasSpans, times->tlasMs));
+      m_blasTimedFrame.reset();
+    }
+    if(!m_blasTimedFrame)
+    {
+      m_resources.retainedGpu->timeBuilds();
+      m_blasTimedFrame = m_trailFrames;
+    }
+  }
   const rs::SyncResult result = m_resources.retainedGpu->sync(cmd, *m_resources.retainedScene);
   {
     // the frame's memory and what its sync did, for what a lost device leaves in the log

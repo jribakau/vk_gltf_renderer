@@ -310,6 +310,9 @@ struct Settings
   // `blasCompactDeforming`: a retained deformed BLAS (posed figures, hair) is built to be refitted and
   // compacted, and its compacted copy refitted (on: about a seventh smaller, falcor-ideas.md)
   bool blasCompactDeforming = true;
+  // `blasTimeBuilds` (debug): the GPU time of a frame's BLAS builds and refits and its TLAS build, a
+  // `GPU BLAS frame` timing line for one frame in a few (GltfRenderer::syncRetainedScene)
+  bool blasTimeBuilds = false;
   // `ptEstimator` (debug): what counts the light both a light sample and a BSDF ray reach
   // (SceneFrameInfo::estimator): 0 both (MIS), 1 light samples alone, 2 BSDF rays alone
   int ptEstimator = 0;
