@@ -141,6 +141,11 @@ private:
 // lowest time per sample; a larger count must beat a smaller one by more than the timing noise. All are
 // tried: the gain of one step can be small (a few percent) while the larger counts gain more. Each is
 // measured over a span of time rather than a number of frames, since short frames are the noisiest.
+//
+// A search is one view's: once settled it never measures again, and a frame's samples are one dispatch,
+// so the count of a light view kept for a dear one (64 a frame at 90 ms a sample) would be a frame of
+// seconds, past the time the driver gives one. restart() at each accumulation: the next count is tried
+// only while the frame it predicts from this view's own time fits `maxFrameMs`.
 class ThroughputSearch
 {
 public:
@@ -148,6 +153,8 @@ public:
   static constexpr int    kMinReadings  = 4;      // Frame times averaged per count, at least...
   static constexpr double kMinMeasureMs = 250.0;  // ...and over this much time
   static constexpr double kMinGain      = 0.01;   // A smaller gain per sample is noise
+
+  void restart() { *this = {}; }
 
   // The time `frameMs` of a frame of `samples` per pixel (the count returned last time). Returns the
   // count to trace next.

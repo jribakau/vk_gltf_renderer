@@ -19,6 +19,7 @@
 
 // sample_schedule: how many samples per pixel the path tracer traces in a frame.
 
+#include <algorithm>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -154,6 +155,59 @@ TEST(SampleSchedule, ThroughputRespectsTheCeiling)
   EXPECT_EQ(searchThroughput(1.0, [](int) { return 0.01; }, 100.0, 256), 256);
   // The next step would pass the samples ceiling: it stays at the last count that fits
   EXPECT_EQ(searchThroughput(1.0, [](int) { return 0.01; }, 100.0, 1000), 256);
+}
+
+namespace {
+
+// Drive `search` from one sample a frame on a view of `fixedMs` a frame and `sampleMs` a sample until it
+// settles. Returns the count it settles on, and in `longestMs` the longest frame it traced on the way.
+int searchView(sample_schedule::ThroughputSearch& search, double fixedMs, double sampleMs, double& longestMs)
+{
+  int samples = 1;
+  longestMs   = 0.0;
+  for(int frame = 0; frame < 1000 && !search.settled(); frame++)
+  {
+    const double frameMs = fixedMs + samples * sampleMs;
+    longestMs            = std::max(longestMs, frameMs);
+    samples              = search.update(samples, frameMs, 100.0, 1024);
+  }
+  EXPECT_TRUE(search.settled());
+  return samples;
+}
+
+}  // namespace
+
+TEST(SampleSchedule, NoFrameTheThroughputSearchTriesPassesTheCeiling)
+{
+  // Whatever a sample costs: a count is tried only while the frame it predicts, from the time of the
+  // count before, fits the ceiling, and that time has the frame's fixed work in it
+  for(const double sampleMs : {0.2, 1.0, 6.0, 7.0, 24.0, 26.0, 60.0, 90.0, 400.0})
+  {
+    sample_schedule::ThroughputSearch search;
+    double                            longestMs = 0.0;
+    const int                         samples   = searchView(search, 2.0, sampleMs, longestMs);
+    // (one sample a frame is the least there is, however long it takes)
+    EXPECT_LE(longestMs, std::max(100.0, 2.0 + sampleMs)) << sampleMs << " ms a sample, settled on " << samples;
+  }
+}
+
+TEST(SampleSchedule, TheThroughputSearchStartsOverForANewView)
+{
+  // A light view, 1 ms a sample: 64 samples a frame
+  sample_schedule::ThroughputSearch search;
+  double                            longestMs = 0.0;
+  ASSERT_EQ(searchView(search, 1.0, 1.0, longestMs), 64);
+
+  // Settled, it measures nothing more: kept for a hair close-up of 90 ms a sample, its next frame would
+  // be those 64 samples in one dispatch, 5.8 s, past the 2 s the driver gives a frame
+  EXPECT_EQ(search.update(64, 1.0 + 64 * 90.0, 100.0, 1024), 64);
+
+  // Started over, as each accumulation does (PathTracer::updateAdaptiveSampling): the new view is
+  // measured from one sample a frame, and stays there
+  search.restart();
+  EXPECT_FALSE(search.settled());
+  EXPECT_EQ(searchView(search, 1.0, 90.0, longestMs), 1);
+  EXPECT_LE(longestMs, 100.0);
 }
 
 namespace {

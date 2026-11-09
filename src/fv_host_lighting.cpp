@@ -270,11 +270,11 @@ void FvHost::Impl::feedSun(rs::RetainedScene& scene)
                            {"aim", {s.azimuth, s.elevation}}};
 }
 
-// A batch of renderer parameters, validated whole before any is applied; callbacks fire as over MCP.
+// A batch of renderer parameters, validated whole before any is applied; callbacks fire as over MCP,
+// and a value the batch names holds against them (setExposedParameters).
 void FvHost::Impl::setParams(const Json& values)
 {
   if(!registry || values.empty())
     return;
-  const auto params = exposedParameters(registry);
-  toolJson(nvmcp::detail::setParameters(params, Json{{"values", values}}.dump()));
+  setExposedParameters(registry, Json{{"values", values}});
 }

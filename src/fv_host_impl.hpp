@@ -686,6 +686,16 @@ nvmcp::detail::ParameterList exposedParameters(const nvutils::ParameterRegistry*
 
 Json toolJson(const nvmcp::ToolResult& r);
 
+// A batch of the renderer's parameters as the host sets it (`params.set`, FvHost::Impl::setParams):
+// `args` is nvmcp's, {"values": {name: value, ...}}, validated whole before any value is written, each
+// parameter's callback then run. nvmcp writes every value before it runs any callback, and a callback
+// may set another parameter (ptSamples turns Auto SPP off, a preset overwrites its fields), so a value
+// the batch names beside it was lost to it: the app's ptAdaptiveSampling to its ptSamples, in every
+// batch it sent. A named value holds: those of parameters with no callback of their own are written
+// once more after the callbacks. A parameter with a callback stays as its callback left it, since it
+// may clamp or consume its own value. Returns nvmcp's answer, the values as they are in the end.
+Json setExposedParameters(const nvutils::ParameterRegistry* registry, const Json& args);
+
 // How a figure is built for the scene: its textures as resolved (cooked, or baked for an edit),
 // flipped as they arrive, the skin for the renderer, the surfaces light walks through.
 fv::build::BuildOptions buildOptionsOf(const Loaded& f, fv::mat::SkinMode skin, bool solidGlass);

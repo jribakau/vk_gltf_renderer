@@ -217,8 +217,12 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                                     "Biased: the light past it is lost while the view moves; the still keeps ptMaxDepth",
                  .callbackSuccess = reset},
                 &m_maxDepthDlss, Persist::eNo, 0, 64);
+  // Set by hand it fixes the count: Auto SPP goes off. A host's batch that names ptAdaptiveSampling too
+  // gets what it names (fvhost::setExposedParameters): the app's batch names both, and for as long as
+  // this callback had the last word its stills traced one sample a frame.
   settings->add({.name            = "ptSamples",
-                 .help            = "PathTracer: Samples per pixel traced each frame (see ptMaxSamples for the total)",
+                 .help            = "PathTracer: Samples per pixel traced each frame (see ptMaxSamples for the total); "
+                                    "setting it turns Auto SPP (ptAdaptiveSampling) off",
                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { m_adaptiveSampling = false; }},
                 &m_pushConst.numSamples, Persist::eYes, MIN_SAMPLES_PER_PIXEL, MAX_SAMPLES_PER_PIXEL);
   // A DLSS frame's samples go through its jittered position, so Ray Reconstruction's guides stay that
@@ -1132,8 +1136,8 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
 // Auto SPP starts over from one sample per frame, e.g. on a new target: the throughput search measures again
 void PathTracer::restartAdaptiveSampling()
 {
-  m_adaptiveSamples  = MIN_SAMPLES_PER_PIXEL;
-  m_throughputSearch = {};
+  m_adaptiveSamples = MIN_SAMPLES_PER_PIXEL;
+  m_throughputSearch.restart();
   m_frameRateControl.restart();
 }
 
@@ -1147,14 +1151,17 @@ void PathTracer::updateAdaptiveSampling(Resources& resources)
     return;
 
   if(!m_adaptiveSampling || !m_profilerTimeline)
+  {
+    // Off: turned on again in the middle of an accumulation, it starts from one sample a frame, not
+    // from the count of whatever view it last ran on
+    restartAdaptiveSampling();
     return;
+  }
 
-  // Another pipeline renders the frames (Rendering Pipeline, SER, Optimize Shader, a shader reload):
-  // its cost per sample differs, so the count is found again, which also shows the change in throughput.
-  // A variant swap counts too, so every still DLSS hands off to a denoiser starts the search over. Keep it:
-  // the search settles once and never checks again, and a frame's samples are one dispatch, so a count
-  // found on a light view, kept for a hair close-up, would be a frame of seconds (past the 2 s GPU timeout).
-  // The climb costs about half a second at a few percent less throughput (2026-11-05, from the app's log).
+  // Another pipeline renders the frames (Rendering Pipeline, SER, Optimize Shader, a shader reload, a
+  // variant swap): its cost per sample differs, so the count is found again, which also shows the change
+  // in throughput. Not what starts a still's search over: DLSS-RR's still runs DLSS's own variant
+  // (dlssVariantFrame), so a hand-off swaps nothing. The new accumulation does, below.
   const uint64_t pipelineKey = (uint64_t(m_pipelineGeneration.load()) << 1) | uint64_t(m_renderTechnique);
   if(pipelineKey != m_adaptivePipelineKey)
   {
@@ -1169,12 +1176,19 @@ void PathTracer::updateAdaptiveSampling(Resources& resources)
   m_lastAdaptiveFrameTime = now;
 
   // Reset samples when frame count resets to 0 (scene change, etc.), so the first frames after a change
-  // stay responsive. The throughput search keeps what it found across these resets; in the app the
-  // variant swap above has already started it over for each still.
+  // stay responsive.
   if(resources.frameCount == 0 || m_handoffFrame)
   {
     m_accumulationFrames = 0;
-    if(m_performanceTarget != PerformanceTarget::eThroughput)
+    if(m_performanceTarget == PerformanceTarget::eThroughput)
+    {
+      // A new accumulation is a new view, and the search is one view's (ThroughputSearch): it settles
+      // once and never checks again, and a frame's samples are one dispatch, so a count found on a light
+      // view, kept for a hair close-up, would be a frame of seconds (past the 2 s GPU timeout). From one
+      // sample a frame again; the search costs about half a second at a few percent less throughput.
+      restartAdaptiveSampling();
+    }
+    else
     {
       // Half the count the last view settled on: a frame of it still costs under the target, and the
       // climb from there to this view's count is half as long. A view much dearer than the last

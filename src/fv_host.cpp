@@ -440,10 +440,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("params.get", [impl](const Json& args) {
     return impl->onApp([impl, args] { return toolJson(nvmcp::detail::getParameters(exposedParameters(impl->registry), args.dump())); });
   });
+  // (a value the batch names holds against another parameter's callback: setExposedParameters)
   cmds.add("params.set", [impl](const Json& args) {
-    return impl->onApp([impl, args] {
-      return toolJson(nvmcp::detail::setParameters(exposedParameters(impl->registry), args.dump()));
-    });
+    return impl->onApp([impl, args] { return setExposedParameters(impl->registry, args); });
   });
   // the app's own timings (an open's phases, measured where the user waits), into the timing log
   cmds.add("app.timing", [](const Json& args) {

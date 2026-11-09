@@ -692,6 +692,28 @@ Json toolJson(const nvmcp::ToolResult& r)
   return Json::parse(r.json);
 }
 
+Json setExposedParameters(const nvutils::ParameterRegistry* registry, const Json& args)
+{
+  const nvmcp::detail::ParameterList parameters = exposedParameters(registry);
+  Json                               answer     = toolJson(nvmcp::detail::setParameters(parameters, args.dump()));
+
+  // the batch was valid, so `values` is an object of known names: those with no callback, once more
+  Json plain = Json::object();
+  for(const auto& [name, value] : args["values"].items())
+    for(const nvutils::ParameterBase* p : parameters)
+      if(p->info.name == name && !p->info.callbackSuccess)
+        plain[name] = value;
+  if(plain.empty())
+    return answer;
+  const Json held = toolJson(nvmcp::detail::setParameters(parameters, Json{{"values", plain}}.dump()));
+  // the answer lists each parameter as the first pass left it: those written again, as they are now
+  for(Json& updated : answer["updated"])
+    for(const Json& now : held["updated"])
+      if(now.value("name", "") == updated.value("name", ""))
+        updated = now;
+  return answer;
+}
+
 fv::build::BuildOptions buildOptionsOf(const Loaded& f, fv::mat::SkinMode skin, bool solidGlass)
 {
   fv::build::BuildOptions options;

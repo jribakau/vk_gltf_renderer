@@ -240,7 +240,9 @@
 //                                                whole scene, written at once -> {ok}
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
-//   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire
+//   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire, and a
+//                                                value the batch names holds against another's callback
+//                                                (setExposedParameters)
 //   history.undo / history.redo {}  -> {label, problems?}, or {label, job} while a prop it puts back loads:
 //                                                the step undone or redone, its label null when there is
 //                                                none; another waits for the job ("history".busy). A step is
