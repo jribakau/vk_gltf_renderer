@@ -540,6 +540,14 @@ bool isNif(const std::string& path)
   return path.size() > 4 && lower(path.substr(path.size() - 4)) == ".nif";
 }
 
+std::shared_ptr<const wardrobe::BaseCage> carriedBody(const fs::path& file)
+{
+  const File               nif = readFile(file);
+  std::vector<std::string> notes;
+  const std::optional<Base> base = findBase(nif, file, notes);
+  return base ? baseCageOf(*base, 1) : nullptr;
+}
+
 std::vector<size_t> bodyShapes(const File& nif)
 {
   std::vector<size_t> out;

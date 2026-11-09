@@ -18,6 +18,8 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -50,11 +52,36 @@ Body bodyOf(const wardrobe::BaseCage& cage);
 // Per vertex, the unit normal of the outer skin round it (its outer triangles' summed by area); zero
 // for a vertex on none.
 std::vector<Vec3> outerNormals(const Body& body);
+// Per vertex, its share of the outer skin's area: a third of each outer triangle round it.
+std::vector<double> vertexAreas(const Body& body);
+// The turn about the origin that best takes each of `a` onto its `b`, by least squares (Horn's
+// quaternion).
+Quat bestTurn(const std::vector<Vec3>& a, const std::vector<Vec3>& b);
+
+// Where a body cut to what shows (an outfit's carried body) ends: the edges no other triangle shares.
+class CutEdges
+{
+public:
+  explicit CutEdges(const Body& body);
+  // Whether a point of triangle `tri` at barycentrics `w` lies on the cut: on such an edge, or at a
+  // corner on one.
+  bool on(size_t tri, const double w[3]) const;
+
+private:
+  const Body*                             m_body;
+  std::set<std::pair<uint32_t, uint32_t>> m_edges;
+  std::vector<uint8_t>                    m_corner;
+};
 
 struct ProjectOptions
 {
   double maxAngle = 60;  // degrees a triangle's facing may lie from the vertex's normal
   double reach    = 5;   // cm: a vertex with nothing nearer is left unmapped
+  // A vertex whose closest point is on `onto`'s cut lies past what that body has, and is left unmapped.
+  bool refuseCut = false;
+  // A vertex may match in the regions next to its own too (withNeighbours): for bodies whose rigs weight
+  // differently (a carried Skyrim body's torso is all its chest, Genesis 9's chest and breasts).
+  bool widen = false;
 };
 
 // Every vertex of `from` on its outer skin, at the closest point of `onto`'s outer skin within its
@@ -93,6 +120,8 @@ struct MapQuality
   std::map<std::string, size_t> unmappedBy, farBy;
   // the source's triangles the map turns over, by their first corner's regions
   std::map<std::string, size_t> foldedBy;
+  // the source's triangles stretched past half again their size one way, by their first corner's regions
+  std::map<std::string, size_t> stretchedBy;
   std::vector<uint32_t>         foldedTris;
   double                        mapped = 0, inverseCovers = 0, stretchP95 = 0, stretchMax = 0, foldFree = 0;
 };
@@ -134,15 +163,16 @@ struct CloneInputs
 };
 std::optional<CloneInputs> cloneInputs(dson::Store& store, wardrobe::Generation generation, const std::string& gender);
 
-// The type's base and its map onto the reference, posed into its rest, with the frame turns.
-struct CloneMap
+// A type's map: its body; the reference as laid onto it (posed into its rest, and for a fitted type
+// deformed onto it, fit.hpp); the map both ways with the frame turns; and the limbs' turns into its rest.
+struct TypeMap
 {
   Body                  source, reference;
   BodyMap               map;
   std::vector<LimbTurn> turns;
 };
-CloneMap makeCloneMap(const CloneInputs& inputs);
+TypeMap makeCloneMap(const CloneInputs& inputs);
 // cloneInputs, then makeCloneMap through the cache (cachedCloneMap); none when cloneInputs has none.
-std::optional<CloneMap> cloneMap(dson::Store& store, wardrobe::Generation generation, const std::string& gender);
+std::optional<TypeMap> cloneMap(dson::Store& store, wardrobe::Generation generation, const std::string& gender);
 
 }  // namespace fv::bodymap

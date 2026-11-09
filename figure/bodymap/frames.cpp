@@ -31,23 +31,6 @@ struct Mean
   std::optional<Vec3> get() const { return weight > 0 ? std::optional<Vec3>(sum * (1.0 / weight)) : std::nullopt; }
 };
 
-// Each vertex's share of the outer skin's area: a third of each outer triangle round it.
-std::vector<double> vertexAreas(const Body& body)
-{
-  std::vector<double> area(body.positions.size() / 3, 0.0);
-  for(size_t t = 0; t * 3 + 2 < body.tris.size(); t++)
-  {
-    if(t < body.outer.size() && !body.outer[t])
-      continue;
-    const uint32_t a = body.tris[t * 3], b = body.tris[t * 3 + 1], c = body.tris[t * 3 + 2];
-    const Vec3     pa = vertexAt(body.positions, a);
-    const double   third = length(cross(vertexAt(body.positions, b) - pa, vertexAt(body.positions, c) - pa)) / 6;
-    for(const uint32_t v : {a, b, c})
-      area[v] += third;
-  }
-  return area;
-}
-
 // Each region's limb axis on the body (unit), by its bit's index. A limb part's runs joint to joint:
 // from the middle of its band with the region above to that of its band with the region below (the
 // upper arm's from the shoulder's band to the elbow's), as those are where each rig's weights hand

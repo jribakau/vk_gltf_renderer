@@ -52,6 +52,11 @@ dson::LoadResult loadWearable(const std::filesystem::path& file, const dson::Loa
 // ("BODYTRI"), the largest first.
 std::vector<size_t> bodyShapes(const File& nif);
 
+// The body an outfit was built on (its own, or a sibling file's, as loadWearable finds it), at the
+// game's size in DAZ's centimetres and axes, skinned to its Skyrim bones: what a body map reads (step 3b).
+// Null when neither keeps one; throws std::runtime_error when the file doesn't read.
+std::shared_ptr<const wardrobe::BaseCage> carriedBody(const std::filesystem::path& file);
+
 // Where a texture a NIF names (`textures\x\y.dds`, or without its `textures\`) is on disk: under the
 // first folder up from `meshDir` that holds it. Empty when none does.
 std::filesystem::path findTexture(const std::filesystem::path& meshDir, const std::string& rel);

@@ -39,6 +39,12 @@ rig::Region regionAbove(rig::Region region);
 std::vector<rig::Region> regionsBelow(rig::Region region);
 // Whether a region comes as a left and a right one (its joints have sides).
 bool regionSided(rig::Region region);
+// Whether the band where a region meets the one above (its joint: the forearm's is the elbow) is a
+// landmark two bodies share, by the spec's flag on the region's joint.
+rig::Landmark regionLandmark(rig::Region region);
+// A mask with the regions next to each it holds: the one above and those below, on its side. The left
+// thigh's are the pelvis and the left shin, never the right thigh.
+RegionMask withNeighbours(RegionMask mask);
 
 // The regions a mask holds, by name, the right side marked: "thigh pelvis", "r thigh", "none".
 std::string regionNames(RegionMask mask);

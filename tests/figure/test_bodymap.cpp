@@ -558,7 +558,7 @@ fv::bodymap::CloneInputs legInputs(double scale = 1.04)
   return in;
 }
 
-void expectSame(const fv::bodymap::CloneMap& a, const fv::bodymap::CloneMap& b)
+void expectSame(const fv::bodymap::TypeMap& a, const fv::bodymap::TypeMap& b)
 {
   for(const auto& [x, y] : {std::pair{&a.source, &b.source}, std::pair{&a.reference, &b.reference}})
   {
@@ -597,20 +597,20 @@ TEST_F(BodyMapCache, AMapReadBackIsTheOneMade)
 {
   const fv::bodymap::CloneInputs in    = legInputs();
   const auto                     start = fv::bodymap::mapCacheCounts();
-  const fv::bodymap::CloneMap    made  = fv::bodymap::cachedCloneMap(in);
+  const fv::bodymap::TypeMap    made  = fv::bodymap::cachedCloneMap(in);
   EXPECT_EQ(fv::bodymap::mapCacheCounts().misses, start.misses + 1);
   ASSERT_EQ(files().size(), 1u);
   EXPECT_EQ(files()[0].extension(), ".fvm");
   EXPECT_FALSE(made.map.frameTurn.empty());
   EXPECT_FALSE(made.turns.empty());
 
-  const fv::bodymap::CloneMap read = fv::bodymap::cachedCloneMap(in);
+  const fv::bodymap::TypeMap read = fv::bodymap::cachedCloneMap(in);
   EXPECT_EQ(fv::bodymap::mapCacheCounts().hits, start.hits + 1);
   expectSame(made, read);
   expectSame(made, fv::bodymap::makeCloneMap(in));
 
   // another type's base is another map
-  const fv::bodymap::CloneMap other = fv::bodymap::cachedCloneMap(legInputs(1.06));
+  const fv::bodymap::TypeMap other = fv::bodymap::cachedCloneMap(legInputs(1.06));
   EXPECT_EQ(fv::bodymap::mapCacheCounts().misses, start.misses + 2);
   EXPECT_EQ(files().size(), 2u);
   EXPECT_NE(other.source.positions, made.source.positions);

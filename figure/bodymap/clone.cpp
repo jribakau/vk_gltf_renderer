@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <map>
+#include <set>
 #include <unordered_map>
 
 #include <figure/bodymap/cache.hpp>
@@ -68,8 +70,10 @@ MapQuality::Spread spreadOf(std::vector<double> s)
   return out;
 }
 
-// The turn about the origin that best takes each of `a` onto its `b`, by least squares: Horn's
-// quaternion, the eigenvector of his symmetric 4x4 matrix with the largest eigenvalue (Jacobi sweeps).
+}  // namespace
+
+// Horn's quaternion: the eigenvector of his symmetric 4x4 matrix with the largest eigenvalue (Jacobi
+// sweeps).
 Quat bestTurn(const std::vector<Vec3>& a, const std::vector<Vec3>& b)
 {
   double S[3][3] = {};
@@ -129,8 +133,6 @@ Quat bestTurn(const std::vector<Vec3>& a, const std::vector<Vec3>& b)
   return Quat{V[1][best], V[2][best], V[3][best], V[0][best]}.normalized();
 }
 
-}  // namespace
-
 Body bodyOf(const wardrobe::BaseCage& cage)
 {
   Body b;
@@ -161,6 +163,60 @@ std::vector<Vec3> outerNormals(const Body& body)
   return n;
 }
 
+std::vector<double> vertexAreas(const Body& body)
+{
+  std::vector<double> area(body.positions.size() / 3, 0.0);
+  for(size_t t = 0; t * 3 + 2 < body.tris.size(); t++)
+  {
+    if(t < body.outer.size() && !body.outer[t])
+      continue;
+    const uint32_t a = body.tris[t * 3], b = body.tris[t * 3 + 1], c = body.tris[t * 3 + 2];
+    const double   third = length(cross(minus(vertexAt(body.positions, b), vertexAt(body.positions, a)), minus(vertexAt(body.positions, c), vertexAt(body.positions, a)))) / 6;
+    for(const uint32_t v : {a, b, c})
+      area[v] += third;
+  }
+  return area;
+}
+
+CutEdges::CutEdges(const Body& body)
+    : m_body(&body)
+    , m_corner(body.positions.size() / 3, 0)
+{
+  std::map<std::pair<uint32_t, uint32_t>, int> count;
+  for(size_t t = 0; t * 3 + 2 < body.tris.size(); t++)
+    for(size_t j = 0; j < 3; j++)
+    {
+      const uint32_t a = body.tris[t * 3 + j], b = body.tris[t * 3 + (j + 1) % 3];
+      count[{std::min(a, b), std::max(a, b)}]++;
+    }
+  for(const auto& [e, n] : count)
+    if(n == 1)
+    {
+      m_edges.insert(e);
+      m_corner[e.first] = m_corner[e.second] = 1;
+    }
+}
+
+bool CutEdges::on(size_t tri, const double w[3]) const
+{
+  constexpr double kOn = 1e-6;
+  const uint32_t   c[3] = {m_body->tris[tri * 3], m_body->tris[tri * 3 + 1], m_body->tris[tri * 3 + 2]};
+  for(size_t j = 0; j < 3; j++)
+  {
+    if(w[j] > kOn)
+      continue;
+    // on the edge across from corner j...
+    const uint32_t a = c[(j + 1) % 3], b = c[(j + 2) % 3];
+    if(m_edges.count({std::min(a, b), std::max(a, b)}))
+      return true;
+    // ...or at the corner left when another weight is nought too
+    for(size_t k = 0; k < 3; k++)
+      if(k != j && w[k] <= kOn && m_corner[c[3 - j - k]])
+        return true;
+  }
+  return false;
+}
+
 Projection project(const Body& from, const Body& onto, const ProjectOptions& options)
 {
   const size_t n = from.positions.size() / 3;
@@ -176,6 +232,13 @@ Projection project(const Body& from, const Body& onto, const ProjectOptions& opt
   const std::vector<V>        faces   = faceNormals(onto);
   const double                cosMax  = std::cos(options.maxAngle * 3.14159265358979323846 / 180);
   const double                reach2  = options.reach * options.reach;
+  const std::optional<CutEdges> cut = options.refuseCut ? std::optional<CutEdges>(onto) : std::nullopt;
+  // a vertex's regions as it matches them, each mask widened once
+  std::unordered_map<RegionMask, RegionMask> widened;
+  if(options.widen)
+    for(const RegionMask m : from.regions)
+      if(!widened.count(m))
+        widened[m] = withNeighbours(m);
   jobs::parallelFor(n, 256, [&](size_t begin, size_t end) {
     physics::Stamps& stamps = physics::threadStamps();
     for(size_t v = begin; v < end; v++)
@@ -183,7 +246,8 @@ Projection project(const Body& from, const Body& onto, const ProjectOptions& opt
       const V normal{normals[v].x, normals[v].y, normals[v].z};
       if(normal[0] == 0 && normal[1] == 0 && normal[2] == 0)
         continue;  // on no outer skin
-      const RegionMask mask   = v < from.regions.size() ? from.regions[v] : 0;
+      const RegionMask own    = v < from.regions.size() ? from.regions[v] : 0;
+      const RegionMask mask   = options.widen ? widened.at(own) : own;
       const auto       accept = [&](size_t t) {
         if(t < onto.outer.size() && !onto.outer[t])
           return false;
@@ -199,6 +263,12 @@ Projection project(const Body& from, const Body& onto, const ProjectOptions& opt
       const auto    hit = index.nearest(from.positions[v * 3], from.positions[v * 3 + 1], from.positions[v * 3 + 2], accept, reach2, stamps.stamp, id);
       if(hit.tri < 0)
         continue;
+      if(cut)
+      {
+        const double w[3] = {hit.u, hit.v, hit.w};
+        if(cut->on(size_t(hit.tri), w))
+          continue;
+      }
       for(size_t j = 0; j < 3; j++)
         out.at.verts[v * 3 + j] = onto.tris[size_t(hit.tri) * 3 + j];
       out.at.weights[v * 3]     = float(hit.u);
@@ -351,6 +421,8 @@ MapQuality mapQuality(const Body& source, const Body& reference, const BodyMap& 
     const double g11 = dot(j1, j1), g12 = dot(j1, j2), g22 = dot(j2, j2);
     const double mean = (g11 + g22) / 2, d = std::sqrt(std::max(0.0, mean * mean - (g11 * g22 - g12 * g12)));
     stretch.push_back(std::sqrt(mean + d));
+    if(stretch.back() > 1.5)
+      q.stretchedBy[regionNames(source.regions[a])]++;
   }
   const MapQuality::Spread st = spreadOf(stretch);
   q.stretchP95                = st.p95;
@@ -560,7 +632,9 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
 
   // Each unit's turn fitted, parents first: its own vertices, as posed, to the closest points of the
   // source's skin in its region, by the turn about its joint that takes them there best; a few rounds,
-  // as the closest points move with the turn. The units below it turn with it.
+  // as the closest points move with the turn. The units below it turn with it. A unit the source has
+  // less than half the skin of (a carried body cut at the shoulder) isn't fitted: its few points would
+  // turn the whole limb onto them.
   if(!source.tris.empty())
   {
     const physics::SurfaceIndex index(source.positions, source.tris);
@@ -568,6 +642,19 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
     for(size_t t = 0; t < triRegions.size(); t++)
       for(size_t j = 0; j < 3; j++)
         triRegions[t] |= source.tris[t * 3 + j] < source.regions.size() ? source.regions[source.tris[t * 3 + j]] : 0;
+    Body shapedBody;
+    shapedBody.positions                 = shaped;
+    shapedBody.tris                      = reference.tris;
+    shapedBody.regions                   = regions;
+    const std::vector<double> refArea    = vertexAreas(shapedBody);
+    const std::vector<double> sourceArea = vertexAreas(source);
+    const auto                skinOf     = [](const Body& b, const std::vector<double>& area, RegionMask own) {
+      double sum = 0;
+      for(size_t v = 0; v < area.size() && v < b.regions.size(); v++)
+        if(b.regions[v] & own)
+          sum += area[v];
+      return sum;
+    };
     constexpr double kReach2 = 8.0 * 8.0;
     for(int level = 0; level < 4; level++)
       for(size_t k = 0; k < units.size(); k++)
@@ -576,6 +663,8 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
         if(!u.found || u.level != level)
           continue;
         const RegionMask own = sided(u.own, u.side);
+        if(skinOf(source, sourceArea, own) < 0.5 * skinOf(shapedBody, refArea, own))
+          continue;
         std::vector<size_t> verts;
         for(size_t v = 0; v < nv; v++)
           if(regions[v] == own)
@@ -653,16 +742,16 @@ std::optional<CloneInputs> cloneInputs(dson::Store& store, wardrobe::Generation 
   return in;
 }
 
-CloneMap makeCloneMap(const CloneInputs& in)
+TypeMap makeCloneMap(const CloneInputs& in)
 {
-  CloneMap out{bodyOf(*in.base), in.reference, {}, {}};
+  TypeMap out{bodyOf(*in.base), in.reference, {}, {}};
   out.reference.positions = intoRest(*in.g9, in.reference.positions, out.source, &out.turns);
   out.map                 = mapBodies(out.source, out.reference);
   out.map.frameTurn       = frameTurns(vertexFrames(out.source), vertexFrames(bodyOf(*in.g9)), out.map.toReference);
   return out;
 }
 
-std::optional<CloneMap> cloneMap(dson::Store& store, wardrobe::Generation generation, const std::string& gender)
+std::optional<TypeMap> cloneMap(dson::Store& store, wardrobe::Generation generation, const std::string& gender)
 {
   const auto in = cloneInputs(store, generation, gender);
   if(!in)

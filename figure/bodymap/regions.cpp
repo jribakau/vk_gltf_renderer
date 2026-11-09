@@ -1,6 +1,7 @@
 #include <figure/bodymap/regions.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <string>
 #include <unordered_map>
@@ -110,6 +111,29 @@ bool regionSided(rig::Region region)
 {
   const rig::Joint* j = firstJointOf(region);
   return j && j->sided;
+}
+
+rig::Landmark regionLandmark(rig::Region region)
+{
+  const rig::Joint* j = firstJointOf(region);
+  return j ? j->landmark : rig::Landmark::eNone;
+}
+
+RegionMask withNeighbours(RegionMask mask)
+{
+  RegionMask out = mask;
+  for(RegionMask m = mask; m; m &= m - 1)
+  {
+    const int         bit    = std::countr_zero(m);
+    const rig::Region region = rig::Region(bit % kRightShift);
+    const char        side   = bit >= kRightShift ? 'r' : 'l';
+    const auto        near   = [&](rig::Region r) { return regionBit(r, regionSided(r) ? side : 0); };
+    if(const rig::Region up = regionAbove(region); up != rig::Region::eNone)
+      out |= near(up);
+    for(const rig::Region down : regionsBelow(region))
+      out |= near(down);
+  }
+  return out;
 }
 
 std::string regionNames(RegionMask mask)

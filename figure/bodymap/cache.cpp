@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -12,6 +13,7 @@
 #include <type_traits>
 #include <vector>
 
+#include <figure/bodymap/fit.hpp>
 #include <figure/io/cache_folder.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/wardrobe/fit/bases.hpp>
@@ -64,19 +66,45 @@ void hashCage(io::CacheHasher& h, uint32_t tag, const wardrobe::BaseCage& c)
   }
 }
 
-io::CacheKey keyOf(const CloneInputs& in)
+// A key's start: the format, the map code, and what kind of map (a clone's 1, a fit's 2).
+void hashHead(io::CacheHasher& h, uint32_t kind)
 {
-  io::CacheHasher        h;
   const std::string_view source = FV_BODYMAP_SOURCE_SHA;
   h.bytes(kMagic, sizeof kMagic);
   h.bytes(&kVersion, sizeof kVersion);
   h.text(source);
+  h.bytes(&kind, sizeof kind);
+}
+
+void hashBody(io::CacheHasher& h, uint32_t tag, const Body& b)
+{
+  h.array<float>(tag, b.positions);
+  h.array<uint32_t>(tag + 1, b.tris);
+  h.array<uint8_t>(tag + 2, b.outer);
+  h.array<RegionMask>(tag + 3, b.regions);
+}
+
+io::CacheKey keyOf(const CloneInputs& in)
+{
+  io::CacheHasher h;
+  hashHead(h, 1);
   hashCage(h, 10, *in.base);
   hashCage(h, 20, *in.g9);
-  h.array<float>(30, in.reference.positions);
-  h.array<uint32_t>(31, in.reference.tris);
-  h.array<uint8_t>(32, in.reference.outer);
-  h.array<RegionMask>(33, in.reference.regions);
+  hashBody(h, 30, in.reference);
+  return h.key();
+}
+
+io::CacheKey keyOf(const FitInputs& in, const FitOptions& o)
+{
+  io::CacheHasher h;
+  hashHead(h, 2);
+  hashCage(h, 10, *in.source);
+  hashCage(h, 20, *in.g9);
+  hashBody(h, 30, in.reference);
+  for(const int i : {o.nodes, o.rounds, o.refine})
+    h.bytes(&i, sizeof i);
+  for(const double d : {o.stiffFrom, o.stiffTo, o.reach, o.maxAngle, o.landmarkWeight, o.refineReach, o.overCut})
+    h.bytes(&d, sizeof d);
   return h.key();
 }
 
@@ -171,7 +199,7 @@ struct Cursor
   }
 };
 
-void writeMap(const std::filesystem::path& file, const io::CacheKey& key, const CloneMap& m)
+void writeMap(const std::filesystem::path& file, const io::CacheKey& key, const TypeMap& m)
 {
   std::ostringstream body(std::ios::binary);
   eachArray(m, [&](const auto& values) { put(body, values); });
@@ -208,8 +236,8 @@ bool cornersWithin(const Projection& p, size_t from, size_t onto)
   return true;
 }
 
-// The map read back, if the file is whole, is this key's and fits these inputs.
-std::optional<CloneMap> readMap(const std::filesystem::path& file, const io::CacheKey& key, const CloneInputs& in)
+// The map read back, if the file is whole, is this key's and fits bodies of these vertex counts.
+std::optional<TypeMap> readMap(const std::filesystem::path& file, const io::CacheKey& key, size_t ns, size_t nr)
 {
   std::error_code ec;
   const uintmax_t size = std::filesystem::file_size(file, ec);
@@ -226,7 +254,7 @@ std::optional<CloneMap> readMap(const std::filesystem::path& file, const io::Cac
   if(std::memcmp(h.magic, kMagic, 4) != 0 || h.version != kVersion || h.keyA != key.a || h.keyB != key.b || h.bytes != size - sizeof h)
     return std::nullopt;
   Cursor   c{bytes.data() + sizeof h, bytes.data() + bytes.size()};
-  CloneMap m;
+  TypeMap m;
   eachArray(m, [&](auto& values) { c.get(values); });
   uint64_t turns = 0;
   c.get(turns);
@@ -238,7 +266,6 @@ std::optional<CloneMap> readMap(const std::filesystem::path& file, const io::Cac
     c.get(t.degrees);
     m.turns.push_back(std::move(t));
   }
-  const size_t ns = in.base->positions.size() / 3, nr = in.g9->positions.size() / 3;
   if(!c.ok || c.at != c.end || m.source.positions.size() != ns * 3 || m.reference.positions.size() != nr * 3
      || !cornersWithin(m.map.toReference, ns, nr) || !cornersWithin(m.map.fromReference, nr, ns) || m.map.frameTurn.size() != ns)
     return std::nullopt;
@@ -260,22 +287,24 @@ std::filesystem::path mapCacheDir()
   return g_dir;
 }
 
-CloneMap cachedCloneMap(const CloneInputs& in)
+namespace {
+
+// A map under `key` read back, else made and kept.
+TypeMap cached(const io::CacheKey& key, size_t ns, size_t nr, const std::function<TypeMap()>& make)
 {
   const std::filesystem::path dir = mapCacheDir();
   if(dir.empty())
-    return makeCloneMap(in);
-  const io::CacheKey          key  = keyOf(in);
+    return make();
   const std::filesystem::path file = io::cacheFileOf(dir, key, ".fvm");
   const auto                  t0   = std::chrono::steady_clock::now();
-  if(auto m = readMap(file, key, in))
+  if(auto m = readMap(file, key, ns, nr))
   {
     g_hits++;
     timing::report("map cache hit", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), 1);
     return std::move(*m);
   }
   g_misses++;
-  CloneMap m = makeCloneMap(in);
+  TypeMap m = make();
   // the cache is optional: failing to keep a map mustn't fail what wanted it
   try
   {
@@ -285,6 +314,22 @@ CloneMap cachedCloneMap(const CloneInputs& in)
   {
   }
   return m;
+}
+
+}  // namespace
+
+TypeMap cachedCloneMap(const CloneInputs& in)
+{
+  if(mapCacheDir().empty())
+    return makeCloneMap(in);
+  return cached(keyOf(in), in.base->positions.size() / 3, in.g9->positions.size() / 3, [&] { return makeCloneMap(in); });
+}
+
+TypeMap cachedFittedMap(const FitInputs& in, const FitOptions& options)
+{
+  if(mapCacheDir().empty())
+    return makeFittedMap(in, options);
+  return cached(keyOf(in, options), in.source->positions.size() / 3, in.g9->positions.size() / 3, [&] { return makeFittedMap(in, options); });
 }
 
 MapCacheCounts mapCacheCounts()

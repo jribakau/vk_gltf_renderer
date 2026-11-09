@@ -81,6 +81,7 @@ set(TEST_SOURCES
     figure/test_wardrobe.cpp
     figure/test_rig_spec.cpp
     figure/test_bodymap.cpp
+    figure/test_bodymap_fit.cpp
     figure/test_nif.cpp
     figure/test_bind_cache.cpp
     figure/test_hair_strands.cpp
