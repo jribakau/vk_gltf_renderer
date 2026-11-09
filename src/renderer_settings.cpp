@@ -553,6 +553,12 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   .help            = "PathTracer (debug): the thin skin preview lets light through thin skin (ears, fingers) to its far side",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.ptSkinSlab, Persist::eNo);
+  // The thin preview's spread (skin_spread.h.slang); off for the preview as it was, skin's light taken where it lands
+  m_settings.add({.name            = "ptSkinSpread",
+                  .help            = "PathTracer (debug): the thin skin preview softens shadows on skin as the still's walk does, "
+                                     "taking each channel's light where the walk lets it out",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.ptSkinSpread, Persist::eNo);
   // Display › Time from a command line (view.set's display "time" in the app): each pixel coloured by how
   // long its thread ran against the frame's average (pixel_time.h.slang); where the frame's time went is
   // logged as it comes back

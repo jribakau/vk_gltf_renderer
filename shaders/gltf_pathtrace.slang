@@ -74,6 +74,7 @@ static bool doDebug = false;
 #include "aerial_perspective.h.slang"
 #include "contribution_roulette.h.slang"
 #include "skin_slab.h.slang"
+#include "skin_spread.h.slang"
 #include "aperture.h.slang"
 #include "sky_bruneton_radiance.h.slang"
 #include "sky_clouds.h.slang"
@@ -387,6 +388,47 @@ SlabFarSide probeSlabFarSide(float3 origin, float3 inward, float reach, int mate
   far.depth     = rayQuery.CommittedRayT();
   far.hit       = hit;
   return far;
+}
+
+// The skin under a point of the thin preview's spread (skin_spread.h.slang, in pathTraceOneBounce):
+// straight down from `origin` along `down` within `reach`, the first surface a walk would stop at
+// (INSTANCE_MASK_WALK: not the hair, lashes or anything worn lying on it), if it is skin of a scattering
+// medium met from outside, any such skin, so the spread runs on across the seam between a head's and a
+// body's surfaces. Its frame faces the probe, out of the skin, as a hit seen from outside does.
+struct SpreadPoint
+{
+  bool     found;
+  HitState hit;
+};
+SpreadPoint probeSpreadPoint(float3 origin, float3 down, float reach)
+{
+  SpreadPoint point = {};
+  point.found       = false;
+  RayDesc probe;
+  probe.Origin    = origin;
+  probe.Direction = down;
+  probe.TMin      = 0.0F;
+  probe.TMax      = reach;
+  PIXEL_TIME_COUNT(kPixelTimeCountRays);
+  RayQuery rayQuery;
+  rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE, INSTANCE_MASK_WALK, probe);
+  while(rayQuery.Proceed())
+  {
+  }  // opaque: nothing to decide
+  if(rayQuery.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+    return point;
+  const GltfRenderNode node = pushConst.gltfScene->renderNodes[rayQuery.CommittedInstanceIndex()];
+  if(node.materialID < 0)
+    return point;
+  GltfShadeMaterial* materials = pushConst.gltfScene->materials;
+  if(materials[node.materialID].scatterStrengthFactor <= 0.0F || !any(materials[node.materialID].scatterDistance > 0.0F))
+    return point;
+  const GltfRenderPrimitive prim = pushConst.gltfScene->renderPrimitives[rayQuery.CommittedInstanceID()];
+  const float2              b    = rayQuery.CommittedTriangleBarycentrics();
+  point.hit = getHitState(prim, float3(1.0F - b.x - b.y, b.x, b.y), node.worldToObject, node.objectToWorld,
+                          rayQuery.CommittedPrimitiveIndex(), down);
+  point.found = point.hit.frontFace;
+  return point;
 }
 #endif
 
@@ -1058,6 +1100,27 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
 #endif
 
+    // The thin preview's spread (skin_spread.h.slang). The preview takes skin's light where it lands,
+    // and the still's walk lets it out millimetres away, so a shadow on skin -- a pendant's, the jaw's
+    // on the neck -- had the hard edge and the dark core the still's lacks. On the camera's skin the
+    // diffuse share of the light sample is taken, each channel, at a point of the skin as far off as
+    // that channel's profile puts it (its rate here, from the map before the slab below changes it),
+    // with a shadow ray of its own; its glossy share keeps this point's. Below, at the shadow rays.
+    bool   spreadHere = false;
+    float3 spreadRate = float3(0.0F);
+#if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+    if(simplifyScatter && firstRay && frameInfo->skinSpread != 0 && !hitInfinitePlane && !hitWater && materialIndex >= 0 && hit.frontFace
+       && !ptIsInside(pt) && pbrMat.thickness > 0.0F && materials[materialIndex].scatterStrengthFactor > 0.0F
+       && any(materials[materialIndex].scatterDistance > 0.0F))
+    {
+      // the medium's single-scattering albedo as the still's walk makes it from the map (gltf_material_eval.h.slang)
+      const float3 A     = clamp(pbrMat.baseColor, float3(1e-3F), float3(0.999F));
+      const float3 alpha = hasFlag(pushConst.flags, PathtracerFlags::ePtSkinFaceOn) ? faceOnSingleScatterAlbedo(A) : multiToSingleScatterAlbedo(A, 0.0F);
+      spreadRate         = skinSpreadRate(alpha, materials[materialIndex].scatterDistance);
+      spreadHere         = true;
+    }
+#endif
+
     // The thin preview's slab (skin_slab.h.slang). The preview sends all of skin's light back out where
     // it went in, which a thick body does, but where measured skin is thin enough for light to reach
     // its far side -- an ear, a finger, the wing of a nostril -- the still's walk lets some through,
@@ -1111,6 +1174,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
               exitFresnelEta = clamp(materials[materialIndex].ior, 1.0F, 3.0F);
             pt.throughput *= lobeWeights[LOBE_DIFFUSE_REFLECTION] / chance;
             slabFarSide = true;
+            spreadHere  = false;  // shaded at the far side's point already
           }
           else
           {
@@ -1445,7 +1509,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 
         // sample weight; a kept candidate's scaled by the candidates' mean weight over its own
         const float3 w = pt.throughput * directLight.radianceOverPdf * mis_weight * risScale;
-        bounce.contribution += w * evalData.bsdf_diffuse;
+        // the spread's diffuse share has shadow rays of its own (below)
+        if(spreadHere)
+          bounce.spreadContribution = w * evalData.bsdf_diffuse;
+        else
+          bounce.contribution += w * evalData.bsdf_diffuse;
         bounce.contribution += w * evalData.bsdf_glossy;
         // Classed by the path before this vertex, as the sample below is about to change it
         bounce.indirect = pt.pathRoughness > DIRECT_PATH_ROUGHNESS;
@@ -1454,7 +1522,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // light sends nothing this way (a black texel of an emissive texture, a sized spot's sample
       // outside its cone, a light picked evenly among more than LIGHT_PICK_MAX_LIGHTS). A non-finite
       // contribution still traces, so its sample is dropped as before (the end of samplePixel).
-      if(all(bounce.contribution == 0.0F))
+      if(all(bounce.contribution == 0.0F) && all(bounce.spreadContribution == 0.0F))
         bounce.nextEventValid = false;
 
 #if GLTF_USE_VOLUME
@@ -1711,6 +1779,57 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         bounce.shadowRayDist  = length(toTarget);
         bounce.shadowRayDir   = toTarget / max(bounce.shadowRayDist, 1e-12F);
       }
+
+#if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+      // The spread's points (above, where spreadHere is set): one radius of the unit profile and one
+      // direction in the tangent plane for all three channels, each channel's point at that radius over
+      // its own rate, so each has a sample of its own profile, never weighed up or down: where nothing
+      // casts a shadow nearby every point sees what this one does and no noise is added. Each point is
+      // found on the skin by a probe straight down through it from as high above the plane as it is
+      // far out (the skin curves away from the plane by much less), and sees the light by a shadow ray
+      // of its own to the same point of the light. A channel whose probe finds no skin, or whose point
+      // has the light below its horizon, keeps this point's shadow (-1, pathTrace): the spread blurs
+      // what something casts on the skin, while the terminator stays as the preview shades it. So does
+      // a channel whose point falls within the pixel's footprint, where a spread could not show: a figure
+      // seen whole traces few of these rays, a close-up of skin all of them (on 10TEST's neck, 9-11%
+      // of the moving frame's trace).
+      if(spreadHere && any(bounce.spreadContribution != 0.0F))
+      {
+        const float3 lightPoint = hit.pos + directLight.direction * directLight.distance;
+        const float  unitRadius = skinSpreadUnitRadius(rand(seed), rand(seed));
+        const float  phi        = M_TWO_PI * rand(seed);
+        float3       t, b;
+        orthonormalBasis(hit.nrm, t, b);
+        const float3 along = t * cos(phi) + b * sin(phi);
+        bounce.spreadVisibility = float3(-1.0F);
+        [ForceUnroll]
+        for(int c = 0; c < 3; c++)
+        {
+          if(bounce.spreadContribution[c] == 0.0F)
+            continue;
+          const float r = unitRadius / spreadRate[c];
+          if(r <= max(hit.offsetDistance, worldFoot))
+            continue;  // within the pixel's own footprint, where no spread shows: this point's shadow
+          const SpreadPoint point = probeSpreadPoint(hit.pos + along * r + hit.nrm * r, -hit.nrm, 2.0F * r);
+          if(!point.found)
+            continue;
+          RayDesc shadowRay;
+          shadowRay.Origin    = safeOffsetRay(point.hit.shadowPos, point.hit.geonrm, point.hit.offsetDistance);
+          shadowRay.Direction = directLight.direction;
+          shadowRay.TMin      = 0.0F;
+          shadowRay.TMax      = directLight.distance;
+          if(directLight.distance < INFINITE)
+          {
+            const float3 toTarget = lightPoint - shadowRay.Origin;
+            shadowRay.TMax        = length(toTarget);
+            shadowRay.Direction   = toTarget / max(shadowRay.TMax, 1e-12F);
+          }
+          if(dot(shadowRay.Direction, point.hit.geonrm) <= 0.0F || dot(shadowRay.Direction, point.hit.nrm) <= 0.0F)
+            continue;  // the light is below this point's horizon: the terminator, not a cast shadow
+          bounce.spreadVisibility[c] = raytracer.TraceShadow(shadowRay, seed, false, float3(0.0F))[c];
+        }
+      }
+#endif
     }
   }
 
@@ -1769,7 +1888,9 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       shadowRay.TMin      = 0.0;
       shadowRay.TMax      = bounce.shadowRayDist;
       float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, bounce.shadowRayInside, bounce.shadowRayExtinction);
-      addRadiance(pt, bounce.contribution * shadowFactor, bounce.indirect);
+      // the spread's diffuse share by each channel's own shadow, or this one's where it found no point
+      const float3 spreadShadow = lerp(shadowFactor, bounce.spreadVisibility, float3(bounce.spreadVisibility >= 0.0F));
+      addRadiance(pt, bounce.contribution * shadowFactor + bounce.spreadContribution * spreadShadow, bounce.indirect);
 #if USE_LIGHT_RIS
       // what the pixel carries to the next frame is what it found lit (light_ris.h.slang)
       if(bounce.lightReuseWritten && all(shadowFactor <= float3(0.0F)))

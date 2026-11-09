@@ -372,6 +372,10 @@ struct SceneFrameInfo
   // ptSkinSlab (debug): the thin preview lets light through thin skin to its far side
   // (skin_slab.h.slang); 0 sends it all back where it went in, as before. (Appended, per the note above.)
   int skinSlab = 1;
+  // ptSkinSpread (debug): the thin preview takes the light of the camera's skin at points as far off as
+  // the still's walk lets it out (skin_spread.h.slang); 0 takes it where it lands, as before.
+  // (Appended, per the note above.)
+  int skinSpread = 1;
 };
 
 enum PathtracerFlags

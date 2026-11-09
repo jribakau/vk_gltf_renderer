@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 #include <random>
@@ -22,6 +23,7 @@ using namespace glm;
 using namespace shaderio;
 #include "../shaders/skin_albedo.h.slang"
 #include "../shaders/skin_slab.h.slang"
+#include "../shaders/skin_spread.h.slang"
 
 namespace {
 
@@ -320,4 +322,122 @@ TEST(SkinSlab, ItLetsThroughWhatTheWalkDoes)
     }
   const SkinSlab reach = skinSlab(float3(0.6f), float3(SKIN_SLAB_REACH));
   EXPECT_LT(reach.transmittance.x, 1e-3f);
+}
+
+namespace {
+
+// Where the still's walk lets light out that went in straight down (a face-on camera ray refracts to
+// the normal): the medium the shader makes from a map A by the face-on inversion, a unit-extinction
+// half-space whose walk leaves the first time it reaches the surface (ePtVolumeDiffuseExit). The radii
+// are in diffusion lengths, the scatter distance the medium is made from, each with the walk's weight.
+struct SpreadExit
+{
+  double radius, weight;
+};
+std::vector<SpreadExit> walkSpread(float a, int walks, uint32_t seed)
+{
+  std::mt19937_64                        rng(seed);
+  std::uniform_real_distribution<double> u(0.0, 1.0);
+  const double                           omega = faceOn(a);
+  const double                           d     = 1 / std::sqrt(3 * (1 - omega));  // in mean free paths
+  std::vector<SpreadExit>                out;
+  for(int w = 0; w < walks; w++)
+  {
+    double x = 0, y = 0, z = 0, dx = 0, dy = 0, dz = -1, weight = 1;
+    for(;;)
+    {
+      const double t = -std::log(1 - u(rng));
+      if(z + dz * t > 0)
+      {
+        const double up = -z / dz;  // to the surface
+        out.push_back({std::hypot(x + dx * up, y + dy * up) / d, weight});
+        break;
+      }
+      x += dx * t;
+      y += dy * t;
+      z += dz * t;
+      weight *= omega;
+      if(weight < 1e-3)
+      {
+        if(u(rng) > 0.1)
+          break;
+        weight *= 10;
+      }
+      dz                = 2 * u(rng) - 1;
+      const double phi  = 2 * std::numbers::pi * u(rng);
+      const double side = std::sqrt(std::max(1 - dz * dz, 0.0));
+      dx                = side * std::cos(phi);
+      dy                = side * std::sin(phi);
+    }
+  }
+  return out;
+}
+
+// The largest gap between the walk's share of light out within each radius and the profile's, at the
+// rate skinSpreadRate gives a unit scatter distance
+double spreadGap(std::vector<SpreadExit> exits, float a)
+{
+  std::sort(exits.begin(), exits.end(), [](const SpreadExit& l, const SpreadExit& r) { return l.radius < r.radius; });
+  double total = 0;
+  for(const SpreadExit& e : exits)
+    total += e.weight;
+  const double k   = skinSpreadRate(float3(float(faceOn(a))), float3(1.0f)).x;
+  double       sum = 0, gap = 0;
+  for(const SpreadExit& e : exits)
+  {
+    sum += e.weight;
+    gap = std::max(gap, std::abs(sum / total - double(skinSpreadUnitCdf(float(k * e.radius)))));
+  }
+  return gap;
+}
+
+}  // namespace
+
+// The spread's radius is drawn from the profile it is weighed as: one draw of the unit profile is
+// within a percent of its share at every radius, up to where the draw is cut (SKIN_SPREAD_MAX)
+TEST(SkinSpread, ItsRadiusFollowsTheProfile)
+{
+  std::mt19937                          rng(7);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  std::vector<float>                    radii(200000);
+  for(float& r : radii)
+    r = skinSpreadUnitRadius(u(rng), u(rng));
+  std::sort(radii.begin(), radii.end());
+  EXPECT_LE(radii.back(), SKIN_SPREAD_MAX);
+  double gap = 0;
+  for(size_t i = 0; i < radii.size(); i++)
+    if(radii[i] < SKIN_SPREAD_MAX)
+      gap = std::max(gap, std::abs(double(i + 1) / radii.size() - double(skinSpreadUnitCdf(radii[i]))));
+  EXPECT_LT(gap, 0.01);
+  EXPECT_GT(skinSpreadUnitCdf(SKIN_SPREAD_MAX), 0.999f);
+}
+
+// ...and the profile is where the still's walk lets the light out: through the medium a map makes,
+// the walk's share within each radius is within 0.03 of the profile's for a map up to 0.8 (the scale's
+// fit to the walk is within a few percent; a lighter map's walk is more peaked than the shape)
+TEST(SkinSpread, ItSpreadsAsTheWalkDoes)
+{
+  for(const float a : {0.1f, 0.25f, 0.4f, 0.6f, 0.8f})
+  {
+    const double gap = spreadGap(walkSpread(a, 60000, uint32_t(a * 1000)), a);
+    EXPECT_LT(gap, a > 0.7f ? 0.035 : 0.03) << "A " << a;
+    std::printf("A %.2f: k %.3f, the walk's share within a radius at most %.4f from the profile's\n", a,
+                skinSpreadRate(float3(float(faceOn(a))), float3(1.0f)).x, gap);
+  }
+}
+
+// Measured skin spreads red furthest and blue least, as the still's shadow edges did on 10TEST (red
+// 1.5 mm past the sun's penumbra, green 0.9, blue 0.7): a pale skin map over the measured distances
+TEST(SkinSpread, RedSpreadsFurthest)
+{
+  const float3 alpha = faceOnSingleScatterAlbedo(float3(0.6f, 0.35f, 0.25f));
+  const float3 rate  = skinSpreadRate(alpha, float3(0.00367f, 0.00137f, 0.00068f));
+  EXPECT_LT(rate.x, rate.y);
+  EXPECT_LT(rate.y, rate.z);
+  // a median radius of a millimetre or so: half of the unit profile lies within 1.7
+  for(int c = 0; c < 3; c++)
+  {
+    EXPECT_GT(1.7f / rate[c], 0.0002f) << c;
+    EXPECT_LT(1.7f / rate[c], 0.002f) << c;
+  }
 }

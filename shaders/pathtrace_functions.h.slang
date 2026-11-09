@@ -2751,6 +2751,11 @@ struct BounceScratch
   float  shadowRayDist       = 0.0F;
   bool   shadowRayInside     = false;         // The shadow ray starts inside a medium...
   float3 shadowRayExtinction = float3(0.0F);  // ...of this extinction.
+  // The thin preview's spread on skin (skin_spread.h.slang): the light sample's diffuse share, kept
+  // out of `contribution`, and each channel's shadow at its own point of the skin, -1 for the shadow
+  // ray's own (a channel the spread found no point for)
+  float3 spreadContribution  = float3(0.0F);
+  float3 spreadVisibility    = float3(-1.0F);
   bool   hairEvent           = false;         // This vertex was a fibre's and spent the hair budget, not a surface bounce
   bool   fibre               = false;         // This vertex was a fibre's, within the budget or past it
   bool   glassEvent          = false;         // This vertex was clear glass and spent the glass budget, not a surface bounce

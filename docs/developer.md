@@ -414,6 +414,26 @@ Some things about the transport are worth knowing before touching it:
   hair off, the Sun low behind, 256 samples) the glow's red went from 0.51 of the walk's to 0.79,
   green 0.76 to 0.87. A straight-in probe gave 0.73 with faceted, hard-edged glow and a dark concha.
   The cost is +6-9% of the preview's trace where skin fills the frame.
+- The **thin preview's spread** (`skin_spread.h.slang`, `ptSkinSpread`, debug, on): the preview takes
+  skin's light where it lands, the still's walk lets it out millimetres away, so shadows cast on skin
+  (a pendant's, the jaw's on the neck) were hard in the moving view. On the camera's hit on preview
+  skin, the light sample's diffuse share (`BounceScratch::spreadContribution`) is shadowed per channel
+  at a point of its own. One radius of the unit profile and one direction serve all three channels:
+  each channel's point lies at that radius over its own rate, so each gets an unweighted sample of its
+  own profile. Where no shadow edge is near, every point sees what the hit does and no noise is added.
+  A shared radius with per-channel weights instead adds 50-60% colour noise to all lit skin, and as
+  a control variate it goes negative near edges, red 5-18% of the time. A probe straight down from
+  above each point finds the skin (`probeSpreadPoint`: `INSTANCE_MASK_WALK`, any scattering skin met
+  from outside). The point then sends its own shadow ray to the same point of the light. A channel
+  with no point, or whose point has the light below its horizon, keeps the hit's shadow, so the
+  terminator stays as the preview shades it. The glossy share keeps the hit's shadow.
+  - **Profile shape:** Burley's normalized diffusion.
+  - **Scale:** fitted to our own walk, s = k / d with k = 2.1772 + 0.3585 / c + 0.6248 c and
+    c = sqrt(1 − alpha). It is within 3.3% of the best fit to the walk over maps of 0.02 to 0.95
+    (`SkinSpread.ItSpreadsAsTheWalkDoes` walks it in C++).
+  - **Not Christensen-Burley's fit:** theirs spreads two to five times wider at our scatter
+    distances.
+  - **Cost:** three short probes and three shadow rays, on the camera's skin hit only.
 - A **sized light** (a point or spot light with a radius, a directional one with a disc, the sky's
   own sun aside) is reached by both techniques: `sampleLights()` draws its cone with a real pdf, and
   `sizedLightHits()` tests each path segment against the spheres (and, on escape, the discs),
