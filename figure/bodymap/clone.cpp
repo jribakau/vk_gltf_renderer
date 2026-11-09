@@ -5,6 +5,8 @@
 #include <cmath>
 #include <unordered_map>
 
+#include <figure/bodymap/cache.hpp>
+#include <figure/bodymap/frames.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/math/xform.hpp>
@@ -26,26 +28,6 @@ V    unit(const V& a)
 {
   const double l = length(a);
   return l > 0 ? V{a[0] / l, a[1] / l, a[2] / l} : V{0, 0, 0};
-}
-
-// Per vertex, the normal of the outer skin round it (its outer triangles' summed by area); zero for a
-// vertex on none.
-std::vector<V> outerNormals(const Body& b)
-{
-  std::vector<V> n(b.positions.size() / 3, V{0, 0, 0});
-  for(size_t t = 0; t * 3 + 2 < b.tris.size(); t++)
-  {
-    if(t < b.outer.size() && !b.outer[t])
-      continue;
-    const uint32_t a = b.tris[t * 3], c1 = b.tris[t * 3 + 1], c2 = b.tris[t * 3 + 2];
-    const V        f = cross(minus(vertexAt(b.positions, c1), vertexAt(b.positions, a)), minus(vertexAt(b.positions, c2), vertexAt(b.positions, a)));
-    for(const uint32_t v : {a, c1, c2})
-      for(size_t i = 0; i < 3; i++)
-        n[v][i] += f[i];
-  }
-  for(V& v : n)
-    v = unit(v);
-  return n;
 }
 
 std::vector<V> faceNormals(const Body& b)
@@ -162,6 +144,23 @@ Body bodyOf(const wardrobe::BaseCage& cage)
   return b;
 }
 
+std::vector<Vec3> outerNormals(const Body& body)
+{
+  std::vector<Vec3> n(body.positions.size() / 3);
+  for(size_t t = 0; t * 3 + 2 < body.tris.size(); t++)
+  {
+    if(t < body.outer.size() && !body.outer[t])
+      continue;
+    const uint32_t a = body.tris[t * 3], c1 = body.tris[t * 3 + 1], c2 = body.tris[t * 3 + 2];
+    const V f = cross(minus(vertexAt(body.positions, c1), vertexAt(body.positions, a)), minus(vertexAt(body.positions, c2), vertexAt(body.positions, a)));
+    for(const uint32_t v : {a, c1, c2})
+      n[v] = n[v] + Vec3{f[0], f[1], f[2]};
+  }
+  for(Vec3& v : n)
+    v = normalize(v);
+  return n;
+}
+
 Projection project(const Body& from, const Body& onto, const ProjectOptions& options)
 {
   const size_t n = from.positions.size() / 3;
@@ -173,7 +172,7 @@ Projection project(const Body& from, const Body& onto, const ProjectOptions& opt
   if(onto.tris.empty())
     return out;
   const physics::SurfaceIndex index(onto.positions, onto.tris);
-  const std::vector<V>        normals = outerNormals(from);
+  const std::vector<Vec3>     normals = outerNormals(from);
   const std::vector<V>        faces   = faceNormals(onto);
   const double                cosMax  = std::cos(options.maxAngle * 3.14159265358979323846 / 180);
   const double                reach2  = options.reach * options.reach;
@@ -181,7 +180,7 @@ Projection project(const Body& from, const Body& onto, const ProjectOptions& opt
     physics::Stamps& stamps = physics::threadStamps();
     for(size_t v = begin; v < end; v++)
     {
-      const V& normal = normals[v];
+      const V normal{normals[v].x, normals[v].y, normals[v].z};
       if(normal[0] == 0 && normal[1] == 0 && normal[2] == 0)
         continue;  // on no outer skin
       const RegionMask mask   = v < from.regions.size() ? from.regions[v] : 0;
@@ -640,19 +639,35 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
   return out;
 }
 
-std::optional<CloneMap> cloneMap(dson::Store& store, wardrobe::Generation generation, const std::string& gender)
+std::optional<CloneInputs> cloneInputs(dson::Store& store, wardrobe::Generation generation, const std::string& gender)
 {
-  const auto base = wardrobe::loadBaseCage(store, generation, gender);
-  if(!base)
+  CloneInputs in;
+  in.base = wardrobe::loadBaseCage(store, generation, gender);
+  in.g9   = wardrobe::loadBaseCage(store, wardrobe::Generation::eG9, "");
+  if(!in.base || !in.g9)
     return std::nullopt;
   auto reference = cloneReference(store, generation, gender);
   if(!reference)
     return std::nullopt;
-  CloneMap out{bodyOf(*base), std::move(*reference), {}, {}};
-  if(const auto g9 = wardrobe::loadBaseCage(store, wardrobe::Generation::eG9, ""))
-    out.reference.positions = intoRest(*g9, out.reference.positions, out.source, &out.turns);
-  out.map = mapBodies(out.source, out.reference);
+  in.reference = std::move(*reference);
+  return in;
+}
+
+CloneMap makeCloneMap(const CloneInputs& in)
+{
+  CloneMap out{bodyOf(*in.base), in.reference, {}, {}};
+  out.reference.positions = intoRest(*in.g9, in.reference.positions, out.source, &out.turns);
+  out.map                 = mapBodies(out.source, out.reference);
+  out.map.frameTurn       = frameTurns(vertexFrames(out.source), vertexFrames(bodyOf(*in.g9)), out.map.toReference);
   return out;
+}
+
+std::optional<CloneMap> cloneMap(dson::Store& store, wardrobe::Generation generation, const std::string& gender)
+{
+  const auto in = cloneInputs(store, generation, gender);
+  if(!in)
+    return std::nullopt;
+  return cachedCloneMap(*in);
 }
 
 }  // namespace fv::bodymap

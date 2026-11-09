@@ -8,7 +8,6 @@
 #include <figure/io/cache_folder.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -16,7 +15,6 @@
 #include <mutex>
 #include <new>
 #include <string_view>
-#include <thread>
 
 namespace fv::dson {
 
@@ -167,8 +165,6 @@ std::filesystem::path parsedCacheFile(const std::filesystem::path& dir, const Pa
 
 bool writeParsed(const std::filesystem::path& cacheFile, const Doc& doc, const ParsedStamp& stamp)
 {
-  std::error_code ec;
-  std::filesystem::create_directories(cacheFile.parent_path(), ec);
   const std::vector<uint8_t> cbor = Json::to_cbor(doc.json);
   Header                     h{};
   std::memcpy(h.magic, kMagic, 4);
@@ -179,14 +175,8 @@ bool writeParsed(const std::filesystem::path& cacheFile, const Doc& doc, const P
   h.bytes     = doc.bytes;
   h.cborBytes = cbor.size();
   h.tables    = uint32_t(doc.tables.size());
-  // through a temporary beside it, renamed into place: a reader never sees a half-written file
-  static std::atomic<unsigned> counter{0};
-  std::filesystem::path        tmp = cacheFile;
-  tmp += ".tmp" + std::to_string(counter++) + "-" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0xffff);
-  {
-    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-    if(!out)
-      return false;
+  // whole or not at all: a reader never sees a half-written file
+  const bool written = io::writeCacheFile(cacheFile, [&](std::ostream& out) {
     writeRaw(out, &h, 1);
     writeRaw(out, cbor.data(), cbor.size());
     for(const Rows& t : doc.tables)
@@ -203,19 +193,10 @@ bool writeParsed(const std::filesystem::path& cacheFile, const Doc& doc, const P
       writeRaw(out, t.start.data(), t.start.size());
       writeRaw(out, t.cells.data(), t.cells.size());
     }
-    if(!out)
-    {
-      out.close();
-      std::filesystem::remove(tmp, ec);
-      return false;
-    }
-  }
-  std::filesystem::rename(tmp, cacheFile, ec);
-  if(ec)
-  {
-    std::filesystem::remove(tmp, ec);
+    return bool(out);
+  });
+  if(!written)
     return false;
-  }
   io::trimCacheFolder(cacheFile.parent_path(), ".fvd", kBudget);
   return true;
 }

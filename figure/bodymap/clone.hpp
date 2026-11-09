@@ -8,17 +8,21 @@
 // (from its own skin weights, rule 3), and only a triangle facing its way; one with nothing within
 // reach is left unmapped.
 //
-// The reference is posed into the type's rest first, at its limb joints (intoRest).
+// The reference is posed into the type's rest first, at its limb joints (intoRest). Each source
+// vertex also has the turn from its frame to the unmorphed Genesis 9 base's where it lands
+// (frames.hpp), and a map is kept on disk under its inputs (cache.hpp).
 //
-// Not here yet: the Skyrim types' fitted maps (3b), the per-vertex frames, and the cache.
+// Not here yet: the Skyrim types' fitted maps (3b).
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include <figure/bodymap/regions.hpp>
+#include <figure/math/xform.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
 
@@ -43,6 +47,10 @@ struct Body
 // A base cage as a map reads it: regions from its skin, outer skin by surface.
 Body bodyOf(const wardrobe::BaseCage& cage);
 
+// Per vertex, the unit normal of the outer skin round it (its outer triangles' summed by area); zero
+// for a vertex on none.
+std::vector<Vec3> outerNormals(const Body& body);
+
 struct ProjectOptions
 {
   double maxAngle = 60;  // degrees a triangle's facing may lie from the vertex's normal
@@ -58,10 +66,13 @@ struct Projection
 };
 Projection project(const Body& from, const Body& onto, const ProjectOptions& options = {});
 
-// A body type's map: its vertices on the reference, and the reference's on it.
+// A body type's map: its vertices on the reference, and the reference's on it; and per source vertex
+// the turn from its frame to the unmorphed Genesis 9 base's where it lands (frameTurns), which the
+// type's map maker fills (mapBodies alone leaves it empty).
 struct BodyMap
 {
-  Projection toReference, fromReference;
+  Projection        toReference, fromReference;
+  std::vector<Quat> frameTurn;
 };
 BodyMap mapBodies(const Body& source, const Body& reference, const ProjectOptions& options = {});
 
@@ -114,14 +125,24 @@ struct LimbTurn
 // rounds), the parts below it turning with it.
 std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vector<float>& shaped, const Body& source, std::vector<LimbTurn>* turns = nullptr);
 
-// The type's base and its map onto the reference, posed into its rest, or none when its base, Genesis
-// 9's or the clone isn't installed.
+// What a type's clone map is made from: the type's base, Genesis 9's, and Genesis 9's shaped as the
+// type by its clone (unposed). None when one of them isn't installed.
+struct CloneInputs
+{
+  std::shared_ptr<const wardrobe::BaseCage> base, g9;
+  Body                                      reference;
+};
+std::optional<CloneInputs> cloneInputs(dson::Store& store, wardrobe::Generation generation, const std::string& gender);
+
+// The type's base and its map onto the reference, posed into its rest, with the frame turns.
 struct CloneMap
 {
   Body                  source, reference;
   BodyMap               map;
   std::vector<LimbTurn> turns;
 };
+CloneMap makeCloneMap(const CloneInputs& inputs);
+// cloneInputs, then makeCloneMap through the cache (cachedCloneMap); none when cloneInputs has none.
 std::optional<CloneMap> cloneMap(dson::Store& store, wardrobe::Generation generation, const std::string& gender);
 
 }  // namespace fv::bodymap

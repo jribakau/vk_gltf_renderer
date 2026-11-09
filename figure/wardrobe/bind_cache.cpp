@@ -1,24 +1,17 @@
 #include <figure/wardrobe/bind_cache.hpp>
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 #include <figure/io/cache_folder.hpp>
 #include <figure/io/timing.hpp>
-
-// xxHash as zstd ships it (XXH64 only), inlined here so it shares no symbols with zstd's copy
-#define XXH_INLINE_ALL
-#include <xxhash.h>
 
 // bind.cpp's SHA-256, set by CMake (figure/CMakeLists.txt): a change to the binding code is another key
 #ifndef FV_BIND_SOURCE_SHA
@@ -38,10 +31,7 @@ constexpr uint32_t kVersion  = 1;
 // the files kept, oldest written or read first to go
 constexpr uintmax_t kBudget = 1ull << 30;
 
-struct Key
-{
-  uint64_t a = 0, b = 0;
-};
+using Key = io::CacheKey;
 
 struct Header
 {
@@ -49,37 +39,6 @@ struct Header
   uint32_t version;
   uint64_t keyA, keyB;
   uint64_t verts, weights, used;
-};
-
-// Two XXH64 streams with different seeds over the same bytes: a 128-bit key.
-class Hasher
-{
-public:
-  Hasher()
-  {
-    XXH64_reset(&m_a, 0x9E3779B97F4A7C15ull);
-    XXH64_reset(&m_b, 0xC2B2AE3D27D4EB4Full);
-  }
-  void bytes(const void* data, size_t size)
-  {
-    XXH64_update(&m_a, data, size);
-    XXH64_update(&m_b, data, size);
-  }
-  // an array as (tag, element size, count, elements), so no two inputs can run into each other
-  template <class T>
-  void array(uint32_t tag, std::span<const T> values)
-  {
-    const uint32_t elem  = sizeof(T);
-    const uint64_t count = values.size();
-    bytes(&tag, sizeof tag);
-    bytes(&elem, sizeof elem);
-    bytes(&count, sizeof count);
-    bytes(values.data(), values.size_bytes());
-  }
-  Key key() { return {XXH64_digest(&m_a), XXH64_digest(&m_b)}; }
-
-private:
-  XXH64_state_t m_a, m_b;
 };
 
 Key keyOf(uint32_t kind,
@@ -92,7 +51,7 @@ Key keyOf(uint32_t kind,
           float                     reach,
           const BindFilter*         filter)
 {
-  Hasher           h;
+  io::CacheHasher        h;
   const std::string_view source = FV_BIND_SOURCE_SHA;
   h.bytes(kMagic, sizeof kMagic);
   h.bytes(&kVersion, sizeof kVersion);
@@ -113,13 +72,6 @@ Key keyOf(uint32_t kind,
     h.array<int32_t>(8, filter->itemMask);
   }
   return h.key();
-}
-
-std::filesystem::path fileOf(const std::filesystem::path& dir, const Key& key)
-{
-  char name[40];
-  std::snprintf(name, sizeof name, "%016llx%016llx.fvb", static_cast<unsigned long long>(key.a), static_cast<unsigned long long>(key.b));
-  return dir / name;
 }
 
 template <class T>
@@ -159,8 +111,6 @@ std::optional<SurfaceBinding> readBinding(const std::filesystem::path& file, con
 
 void writeBinding(const std::filesystem::path& file, const Key& key, const SurfaceBinding& b)
 {
-  std::error_code ec;
-  std::filesystem::create_directories(file.parent_path(), ec);
   Header h{};
   std::memcpy(h.magic, kMagic, 4);
   h.version = kVersion;
@@ -169,36 +119,15 @@ void writeBinding(const std::filesystem::path& file, const Key& key, const Surfa
   h.verts   = b.verts.size();
   h.weights = b.weights.size();
   h.used    = b.used.size();
-  // through a temporary beside it, renamed into place: a reader never sees a half-written file, and
-  // two writers (two app instances) each write their own
-  static std::atomic<unsigned> counter{0};
-  std::filesystem::path        tmp = file;
-  tmp += ".tmp" + std::to_string(counter++) + "-"
-                                    + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0xffff) + "-"
-                                    + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count() & 0xffffff);
-  {
-    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-    if(!out)
-      return;
+  const bool written = io::writeCacheFile(file, [&](std::ostream& out) {
     out.write(reinterpret_cast<const char*>(&h), sizeof h);
     writeRaw(out, b.verts);
     writeRaw(out, b.weights);
     writeRaw(out, b.used);
-    if(!out)
-    {
-      out.close();
-      std::filesystem::remove(tmp, ec);
-      return;
-    }
-  }
-  std::filesystem::rename(tmp, file, ec);
-  if(ec)
-  {
-    // another instance put the same binding there first, or holds it open
-    std::filesystem::remove(tmp, ec);
-    return;
-  }
-  io::trimCacheFolder(file.parent_path(), ".fvb", kBudget);
+    return bool(out);
+  });
+  if(written)
+    io::trimCacheFolder(file.parent_path(), ".fvb", kBudget);
 }
 
 SurfaceBinding cached(const Key& key, size_t itemVerts, size_t bodyVerts, const std::function<SurfaceBinding()>& bind)
@@ -206,7 +135,7 @@ SurfaceBinding cached(const Key& key, size_t itemVerts, size_t bodyVerts, const 
   const std::filesystem::path dir = bindCacheDir();
   if(dir.empty())
     return bind();
-  const std::filesystem::path file = fileOf(dir, key);
+  const std::filesystem::path file = io::cacheFileOf(dir, key, ".fvb");
   const auto                  t0   = std::chrono::steady_clock::now();
   if(auto b = readBinding(file, key, itemVerts, bodyVerts))
   {

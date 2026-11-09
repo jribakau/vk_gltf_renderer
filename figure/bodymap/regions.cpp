@@ -66,6 +66,52 @@ std::vector<RegionMask> vertexRegions(const mesh::SkinInput& skin, const std::ve
   return out;
 }
 
+namespace {
+
+// the first joint of a region in the spec (parents come first)
+const rig::Joint* firstJointOf(rig::Region region)
+{
+  for(const rig::Joint& j : rig::joints())
+    if(j.region == region)
+      return &j;
+  return nullptr;
+}
+
+}  // namespace
+
+rig::Region regionAbove(rig::Region region)
+{
+  const rig::Joint* j = firstJointOf(region);
+  for(int guard = 0; j && guard < 64; guard++)
+  {
+    j = j->parent.empty() ? nullptr : rig::joint(j->parent);
+    if(j && j->region != rig::Region::eNone && j->region != region)
+      return j->region;
+  }
+  return rig::Region::eNone;
+}
+
+std::vector<rig::Region> regionsBelow(rig::Region region)
+{
+  const rig::Joint* j = firstJointOf(region);
+  if(!j || regionAbove(region) == rig::Region::eNone)
+    return {};
+  for(const std::string_view aim : j->aims)
+    if(const rig::Joint* a = aim.empty() ? nullptr : rig::joint(aim); a && a->region != rig::Region::eNone && a->region != region)
+      return {a->region};
+  std::vector<rig::Region> out;
+  for(int r = 1; r <= int(rig::Region::ePinkyToe); r++)
+    if(regionAbove(rig::Region(r)) == region)
+      out.push_back(rig::Region(r));
+  return out;
+}
+
+bool regionSided(rig::Region region)
+{
+  const rig::Joint* j = firstJointOf(region);
+  return j && j->sided;
+}
+
 std::string regionNames(RegionMask mask)
 {
   static const char* const names[] = {"none", "pelvis", "abdomen", "chest", "breast", "neck", "head", "collar", "upperarm", "forearm", "hand", "thumb", "index",

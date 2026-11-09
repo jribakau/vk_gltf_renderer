@@ -24,6 +24,19 @@ foreach(source ${FV_BIND_SOURCES})
 endforeach()
 string(SHA256 FV_BIND_SOURCE_SHA "${FV_BIND_SOURCE_TEXT}")
 set_source_files_properties(wardrobe/bind_cache.cpp PROPERTIES COMPILE_DEFINITIONS "FV_BIND_SOURCE_SHA=\"${FV_BIND_SOURCE_SHA}\"")
+# The body map cache's key (bodymap/cache.cpp) likewise: the map code, the skeleton spec its regions
+# come from, and the closest-point search.
+file(GLOB FV_BODYMAP_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS bodymap/*.cpp bodymap/*.hpp rig/*.cpp rig/*.hpp rig/aliases/*.cpp)
+list(SORT FV_BODYMAP_SOURCES)
+list(APPEND FV_BODYMAP_SOURCES physics/collide/surface_index.hpp physics/collide/surface_index.cpp)
+set(FV_BODYMAP_SOURCE_TEXT "")
+foreach(source ${FV_BODYMAP_SOURCES})
+  file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/${source} sourceSha)
+  string(APPEND FV_BODYMAP_SOURCE_TEXT "${sourceSha}")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source})
+endforeach()
+string(SHA256 FV_BODYMAP_SOURCE_SHA "${FV_BODYMAP_SOURCE_TEXT}")
+set_source_files_properties(bodymap/cache.cpp PROPERTIES COMPILE_DEFINITIONS "FV_BODYMAP_SOURCE_SHA=\"${FV_BODYMAP_SOURCE_SHA}\"")
 
 # The parity harness's native side (see tools/fv_parity.cpp): no GPU. The library, and for its feed
 # step the retained scene's Vulkan-free sources: the store, the figure feed, and what they call (the

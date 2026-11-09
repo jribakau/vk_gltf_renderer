@@ -30,6 +30,16 @@ RegionMask regionBit(rig::Region region, char side = 0);
 // with a region holds has none.
 std::vector<RegionMask> vertexRegions(const mesh::SkinInput& skin, const std::vector<wardrobe::SkelBone>& bones, size_t vertices, float border = 0.25f);
 
+// The region a region hangs from, by the spec's joints: the forearm's is the upper arm, a toe's the
+// foot, the breast's the chest; none for the pelvis, the root.
+rig::Region regionAbove(rig::Region region);
+// The regions a region runs on into, by the spec's joints: the one its joint aims down the limb at
+// (the upper arm's forearm, the hand's middle finger, the chest's neck), else every region hanging
+// from it (the foot's toes); none at a limb's end, or for the pelvis, the root.
+std::vector<rig::Region> regionsBelow(rig::Region region);
+// Whether a region comes as a left and a right one (its joints have sides).
+bool regionSided(rig::Region region);
+
 // The regions a mask holds, by name, the right side marked: "thigh pelvis", "r thigh", "none".
 std::string regionNames(RegionMask mask);
 

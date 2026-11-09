@@ -1,16 +1,22 @@
-// Body maps (wardrobe plan step 3a): regions from a body's own skin, outer skin by surface, and the
-// projection one body onto another within its regions, facing its way and within reach. Synthetic
+// Body maps (wardrobe plan step 3a): regions from a body's own skin, outer skin by surface, the
+// projection one body onto another within its regions, facing its way and within reach, the vertex
+// frames and their turns, and the maps kept on disk. Synthetic
 // bodies only (the plan's rule 7); the real Genesis 8 Female onto Genesis 9 is fv_parity's bodymap step.
 
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <filesystem>
+#include <memory>
 #include <numbers>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include <figure/bodymap/cache.hpp>
 #include <figure/bodymap/clone.hpp>
+#include <figure/bodymap/frames.hpp>
 #include <figure/bodymap/regions.hpp>
 #include <figure/wardrobe/fit/bases.hpp>
 
@@ -367,4 +373,265 @@ TEST(BodyMap, ALimbIsFittedToTheSourcesSkinAboutItsJoint)
   for(size_t v = 18 * kRing; v < 19 * kRing; v++)
     for(size_t c = 0; c < 3; c++)
       EXPECT_NEAR(posed[v * 3 + c], source.positions[v * 3 + c], 0.3) << v << " " << c;
+}
+
+// A region hangs from the one above it by the spec's joints and runs on into the one its joint aims
+// at, else those hanging from it; the limbs and breasts have sides.
+TEST(BodyMap, ARegionHangsFromTheOneAboveIt)
+{
+  EXPECT_EQ(fv::bodymap::regionAbove(Region::eForearm), Region::eUpperArm);
+  EXPECT_EQ(fv::bodymap::regionAbove(Region::eUpperArm), Region::eCollar);
+  EXPECT_EQ(fv::bodymap::regionAbove(Region::eIndex), Region::eHand);
+  EXPECT_EQ(fv::bodymap::regionAbove(Region::eBigToe), Region::eFoot);
+  EXPECT_EQ(fv::bodymap::regionAbove(Region::eThigh), Region::ePelvis);
+  EXPECT_EQ(fv::bodymap::regionAbove(Region::eBreast), Region::eChest);
+  EXPECT_EQ(fv::bodymap::regionAbove(Region::eHead), Region::eNeck);
+  EXPECT_EQ(fv::bodymap::regionAbove(Region::ePelvis), Region::eNone);
+  using Regions = std::vector<Region>;
+  EXPECT_EQ(fv::bodymap::regionsBelow(Region::eUpperArm), Regions{Region::eForearm});
+  EXPECT_EQ(fv::bodymap::regionsBelow(Region::eCollar), Regions{Region::eUpperArm});
+  EXPECT_EQ(fv::bodymap::regionsBelow(Region::eHand), Regions{Region::eMid});
+  EXPECT_EQ(fv::bodymap::regionsBelow(Region::eAbdomen), Regions{Region::eChest});
+  EXPECT_EQ(fv::bodymap::regionsBelow(Region::eChest), Regions{Region::eNeck});
+  EXPECT_EQ(fv::bodymap::regionsBelow(Region::eFoot), (Regions{Region::eBigToe, Region::eIndexToe, Region::eMidToe, Region::eRingToe, Region::ePinkyToe}));
+  EXPECT_TRUE(fv::bodymap::regionsBelow(Region::eIndex).empty());
+  EXPECT_TRUE(fv::bodymap::regionsBelow(Region::eHead).empty());
+  EXPECT_TRUE(fv::bodymap::regionsBelow(Region::ePelvis).empty());
+  EXPECT_TRUE(fv::bodymap::regionSided(Region::eThigh));
+  EXPECT_TRUE(fv::bodymap::regionSided(Region::eBreast));
+  EXPECT_FALSE(fv::bodymap::regionSided(Region::eChest));
+  EXPECT_FALSE(fv::bodymap::regionSided(Region::ePelvis));
+}
+
+namespace {
+
+constexpr int kLegRing = 12, kLegRings = 10;
+
+// A left leg as a base cage: a tube of radius 5 down from the hip at (10, 100, 0), a ring every 5 cm,
+// capped at the bottom by one vertex, facing out; its top ring held half by the pelvis and half by the
+// thigh, the rest by the thigh. Scaled about the hip by `scale`.
+fv::wardrobe::BaseCage legCage(double scale = 1)
+{
+  fv::wardrobe::BaseCage c;
+  c.skeleton = {{"hip", std::nullopt, {10, 100, 0}}, {"pelvis", "hip", {10, 100, 0}}, {"lThighBend", "pelvis", {10, 100, 0}}};
+  c.skin.start.push_back(0);
+  const auto add = [&](double x, double y, double z, bool top) {
+    c.positions.insert(c.positions.end(), {float(10 + (x - 10) * scale), float(100 + (y - 100) * scale), float(z * scale)});
+    if(top)
+      c.skin.bone.insert(c.skin.bone.end(), {1, 2}), c.skin.weight.insert(c.skin.weight.end(), {0.5f, 0.5f});
+    else
+      c.skin.bone.push_back(2), c.skin.weight.push_back(1);
+    c.skin.start.push_back(int32_t(c.skin.bone.size()));
+  };
+  for(int r = 0; r < kLegRings; r++)
+    for(int k = 0; k < kLegRing; k++)
+    {
+      const double a = 2 * std::numbers::pi * k / kLegRing;
+      add(10 + 5 * std::cos(a), 100 - 5 * r, 5 * std::sin(a), r == 0);
+    }
+  add(10, 100 - 5 * kLegRings, 0, false);
+  for(int r = 0; r + 1 < kLegRings; r++)
+    for(int k = 0; k < kLegRing; k++)
+    {
+      const uint32_t a = uint32_t(r * kLegRing + k), b = uint32_t(r * kLegRing + (k + 1) % kLegRing), d = a + kLegRing, e = b + kLegRing;
+      c.tris.insert(c.tris.end(), {a, b, d, b, e, d});
+    }
+  const uint32_t last = uint32_t((kLegRings - 1) * kLegRing), pole = uint32_t(kLegRings * kLegRing);
+  for(int k = 0; k < kLegRing; k++)
+    c.tris.insert(c.tris.end(), {last + uint32_t(k), last + uint32_t((k + 1) % kLegRing), pole});
+  return c;
+}
+
+// every vertex of a body onto the same vertex of another of its topology
+fv::bodymap::Projection itself(size_t n)
+{
+  fv::bodymap::Projection p;
+  for(size_t v = 0; v < n; v++)
+  {
+    p.at.verts.insert(p.at.verts.end(), {uint32_t(v), uint32_t(v), uint32_t(v)});
+    p.at.weights.insert(p.at.weights.end(), {1.f, 0.f, 0.f});
+  }
+  p.at.used.assign(n, 1);
+  p.mapped.assign(n, 1);
+  return p;
+}
+
+}  // namespace
+
+// A vertex's frame: the outer normal, and a tangent along its limb (the thigh runs down from its band
+// with the pelvis), full on the limb's sides; it fades at the cap, where the limb runs along the normal,
+// and on the band, where the pelvis's axis (up) and the thigh's (down) cancel.
+TEST(BodyMap, AFramesTangentRunsAlongItsLimbAndFadesWhereItEnds)
+{
+  const Body                leg    = fv::bodymap::bodyOf(legCage());
+  const fv::bodymap::Frames frames = fv::bodymap::vertexFrames(leg);
+  for(int k = 0; k < kLegRing; k++)
+  {
+    const size_t v = size_t(5 * kLegRing + k);
+    const double a = 2 * std::numbers::pi * k / kLegRing;
+    EXPECT_NEAR(frames.normal[v].x, std::cos(a), 1e-6) << v;
+    EXPECT_NEAR(frames.normal[v].y, 0, 1e-6) << v;
+    EXPECT_NEAR(frames.normal[v].z, std::sin(a), 1e-6) << v;
+    EXPECT_NEAR(frames.tangent[v].x, 0, 1e-6) << v;
+    EXPECT_NEAR(frames.tangent[v].y, -1, 1e-6) << v;
+    EXPECT_NEAR(frames.tangent[v].z, 0, 1e-6) << v;
+    EXPECT_LT(fv::length(frames.tangent[size_t(k)]), 1e-6) << "the band, vertex " << k;
+  }
+  const size_t pole = size_t(kLegRings * kLegRing);
+  EXPECT_NEAR(frames.normal[pole].y, -1, 1e-6);
+  EXPECT_LT(fv::length(frames.tangent[pole]), 1e-6);
+}
+
+// A frame's turn is how the surface turned there: a leg swung out 40 degrees about z maps onto the
+// straight one by that swing undone, its front (whose normal the swing leaves alone) by the twist that
+// brings its tangent along; at the cap, where the tangent isn't set, its normal still comes onto the
+// other's. A vertex left unmapped keeps its frame.
+TEST(BodyMap, AFrameTurnIsHowTheSurfaceTurnedThere)
+{
+  const Body     straight = fv::bodymap::bodyOf(legCage());
+  Body           swung    = straight;
+  const double   kSwing   = 40 * std::numbers::pi / 180;
+  const fv::Quat swing{0, 0, std::sin(kSwing / 2), std::cos(kSwing / 2)};
+  const size_t   n = straight.positions.size() / 3;
+  for(size_t v = 0; v < n; v++)
+  {
+    const fv::Vec3 p = fv::rotate(fv::Vec3{straight.positions[v * 3] - 10.0, straight.positions[v * 3 + 1] - 100.0, double(straight.positions[v * 3 + 2])}, swing);
+    swung.positions[v * 3]     = float(p.x + 10);
+    swung.positions[v * 3 + 1] = float(p.y + 100);
+    swung.positions[v * 3 + 2] = float(p.z);
+  }
+  fv::bodymap::Projection p = itself(n);
+  p.mapped[3]               = 0;
+  const fv::bodymap::Frames   from = fv::bodymap::vertexFrames(swung), onto = fv::bodymap::vertexFrames(straight);
+  const std::vector<fv::Quat> turns = fv::bodymap::frameTurns(from, onto, p);
+  ASSERT_EQ(turns.size(), n);
+  const fv::Quat undo = swing.inverse();
+  for(size_t v = size_t(kLegRing); v < size_t((kLegRings - 1) * kLegRing); v++)
+  {
+    const fv::Quat& t = turns[v];
+    EXPECT_NEAR(std::abs(t.x * undo.x + t.y * undo.y + t.z * undo.z + t.w * undo.w), 1, 1e-6) << v;
+  }
+  const size_t   pole = size_t(kLegRings * kLegRing);
+  const fv::Vec3 back = fv::rotate(from.normal[pole], turns[pole]);
+  EXPECT_NEAR(back.x, onto.normal[pole].x, 1e-6);
+  EXPECT_NEAR(back.y, onto.normal[pole].y, 1e-6);
+  EXPECT_NEAR(back.z, onto.normal[pole].z, 1e-6);
+  EXPECT_EQ(turns[3].w, 1);
+}
+
+namespace {
+
+// A cache folder of its own for each test, and the cache off again after it.
+class BodyMapCache : public ::testing::Test
+{
+protected:
+  void SetUp() override
+  {
+    dir = std::filesystem::temp_directory_path() / ("fv_bodymap_cache_" + std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()));
+    std::filesystem::remove_all(dir);
+    fv::bodymap::setMapCacheDir(dir);
+  }
+  void TearDown() override
+  {
+    fv::bodymap::setMapCacheDir({});
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+  }
+  std::vector<std::filesystem::path> files() const
+  {
+    std::vector<std::filesystem::path> out;
+    std::error_code                    ec;
+    for(const auto& e : std::filesystem::directory_iterator(dir, ec))
+      out.push_back(e.path());
+    return out;
+  }
+  std::filesystem::path dir;
+};
+
+// a type's leg a little larger than Genesis 9's, which its clone shapes halfway
+fv::bodymap::CloneInputs legInputs(double scale = 1.04)
+{
+  fv::bodymap::CloneInputs in;
+  in.base      = std::make_shared<const fv::wardrobe::BaseCage>(legCage(scale));
+  in.g9        = std::make_shared<const fv::wardrobe::BaseCage>(legCage());
+  in.reference = fv::bodymap::bodyOf(legCage(1 + (scale - 1) / 2));
+  return in;
+}
+
+void expectSame(const fv::bodymap::CloneMap& a, const fv::bodymap::CloneMap& b)
+{
+  for(const auto& [x, y] : {std::pair{&a.source, &b.source}, std::pair{&a.reference, &b.reference}})
+  {
+    EXPECT_EQ(x->positions, y->positions);
+    EXPECT_EQ(x->tris, y->tris);
+    EXPECT_EQ(x->outer, y->outer);
+    EXPECT_EQ(x->regions, y->regions);
+  }
+  for(const auto& [x, y] : {std::pair{&a.map.toReference, &b.map.toReference}, std::pair{&a.map.fromReference, &b.map.fromReference}})
+  {
+    EXPECT_EQ(x->at.verts, y->at.verts);
+    EXPECT_EQ(x->at.weights, y->at.weights);
+    EXPECT_EQ(x->at.used, y->at.used);
+    EXPECT_EQ(x->mapped, y->mapped);
+  }
+  ASSERT_EQ(a.map.frameTurn.size(), b.map.frameTurn.size());
+  for(size_t v = 0; v < a.map.frameTurn.size(); v++)
+  {
+    const fv::Quat &p = a.map.frameTurn[v], &q = b.map.frameTurn[v];
+    EXPECT_TRUE(p.x == q.x && p.y == q.y && p.z == q.z && p.w == q.w) << v;
+  }
+  ASSERT_EQ(a.turns.size(), b.turns.size());
+  for(size_t i = 0; i < a.turns.size(); i++)
+  {
+    EXPECT_EQ(a.turns[i].joint, b.turns[i].joint);
+    EXPECT_EQ(a.turns[i].side, b.turns[i].side);
+    EXPECT_EQ(a.turns[i].degrees, b.turns[i].degrees);
+  }
+}
+
+}  // namespace
+
+// A map read back from the cache is the one made; a change to what it's made from is another map; a
+// file cut short is made again.
+TEST_F(BodyMapCache, AMapReadBackIsTheOneMade)
+{
+  const fv::bodymap::CloneInputs in    = legInputs();
+  const auto                     start = fv::bodymap::mapCacheCounts();
+  const fv::bodymap::CloneMap    made  = fv::bodymap::cachedCloneMap(in);
+  EXPECT_EQ(fv::bodymap::mapCacheCounts().misses, start.misses + 1);
+  ASSERT_EQ(files().size(), 1u);
+  EXPECT_EQ(files()[0].extension(), ".fvm");
+  EXPECT_FALSE(made.map.frameTurn.empty());
+  EXPECT_FALSE(made.turns.empty());
+
+  const fv::bodymap::CloneMap read = fv::bodymap::cachedCloneMap(in);
+  EXPECT_EQ(fv::bodymap::mapCacheCounts().hits, start.hits + 1);
+  expectSame(made, read);
+  expectSame(made, fv::bodymap::makeCloneMap(in));
+
+  // another type's base is another map
+  const fv::bodymap::CloneMap other = fv::bodymap::cachedCloneMap(legInputs(1.06));
+  EXPECT_EQ(fv::bodymap::mapCacheCounts().misses, start.misses + 2);
+  EXPECT_EQ(files().size(), 2u);
+  EXPECT_NE(other.source.positions, made.source.positions);
+
+  // a file cut short is a miss, and is made again whole
+  for(const auto& f : files())
+    std::filesystem::resize_file(f, std::filesystem::file_size(f) - 7);
+  const auto before = fv::bodymap::mapCacheCounts();
+  expectSame(made, fv::bodymap::cachedCloneMap(in));
+  EXPECT_EQ(fv::bodymap::mapCacheCounts().misses, before.misses + 1);
+  expectSame(made, fv::bodymap::cachedCloneMap(in));
+  EXPECT_EQ(fv::bodymap::mapCacheCounts().hits, before.hits + 1);
+}
+
+// With no folder set the cache is off: nothing is written.
+TEST_F(BodyMapCache, NoFolderNoFiles)
+{
+  fv::bodymap::setMapCacheDir({});
+  const auto start = fv::bodymap::mapCacheCounts();
+  fv::bodymap::cachedCloneMap(legInputs());
+  EXPECT_EQ(fv::bodymap::mapCacheCounts().hits, start.hits);
+  EXPECT_EQ(fv::bodymap::mapCacheCounts().misses, start.misses);
+  EXPECT_TRUE(files().empty());
 }

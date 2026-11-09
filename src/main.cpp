@@ -56,6 +56,7 @@
 #ifdef FV_PHYSICS_GPU
 #include "fv_physics_gpu.hpp"
 #endif
+#include <figure/bodymap/cache.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include "fv_protocol.hpp"
@@ -278,6 +279,7 @@ auto main(int argc, char** argv) -> int
   // parsed DSON files (a strand hair's 76 MB geometry) beside the pipeline cache
   fv::dson::setParsedCacheDir((cacheDir.empty() ? nvutils::getExecutablePath().parent_path() : cacheDir) / "dson");
   fv::wardrobe::setBindCacheDir((cacheDir.empty() ? nvutils::getExecutablePath().parent_path() : cacheDir) / "bind");
+  fv::bodymap::setMapCacheDir((cacheDir.empty() ? nvutils::getExecutablePath().parent_path() : cacheDir) / "bodymap");
   elemGltfRenderer->setEditable(editable || enableStream);
 
   elemGltfRenderer->alignMaxSamplesForHeadless(appInfo.headlessFrameCount);
