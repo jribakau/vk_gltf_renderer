@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include <figure/wardrobe/bind_cache.hpp>
+
 namespace fv::wardrobe {
 
 V3 triNormal(std::span<const float> p, size_t a, size_t b, size_t c)
@@ -221,6 +223,26 @@ std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const
   for(size_t i = 0; i < out.size(); i++)
     out[i] = prev[i] + smooth[i];
   return out;
+}
+
+std::vector<float> pushOutOfBody(std::span<const float> positions, std::span<const uint32_t> tris, const Surface& body, std::span<const int32_t> lineStart,
+                                 std::span<const int32_t> lineVerts)
+{
+  constexpr float kMargin = 0.15f;
+  if(lineStart.empty())
+  {
+    const SurfaceBinding binding = cachedBindToSurface(body.positions, body.tris, positions);
+    return smoothCorrection(positions, pushOut(positions, body, binding, kMargin), tris);
+  }
+  const SurfaceBinding binding = cachedBindStrands(body.positions, body.tris, positions, lineStart, lineVerts, kStrandReach);
+  std::vector<float>   pushed  = pushOut(positions, body, binding, kMargin);
+  // what rides with a point of its strand moves as that point does
+  const auto leader = strandLeaders(positions, body, binding, lineStart, lineVerts);
+  for(size_t v = 0; v < leader.size(); v++)
+    if(const size_t l = size_t(leader[v]); l != v)
+      for(size_t c = 0; c < 3; c++)
+        pushed[v * 3 + c] = positions[v * 3 + c] + (pushed[l * 3 + c] - positions[l * 3 + c]);
+  return smoothCorrection(positions, pushed, tris);
 }
 
 }  // namespace fv::wardrobe

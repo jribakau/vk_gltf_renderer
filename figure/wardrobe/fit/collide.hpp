@@ -42,4 +42,12 @@ std::vector<int32_t> coveredPolys(std::span<const float>    body,
 // Laplacian steps on the correction (`next` - `prev`), leaving the garment's cut in place.
 std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const float> next, std::span<const uint32_t> tris, int passes = 2);
 
+// The fitter's last step: what ended just under the skin pushed back out to 0.15 cm and the push
+// smoothed over the garment, the body searched through the bind cache. Strand hair (`lineStart`,
+// `lineVerts`, as mesh::BuiltMesh has them) is bound along its strands (bindStrands, kStrandReach),
+// and a point further from the body than that moves as the point its strand last touched it at, so a
+// root pushed out of the scalp takes the strand with it.
+std::vector<float> pushOutOfBody(std::span<const float> positions, std::span<const uint32_t> tris, const Surface& body,
+                                 std::span<const int32_t> lineStart = {}, std::span<const int32_t> lineVerts = {});
+
 }  // namespace fv::wardrobe

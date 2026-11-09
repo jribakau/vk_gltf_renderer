@@ -64,13 +64,6 @@ void writeCage(mesh::BuiltMesh& geo, const std::vector<float>& positions)
   mesh::weldNormals(geo.position, geo.renderIndex, geo.firstSplit, geo.renderTris, geo.renderVertexCount, geo.normal);
 }
 
-// Pushes what ended just under the skin back out, smoothing the push over the garment.
-std::vector<float> collide(const std::vector<float>& positions, std::span<const uint32_t> tris, const Surface& body)
-{
-  const SurfaceBinding binding = cachedBindToSurface(body.positions, body.tris, positions);
-  return smoothCorrection(positions, pushOut(positions, body, binding, 0.15f), tris);
-}
-
 // The generations the item and the figure can be told to be of.
 std::pair<std::optional<Generation>, std::optional<Generation>> identified(const dson::LoadResult& wearable, const dson::Item& item, const std::string& rel,
                                                                            const FitFigure& figure)
@@ -258,13 +251,15 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
         in.baseFilter   = baseFilter ? &*baseFilter : nullptr;
         in.itemFilter   = itemFilter ? &*itemFilter : nullptr;
         in.baseToTarget = pair ? &*pair : nullptr;
+        in.lineStart    = m.geo->cageLineStart;
+        in.lineVerts    = m.geo->cageLineVerts;
         const std::vector<float> corrected = shapeCorrection(positions, m.geo->dsonTris, *base, bodySurface, in);
         positions = boot ? fadeByFoot(positions, corrected, onFoot) : corrected;
       }
     }
     // a dynamic surface owns its collision: dForce drapes it over the body, so it is not pushed out here
     if(!(m.dforce && m.dforce->simulated()))
-      positions = collide(positions, m.geo->dsonTris, bodySurface);
+      positions = pushOutOfBody(positions, m.geo->dsonTris, bodySurface, m.geo->cageLineStart, m.geo->cageLineVerts);
     writeCage(*m.geo, positions);
   }
   detail.shaped = base.has_value();

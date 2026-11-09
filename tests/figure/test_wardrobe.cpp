@@ -31,6 +31,7 @@
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/fit/bases.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
+#include <figure/wardrobe/fit/collide.hpp>
 #include <figure/wardrobe/fit/fit.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
 #include <figure/wardrobe/fit/heel.hpp>
@@ -1850,6 +1851,86 @@ TEST(Fit, ABootsShaftTakesTheCorrectionItsFootDoesnt)
   EXPECT_FLOAT_EQ(out[6], 1);
   EXPECT_FLOAT_EQ(out[8], 2);
   EXPECT_FLOAT_EQ(out[7], 20);
+}
+
+namespace {
+
+// Strand hair as the fitter takes it: points and polylines, one strand after another.
+struct Strands
+{
+  std::vector<float>   points;
+  std::vector<int32_t> lineStart{0}, lineVerts;
+  void add(const std::vector<std::array<float, 3>>& strand)
+  {
+    for(const auto& p : strand)
+    {
+      lineVerts.push_back(int32_t(points.size() / 3));
+      points.insert(points.end(), p.begin(), p.end());
+    }
+    lineStart.push_back(int32_t(lineVerts.size()));
+  }
+};
+
+}  // namespace
+
+// The old fitter's shape correction on strand hair (wardrobe plan 0s): a strand moves whole with the
+// body under its root and the body it lies on. Point by point, its points past 1.5 cm took less of
+// the correction and those past 5 cm none, so a strand standing off the scalp was squashed onto it.
+TEST(Fit, AStrandTakesTheCorrectionOfWhereItTouchesTheBody)
+{
+  using namespace fv::wardrobe;
+  // the target body lies 1 cm above the base everywhere
+  const auto    base = fv::mesh::build(grid(10, 0)), target = fv::mesh::build(grid(10, 1));
+  const Surface onBase{base.cagePositions, base.dsonTris}, onTarget{target.cagePositions, target.dsonTris};
+  Strands       hair;
+  {
+    // standing off the scalp from half a centimetre up to 12.5
+    std::vector<std::array<float, 3>> up;
+    for(int k = 0; k <= 12; k++)
+      up.push_back({5.f, 5.f, 0.5f + float(k)});
+    hair.add(up);
+    // lying at 1 cm for seven points, then rising away
+    std::vector<std::array<float, 3>> lying;
+    for(int k = 0; k <= 12; k++)
+      lying.push_back({0.5f + 0.75f * float(k), 4.3f, k <= 6 ? 1.f : 1.f + 2.f * float(k - 6)});
+    hair.add(lying);
+  }
+  ShapeInputs in;
+  in.lineStart         = hair.lineStart;
+  in.lineVerts         = hair.lineVerts;
+  const auto corrected = shapeCorrection(hair.points, {}, onBase, onTarget, in);
+  ASSERT_EQ(corrected.size(), hair.points.size());
+  for(size_t v = 0; v < hair.points.size() / 3; v++)
+  {
+    EXPECT_NEAR(corrected[v * 3], hair.points[v * 3], 1e-4f) << v;
+    EXPECT_NEAR(corrected[v * 3 + 1], hair.points[v * 3 + 1], 1e-4f) << v;
+    EXPECT_NEAR(corrected[v * 3 + 2], hair.points[v * 3 + 2] + 1.f, 1e-4f) << v;
+  }
+}
+
+// The old fitter's push out of the body on strand hair: a root pushed out of the scalp takes the
+// strand with it where the strand stands further off than the reach, and a strand lying on the body
+// is pushed out point by point. Before, only the root moved.
+TEST(Fit, AStrandsRootPushedOutOfTheBodyTakesTheStrandWithIt)
+{
+  using namespace fv::wardrobe;
+  const auto    body = fv::mesh::build(grid(10, 0));
+  const Surface onBody{body.cagePositions, body.dsonTris};
+  Strands       hair;
+  // a root half a centimetre inside, then straight up 4 cm a point: out of reach at once
+  hair.add({{5, 5, -0.5f}, {5, 5, 3.5f}, {5, 5, 7.5f}, {5, 5, 11.5f}});
+  // lying 3 mm inside for five points
+  hair.add({{1, 2, -0.3f}, {2, 2, -0.3f}, {3, 2, -0.3f}, {4, 2, -0.3f}, {5, 2, -0.3f}});
+  const auto pushed = pushOutOfBody(hair.points, {}, onBody, hair.lineStart, hair.lineVerts);
+  ASSERT_EQ(pushed.size(), hair.points.size());
+  // the root out to the 0.15 cm clearance, 0.65 up, and the rest of its strand as far
+  for(size_t v = 0; v < 4; v++)
+  {
+    EXPECT_NEAR(pushed[v * 3], hair.points[v * 3], 1e-4f) << v;
+    EXPECT_NEAR(pushed[v * 3 + 2], hair.points[v * 3 + 2] + 0.65f, 1e-3f) << v;
+  }
+  for(size_t v = 4; v < 9; v++)
+    EXPECT_NEAR(pushed[v * 3 + 2], 0.15f, 1e-3f) << v;
 }
 
 // A prop hung from a bone was placed around that joint on the figure it was made for: on another

@@ -84,13 +84,26 @@ struct ShapeInputs
   ShapeOptions              shape;
   // the nearest-point binding of the base onto the target when the caller already has it
   const SurfaceBinding*     baseToTarget = nullptr;
+  // strand hair's polylines over the item (mesh::BuiltMesh::cageLineStart, cageLineVerts); empty for
+  // anything else
+  std::span<const int32_t> lineStart, lineVerts;
 };
 
 // How far each garment vertex moves so its distance from the body is the distance it had from the
 // source base. `base` is the source base already through the bone transfer; `target` is the body it
-// now dresses.
+// now dresses. Strand hair (`in.lineStart`) is bound along its strands (bindStrands, kStrandReach): a
+// point within reach of the base takes all of its correction, and one further out the correction of
+// the point its strand last touched the base at, so a strand moves whole with its root and the body
+// it lies on, where point by point its free length stayed behind (no faces smooth it).
 std::vector<float> shapeCorrection(std::span<const float> item, std::span<const uint32_t> itemTris, const Surface& base, const Surface& target,
                                    const ShapeInputs& in);
+
+// Strand hair bound along its strands (bindStrands): per point, the point of its strand whose
+// correction it takes. Points sharing one binding run together along a strand (one bound on its own,
+// then those riding with it); each takes the one of them nearest `surface`. A point on no strand is
+// its own.
+std::vector<int32_t> strandLeaders(std::span<const float> points, const Surface& surface, const SurfaceBinding& binding, std::span<const int32_t> lineStart,
+                                   std::span<const int32_t> lineVerts);
 
 // `passes` steps of half-way averaging with the edge neighbours, over a per-vertex vec3 field.
 std::vector<float> laplacian(std::vector<float> field, std::span<const uint32_t> tris, size_t n, int passes);

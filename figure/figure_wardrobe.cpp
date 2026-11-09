@@ -93,11 +93,6 @@ void placeSurfaces(SceneGraph& scene, const std::map<int, mat::Context>& meshes)
   }
 }
 
-// How near the body a strand point binds to the body under it, cm; further out it moves with the
-// point above it on its strand. Hair lying on a shoulder or over the chest is within this; a strand
-// hanging free past it follows where it last touched.
-constexpr float kStrandReach = 3.f;
-
 // An item morph whose deltas address vertices the item does not have belongs to another generation.
 bool targetFits(const mesh::RenderTarget& t, int count)
 {
@@ -527,7 +522,7 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
       if(!item.cageLineStart.empty())
       {
         *slot = std::make_shared<wardrobe::SurfaceBinding>(
-            wardrobe::cachedBindStrands(body.cagePositions, body.dsonTris, item.cagePositions, item.cageLineStart, item.cageLineVerts, kStrandReach, f));
+            wardrobe::cachedBindStrands(body.cagePositions, body.dsonTris, item.cagePositions, item.cageLineStart, item.cageLineVerts, wardrobe::kStrandReach, f));
         return;
       }
       // a graft's seam pairs number the body it was made for: on another mesh they'd weld it to strangers

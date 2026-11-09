@@ -232,6 +232,64 @@ std::optional<V3> boundPoint(std::span<const float> field, const SurfaceBinding&
 
 }  // namespace
 
+std::vector<int32_t> strandLeaders(std::span<const float> points, const Surface& surface, const SurfaceBinding& b, std::span<const int32_t> lineStart,
+                                   std::span<const int32_t> lineVerts)
+{
+  const size_t         n = points.size() / 3;
+  std::vector<int32_t> leader(n);
+  for(size_t v = 0; v < n; v++)
+    leader[v] = int32_t(v);
+  if(b.verts.size() < n * 3 || b.weights.size() < n * 3)
+    return leader;
+  const auto same = [&](size_t u, size_t v) {
+    for(size_t c = 0; c < 3; c++)
+      if(b.verts[u * 3 + c] != b.verts[v * 3 + c] || b.weights[u * 3 + c] != b.weights[v * 3 + c])
+        return false;
+    return true;
+  };
+  const auto away = [&](size_t v) {
+    const auto p = boundPoint(surface.positions, b, v);
+    return p ? std::hypot(points[v * 3] - (*p)[0], points[v * 3 + 1] - (*p)[1], points[v * 3 + 2] - (*p)[2]) : INFINITY;
+  };
+  const auto at = [&](int32_t c) {
+    const int32_t v = lineVerts[size_t(c)];
+    return v >= 0 && size_t(v) < n ? v : -1;
+  };
+  // bindStrands gives a point out of reach the binding of the one before it in the order it walks the
+  // strand, root first or tip first: either way they run together along it
+  std::vector<int32_t> run;
+  for(size_t l = 0; l + 1 < lineStart.size(); l++)
+  {
+    const int32_t end = std::min<int32_t>(lineStart[l + 1], int32_t(lineVerts.size()));
+    for(int32_t c = lineStart[l]; c < end;)
+    {
+      const int32_t first = at(c);
+      if(first < 0)
+      {
+        c++;
+        continue;
+      }
+      run.assign(1, first);
+      int32_t best = first;
+      double  near = away(size_t(first));
+      for(c++; c < end; c++)
+      {
+        const int32_t v = at(c);
+        if(v < 0)
+          continue;
+        if(!same(size_t(first), size_t(v)))
+          break;
+        run.push_back(v);
+        if(const double d = away(size_t(v)); d < near)
+          near = d, best = v;
+      }
+      for(int32_t v : run)
+        leader[size_t(v)] = best;
+    }
+  }
+  return leader;
+}
+
 std::vector<float> laplacian(std::vector<float> field, std::span<const uint32_t> tris, size_t n, int passes)
 {
   if(passes <= 0)
@@ -324,7 +382,10 @@ std::vector<float> shapeCorrection(std::span<const float> item, std::span<const 
 
   const size_t       n = item.size() / 3;
   std::vector<float> delta(item.size(), 0.f);
-  const auto         onBase = cachedBindToSurface(base.positions, base.tris, item, {}, in.itemFilter);
+  // strand hair along its strands, the search for a point hanging free stopping at the reach
+  const bool strands = !in.lineStart.empty();
+  const auto onBase  = strands ? cachedBindStrands(base.positions, base.tris, item, in.lineStart, in.lineVerts, kStrandReach, in.itemFilter)
+                               : cachedBindToSurface(base.positions, base.tris, item, {}, in.itemFilter);
   for(size_t v = 0; v < n; v++)
   {
     const size_t k = v * 3;
@@ -332,13 +393,24 @@ std::vector<float> shapeCorrection(std::span<const float> item, std::span<const 
     if(!s)
       continue;
     const double dist = std::hypot(item[k] - (*s)[0], item[k + 1] - (*s)[1], item[k + 2] - (*s)[2]);
-    const double w    = dist <= o.inner ? 1 : dist >= o.outer ? 0 : (o.outer - dist) / (o.outer - o.inner);
+    // a strand point within reach lies on the base, all of it (a strand's own points, past the inner
+    // distance, would otherwise take less than the point below them)
+    const double w = dist <= o.inner || (strands && dist <= kStrandReach) ? 1 : dist >= o.outer ? 0 : (o.outer - dist) / (o.outer - o.inner);
     if(w <= 0)
       continue;
     const V3 d = *boundPoint(baseDelta, onBase, v);
     delta[k]     = float(d[0] * w);
     delta[k + 1] = float(d[1] * w);
     delta[k + 2] = float(d[2] * w);
+  }
+  // what rides with a point of its strand moves as that point does
+  if(strands)
+  {
+    const auto leader = strandLeaders(item, base, onBase, in.lineStart, in.lineVerts);
+    for(size_t v = 0; v < n; v++)
+      if(const size_t l = size_t(leader[v]); l != v)
+        for(size_t c = 0; c < 3; c++)
+          delta[v * 3 + c] = delta[l * 3 + c];
   }
   const std::vector<float> smoothed = laplacian(std::move(delta), itemTris, n, o.smooth);
   std::vector<float>       out(item.size());

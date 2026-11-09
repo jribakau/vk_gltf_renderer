@@ -50,6 +50,11 @@ SurfaceBinding bindToSurface(const physics::SurfaceIndex& body,
                              std::span<const int32_t>     pairs  = {},
                              const BindFilter*            filter = nullptr);
 
+// How near the body a strand point binds to the body under it, cm; further out it moves with the
+// point above it on its strand. Hair lying on a shoulder or over the chest is within this; a strand
+// hanging free past it follows where it last touched. The follow binding and the fitter both use it.
+constexpr float kStrandReach = 3.f;
+
 // The same for strand hair, polyline by polyline (`lineStart`/`lineVerts`, root first as files store
 // them; a strand whose first point is out of `reach` of the body and whose last is nearer is taken
 // tip first): each root is bound as above, and each later point to the closest body point if one lies
