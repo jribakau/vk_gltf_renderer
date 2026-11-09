@@ -347,7 +347,9 @@ Some things about the transport are worth knowing before touching it:
   caps DLSS frames below it (`sample_schedule::frameMaxDepth`). Fibres, clear glass and water have
   their own budgets. The app sends 32 and 8. At 8 a closed room of albedo 0.9 keeps 6.1 of its 10
   parts of light; at 32 it keeps 9.7. The roulette ends most paths long before either limit, so
-  the limit costs time only where the throughput stays high.
+  the limit costs time only where the throughput stays high. In a real office lit by daylight
+  (2026-11-09), a still frame took the same time from 8 to 64 bounces. At 8 it kept all but 0.23%
+  of the light.
 - Surfaces with a diffuse transmission lobe are lit from **both** hemispheres, so `sampleLights()`
   takes a flag that disables the punctual-light hemisphere rejection in
   `singleLightContribution()`. Without it, a light behind a backlit leaf or sheet contributes
