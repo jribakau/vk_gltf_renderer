@@ -214,10 +214,14 @@ public:
   // between them too (FollowChain).
   // Bones in `plan->inherit` already move with a parent that follows, so they count as matched and
   // are not given the leader's rotation a second time. Returns {matched, total} bones.
+  // `builtAt` is where the figure's joint centres stood when the item's skeleton was built (figure bone
+  // node -> centre): a dial that moved them since, while a slow wear prepared, is made up, and the
+  // skins re-bind (takeRestMoved). Without it the item counts as built at the centres of now.
   struct FollowPlan
   {
-    const std::map<std::string, std::string>* follow  = nullptr;
-    const std::set<std::string>*              inherit = nullptr;
+    const std::map<std::string, std::string>*   follow  = nullptr;
+    const std::set<std::string>*                inherit = nullptr;
+    const std::map<int, std::array<double, 3>>* builtAt = nullptr;
   };
   std::pair<int, int> addFollowers(const dson::Rig& rig, const FollowPlan& plan);
   std::pair<int, int> addFollowers(const dson::Rig& rig) { return addFollowers(rig, FollowPlan{}); }
@@ -240,6 +244,7 @@ private:
   // Rotation channels, in degrees, that turn this bone's local +Z toward `worldPoint`.
   std::optional<std::array<double, 3>> aimAngles(const PoseBone& pb, const Vec3& worldPoint) const;
   Vec3             localOffset(const PoseBone& pb) const;
+  Vec3             centreMoved(const PoseBone& pb, const std::map<int, std::array<double, 3>>& builtAt) const;
 
   SceneGraph&                                  m_scene;
   int                                          m_mainRoot = -1;

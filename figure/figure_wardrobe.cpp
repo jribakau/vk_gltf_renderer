@@ -177,6 +177,9 @@ struct Figure::PreparedWear
   std::vector<std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>>> preprojected;
   // the wearable's own morph files, per Morphs folder: stem (lowercase) -> file
   std::map<std::string, std::map<std::string, std::string>> ownMorphs;
+  // the figure's joint centres in the scene it was prepared against (bone node -> centre), which its
+  // skeleton was built at: a dial turned before commit has moved them
+  std::map<int, std::array<double, 3>> centres;
 };
 
 void Figure::indexItems()
@@ -441,6 +444,9 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   options.strandPieces = quality.strandPieces;
   const SceneGraph& scene = *inputs.scene;
   options.attach      = dson::AttachTarget{&scene, inputs.rig.get(), out->key};
+  for(const auto& [id, node] : inputs.rig->bones)
+    if(const auto& j = scene.nodes[size_t(node)].joint)
+      out->centres[node] = j->center;
   const std::vector<dson::TargetPtr>& bodyTargets = inputs.bodyTargets;
   const std::string file = rel.substr(std::min(rel.find_first_not_of('/'), rel.size()));
   timing::Scope     t("prepareWear " + file);
@@ -826,6 +832,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     {
       const auto& fit = k < p.fits.size() ? p.fits[k] : std::optional<wardrobe::FitDetail>{};
       pose::PoseRig::FollowPlan plan;
+      plan.builtAt = &p.centres;
       if(fit)
       {
         plan.follow  = &fit->plan.follow;

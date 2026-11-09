@@ -161,9 +161,15 @@ std::pair<int, int> PoseRig::addFollowers(const dson::Rig& rig, const FollowPlan
     PoseBone& pb = m_bones[leader];
     pb.followers.push_back(node);
     m_writer[node] = leader;
-    // an item fitted after the joints moved was built at the moved centres: its base is without them
-    pb.rest.emplace_back(node, m_scene.nodes[node].position);
-    m_restBase[node] = m_scene.nodes[node].position - localOffset(pb);
+    // an item fitted after the joints moved was built at the moved centres: its base is without them.
+    // Those are the centres it was built at, which a dial turned while it prepared has moved since
+    const Vec3 now   = localOffset(pb);
+    const Vec3 built = now - (plan.builtAt ? centreMoved(pb, *plan.builtAt) : Vec3{});
+    const Vec3 at    = m_scene.nodes[node].position;
+    m_restBase[node] = at - built;
+    pb.rest.emplace_back(node, m_restBase[node] + now);
+    if(built.x != now.x || built.y != now.y || built.z != now.z)
+      m_restMoved = true;
     touched.insert(leader);
     added.emplace_back(node, leader);
   }
@@ -790,6 +796,26 @@ Vec3 PoseRig::localOffset(const PoseBone& pb) const
     if(auto it = m_byNode.find(parent); it != m_byNode.end())
       up = m_bones[it->second].centerOffset;
   return pb.centerOffset - up;
+}
+
+// How far a bone's centre has moved since `builtAt` recorded it, less its parent's: what its local
+// offset gained. A bone it doesn't name hasn't moved.
+Vec3 PoseRig::centreMoved(const PoseBone& pb, const std::map<int, std::array<double, 3>>& builtAt) const
+{
+  const auto moved = [&](int node) {
+    const auto  at = builtAt.find(node);
+    const auto& j  = m_scene.nodes[size_t(node)].joint;
+    if(at == builtAt.end() || !j)
+      return Vec3{};
+    return Vec3{j->center[0] - at->second[0], j->center[1] - at->second[1], j->center[2] - at->second[2]};
+  };
+  if(pb.bone < 0)
+    return {};
+  const int parent = m_scene.nodes[size_t(pb.bone)].parent;
+  Vec3      up;
+  if(parent >= 0 && m_byNode.count(parent))
+    up = moved(parent);
+  return moved(pb.bone) - up;
 }
 
 void PoseRig::setCenterOffsets(const std::vector<CenterOffset>& offsets)

@@ -564,6 +564,64 @@ TEST(Wardrobe, AWearIsGivenTheSkeletonAndTheBodyOnly)
   EXPECT_FALSE(refinement->levels.empty());
 }
 
+namespace {
+// Box Hood's mesh hangs from a head bone of its own, at the box figure's head
+const char* const kBoxHood = "People/Test/Clothing/Box Hood.duf";
+// What a mesh's skin does to a vertex of `bone`: the bone's world now times its inverse at rest
+fv::Mat4 skinning(const fv::SceneGraph& scene, int mesh, int bone)
+{
+  const fv::Mesh& m  = scene.meshes[size_t(mesh)];
+  const auto      at = std::find(m.bones.begin(), m.bones.end(), bone);
+  EXPECT_NE(at, m.bones.end());
+  if(at == m.bones.end() || size_t(at - m.bones.begin()) >= m.boneInverses.size())
+    return {};
+  return scene.world(bone) * m.boneInverses[size_t(at - m.bones.begin())];
+}
+}  // namespace
+
+// A dial that moves joint centres, turned while a wear prepares (Stretch: the head's centre 5 cm up),
+// moves the item's joints as well: its head turns about the body's, and still does when the dial goes
+// back. It used to keep the centres it was prepared at for good (finding 10)
+TEST(Wardrobe, ADialTurnedWhileAWearPreparesMovesItsJointsToo)
+{
+  const auto figure   = boxFigure();
+  auto       prepared = figure->prepareWear(kBoxHood, 1);
+  figure->morphs->set("Stretch", 1);
+  figure->settle();
+  (void)figure->drain();
+  const fv::WearResult worn = figure->commitWear(prepared, kBoxHood);
+  figure->settle();
+  (void)figure->drain();
+  const fv::WornItem* hood = figure->item(worn.items.at(0));
+  ASSERT_NE(hood, nullptr);
+  ASSERT_FALSE(hood->rigs.empty());
+  const fv::SceneGraph& scene    = figure->loaded.scene;
+  const int             body     = figure->wearInputs().bodyMesh;
+  const int             mesh     = hood->meshes.at(0);
+  const int             head     = figure->loaded.rigs[size_t(figure->loaded.mainRig)].find(scene, "head");
+  const int             hoodHead = figure->loaded.rigs[size_t(hood->rigs[0])].find(scene, "head");
+  ASSERT_GE(head, 0);
+  ASSERT_GE(hoodHead, 0);
+  const auto same = [&](const std::string& when) {
+    const fv::Mat4 a = scene.world(head), b = scene.world(hoodHead);
+    for(size_t k = 0; k < 16; k++)
+      EXPECT_NEAR(a.e[k], b.e[k], 1e-6) << when << ": the head's world, element " << k;
+    const fv::Mat4 s = skinning(scene, body, head), t = skinning(scene, mesh, hoodHead);
+    for(size_t k = 0; k < 16; k++)
+      EXPECT_NEAR(s.e[k], t.e[k], 1e-6) << when << ": the head's skinning, element " << k;
+  };
+  EXPECT_NEAR(scene.world(head).e[13], 25, 1e-9);
+  same("at rest");
+  figure->pose->setMany({{"head", fv::pose::ChannelKind::eRotation, "x", 30}});
+  (void)figure->drain();
+  same("posed");
+  figure->morphs->set("Stretch", 0);
+  figure->settle();
+  (void)figure->drain();
+  EXPECT_NEAR(figure->loaded.scene.nodes[size_t(head)].joint->center[1], 20, 1e-9);
+  same("the dial back");
+}
+
 // System memory running out anywhere in a commit leaves the figure as it was: nothing half worn, nothing
 // of it drawn, and the same wear goes on afterwards.
 TEST(Wardrobe, AWearThatRunsOutOfMemoryLeavesTheFigureAsItWas)
