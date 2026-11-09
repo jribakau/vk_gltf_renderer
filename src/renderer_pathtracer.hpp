@@ -274,10 +274,12 @@ public:
   // DLSS frames: past ptHairRouletteFrom fibre events a path continues at most with ptHairRouletteDlss
   float m_hairRouletteDlss{1.0F};
   int   m_hairRouletteFrom{1};
-  // DLSS frames: hair paths end at their third fibre event, whose light sample carries the rest of the
-  // lock's light (ptHairCutDlss, ptHairCutTail; measured 2026-10-29: moving frame 29.5 -> 24.5 ms,
-  // the hair's brightness against the still about as close as the uncut moving view's)
-  int   m_hairCutDlss{3};
+  // DLSS frames: hair paths end at their fourth fibre event, whose light sample carries the rest of the
+  // lock's light (ptHairCutDlss, ptHairCutTail). Measured 2026-11-09 at 1080p against the converged
+  // still: a sunlit figure's shadowed hair 12% dark cut at the third event, 6% at the fourth, 3% uncut,
+  // for no trace time measured between the third and the fourth; the cut saves about 1 ms of a moving
+  // trace where long hair fills the view (it saved 5 ms on 2026-10-29, before the strand split)
+  int   m_hairCutDlss{4};
   float m_hairCutTail{4.0F};
   // DLSS frames: DLSS-RR's responsivity mask on hair (ptHairResponsivity; 0: no mask). Negative trusts
   // the history more: test4 held on DLSS, 12 frames, the hair's per-pixel std 2.32 -> 1.45 (top of the
