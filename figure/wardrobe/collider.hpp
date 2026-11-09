@@ -39,6 +39,10 @@
 #include <figure/morph/morph_set.hpp>
 #include <figure/scene/graph.hpp>
 
+namespace fv::physics {
+struct CageSkin;
+}
+
 namespace fv::wardrobe {
 
 // The hidden channel a mesh's correction is stored as.
@@ -92,6 +96,18 @@ private:
   struct Job;
   std::shared_ptr<Job> prepare() const;
   bool                 apply(const Job& job, const std::vector<std::vector<float>>& positions);
+
+  // What a mesh's skin comes to that no pose changes: its influences as the skinning reads them (none
+  // when it has no skin) and each vertex's limb. Kept from pass to pass while the skin, its bones and
+  // their names are the same; `key` is their hash.
+  struct Kept
+  {
+    uint64_t                                    key = 0;
+    std::shared_ptr<const physics::CageSkin>    skin;
+    std::shared_ptr<const std::vector<int16_t>> limbs;
+  };
+  Kept                        kept(int mesh) const;
+  mutable std::map<int, Kept> m_kept;  // by mesh; the owning thread's, as prepare is
 
   SceneGraph&      m_scene;
   morph::MorphSet& m_morphs;

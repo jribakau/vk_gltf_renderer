@@ -12,6 +12,10 @@
 #include <figure/wardrobe/fit/collide.hpp>
 #include <figure/wardrobe/fit/regions.hpp>
 
+// xxHash as zstd ships it, inlined as the bind cache has it (no symbols shared with zstd's copy)
+#define XXH_INLINE_ALL
+#include <xxhash.h>
+
 namespace fv::wardrobe {
 
 namespace {
@@ -45,6 +49,35 @@ std::vector<bool> shownNodes(const SceneGraph& scene)
     shown[i]      = n.visible && !n.removed && (n.parent < 0 || shown[size_t(n.parent)]);
   }
   return shown;
+}
+
+// What a mesh's skin and limbs are made from: its influences, its bones and their names, its vertex count.
+uint64_t skinKey(const SceneGraph& scene, const Mesh& m)
+{
+  XXH64_state_t s;
+  XXH64_reset(&s, 0);
+  const auto bytes = [&](const void* data, size_t size) {
+    const uint64_t n = size;
+    XXH64_update(&s, &n, sizeof n);
+    XXH64_update(&s, data, size);
+  };
+  const auto array = [&](const auto& v) { bytes(v.data(), v.size() * sizeof(v[0])); };
+  const mesh::SkinInput& in = m.cageSkin;
+  array(in.start);
+  array(in.bone);
+  array(in.weight);
+  array(in.dualQuatMap);
+  bytes(&in.rootBone, sizeof in.rootBone);
+  bytes(&in.dualQuat, sizeof in.dualQuat);
+  array(m.bones);
+  for(int b : m.bones)
+  {
+    const std::string& name = b >= 0 && size_t(b) < scene.nodes.size() ? scene.nodes[size_t(b)].name : std::string{};
+    bytes(name.data(), name.size());
+  }
+  const int64_t vertices = m.geo ? int64_t(m.geo->dsonVertexCount) : -1;
+  bytes(&vertices, sizeof vertices);
+  return XXH64_digest(&s);
 }
 
 }  // namespace
@@ -104,10 +137,10 @@ struct Collider::Job
     std::vector<uint32_t> tris;
     std::vector<int16_t>  limbs;
     // for the write-back: the rest cage, its skin and pose in the mesh's space, and the way back there
-    std::vector<float> rest;
-    physics::CageSkin   skin;
-    physics::SkinPose   pose;
-    Mat4               back;
+    std::vector<float>                       rest;
+    std::shared_ptr<const physics::CageSkin> skin;
+    physics::SkinPose                        pose;
+    Mat4                                     back;
   };
   std::vector<Item> items;
 };
@@ -184,6 +217,19 @@ void Collider::setEnabled(bool on)
     m_morphs.setMany(off);
 }
 
+Collider::Kept Collider::kept(int mesh) const
+{
+  const Mesh&    m   = m_scene.meshes[size_t(mesh)];
+  const uint64_t key = skinKey(m_scene, m);
+  Kept&          k   = m_kept[mesh];
+  if(k.limbs && k.key == key)
+    return k;
+  k.key   = key;
+  k.skin  = m.skinned() ? std::make_shared<const physics::CageSkin>(physics::cageSkin(m.cageSkin)) : nullptr;
+  k.limbs = std::make_shared<const std::vector<int16_t>>(meshLimbs(m_scene, m));
+  return k;
+}
+
 std::shared_ptr<Collider::Job> Collider::prepare() const
 {
   if(m_bodyMesh < 0 || size_t(m_bodyMesh) >= m_scene.meshes.size() || !settings)
@@ -199,8 +245,8 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
   const Mat4 fromWorld = inverse(rootWorld);
   const auto toSpace = [&](int mesh) { return fromWorld * (nodeOf[size_t(mesh)] >= 0 ? worlds[size_t(nodeOf[size_t(mesh)])] : Mat4{}); };
   // its parts, as the timing log shows them where they take a millisecond or more: the morphed cages,
-  // their skinning, and each vertex's limb
-  double     cagesMs = 0, skinMs = 0, limbsMs = 0;
+  // their skinning, and the skins and limbs made again (a mesh worn or refitted since the last pass)
+  double     cagesMs = 0, skinMs = 0, keptMs = 0;
   const auto timed   = [](double& into, auto&& work) {
     const auto t0  = std::chrono::steady_clock::now();
     auto       out = work();
@@ -208,27 +254,30 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
     return out;
   };
   // a mesh's cage in its own space as posed now: skinned when it has a skin, else as it is
-  const auto posedCage = [&](int mesh, const std::vector<float>& rest, physics::CageSkin* skin, physics::SkinPose* pose) {
+  const auto posedCage = [&](int mesh, const std::vector<float>& rest, const physics::CageSkin* skin, physics::SkinPose* pose) {
     const Mesh& m = m_scene.meshes[size_t(mesh)];
-    if(!m.skinned() || m.cageSkin.start.size() != rest.size() / 3 + 1)
+    if(!skin || m.cageSkin.start.size() != rest.size() / 3 + 1)
       return rest;
     return timed(skinMs, [&] {
-      physics::CageSkin s = physics::cageSkin(m.cageSkin);
-      physics::SkinPose p = physics::currentSkin(m_scene, worlds, nodeOf, mesh);
-      auto             posed = physics::skinLocal(rest, s, p);
-      if(skin)
-        *skin = std::move(s);
+      physics::SkinPose p     = physics::currentSkin(m_scene, worlds, nodeOf, mesh);
+      auto              posed = physics::skinLocal(rest, *skin, p);
       if(pose)
         *pose = std::move(p);
       return posed;
     });
   };
+  std::set<int> used;
+  const auto    keptOf = [&](int mesh) {
+    used.insert(mesh);
+    return timed(keptMs, [&] { return kept(mesh); });
+  };
 
   auto       job      = std::make_shared<Job>();
   const auto bodyRest = timed(cagesMs, [&] { return m_morphs.morphedCage(m_bodyMesh); });
-  job->body           = physics::transformPoints(toSpace(m_bodyMesh), posedCage(m_bodyMesh, bodyRest, nullptr, nullptr));
+  const Kept bodyKept = keptOf(m_bodyMesh);
+  job->body           = physics::transformPoints(toSpace(m_bodyMesh), posedCage(m_bodyMesh, bodyRest, bodyKept.skin.get(), nullptr));
   job->bodyTris       = body.geo->dsonTris;
-  job->bodyLimbs      = timed(limbsMs, [&] { return meshLimbs(m_scene, body); });
+  job->bodyLimbs      = *bodyKept.limbs;
   job->bodyRest       = physics::transformPoints(toSpace(m_bodyMesh), bodyRest);
 
   std::vector<int> order;
@@ -255,18 +304,22 @@ std::shared_ptr<Collider::Job> Collider::prepare() const
     // the shape under the last correction, so a pass measures the garment, not its own push
     const auto own = m_morphs.cpuTarget(collideChannelOf(mesh), mesh);
     item.rest      = timed(cagesMs, [&] { return m_morphs.morphedCage(mesh, own.get()); });
+    const Kept k   = keptOf(mesh);
     const Mat4 to  = toSpace(mesh);
-    item.posed     = physics::transformPoints(to, posedCage(mesh, item.rest, &item.skin, &item.pose));
+    item.skin      = k.skin;
+    item.posed     = physics::transformPoints(to, posedCage(mesh, item.rest, k.skin.get(), &item.pose));
     item.tris      = m.geo->dsonTris;
-    item.limbs     = timed(limbsMs, [&] { return meshLimbs(m_scene, m); });
+    item.limbs     = *k.limbs;
     item.back      = inverse(to);
     item.restInSpace = physics::transformPoints(to, item.rest);
     item.worn        = placeWorn(mesh);
     job->items.push_back(std::move(item));
   }
+  // what no pass took is let go (an item taken off, collision turned off for it)
+  std::erase_if(m_kept, [&](const auto& e) { return !used.count(e.first); });
   timing::report("collider: the cages", cagesMs, 1);
-  timing::report("collider: their skins", skinMs, 1);
-  timing::report("collider: their limbs", limbsMs, 1);
+  timing::report("collider: their skinning", skinMs, 1);
+  timing::report("collider: skins and limbs made again", keptMs, 1);
   if(job->items.empty())
     return nullptr;
   return job;
@@ -384,10 +437,10 @@ bool Collider::apply(const Job& job, const std::vector<std::vector<float>>& posi
     if(item.mesh < 0 || size_t(item.mesh) >= m_scene.meshes.size())
       continue;
     const Mesh& m = m_scene.meshes[size_t(item.mesh)];
-    if(!m.geo || m.geo->cagePositions.size() != item.rest.size())
+    if(!m.geo || m.geo->cagePositions.size() != item.rest.size() || !item.skin)
       continue;
     const auto local = physics::transformPoints(item.back, positions[k]);
-    const auto delta = physics::drapeDelta(item.rest, local, item.skin, item.pose);
+    const auto delta = physics::drapeDelta(item.rest, local, *item.skin, item.pose);
     mesh::CageDeltas cage;
     for(size_t v = 0; v * 3 + 2 < delta.size(); v++)
     {

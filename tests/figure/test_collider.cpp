@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <set>
@@ -325,6 +326,38 @@ TEST(Collider, layersItemsInsideOutByTheirClearanceFromTheBody)
     EXPECT_GT(outer.first, inner.second + 0.1f) << innerFirst;
     EXPECT_LT(outer.first, inner.second + 0.6f) << innerFirst;
   }
+}
+
+// A mesh's skin, as the skinning reads it, is kept from one pass to the next, and made again once the
+// mesh's influences change (a refit moving them onto other bones): the next pass poses the garment by
+// the new skin. Here it moves onto a bone three centimetres up, which takes it clear of the body.
+TEST(Collider, aSkinKeptFromTheLastPassIsMadeAgainWhenItChanges)
+{
+  Rig  r;
+  Node lift;
+  lift.kind     = NodeKind::eBone;
+  lift.name     = "lift";
+  lift.position = {0, 3, 0};
+  const int up  = r.scene.add(lift, r.root);
+  morph::MorphSet    morphs([&](int m) { return r.scene.meshes[size_t(m)].geo.get(); });
+  wardrobe::Collider c(r.scene, morphs, 0, r.root);
+  c.settings = [] { return std::map<int, dson::Smoothing>{{1, dson::Smoothing{}}}; };
+  c.poke();
+  ASSERT_TRUE(pumpUntilWritten(c));
+  morphs.flush();
+  const auto& geo = *r.scene.meshes[1].geo;
+  EXPECT_GT(minY(geo), 0.1f);  // pushed out of the body
+
+  Mesh& garment = r.scene.meshes[1];
+  garment.bones.push_back(up);
+  garment.boneInverses.push_back(Mat4{});
+  std::fill(garment.cageSkin.bone.begin(), garment.cageSkin.bone.end(), 1);
+  c.poke();
+  ASSERT_TRUE(pumpUntilWritten(c));
+  morphs.flush();
+  // posed at 2.5, above the skin: nothing to push, and the correction made for the old skin is gone
+  EXPECT_NEAR(minY(geo), -0.5f, 1e-4f);
+  EXPECT_EQ(c.corrected(), 0);
 }
 
 TEST(Collider, leavesAMeshASimulationOwnsAndOneWithCollisionOff)
