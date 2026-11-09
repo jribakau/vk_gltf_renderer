@@ -381,6 +381,13 @@ Some things about the transport are worth knowing before touching it:
   (KHR_materials_sheen's albedo scaling), and its lobe is divided by the same, as the specular lobes
   are. The albedo is baked from the lobe too (`nvshaders/sheen_albedo_table.h.slang`, rerun
   `utils/sheen_albedo_table.py`; `BsdfLobes.TheSheenAlbedoTableIsTheLobesIntegral`).
+- A **coat** darkens the layers under it by OpenPBR 1.1's (1 − K) / (1 − E K) (`bsdfCoatDarkening`).
+  The ground truth is the coat and the base stacked exactly (`coatedReference` in
+  `tests/test_bsdf_lobes.cpp`: a position-free walk through an exact rough dielectric, checked against
+  the smooth coat's closed form). `BsdfLobes.ACoatDarkensADiffuseBaseAsTheLayersStackedExactly` and
+  `ACoatOverASpecularBaseAgainstTheExactStack` hold the closure to it and print the table. Over a diffuse
+  base the formula is the physics. Over a base with its own reflection it isn't: under a coat the base
+  sees the bent view, and the closure gives it the unbent one (the app's `docs/improvements.md`).
 - A lobe is **picked** apart from what it weighs (`bsdfLobePick`): by its weight times the light its
   own value gives back, so a dark base under a specular or a coat stops taking nearly every sample;
   each pick is at least a tenth of its weight. A sample carries weight over pick (`bsdfPickShare`),

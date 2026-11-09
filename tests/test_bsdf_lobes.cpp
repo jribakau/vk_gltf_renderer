@@ -12,6 +12,7 @@
 #include <cmath>
 #include <complex>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <random>
 #include <vector>
@@ -1498,6 +1499,210 @@ TEST(BsdfLobes, TheDarkeningReachesTheLobes)
   // over 0.3, K about 0.6: 0.3 * 0.58 / 0.96 below the coat, plus the coat's own 4%
   EXPECT_LT(coatAlbedo, 0.8f * plainAlbedo);
   EXPECT_NEAR(coatAlbedo, 0.04f + 0.96f * 0.3f * 0.49f, 0.02f);
+}
+
+namespace {
+
+// One microfacet of a rough dielectric interface of GGX alpha `alpha`, seen from its near side in the
+// frame whose +z points to that side, drawn by its visible normals for the direction `k1`: both ways on by
+// its exact Fresnel. `eta` is the far side's index over the near side's. Each way's weight is its Fresnel
+// share times Smith's masking of the way out (the visible normals carry the way in's): height-correlated
+// for the reflection, uncorrelated for the refraction, whose correlated form is a Beta function. A way
+// that single scattering loses (a reflection under the surface, a refraction back over it) weighs 0.
+struct Microfacet
+{
+  vec3  reflected{0.0f}, refracted{0.0f};
+  float fresnel = 1.0f, reflectWeight = 0.0f, refractWeight = 0.0f;
+};
+
+Microfacet coatMicrofacet(const vec3& k1, float alpha, float eta, std::mt19937& rng)
+{
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  Microfacet                            m;
+  const vec3                            h  = hvd_ggx_sample_vndf(k1, vec2(alpha), vec2(u(rng), u(rng)));
+  const float                           kh = dot(k1, h);
+  if(h.z <= 0.0f || kh <= 0.0f)
+    return m;
+  m.fresnel   = ior_fresnel(eta, kh);
+  m.reflected = (2.0f * kh) * h - k1;
+  if(m.reflected.z > 0.0f)
+  {
+    float       G1, G2;
+    const float G = ggx_smith_shadow_mask_correlated(G1, G2, k1, m.reflected, vec2(alpha));
+    m.reflectWeight = m.fresnel * G / G1;
+  }
+  bool tir    = false;
+  m.refracted = refract(k1, h, 1.0f / eta, kh, tir);
+  if(!tir && m.refracted.z < 0.0f)
+    m.refractWeight = (1.0f - m.fresnel) * smith_shadow_or_mask(m.refracted, vec2(alpha));
+  return m;
+}
+
+// The ground truth for a coat: a coat of index 1.5 and GGX alpha `coatAlpha` over `base`, an uncoated
+// material, stacked exactly. Guo et al. 2018's position-free walk with nothing between the layers: the
+// coat reflects or lets in, then the path goes between the base and the coat's inside until it leaves
+// through the coat or is absorbed. Its directional albedo at view cosine `NoV`, over N paths; the coat's
+// reflection on the way in is counted for every path, not drawn. The radiance's 1/eta^2 on the way in and
+// eta^2 on the way out cancel, so neither is counted. A model too: Smith interfaces, no light between
+// microfacets (a rough coat loses light to that: a coat of roughness 0.4 over white keeps 0.82-0.86 of
+// it, so the tables stop at 0.2; DAZ's Top Coat Roughness defaults to 0.1), no interference.
+struct Stack
+{
+  vec3 top{0.0f};    // the coat's own reflection
+  vec3 under{0.0f};  // what comes back out through it
+  vec3 all() const { return top + under; }
+};
+
+Stack coatedReference(const PbrMaterial& base, float coatAlpha, float NoV, int N)
+{
+  std::mt19937                          rng(43);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  const vec3                            view(std::sqrt(1.0f - NoV * NoV), 0.0f, NoV);
+  dvec3                                 top(0.0), under(0.0);
+  for(int i = 0; i < N; i++)
+  {
+    const Microfacet entry = coatMicrofacet(view, coatAlpha, 1.5f, rng);
+    top += dvec3(entry.reflectWeight);
+    if(entry.refractWeight <= 0.0f)
+      continue;
+    vec3 throughput(entry.refractWeight), down = entry.refracted;
+    for(int bounce = 0; bounce < 256; bounce++)
+    {
+      BsdfSampleData s;
+      s.k1 = -down;
+      s.xi = vec3(u(rng), u(rng), u(rng));
+      bsdfSample(s, base);
+      if(s.event_type == BSDF_EVENT_ABSORB || s.k2.z <= 0.0f)
+        break;
+      throughput *= s.bsdf_over_pdf;
+      if(bounce >= 3)
+      {
+        const float p = std::min(1.0f, std::max({throughput.x, throughput.y, throughput.z}));
+        if(u(rng) >= p)
+          break;
+        throughput /= p;
+      }
+      // the coat from inside, in the frame mirrored so that its near side is +z: one way, by its Fresnel
+      const Microfacet m = coatMicrofacet(vec3(-s.k2.x, -s.k2.y, s.k2.z), coatAlpha, 1.0f / 1.5f, rng);
+      if(u(rng) >= m.fresnel)
+      {
+        under += dvec3(throughput * (m.refractWeight / (1.0f - m.fresnel)));
+        break;
+      }
+      if(m.reflectWeight <= 0.0f)
+        break;
+      throughput *= m.reflectWeight / m.fresnel;
+      down = vec3(m.reflected.x, m.reflected.y, -m.reflected.z);
+    }
+  }
+  return {vec3(top / double(N)), vec3(under / double(N))};
+}
+
+PbrMaterial withCoat(PbrMaterial mat, float roughness)
+{
+  mat.Nc                 = mat.N;
+  mat.clearcoat          = 1.0f;
+  mat.clearcoatRoughness = roughness;
+  return mat;
+}
+
+// One row of a coat's table: the exact stack's albedo, our closure's, and ours over it less 1, per channel
+void printCoatRow(const char* name, const PbrMaterial& base, float coatRoughness, float NoV, const vec3& ref, const vec3& ours)
+{
+  const vec3 error = ours / ref - vec3(1.0f);
+  std::printf("  %-9s colour %.2f %.2f %.2f  coat %.2f  NoV %.2f | exact %.4f %.4f %.4f | ours %.4f %.4f %.4f | %+5.1f%% %+5.1f%% %+5.1f%%\n",
+              name, base.baseColor.x, base.baseColor.y, base.baseColor.z, coatRoughness, NoV, ref.x, ref.y, ref.z, ours.x,
+              ours.y, ours.z, 100.0f * error.x, 100.0f * error.y, 100.0f * error.z);
+}
+
+const float kCoatViews[] = {1.0f, 0.7f, 0.4f, 0.15f};
+
+}  // namespace
+
+// The reference itself: a smooth coat over white gives back all the light at every view, reflects the
+// dielectric's Fresnel, and over a Lambert base is the closed form a smooth coat has. The light lets in,
+// T(mu) = 1 - F(mu), meets the base of albedo E, and of what the base sends up the coat's inside reflects
+// K = 1 - (1 - F_avg) / n^2 back down (F_avg the Fresnel's cosine-weighted mean seen from outside, so K
+// 0.596 at n 1.5): F(mu) + T(mu) E (1 - K) / (1 - E K).
+TEST(BsdfLobes, TheCoatReferenceKeepsEnergyAndIsTheSmoothCoatsClosedForm)
+{
+  const float  alpha = 0.05f * 0.05f;
+  const float  K     = 1.0f - (1.0f - 0.0918f) / (1.5f * 1.5f);
+  PbrMaterial  base  = defaultPbrMaterial(vec3(1.0f, 0.3f, 0.05f), 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1));
+  base.specular      = 0.0f;
+  for(float NoV : kCoatViews)
+  {
+    const Stack ref = coatedReference(base, alpha, NoV, 100000);
+    const float F   = ior_fresnel(1.5f, NoV);
+    EXPECT_NEAR(ref.top.x, F, 0.002f) << NoV;
+    EXPECT_NEAR(ref.all().x, 1.0f, 0.003f) << NoV;
+    for(int c = 1; c < 3; c++)
+    {
+      const float E = base.baseColor[c];
+      EXPECT_NEAR(ref.all()[c], F + (1.0f - F) * E * (1.0f - K) / (1.0f - E * K), 0.003f) << NoV << ", channel " << c;
+    }
+  }
+}
+
+// A coat over a diffuse base darkens it by physics: of a base of 0.3, 0.49 of what the coat lets in comes
+// back out under a smooth coat. Our closure darkens it a little less (OpenPBR's formula with K near the
+// diffuse 0.596, but E taking a base specular of 9% that a Lambert base doesn't have): 0-7.5% brighter
+// than the exact stack, most head-on, at every view and both coat roughnesses DAZ uses most.
+TEST(BsdfLobes, ACoatDarkensADiffuseBaseAsTheLayersStackedExactly)
+{
+  std::printf("A coat over a Lambert base: the exact stack's albedo against our closure's\n");
+  for(const vec3 colour : {vec3(0.03f, 0.15f, 0.3f), vec3(0.5f, 0.7f, 0.9f)})
+  {
+    PbrMaterial base = defaultPbrMaterial(colour, 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1));
+    base.specular    = 0.0f;
+    for(float coatRoughness : {0.05f, 0.2f})
+      for(float NoV : kCoatViews)
+      {
+        const vec3 ref  = coatedReference(base, coatRoughness * coatRoughness, NoV, 50000).all();
+        const vec3 ours = carriedAt(withCoat(base, coatRoughness), NoV, 50000).all;
+        printCoatRow("lambert", base, coatRoughness, NoV, ref, ours);
+        for(int c = 0; c < 3; c++)
+        {
+          EXPECT_GT(ours[c], 0.99f * ref[c]) << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
+          EXPECT_LT(ours[c], 1.10f * ref[c]) << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
+        }
+      }
+  }
+}
+
+// Over a base with its own reflection, a plastic's specular or a metal, our closure is further from the exact
+// stack. The coat bends the light in, so the base sees the view within 42 degrees of its normal and its
+// Fresnel never rises toward grazing, and what the base sends past 42 degrees stays inside by total internal
+// reflection. Ours keeps the base's own rise under the coat's: from a view cosine of 0.4 to grazing, a
+// coated dark plastic is up to 37% too bright and a smooth metal 33%. A rough metal's light meets the coat's
+// inside nearly as a diffuse base's does, where ours takes K 0.45: up to 22% too bright at every view.
+// Head-on, a smooth metal's light leaves straight through the coat, which ours darkens as if it were spread
+// over the hemisphere (up to 11% too dark), and a plastic's own specular isn't darkened (8-15% too bright).
+// These bounds hold today's gaps; closing them tightens them.
+TEST(BsdfLobes, ACoatOverASpecularBaseAgainstTheExactStack)
+{
+  std::printf("A coat over a plastic or a metal: the exact stack's albedo against our closure's\n");
+  for(const vec3 colour : {vec3(0.03f, 0.15f, 0.3f), vec3(0.5f, 0.7f, 0.9f)})
+  {
+    const std::array<std::pair<const char*, PbrMaterial>, 3> bases{{
+        {"plastic", defaultPbrMaterial(colour, 0.0f, 0.5f, vec3(0, 0, 1), vec3(0, 0, 1))},
+        {"metal 0.3", defaultPbrMaterial(colour, 1.0f, 0.3f, vec3(0, 0, 1), vec3(0, 0, 1))},
+        {"metal 0.7", defaultPbrMaterial(colour, 1.0f, 0.7f, vec3(0, 0, 1), vec3(0, 0, 1))},
+    }};
+    for(const auto& [name, base] : bases)
+      for(float coatRoughness : {0.05f, 0.2f})
+        for(float NoV : kCoatViews)
+        {
+          const vec3 ref  = coatedReference(base, coatRoughness * coatRoughness, NoV, 50000).all();
+          const vec3 ours = carriedAt(withCoat(base, coatRoughness), NoV, 50000).all;
+          printCoatRow(name, base, coatRoughness, NoV, ref, ours);
+          for(int c = 0; c < 3; c++)
+          {
+            EXPECT_GT(ours[c], 0.85f * ref[c]) << name << ", " << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
+            EXPECT_LT(ours[c], 1.45f * ref[c]) << name << ", " << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
+          }
+        }
+  }
 }
 
 // Emission lies under a coat: out through what it doesn't reflect, and what it doesn't give back to the base.
