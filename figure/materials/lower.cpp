@@ -6,6 +6,7 @@
 #include <numbers>
 
 #include <figure/materials/fabric.hpp>
+#include <figure/materials/hair_color.hpp>
 #include <figure/materials/hair_strands.hpp>
 #include <figure/materials/lobes.hpp>
 #include <figure/materials/metals.hpp>
@@ -180,32 +181,17 @@ float clamp(float v, float lo, float hi)
   return std::clamp(v, lo, hi);
 }
 
-// Chiang et al.'s fit between a fibre's colour and its absorption, by azimuthal roughness, as the
-// DSON reader uses it: colour = exp(-0.45 sqrt(sigma) fit). The hair shader's own inverse for cards
-// (hairColorToAbsorption) has no 0.45; which one is right is open (docs/lighting-audit.md, hair).
-float chiangFit(float b)
-{
-  b = clamp(b, 0, 1);
-  return 5.969f - 0.215f * b + 2.532f * b * b - 10.73f * b * b * b + 5.574f * b * b * b * b + 0.245f * b * b * b * b * b;
-}
-
-// A fibre's root and tip absorption moved so their mean colour goes to `target` by `strength`, each
-// scaled by the same ratio, so a dark root and a light tip stay apart. The path tracer shades a
-// fibre from these, not from its map, so a recolour has to move them too.
+// A fibre's root and tip absorption moved so the mean of their lock colours (hair_color.hpp) goes to
+// `target` by `strength`, each scaled by the same ratio, so a dark root and a light tip stay apart.
+// The path tracer shades a fibre from these, not from its map, so a recolour has to move them too.
 void recolorFibre(Rgb& root, Rgb& tip, float azimuthal, const Rgb& target, float strength)
 {
-  const float fit    = chiangFit(azimuthal);
-  const auto  colour = [&](float sigma) { return std::exp(-0.45f * std::sqrt(std::max(sigma, 0.f)) * fit); };
-  const auto  sigma  = [&](float c) {
-    const float s = std::log(clamp(c, 1e-3f, 0.999f)) / (-0.45f * fit);
-    return s * s;
-  };
   for(int i = 0; i < 3; i++)
   {
-    const float r = colour(root[i]), t = colour(tip[i]);
+    const float r = hairLockColor(root[i], azimuthal), t = hairLockColor(tip[i], azimuthal);
     const float k = target[i] / std::max(0.5f * (r + t), 1e-3f);
-    root[i]       = sigma(r + (r * k - r) * strength);
-    tip[i]        = sigma(t + (t * k - t) * strength);
+    root[i]       = hairAbsorption(r + (r * k - r) * strength, azimuthal);
+    tip[i]        = hairAbsorption(t + (t * k - t) * strength, azimuthal);
   }
 }
 
@@ -970,11 +956,10 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     {
       recolorFibre(rootSigma, tipSigma, betaN, recolor->color, recolor->strength);
       // the ends a tint moved, as colours for the same blend, with no melanin left to mix in
-      const float fit = chiangFit(betaN);
       for(int i = 0; i < 3; i++)
       {
-        dye.rootColor[i] = std::exp(-std::sqrt(std::max(rootSigma[i], 0.f)) * fit);
-        dye.tipColor[i]  = std::exp(-std::sqrt(std::max(tipSigma[i], 0.f)) * fit);
+        dye.rootColor[i] = hairLockColor(rootSigma[i], betaN);
+        dye.tipColor[i]  = hairLockColor(tipSigma[i], betaN);
       }
       dye.melaninMix = 0;
     }

@@ -3,6 +3,7 @@
 // edits laid over it. A port of the material pipeline in src/lib/materials and src/lib/rtx/gltf.ts.
 
 #include "materials_test_util.hpp"
+#include <figure/materials/hair_color.hpp>
 
 // The path tracer's clear-crossing rule, which the lowering's cap is held to
 #include "../../shaders/clear_crossing.h.slang"
@@ -812,15 +813,17 @@ TEST(Materials, APresetSurfaceFallsBackToItsNameWithoutAProductPrefix)
   EXPECT_FLOAT_EQ(scene.materials[1].surface.glossy.roughness.value, 0.4f);
 }
 
-TEST(Materials, OmniHairMelaninReadsAsTheBrownItIs)
+// The swatch is the colour a dense lock of the fibres shows (hair_color.hpp), the meaning the hair
+// shader and Iray's dyes give a colour: medium brown, melanin 0.5 at redness 0.5, a dark brown. It used
+// to read the fit's exponent scaled by 0.45, (0.259, 0.159, 0.062), for a raster ribbon.
+TEST(Materials, OmniHairsSwatchIsTheColourItsLocksShow)
 {
-  // the albedo measured for medium brown hair, not the near-black a lit ribbon showed
   const std::string fullWeight = R"(,{"channel":{"id":"Diffuse Strength","type":"float","current_value":1}})";
   const auto c = fv::dson::omniHairColor(channelsOf(omniHair(fullWeight).c_str()));
   ASSERT_TRUE(c.has_value());
-  EXPECT_NEAR((*c)[0], 0.259f, 0.003f);
-  EXPECT_NEAR((*c)[1], 0.159f, 0.003f);
-  EXPECT_NEAR((*c)[2], 0.062f, 0.003f);
+  EXPECT_NEAR((*c)[0], 0.0497f, 0.001f);
+  EXPECT_NEAR((*c)[1], 0.0168f, 0.0005f);
+  EXPECT_NEAR((*c)[2], 0.0021f, 0.0002f);
   // the darkest preset stays darker than that, and the lightest lighter
   const auto black = fv::dson::omniHairColor(channelsOf(omniHair().replace(omniHair().find("\"current_value\":7"), 17, "\"current_value\":6").c_str()));
   const auto white = fv::dson::omniHairColor(channelsOf(omniHair().replace(omniHair().find("\"current_value\":7"), 17, "\"current_value\":1").c_str()));
@@ -1089,8 +1092,7 @@ TEST(Materials, ARecolourMovesAFibresAbsorptionAndKeepsRootAndTipApart)
   const auto   lowered     = loweredJson(s, e, {});
   const auto&  hair        = lowered.material["extensions"]["FV_materials_hair"];
   const float  b           = hair["azimuthalRoughness"].get<float>();
-  const float  fit         = 5.969f - 0.215f * b + 2.532f * b * b - 10.73f * b * b * b + 5.574f * b * b * b * b + 0.245f * b * b * b * b * b;
-  const auto   colour      = [&](float sigma) { return std::exp(-0.45f * std::sqrt(sigma) * fit); };
+  const auto   colour      = [&](float sigma) { return fv::mat::hairLockColor(sigma, b); };
   for(int i = 0; i < 3; i++)
   {
     const float root = colour(hair["rootAbsorption"][i].get<float>()), tip = colour(hair["tipAbsorption"][i].get<float>());
@@ -1100,6 +1102,40 @@ TEST(Materials, ARecolourMovesAFibresAbsorptionAndKeepsRootAndTipApart)
   // none of it: the fibre as it was
   e.recolorStrength = 0.f;
   EXPECT_NEAR(loweredJson(s, e, {}).material["extensions"]["FV_materials_hair"]["rootAbsorption"][0].get<float>(), s.hairFibre->rootSigma[0], 1e-3f);
+}
+
+// One meaning for a hair colour: a recolour to a colour gives the absorption a DAZ dye of that colour
+// does (they differed 4.9 times), and recolouring a single-colour hair to its own swatch changes nothing
+TEST(Materials, ARecolourAndADyeOfOneColourAbsorbAlike)
+{
+  // no melanin (the White preset), one dye at full weight: Iray's dye colour is the channel's colour,
+  // linear, x 2.4 (OmniHairBase.mdl's gamma), the fibre's rootDye
+  std::string dyed = omniHair(R"(,{"channel":{"id":"Diffuse Strength","type":"float","current_value":1}},
+    {"channel":{"id":"Hair Root Color","type":"color","current_value":[0.39,0.39,0.39]}},
+    {"channel":{"id":"Hair Tip Color","type":"color","current_value":[0.39,0.39,0.39]}})");
+  dyed.replace(dyed.find("\"current_value\":7"), 17, "\"current_value\":0");
+  const auto dye = fv::dson::parseSurface("FE Base", channelsOf(dyed.c_str()));
+  ASSERT_TRUE(dye.hairFibre);
+  const float b      = dye.hairFibre->azimuthal;
+  const float colour = dye.hairFibre->rootDye[0];
+  ASSERT_GT(colour, 0.2f);
+  ASSERT_LT(colour, 0.5f);
+  EXPECT_NEAR(dye.hairFibre->rootSigma[0], fv::mat::hairAbsorption(colour, b), 1e-4f);
+  // undyed hair tinted that colour
+  const auto plain = fv::dson::parseSurface("FE Base", channelsOf(omniHair().c_str()));
+  ASSERT_TRUE(plain.hairFibre);
+  fv::mat::Edits e;
+  e.recolor           = fv::mat::Rgb{colour, colour, colour};
+  const auto  tinted  = loweredJson(plain, e, {});
+  const auto& hair    = tinted.material["extensions"]["FV_materials_hair"];
+  const float plainB  = hair["azimuthalRoughness"].get<float>();
+  EXPECT_NEAR(hair["rootAbsorption"][0].get<float>(), fv::mat::hairAbsorption(colour, plainB), 1e-3f);
+  // and to its own swatch: as it was
+  e.recolor          = plain.base.color;
+  const auto  own    = loweredJson(plain, e, {});
+  const auto& same   = own.material["extensions"]["FV_materials_hair"];
+  for(int i = 0; i < 3; i++)
+    EXPECT_NEAR(same["rootAbsorption"][i].get<float>(), plain.hairFibre->rootSigma[i], 1e-3f * std::max(1.f, plain.hairFibre->rootSigma[i])) << i;
 }
 
 // The orders of one fibre at its centre, the part of hair_bsdf.h.slang that decides whether light

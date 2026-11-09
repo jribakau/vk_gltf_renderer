@@ -20,6 +20,7 @@ namespace shaderio {
 inline vec3 lerp(vec3 a, vec3 b, float t) { return glm::mix(a, b, t); }
 }  // namespace shaderio
 #include "../shaders/hair_bsdf.h.slang"
+#include "../figure/materials/hair_color.hpp"
 
 namespace {
 
@@ -158,4 +159,24 @@ TEST(HairBsdf, SamplingCarriesWhatEvaluationIntegrates)
   EXPECT_NEAR(sampled.x, expected.x, 0.02f * expected.x);
   EXPECT_NEAR(sampled.z, expected.z, 0.03f * expected.z);
   EXPECT_EQ(pdfMismatches, 0);
+}
+
+// A hair colour means one thing: the figure library's colour and absorption (hair_color.hpp, the
+// DSON dyes, swatches and recolours) are the shader's (cards' colours, OmniHair's dyes, the lock
+// colour the cut's tail carries)
+TEST(HairBsdf, TheLibrarysHairColourIsTheShaders)
+{
+  for(const float b : {0.0f, 0.2f, 0.45f, 1.0f})
+  {
+    EXPECT_NEAR(fv::mat::hairColorFit(b), hairColorFit(b), 1e-5f) << b;
+    for(const float c : {0.05f, 0.3f, 0.8f})
+    {
+      const float3 shader = hairColorToAbsorption(float3(c), b);
+      EXPECT_NEAR(fv::mat::hairAbsorption(c, b), shader.x, 1e-4f * std::max(1.0f, shader.x)) << b << " " << c;
+      HairHit hair = fibre(shader);
+      hair.betaN   = b;
+      EXPECT_NEAR(fv::mat::hairLockColor(shader.x, b), hairLockColor(hair).x, 1e-5f) << b << " " << c;
+      EXPECT_NEAR(hairLockColor(hair).x, c, 1e-4f) << b << " " << c;
+    }
+  }
 }

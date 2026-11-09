@@ -38,7 +38,8 @@ std::string materialKey(const std::string& name, const Channels& ch);
 // materials/parse/dson.ts parseDsonSurface).
 mat::Surface parseSurface(const std::string& name, const Channels& ch, mat::Context context = mat::Context::eBody);
 
-// OmniHair's colour, linear, or none for any other shader (omniHairColor in parse/dson.ts).
+// OmniHair's colour, linear: the colour a dense lock of its fibres shows (figure/materials/hair_color.hpp),
+// its dyes averaged root to tip; none for any other shader.
 std::optional<mat::Rgb> omniHairColor(const Channels& ch);
 
 // A channel a preset sets: its value, and/or its image (an empty image removes the map), and/or

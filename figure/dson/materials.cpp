@@ -1,5 +1,6 @@
 #include <figure/dson/materials.hpp>
 #include <figure/dson/legacy_materials.hpp>
+#include <figure/materials/hair_color.hpp>
 #include <figure/materials/texture_request.hpp>
 
 #include <algorithm>
@@ -305,12 +306,6 @@ mat::ScalarMap scalar(const Channel* c, double d)
 // OmniHair's Melanin Presets, White to Black; the eighth, Custom, uses the Melanin slider.
 constexpr double kMelaninPresets[] = {0, 0.0025, 0.1, 0.175, 0.3, 0.65, 1};
 
-// Chiang et al.'s fit between a hair colour and its absorption, by azimuthal roughness.
-double chiangFit(double b)
-{
-  return 5.969 - 0.215 * b + 2.532 * std::pow(b, 2) - 10.73 * std::pow(b, 3) + 5.574 * std::pow(b, 4) + 0.245 * std::pow(b, 5);
-}
-
 // Iray's volume: Transmitted Color over Transmitted Measurement Distance (absorption), and the
 // scattering over Scattering Measurement Distance, coloured by SSS Color in chromatic mode or grey
 // by SSS Amount in mono mode (PBRSkin is always chromatic). PBRSkin's volume switches each gate
@@ -397,15 +392,16 @@ std::optional<mat::MakeupLayer> readMakeup(const Find& find)
 // channel over 1 / 2.4 absorbs nothing.
 constexpr double kMelaninGamma = 2.4;
 
-// One dye colour's fibre absorption, and the albedo a ribbon shows for it. White dye at full weight
-// is no dye; anything else is mixed with the melanin, as OmniHairBase.mdl has it.
+// One dye colour's fibre absorption, and the colour a lock of it shows (hair_color.hpp), at the
+// roughness `b` the fit takes. White dye at full weight is no dye; anything else is mixed with the
+// melanin, as OmniHairBase.mdl has it.
 struct DyedHair
 {
   mat::Rgb sigma;
-  mat::Rgb albedo;
+  mat::Rgb color;
 };
 
-DyedHair dyeHair(double m, double fit, const mat::Rgb& dye, const double sigmaMelanin[3], double weight)
+DyedHair dyeHair(double m, float b, const mat::Rgb& dye, const double sigmaMelanin[3], double weight)
 {
   const bool undyed = dye[0] >= 1 && dye[1] >= 1 && dye[2] >= 1 && weight >= 1;
   DyedHair   out;
@@ -414,16 +410,16 @@ DyedHair dyeHair(double m, double fit, const mat::Rgb& dye, const double sigmaMe
     double sigma = sigmaMelanin[i];
     if(!undyed)
     {
-      const double sigmaDye = std::pow(std::log(std::clamp(double(dye[i]) * weight * kMelaninGamma, 0.001, 1.0)) / fit, 2);
+      const double sigmaDye = mat::hairAbsorption(float(dye[i] * weight * kMelaninGamma), b);
       sigma                 = sigmaDye + (sigmaMelanin[i] - sigmaDye) * std::sqrt(m);
     }
-    out.sigma[i]  = float(sigma);
-    out.albedo[i] = float(std::exp(-0.45 * std::sqrt(sigma) * fit));
+    out.sigma[i] = float(sigma);
+    out.color[i] = mat::hairLockColor(float(sigma), b);
   }
   return out;
 }
 
-// OmniHair's fibre: the albedo of the averaged dye (what a single-colour ribbon used to show),
+// OmniHair's fibre: the lock colour of the averaged dye (its swatch, the surface's base colour),
 // the absorption at the root and at the tip and what they are made from, and the two roughnesses.
 // None when there is no Melanin channel, which is what distinguishes OmniHair from every other shader.
 struct OmniHairShade
@@ -451,9 +447,9 @@ std::optional<OmniHairShade> omniHairShade(const Channels& ch)
   // melanin (Melanin^2 x 2.4, split by Melanin Redness, with Bitterli's eumelanin and pheomelanin
   // spectra), and the dye colour (Hair Root and Tip Color through Chiang's colour-to-absorption
   // fit), the two mixed by sqrt(Melanin). The dye is colour x Diffuse Strength ("Hair Color Weight")
-  // x 2.4, at most 1; a white dye at full weight is no dye. The albedo below is that absorption read
-  // back through the same fit with its exponent scaled down (0.45), which is the colour a lit
-  // ribbon shows: undyed at melanin 0.5 and redness 0.5, (0.26, 0.16, 0.06) linear. The fibre itself
+  // x 2.4, at most 1; a white dye at full weight is no dye. The swatch below is that absorption read
+  // back through the same fit, the colour a dense lock of it shows: undyed at melanin 0.5 and
+  // redness 0.5, (0.050, 0.017, 0.002) linear, a dark brown. The fibre itself
   // takes the colours and the melanin apart: the brick blends colour, root to tip, by Root To Tip
   // Bias and Gain before the absorption is worked out, which a blend of two absorptions can't match.
   constexpr int kPresets = int(sizeof(kMelaninPresets) / sizeof(kMelaninPresets[0]));
@@ -468,15 +464,15 @@ std::optional<OmniHairShade> omniHairShade(const Channels& ch)
   const double rough        = clamp01(num(find({"Roughness"}), 0.2));
   const double longitudinal = std::pow(0.726 * rough + 0.812 * rough * rough + 3.7 * std::pow(rough, 20), 2);
   const double azimuthal    = clamp01(num(find({"Azimuthal Roughness"}), 0.2));
-  const double fit          = chiangFit(anisotropic ? azimuthal : longitudinal);
+  const float  fitRoughness = float(anisotropic ? azimuthal : longitudinal);
   const mat::Rgb root = colorOr(find({"Hair Root Color"})), tip = colorOr(find({"Hair Tip Color"}));
   const mat::Rgb dye{(root[0] + tip[0]) / 2, (root[1] + tip[1]) / 2, (root[2] + tip[2]) / 2};
   const double weight = clamp01(num(find({"Diffuse Strength"}), 0.8));
-  const DyedHair averaged = dyeHair(m, fit, dye, sigmaMelanin, weight);
-  const DyedHair atRoot   = dyeHair(m, fit, root, sigmaMelanin, weight);
-  const DyedHair atTip    = dyeHair(m, fit, tip, sigmaMelanin, weight);
+  const DyedHair averaged = dyeHair(m, fitRoughness, dye, sigmaMelanin, weight);
+  const DyedHair atRoot   = dyeHair(m, fitRoughness, root, sigmaMelanin, weight);
+  const DyedHair atTip    = dyeHair(m, fitRoughness, tip, sigmaMelanin, weight);
   OmniHairShade shade;
-  shade.albedo       = averaged.albedo;
+  shade.albedo       = averaged.color;
   shade.rootSigma    = atRoot.sigma;
   shade.tipSigma     = atTip.sigma;
   // no dye at either end is melanin alone, whatever the blend
