@@ -11,6 +11,7 @@
 #include <figure/dson/figure_loader.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
+#include <figure/wardrobe/fit/transfer.hpp>
 
 namespace fv::wardrobe {
 
@@ -23,7 +24,15 @@ struct FitDetail
   LeaderPlan plan;
   // "Genesis 8 outfit on Genesis 9, refitted to its skeleton and shape."
   std::string note;
+  // per object of the item (dson::Item::objects): for one hung from a bone (glasses on the head), that
+  // bone's joint centre on the source generation's base, which it was placed around; none for one on
+  // the figure, or when the base isn't installed
+  std::vector<std::optional<V3>> mountFrom;
 };
+
+// The joint centres a prop hung from a bone was placed around, per object of `item`, from the base
+// skeleton of the generation it was made for (see FitDetail::mountFrom).
+std::vector<std::optional<V3>> mountsFrom(const dson::Item& item, const std::vector<SkelBone>* base);
 
 struct FitFigure
 {

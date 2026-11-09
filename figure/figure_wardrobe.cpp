@@ -734,24 +734,41 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
         releaseMesh(scene.meshes[m]);
     }
   } takeOff{*this, added, nodeBase, meshBase};
+  std::vector<std::string> figureBoneNames;
+  for(const auto& [id, node] : figureRig.bones)
+    figureBoneNames.push_back(dst.nodes[size_t(node)].name);
   for(size_t k = 0; k < w.items.size(); k++)
   {
-    dson::Item it = w.items[k];
-    for(auto& [node, bone] : it.objects)
+    dson::Item  it  = w.items[k];
+    const auto& fit = k < p.fits.size() ? p.fits[k] : std::optional<wardrobe::FitDetail>{};
+    for(size_t o = 0; o < it.objects.size(); o++)
     {
+      auto& [node, bone] = it.objects[o];
       node += nodeBase;
       int parent = loaded.mainGroup;
       if(!bone.empty())
       {
-        const int b = figureRig.find(dst, bone);
+        int b = figureRig.find(dst, bone);
+        // a bone of another generation's ("lHand" for Genesis 9's "l_hand")
+        if(b < 0)
+          if(const auto alias = wardrobe::matchBone(bone, figureBoneNames))
+          {
+            b = figureRig.find(dst, *alias);
+            if(b >= 0)
+              bone = *alias;
+          }
         if(b < 0)
           result.missingBones.push_back(bone);
         else
         {
-          // a group under the bone that cancels its rest offset, so nodes in figure space can hang from it
+          // a group under the bone that cancels its rest offset, so nodes in figure space can hang from
+          // it: the offset of the joint it was placed around, which on another generation is that one's
+          // base's, so it moves with the joint (glasses made for Genesis 8's head stood 9 cm high on 9's)
           fv::Node mount;
           mount.name = dst.nodes[size_t(b)].name + " attachment";
-          if(const auto& j = dst.nodes[size_t(b)].joint)
+          if(fit && o < fit->mountFrom.size() && fit->mountFrom[o])
+            mount.position = {-(*fit->mountFrom[o])[0], -(*fit->mountFrom[o])[1], -(*fit->mountFrom[o])[2]};
+          else if(const auto& j = dst.nodes[size_t(b)].joint)
             mount.position = {-j->center[0], -j->center[1], -j->center[2]};
           parent = dst.add(std::move(mount), b);
         }

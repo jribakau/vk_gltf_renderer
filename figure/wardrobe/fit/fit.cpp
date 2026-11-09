@@ -99,6 +99,24 @@ bool madeForFigure(const dson::LoadResult& wearable, const dson::Item& item, con
   return source && target && sameRig(*source, *target);
 }
 
+std::vector<std::optional<V3>> mountsFrom(const dson::Item& item, const std::vector<SkelBone>* base)
+{
+  std::vector<std::optional<V3>> out;
+  for(const auto& [node, bone] : item.objects)
+  {
+    std::optional<V3> from;
+    if(!bone.empty() && base)
+      for(const SkelBone& b : *base)
+        if(b.name == bone)
+        {
+          from = b.center;
+          break;
+        }
+    out.push_back(from);
+  }
+  return out;
+}
+
 std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const dson::Item& item, const std::string& rel, const FitFigure& figure)
 {
   const auto gens = generationsOf(w, item, rel, figure);
@@ -131,6 +149,23 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     boneNames.push_back(b.name);
   const FitRegion region = item.region ? *item.region : regionOf(rel + "/" + item.label, boneNames);
 
+  // a prop hung from a bone keeps its place on the joint: it was placed around the source's. With no
+  // skinned mesh there is no skeleton or shape to refit, nor the base's search to make for one
+  detail.mountFrom = mountsFrom(item, cage ? &cage->skeleton : nullptr);
+  const bool skinned = std::any_of(item.meshes.begin(), item.meshes.end(), [&](int m) {
+    const Mesh& mesh = w.scene.meshes[size_t(m)];
+    return mesh.geo && !mesh.cageSkin.start.empty();
+  });
+  if(!skinned)
+  {
+    const bool onBones = std::any_of(item.objects.begin(), item.objects.end(), [](const auto& o) { return !o.second.empty(); });
+    const bool carried = std::any_of(detail.mountFrom.begin(), detail.mountFrom.end(), [](const auto& f) { return f.has_value(); });
+    detail.note        = std::string(label(source)) + " prop on " + label(target)
+                + (!onBones  ? std::string(", placed as it was made.")
+                   : carried ? std::string(", moved with the joint it hangs from.")
+                             : std::string(": the ") + label(source) + " base figure isn't installed, so it hangs where it was made for that figure.");
+    return detail;
+  }
   std::vector<float>       baseMoved;
   std::vector<int16_t>     baseLimbs;
   std::optional<Surface>   base;

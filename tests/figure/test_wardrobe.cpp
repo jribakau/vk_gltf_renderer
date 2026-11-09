@@ -1775,3 +1775,24 @@ TEST(Fit, ABootsShaftTakesTheCorrectionItsFootDoesnt)
   EXPECT_FLOAT_EQ(out[8], 2);
   EXPECT_FLOAT_EQ(out[7], 20);
 }
+
+// A prop hung from a bone was placed around that joint on the figure it was made for: on another
+// generation it is mounted by the source base's joint, so it moves with the joint (Genesis 8's
+// glasses on its head stood 9 cm high on Genesis 9's)
+TEST(Fit, APropHungFromABoneKeepsItsPlaceOnTheJoint)
+{
+  using namespace fv::wardrobe;
+  fv::dson::Item glasses;
+  glasses.objects = {{0, "head"}, {1, ""}, {2, "lHand"}};
+  const std::vector<SkelBone> g8{{"hip", std::nullopt, {0, 100, 0}}, {"head", std::string("hip"), {0, 160, 2}}};
+  const auto from = mountsFrom(glasses, &g8);
+  ASSERT_EQ(from.size(), 3u);
+  ASSERT_TRUE(from[0]);
+  EXPECT_EQ(*from[0], (V3{0, 160, 2}));
+  EXPECT_FALSE(from[1]) << "on the figure, not a bone";
+  EXPECT_FALSE(from[2]) << "a bone the base doesn't have";
+  // without the base, nothing to carry it by
+  EXPECT_FALSE(mountsFrom(glasses, nullptr)[0]);
+  // and the bone it names, on Genesis 9
+  EXPECT_EQ(matchBone("lHand", {"hip", "head", "l_hand", "r_hand"}), std::optional<std::string>("l_hand"));
+}
