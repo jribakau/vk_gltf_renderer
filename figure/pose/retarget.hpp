@@ -18,6 +18,9 @@
 
 #include <string>
 
+#include <set>
+#include <string>
+
 #include <figure/dson/store.hpp>
 #include <figure/pose/pose_clip.hpp>
 #include <figure/pose/pose_rig.hpp>
@@ -28,6 +31,9 @@ namespace fv::pose {
 // names and then the file's own path (Genesis 8 Male's, Genesis 3's); empty when its bones are none
 // of Genesis 2, 3, 8 or 9's.
 std::string sourceFigureFile(const dson::Json& doc, const std::string& rel);
+// The same from the bones a file names: their family by the skeleton spec (rig::identify), Genesis 2's,
+// 3's and 8's sex and version by the path.
+std::string sourceFigureFor(const std::set<std::string>& bones, const std::string& rel);
 // That file's figure as people call it: "Genesis 8 Female".
 std::string sourceFigureName(const std::string& file);
 

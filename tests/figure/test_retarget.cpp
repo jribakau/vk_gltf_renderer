@@ -432,6 +432,15 @@ TEST(Retarget, theSourceFigureIsFoundByItsBonesThenItsPath)
             "data/DAZ 3D/Genesis 8/Male/Genesis8Male.dsf");
   EXPECT_EQ(fv::pose::sourceFigureFile(walkFile(true), "People/Genesis 3 Female/Poses/Walk.duf"), "data/DAZ 3D/Genesis 3/Female/Genesis3Female.dsf");
   EXPECT_EQ(fv::pose::sourceFigureFile({{"scene", {{"animations", fv::dson::Json::array()}}}}, "x.duf"), "");
+  // the bones' family by the skeleton spec: a Genesis 9 hand or foot alone, an arm's bend, Genesis 3's
+  // heel, which a file naming every generation's bones (a zeroing pose) doesn't let decide
+  EXPECT_EQ(fv::pose::sourceFigureFor({"l_hand", "l_index1"}, "x.duf"), "data/DAZ 3D/Genesis 9/Base/Genesis9.dsf");
+  EXPECT_EQ(fv::pose::sourceFigureFor({"rForearmBend", "rHand"}, "x.duf"), "data/DAZ 3D/Genesis 8/Female/Genesis8Female.dsf");
+  EXPECT_EQ(fv::pose::sourceFigureFor({"lFoot", "lHeel", "lToe"}, "x.duf"), "data/DAZ 3D/Genesis 3/Female/Genesis3Female.dsf");
+  EXPECT_EQ(fv::pose::sourceFigureFor({"lFoot", "lHeel"}, "People/Genesis 3 Male/Clothing/Boots.duf"), "data/DAZ 3D/Genesis 3/Male/Genesis3Male.dsf");
+  EXPECT_EQ(fv::pose::sourceFigureFor({"abdomenLower", "lHeel", "lThighBend"}, "Zero All.duf"), "data/DAZ 3D/Genesis 8/Female/Genesis8Female.dsf");
+  EXPECT_EQ(fv::pose::sourceFigureFor({"abdomen", "lThigh"}, "People/Genesis 2 Male/Poses/Sit.duf"), "data/DAZ 3D/Genesis 2/Male/Genesis2Male.dsf");
+  EXPECT_EQ(fv::pose::sourceFigureFor({"BelowJaw", "Chin"}, "x.duf"), "");
   EXPECT_EQ(fv::pose::sourceFigureName("/data/DAZ 3D/Genesis 8/Female 8_1/Genesis8_1Female.dsf"), "Genesis 8.1 Female");
   EXPECT_EQ(fv::pose::sourceFigureName("/data/DAZ 3D/Genesis 9/Base/Genesis9.dsf"), "Genesis 9");
 

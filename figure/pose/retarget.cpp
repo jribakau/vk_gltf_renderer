@@ -257,17 +257,28 @@ std::array<double, 3> fitAxes(const PoseBone& pb, const Quat& goal, const Vec3& 
 
 std::string sourceFigureFile(const dson::Json& doc, const std::string& rel)
 {
-  const std::set<std::string> bones = namedBones(doc);
-  const auto                  has   = [&](std::initializer_list<const char*> names) {
-    return std::any_of(names.begin(), names.end(), [&](const char* n) { return bones.count(n) > 0; });
-  };
-  const std::string path = lower(rel);
-  const auto        in   = [&](std::initializer_list<const char*> words) {
+  return sourceFigureFor(namedBones(doc), rel);
+}
+
+std::string sourceFigureFor(const std::set<std::string>& bones, const std::string& rel)
+{
+  // Genesis 3's heel tells only when nothing else does: a file naming every generation's bones (a
+  // zeroing pose, an unlocker) is read by the rest
+  bool                     heel = false;
+  std::vector<std::string> names;
+  for(const std::string& b : bones)
+    if(rig::parse(b).token == "heel")
+      heel = true;
+    else
+      names.push_back(b);
+  const rig::Evidence e    = rig::identify(names);
+  const std::string   path = lower(rel);
+  const auto          in   = [&](std::initializer_list<const char*> words) {
     return std::any_of(words.begin(), words.end(), [&](const char* w) { return path.find(w) != std::string::npos; });
   };
-  if(has({"l_thigh", "r_thigh", "l_upperarm", "r_upperarm", "l_forearm", "l_shin"}))
+  if(e.sure == rig::Family::eGenesis9)
     return "data/DAZ 3D/Genesis 9/Base/Genesis9.dsf";
-  if(has({"lThighBend", "rThighBend", "lShldrBend", "rShldrBend", "abdomenLower", "chestLower"}))
+  if(e.genesis3or8)
   {
     if(in({"genesis 3 male", "michael 7"}))
       return "data/DAZ 3D/Genesis 3/Male/Genesis3Male.dsf";
@@ -279,7 +290,9 @@ std::string sourceFigureFile(const dson::Json& doc, const std::string& rel)
       return "data/DAZ 3D/Genesis 8/Female 8_1/Genesis8_1Female.dsf";
     return "data/DAZ 3D/Genesis 8/Female/Genesis8Female.dsf";
   }
-  if(has({"lThigh", "rThigh", "lShldr", "rShldr", "abdomen"}))
+  if(heel)
+    return in({"genesis 3 male", "michael 7"}) ? "data/DAZ 3D/Genesis 3/Male/Genesis3Male.dsf" : "data/DAZ 3D/Genesis 3/Female/Genesis3Female.dsf";
+  if(e.sure == rig::Family::eGenesis2)
     return in({"genesis 2 male", "michael 6"}) ? "data/DAZ 3D/Genesis 2/Male/Genesis2Male.dsf" : "data/DAZ 3D/Genesis 2/Female/Genesis2Female.dsf";
   return {};
 }

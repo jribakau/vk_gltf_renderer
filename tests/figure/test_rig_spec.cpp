@@ -25,6 +25,7 @@
 #include <figure/dson/rig.hpp>
 #include <figure/math/xform.hpp>
 #include <figure/pose/pose_rig.hpp>
+#include <figure/pose/retarget.hpp>
 #include <figure/scene/graph.hpp>
 #include <figure/rig/aliases/aliases.hpp>
 #include <figure/rig/spec.hpp>
@@ -333,6 +334,36 @@ std::optional<fv::wardrobe::Generation> generationFromBones(const std::vector<st
   return std::nullopt;
 }
 
+// retarget.cpp's sourceFigureFile from the bones a file names (renderer db0ac9c)
+std::string sourceFigureFile(const std::set<std::string>& bones, const std::string& rel)
+{
+  const auto has = [&](std::initializer_list<const char*> names) {
+    return std::any_of(names.begin(), names.end(), [&](const char* n) { return bones.count(n) > 0; });
+  };
+  std::string path = rel;
+  std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  const auto in = [&](std::initializer_list<const char*> words) {
+    return std::any_of(words.begin(), words.end(), [&](const char* w) { return path.find(w) != std::string::npos; });
+  };
+  if(has({"l_thigh", "r_thigh", "l_upperarm", "r_upperarm", "l_forearm", "l_shin"}))
+    return "data/DAZ 3D/Genesis 9/Base/Genesis9.dsf";
+  if(has({"lThighBend", "rThighBend", "lShldrBend", "rShldrBend", "abdomenLower", "chestLower"}))
+  {
+    if(in({"genesis 3 male", "michael 7"}))
+      return "data/DAZ 3D/Genesis 3/Male/Genesis3Male.dsf";
+    if(in({"genesis 3 female", "victoria 7"}))
+      return "data/DAZ 3D/Genesis 3/Female/Genesis3Female.dsf";
+    if(in({"genesis 8 male", "genesis 8.1 male", "michael 8", "michael8"}))
+      return "data/DAZ 3D/Genesis 8/Male/Genesis8Male.dsf";
+    if(in({"genesis 8.1 female", "8_1"}))
+      return "data/DAZ 3D/Genesis 8/Female 8_1/Genesis8_1Female.dsf";
+    return "data/DAZ 3D/Genesis 8/Female/Genesis8Female.dsf";
+  }
+  if(has({"lThigh", "rThigh", "lShldr", "rShldr", "abdomen"}))
+    return in({"genesis 2 male", "michael 6"}) ? "data/DAZ 3D/Genesis 2/Male/Genesis2Male.dsf" : "data/DAZ 3D/Genesis 2/Female/Genesis2Female.dsf";
+  return {};
+}
+
 }  // namespace old
 
 // What each reader says of one name, old and new alike, as text: a difference prints itself.
@@ -621,4 +652,46 @@ TEST(RigSpec, EveryInstalledRigsBonesAnswerAsBefore)
   std::printf("[rig spec] %zu rigs, %zu bones, %zu names, %zu figures, %zu leader plans: %zu differ\n", rigs.size(), bones, names.size(), figures.size(),
               plans, differ);
   EXPECT_EQ(differ, 0u);
+}
+
+// Every installed pose file's source figure, through the old reader and the one on the spec (step 2b).
+// The poses come from FV_POSE_BONES, a file of one "<rel>\t<bone>\t<bone>..." line a pose (made by a
+// script that saves it outside the repository). The spec reads a family from more of its bones, so a
+// file the old reader found no figure for may find one now (a Genesis 9 hand pose, a Genesis 3 foot
+// pose by its heel); one whose figure changes is a failure. Genesis 1's poses, which the old reader took
+// for Genesis 2's by their abdomen, find none now.
+TEST(RigSpec, EveryInstalledPoseFindsTheFigureItWasMadeForAsBefore)
+{
+  const char* path = std::getenv("FV_POSE_BONES");
+  if(!path || !*path)
+    GTEST_SKIP() << "FV_POSE_BONES not set";
+  std::ifstream in(path);
+  ASSERT_TRUE(in) << path;
+  size_t files = 0, found = 0, lost = 0, changed = 0;
+  for(std::string line; std::getline(in, line);)
+  {
+    std::vector<std::string> cols;
+    for(size_t at = 0;;)
+    {
+      const size_t tab = line.find('\t', at);
+      cols.push_back(line.substr(at, tab == std::string::npos ? std::string::npos : tab - at));
+      if(tab == std::string::npos)
+        break;
+      at = tab + 1;
+    }
+    const std::set<std::string> bones(cols.begin() + 1, cols.end());
+    const std::string           was = old::sourceFigureFile(bones, cols[0]), now = fv::pose::sourceFigureFor(bones, cols[0]);
+    files++;
+    if(was == now)
+      continue;
+    if(was.empty())
+      found++;
+    else if(now.empty())
+      lost++;
+    else if(++changed < 30)
+      ADD_FAILURE() << cols[0] << ": " << now << " was " << was;
+  }
+  std::printf("[rig spec] %zu pose files: %zu find a figure they didn't, %zu lose theirs, %zu change it\n", files, found, lost, changed);
+  EXPECT_GT(files, 0u);
+  EXPECT_EQ(changed, 0u);
 }
