@@ -160,6 +160,16 @@ float toksvigVariance(float3 n, GltfTextureInfo textureInfo)
   return (1.0F - len) / max(len, 1e-3F);
 }
 
+// What a footprint's mip averaged away of a normal map's relief (toksvigVariance), for a sample at
+// that footprint. At mip 0 (texGrad 0, as the path tracer samples every hit while ptTexGradScale is 0,
+// the app's) nothing was averaged, a pixel's own samples resolve the relief, and a texel's length is
+// only its encoding's error: BC7 leaves a sweat bead's texels 13 times the variance their 8-bit normals
+// hold (0.012 against 0.0009), which read as a coat of roughness 0.33 over water's 0.04.
+float footprintVariance(float3 n, GltfTextureInfo textureInfo, float texGrad)
+{
+  return texGrad > 0.0F ? toksvigVariance(n, textureInfo) : 0.0F;
+}
+
 /*-------------------------------------------------------------------------------------------------
  * Check if a texture is present.
  * -------------------------------------------------------------------------------------------------*/
@@ -347,9 +357,10 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   float  detailRoughnessMul = 1.0F;
   // What a detail map's relief spreads highlights by beyond the normal it bends, as every lobe's
   // roughness, after the films it bends as well (detailVariance, below the coat block). A mip of the
-  // map averages the relief under a footprint, which the normal can no longer show: that part. On skin
-  // shaded as the thin preview the relief doesn't bend the normal at all (a fine relief at one sample a
-  // pixel only shimmers under DLSS): all of it, as the still's resolved and averaged parts together.
+  // map averages the relief under a footprint, which the normal can no longer show: that part, where a
+  // footprint picks the mip (footprintVariance; at mip 0, the app's, none). On skin shaded as the thin
+  // preview the relief doesn't bend the normal at all (a fine relief at one sample a pixel only
+  // shimmers under DLSS): all of it, the whole map's, from its last mip.
   float detailVariance    = 0.0F;
   bool  reliefAsRoughness = false;
 #if GLTF_USE_SCATTER
@@ -376,7 +387,7 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
       {
         detailNormal   = getTexture(images, samplers, detailTexInfo, state.tc, state.texGrad).xyz * 2.0F - 1.0F;
         detailNormal   = decodeTangentSpaceNormal(detailNormal, detailTexInfo);
-        detailVariance = toksvigVariance(detailNormal, detailTexInfo) * slopeScale * slopeScale;
+        detailVariance = footprintVariance(detailNormal, detailTexInfo, state.texGrad) * slopeScale * slopeScale;
         detailNormal.x *= slopeScale;
         detailNormal.y *= slopeScale;
         pbrMat.N           = applyDetailNormal(pbrMat.N, state.T, state.B, detailNormal);
@@ -428,15 +439,14 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
       {
         GltfTextureInfo dropInfo = texInfos[material.proceduralNormalTexture];
         float3          raw      = getTexture(images, samplers, dropInfo, state.tc, state.texGrad).xyz * 2.0F - 1.0F;
-        // Toksvig: a mip averages the beads' normals, and how short that leaves them is how much they
-        // vary under the footprint, which goes into the coat's roughness. Far beads blend into a sheen
-        // instead of a dust of glints.
-        const float length2 = min(dot(raw, raw), 1.0F);
-        const float len     = sqrt(length2);
-        proceduralDropVariance = (1.0F - len) / max(len, 1e-3F);
+        // Toksvig where a footprint picks the mip: it averages the beads' normals, and how short that
+        // leaves them is how much they vary under it, which goes into the coat's roughness at the
+        // slopes the normal is bent by. At mip 0 (the app's) a pixel's samples see each bead's glint.
+        const float dropScale  = material.proceduralNormalScale * proceduralDrop;
+        proceduralDropVariance = footprintVariance(raw, dropInfo, state.texGrad) * dropScale * dropScale;
         proceduralDropNormal   = decodeTangentSpaceNormal(raw, dropInfo);
-        proceduralDropNormal.x *= material.proceduralNormalScale * proceduralDrop;
-        proceduralDropNormal.y *= material.proceduralNormalScale * proceduralDrop;
+        proceduralDropNormal.x *= dropScale;
+        proceduralDropNormal.y *= dropScale;
       }
       pbrMat.baseColor *= lerp(float3(1.0F), material.proceduralTint, proceduralFilm);
       // pbrMat.roughness holds alpha = roughness^2
@@ -592,7 +602,8 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
   if(proceduralDrop > 0.0F)
   {
     const float dropAlpha     = material.proceduralDropRoughness * material.proceduralDropRoughness;
-    const float coatRoughness = sqrt(sqrt(dropAlpha * dropAlpha + proceduralDropVariance));
+    // alpha^2 + 2 variance, as the detail's below (toksvigVariance), the coat's as roughness
+    const float coatRoughness = sqrt(sqrt(dropAlpha * dropAlpha + 2.0F * proceduralDropVariance));
     pbrMat.clearcoat          = max(pbrMat.clearcoat, material.proceduralCoat * proceduralDrop);
     pbrMat.clearcoatRoughness = lerp(pbrMat.clearcoatRoughness, coatRoughness, proceduralDrop);
     pbrMat.Nc                 = applyDetailNormal(pbrMat.Nc, state.T, state.B, proceduralDropNormal);
@@ -611,9 +622,8 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
 #if GLTF_USE_DETAIL
   // The relief as roughness (detailVariance above), on every lobe it bends, films and coats included. A
   // sweat film at roughness 0.22 over HID Kelly's pores (slopes of 0.21 a side, at her weight 0.6)
-  // spreads to about 0.42 with all of the relief. A still used to lose what a mip averaged, three
-  // quarters and more of it from mip 4 on, so at a full figure's distance it read almost as wet as
-  // with no pores; the moving view's preview showed it so at any distance.
+  // spreads to about 0.42 with all of the relief, which the moving view's preview, without the relief,
+  // used to show as a film over no pores.
   if(detailVariance > 0.0F)
   {
     // pbrMat.roughness holds alpha = roughness^2; the coat's and the second lobe's are roughness

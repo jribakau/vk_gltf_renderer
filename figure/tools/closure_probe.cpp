@@ -112,7 +112,8 @@ PbrMaterial evaluateBytes(const void* rowBytes, size_t rowSize, const void* info
   }
   std::vector<Texture2D>    imageArray(static_cast<size_t>(images));
   std::vector<SamplerState> samplerArray(static_cast<size_t>(samplers));
-  for(const uint16_t normal : {uint16_t(row.normalTexture), uint16_t(row.clearcoatNormalTexture), uint16_t(row.detailNormalTexture)})
+  for(const uint16_t normal : {uint16_t(row.normalTexture), uint16_t(row.clearcoatNormalTexture), uint16_t(row.detailNormalTexture),
+                               uint16_t(row.proceduralNormalTexture)})
     if(normal > 0 && normal < infos.size() && infos[normal].index >= 0)
       imageArray[static_cast<size_t>(infos[normal].index)].colour = imageArray[static_cast<size_t>(infos[normal].index)].mean = vec4(0.5f, 0.5f, 1.0f, 1.0f);
   for(const ProbeImage& image : options.images)
@@ -129,8 +130,10 @@ PbrMaterial evaluateBytes(const void* rowBytes, size_t rowSize, const void* info
   state.T     = vec3(1.0f, 0.0f, 0.0f);
   state.B     = vec3(0.0f, 1.0f, 0.0f);
   state.Ng    = state.N;
-  state.tc[0] = vec2(0.5f);
-  state.tc[1] = vec2(0.5f);
+  state.tc[0]   = vec2(0.5f);
+  state.tc[1]   = vec2(0.5f);
+  state.texGrad = options.texGrad;
+  state.masks   = vec4(options.masks[0], options.masks[1], options.masks[2], options.masks[3]);
   return evaluateMaterial(row, state, imageArray.data(), samplerArray.data(), infos.data(), options.thinScatter);
 }
 

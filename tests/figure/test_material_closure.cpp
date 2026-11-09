@@ -181,12 +181,16 @@ tinygltf::Material detailSkin(double roughnessMul = 1.0, bool medium = true)
   return m;
 }
 
+// A hit's texture footprint wide enough to pick a mip past the first (MeshState::texGrad)
+constexpr float kFootprint = 0.01f;
+
 // The detail normal map: a footprint's mip and the last mip each a flat normal of the given length,
-// as a map cooked to keep it (normalLength) holds them
-fv::probe::ClosureOptions detailMap(bool preview, float footprintLength, float meanLength)
+// as a map cooked to keep it (normalLength) holds them, sampled at that footprint
+fv::probe::ClosureOptions detailMap(bool preview, float footprintLength, float meanLength, float texGrad = kFootprint)
 {
   fv::probe::ClosureOptions options;
   options.thinScatter = preview;
+  options.texGrad     = texGrad;
   fv::probe::ProbeImage image;
   image.texture = kDetailTexture;
   for(int c = 0; c < 2; c++)
@@ -222,9 +226,9 @@ TEST(MaterialClosure, TheSkinPreviewTakesADetailMapsReliefAsRoughness)
   EXPECT_NEAR(preview.specular2, widened(still.specular2), 1e-4f);
 }
 
-// A still bends its normal by what the footprint's mip holds of the relief, and takes what the mip has
-// averaged away as roughness, on any surface: at a distance, where a mip holds none of it, all of it
-TEST(MaterialClosure, AStillTakesTheReliefItsMipAveragedAwayAsRoughness)
+// A sample at a footprint bends its normal by what the footprint's mip holds of the relief, and takes
+// what the mip has averaged away as roughness, on any surface: where a mip holds none of it, all of it
+TEST(MaterialClosure, AFootprintsSampleTakesTheReliefItsMipAveragedAwayAsRoughness)
 {
   const float weight2 = float(kDetailWeight * kDetailWeight);
   for(const bool medium : {true, false})
@@ -237,6 +241,82 @@ TEST(MaterialClosure, AStillTakesTheReliefItsMipAveragedAwayAsRoughness)
   // the preview takes the whole map's, wherever its footprint is: what the still resolves and what it averages
   const auto preview = fv::probe::roughnessOfGltf(detailSkin(), detailMap(true, 0.98f, 0.957f));
   EXPECT_NEAR(preview.alpha[0], std::sqrt(0.0625f + 2.0f * toksvig(0.957f) * weight2), 1e-4f);
+}
+
+// At mip 0, as the app's path tracer samples every hit, nothing was averaged: a texel short of unit
+// length is its encoding's error (BC7's), not relief, and the still's lobes keep their roughness. The
+// preview still takes the whole map's, from its last mip, wherever it samples.
+TEST(MaterialClosure, ASampleAtMipZeroTakesNoReliefAsRoughness)
+{
+  for(const bool medium : {true, false})
+  {
+    const auto still = fv::probe::roughnessOfGltf(detailSkin(1.0, medium), detailMap(false, 0.98f, 0.957f, 0.0f));
+    EXPECT_NEAR(still.alpha[0], 0.25f, 1e-5f) << medium;
+  }
+  const auto preview = fv::probe::roughnessOfGltf(detailSkin(), detailMap(true, 0.98f, 0.957f, 0.0f));
+  EXPECT_NEAR(preview.alpha[0], std::sqrt(0.0625f + 2.0f * toksvig(0.957f) * float(kDetailWeight * kDetailWeight)), 1e-4f);
+}
+
+namespace {
+
+// Sweat's layer over a plain surface (FV_materials_procedural, as figure/materials/procedural.cpp has
+// it): a full amount where both of its mask channels are half, so every point is under a bead, whose
+// normal map is texture 3 at the given scale and whose cover is texture 4 (white: every bead there)
+constexpr int   kBeadNormalTexture = 3, kBeadCoverTexture = 4;
+constexpr float kDropRoughness     = 0.04f;
+
+tinygltf::Material sweatBeads(double normalScale)
+{
+  tinygltf::Material m;
+  m.pbrMetallicRoughness.baseColorFactor = {0.8, 0.5, 0.4, 1.0};
+  m.pbrMetallicRoughness.metallicFactor  = 0.0;
+  m.pbrMetallicRoughness.roughnessFactor = 0.5;
+  tinygltf::Value::Object normal, cover, layer;
+  normal["index"]         = tinygltf::Value(kBeadNormalTexture);
+  normal["scale"]         = tinygltf::Value(normalScale);
+  cover["index"]          = tinygltf::Value(kBeadCoverTexture);
+  layer["amount"]         = tinygltf::Value(1.0);
+  layer["channel"]        = tinygltf::Value(0);
+  layer["dropChannel"]    = tinygltf::Value(1);
+  layer["coatFactor"]     = tinygltf::Value(0.5);
+  layer["dropRoughness"]  = tinygltf::Value(double(kDropRoughness));
+  layer["filmRoughness"]  = tinygltf::Value(0.22);
+  layer["normalTexture"]  = tinygltf::Value(normal);
+  layer["coverTexture"]   = tinygltf::Value(cover);
+  m.extensions["FV_materials_procedural"] = tinygltf::Value(layer);
+  return m;
+}
+
+// The beads' normal map sampled flat, at the given length, at a footprint
+fv::probe::ClosureOptions beadMap(float length, float texGrad)
+{
+  fv::probe::ClosureOptions options;
+  options.texGrad  = texGrad;
+  options.masks[0] = options.masks[1] = 0.5f;
+  fv::probe::ProbeImage image;
+  image.texture = kBeadNormalTexture;
+  for(int c = 0; c < 2; c++)
+    image.colour[c] = image.mean[c] = 0.5f;
+  image.colour[2] = image.mean[2] = 0.5f + 0.5f * length;
+  options.images = {image};
+  return options;
+}
+
+}  // namespace
+
+// A bead is a coat of water's roughness. Where a footprint's mip has averaged beads, their spread is
+// the coat's alpha^2 + 2 variance, as any lobe's over relief, at the slopes the bead normal is bent by
+// (its scale); at mip 0, the app's, the coat keeps the water's own
+TEST(MaterialClosure, ABeadsCoatTakesItsFootprintsSpreadAsAnyLobeDoes)
+{
+  const float a2     = kDropRoughness * kDropRoughness * kDropRoughness * kDropRoughness;
+  const auto  coatAt = [&](float variance) { return std::sqrt(std::sqrt(a2 + 2.0f * variance)); };
+  const auto  far    = fv::probe::roughnessOfGltf(sweatBeads(1.0), beadMap(0.93f, kFootprint));
+  EXPECT_NEAR(far.clearcoat, coatAt(toksvig(0.93f)), 1e-4f);
+  const auto halved = fv::probe::roughnessOfGltf(sweatBeads(0.5), beadMap(0.93f, kFootprint));
+  EXPECT_NEAR(halved.clearcoat, coatAt(0.25f * toksvig(0.93f)), 1e-4f);
+  for(const float length : {1.0f, 0.99f, 0.93f})
+    EXPECT_NEAR(fv::probe::roughnessOfGltf(sweatBeads(1.0), beadMap(length, 0.0f)).clearcoat, kDropRoughness, 1e-5f) << length;
 }
 
 // Only mips the cooker made from unit texels say how the relief varies: a map rebuilt unit length (BC5)

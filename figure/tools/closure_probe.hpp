@@ -49,6 +49,11 @@ struct ClosureOptions
   std::vector<ProbeImage> images;
   // the images' mips came with them, as the cooker's do (eTexInfoCookedMips); off, as a raw stand-in's
   bool cookedMips = true;
+  // the hit's texture footprint (MeshState::texGrad): 0 samples mip 0, as the app's path tracer does
+  // everywhere; more, the footprint's mip (the images' `colour`)
+  float texGrad = 0;
+  // where procedural layers land, a channel each (MeshState::masks)
+  float masks[4] = {0, 0, 0, 0};
 };
 
 // The roughness evaluateMaterial gives each lobe: GGX alpha for the base along T and B, and the

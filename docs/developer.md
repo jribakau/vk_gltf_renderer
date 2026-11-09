@@ -513,15 +513,18 @@ walk with no detail map or top coat of its own gets a tiled height map of fine c
 app's like the fabrics'. The walk melts it out of the diffuse light, so what shows is the highlights
 breaking up.
 
-Any detail map's relief that a mip averages away under a pixel's footprint becomes roughness on
-every lobe, after the films (`evaluateMaterial`): the variance of the slopes it averaged, from how
-short the mip's mean normal is (Toksvig, `toksvigVariance`), as alpha² + 2 × variance × (scale ×
-weight)². Without it a still lost the relief with distance: of HID Kelly's pore map, a mip 4 texel
-keeps 24% and from mip 6 on nothing, so at a full figure's distance her sweat film (roughness 0.22)
-read almost as wet as with no pores; with all of the relief it spreads to about 0.42. A detail map therefore
-cooks to keep its length (`normalLength`: BC7 from unit texels, where BC5 would rebuild it), and the
-shader reads the length only where the image's mips came with it (`eTexInfoCookedMips`, from the
-residency's `storedLevels`): a raw stand-in's or an Original texture's texels are short themselves.
+Where a hit's footprint picks a mip past the first (`MeshState::texGrad` above 0), the relief that
+mip averaged away becomes roughness on every lobe, after the films (`evaluateMaterial`): the
+variance of the slopes it averaged, from how short the mip's mean normal is (Toksvig,
+`toksvigVariance` through `footprintVariance`), as alpha² + 2 × variance × (scale × weight)². The
+app's path tracer samples every hit at mip 0 (`ptTexGradScale` 0, which the app doesn't send), and
+there nothing was averaged: a pixel's own samples resolve the relief, and a texel's length is only
+its encoding's error, so `footprintVariance` gives 0. BC7's error is no sliver at the base: on the
+sweat beads' map it reads as 13 times the variance the 8-bit normals hold (0.012 against 0.0009),
+twice at mip 1, and agrees from mip 2 on. A detail map cooks to keep its length (`normalLength`:
+BC7 from unit texels, where BC5 would rebuild it) for the preview below, and the shader reads the
+length only where the image's mips came with it (`eTexInfoCookedMips`, from the residency's
+`storedLevels`): a raw stand-in's or an Original texture's texels are short themselves.
 
 The moving view's thin preview leaves a measured skin's relief out altogether, where one sample a
 pixel would only shimmer, and takes all of it as roughness: the whole map's variance, from its last
@@ -589,8 +592,10 @@ the material row.
 What it does is in `evaluateMaterial()`: the amount grows the layer from where the mask is highest until,
 at 1, it covers everything the mask touches; a tile says what is finer than the mesh (how early each
 droplet shows). The film is the surface itself made smoother and a little darker; the beads are a clear coat of
-their own, domes from the tile's normal map, whose shortened mipped normals turn into coat roughness
-(Toksvig) so far beads blend into a sheen. The gating promotes clearcoat and specular with `eProcedural`
+their own, domes from the tile's normal map at water's roughness (0.04). Where a footprint picks a
+coarser mip, its shortened normals turn into coat roughness as any lobe's over relief does (alpha² +
+2 × variance at the bead normal's scale); at mip 0, the app's, each bead keeps its glint and a still's
+samples average far ones. The gating promotes clearcoat and specular with `eProcedural`
 (`detectMaterialFeatures`), since a scene with neither would compile out what the layer writes to. As the
 detail layer, the droplets leave a measured skin's thin preview, where one sample a pixel would only
 shimmer. A GLB export leaves the extension out; the masks are not exported either.
