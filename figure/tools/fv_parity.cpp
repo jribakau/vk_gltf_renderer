@@ -42,6 +42,9 @@
 // {"touch": label} bobs the figure's hip (2 cm at 2 Hz) for "frames" frames at the pose it is in, with
 // its soft flesh on and meeting its own limbs (its ragdoll's capsules, step 11): the most particles
 // pressed in a frame, how far the deepest went, which lobes, and a frame of the flesh's time.
+// {"clearance": rel} wears a garment and reports, per region, how its clearance from the body changed
+// from the body it was shaped around (its generation's base cage, or a Skyrim outfit's carried body)
+// to the loaded figure's, fitted: the measure of wardrobe plan step 3. Numbers only.
 // {"contact": label} runs the body's contact pass at the pose it is in with nothing near it, so only
 // its own parts press on one another (figure/physics/contact, step 10): the vertices pressed, the
 // dents, how many vertices moved and how far at most, by part, and the pass's time.
@@ -60,8 +63,10 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 
@@ -91,7 +96,11 @@
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/collider.hpp>
+#include <figure/wardrobe/fit/bases.hpp>
 #include <figure/wardrobe/fit/collide.hpp>
+#include <figure/wardrobe/fit/fit.hpp>
+#include <figure/wardrobe/fit/generation.hpp>
+#include <figure/nif/nif_wear.hpp>
 
 #include "fv_figure_feed.hpp"
 #include "material_sweep.hpp"
@@ -301,6 +310,143 @@ Json insideReport(std::span<const float> body, std::span<const uint32_t> bodyTri
       depth.push_back(std::hypot(pushed[k] - item[k], pushed[k + 1] - item[k + 1], pushed[k + 2] - item[k + 2]));
   std::sort(depth.begin(), depth.end());
   return {{"vertices", item.size() / 3}, {"count", depth.size()}, {"p50", depth.empty() ? 0.0 : r(depth[depth.size() / 2])}, {"max", depth.empty() ? 0.0 : r(depth.back())}};
+}
+
+// A surface's vertex normals, each its faces' summed by area.
+std::vector<double> vertexNormals(std::span<const float> pos, std::span<const uint32_t> tris)
+{
+  std::vector<double> n(pos.size(), 0.0);
+  for(size_t t = 0; t + 2 < tris.size(); t += 3)
+  {
+    const size_t a = size_t(tris[t]) * 3, b = size_t(tris[t + 1]) * 3, c = size_t(tris[t + 2]) * 3;
+    const double u[3] = {pos[b] - pos[a], pos[b + 1] - pos[a + 1], pos[b + 2] - pos[a + 2]};
+    const double v[3] = {pos[c] - pos[a], pos[c + 1] - pos[a + 1], pos[c + 2] - pos[a + 2]};
+    const double f[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+    for(const size_t k : {a, b, c})
+      for(size_t i = 0; i < 3; i++)
+        n[k + i] += f[i];
+  }
+  return n;
+}
+
+// Each point's signed distance (cm) to a surface: to its closest point there, negative behind it (by
+// the surface's normal at that point).
+std::vector<double> signedClearance(std::span<const float> pos, std::span<const uint32_t> tris, std::span<const float> points)
+{
+  const std::vector<double>          nrm     = vertexNormals(pos, tris);
+  const fv::wardrobe::SurfaceBinding binding = fv::wardrobe::bindToSurface(pos, tris, points);
+  std::vector<double>                out(points.size() / 3, 0.0);
+  for(size_t v = 0; v < out.size(); v++)
+  {
+    double at[3] = {}, n[3] = {};
+    for(size_t j = 0; j < 3; j++)
+    {
+      const size_t b = size_t(binding.verts[v * 3 + j]) * 3;
+      const double w = binding.weights[v * 3 + j];
+      for(size_t i = 0; i < 3; i++)
+      {
+        at[i] += w * pos[b + i];
+        n[i] += w * nrm[b + i];
+      }
+    }
+    const double d[3] = {points[v * 3] - at[0], points[v * 3 + 1] - at[1], points[v * 3 + 2] - at[2]};
+    const double len  = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    out[v]            = d[0] * n[0] + d[1] * n[1] + d[2] * n[2] < 0 ? -len : len;
+  }
+  return out;
+}
+
+// A body region as the measure reports it: the spec's, a finger with its hand and a toe with its foot.
+std::string clearanceRegion(fv::rig::Region r)
+{
+  using R = fv::rig::Region;
+  switch(r)
+  {
+    case R::ePelvis: return "pelvis";
+    case R::eAbdomen: return "abdomen";
+    case R::eChest: return "chest";
+    case R::eBreast: return "breast";
+    case R::eNeck: return "neck";
+    case R::eHead: return "head";
+    case R::eCollar: return "collar";
+    case R::eUpperArm: return "upper arm";
+    case R::eForearm: return "forearm";
+    case R::eHand:
+    case R::eThumb:
+    case R::eIndex:
+    case R::eMid:
+    case R::eRing:
+    case R::ePinky: return "hand";
+    case R::eThigh: return "thigh";
+    case R::eShin: return "shin";
+    case R::eFoot:
+    case R::eBigToe:
+    case R::eIndexToe:
+    case R::eMidToe:
+    case R::eRingToe:
+    case R::ePinkyToe: return "foot";
+    case R::eNone: break;
+  }
+  return "other";
+}
+
+// Each cage vertex's region: its strongest bone's, by the skeleton spec.
+std::vector<std::string> cageRegions(const fv::SceneGraph& scene, const fv::Mesh& mesh)
+{
+  const size_t               n = mesh.geo ? mesh.geo->cagePositions.size() / 3 : 0;
+  std::vector<std::string>   out(n, "other");
+  const fv::mesh::SkinInput& skin = mesh.cageSkin;
+  if(skin.start.size() != n + 1)
+    return out;
+  for(size_t v = 0; v < n; v++)
+  {
+    int   best = -1;
+    float most = 0;
+    for(int32_t i = skin.start[v]; i < skin.start[v + 1]; i++)
+      if(skin.weight[size_t(i)] > most)
+        most = skin.weight[size_t(i)], best = skin.bone[size_t(i)];
+    if(best >= 0 && size_t(best) < mesh.bones.size())
+    {
+      const fv::rig::Name name = fv::rig::parse(scene.nodes[size_t(mesh.bones[size_t(best)])].name);
+      out[v]                   = clearanceRegion(name.joint ? name.joint->region : fv::rig::Region::eNone);
+    }
+  }
+  return out;
+}
+
+// Per region, how a garment's clearance changed from its source body to the figure: the source's and
+// the figure's median, and the change's median, 5th and 95th percentiles, over every vertex and over
+// those within 3 cm of the source body (the band a garment fits by).
+Json clearanceChange(const std::vector<std::string>& regions, const std::vector<double>& before, const std::vector<double>& after)
+{
+  std::map<std::string, std::array<std::vector<double>, 3>> all, band;
+  for(size_t v = 0; v < regions.size() && v < before.size() && v < after.size(); v++)
+    for(const std::string& key : {regions[v], std::string("all")})
+    {
+      auto& a = all[key];
+      a[0].push_back(before[v]), a[1].push_back(after[v]), a[2].push_back(after[v] - before[v]);
+      if(before[v] > -1 && before[v] < 3)
+      {
+        auto& b = band[key];
+        b[0].push_back(before[v]), b[1].push_back(after[v]), b[2].push_back(after[v] - before[v]);
+      }
+    }
+  const auto pct = [](std::vector<double> s, double q) {
+    std::sort(s.begin(), s.end());
+    return s.empty() ? 0.0 : r(s[size_t(q * double(s.size() - 1))]);
+  };
+  const auto stats = [&](const std::array<std::vector<double>, 3>& a) {
+    return Json{{"n", a[2].size()},       {"source", pct(a[0], 0.5)},      {"figure", pct(a[1], 0.5)},
+                {"change", pct(a[2], 0.5)}, {"changeP05", pct(a[2], 0.05)}, {"changeP95", pct(a[2], 0.95)}};
+  };
+  Json out = Json::object();
+  for(const auto& [key, a] : all)
+  {
+    out[key] = {{"all", stats(a)}};
+    if(const auto it = band.find(key); it != band.end())
+      out[key]["band"] = stats(it->second);
+  }
+  return out;
 }
 
 // How far each cage vertex of a mesh stands from the closest body point: the percentiles and the
@@ -903,6 +1049,115 @@ int main(int argc, char** argv)
         if(!loaded)
           throw std::runtime_error("strandsInside before a figure loads");
         dumps[step.value("dump", std::string("strandsInside"))] = strandsInsideReport(*loaded, step["strandsInside"].get<std::string>());
+      }
+      else if(step.contains("clearance"))
+      {
+        // {"clearance": rel[, "label": name]}: wears `rel` on the loaded figure and reports, per region of
+        // each garment (its vertices' strongest bones, by the skeleton spec), how its clearance from the
+        // body changed: against the body it was shaped around (its generation's base cage, or the body a
+        // Skyrim outfit carries), as it was made, and against this figure's body, fitted and worn
+        // (wardrobe plan step 3's measure), then takes it off. Numbers only: nothing of the garment is written.
+        if(!loaded)
+          throw std::runtime_error("clearance before a figure loads");
+        const std::string     rel    = step["clearance"].get<std::string>();
+        const std::string     file   = rel.substr(std::min(rel.find_first_not_of('/'), rel.size()));
+        const auto            inputs = loaded->wearInputs();
+        fv::dson::LoadOptions options;
+        options.attach = fv::dson::AttachTarget{inputs.scene.get(), inputs.rig.get(), "measure"};
+        fv::dson::LoadResult w;
+        if(fv::nif::isNif(rel))
+        {
+          const auto found = store->library().find(file);
+          if(!found)
+            throw std::runtime_error(file + " isn't in the library");
+          w = fv::nif::loadWearable(*found, options, {});
+        }
+        else
+          w = fv::dson::loadDson(*store, file, options);
+        const std::string             morphDir = inputs.morphDir;
+        const fv::wardrobe::FitFigure figure{*inputs.scene, *inputs.rig, inputs.bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
+        // each item's meshes as made: their clearance from the body they were shaped around
+        struct Made
+        {
+          std::string                           label, source, body;
+          std::vector<std::vector<std::string>> regions;
+          std::vector<std::vector<double>>      clearance;
+        };
+        std::vector<Made> made;
+        for(const fv::dson::Item& item : w.items)
+        {
+          Made       m{item.label, "", {}, {}};
+          const auto gens = fv::wardrobe::generationsOf(w, item, rel, figure);
+          if(gens)
+            m.source = fv::wardrobe::label(gens->first);
+          const auto base = w.sourceBase ? w.sourceBase : gens ? fv::wardrobe::loadBaseCage(*store, gens->first, fv::wardrobe::genderHint(rel)) : nullptr;
+          if(base)
+          {
+            // the body's extent, which tells a carried body cut to what shows from a whole one
+            float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+            for(size_t v = 0; v + 2 < base->positions.size(); v += 3)
+              for(size_t i = 0; i < 3; i++)
+                lo[i] = std::min(lo[i], base->positions[v + i]), hi[i] = std::max(hi[i], base->positions[v + i]);
+            std::ostringstream b;
+            b << std::fixed << std::setprecision(0) << (w.sourceBase ? "carried body, " : "base cage, ") << base->positions.size() / 3 << " vertices, x "
+              << lo[0] << ".." << hi[0] << " y " << lo[1] << ".." << hi[1] << " z " << lo[2] << ".." << hi[2];
+            m.body = b.str();
+          }
+          for(int mesh : item.meshes)
+          {
+            const fv::Mesh& me = w.scene.meshes[size_t(mesh)];
+            // a mesh with no skin (a button hung from a node of its own) is in its node's frame, and is
+            // placed, not fitted: left out
+            const bool skinned = me.geo && me.cageSkin.start.size() == me.geo->cagePositions.size() / 3 + 1;
+            m.regions.push_back(cageRegions(w.scene, me));
+            m.clearance.push_back(base && skinned ? signedClearance(base->positions, base->tris, me.geo->cagePositions) : std::vector<double>{});
+          }
+          made.push_back(std::move(m));
+        }
+        // worn: the same meshes, fitted, against the figure's body
+        const fv::WearResult worn = loaded->commitWear(loaded->prepareWear(rel, 0), rel);
+        loaded->settle();
+        const fv::SceneGraph&      scene = loaded->loaded.scene;
+        const auto&                ctx   = loaded->loaded.morphs;
+        const fv::mesh::BuiltMesh& body  = *scene.meshes[size_t(ctx.meshes[ctx.mainMeshes.at(0)].mesh)].geo;
+        Json                       items = Json::array();
+        for(size_t k = 0; k < worn.items.size() && k < made.size(); k++)
+        {
+          const fv::WornItem* item = loaded->item(worn.items[k]);
+          if(!item)
+            continue;
+          std::vector<std::string> regions;
+          std::vector<double>      before, after;
+          for(size_t j = 0; j < item->meshes.size() && j < made[k].clearance.size(); j++)
+          {
+            const fv::Mesh& me = scene.meshes[size_t(item->meshes[j])];
+            if(!me.geo || made[k].clearance[j].size() != me.geo->cagePositions.size() / 3)
+              continue;
+            const std::vector<double> now = signedClearance(body.cagePositions, body.dsonTris, me.geo->cagePositions);
+            regions.insert(regions.end(), made[k].regions[j].begin(), made[k].regions[j].end());
+            before.insert(before.end(), made[k].clearance[j].begin(), made[k].clearance[j].end());
+            after.insert(after.end(), now.begin(), now.end());
+          }
+          const Json change = clearanceChange(regions, before, after);
+          items.push_back({{"label", item->label}, {"source", made[k].source}, {"regions", change}});
+          std::cerr << "[clearance] " << item->label << " (" << (made[k].source.empty() ? std::string("no source body") : made[k].source) << "; "
+                    << made[k].body << ")\n"
+                    << std::fixed << std::setprecision(2);
+          for(const auto& [region, st] : change.items())
+          {
+            const Json& a = st.contains("band") ? st["band"] : st["all"];
+            std::cerr << "  " << std::left << std::setw(10) << region << std::right << " n " << std::setw(6) << a["n"].get<size_t>() << "  source "
+                      << std::setw(6) << a["source"].get<double>() << "  figure " << std::setw(6) << a["figure"].get<double>() << "  change "
+                      << std::setw(6) << a["change"].get<double>() << " [" << a["changeP05"].get<double>() << ", " << a["changeP95"].get<double>() << "]"
+                      << (st.contains("band") ? "" : " (none in the band)") << "\n";
+          }
+          std::cerr << std::defaultfloat << std::setprecision(6);
+        }
+        // off again, so the next garment measured isn't fitted over this one
+        for(int id : worn.items)
+          loaded->removeItem(id);
+        loaded->settle();
+        dumps[step.value("label", std::string("clearance"))] = {{"clearance", items}, {"notes", worn.notes}};
       }
       else if(step.contains("fit"))
       {
