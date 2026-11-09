@@ -239,13 +239,69 @@ std::vector<float> pushOutOfBody(std::span<const float> positions, std::span<con
     // are of shapes no other fit asks for, so they aren't cached.
     std::vector<float>                     out(positions.begin(), positions.end());
     std::unique_ptr<physics::SurfaceIndex> index;
+    // Past pushOut's own reach (cloth, not footwear): a vertex its push skipped, because the skin
+    // nearest lies off to one side (in a crease: a CBBE crotch strip inside Genesis 9's pelvis, its
+    // nearest skin the inner thigh's), that the body's smooth normals put behind the skin, and that
+    // rays agree is inside (odd crossings, two of three), goes the shortest way out: to that nearest
+    // skin and the margin past it.
+    const bool          deep = depth > 3;
+    std::vector<double> smooth;
+    if(deep)
+    {
+      index  = std::make_unique<physics::SurfaceIndex>(body.positions, body.tris);
+      smooth.assign(body.positions.size(), 0.0);
+      for(size_t t = 0; t + 2 < body.tris.size(); t += 3)
+      {
+        const V3 n = triNormal(body.positions, body.tris[t], body.tris[t + 1], body.tris[t + 2]);
+        for(size_t j = 0; j < 3; j++)
+          for(size_t i = 0; i < 3; i++)
+            smooth[body.tris[t + j] * 3 + i] += n[i];
+      }
+    }
+    const auto inside = [&](const double o[3]) {
+      static constexpr double kRays[3][3] = {{0.03, -1, 0.05}, {0.97, 0.13, -0.21}, {-0.15, 0.22, 0.96}};
+      physics::Stamps&        stamps      = physics::threadStamps();
+      int                     odd         = 0;
+      for(const auto& d : kRays)
+      {
+        const int32_t id = stamps.next(index->triangles());
+        odd += index->crossings(o, d, [](size_t) { return true; }, stamps.stamp, id) % 2;
+      }
+      return odd >= 2;
+    };
     for(int round = 0; round < kPushRounds; round++)
     {
-      if(round == 1)
+      if(round == 1 && !index)
         index = std::make_unique<physics::SurfaceIndex>(body.positions, body.tris);
       const SurfaceBinding binding = round == 0 ? cachedBindToSurface(body.positions, body.tris, out)
                                                 : bindToSurface(*index, body.tris, body.positions.size() / 3, out);
-      const std::vector<float> pushed = pushOut(out, body, binding, kMargin, depth);
+      std::vector<float> pushed = pushOut(out, body, binding, kMargin, depth);
+      if(deep)
+        for(size_t v = 0; v * 3 + 2 < out.size(); v++)
+        {
+          const size_t k = v * 3;
+          if(pushed[k] != out[k] || pushed[k + 1] != out[k + 1] || pushed[k + 2] != out[k + 2])
+            continue;
+          double near[3] = {}, n[3] = {};
+          for(size_t j = 0; j < 3; j++)
+          {
+            const size_t b = size_t(binding.verts[k + j]) * 3;
+            const double w = binding.weights[k + j];
+            for(size_t i = 0; i < 3; i++)
+              near[i] += w * body.positions[b + i], n[i] += w * smooth[b + i];
+          }
+          const double d[3] = {near[0] - out[k], near[1] - out[k + 1], near[2] - out[k + 2]};
+          const double dist = std::hypot(d[0], d[1], d[2]);
+          // behind the skin by its smooth normal (the way out along d agrees with it)
+          if(dist <= kMargin || dist > depth || d[0] * n[0] + d[1] * n[1] + d[2] * n[2] <= 0)
+            continue;
+          const double o[3] = {out[k], out[k + 1], out[k + 2]};
+          if(!inside(o))
+            continue;
+          const double move = std::min(dist + kMargin, 2.0) / dist;
+          for(size_t i = 0; i < 3; i++)
+            pushed[k + i] = float(out[k + i] + d[i] * move);
+        }
       if(pushed == out)
         break;
       out = smoothCorrection(out, pushed, tris);

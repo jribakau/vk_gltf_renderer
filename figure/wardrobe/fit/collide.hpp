@@ -46,11 +46,13 @@ std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const
 // and the push smoothed over the garment, the body searched through the bind cache; up to kPushRounds
 // times, so cloth sunk deeper than one push moves comes out from its edge. Footwear keeps pushOut's
 // 3 cm (a heel's stem); cloth reaches kSunkDepth, as a garment over skin its own body doesn't have
-// sinks into a fuller figure (a CBBE dress's waist into Genesis 9's, 3 to 7 cm). Strand hair (`lineStart`,
+// sinks into a fuller figure (a CBBE dress's waist into Genesis 9's, 3 to 7 cm); there, cloth the push
+// skips because its nearest skin lies off to one side (a crease), and that rays say is inside, leaves
+// by that nearest skin. Strand hair (`lineStart`,
 // `lineVerts`, as mesh::BuiltMesh has them) is bound along its strands (bindStrands, kStrandReach),
 // and a point further from the body than that moves as the point its strand last touched it at, so a
 // root pushed out of the scalp takes the strand with it.
-constexpr int   kPushRounds = 8;
+constexpr int   kPushRounds = 12;
 constexpr float kSunkDepth  = 10;
 std::vector<float> pushOutOfBody(std::span<const float> positions, std::span<const uint32_t> tris, const Surface& body,
                                  std::span<const int32_t> lineStart = {}, std::span<const int32_t> lineVerts = {}, float depth = 3);

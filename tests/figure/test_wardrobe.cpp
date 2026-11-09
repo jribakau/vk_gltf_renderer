@@ -2075,6 +2075,42 @@ TEST(Fit, ClothSunkDeepInTheBodyComesOutOverRounds)
     EXPECT_NEAR(footwear[v * 3 + 2], -6.f, 1e-4f) << v;
 }
 
+// The push's way out of a crease: cloth inside a body leaves by its nearest skin, but cloth outside in a
+// concave notch, whose nearest skin is the crease's edge off to one side, is left where it is (rays say
+// it's outside). The body: an L 20 cm a side, 10 thick, closed.
+TEST(Fit, ClothInsideLeavesByItsNearestSkinAndClothInANotchStays)
+{
+  using namespace fv::wardrobe;
+  const float           l[7][2] = {{0, 0}, {20, 0}, {20, 10}, {10, 10}, {10, 20}, {0, 20}, {0, 10}};
+  std::vector<float>    pos;
+  std::vector<uint32_t> tris;
+  for(const float z : {0.f, 10.f})
+    for(const auto& p : l)
+      pos.insert(pos.end(), {p[0], p[1], z});
+  for(uint32_t i = 0; i < 7; i++)
+  {
+    const uint32_t a0 = i, b0 = (i + 1) % 7, a1 = a0 + 7, b1 = b0 + 7;
+    tris.insert(tris.end(), {a0, b0, b1, a0, b1, a1});
+  }
+  // the caps: the L as five triangles, below facing down and above facing up
+  const uint32_t cap[5][3] = {{0, 1, 2}, {0, 2, 3}, {0, 3, 6}, {6, 3, 4}, {6, 4, 5}};
+  for(const auto& t : cap)
+  {
+    tris.insert(tris.end(), {t[0], t[2], t[1]});
+    tris.insert(tris.end(), {t[0] + 7, t[1] + 7, t[2] + 7});
+  }
+  const Surface            body{pos, tris};
+  const std::vector<float> cloth{13, 13, 5, 15, 5, 5};
+  const auto               out = pushOutOfBody(cloth, {}, body, {}, {}, kSunkDepth);
+  ASSERT_EQ(out.size(), cloth.size());
+  for(size_t i = 0; i < 3; i++)
+    EXPECT_FLOAT_EQ(out[i], cloth[i]) << i;
+  // 5 cm from the top, bottom and the far end alike: out past one of them by the clearance
+  const double x = out[3], y = out[4], z = out[5];
+  const bool   past = z >= 10.1 || z <= -0.1 || x >= 20.1 || y <= -0.1;
+  EXPECT_TRUE(past) << x << " " << y << " " << z;
+}
+
 // A prop hung from a bone was placed around that joint on the figure it was made for: on another
 // generation it is mounted by the source base's joint, so it moves with the joint (Genesis 8's
 // glasses on its head stood 9 cm high on Genesis 9's)
