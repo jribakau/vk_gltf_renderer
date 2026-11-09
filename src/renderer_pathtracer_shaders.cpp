@@ -1218,13 +1218,13 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
   // still match it. A from-file compile (or the embedded DLSS build standing in for one) follows
   // the live settings; so does a failed one, as the variant its fallback stands in for, or every
   // frame would retry the compile. The embedded SPIR-V at startup mirrors the CMake build (see
-  // CMakeLists.txt): not optimal, all-on features, USE_GUIDE_SHADER=1 iff DLSS/OptiX/OIDN is
+  // CMakeLists.txt): not optimal, all-on features, USE_GUIDE_SHADER=1 iff DLSS is
   // available at build time, and USE_DLSS_SHADER=0 (DLSS is never active at startup; when it
   // engages, the next compile takes the embedded DLSS build). Its pipelines are specialized with
   // the live transparency mode, which the key keeps.
   {
     std::lock_guard<std::mutex> lock(m_compileMutex);
-#if defined(USE_DLSS) || defined(USE_OPTIX_DENOISER) || defined(USE_OIDN_DENOISER)
+#if defined(USE_DLSS)
     constexpr bool kEmbeddedDlssGuide = true;
 #else
     constexpr bool kEmbeddedDlssGuide = false;
@@ -1259,14 +1259,14 @@ bool PathTracer::isEmbeddedDlssVariant(const Resources& resources) const
 
 //--------------------------------------------------------------------------------------------------
 // The embedded build itself is the same flags without USE_DLSS_SHADER: DLSS off and guide buffers on
-// when a denoiser is built in, which is what a still asks for before it hands off to OptiX. Taking
+// when DLSS is built in, which is what a still accumulated without a denoiser asks for. Taking
 // it saves the Slang compile and, as its SPIR-V is the one the warm-up built a pipeline from, the
 // pipeline build too.
 bool PathTracer::isEmbeddedBaseVariant(const Resources& resources) const
 {
   if(!m_supportSER)
     return false;
-#if defined(USE_DLSS) || defined(USE_OPTIX_DENOISER) || defined(USE_OIDN_DENOISER)
+#if defined(USE_DLSS)
   return makeVariantKey(resources).sameShader(VariantKey{.dlssGuide = true});
 #else
   return makeVariantKey(resources).sameShader(VariantKey{});
@@ -1275,10 +1275,10 @@ bool PathTracer::isEmbeddedBaseVariant(const Resources& resources) const
 
 //--------------------------------------------------------------------------------------------------
 // The variant the current settings ask for -- the variant-cache key compileShader() looks up.
-// DLSS's guide captures cost every sample, so they are compiled in only for the frames DLSS renders:
-// with OptiX or OIDN also on, frame 0 and the hand-off delay's (m_dlssShaderFrame), while the
-// accumulation's frames after them run the regular variant. Each camera start and stop is then a
-// cached-variant swap in prepareFrame(); a moving camera stays on DLSS's.
+// DLSS's guide captures cost every sample, so they are compiled in only for the frames that use them:
+// DLSS's, and those of DLSS-RR's still, which gathers RR's guides. A still accumulated without a
+// denoiser (DLSS off) runs the regular variant. Each switch between them is then a cached-variant swap
+// in prepareFrame(); a moving camera stays on DLSS's.
 // While DLSS is still loading, its variant is compiled ahead of its first frame.
 PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) const
 {
@@ -1343,7 +1343,7 @@ bool PathTracer::tryRestoreCachedVariant(Resources& resources)
       return false;
   }
   const bool hit = swapVariant(resources, key, /*gpuIdle=*/false);  // the previous frame may be in flight
-  if(hit)  // debug level: with DLSS-RR and OptiX or OIDN, every camera start and stop swaps
+  if(hit)  // debug level: every switch between DLSS's frames and a still without a denoiser swaps
     LOGD("[PathTracer] Variant cache hit (swapped in place).\n");
   return hit;
 }

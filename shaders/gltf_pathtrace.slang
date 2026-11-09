@@ -923,21 +923,21 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif  // USE_DLSS_SHADER
 
       // Base-color guide albedo (shared by DLSS and the other denoisers). Stored temporarily, written at end to
-      // reduce live state. OptiX and OIDN take the surface colour, metal included; DLSS-RR the diffuse
-      // albedo, its specular share going to the specular guide (NVIDIA's RR guide). Transmission is not
+      // reduce live state. Without RR's guides it is the surface colour, metal included; DLSS-RR's is the
+      // diffuse albedo, its specular share going to the specular guide (NVIDIA's RR guide). Transmission is not
       // taken off: skin's (up to 0.95) would leave RR a near-black albedo.
       float3 guideAlbedo = pbrMat.baseColor.xyz;
 #if USE_DLSS_SHADER
       if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) || hasFlag(pushConst.flags, PathtracerFlags::ePtRrStillGuides))
         guideAlbedo *= 1.0F - pbrMat.metallic;
       // #DLSS specular guide - specular albedo + clear-glass albedo refinement. DLSS-only quality
-      // path; the other denoisers need neither, so it is compiled out of their variant.
+      // path, compiled out of the variant without DLSS's guides.
       float3 specularAlbedo = dlssSpecularAlbedo(pbrMat, ray.Direction);
       float3 guideNormal    = pbrMat.N;
       // RR reads linear (perceptual) roughness; the material keeps GGX alpha
       float  guideRoughness = sqrt(pbrMat.roughness.x);
-      // also on the accumulation's frames, so OptiX and OIDN see the iris behind a cornea too (only DLSS
-      // reads the replaced depth and motion)
+      // also on the accumulation's frames, so the still's guides see the iris behind a cornea too (only
+      // DLSS's frames read the replaced depth and motion)
       float replacedDepth = 0.0F;  // how far behind the hit DLSS's depth is put (primary surface replacement)
       if(USE_DLSS_TRANSP == 1 && dlssIsClearGlass(pbrMat))
       {
@@ -2299,7 +2299,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
 
   // The frame traces exactly the samples the host counts (numSamples): the host decides, per frame.
   // A frame DLSS denoises gets ptSamplesDlss (1 but for the DLSS refine of a still: DLSS does its own
-  // temporal accumulation); with OptiX or OIDN also on, the frames after DLSS's frame 0 get Auto SPP's
+  // temporal accumulation); with DLSS-RR's still on, the frames after DLSS's frame 0 get Auto SPP's
   // or ptSamples' count.
   for(int s = 1; s < pushConst.numSamples; s++)
   {
@@ -2727,7 +2727,7 @@ void inspectPixel(IRaytracer raytracer)
 void computeMain(uint3 threadIdx: SV_DispatchThreadID)
 {
   RAYQUERY_USE_OPACITY_MICROMAP(computeMain);
-  // The render size, not the output image's: OptiX 2x upscale traces only its top-left quarter.
+  // The render size, not the output image's: DLSS's frames trace its smaller input size.
   RayQueryRaytracer raytracer;
   // the one-thread modes, in one branch (inspectPixel's note)
   if(hasFlag(pushConst.flags, int(PathtracerFlags::ePtProbeCameraMedium) | int(PathtracerFlags::ePtInspectPixel)))

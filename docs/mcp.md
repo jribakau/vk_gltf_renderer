@@ -62,7 +62,7 @@ restart accumulation without a trigger, `vk_gltf_reload_shaders` resets it.
 
 Names are grouped by prefix: `pt*` path tracer, `tm*` tonemapper, `hdr*`, `sky*`, `plain*`,
 `gradient*` and `env*` environment (plus `sunAzimuth` / `sunElevation`, unprefixed because the sun
-is shared by every sky type), `dlss*`/`optix*`/`oidn*` denoisers, `dbg*` debug views, `ui*` panels and
+is shared by every sky type), `dlss*`/`rrStill*` denoisers, `dbg*` debug views, `ui*` panels and
 gizmo.
 
 A parameter that names *state* the renderer reads each frame takes effect immediately. A parameter

@@ -69,7 +69,7 @@
 //     if (dlss.isActive())
 //         dlss.evaluate(cmd, view, projUnjittered);
 //
-//     // ---- accumulation reset (camera/scene change, OptiX/DLSS toggle) ----
+//     // ---- accumulation reset (camera/scene change, DLSS toggle) ----
 //     dlss.notifyReset();                          // next beginFrame() restarts at index 0
 //
 //     // ---- viewport (kind-agnostic) ----
@@ -397,9 +397,8 @@ private:
   bool     m_responsivityMask     = false;  // setResponsivityMask()
   uint64_t m_forceResetUntilFrame = 0;  // reset signal is re-armed on every notifyReset() call; evaluate() sees reset == true exactly once and the counter slides past. This is robust to evaluate() being skipped between two notifyReset() calls (deferred presents, debugger pause, async-compile-blocked frames): the signal can never be lost, only re-armed. A simple bool would silently drop the signal if it was set then cleared by something other than evaluate(). uint64_t at 60 fps wraps around in ~9.7 billion years.
   // Resources::drawnFrameCount at the last tick(), and at the last evaluate() (0: none yet). evaluate()
-  // drops the history when the drawn frame before it did not evaluate: DLSS was off, the other
-  // renderer drew, a pipeline compile skipped the frame, or OptiX took it. The camera or the content
-  // may have changed there without NGX seeing it. Frames that are not drawn (maxFrames reached) do
+  // drops the history when the drawn frame before it did not evaluate: DLSS was off, a pipeline
+  // compile skipped the frame, or the still's denoiser took it. The camera or the content may have changed there without NGX seeing it. Frames that are not drawn (maxFrames reached) do
   // not count, so a still that stops drawing keeps the history.
   uint64_t m_tickFrame         = 0;
   uint64_t m_lastEvaluateFrame = 0;

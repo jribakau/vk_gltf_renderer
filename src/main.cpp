@@ -347,27 +347,8 @@ auto main(int argc, char** argv) -> int
   vkSetup.queues.push_back(VK_QUEUE_COMPUTE_BIT);
 #endif
 
-#ifdef USE_OPTIX_DENOISER
-  // Instance extensions
-  vkSetup.instanceExtensions.emplace_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
-  vkSetup.instanceExtensions.emplace_back(VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME);
-
-  // Device extensions
-  vkSetup.deviceExtensions.emplace_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
-  vkSetup.deviceExtensions.emplace_back(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
-  vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
-  vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
-#ifdef WIN32
-  vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
-  vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
-#else
-  vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
-  vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
-#endif  // WIN32
-#endif  // USE_OPTIX_DENOISER
-#if defined(_WIN32) && !defined(USE_OPTIX_DENOISER)
-  // native presentation (frame_present_win32.cpp) shares images and a fence with D3D11; the
-  // denoiser's block above asks for the same
+#if defined(_WIN32)
+  // native presentation (frame_present_win32.cpp) shares images and a fence with D3D11
   vkSetup.instanceExtensions.emplace_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
   vkSetup.instanceExtensions.emplace_back(VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME);
   vkSetup.deviceExtensions.emplace_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
@@ -478,22 +459,6 @@ auto main(int argc, char** argv) -> int
 #endif
 
 
-#if defined(USE_OIDN_DENOISER)
-  // #OIDN - Request the device extensions vk_oidn can use (VK_KHR_cooperative_matrix for the tensor
-  // cores when supported), after whatever the callback above already asks for.
-  {
-    const std::optional<std::function<bool(VkInstance, VkPhysicalDevice, nvvk::ContextInitInfo&)>> previousCallback =
-        vkSetup.postSelectPhysicalDeviceCallback;
-    vkSetup.postSelectPhysicalDeviceCallback = [previousCallback](VkInstance instance, VkPhysicalDevice physicalDevice,
-                                                                  nvvk::ContextInitInfo& info) {
-      if(previousCallback && !(*previousCallback)(instance, physicalDevice, info))
-        return false;
-      OidnDenoiser::requestDeviceExtensions(instance, physicalDevice, info);
-      return true;
-    };
-  }
-#endif
-
   // Create the Vulkan context
   nvvk::Context vkContext;
 #ifdef FV_PHYSICS_GPU
@@ -594,7 +559,7 @@ auto main(int argc, char** argv) -> int
   elemGltfRenderer->setShaderClockAvailable(vkContext.hasExtensionEnabled(VK_KHR_SHADER_CLOCK_EXTENSION_NAME)
                                             && shaderClockFeature.shaderDeviceClock == VK_TRUE);
 
-  // Names of the extensions the device was created with (the vk_oidn denoiser picks its features from them)
+  // Names of the extensions the device was created with (the path tracer reads pipeline statistics when it has them)
   {
     std::vector<std::string> deviceExtensions;
     for(size_t i = 0; i < vkContext.contextInfo.deviceExtensions.size(); i++)

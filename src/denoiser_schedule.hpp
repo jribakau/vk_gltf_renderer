@@ -24,7 +24,7 @@
 //-------------------------------------------------------------------------------------------------------
 // AutoDenoiseSchedule
 //
-// When the OptiX and OIDN denoisers run on their own: each time the accumulated image reaches the next
+// When the still's denoiser (RrStillDenoiser) runs on its own: each time the accumulated image reaches the next
 // multiple of `interval` samples per pixel (interval, 2*interval, ...). Counting samples, not frames,
 // makes the schedule independent of the samples per frame: with several per frame a multiple can fall
 // inside a frame, and the image of that frame is denoised. An interval of 1 denoises every frame.
@@ -37,7 +37,7 @@
 // 1 and 2 samples were shown at 0.3% and 1.1% (handoffWeight), DLSS's image alone until the first.
 // After a hand-off the step grows with the samples, max(interval, last / 4): the noise falls as
 // 1/sqrt(samples), so a fixed step denoised more often the less each denoise changed, and each denoise
-// costs about 40 ms (OptiX's GPU time and the queue it drains). A denoise within a step of the cap
+// costs GPU time (about 40 ms for OptiX, the denoiser it was tuned with). A denoise within a step of the cap
 // (`maxSamples`) is left to the final one. A 128-sample still with a 32-sample hand-off denoises at
 // 4, 8, 16, 32, 40, 50, 62, 77, 96 and 128: 10 times, where 1, 2, 4, ... and every 8 was 18.
 // Without a hand-off the interval is fixed: each multiple of it.
@@ -117,10 +117,10 @@ inline float handoffWeight(int samples, int handoffEnd)
 //-------------------------------------------------------------------------------------------------------
 // GuideAccumulation
 //
-// The albedo and normal guides of the OptiX and OIDN denoisers are accumulated by the path tracer like
-// the color, but with a sample count of their own: they restart when they were not written on the
-// previous frame (the denoiser was just turned on, or its images were reallocated) while the color
-// accumulation goes on. Each denoiser keeps one for its guide images.
+// The guides of the still's denoiser are accumulated by the path tracer like the color, but with a
+// sample count of their own: they restart when they were not written on the previous frame (the
+// denoiser was just turned on, or its images were reallocated) while the color accumulation goes on.
+// The denoiser keeps one for its guide images.
 //
 //   pushConst.guideSamples = guides.update(writtenThisFrame, totalSamples);  // before each rendered frame
 //

@@ -159,11 +159,9 @@ src/
 │
 ├── dlss.cpp/hpp                # DLSS adapter (Ray Reconstruction + Super Resolution)
 ├── dlss_wrapper.cpp/hpp        # NGX / DLSS SDK wrapper (project-independent)
-├── optix_denoiser.cpp/hpp      # OptiX AI Denoiser integration
-├── oidn_denoiser.cpp/hpp       # Open Image Denoise on Vulkan (vk_oidn) integration
-├── denoiser_schedule.hpp       # Auto-denoise interval shared by OptiX and OIDN, DLSS hand-off weight
-├── denoiser_handoff.cpp/hpp    # DLSS hand-off: blend from DLSS-RR's image to OptiX / OIDN's
-├── vk_cuda.cpp/hpp             # Vulkan-CUDA interop (shared memory/semaphores)
+├── rr_still_denoiser.cpp/hpp   # DLSS-RR as the still's denoiser (its own NGX feature, averaged guides)
+├── denoiser_schedule.hpp       # The still denoiser's auto-denoise interval, DLSS hand-off weight
+├── denoiser_handoff.cpp/hpp    # DLSS hand-off: blend from DLSS-RR's moving image to the denoised still
 │
 ├── gizmo_transform_vk.cpp/hpp  # 3D translate/rotate/scale gizmo
 ├── gizmo_grid_vk.cpp/hpp       # Infinite procedural grid
@@ -200,7 +198,6 @@ shaders/
 ├── gizmo_grid_shaderio.h.slang # Grid shader I/O
 ├── gizmo_visuals.slang         # Transform gizmo overlays
 ├── gizmo_visuals_shaderio.h.slang # Gizmo shader I/O
-├── optix_image_to_buffer.slang # OptiX denoiser buffer conversion
 ├── denoiser_handoff.slang      # DLSS hand-off blend of two images
 ├── hdr_output.slang            # HDR display output (tone map, overlays) and the EXR export's linear image
 ├── hdr_output.h.slang          # Its tone curve: Neutral with the display's peak, the others' shoulder opened (unit-tested)

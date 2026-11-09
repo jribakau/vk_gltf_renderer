@@ -118,11 +118,9 @@ jobs:
             libxi-dev libxinerama-dev libxrandr-dev libxxf86vm-dev libtbb-dev \
             libgl-dev libvulkan-dev
 
-      # CUDA Toolkit is required at link time for OptiX denoiser interop.
-      # NVML headers/import libraries are required so the GPU monitor is present
-      # in release binaries; the runtime library still comes from the user driver.
-      # cudart is delay-loaded on Windows and bundled at install on Linux,
-      # so the resulting binary still runs on machines without CUDA installed.
+      # The CUDA Toolkit provides the NVML headers/import libraries, required so
+      # the GPU monitor is present in release binaries; the runtime library still
+      # comes from the user driver.
       # Sub-package names differ per platform: the Windows installer uses the
       # underscore form (nvml_dev), while on Linux the action prepends "cuda-"
       # to build an apt package name, so it needs the hyphen form (nvml-dev)
@@ -151,7 +149,6 @@ jobs:
         run: >
           cmake -S . -B build -A x64
           -DUSE_DEFAULT_SCENE=OFF
-          -DUSE_OPTIX_DENOISER=ON
           -DUSE_DLSS=ON
           -DUSE_DRACO=ON
           -DBUILD_TESTING=OFF
@@ -172,7 +169,6 @@ jobs:
           cmake -S . -B build -G "Unix Makefiles"
           -DCMAKE_BUILD_TYPE=Release
           -DUSE_DEFAULT_SCENE=OFF
-          -DUSE_OPTIX_DENOISER=ON
           -DUSE_DLSS=ON
           -DUSE_DRACO=ON
           -DBUILD_TESTING=OFF

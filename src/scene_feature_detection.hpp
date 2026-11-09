@@ -34,7 +34,7 @@ namespace nvvkgltf {
 
 > Bitmask of which `KHR_materials_*` (+ `KHR_texture_transform`) extensions are used
 > by the loaded glTF scene, plus other shader-level toggles that scene-aware variant
-> compilation can flip (currently: whether DLSS/OptiX guide buffers need to exist).
+> compilation can flip (currently: whether DLSS-RR's guide buffers need to exist).
 >
 > Used by the path tracer's optimal-mode shader rebuild: when "Optimize shader for
 > current scene" is enabled, the renderer detects which extensions actually appear
@@ -76,7 +76,7 @@ struct SceneFeatureSet
     eTextureTransform,
 
     // Shader-side guide-buffer code (GuideScratch / dlssTraceClearGlass / etc.).
-    // True when the active denoiser (DLSS, OptiX or OIDN) wants the path tracer to populate
+    // True when the active denoiser (DLSS-RR, moving or still) wants the path tracer to populate
     // first-hit guide buffers. The build-time CMake gate also controls this via
     // USE_GUIDE_SHADER, but the optimal shader's runtime variant rebuild can be more aggressive
     // (turn off when DLSS is compiled in but the user has disabled the denoiser). The regular

@@ -88,24 +88,24 @@ static const int   VOLUME_HARD_CAP     = 256;     // Scatter events at which the
 static const float RR_PCONT_CAP_VOLUME = 0.999f;  // Maximum Russian Roulette probability inside a volume
 
 //-----------------------------------------------------------------------
-// Denoiser guide buffers (shared by DLSS, OptiX and OIDN)
+// Denoiser guide buffers (DLSS-RR's, on moving frames and the still)
 //
 // Guide-buffer scratch (GuideOutput / GuideScratch + the helpers further down + the
 // per-bounce captures in pathTraceOneBounce) only exists when USE_GUIDE_SHADER is
-// defined (set by CMake when USE_DLSS, USE_OPTIX_DENOISER or USE_OIDN_DENOISER is ON, or by the runtime
+// defined (set by CMake when USE_DLSS is ON, or by the runtime
 // scene-aware variant rebuild). When it's off we drop those scratch fields from
 // PathTracerState and SampleResult to shrink per-thread live state.
 //
 // Two-tier split inside the guide block:
-//   USE_GUIDE_SHADER : albedo + normalRoughness (+ motion/depth). Consumed by DLSS, OptiX
-//                      and OIDN, so present whenever any denoiser guide is required.
-//   USE_DLSS_SHADER  : specularAlbedo + specularHitDist (+ their per-bounce capture).
-//                      DLSS-only; OptiX needs neither, so they are compiled out of the
-//                      OptiX/no-denoiser variant to shrink live state further.
+//   USE_GUIDE_SHADER : albedo + normalRoughness (+ motion/depth), present whenever any
+//                      denoiser guide is required.
+//   USE_DLSS_SHADER  : specularAlbedo + specularHitDist (+ their per-bounce capture), on the
+//                      frames DLSS renders and those of DLSS-RR's still; compiled out of the
+//                      no-denoiser variant to shrink live state further.
 //
 // Exception: hitPosition is promoted OUT of the guide-gated block because it is
 // also consumed by the always-on NDC depth output (used for selection/picking on
-// the first frame). Keeping it gated would break picking when DLSS/OptiX are off.
+// the first frame). Keeping it gated would break picking when DLSS is off.
 //-----------------------------------------------------------------------
 #if USE_GUIDE_SHADER
 struct GuideOutput
@@ -317,7 +317,7 @@ float alphaHashU(uint renderNodeID, uint triangleID, float3 barycentrics)
 //
 // Every other frame draws from the path seed, which advances it. A frozen hash averages to 0 or
 // 1 across accumulated frames, never to the soft opacity. USE_DLSS_SHADER stays on for every
-// frame while DLSS is enabled, including the frames OptiX accumulates, so ePtUseDlss — set only
+// frame while DLSS is enabled, including the frames of DLSS-RR's still, so ePtUseDlss — set only
 // when DLSS denoises this frame — is the gate.
 float stochasticOpacityU(uint renderNodeID, uint triangleID, float3 barycentrics, inout uint seed)
 {
@@ -2668,7 +2668,7 @@ enum PathStepResult
 // or GLTF_USE_VOLUME (used to gate the in-volume scatter check).
 //
 // firstHitPos is always present (drives the selection/picking NDC depth) even
-// when DLSS/OptiX is disabled; it is written on the first hit (or by the
+// when DLSS is disabled; it is written on the first hit (or by the
 // primary-miss backplate path).
 struct PathTracerState
 {

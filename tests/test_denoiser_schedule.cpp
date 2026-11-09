@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// AutoDenoiseSchedule: when the OptiX and OIDN denoisers run on their own, in samples per pixel.
+// AutoDenoiseSchedule: when the still's denoiser runs on its own, in samples per pixel.
 // handoffWeight: the share of the denoised image during the DLSS hand-off.
 
 #include <vector>
@@ -29,7 +29,7 @@
 namespace {
 
 // Rendered frames of `samplesPerFrame` up to `maxSamples` (the last one traces only what is missing),
-// then idle frames. Returns the spp of each denoise, the way OIDN schedules: the image read includes
+// then idle frames. Returns the spp of each denoise, the way the still's denoiser schedules: the image read includes
 // the frame's samples, and the frame that reaches the cap is final. `handoffEnd`: see isDue().
 std::vector<int> runAccumulation(AutoDenoiseSchedule& schedule, int samplesPerFrame, int maxSamples, int interval, int handoffEnd = 0)
 {
@@ -78,7 +78,7 @@ TEST(AutoDenoiseSchedule, SingleFrameAccumulationsDenoiseEachRestart)
 
 TEST(AutoDenoiseSchedule, IdleFrameDenoisesAFinalImageNotYetDenoised)
 {
-  // One frame behind (OptiX): the frame reaching the cap is never seen by isDue(), the idle frame
+  // A denoiser one frame behind: the frame reaching the cap is never seen by isDue(), the idle frame
   // denoises it, and only once.
   AutoDenoiseSchedule schedule;
   for(int samples : {0, 3, 6, 9})  // the image read, before each rendered frame's samples
@@ -140,7 +140,7 @@ TEST(AutoDenoiseSchedule, TheStepGrowsWithTheSamples)
 
 TEST(AutoDenoiseSchedule, OneFrameBehindItStillReachesTheFinalImage)
 {
-  // OptiX reads the image before the frame's samples and never passes `final`: the near-cap step is
+  // A denoiser that reads the image before the frame's samples never passes `final`: the near-cap step is
   // skipped and the idle frame denoises the final image
   AutoDenoiseSchedule schedule;
   std::vector<int>    denoised;

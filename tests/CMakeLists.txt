@@ -151,7 +151,7 @@ set(TEST_SOURCES
     # Native P4a: the Light tab's state and unit conversions
     test_fv_lighting.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_lighting.cpp
-    # OptiX / OIDN auto-denoise schedule: interval multiples and the final image (header only)
+    # The still denoiser's auto-denoise schedule: interval multiples and the final image (header only)
     test_denoiser_schedule.cpp
     # Path tracer samples per frame: ending on stops, the Auto SPP controller (header only)
     test_sample_schedule.cpp

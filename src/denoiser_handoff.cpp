@@ -18,7 +18,7 @@
  */
 
 //
-// DLSS hand-off: the image shown while OptiX or OIDN takes over from DLSS-RR (see denoiser_handoff.hpp).
+// DLSS hand-off: the image shown while the still's denoiser takes over from DLSS-RR (see denoiser_handoff.hpp).
 //
 
 #include "denoiser_handoff.hpp"
@@ -105,7 +105,7 @@ void DenoiserHandoff::init(Resources& resources)
   const VkDevice device = resources.allocator.getDevice();
   m_appMemoryTracker    = &resources.appMemoryTracker;
 
-  // Allocated at the first capture (updated by onResize from then on): only DLSS-RR + OptiX/OIDN uses them
+  // Allocated at the first capture (updated by onResize from then on): only DLSS-RR with its still uses them
   NVVK_CHECK(m_target.init({.device       = device,
                             .alloc        = &resources.allocator,
                             .colorFormats = {VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT},
@@ -126,7 +126,7 @@ void DenoiserHandoff::deinit(Resources& resources)
 void DenoiserHandoff::registerParameters(SettingsRegistry* settings)
 {
   settings->add({"dlssHandoffSpp",
-                 "Denoisers: With DLSS-RR and OptiX or OIDN, samples per pixel over which the image blends from "
+                 "Denoisers: With DLSS-RR and its still on, samples per pixel over which the image blends from "
                  "DLSS's to the denoised one (0 = switch at the first denoise)"},
                 &m_settings.spp, Persist::eYes, 0, 1000);
 }
@@ -194,8 +194,8 @@ void DenoiserHandoff::cmdUpdate(VkCommandBuffer cmd, Resources& resources, const
 
   const bool  denoised = denoiser->denoiseCount != m_captureDenoiseCount;  // this accumulation has a denoised image
   const float weight   = handoffWeight(frame.samples, frame.handoffEnd);
-  // Done: the denoised image alone. Without one yet, DLSS's image stays while Auto will make it (OptiX,
-  // one frame behind, may reach the end first); with Auto turned off, the accumulation is shown.
+  // Done: the denoised image alone. Without one yet, DLSS's image stays while Auto will make it; with
+  // Auto turned off, the accumulation is shown.
   if(weight >= 1.0f && (denoised || !denoiser->autoDenoise))
   {
     m_active = false;
@@ -213,8 +213,8 @@ void DenoiserHandoff::cmdUpdate(VkCommandBuffer cmd, Resources& resources, const
   }
 
   NVVK_DBG_SCOPE(cmd);
-  // The denoised image is written (OIDN in this command buffer, OptiX in an earlier submission), and
-  // the previous frame's tonemapper may still read the output
+  // The denoised image is written in this command buffer, and the previous frame's tonemapper may
+  // still read the output
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_MEMORY_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 

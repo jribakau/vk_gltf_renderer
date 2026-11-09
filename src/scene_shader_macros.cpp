@@ -74,12 +74,13 @@ void appendPathTracerDlssShaderMacro(std::vector<std::pair<std::string, std::str
 {
   // Two independent, runtime-driven compile gates (both refreshed every frame, independent of
   // optimal mode):
-  //   USE_GUIDE_SHADER : guide-buffer capture (albedo/normal/etc.). Needed by DLSS, OptiX and OIDN,
-  //                      so it follows eDlssGuide == dlssGuideRequired() (any of them active).
-  //   USE_DLSS_SHADER  : DLSS's guide captures, on the frames DLSS renders (PathTracer::makeVariantKey;
-  //                      with OptiX or OIDN also on, frame 0 only). Its guide writes still follow the
-  //                      per-frame ePtUseDlss flag, off while DLSS is loading.
-#if defined(USE_DLSS) || defined(USE_OPTIX_DENOISER) || defined(USE_OIDN_DENOISER)
+  //   USE_GUIDE_SHADER : guide-buffer capture (albedo/normal/etc.). Needed by DLSS-RR, moving or still,
+  //                      so it follows eDlssGuide == dlssGuideRequired().
+  //   USE_DLSS_SHADER  : DLSS's guide captures, on the frames DLSS renders and the frames of DLSS-RR's
+  //                      still (PathTracer::makeVariantKey; with the still on, DLSS renders frame 0
+  //                      only). Its guide writes still follow the per-frame ePtUseDlss flag, off while
+  //                      DLSS is loading.
+#if defined(USE_DLSS)
   const bool useGuideShader = features.has(SceneFeatureSet::eDlssGuide);
 #else
   const bool useGuideShader = false;

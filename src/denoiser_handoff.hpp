@@ -48,17 +48,17 @@ private:
 //-------------------------------------------------------------------------------------------------------
 // DenoiserHandoff
 //
-// DLSS-RR combined with an accumulated-image denoiser (OptiX or OIDN): DLSS denoises frame 0, the image
-// seen while the camera moves, and the accumulation denoiser takes the frames after it, once the camera
-// stops. Its first images come from a few samples and look worse than DLSS's, so it does not replace
+// DLSS-RR with its still on (RrStillDenoiser): DLSS denoises frame 0, the image seen while the camera
+// moves, and the still's denoiser takes the frames after it, once the camera stops. Its first images
+// come from a few samples and look worse than DLSS's, so it does not replace
 // DLSS's image at once: the image shown blends from one to the other as the samples accumulate,
 //
 //   shown = lerp(dlss, denoised, handoffWeight(samples, handoffEnd))      (denoiser_schedule.hpp)
 //
 // and is the denoised image alone from `handoffEnd` on (the hand-off setting, or Max Samples when lower).
-// Until the first denoise of the accumulation, DLSS's image is shown, past `handoffEnd` too: OptiX
-// denoises one frame behind, so a frame that reaches the end may have nothing denoised yet. Meanwhile the denoiser's Auto
-// schedule denoises each time the samples double (AutoDenoiseSchedule::isDue).
+// Until the first denoise of the accumulation, DLSS's image is shown, past `handoffEnd` too, while the
+// denoiser's Auto will make one. Meanwhile its Auto schedule denoises each time the samples double
+// (AutoDenoiseSchedule::isDue).
 //
 //   handoff.cmdCapture(cmd, resources, denoiser);                     // frame 1: keep DLSS's image
 //   handoff.cmdUpdate(cmd, resources, {.denoiser = &denoiser, ...});  // each rendered frame, after the denoisers
@@ -75,19 +75,19 @@ public:
     int spp = 64;  // Samples per pixel the blend lasts; 0 switches to the denoised image at its first denoise
   };
 
-  // The accumulation denoiser of the frame (OptiX or OIDN)
+  // The still's denoiser on the frame
   struct Denoiser
   {
     DisplayBuffer         view = DisplayBuffer::eRendered;  // Its view: the hand-off is shown in its place
     VkDescriptorImageInfo image{};              // Its denoised image (RGBA32F storage, VK_IMAGE_LAYOUT_GENERAL)
     bool                  autoDenoise = false;  // Its Auto is on: without it, nothing may be denoised to hand off to
-    uint32_t denoiseCount = 0;  // OptiX's and OIDN's denoises so far: more than at the capture means this accumulation has one
+    uint32_t denoiseCount = 0;  // Its denoises so far: more than at the capture means this accumulation has one
   };
 
   // What cmdUpdate() blends for
   struct Frame
   {
-    const Denoiser* denoiser   = nullptr;  // The accumulation denoiser, null when none is on
+    const Denoiser* denoiser   = nullptr;  // The still's denoiser, null when it is off
     int             samples    = 0;        // Samples per pixel of the image this frame
     int             handoffEnd = 0;        // Samples per pixel the hand-off ends at
   };
@@ -110,8 +110,6 @@ public:
 
   // The image to show instead of the denoiser's (null when the hand-off is not shown)
   const VkDescriptorImageInfo* displayImage() const { return m_shown ? &m_shownImage : nullptr; }
-
-  // The setting, shown when DLSS-RR and an accumulation denoiser are both on
 
 private:
   enum Image

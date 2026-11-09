@@ -345,7 +345,7 @@ public:
   // extension. A physical-device query: any thread.
   MemoryBudget deviceMemoryBudget() const override;
   // What a pixel of the frame costs in the mode drawn, an estimate of the per-pixel buffers (the
-  // G-buffers; under RTX the DLSS guides and output, OptiX's images and shared buffers, the hand-off
+  // G-buffers; under RTX the DLSS guides and output, the still denoiser's images, the hand-off
   // and the upscaler's own history). Updated each frame; any thread.
   uint32_t frameBytesPerPixel() const override { return m_frameBytesPerPixel.load(); }
   FrameCpu lastFrameCpu() const override { return m_lastFrameCpu; }
@@ -553,7 +553,7 @@ private:
   const Dlss* activeDlss() const;
 #endif
 
-  bool dlssGuideRequired() const;  // True when the path tracer currently needs DLSS/OptiX/OIDN guide-buffer capture code.
+  bool dlssGuideRequired() const;  // True when the path tracer currently needs DLSS-RR's guide-buffer capture code.
   float defaultFireflyClamp() const;  // Scene-appropriate firefly clamp: HDR luminance integral, else a fixed baseline.
   void  updateGizmoAttachment();
   void updateHdrImages();
@@ -585,7 +585,6 @@ private:
   void                                           saveHeadlessOutputImage();
   void saveViewportImage(const std::filesystem::path& filename);  // .hdr: linear render, else tonemapped
   std::filesystem::path headlessOutputPathOrDefault() const;
-  void                  logDenoiserTimings() const;  // DENOISER_TIMING lines (headless)
   // --outputSamples: the samples per pixel of the image shown, and which one it is (DisplayBuffer)
   int displayedImageSamples(DisplayBuffer& source) const;
   void refreshSampleTargets();  // Before the frame renders: parses the counts, and hands them to the path tracer as stops

@@ -79,10 +79,9 @@ enum OutputImage
   eDlssDepth,            // Depth (R32)
   eDlssSpecularHitDist,  // Specular hit distance (R16F)
   eNrMask,               // NR per-material control mask (RGBA16F)
-  eDenoiserAlbedo = 2,   // Accumulated albedo guide of the denoiser of the accumulation (RGBA32)
-  eDenoiserNormal = 3,   // Accumulated world-space normal guide (RGBA32). Both alias DLSS slots: the
-                         // images of the denoiser on (OptiX, OIDN or DLSS-RR's still) are bound there, never on DLSS's
-                         // frames; for DLSS-RR's still the normal's w is the accumulated linear roughness
+  eDenoiserAlbedo = 2,   // Accumulated albedo guide of DLSS-RR's still (RGBA32)
+  eDenoiserNormal = 3,   // Accumulated world-space normal guide (RGBA32), its w the accumulated linear roughness.
+                         // Both alias DLSS slots: the still's images are bound there, never on DLSS's frames
   eRrStillSpecAlbedo = 4,  // DLSS-RR's still (ePtRrStillGuides): accumulated specular albedo (RGBA32)
   eRrStillDepth      = 6,  // DLSS-RR's still: the nearest guide depth of its samples (R32), the surface behind clear glass's
   eConvergence = 9,      // Per pixel of an accumulation (RG32): the mean of its samples' luminance squared, and 1 while it has converged (ePtAdaptiveStop)
@@ -102,16 +101,6 @@ enum BindingPoints
   eTextures,      // glTF material images (bindless SAMPLED_IMAGE array; indexed by GltfTextureInfo.index)
   eTexturesHdr,   // 2D environment textures (HDR_IMAGE_INDEX)
   eSamplers,      // glTF samplers (bindless SAMPLER array; indexed by GltfTextureInfo.samplerIndex, slot 0 = default)
-};
-
-enum OptixBindingPoints
-{
-  eInRgba = 0,  // Incoming image (RGBA32)
-  eInAlbedo,    // Incoming accumulated albedo guide (RGBA32)
-  eInNormal,    // Incoming accumulated world-space normal guide (RGBA32)
-  eOutRgba,     // Outgoing image in buffer
-  eOutAlbedo,   // Outgoing albedo in buffer
-  eOutNormal,   // Outgoing normal in buffer
 };
 
 // DLSS hand-off (denoiser_handoff.slang): storage images, in VK_IMAGE_LAYOUT_GENERAL
@@ -465,7 +454,7 @@ struct PathtracePushConstant
   int             seed                  = 0;       // Random sequence: another value gives independent noise
   int             guideSamples          = 0;       // Samples in the denoiser guides (0: replace them)
   float2          mouseCoord            = {0, 0};  // Mouse coordinates (use for debug)
-  uint2           renderSize = {0, 0};          // Traced region: smaller than the output images under OptiX 2x upscale
+  uint2           renderSize = {0, 0};          // Traced region: DLSS's input size on its frames, smaller than the view
   int             bladeCount    = 0;            // Aperture blades: below 3 a round aperture (aperture.h.slang)
   float           bladeRotation = 0.0f;         // Angle of the first blade's corner, radians from the camera's right
   float           hairRouletteDlss = 1.0f;      // DLSS frames: a path continues from a fibre at most with this... (1: off)
@@ -494,13 +483,6 @@ struct PathtracePushConstant
   CameraMedium*   cameraMedium;                 // The medium camera paths start in; null when the scene has none
   uint4*          lightReservoirs;              // ePtLightReuse: two halves of renderSize records, two uint4 a pixel (light_ris.h.slang)
   PixelInspect*   pixelInspect;                 // ePtInspectPixel: where the pixel readout goes (the last 8 of 256 bytes)
-};
-
-// OptiX: copy of the images to the linear buffers it reads (optix_image_to_buffer.slang)
-struct OptixCopyPushConstant
-{
-  uint2           imageSize;  // Input (render) size
-  SceneFrameInfo* frameInfo;  // View matrix: the guide normal is converted to camera space
 };
 
 struct DenoiserHandoffPushConstant

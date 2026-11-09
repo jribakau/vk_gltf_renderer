@@ -180,7 +180,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   // null pipeline -- caught only by an assert, so a release build simply crashes.
   m_resources.hdrIbl.initGpuWriter(std::span(env_write_pdf_slang));
 
-  // Application-level memory tracker (frame targets, DLSS, OptiX images)
+  // Application-level memory tracker (frame targets, DLSS images)
   m_resources.appMemoryTracker.init(&m_resources.allocator);
 
   // G-Buffer
@@ -428,25 +428,6 @@ void GltfRenderer::applyHeadlessDefaults()
     m_pathTracer.m_performanceTarget = PathTracer::PerformanceTarget::eThroughput;
 }
 
-//--------------------------------------------------------------------------------------------------
-// End of a headless run: the cost of the AI denoisers that ran. OIDN is GPU time inside the frame;
-// OptiX runs outside it (queue drain, copies, CUDA), so its breakdown is host wall time.
-void GltfRenderer::logDenoiserTimings() const
-{
-#if defined(USE_OIDN_DENOISER)
-  if(const OidnDenoiser* oidn = m_pathTracer.getOidnDenoiser(); oidn && oidn->hasValidDenoisedOutput() && oidn->getGpuTimeMs() > 0.0)
-    LOGI("DENOISER_TIMING oidn gpu_ms=%.3f\n", oidn->getGpuTimeMs());
-#endif
-#if defined(USE_OPTIX_DENOISER)
-  if(const OptiXDenoiser* optix = m_pathTracer.getOptiXDenoiser(); optix && optix->hasValidDenoisedOutput())
-  {
-    const OptiXDenoiser::Timings t = optix->getTimings();
-    LOGI("DENOISER_TIMING optix total_ms=%.3f drain_ms=%.3f copy_in_ms=%.3f invoke_ms=%.3f invoke_gpu_ms=%.3f copy_out_ms=%.3f\n",
-         t.totalMs, t.drainMs, t.copyInMs, t.invokeMs, t.invokeGpuMs, t.copyOutMs);
-  }
-#endif
-}
-
 std::filesystem::path GltfRenderer::headlessOutputPathOrDefault() const
 {
   return m_resources.headlessOutputPath.empty() ? nvutils::getExecutablePath().replace_extension(".jpg") : m_resources.headlessOutputPath;
@@ -454,23 +435,13 @@ std::filesystem::path GltfRenderer::headlessOutputPathOrDefault() const
 
 //--------------------------------------------------------------------------------------------------
 // --outputSamples: the samples per pixel of the image the tonemapper shows. A denoised image counts
-// the samples it was denoised from (OptiX runs one frame behind, OIDN in the same frame). Returns
+// the samples it was denoised from. Returns
 // -1 for an image that is not a path-traced accumulation (the DLSS hand-off's blend included).
 int GltfRenderer::displayedImageSamples(DisplayBuffer& source) const
 {
   source = m_resources.settings.displayBuffer;
   if(m_pathTracer.handoffImage(m_resources))
     return -1;
-#if defined(USE_OPTIX_DENOISER)
-  if(const OptiXDenoiser* optix = m_pathTracer.getOptiXDenoiser();
-     source == DisplayBuffer::eOptixDenoised && optix && optix->hasValidDenoisedOutput())
-    return optix->denoisedSamples();
-#endif
-#if defined(USE_OIDN_DENOISER)
-  if(const OidnDenoiser* oidn = m_pathTracer.getOidnDenoiser();
-     source == DisplayBuffer::eOidnDenoised && oidn && oidn->hasValidDenoisedOutput())
-    return oidn->denoisedSamples();
-#endif
 #if defined(USE_DLSS)
   if(const RrStillDenoiser* rr = m_pathTracer.getRrStillDenoiser();
      source == DisplayBuffer::eRrStillDenoised && rr && rr->hasValidDenoisedOutput())
@@ -516,7 +487,7 @@ void GltfRenderer::updateSampleCaptures()
     return;
 
   // A .hdr capture saves the rendered image, never a denoiser's (saveViewportImage): name it after
-  // that image's samples, not after the denoised one on screen, which OptiX keeps a frame behind.
+  // that image's samples, not after the denoised one on screen.
   const bool    linear = nvutils::extensionMatches(headlessOutputPathOrDefault(), ".hdr")
                       || nvutils::extensionMatches(headlessOutputPathOrDefault(), ".pfm");
   DisplayBuffer source{};
@@ -1084,7 +1055,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   updatePixelTimes();       // ...and the Time view's sums
   // Check for changes
   bool changed{false};
-  changed |= m_pathTracer.keepOneAccumulationDenoiser(m_resources);  // OptiX or OIDN, not both
+  changed |= m_pathTracer.pollStillDenoiser();  // DLSS-RR's still came on or went off
   changed |= syncRetainedScene(cmd);  // the clip, and the residency's sync of the host's edits
 
   // #DLSS motion: the retained scene keeps both tables current every sync (a row at rest is no motion)
@@ -1224,7 +1195,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     {
       m_pathTracer.onAccumulationComplete(cmd, m_resources);
       // A headless run given --ptMaxSamples is done: this frame shows the final image (and its
-      // denoise, which OptiX makes on this first idle frame), and --frames is only an upper bound.
+      // denoise, when the adaptive stop ended it early), and --frames is only an upper bound.
       // Not while an image is still decoding: a large file's last texture can land after the first
       // samples are in, and the still begins again with it, so what is saved has every texture (two
       // runs of a 326 MB figure differed where its top's map had landed in one of them only).
@@ -1290,7 +1261,6 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
 // Called with headless rendering, to save the final image
 void GltfRenderer::onLastHeadlessFrame()
 {
-  logDenoiserTimings();
   if(m_sampleCapture.next < m_sampleCapture.targets.size())
     LOGW("--outputSamples: %d spp and above were not reached (the image has %d spp); raise --frames\n",
          m_sampleCapture.targets[m_sampleCapture.next], m_sampleCapture.lastSamples);
@@ -1315,27 +1285,15 @@ const Dlss* GltfRenderer::activeDlss() const
 // Runtime gate for path-tracer guide-buffer shader code.
 bool GltfRenderer::dlssGuideRequired() const
 {
-#if defined(USE_DLSS) || defined(USE_OPTIX_DENOISER) || defined(USE_OIDN_DENOISER)
+#if defined(USE_DLSS)
   // The build with guides is the one in the exe, warmed at start, and it writes none unless a denoiser
   // asks (ePtDenoiserGuides). Without guides there's nothing prepared: turning the denoiser off froze
   // the renderer for 27 s the first time, to compile and build the pipeline of a shader that differs
   // only by code that doesn't run. The optimal shader is built per scene anyway, and leaves it out.
   if(!m_resources.settings.optimalShader)
     return true;
-#endif
-
-#if defined(USE_DLSS)
-  if(m_pathTracer.isDlssEnabled())
-    return true;
-#endif
-
-#if defined(USE_OPTIX_DENOISER)
-  if(const OptiXDenoiser* optix = m_pathTracer.getOptiXDenoiser(); optix && optix->isEnabled())
-    return true;
-#endif
-
-#if defined(USE_OIDN_DENOISER)
-  if(const OidnDenoiser* oidn = m_pathTracer.getOidnDenoiser(); oidn && oidn->isEnabled())
+  // DLSS-RR's guides: the moving view's, and the still's denoiser's, averaged over its samples
+  if(m_pathTracer.isDlssEnabled() || m_pathTracer.rrStillOn())
     return true;
 #endif
 
@@ -1378,30 +1336,7 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   bool       bypassTonemapper = false;
 
 
-  // OptiX / OIDN denoised output (path-tracer only). Routed via the global DisplayBuffer toggle the
-  // denoisers write when they denoise or the user clicks their thumbnail.
-#if defined(USE_OPTIX_DENOISER)
-  if(m_resources.settings.displayBuffer == DisplayBuffer::eOptixDenoised)
-  {
-    const OptiXDenoiser* optix = m_pathTracer.getOptiXDenoiser();
-    if(optix && optix->hasValidDenoisedOutput())
-    {
-      inputBuffer         = optix->getDescriptorImageInfo(OptiXDenoiser::eGBufferDenoised);
-      inputBuffer.sampler = m_resources.linearSampler;
-    }
-  }
-#endif
-#if defined(USE_OIDN_DENOISER)
-  if(m_resources.settings.displayBuffer == DisplayBuffer::eOidnDenoised)
-  {
-    const OidnDenoiser* oidn = m_pathTracer.getOidnDenoiser();
-    if(oidn && oidn->hasValidDenoisedOutput())
-    {
-      inputBuffer         = oidn->getDescriptorImageInfo(OidnDenoiser::eGBufferDenoised);
-      inputBuffer.sampler = m_resources.linearSampler;
-    }
-  }
-#endif
+  // The still denoised by DLSS-RR, routed via the DisplayBuffer it sets when it denoises
 #if defined(USE_DLSS)
   if(m_resources.settings.displayBuffer == DisplayBuffer::eRrStillDenoised)
   {
@@ -1413,7 +1348,7 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
     }
   }
 #endif
-  // The DLSS hand-off, shown in place of the denoiser's view while OptiX or OIDN takes over from DLSS
+  // The DLSS hand-off, shown in place of the denoiser's view while the still's denoiser takes over from DLSS
   if(const VkDescriptorImageInfo* handoff = m_pathTracer.handoffImage(m_resources))
   {
     inputBuffer         = *handoff;
@@ -1690,8 +1625,8 @@ void GltfRenderer::logPixelTimes(const pixel_time::Reading& reading)
 }
 
 //--------------------------------------------------------------------------------------------------
-// Names of the extensions enabled on the device. Call before the path tracer is attached: the
-// vk_oidn denoiser picks its optional features (tensor cores, ...) from them.
+// Names of the extensions enabled on the device. Call before the path tracer is attached, which
+// reads them (pipeline statistics).
 void GltfRenderer::setDeviceExtensions(std::vector<std::string> extensions)
 {
   m_resources.deviceExtensions = std::move(extensions);
@@ -1765,7 +1700,7 @@ void GltfRenderer::createDescriptorSets()
 
   // Pool sizes are derived from descriptorBinding[0] (now SAMPLED_IMAGE + SAMPLER for the scene, plus
   // COMBINED_IMAGE_SAMPLER for the HDR array). Each nvapp::ImTexture (viewport: 1, DLSS guides: 8,
-  // OptiX denoised: 1 + margin) additionally uses one VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE descriptor.
+  // and a margin) additionally uses one VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE descriptor.
   constexpr uint32_t                kImTextureMaxSets = 15;
   std::vector<VkDescriptorPoolSize> poolSize          = m_resources.descriptorBinding[0].calculatePoolSizes();
   poolSize.push_back({VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kImTextureMaxSets});

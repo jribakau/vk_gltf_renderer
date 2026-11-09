@@ -62,12 +62,10 @@
 // Which special view the user wants in the viewport. The DLSS guide-buffer entries that used
 // to live here are gone -- DLSS guide selection is now encapsulated inside the Dlss class
 // (see Dlss::activeGuideImage() in dlss.hpp). What remains are the app-level overrides of the
-// rendered output: the regular renderer output, or an AI-denoised image.
+// rendered output: the regular renderer output, or the still denoised by DLSS-RR.
 enum class DisplayBuffer
 {
   eRendered,           // Final rendered image (default)
-  eOptixDenoised,      // OptiX Denoised output (handled via OptiXDenoiser::getDescriptorImageInfo)
-  eOidnDenoised,       // vk_oidn Denoised output (handled via OidnDenoiser::getDescriptorImageInfo)
   eRrStillDenoised,    // DLSS-RR over the still's final image (RrStillDenoiser::getDescriptorImageInfo)
 };
 
@@ -364,7 +362,7 @@ struct Resources
   nvapp::Application* app{nullptr};
 
   VkInstance               instance{};
-  std::vector<std::string> deviceExtensions;  // Extensions enabled on the device (set at startup; read by vk_oidn)
+  std::vector<std::string> deviceExtensions;  // Extensions enabled on the device (set at startup)
   nvvk::ResourceAllocator  allocator{};       // Vulkan Memory Allocator
   nvvk::FrameUploader      staging;           // Per-frame + load-path staging copies (records into caller cmd)
 

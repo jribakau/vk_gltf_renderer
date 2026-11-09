@@ -21,7 +21,7 @@
 // Vulkan ray tracing path tracer renderer. Builds and dispatches the
 // ray generation / closest-hit / any-hit / miss shader pipeline for
 // progressive path tracing of glTF scenes. Handles accumulation,
-// depth-of-field, and denoiser integration (OptiX / OIDN / DLSS).
+// depth-of-field, and denoiser integration (DLSS-RR, moving and still).
 //
 
 #include <fmt/format.h>
@@ -77,13 +77,6 @@ PathTracer::PathTracer()
   m_rrStill = std::make_unique<RrStillDenoiser>();
 #endif
 
-#if defined(USE_OPTIX_DENOISER)
-  m_optix = std::make_unique<OptiXDenoiser>();
-#endif
-
-#if defined(USE_OIDN_DENOISER)
-  m_oidn = std::make_unique<OidnDenoiser>();
-#endif
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -192,15 +185,6 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
   m_dlss->init(resources);
 #endif
 
-  // #OPTIX - Create the OptiX denoiser
-#if defined(USE_OPTIX_DENOISER)
-  m_optix->init(resources);
-#endif
-
-  // #OIDN - Create the vk_oidn context (compute pipelines); the network follows the size
-#if defined(USE_OIDN_DENOISER)
-  m_oidn->init(resources);
-#endif
 #if defined(USE_DLSS)
   m_rrStill->init(resources);
 #endif
@@ -272,7 +256,7 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                 &m_shadowTransmission, Persist::eYes);
   // Not persisted: the viewer turns it on while the camera moves and off once the view is still.
   settings->add({"dlssHandoffDelayMs",
-                 "Denoisers: With DLSS-RR and OptiX or OIDN, milliseconds the view must have been still before the "
+                 "Denoisers: With DLSS-RR and its still on, milliseconds the view must have been still before the "
                  "accumulation takes over from DLSS (0: the frame after it stops)"},
                 &m_dlssHandoffDelayMs, Persist::eYes, 0, 5000);
   settings->add({.name            = "ptCameraMedium",
@@ -511,13 +495,6 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
   m_dlss->registerParameters(settings, resetAccumulation);
 #endif
 
-#if defined(USE_OPTIX_DENOISER)
-  m_optix->registerParameters(settings);
-#endif
-
-#if defined(USE_OIDN_DENOISER)
-  m_oidn->registerParameters(settings);
-#endif
 #if defined(USE_DLSS)
   m_rrStill->registerParameters(settings);
 #endif
@@ -560,13 +537,6 @@ void PathTracer::onDetach(Resources& resources)
   m_rrStill->deinit(resources);  // its feature before the NGX context it was made in
   m_dlss->deinit(resources);
 #endif
-
-#if defined(USE_OPTIX_DENOISER)
-  m_optix->deinit(resources);
-#endif
-#if defined(USE_OIDN_DENOISER)
-  m_oidn->deinit(resources);
-#endif
   m_handoff.deinit(resources);
   vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
   vkDestroyShaderModule(m_device, m_shaderModule, nullptr);
@@ -583,10 +553,6 @@ void PathTracer::onResize(VkCommandBuffer cmd, const VkExtent2D& /*size*/, Resou
   updateDepthStaging(cmd, resources);
   updateConvergence(cmd, resources);
   updateDlssResources(cmd, resources);
-  updateOptiXResources(cmd, resources);
-#if defined(USE_OIDN_DENOISER)
-  m_oidn->updateSize(cmd, resources.gBuffers.getSize());
-#endif
   m_handoff.onResize(cmd, resources.gBuffers.getSize());
 #if defined(USE_DLSS)
   m_dlss->notifyReset();  // viewport size changed -> reseed jitter sequence + drop NGX history
@@ -632,15 +598,6 @@ void PathTracer::updateDlssResources(VkCommandBuffer cmd, Resources& resources)
 #endif
 }
 
-void PathTracer::updateOptiXResources(VkCommandBuffer cmd, Resources& resources)
-{
-#if defined(USE_OPTIX_DENOISER)
-  NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
-  VkExtent2D size = resources.gBuffers.getSize();
-  m_optix->updateSize(cmd, size);
-#endif
-}
-
 //--------------------------------------------------------------------------------------------------
 // Bring the live shader, pipeline, and denoiser targets in line with the settings, however those
 // were changed (UI, command line, sequence script, MCP). Nothing but compares when they already
@@ -671,12 +628,6 @@ bool PathTracer::prepareFrame(Resources& resources)
     ensureShadersAndPipelines(resources);
   }
 
-#if defined(USE_OPTIX_DENOISER)
-  m_optix->ensureTargets(resources);
-#endif
-#if defined(USE_OIDN_DENOISER)
-  m_oidn->ensureTargets(resources);
-#endif
 #if defined(USE_DLSS)
   m_rrStill->ensureTargets(resources);
 #endif
@@ -705,7 +656,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   // DLSS-RR's still runs in an NGX context of the moving view's, once NGX is up
   m_rrStill->setContext(m_dlss->ngxContext(), m_dlss->presetHint());
 #endif
-  m_dlssShaderFrame = !isAccumulationDenoiserEnabled() || resources.frameCount == 0 || inHandoffDelay();
+  m_dlssShaderFrame = !rrStillOn() || resources.frameCount == 0 || inHandoffDelay();
   // The technique follows the variant (makeVariantKey's dlss), so a view's pipeline is the cached one
   m_renderTechnique = dlssVariantFrame() ? m_techniqueDlss : m_techniqueStill;
   if(!m_supportRayQuery)
@@ -715,8 +666,8 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
     return;
 
 #if defined(USE_DLSS)
-  // Drive the DLSS state machine, then decide the frame: DLSS renders it (every frame without an
-  // accumulation denoiser; frame 0 and the delay's frames with one), or the accumulation does, this
+  // Drive the DLSS state machine, then decide the frame: DLSS renders it (every frame without the
+  // still's denoiser; frame 0 and the delay's frames with it), or the accumulation does, this
   // being the hand-off frame when DLSS rendered the one before.
   const bool dlssTicked = m_dlss->tick(resources);
   m_prevDlssFrame       = m_dlssFrame;
@@ -732,9 +683,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
 #endif
 
   // Reset display buffer to rendered on first frame: the denoised image is stale until denoised again
-  if((resources.frameCount == 0)
-     && (resources.settings.displayBuffer == DisplayBuffer::eOptixDenoised || resources.settings.displayBuffer == DisplayBuffer::eOidnDenoised
-         || resources.settings.displayBuffer == DisplayBuffer::eRrStillDenoised))
+  if(resources.frameCount == 0 && resources.settings.displayBuffer == DisplayBuffer::eRrStillDenoised)
   {
     resources.settings.displayBuffer = DisplayBuffer::eRendered;
   }
@@ -756,12 +705,6 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   if(getEffectiveDlssEnabled(resources))
   {
     renderingSize = m_dlss->getRenderSize();
-  }
-#endif
-#if defined(USE_OPTIX_DENOISER)
-  if(getEffectiveOptixEnabled(resources) && m_optix->isUpscaleMode())
-  {
-    renderingSize = m_optix->getRenderSize();
   }
 #endif
 
@@ -813,7 +756,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
 
   // Depth is only traced on the first frame (see processPixel); bring it into the depth buffer
-  // before anything reads it (OptiX upscale below, overlays and picking after).
+  // before anything reads it (overlays and picking).
   if(m_depthViaStaging && m_depthCopyable && resources.frameCount == 0)
     cmdCopyStagedDepth(cmd, resources);
 
@@ -822,43 +765,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   if(getEffectiveDlssEnabled(resources))
   {
     denoiseDlss(cmd, resources, (pushConst.flags & shaderio::ePtWriteSelection) != 0);
-    m_dlssFrame0 = isAccumulationDenoiserEnabled();  // frame 0 and the delay's frames, then OptiX or OIDN takes over
-  }
-#endif
-
-#if defined(USE_OPTIX_DENOISER)
-  // Update OptiX auto-denoiser (only when effectively enabled)
-  if(getEffectiveOptixEnabled(resources))
-  {
-    // OptiX runs on CUDA, outside this command buffer, where a Vulkan GPU timer reads ~0. The section's
-    // GPU time is the denoiser invoke measured with CUDA events (the Vulkan copies around it excluded),
-    // comparable to OIDN's; its CPU time is the host wall time, the wait for the frames in flight included.
-    {
-      const uint32_t denoisesBefore = m_optix->denoiseCount();
-      const auto section = m_profilerTimeline ? m_profilerTimeline->frameBeginSection("Optix denoiser", &m_optixTimeProvider) :
-                                                nvutils::ProfilerTimeline::FrameSectionID{};
-      m_optix->updateDenoiser(resources, m_dlssFrame0, handoffEnd(resources));
-      if(m_profilerTimeline)
-      {
-        m_optixGpuUs[section.subFrame] = (m_optix->denoiseCount() != denoisesBefore) ? 1000.0 * m_optix->lastInvokeGpuMs() : 0.0;
-        m_profilerTimeline->frameEndSection(section);
-      }
-    }
-
-    if(m_optix->isUpscaleMode() && resources.frameCount == 0)
-    {
-      auto timerSection = m_profiler->cmdFrameSection(cmd, "Optix upscale guides");
-      upscaleSelectionAndDepth(cmd, resources);
-    }
-  }
-#endif
-
-#if defined(USE_OIDN_DENOISER)
-  // OIDN auto-denoise, recorded in this frame's command buffer: no lag, no host wait
-  if(getEffectiveOidnEnabled(resources))
-  {
-    // The image it reads includes the samples traced in this frame (not counted until updateStatistics)
-    m_oidn->updateDenoiser(cmd, resources, m_profiler, m_totalSamplesAccumulated + m_frameSamples, handoffEnd(resources));
+    m_dlssFrame0 = rrStillOn();  // frame 0 and the delay's frames, then the still's denoiser takes over
   }
 #endif
 
@@ -869,7 +776,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
                       resources.cameraManip->getViewMatrix(), resources.cameraManip->getPerspectiveMatrix());
 #endif
 
-  // DLSS hand-off: the image shown while OptiX or OIDN takes over from DLSS's frame 0
+  // DLSS hand-off: the image shown while the still's denoiser takes over from DLSS's frame 0
   {
     const std::optional<DenoiserHandoff::Denoiser> denoiser = handoffDenoiser(resources);
     m_handoff.cmdUpdate(cmd, resources,
@@ -882,9 +789,9 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
 }
 
 //--------------------------------------------------------------------------------------------------
-// Idle frames, once the accumulation is complete: the auto denoisers denoise its final image, which
-// is shown from then on, if their last denoise was not of it. OptiX, one frame behind, needs this for
-// every accumulation; OIDN only when the cap was lowered below it, or Auto turned on, since.
+// Idle frames, once the accumulation is complete: the still's denoiser denoises its final image, which
+// is shown from then on, if its last denoise was not of it (the adaptive stop ended the still before the
+// cap, the cap was lowered below it, or the denoiser came on since).
 void PathTracer::onAccumulationComplete(VkCommandBuffer cmd, Resources& resources)
 {
   // a view whose samples ended before its window did counted what it counted, and traces nothing from here
@@ -892,64 +799,11 @@ void PathTracer::onAccumulationComplete(VkCommandBuffer cmd, Resources& resource
     copyHitCounts(cmd, resources);
   takeHitCounts(resources);
   takePixelTimes(resources);  // the accumulation's last frames, as they come back
-#if defined(USE_OPTIX_DENOISER)
-  if(getEffectiveOptixEnabled(resources))
-    m_optix->denoiseFinal(resources);
-#endif
-#if defined(USE_OIDN_DENOISER)
-  if(getEffectiveOidnEnabled(resources))
-    m_oidn->denoiseFinal(cmd, resources, m_profiler);
-#endif
 #if defined(USE_DLSS)
   // an accumulation the adaptive stop ended before the cap, or one complete when RR's still came on
   if(rrStillOn())
     m_rrStill->denoiseFinal(cmd, resources, m_profiler, resources.accumulatedSamples, resources.cameraManip->getViewMatrix(),
                             resources.cameraManip->getPerspectiveMatrix());
-#endif
-}
-
-//--------------------------------------------------------------------------------------------------
-// Upscale selection ID and depth from render resolution (half) to display resolution (full).
-// In OptiX 2x upscale mode the shader writes into the top-left corner of the full-res GBuffer.
-// vkCmdBlitImage cannot blit an image to itself with overlapping regions, so we copy the
-// half-res data to a staging image first, then blit it back at full resolution.
-void PathTracer::upscaleSelectionAndDepth(VkCommandBuffer cmd, Resources& resources)
-{
-#if defined(USE_OPTIX_DENOISER)
-  VkExtent2D srcSize = m_optix->getRenderSize();
-  VkExtent2D dstSize = resources.gBuffers.getSize();
-
-  // Copy half-res region to staging, then blit staging back to full-res destination.
-  auto copyAndBlit = [cmd, &srcSize, &dstSize](VkImage image, VkImage staging, VkImageAspectFlags aspect) {
-    VkImageSubresourceLayers subresource = {.aspectMask = aspect, .layerCount = 1};
-
-    VkImageCopy copy{
-        .srcSubresource = subresource,
-        .dstSubresource = subresource,
-        .extent         = {srcSize.width, srcSize.height, 1},
-    };
-    vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, staging, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
-
-    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-
-    VkOffset3D srcExtent = {int(srcSize.width), int(srcSize.height), 1};
-    VkOffset3D dstExtent = {int(dstSize.width), int(dstSize.height), 1};
-
-    VkImageBlit blit{
-        .srcSubresource = subresource,
-        .srcOffsets     = {{0, 0, 0}, srcExtent},
-        .dstSubresource = subresource,
-        .dstOffsets     = {{0, 0, 0}, dstExtent},
-    };
-    vkCmdBlitImage(cmd, staging, VK_IMAGE_LAYOUT_GENERAL, image, VK_IMAGE_LAYOUT_GENERAL, 1, &blit, VK_FILTER_NEAREST);
-  };
-
-  copyAndBlit(resources.gBuffers.getColorImage(Resources::eImgSelection), m_optix->getStagingSelectionImage(), VK_IMAGE_ASPECT_COLOR_BIT);
-  copyAndBlit(resources.gBuffers.getDepthImage(), m_optix->getStagingDepthImage(), VK_IMAGE_ASPECT_DEPTH_BIT);
-
-  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                         VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT);
 #endif
 }
 
@@ -1227,28 +1081,8 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
   }
 #endif
 
-  // The denoiser guide slots (ePtDenoiserGuides) get the images of the denoiser of the accumulation on
-  // this frame: OptiX and OIDN are exclusive, and neither shares a frame with DLSS
-#if defined(USE_OPTIX_DENOISER)
-  if(getEffectiveOptixEnabled(resources))
-  {
-    using namespace shaderio;
-    outputCount                   = std::max<uint32_t>(outputCount, eDenoiserNormal + 1);
-    outputImages[eDenoiserAlbedo] = m_optix->getDescriptorImageInfo(OptiXDenoiser::eGBufferAlbedo);
-    outputImages[eDenoiserNormal] = m_optix->getDescriptorImageInfo(OptiXDenoiser::eGBufferNormal);
-  }
-#endif
-#if defined(USE_OIDN_DENOISER)
-  if(getEffectiveOidnEnabled(resources))
-  {
-    using namespace shaderio;
-    outputCount                   = std::max<uint32_t>(outputCount, eDenoiserNormal + 1);
-    outputImages[eDenoiserAlbedo] = m_oidn->getDescriptorImageInfo(OidnDenoiser::eGBufferAlbedo);
-    outputImages[eDenoiserNormal] = m_oidn->getDescriptorImageInfo(OidnDenoiser::eGBufferNormal);
-  }
-#endif
 #if defined(USE_DLSS)
-  // DLSS-RR's still: RR's guides, averaged (ePtRrStillGuides)
+  // DLSS-RR's still: RR's guides, averaged (ePtDenoiserGuides, ePtRrStillGuides), never on a DLSS frame
   if(getEffectiveRrStillEnabled(resources))
   {
     using namespace shaderio;
@@ -1307,7 +1141,7 @@ void PathTracer::restartAdaptiveSampling()
 // Update adaptive sampling based on frame timing
 void PathTracer::updateAdaptiveSampling(Resources& resources)
 {
-  // DLSS alone traces one sample per frame. With OptiX or OIDN, the frames it renders do
+  // DLSS alone traces one sample per frame. With the still's denoiser, the frames it renders do
   // (setupPushConstant), and Auto SPP climbs over the frames after them from the reset below.
   if(m_dlssFrame)
     return;
@@ -1438,7 +1272,7 @@ void PathTracer::updateStatistics(Resources& resources)
 
   // Track total samples accumulated. DLSS's frames before a hand-off (frame 0, the delay's) add
   // nothing to it: the hand-off frame starts it over, and their count must not reach the cap first.
-  if(!(m_dlssFrame && isAccumulationDenoiserEnabled()))
+  if(!(m_dlssFrame && rrStillOn()))
     m_totalSamplesAccumulated += m_frameSamples;
   std::rotate(m_recentFrameSamples.begin(), m_recentFrameSamples.begin() + 1, m_recentFrameSamples.end());
   m_recentFrameSamples.back()  = m_frameSamples;
@@ -1650,7 +1484,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   if(resources.frameCount == 0 || m_handoffFrame)
   {
     // Reset sample counter when scene/camera changes. Resources' copy too: what runs before
-    // updateStatistics() this frame (the OptiX denoiser) must not see the previous accumulation's count.
+    // updateStatistics() this frame (the still's denoiser) must not see the previous accumulation's count.
     m_totalSamplesAccumulated    = 0;
     resources.accumulatedSamples = 0;
     resources.adaptiveDone       = false;
@@ -1758,25 +1592,11 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
 #if defined(USE_DLSS)
   m_pushConst.flags |= useDlss ? shaderio::ePtUseDlss : 0;
 #endif
-  // Guides of the denoiser of the accumulation (OptiX or OIDN, one at a time, never with DLSS): accumulated
-  // like the color into that denoiser's images, over the samples since they last restarted. Each
-  // denoiser is told whether its guides are written, so a denoiser turned on restarts them.
+  // Guides of the still's denoiser (never on a DLSS frame): accumulated like the color into its images,
+  // over the samples since they last restarted. It is told whether its guides are written, so turning
+  // it on restarts them.
   bool denoiserGuides      = false;
   m_pushConst.guideSamples = 0;
-#if defined(USE_OPTIX_DENOISER)
-  const bool useOptixDenoiser = getEffectiveOptixEnabled(resources);
-  const int  optixGuides      = m_optix->updateGuideState(useOptixDenoiser, m_totalSamplesAccumulated);
-  if(useOptixDenoiser)
-    m_pushConst.guideSamples = optixGuides;
-  denoiserGuides |= useOptixDenoiser;
-#endif
-#if defined(USE_OIDN_DENOISER)
-  const bool useOidnDenoiser = getEffectiveOidnEnabled(resources);
-  const int  oidnGuides      = m_oidn->updateGuideState(useOidnDenoiser, m_totalSamplesAccumulated);
-  if(useOidnDenoiser)
-    m_pushConst.guideSamples = oidnGuides;
-  denoiserGuides |= useOidnDenoiser;
-#endif
 #if defined(USE_DLSS)
   const bool useRrStill = getEffectiveRrStillEnabled(resources);
   const int  rrGuides   = m_rrStill->updateGuideState(useRrStill, m_totalSamplesAccumulated);
@@ -1833,7 +1653,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
 
 //--------------------------------------------------------------------------------------------------
 // Returns true iff DLSS will actually denoise this frame (strict): NGX is up, the inner GBuffer
-// is populated, the user enabled DLSS-RR, AND the OptiX/OIDN-exclusivity rule lets DLSS run.
+// is populated, the user enabled DLSS-RR, AND the still's denoiser has not taken the frame.
 bool PathTracer::getEffectiveDlssEnabled(const Resources& resources) const
 {
 #if defined(USE_DLSS)
@@ -1844,20 +1664,6 @@ bool PathTracer::getEffectiveDlssEnabled(const Resources& resources) const
   (void)resources;
   return false;
 #endif
-}
-
-//--------------------------------------------------------------------------------------------------
-bool PathTracer::isAccumulationDenoiserEnabled() const
-{
-  bool enabled = false;
-#if defined(USE_OPTIX_DENOISER)
-  enabled |= m_optix->isEnabled();
-#endif
-#if defined(USE_OIDN_DENOISER)
-  enabled |= m_oidn->isEnabled();
-#endif
-  enabled |= rrStillOn();
-  return enabled;
 }
 
 bool PathTracer::rrStillOn() const
@@ -1872,14 +1678,7 @@ bool PathTracer::rrStillOn() const
 bool PathTracer::rrStillWanted() const
 {
 #if defined(USE_DLSS)
-  bool other = false;
-#if defined(USE_OPTIX_DENOISER)
-  other |= m_optix->isEnabled();
-#endif
-#if defined(USE_OIDN_DENOISER)
-  other |= m_oidn->isEnabled();
-#endif
-  return m_rrStill->isWanted() && !other;
+  return m_rrStill->isWanted();
 #else
   return false;
 #endif
@@ -1890,7 +1689,7 @@ bool PathTracer::stillDenoisePending(const Resources& resources) const
 #if defined(USE_DLSS)
   if(!rrStillWanted())
     return false;
-  // once NGX is up the still begins again with RR's guides (keepOneAccumulationDenoiser)
+  // once NGX is up the still begins again with RR's guides (pollStillDenoiser)
   if(m_dlss->ngxStarting())
     return true;
   return rrStillOn() && m_rrStill->finalPending(resources.accumulatedSamples);
@@ -1921,23 +1720,9 @@ bool PathTracer::getEffectiveRrStillEnabled(const Resources& resources) const
 }
 
 //--------------------------------------------------------------------------------------------------
-// The DLSS hand-off: the accumulation denoiser it hands off to, the denoises so far, and when it ends
+// The DLSS hand-off: the still's denoiser it hands off to, the denoises so far, and when it ends
 std::optional<DenoiserHandoff::Denoiser> PathTracer::handoffDenoiser(const Resources& resources) const
 {
-#if defined(USE_OPTIX_DENOISER)
-  if(getEffectiveOptixEnabled(resources))
-    return DenoiserHandoff::Denoiser{.view         = DisplayBuffer::eOptixDenoised,
-                                     .image        = m_optix->getDescriptorImageInfo(OptiXDenoiser::eGBufferDenoised),
-                                     .autoDenoise  = m_optix->isAutoDenoiseActive(),
-                                     .denoiseCount = accumulationDenoiseCount()};
-#endif
-#if defined(USE_OIDN_DENOISER)
-  if(getEffectiveOidnEnabled(resources))
-    return DenoiserHandoff::Denoiser{.view         = DisplayBuffer::eOidnDenoised,
-                                     .image        = m_oidn->getDescriptorImageInfo(OidnDenoiser::eGBufferDenoised),
-                                     .autoDenoise  = m_oidn->isAutoDenoiseActive(),
-                                     .denoiseCount = accumulationDenoiseCount()};
-#endif
 #if defined(USE_DLSS)
   if(getEffectiveRrStillEnabled(resources))
     return DenoiserHandoff::Denoiser{.view         = DisplayBuffer::eRrStillDenoised,
@@ -1945,22 +1730,17 @@ std::optional<DenoiserHandoff::Denoiser> PathTracer::handoffDenoiser(const Resou
                                      .autoDenoise  = m_rrStill->isAutoDenoiseActive(),
                                      .denoiseCount = accumulationDenoiseCount()};
 #endif
+  (void)resources;
   return std::nullopt;
 }
 
 uint32_t PathTracer::accumulationDenoiseCount() const
 {
-  uint32_t count = 0;
-#if defined(USE_OPTIX_DENOISER)
-  count += m_optix->denoiseCount();
-#endif
-#if defined(USE_OIDN_DENOISER)
-  count += m_oidn->denoiseCount();
-#endif
 #if defined(USE_DLSS)
-  count += m_rrStill->denoiseCount();
+  return m_rrStill->denoiseCount();
+#else
+  return 0;
 #endif
-  return count;
 }
 
 int PathTracer::handoffEnd(const Resources& resources) const
@@ -1970,27 +1750,15 @@ int PathTracer::handoffEnd(const Resources& resources) const
 
 const VkDescriptorImageInfo* PathTracer::handoffImage(const Resources& resources) const
 {
-  const DisplayBuffer view = resources.settings.displayBuffer;
-  if(view != DisplayBuffer::eOptixDenoised && view != DisplayBuffer::eOidnDenoised && view != DisplayBuffer::eRrStillDenoised)
+  if(resources.settings.displayBuffer != DisplayBuffer::eRrStillDenoised)
     return nullptr;
   return m_handoff.displayImage();
 }
 
 //--------------------------------------------------------------------------------------------------
-bool PathTracer::keepOneAccumulationDenoiser(Resources& resources)
+bool PathTracer::pollStillDenoiser()
 {
   bool restart = false;
-#if defined(USE_OPTIX_DENOISER) && defined(USE_OIDN_DENOISER)
-  if(m_optix->isEnabled() && m_oidn->isEnabled())
-  {
-    if(!m_optixWasOn && m_oidnWasOn)  // OptiX was turned on while OIDN was
-      m_oidn->disable(resources);
-    else
-      restart = m_optix->disable(resources);
-  }
-  m_optixWasOn = m_optix->isEnabled();
-  m_oidnWasOn  = m_oidn->isEnabled();
-#endif
 #if defined(USE_DLSS)
   // DLSS-RR's still came on or went off (the setting, or NGX coming up): its guides cover the still
   // only when it began with it, and the shader variant changes with it. An idle still's frames do not
@@ -2002,49 +1770,4 @@ bool PathTracer::keepOneAccumulationDenoiser(Resources& resources)
   m_rrStillWasOn = rrStill;
 #endif
   return restart;
-}
-
-//--------------------------------------------------------------------------------------------------
-// Determine if OptiX should actively denoise this frame
-bool PathTracer::getEffectiveOptixEnabled(const Resources& resources) const
-{
-#if defined(USE_OPTIX_DENOISER)
-  bool optixEnabled = m_optix->isEnabled();
-#if defined(USE_DLSS)
-  // OptiX-exclusivity rule: when DLSS-RR is also currently engaged (loading or active), DLSS
-  // owns frame 0 and OptiX takes 1+. We treat eLoading the same as eActive here so the rule
-  // doesn't flip mid-init (otherwise OptiX would run on frame 0 during the DLSS-RR async-init
-  // window, then yield once DLSS becomes Active -- visibly inconsistent).
-  const auto s           = m_dlss->state();
-  const bool dlssEngaged = (s == Dlss::State::eLoading || s == Dlss::State::eActive);
-  if(dlssEngaged && optixEnabled)
-  {
-    return resources.frameCount > 0 && !m_dlssFrame;
-  }
-#endif
-
-  // Normal behavior when DLSS is off
-  return optixEnabled;
-#else
-  return false;
-#endif
-}
-
-//--------------------------------------------------------------------------------------------------
-// Determine if OIDN should write its guides and denoise this frame. Same exclusivity rule as OptiX:
-// with DLSS-RR also engaged, DLSS owns frame 0 and OIDN takes 1+.
-bool PathTracer::getEffectiveOidnEnabled(const Resources& resources) const
-{
-#if defined(USE_OIDN_DENOISER)
-  const bool oidnEnabled = m_oidn->isEnabled();
-#if defined(USE_DLSS)
-  const auto s           = m_dlss->state();
-  const bool dlssEngaged = (s == Dlss::State::eLoading || s == Dlss::State::eActive);
-  if(dlssEngaged && oidnEnabled)
-    return resources.frameCount > 0 && !m_dlssFrame;
-#endif
-  return oidnEnabled;
-#else
-  return false;
-#endif
 }

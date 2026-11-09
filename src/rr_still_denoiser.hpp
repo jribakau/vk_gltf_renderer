@@ -26,15 +26,14 @@
 //
 // DLSS Ray Reconstruction as the denoiser of a still: the accumulation's image goes through DLSS-RR at
 // native size (DLAA), its history reset, every `autoDenoiseSpp` samples per pixel as it refines (on
-// OptiX's and OIDN's schedule, AutoDenoiseSchedule, the DLSS hand-off included) and once it is complete;
-// with 0, only the final image.
+// AutoDenoiseSchedule, the DLSS hand-off included) and once it is complete; with 0, only the final image.
 // The guides are RR's own (the DLSS shader variant's: diffuse and specular albedo, linear roughness,
 // and through clear glass the surface behind it), averaged over the still's samples like the colour
 // (ePtRrStillGuides, into this class's images), so their edges are anti-aliased as the colour's are.
 // Motion is zero: nothing moved. The moving view's DLSS-RR feature is left alone: this one is its own
 // (the shared NGX context, Dlss::ngxContext()).
 //
-// Usage, as OidnDenoiser's:
+// Usage:
 //   denoiser.init(resources);                        // once
 //   denoiser.setContext(dlss.ngxContext(), preset);  // every frame: null until NGX is up with RR
 //   denoiser.ensureTargets(resources);               // every frame: images and feature follow the settings
@@ -105,7 +104,7 @@ public:
 
   VkDescriptorImageInfo getDescriptorImageInfo(GBufferIndex index) const;
 
-  // As OidnDenoiser's: whether the path tracer writes the guides this frame; the samples already in them
+  // Whether the path tracer writes the guides this frame; the samples already in them
   int updateGuideState(bool writtenThisFrame, int totalSamples) { return m_guides.update(writtenThisFrame, totalSamples); }
 
   // Images and feature follow `enable`, the size and the preset; released when off. Waits for the queue

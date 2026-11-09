@@ -58,7 +58,7 @@ void RrStillDenoiser::registerParameters(SettingsRegistry* settings)
 {
   settings->add({"rrStillEnable",
                  "DLSS-RR still: denoise the still with DLSS Ray Reconstruction, every rrStillAutoDenoiseSpp samples per pixel "
-                 "and its final image; OptiX and OIDN off"},
+                 "and its final image"},
                 &m_settings.enable, Persist::eYes);
   settings->add({"rrStillBlendMax", "DLSS-RR still: share of the raw accumulation mixed back into its output (0 = all RR's)"},
                 &m_settings.blendMax, Persist::eYes, 0.0f, 1.0f);
@@ -249,7 +249,7 @@ void RrStillDenoiser::evaluate(VkCommandBuffer         cmd,
   }
   if(ok)
   {
-    // Keep detail: the raw accumulation mixed back in, as OIDN's (RGBA32F: no half-float clamp)
+    // Keep detail: the raw accumulation mixed back in (RGBA32F: no half-float clamp)
     const float blend = sample_schedule::denoiseBlend(m_settings.blendMax, samples, resources.settings.maxSamples, finalImage);
     if(blend > 0.0f)
     {

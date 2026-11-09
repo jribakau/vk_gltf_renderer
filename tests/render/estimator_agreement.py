@@ -226,7 +226,7 @@ def regions(path):
 def render(exe, scene_path, env_path, out_path, estimator, seed, extra):
     cmd = [str(exe), "--headless", "--size", str(IMAGE_SIZE), str(IMAGE_SIZE), "--scenefile", str(scene_path),
            "--envSystem", "1", "--hdrfile", str(env_path), "--hdrIntensity", "1",
-           "--ptTechnique", "1", "--dlssEnable", "0", "--optixEnable", "0", "--oidnEnable", "0",
+           "--ptTechnique", "1", "--dlssEnable", "0", "--rrStillEnable", "0",
            # no firefly clamp: it cuts one technique's rare bright samples more than the other's
            "--ptAdaptiveSampling", "0", "--ptAdaptiveStop", "0", "--ptFireflyClamp", "0", "--ptFireflyClampStill", "0",
            "--ptMaxDepth", str(MAX_DEPTH), "--ptEstimator", str(estimator), "--ptSeed", str(seed), *extra,

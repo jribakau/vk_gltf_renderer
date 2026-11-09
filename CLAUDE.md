@@ -27,7 +27,7 @@ C++20. Host and device share structs via `shaders/shaderio.h`.
 | Sky models: physical atmosphere, its clouds, gradient, units and calibration, the sun, glTF mapping | [docs/sky.md](docs/sky.md) |
 | Environment *pipeline*: the analytic bake, lighting vs background fields, preview/commit | [docs/developer.md](docs/developer.md) (§ Environment Lighting) |
 | MCP shader timing: enabling `--mcp`, the tool surface, measuring a change | [docs/mcp.md](docs/mcp.md) |
-| DLSS / OptiX / OIDN denoising, motion vectors, jitter/reset (incl. why animated meshes ghost) | [docs/denoising.md](docs/denoising.md) |
+| DLSS-RR denoising (moving and still), motion vectors, jitter/reset (incl. why animated meshes ghost) | [docs/denoising.md](docs/denoising.md) |
 | Test suite: running (CTest vs. direct), adding tests, benchmarks | [tests/README.md](tests/README.md) |
 | Where scene/model assets come from | [docs/resources.md](docs/resources.md) |
 
@@ -82,9 +82,9 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   commands registered in `src/fv_host.cpp`. The protocol is listed in `src/fv_host.hpp` and
   `src/fv_view.hpp`; the app's `native/README.md` describes how it drives the renderer, and its
   `docs/improvements.md` holds the open issues.
-- `src/dlss*`, `src/optix_denoiser*`, `src/oidn_denoiser*`, `src/vk_cuda*` — AI denoisers + CUDA interop
-  (OIDN runs on Vulkan compute through the prebuilt [vk_oidn](https://github.com/nvpro-samples/vk_oidn) package).
-  `src/denoiser_handoff*` blends from DLSS-RR's image to OptiX / OIDN's when both are on
+- `src/dlss*`, `src/rr_still_denoiser*` — DLSS Ray Reconstruction, the one denoiser: the moving view's,
+  and the still's over the accumulated image (OptiX and OIDN were removed 2026-11-09; the app is
+  NVIDIA RTX only). `src/denoiser_handoff*` blends from the moving image to the denoised still
   ([docs/denoising.md](docs/denoising.md#dlss-hand-off)).
 - `src/gizmo_*` — transform gizmo, grid, overlays.
 - `shaders/*.slang` + `shaders/shaderio.h` — GPU code and host/device structs.
@@ -179,7 +179,7 @@ you are expected to keep them that way:
 |---|---|
 | Scene sync / dirty-flag / BLAS-TLAS data flow | [docs/RENDERING_ARCHITECTURE.md](docs/RENDERING_ARCHITECTURE.md) |
 | App lifecycle, source layout, material fork, build/test | [docs/developer.md](docs/developer.md) + this file |
-| DLSS/OptiX/OIDN, motion-vector / jitter / reset behavior | [docs/denoising.md](docs/denoising.md) |
+| DLSS-RR (moving or still), motion-vector / jitter / reset behavior | [docs/denoising.md](docs/denoising.md) |
 | A sky model, its units, the sun, or the `OMI_environment_sky` mapping | [docs/sky.md](docs/sky.md) |
 | Environment sources, the sky bake, or the lighting/background split | [docs/developer.md](docs/developer.md) |
 | MCP tools or the timing measurement | [docs/mcp.md](docs/mcp.md) |
@@ -218,7 +218,7 @@ cmake --build build
 ./_bin/Release/vk_gltf_renderer
 ```
 
-Key CMake options: `USE_DLSS`, `USE_OPTIX_DENOISER`, `USE_OIDN_DENOISER`, `USE_DRACO`,
+Key CMake options: `USE_DLSS`, `USE_DRACO`,
 `NVPRO2_ENABLE_nvmcp` (all `ON`; the last one adds the `--mcp` endpoint and fetches
 cpp-mcp at configure time — see [docs/mcp.md](docs/mcp.md)),
 `BUILD_TESTING` (`OFF` — turn on to build unit tests + benchmarks; `ctest` runs the

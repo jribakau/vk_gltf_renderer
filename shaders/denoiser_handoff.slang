@@ -18,8 +18,8 @@
  */
 
 // A weighted sum of two images (ImageBlend in src/denoiser_handoff.hpp): the DLSS hand-off, shown while
-// the accumulation denoiser (OptiX or OIDN) takes over from DLSS-RR, and OIDN's Keep detail, the raw
-// accumulation mixed back into its denoised image. Each pixel reads only itself, so the output may be
+// the still's denoiser takes over from DLSS-RR, and its Keep detail, the raw accumulation mixed back
+// into its denoised image. Each pixel reads only itself, so the output may be
 // the first input.
 
 #include "shaderio.h"
