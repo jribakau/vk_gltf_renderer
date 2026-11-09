@@ -4,6 +4,7 @@
 #include <cmath>
 #include <set>
 
+#include <figure/rig/spec.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 
@@ -20,15 +21,17 @@ V3     unit(const V3& a)
   return l < 1e-9 ? V3{0, 0, 0} : V3{a[0] / l, a[1] / l, a[2] / l};
 }
 
-// The joint down the limb that sets a bone's direction, by slot, nearest first.
+// The joint down the limb that sets a bone's direction, by slot, nearest first: the skeleton spec's aims.
 const std::map<std::string, std::vector<std::string>>& nextSlots()
 {
-  static const std::map<std::string, std::vector<std::string>> table{
-      {"thigh", {"shin"}},       {"shin", {"foot"}},          {"foot", {"toes"}},           {"collar", {"upperarm"}},
-      {"upperarm", {"forearm"}}, {"forearm", {"hand"}},       {"hand", {"mid1", "midmc"}},  {"spine1", {"spine2", "spine3"}},
-      {"spine2", {"spine3"}},    {"spine3", {"spine4", "neck1"}}, {"spine4", {"neck1"}},    {"neck1", {"neck2", "head"}},
-      {"neck2", {"head"}},
-  };
+  static const std::map<std::string, std::vector<std::string>> table = [] {
+    std::map<std::string, std::vector<std::string>> out;
+    for(const rig::Joint& j : rig::joints())
+      for(std::string_view a : j.aims)
+        if(!a.empty())
+          out[std::string(j.id)].push_back(std::string(a));
+    return out;
+  }();
   return table;
 }
 

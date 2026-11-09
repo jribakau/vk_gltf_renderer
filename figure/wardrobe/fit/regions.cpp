@@ -4,32 +4,40 @@
 #include <regex>
 #include <set>
 
+#include <figure/rig/spec.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 
 namespace fv::wardrobe {
 
 int16_t limbOfBone(const std::string& name)
 {
-  static const std::set<std::string> foot{"foot", "metatarsal", "toes"};
-  static const std::set<std::string> hand{"hand", "indexmc", "midmc", "ringmc", "pinkymc"};
-  static const std::set<std::string> arm{"collar", "upperarm", "forearm"};
-  static const std::set<std::string> head{"head", "neck1", "neck2"};
-  static const std::regex            toeN(R"(toe\d$)");
-  static const std::regex            fingerN(R"(^(thumb|index|mid|ring|pinky)\d$)");
-  const ParsedBone                   p    = parseBone(name);
-  const bool                         left = p.side != 'r';
-  if(foot.count(p.slot) || std::regex_search(p.slot, toeN))
-    return left ? limb::kLFoot : limb::kRFoot;
-  if(p.slot == "shin")
-    return left ? limb::kLShin : limb::kRShin;
-  if(p.slot == "thigh")
-    return left ? limb::kLThigh : limb::kRThigh;
-  if(hand.count(p.slot) || std::regex_search(p.slot, fingerN))
-    return left ? limb::kLHand : limb::kRHand;
-  if(arm.count(p.slot))
-    return left ? limb::kLArm : limb::kRArm;
-  if(head.count(p.slot))
-    return limb::kHead;
+  const rig::Name n    = rig::parse(name);
+  const bool      left = n.side != 'r';
+  rig::Limb       l    = n.joint ? n.joint->limb : rig::Limb::eNone;
+  // a toe or finger joint past the table's (a fourth knuckle, a fifth toe) by its name's ending
+  if(!n.joint)
+  {
+    static const std::regex toeN(R"(toe\d$)");
+    static const std::regex fingerN(R"(^(thumb|index|mid|ring|pinky)\d$)");
+    l = std::regex_search(n.slot, toeN) ? rig::Limb::eFoot : std::regex_search(n.slot, fingerN) ? rig::Limb::eHand : rig::Limb::eNone;
+  }
+  switch(l)
+  {
+    case rig::Limb::eFoot:
+      return left ? limb::kLFoot : limb::kRFoot;
+    case rig::Limb::eShin:
+      return left ? limb::kLShin : limb::kRShin;
+    case rig::Limb::eThigh:
+      return left ? limb::kLThigh : limb::kRThigh;
+    case rig::Limb::eHand:
+      return left ? limb::kLHand : limb::kRHand;
+    case rig::Limb::eArm:
+      return left ? limb::kLArm : limb::kRArm;
+    case rig::Limb::eHead:
+      return limb::kHead;
+    case rig::Limb::eNone:
+      break;
+  }
   return 0;
 }
 

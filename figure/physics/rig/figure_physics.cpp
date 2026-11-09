@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <set>
 
 #include <figure/physics/skin.hpp>
 #include <figure/io/timing.hpp>
+#include <figure/rig/spec.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 
 namespace fv::physics {
@@ -16,16 +18,27 @@ using pose::ChannelKind;
 
 constexpr double kGravity = 980;
 
-// the anatomical slots (wardrobe::parseBone) that are parts, and those merged into the part above
+// the anatomical slots (wardrobe::parseBone) that are parts, and those merged into the part above: the
+// skeleton spec's part column
+const std::set<std::string>& slotsWithPart(rig::Part part)
+{
+  static const std::map<rig::Part, std::set<std::string>> by = [] {
+    std::map<rig::Part, std::set<std::string>> out;
+    for(const rig::Joint& j : rig::joints())
+      out[j.part].insert(std::string(j.id));
+    return out;
+  }();
+  static const std::set<std::string> none;
+  const auto                         it = by.find(part);
+  return it == by.end() ? none : it->second;
+}
 const std::set<std::string>& partSlots()
 {
-  static const std::set<std::string> s{"hip", "spine1", "spine3", "neck1", "head", "collar", "upperarm", "forearm", "hand", "thigh", "shin", "foot"};
-  return s;
+  return slotsWithPart(rig::Part::eOwn);
 }
 const std::set<std::string>& mergedSlots()
 {
-  static const std::set<std::string> s{"pelvis", "spine2", "spine4", "neck2"};
-  return s;
+  return slotsWithPart(rig::Part::eMerged);
 }
 
 Vec3 originOf(const Mat4& m)

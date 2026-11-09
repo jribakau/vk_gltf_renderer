@@ -1,6 +1,6 @@
 #include <figure/pose/pose_rig.hpp>
 #include <figure/io/timing.hpp>
-#include <figure/wardrobe/fit/bones.hpp>
+#include <figure/rig/spec.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -47,13 +47,27 @@ std::string groupOf(const std::string& name, bool isRoot)
     return "Figure";
   // by the name with its side taken off, as the wardrobe reads it: Genesis 9's "l_eye" is an eye and
   // "l_indextoe1" a toe, not a finger
-  const wardrobe::ParsedBone p = wardrobe::parseBone(name);
-  const std::string&         n = p.token;
-  static const std::regex    face(
+  const rig::Name    p    = rig::parse(name);
+  const std::string& n    = p.token;
+  const std::string  side = p.side == 'l' ? "Left" : p.side == 'r' ? "Right" : "";
+  // a Genesis joint by the skeleton spec's group; a limb's needs its side
+  if(const rig::Joint* j = rig::genesisJoint(n))
+    switch(j->group)
+    {
+      case rig::Group::eTorso:
+        return "Torso";
+      case rig::Group::eHeadNeck:
+        return "Head & neck";
+      case rig::Group::eArm:
+        return side.empty() ? "Other" : side + " arm";
+      case rig::Group::eLeg:
+        return side.empty() ? "Other" : side + " leg";
+    }
+  // anything else (a face rig, Skyrim's names, an item's own bones) by its words
+  static const std::regex face(
       R"(^(eye|ear)|brow|lid|lip|cheek|nose|nostril|jaw|tongue|teeth|mouth|chin|squint|nasolabial|face|forehead|temple|upperfacerig|lowerfacerig|belowjaw|center|lash)");
   static const std::regex head(R"(^(head|neck|necklower|neckupper))");
   static const std::regex torso(R"(^(hip|pelvis|abdomen|chest|spine|pectoral))");
-  // G8's lCollar, lShldrBend; G9's l_shoulder, l_upperarm
   static const std::regex arm(R"((collar|shldr|shoulder|upperarm|forearm|hand|carpal|thumb|index|mid|ring|pinky))");
   static const std::regex leg(R"((thigh|shin|foot|toe|metatarsal|heel))");
   if(std::regex_search(n, face))
@@ -62,7 +76,6 @@ std::string groupOf(const std::string& name, bool isRoot)
     return "Head & neck";
   if(std::regex_search(n, torso))
     return "Torso";
-  const std::string side = p.side == 'l' ? "Left" : p.side == 'r' ? "Right" : "";
   // the leg first: a toe's name has its finger's in it ("indextoe")
   if(!side.empty() && std::regex_search(n, leg))
     return side + " leg";

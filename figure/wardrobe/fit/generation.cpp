@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <regex>
 
+#include <figure/rig/spec.hpp>
+
 namespace fv::wardrobe {
 
 const char* label(Generation g)
@@ -78,36 +80,32 @@ struct BoneEvidence
   bool                      g3or8 = false;
 };
 
+// the skeleton spec's family rule (rig::identify), as a generation
 BoneEvidence boneEvidence(const std::vector<std::string>& names)
 {
-  static const std::regex underscored(R"(^[lr]_(thigh|shin|foot|upperarm|forearm|hand))");
-  static const std::regex heelRe(R"(^[lr]heel$)");
-  static const std::regex bendRe(R"(^[lr](thigh|shldr|forearm)(bend|twist)$)");
-  static const std::regex trunkRe(R"(^(abdomen|chest|neck)(lower|upper)$)");
-  static const std::regex plainRe(R"(^[lr]thigh$)");
-  bool                    under = false, heel = false, g3or8 = false, plain = false;
-  for(const std::string& name : names)
-  {
-    const std::string n = lower(name);
-    // Skyrim's bones ("NPC Head [Head]"), which no DAZ figure's are named like: a glove or a helmet has
-    // only its hand's or head's
-    if(n.rfind("npc ", 0) == 0)
-      return {Generation::eSkyrim, false};
-    under = under || std::regex_search(n, underscored);
-    heel  = heel || std::regex_search(n, heelRe);
-    g3or8 = g3or8 || std::regex_search(n, bendRe) || std::regex_search(n, trunkRe);
-    plain = plain || std::regex_search(n, plainRe);
-  }
-  // underscored side prefixes (`l_thigh`) are Genesis 9, whose twist helpers would otherwise read as Genesis 8
-  if(under)
-    return {Generation::eG9, false};
-  if(heel)
-    return {Generation::eG3, false};
-  if(g3or8)
-    return {std::nullopt, true};
-  if(plain)
-    return {Generation::eG2, false};
-  return {};
+  const rig::Evidence e = rig::identify(names);
+  BoneEvidence        out;
+  out.g3or8 = e.genesis3or8;
+  if(e.sure)
+    switch(*e.sure)
+    {
+      case rig::Family::eGenesis2:
+        out.sure = Generation::eG2;
+        break;
+      case rig::Family::eGenesis3:
+        out.sure = Generation::eG3;
+        break;
+      case rig::Family::eGenesis8:
+        out.sure = Generation::eG8;
+        break;
+      case rig::Family::eGenesis9:
+        out.sure = Generation::eG9;
+        break;
+      case rig::Family::eSkyrim:
+        out.sure = Generation::eSkyrim;
+        break;
+    }
+  return out;
 }
 
 bool g3or8(Generation g)

@@ -79,6 +79,7 @@ set(TEST_SOURCES
     figure/test_materials_channels.cpp
     figure/test_material_closure.cpp
     figure/test_wardrobe.cpp
+    figure/test_rig_spec.cpp
     figure/test_nif.cpp
     figure/test_bind_cache.cpp
     figure/test_hair_strands.cpp
