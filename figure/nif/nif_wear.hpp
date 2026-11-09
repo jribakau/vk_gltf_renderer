@@ -57,6 +57,12 @@ std::vector<size_t> bodyShapes(const File& nif);
 // Null when neither keeps one; throws std::runtime_error when the file doesn't read.
 std::shared_ptr<const wardrobe::BaseCage> carriedBody(const std::filesystem::path& file);
 
+// A body mod's body (femalebody_1.nif with the femalehands_1.nif and femalefeet_1.nif beside it): their
+// body shapes as one cage, welded where they meet at the wrists and ankles, skinned to their bones by
+// name, its surfaces "Body", "Hands" and "Feet"; at the game's size, as carriedBody. Null when the body
+// file keeps no body; a hands or feet file missing is left out.
+std::shared_ptr<const wardrobe::BaseCage> modBody(const std::filesystem::path& bodyFile);
+
 // Where a texture a NIF names (`textures\x\y.dds`, or without its `textures\`) is on disk: under the
 // first folder up from `meshDir` that holds it. Empty when none does.
 std::filesystem::path findTexture(const std::filesystem::path& meshDir, const std::string& rel);

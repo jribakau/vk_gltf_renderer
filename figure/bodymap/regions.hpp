@@ -42,8 +42,9 @@ bool regionSided(rig::Region region);
 // Whether the band where a region meets the one above (its joint: the forearm's is the elbow) is a
 // landmark two bodies share, by the spec's flag on the region's joint.
 rig::Landmark regionLandmark(rig::Region region);
-// A mask with the regions next to each it holds: the one above and those below, on its side. The left
-// thigh's are the pelvis and the left shin, never the right thigh.
+// A mask with the regions next to each it holds: the one above and every one hanging from it, on its
+// side (an unsided region's on both). The left thigh's are the pelvis and the left shin, never the right
+// thigh; the chest's the abdomen, neck, both breasts and both collars; the hand's its five fingers.
 RegionMask withNeighbours(RegionMask mask);
 
 // The regions a mask holds, by name, the right side marked: "thigh pelvis", "r thigh", "none".

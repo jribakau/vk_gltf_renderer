@@ -297,7 +297,7 @@ FitResult fitReference(const wardrobe::BaseCage& cage, const Body& reference, co
   }
 
   // 2. the limbs into the source's rest
-  out.positions = intoRest(cage, out.positions, source, &out.turns);
+  out.positions = intoRest(cage, out.positions, source, &out.turns, true);
 
   // 3. the embedded deformation
   Body posed      = reference;
@@ -429,12 +429,94 @@ FitResult fitReference(const wardrobe::BaseCage& cage, const Body& reference, co
       }
     });
   };
+  // and the other way: each source vertex pulls the reference's closest skin (in its regions or next to
+  // them, facing its way, within reach) onto the plane of its own, so a part the reference's vertices
+  // don't reach (a bigger bust's underside) still has the reference laid on it
+  struct Back
+  {
+    uint32_t corner[3];
+    double   share[3];
+    Vec3     target;
+    bool     hit = false;
+  };
+  const size_t              ns         = source.positions.size() / 3;
+  const std::vector<double> sourceArea = vertexAreas(source);
+  std::vector<Back>         back(ns);
+  std::unordered_map<RegionMask, RegionMask> sourceWidened;
+  for(const RegionMask m : source.regions)
+    if(!sourceWidened.count(m))
+      sourceWidened[m] = withNeighbours(m);
+  std::vector<RegionMask> refTriRegions(reference.tris.size() / 3, 0);
+  for(size_t t = 0; t < refTriRegions.size(); t++)
+    for(size_t j = 0; j < 3; j++)
+      refTriRegions[t] |= reference.tris[t * 3 + j] < reference.regions.size() ? reference.regions[reference.tris[t * 3 + j]] : 0;
+  const auto pullBack = [&](double within2) {
+    const physics::SurfaceIndex onto(current, reference.tris);
+    std::vector<Vec3>           face(reference.tris.size() / 3);
+    for(size_t t = 0; t < face.size(); t++)
+    {
+      const Vec3 a = at(current, reference.tris[t * 3]);
+      face[t]      = normalize(crossOf(at(current, reference.tris[t * 3 + 1]) - a, at(current, reference.tris[t * 3 + 2]) - a));
+    }
+    jobs::parallelFor(ns, 256, [&](size_t begin, size_t end) {
+      physics::Stamps& stamps = physics::threadStamps();
+      for(size_t s = begin; s < end; s++)
+      {
+        back[s].hit = false;
+        const Vec3& ns_ = sourceNormals[s];
+        if(sourceArea[s] <= 0 || dot(ns_, ns_) == 0)
+          continue;
+        const RegionMask m      = s < source.regions.size() ? sourceWidened.at(source.regions[s]) : 0;
+        const auto       accept = [&](size_t t) {
+          if(t < reference.outer.size() && !reference.outer[t])
+            return false;
+          if(m && refTriRegions[t] && !(refTriRegions[t] & m))
+            return false;
+          return dot(face[t], ns_) >= cosMax;
+        };
+        const Vec3    p   = at(source.positions, s);
+        const int32_t id  = stamps.next(onto.triangles());
+        const auto    hit = onto.nearest(p.x, p.y, p.z, accept, within2, stamps.stamp, id);
+        if(hit.tri < 0)
+          continue;
+        Back&        b    = back[s];
+        const double w[3] = {hit.u, hit.v, hit.w};
+        Vec3         q;
+        for(size_t j = 0; j < 3; j++)
+        {
+          b.corner[j] = reference.tris[size_t(hit.tri) * 3 + j];
+          b.share[j]  = w[j];
+          q           = q + at(current, b.corner[j]) * w[j];
+        }
+        b.target = q + ns_ * dot(ns_, p - q);
+        b.hit    = true;
+      }
+    });
+  };
+  // a source pull's nodes and their shares (its three corners' nodes, by the corners' shares)
+  const auto backNodes = [&](const Back& b) {
+    std::vector<std::pair<uint32_t, double>> nodes;
+    for(size_t i = 0; i < 3; i++)
+      for(size_t k = 0; k < kPerVertex; k++)
+      {
+        const uint32_t j = graph.near[b.corner[i]][k];
+        const double   c = b.share[i] * graph.weight[b.corner[i]][k];
+        auto           it = std::find_if(nodes.begin(), nodes.end(), [&](const auto& e) { return e.first == j; });
+        if(it == nodes.end())
+          nodes.emplace_back(j, c);
+        else
+          it->second += c;
+      }
+    return nodes;
+  };
+
   const int rounds = std::max(options.rounds, 1);
   for(int round = 0; round < rounds; round++)
   {
     const double stiff = options.stiffFrom * std::pow(options.stiffTo / options.stiffFrom, rounds > 1 ? double(round) / double(rounds - 1) : 1.0);
     deform();
     pullAll(reach2);
+    pullBack(reach2);
     // the moves: the pull at each vertex against the graph's stiffness, one solve for all three axes
     std::fill(matrix.begin(), matrix.end(), 0.0);
     double data = 0;
@@ -446,6 +528,17 @@ FitResult fitReference(const wardrobe::BaseCage& cage, const Body& reference, co
       for(size_t i = 0; i < kPerVertex; i++)
         for(size_t k = 0; k < kPerVertex; k++)
           matrix[graph.near[v][i] * n + graph.near[v][k]] += a * graph.weight[v][i] * graph.weight[v][k];
+      data += a;
+    }
+    for(size_t s = 0; s < ns; s++)
+    {
+      if(!back[s].hit)
+        continue;
+      const double a     = sourceArea[s] / meanArea;
+      const auto   nodes = backNodes(back[s]);
+      for(const auto& [j, cj] : nodes)
+        for(const auto& [k, ck] : nodes)
+          matrix[j * n + k] += a * cj * ck;
       data += a;
     }
     size_t links = 0;
@@ -489,6 +582,26 @@ FitResult fitReference(const wardrobe::BaseCage& cage, const Body& reference, co
         const Vec3 want = target[v] - rest;
         for(size_t i = 0; i < kPerVertex; i++)
           b[graph.near[v][i]] = b[graph.near[v][i]] + want * (graph.weight[v][i] * a);
+      }
+      for(size_t s = 0; s < ns; s++)
+      {
+        if(!back[s].hit)
+          continue;
+        const double a = sourceArea[s] / meanArea;
+        Vec3         rest;
+        for(size_t i = 0; i < 3; i++)
+        {
+          const uint32_t v = back[s].corner[i];
+          const Vec3     p = at(out.positions, v);
+          for(size_t k = 0; k < kPerVertex; k++)
+          {
+            const uint32_t j = graph.near[v][k];
+            rest             = rest + (rotate(p - graph.node[j], turn[j]) + graph.node[j]) * (back[s].share[i] * graph.weight[v][k]);
+          }
+        }
+        const Vec3 want = back[s].target - rest;
+        for(const auto& [j, c] : backNodes(back[s]))
+          b[j] = b[j] + want * (a * c);
       }
       for(uint32_t j = 0; j < n; j++)
         for(const uint32_t k : graph.linked[j])
@@ -556,13 +669,38 @@ FitResult fitReference(const wardrobe::BaseCage& cage, const Body& reference, co
       std::sort(r.begin(), r.end());
       r.erase(std::unique(r.begin(), r.end()), r.end());
     }
-    const double      near2 = options.refineReach * options.refineReach;
-    std::vector<Vec3> want(nv), move2(nv), next(nv);
+    const double        near2 = options.refineReach * options.refineReach;
+    std::vector<Vec3>   want(nv), move2(nv), next(nv);
+    std::vector<double> weight(nv);
+    std::vector<uint8_t> held2(nv);
     for(int pass = 0; pass < options.refine; pass++)
     {
       pullAll(near2);
+      pullBack(near2);
+      // each vertex's move: its own pull and the source's on the skin round it, by area
       for(size_t v = 0; v < nv; v++)
-        want[v] = pulled[v] ? target[v] - at(current, v) : Vec3{};
+      {
+        weight[v] = pulled[v] ? area[v] : 0;
+        want[v]   = pulled[v] ? (target[v] - at(current, v)) * area[v] : Vec3{};
+      }
+      for(size_t s = 0; s < ns; s++)
+        if(back[s].hit)
+        {
+          Vec3 q;
+          for(size_t i = 0; i < 3; i++)
+            q = q + at(current, back[s].corner[i]) * back[s].share[i];
+          const Vec3 d = back[s].target - q;
+          for(size_t i = 0; i < 3; i++)
+          {
+            want[back[s].corner[i]] = want[back[s].corner[i]] + d * (back[s].share[i] * sourceArea[s]);
+            weight[back[s].corner[i]] += back[s].share[i] * sourceArea[s];
+          }
+        }
+      for(size_t v = 0; v < nv; v++)
+      {
+        held2[v] = weight[v] > 0;
+        want[v]  = held2[v] ? want[v] * (1 / weight[v]) : Vec3{};
+      }
       move2 = want;
       for(int sweep = 0; sweep < 16; sweep++)
       {
@@ -572,7 +710,7 @@ FitResult fitReference(const wardrobe::BaseCage& cage, const Body& reference, co
             Vec3 sum;
             for(const uint32_t u : ring[v])
               sum = sum + move2[u];
-            const double k = double(ring[v].size()), anchor = pulled[v] ? 2 * k : 0;
+            const double k = double(ring[v].size()), anchor = held2[v] ? 2 * k : 0;
             next[v]        = k + anchor > 0 ? (want[v] * anchor + sum) * (1 / (k + anchor)) : Vec3{};
           }
         });
@@ -616,6 +754,124 @@ TypeMap makeFittedMap(const FitInputs& in, const FitOptions& options, FitResult*
   out.map.frameTurn     = frameTurns(vertexFrames(out.source), vertexFrames(bodyOf(*in.g9)), out.map.toReference);
   if(fit)
     *fit = std::move(made);
+  return out;
+}
+
+std::vector<int32_t> matchCut(const wardrobe::BaseCage& cut, const wardrobe::BaseCage& whole)
+{
+  const size_t         nc = cut.positions.size() / 3, nw = whole.positions.size() / 3;
+  std::vector<int32_t> out(nc, -1);
+  if(cut.uvs.size() != nc * 2 || whole.uvs.size() != nw * 2)
+    return out;
+  // the whole body's vertices by UV, on a grid finer than any two a body's UVs hold apart
+  constexpr double kCell = 1e-4, kSame = 2e-5;
+  const auto       key = [](double u, double v) { return (int64_t(std::floor(u / kCell)) << 32) ^ int64_t(std::floor(v / kCell) + (1ll << 30)); };
+  std::unordered_map<int64_t, std::vector<uint32_t>> byUv;
+  for(uint32_t w = 0; w < nw; w++)
+    byUv[key(whole.uvs[w * 2], whole.uvs[w * 2 + 1])].push_back(w);
+  for(size_t c = 0; c < nc; c++)
+  {
+    const double u = cut.uvs[c * 2], v = cut.uvs[c * 2 + 1];
+    const Vec3   p = at(cut.positions, c);
+    double       best = INFINITY;
+    for(int du = -1; du <= 1; du++)
+      for(int dv = -1; dv <= 1; dv++)
+        if(const auto it = byUv.find(key(u + du * kCell, v + dv * kCell)); it != byUv.end())
+          for(const uint32_t w : it->second)
+            if(std::abs(whole.uvs[w * 2] - u) <= kSame && std::abs(whole.uvs[w * 2 + 1] - v) <= kSame)
+              if(const Vec3 d = at(whole.positions, w) - p; dot(d, d) < best)
+                best = dot(d, d), out[c] = int32_t(w);
+  }
+  // a vertex on a UV seam may keep the other side's UV: it takes the nearest whole vertex among the
+  // neighbours of its own neighbours' matches, a few times over as matches spread
+  std::vector<std::vector<uint32_t>> cutRing(nc), wholeRing(nw);
+  const auto ringsOf = [](const std::vector<uint32_t>& tris, std::vector<std::vector<uint32_t>>& ring) {
+    for(size_t t = 0; t * 3 + 2 < tris.size(); t++)
+      for(size_t j = 0; j < 3; j++)
+      {
+        ring[tris[t * 3 + j]].push_back(tris[t * 3 + (j + 1) % 3]);
+        ring[tris[t * 3 + (j + 1) % 3]].push_back(tris[t * 3 + j]);
+      }
+  };
+  ringsOf(cut.tris, cutRing);
+  ringsOf(whole.tris, wholeRing);
+  for(int sweep = 0; sweep < 4; sweep++)
+  {
+    bool grew = false;
+    for(size_t c = 0; c < nc; c++)
+    {
+      if(out[c] >= 0)
+        continue;
+      const Vec3 p    = at(cut.positions, c);
+      double     best = INFINITY;
+      for(const uint32_t n : cutRing[c])
+        if(out[n] >= 0)
+          for(const uint32_t w : wholeRing[size_t(out[n])])
+            if(const Vec3 d = at(whole.positions, w) - p; dot(d, d) < best)
+              best = dot(d, d), out[c] = int32_t(w);
+      grew = grew || out[c] >= 0;
+    }
+    if(!grew)
+      break;
+  }
+  return out;
+}
+
+TypeMap cutMap(const TypeMap& whole, const Body& cut, const std::vector<int32_t>& match)
+{
+  TypeMap      out;
+  const size_t nc = cut.positions.size() / 3, nr = whole.reference.positions.size() / 3, nw = whole.source.positions.size() / 3;
+  out.source      = cut;
+  out.reference   = whole.reference;
+  out.turns       = whole.turns;
+  auto& there     = out.map.toReference;
+  there.at.verts.assign(nc * 3, 0);
+  there.at.weights.assign(nc * 3, 0.f);
+  there.at.used.assign(nr, 0);
+  there.mapped.assign(nc, 0);
+  out.map.frameTurn.assign(nc, Quat{});
+  std::vector<int32_t> inCut(nw, -1);
+  for(size_t c = 0; c < nc && c < match.size(); c++)
+  {
+    const int32_t w = match[c];
+    if(w < 0 || size_t(w) >= nw)
+      continue;
+    inCut[size_t(w)] = int32_t(c);
+    if(!whole.map.toReference.mapped[size_t(w)])
+      continue;
+    for(size_t j = 0; j < 3; j++)
+    {
+      there.at.verts[c * 3 + j]   = whole.map.toReference.at.verts[size_t(w) * 3 + j];
+      there.at.weights[c * 3 + j] = whole.map.toReference.at.weights[size_t(w) * 3 + j];
+      there.at.used[there.at.verts[c * 3 + j]] = 1;
+    }
+    there.mapped[c] = 1;
+    if(size_t(w) < whole.map.frameTurn.size())
+      out.map.frameTurn[c] = whole.map.frameTurn[size_t(w)];
+  }
+  auto& back = out.map.fromReference;
+  back.at.verts.assign(nr * 3, 0);
+  back.at.weights.assign(nr * 3, 0.f);
+  back.at.used.assign(nc, 0);
+  back.mapped.assign(nr, 0);
+  for(size_t r = 0; r < nr; r++)
+  {
+    if(!whole.map.fromReference.mapped[r])
+      continue;
+    bool all = true;
+    for(size_t j = 0; j < 3 && all; j++)
+    {
+      const int32_t c = inCut[whole.map.fromReference.at.verts[r * 3 + j]];
+      all             = c >= 0 || whole.map.fromReference.at.weights[r * 3 + j] <= 0;
+      back.at.verts[r * 3 + j]   = uint32_t(std::max(c, 0));
+      back.at.weights[r * 3 + j] = whole.map.fromReference.at.weights[r * 3 + j];
+    }
+    if(!all)
+      continue;
+    back.mapped[r] = 1;
+    for(size_t j = 0; j < 3; j++)
+      back.at.used[back.at.verts[r * 3 + j]] = 1;
+  }
   return out;
 }
 

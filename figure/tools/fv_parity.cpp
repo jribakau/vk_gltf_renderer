@@ -58,6 +58,7 @@
 // inside it: the case in cases/native_test.json is the profile of a scene file's load.
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -94,6 +95,7 @@
 #include <figure/gltf/gltf_check.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/dson/rig.hpp>
+#include <figure/physics/collide/surface_index.hpp>
 #include <figure/physics/contact/contact.hpp>
 #include <figure/physics/flesh/flesh.hpp>
 #include <figure/physics/flesh/follow.hpp>
@@ -433,7 +435,11 @@ Json reportMap(const fv::bodymap::TypeMap& m, const fv::wardrobe::BaseCage& sour
   Json spreads = Json::object();
   std::cerr << std::fixed << std::setprecision(1) << "  turned into its rest:";
   for(const auto& t : m.turns)
+  {
     std::cerr << " " << (t.side ? std::string(1, t.side) + " " : std::string()) << t.joint << " " << t.degrees;
+    if(t.moved > 0.05 || std::abs(t.sized - 1) > 0.005)
+      std::cerr << std::setprecision(2) << " (moved " << t.moved << " cm, sized " << t.sized << ")" << std::setprecision(1);
+  }
   std::cerr << "\n"
             << std::setprecision(4) << "  mapped " << q.mapped << ", the reference covered back " << q.inverseCovers << ", stretch p95 " << q.stretchP95
             << " max " << q.stretchMax << ", fold-free " << q.foldFree << "\n"
@@ -458,6 +464,104 @@ Json reportMap(const fv::bodymap::TypeMap& m, const fv::wardrobe::BaseCage& sour
     for(size_t i = 0; i < most.size() && i < 40; i++)
       std::cerr << (i ? ", " : " ") << most[i].second << " " << most[i].first;
     std::cerr << (most.size() > 40 ? ", ..." : "") << "\n";
+  }
+  // why a source vertex lands over 1 cm off: the reference's skin is that far from it anyway (it doesn't
+  // reach there), or nearer skin was refused (facing away past 60 degrees, or of other regions)
+  {
+    const fv::physics::SurfaceIndex index(m.reference.positions, m.reference.tris);
+    const std::vector<fv::Vec3>     normals = fv::bodymap::outerNormals(m.source);
+    const auto P = [](const std::vector<float>& p, size_t v) { return fv::Vec3{p[v * 3], p[v * 3 + 1], p[v * 3 + 2]}; };
+    size_t     far = 0, uncovered = 0, between = 0, refusedFacing = 0, refusedRegion = 0, facingDown = 0;
+    std::map<std::string, std::array<size_t, 3>> byRegion;
+    fv::physics::Stamps& stamps = fv::physics::threadStamps();
+    for(size_t v = 0; v < m.map.toReference.mapped.size(); v++)
+    {
+      if(!m.map.toReference.mapped[v])
+        continue;
+      fv::Vec3 q;
+      for(size_t j = 0; j < 3; j++)
+        q = q + P(m.reference.positions, m.map.toReference.at.verts[v * 3 + j]) * double(m.map.toReference.at.weights[v * 3 + j]);
+      const fv::Vec3 p = P(m.source.positions, v);
+      if(fv::length(q - p) <= 1)
+        continue;
+      far++;
+      facingDown += normals[v].y < -0.5;
+      const int32_t id  = stamps.next(index.triangles());
+      const auto    hit = index.nearest(p.x, p.y, p.z, [&](size_t t) { return t >= m.reference.outer.size() || m.reference.outer[t]; }, 100.0, stamps.stamp, id);
+      auto&         row = byRegion[fv::bodymap::regionNames(m.source.regions[v])];
+      if(hit.tri < 0 || hit.d2 >= 1)
+      {
+        uncovered++, row[0]++;
+        continue;
+      }
+      if(hit.d2 >= 0.09)
+      {
+        between++, row[1]++;
+        continue;
+      }
+      row[2]++;
+      const size_t   t = size_t(hit.tri);
+      const fv::Vec3 a = P(m.reference.positions, m.reference.tris[t * 3]);
+      const fv::Vec3 e1 = P(m.reference.positions, m.reference.tris[t * 3 + 1]) - a, e2 = P(m.reference.positions, m.reference.tris[t * 3 + 2]) - a;
+      const fv::Vec3 face = fv::normalize(fv::Vec3{e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x});
+      if(fv::dot(face, normals[v]) < std::cos(60 * fv::kDeg))
+        refusedFacing++;
+      else
+        refusedRegion++;
+    }
+    std::cerr << "  over 1 cm off, why: " << far << " vertices; the reference's skin over 1 cm away anyway " << uncovered << ", 3 mm to 1 cm " << between
+              << ", within 3 mm but refused " << (refusedFacing + refusedRegion) << " (facing " << refusedFacing << ", regions " << refusedRegion
+              << "); facing down " << facingDown << "\n    by region (skin over 1 cm, 3 mm-1 cm, within 3 mm):";
+    for(const auto& [name, row] : byRegion)
+      if(row[0] + row[1] + row[2] >= 20)
+        std::cerr << " " << name << " " << row[0] << "/" << row[1] << "/" << row[2];
+    std::cerr << "\n";
+    // where the round trip (source to the reference and back) ends over 3 mm off, by region, and how
+    // high (the source's height range in tenths)
+    {
+      const auto&                   there = m.map.toReference;
+      const auto&                   back  = m.map.fromReference;
+      std::map<std::string, size_t> off;
+      std::array<size_t, 10>        byHeight{};
+      double                        lo = INFINITY, hi = -INFINITY;
+      for(size_t v = 0; v < m.source.positions.size() / 3; v++)
+        lo = std::min(lo, double(m.source.positions[v * 3 + 1])), hi = std::max(hi, double(m.source.positions[v * 3 + 1]));
+      size_t total = 0;
+      for(size_t v = 0; v < there.mapped.size(); v++)
+      {
+        if(!there.mapped[v])
+          continue;
+        fv::Vec3 q;
+        double   w = 0;
+        for(size_t j = 0; j < 3; j++)
+        {
+          const uint32_t r = there.at.verts[v * 3 + j];
+          if(r >= back.mapped.size() || !back.mapped[r])
+            continue;
+          fv::Vec3 s;
+          for(size_t k = 0; k < 3; k++)
+            s = s + P(m.source.positions, back.at.verts[r * 3 + k]) * double(back.at.weights[r * 3 + k]);
+          q = q + s * double(there.at.weights[v * 3 + j]);
+          w += there.at.weights[v * 3 + j];
+        }
+        if(w < 0.5 || fv::length(q * (1 / w) - P(m.source.positions, v)) <= 0.3)
+          continue;
+        total++;
+        off[fv::bodymap::regionNames(m.source.regions[v])]++;
+        byHeight[std::min<size_t>(9, size_t(10 * (m.source.positions[v * 3 + 1] - lo) / std::max(hi - lo, 1e-9)))]++;
+      }
+      std::vector<std::pair<size_t, std::string>> most;
+      for(const auto& [name, n] : off)
+        most.emplace_back(n, name);
+      std::sort(most.rbegin(), most.rend());
+      std::cerr << "  round trip over 3 mm: " << total << " vertices; by region:";
+      for(size_t i = 0; i < most.size() && i < 12; i++)
+        std::cerr << " " << most[i].second << " " << most[i].first;
+      std::cerr << "; by height, feet to head:";
+      for(const size_t n : byHeight)
+        std::cerr << " " << n;
+      std::cerr << "\n";
+    }
   }
   // the turned-over triangles by the surface they're on (nails, ears...)
   if(const fv::wardrobe::BaseCage* cage = &source; !cage->triSurface.empty())
@@ -1266,23 +1370,98 @@ int main(int argc, char** argv)
         fv::bodymap::FitResult                        fitted;
         std::string                                   how;
         double                                        loadMs = 0;
-        if(fv::nif::isNif(figureName) || !fitFrom.empty())
+        fv::bodymap::FitOptions                       options;
+        options.nodes          = step.value("nodes", options.nodes);
+        options.rounds         = step.value("rounds", options.rounds);
+        options.landmarkWeight = step.value("landmarks", options.landmarkWeight);
+        options.stiffTo        = step.value("stiffTo", options.stiffTo);
+        if(fv::nif::isNif(figureName) && step.contains("whole"))
+        {
+          // the outfit's carried body matched to the whole body mod it was cut from ("whole": its
+          // femalebody nif), and mapped through the whole body's fitted map
+          std::filesystem::path outfit = pathOf(figureName.c_str());
+          if(std::error_code ec; !std::filesystem::is_regular_file(outfit, ec))
+          {
+            const auto found = store->library().find(figureName);
+            if(!found)
+              throw std::runtime_error(figureName + " isn't in the library");
+            outfit = *found;
+          }
+          const auto carried = fv::nif::carriedBody(outfit);
+          const auto whole   = fv::nif::modBody(pathOf(step["whole"].get<std::string>().c_str()));
+          const auto shaped  = fv::bodymap::cloneReference(*store, fv::wardrobe::Generation::eG8, "female");
+          if(!carried || !whole || !shaped)
+            throw std::runtime_error("bodymap: no carried body, whole body or CloneGenesis8Female");
+          loadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - mapStart).count();
+          fv::bodymap::FitInputs in{whole, g9, *shaped};
+          const fv::bodymap::TypeMap wholeMap = fv::bodymap::mapCacheDir().empty() ? fv::bodymap::makeFittedMap(in, options, &fitted) : fv::bodymap::cachedFittedMap(in, options);
+          const auto           matchStart = std::chrono::steady_clock::now();
+          const std::vector<int32_t> match  = fv::bodymap::matchCut(*carried, *whole);
+          made                              = fv::bodymap::cutMap(wholeMap, fv::bodymap::bodyOf(*carried), match);
+          const double matchMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - matchStart).count();
+          source               = carried;
+          size_t              matched = 0;
+          std::vector<double> preset;
+          for(size_t c = 0; c < match.size(); c++)
+            if(match[c] >= 0)
+            {
+              matched++;
+              const size_t w = size_t(match[c]);
+              preset.push_back(std::sqrt(std::pow(carried->positions[c * 3] - whole->positions[w * 3], 2) + std::pow(carried->positions[c * 3 + 1] - whole->positions[w * 3 + 1], 2)
+                                         + std::pow(carried->positions[c * 3 + 2] - whole->positions[w * 3 + 2], 2)));
+            }
+          std::sort(preset.begin(), preset.end());
+          std::ostringstream m;
+          m << std::fixed << std::setprecision(2) << "its carried body (" << carried->positions.size() / 3 << " vertices) matched to the whole body's ("
+            << whole->positions.size() / 3 << ") by UV: " << matched << " matched, in " << matchMs << " ms; the presets apart (cm) median "
+            << (preset.empty() ? 0.0 : preset[preset.size() / 2]) << ", p95 " << (preset.empty() ? 0.0 : preset[size_t(0.95 * double(preset.size() - 1))]) << ", max "
+            << (preset.empty() ? 0.0 : preset.back());
+          how = m.str();
+        }
+        else if(fv::nif::isNif(figureName) || !fitFrom.empty())
         {
           fv::bodymap::FitInputs in;
           in.g9 = g9;
           if(fv::nif::isNif(figureName))
           {
-            const auto found = store->library().find(figureName);
-            if(!found)
-              throw std::runtime_error(figureName + " isn't in the library");
-            in.source = fv::nif::carriedBody(*found);
+            // a library path, or a file on disk (a body mod's meshes unpacked to look at)
+            std::filesystem::path file = pathOf(figureName.c_str());
+            if(std::error_code ec; !std::filesystem::is_regular_file(file, ec))
+            {
+              const auto found = store->library().find(figureName);
+              if(!found)
+                throw std::runtime_error(figureName + " isn't in the library");
+              file = *found;
+            }
+            std::string stem = file.filename().string();
+            std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+            const bool modBody = stem.rfind("femalebody", 0) == 0;
+            in.source          = modBody ? fv::nif::modBody(file) : fv::nif::carriedBody(file);
             if(!in.source)
               throw std::runtime_error(figureName + " carries no body");
             const auto shaped = fv::bodymap::cloneReference(*store, fv::wardrobe::Generation::eG8, "female");
             if(!shaped)
               throw std::runtime_error("bodymap: Genesis 9's CloneGenesis8Female isn't installed");
             in.reference = *shaped;
-            how          = "its carried body, fitted from Genesis 9 shaped by CloneGenesis8Female";
+            {
+              const fv::bodymap::Body b = fv::bodymap::bodyOf(*in.source);
+              std::map<std::pair<uint32_t, uint32_t>, int> edges;
+              for(size_t t = 0; t * 3 + 2 < b.tris.size(); t++)
+                for(size_t j = 0; j < 3; j++)
+                {
+                  const uint32_t x = b.tris[t * 3 + j], y = b.tris[t * 3 + (j + 1) % 3];
+                  edges[{std::min(x, y), std::max(x, y)}]++;
+                }
+              size_t open = 0;
+              for(const auto& [e, k] : edges)
+                open += k == 1 ? 1 : 0;
+              float lo = 1e30f, hi = -1e30f;
+              for(size_t v = 1; v < b.positions.size(); v += 3)
+                lo = std::min(lo, b.positions[v]), hi = std::max(hi, b.positions[v]);
+              how = std::string(modBody ? "the body mod's body (body, hands and feet)" : "its carried body") + " of " + std::to_string(b.positions.size() / 3)
+                    + " vertices, " + std::to_string(open) + " open edges, " + std::to_string(int(lo)) + " to " + std::to_string(int(hi))
+                    + " cm high, fitted from Genesis 9 shaped by CloneGenesis8Female";
+            }
           }
           else
           {
@@ -1304,11 +1483,6 @@ int main(int argc, char** argv)
               truth = fv::bodymap::cachedCloneMap(*inputs);
           }
           loadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - mapStart).count();
-          fv::bodymap::FitOptions options;
-          options.nodes  = step.value("nodes", options.nodes);
-          options.rounds = step.value("rounds", options.rounds);
-          options.landmarkWeight = step.value("landmarks", options.landmarkWeight);
-          options.stiffTo        = step.value("stiffTo", options.stiffTo);
           // through the cache when it's on (--map-cache), else made here with the fit's own numbers
           if(fv::bodymap::mapCacheDir().empty())
             made = fv::bodymap::makeFittedMap(in, options, &fitted);
@@ -1348,6 +1522,31 @@ int main(int argc, char** argv)
         dump["bodymap"] = figureName;
         if(truth)
           dump["againstClone"] = reportAgainstTruth(*made, *truth);
+        // "points": a region's name ("hand" takes in its fingers, "foot" its toes): both bodies' points there, each with its
+        // region's number, to look at outside
+        if(step.contains("points"))
+        {
+          const std::string part = step["points"].get<std::string>();
+          for(const auto& [what, body] : {std::pair{"source", &made->source}, std::pair{"reference", &made->reference}})
+          {
+            Json pts = Json::array();
+            for(size_t v = 0; v < body->regions.size(); v++)
+            {
+              const fv::bodymap::RegionMask mask = body->regions[v];
+              if(!mask || (mask & (mask - 1)))
+                continue;
+              const std::string name = fv::bodymap::regionNames(mask);
+              const bool        right = name.rfind("r ", 0) == 0;
+              const std::string bare  = right ? name.substr(2) : name;
+              const bool        inHand = bare == "hand" || bare == "thumb" || bare == "index" || bare == "mid" || bare == "ring" || bare == "pinky";
+              const bool        inFoot = bare == "foot" || bare.find("toe") != std::string::npos;
+              if(right || !(bare == part || (part == "hand" && inHand) || (part == "foot" && inFoot)))
+                continue;
+              pts.push_back({r(body->positions[v * 3]), r(body->positions[v * 3 + 1]), r(body->positions[v * 3 + 2]), bare});
+            }
+            dump["points"][what] = pts;
+          }
+        }
         dumps[step.value("label", std::string("bodymap"))] = dump;
       }
       else if(step.contains("clearance"))

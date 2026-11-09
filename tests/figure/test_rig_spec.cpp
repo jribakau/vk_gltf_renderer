@@ -77,6 +77,8 @@ const std::unordered_map<std::string, std::string>& skyrimSlots()
       {"neck", "neck1"},        {"clavicle", "collar"},  {"upperarmtwist1", "upperarm"}, {"upperarmtwist2", "upperarm"},
       {"forearmtwist1", "forearm"}, {"forearmtwist2", "forearm"}, {"calf", "shin"},     {"toe0", "toes"},
       {"breast", "pectoral"},   {"finger00", "thumb1"},  {"finger01", "thumb2"},        {"finger02", "thumb3"},
+      // added since: 3BA's breast bones
+      {"breast01", "pectoral"}, {"breast02", "pectoral"}, {"breast03", "pectoral"},
       {"finger10", "index1"},   {"finger11", "index2"},  {"finger12", "index3"},        {"finger20", "mid1"},
       {"finger21", "mid2"},     {"finger22", "mid3"},    {"finger30", "ring1"},         {"finger31", "ring2"},
       {"finger32", "ring3"},    {"finger40", "pinky1"},  {"finger41", "pinky2"},        {"finger42", "pinky3"},
@@ -99,6 +101,9 @@ fv::wardrobe::ParsedBone parseBone(const std::string& name)
 {
   fv::wardrobe::ParsedBone out;
   static const std::regex  twist(R"(twist\d?$)");
+  // added since: a Skyrim name without the "NPC " (3BA's "L Breast01")
+  if(name.size() > 2 && (name[0] == 'L' || name[0] == 'R') && name[1] == ' ')
+    return parseBone("NPC " + name);
   if(name.size() > 4 && name.compare(0, 4, "NPC ") == 0)
   {
     std::string rest = name.substr(4);
@@ -518,6 +523,14 @@ TEST(RigSpec, ANameIsReadIntoASideAndAJoint)
   EXPECT_EQ(fv::rig::parse("l_shoulder").joint->id, "collar");
   EXPECT_EQ(fv::rig::parse("lip").joint, nullptr);
   EXPECT_EQ(fv::rig::parse("lip").side, 0);
+  // 3BA's breast bones, each the pectoral
+  for(const char* breast : {"NPC L Breast", "L Breast01", "L Breast02", "L Breast03"})
+  {
+    const fv::rig::Name n = fv::rig::parse(breast);
+    ASSERT_NE(n.joint, nullptr) << breast;
+    EXPECT_EQ(n.joint->id, "pectoral") << breast;
+    EXPECT_EQ(n.side, 'l') << breast;
+  }
 }
 
 // The Pose tab's mirror pairs the sides by the spec: Genesis 9's and 8's names, Skyrim's, a toe's

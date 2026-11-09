@@ -486,7 +486,7 @@ std::optional<Body> cloneReference(dson::Store& store, wardrobe::Generation gene
   return reference;
 }
 
-std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vector<float>& shaped, const Body& source, std::vector<LimbTurn>* turns)
+std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vector<float>& shaped, const Body& source, std::vector<LimbTurn>* turns, bool reshape)
 {
   const std::vector<wardrobe::SkelBone>& bones = reference.skeleton;
   const size_t                           nb = bones.size(), nv = shaped.size() / 3;
@@ -508,6 +508,9 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
     char                     side = 0;
     Quat                     world;
     Vec3                     pivot;
+    Vec3                     shift;      // a hand, finger, foot or toe moved off its parent's end too...
+    double                   scale = 1;  // ...and sized along its length
+    Vec3                     axis;       // which, from its joint to its skin's middle, as it rests
     bool                     found = false;
   };
   std::vector<Unit> units;
@@ -553,6 +556,37 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
     for(const Unit& p : units)
       if(p.chain == u.chain && p.level == u.level - 1 && p.found && u.level == 3)
         u.world = p.world;
+    // a finger is sized to the source's from its knuckles' band to its tip (each body's 99th percentile
+    // along the line from that band to its skin's middle)
+    if(reshape && u.next.empty() && u.chain < 2)
+      if(const auto sFrom = bandMiddle(source.positions, source.regions, own, above))
+      {
+        const auto reach = [&](const std::vector<float>& pos, const std::vector<RegionMask>& reg, const Vec3& joint, Vec3* axisOut) {
+          Vec3   middle;
+          size_t n = 0;
+          for(size_t v = 0; v < reg.size() && v * 3 + 2 < pos.size(); v++)
+            if(reg[v] == own)
+              middle = middle + Vec3{pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]}, n++;
+          if(n < 8 || length(middle * (1.0 / double(n)) - joint) < 1e-6)
+            return 0.0;
+          const Vec3          axis = normalize(middle * (1.0 / double(n)) - joint);
+          std::vector<double> t;
+          for(size_t v = 0; v < reg.size() && v * 3 + 2 < pos.size(); v++)
+            if(reg[v] == own)
+              t.push_back(dot(Vec3{pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]} - joint, axis));
+          std::sort(t.begin(), t.end());
+          if(axisOut)
+            *axisOut = axis;
+          return t[size_t(0.99 * double(t.size() - 1))];
+        };
+        Vec3         axis;
+        const double mineLong = reach(shaped, regions, *from, &axis), theirsLong = reach(source.positions, source.regions, *sFrom, nullptr);
+        if(mineLong > 1e-6 && theirsLong > 1e-6)
+        {
+          u.axis  = axis;
+          u.scale = std::clamp(theirsLong / mineLong, 0.8, 1.25);
+        }
+      }
     if(u.next.empty())
       continue;
     RegionMask next = 0;
@@ -570,6 +604,37 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
     const Vec3 dr = *to - *from, ds = *sTo - *sFrom;
     if(length(dr) > 1e-6 && length(ds) > 1e-6)
       u.world = quatFromUnitVectors(normalize(dr), normalize(ds));
+    // an arm's part (the upper arm, forearm and hand) is sized to the source's too, joint band to joint
+    // band: the elbow's and wrist's bands lie within 0.3 cm of each other on two rigs' clones. Not a
+    // leg's: the knee's lie 1.3 cm apart, and sized, Genesis 8 Female's shin fitted 1.10 cm off its clone
+    // map (0.76 turned alone)
+    if(reshape && u.chain < 2 && length(dr) > 1e-6)
+    {
+      u.axis  = normalize(dr);
+      u.scale = std::clamp(length(ds) / length(dr), 0.8, 1.25);
+    }
+    // a hand is turned about that line too, to bring its thumb where the source's is: one rig's rest has
+    // the palms down (Skyrim's), another's toward the body (Genesis 9's)
+    if(u.own == R::eHand && length(ds) > 1e-6)
+    {
+      const RegionMask thumb = sided(R::eThumb, u.side);
+      const auto       rt = bandMiddle(shaped, regions, own, thumb), st = bandMiddle(source.positions, source.regions, own, thumb);
+      if(rt && st)
+      {
+        const Vec3 axis = normalize(ds);
+        Vec3       a = rotate(*rt - *from, u.world), b = *st - *sFrom;
+        a            = a - axis * dot(a, axis);
+        b            = b - axis * dot(b, axis);
+        if(length(a) > 1e-6 && length(b) > 1e-6)
+        {
+          a                  = normalize(a);
+          b                  = normalize(b);
+          const Vec3   c     = {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+          const double angle = std::atan2(dot(c, axis), dot(a, b));
+          u.world            = (Quat{axis.x * std::sin(angle / 2), axis.y * std::sin(angle / 2), axis.z * std::sin(angle / 2), std::cos(angle / 2)} * u.world).normalized();
+        }
+      }
+    }
   }
 
   // parents, and an order with every bone after its parent; each bone's unit
@@ -602,15 +667,22 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
 
   // The pose: a unit's bones (its twist bones too) turn about its joint; any other bone keeps its
   // parent's turn, so where its own centre is cancels out of the skin.
-  std::vector<Quat> world(nb);
-  std::vector<Vec3> centre(nb), at(nb);
-  const auto        pose = [&] {
+  // an offset as it rests, sized along a unit's length
+  const auto stretch = [](const Vec3& d, const Vec3& axis, double size) { return d + axis * ((size - 1) * dot(axis, d)); };
+  std::vector<Quat>   world(nb);
+  std::vector<Vec3>   centre(nb), at(nb), along(nb);
+  std::vector<double> size(nb, 1);
+  const auto          pose = [&] {
     for(const size_t b : order)
     {
       const int u = unitOf[b], p = parent[b];
       centre[b]   = u >= 0 ? units[size_t(u)].pivot : Vec3{bones[b].center[0], bones[b].center[1], bones[b].center[2]};
       world[b]    = u >= 0 ? units[size_t(u)].world : p >= 0 ? world[size_t(p)] : Quat{};
-      at[b]       = p >= 0 ? at[size_t(p)] + rotate(centre[b] - centre[size_t(p)], world[size_t(p)]) : centre[b];
+      size[b]     = u >= 0 ? units[size_t(u)].scale : p >= 0 ? size[size_t(p)] : 1;
+      along[b]    = u >= 0 ? units[size_t(u)].axis : p >= 0 ? along[size_t(p)] : Vec3{};
+      at[b]       = p >= 0 ? at[size_t(p)] + rotate(stretch(centre[b] - centre[size_t(p)], along[size_t(p)], size[size_t(p)]), world[size_t(p)]) : centre[b];
+      if(u >= 0 && (p < 0 || unitOf[size_t(p)] != u))
+        at[b] = at[b] + units[size_t(u)].shift;
     }
   };
   const auto skinned = [&](size_t v) {
@@ -623,7 +695,7 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
       const double w = reference.skin.weight[size_t(i)];
       if(b < 0 || size_t(b) >= nb || w <= 0)
         continue;
-      sum = sum + (at[size_t(b)] + rotate(p - centre[size_t(b)], world[size_t(b)])) * w;
+      sum = sum + (at[size_t(b)] + rotate(stretch(p - centre[size_t(b)], along[size_t(b)], size[size_t(b)]), world[size_t(b)])) * w;
       total += w;
     }
     return total > 0 ? sum * (1.0 / total) : p;
@@ -632,9 +704,14 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
 
   // Each unit's turn fitted, parents first: its own vertices, as posed, to the closest points of the
   // source's skin in its region, by the turn about its joint that takes them there best; a few rounds,
-  // as the closest points move with the turn. The units below it turn with it. A unit the source has
-  // less than half the skin of (a carried body cut at the shoulder) isn't fitted: its few points would
-  // turn the whole limb onto them.
+  // as the closest points move with the turn. The units below it turn with it. A hand, finger, foot or
+  // toe is moved as well as turned, about its points' middle: one rig's palm is longer than another's (a
+  // Skyrim body's knuckles lie 2.5 cm further from the wrist than Genesis 9's), and a finger turned about
+  // knuckles that far off can't lie along the source's. A hand's and its fingers' points are pulled by
+  // the source's closest points too, a finger's tip by the source's past it. (Their lengths were set
+  // above, from the bands: closest points slide along a finger, and sized by them a finger's thickness
+  // counted as its length.) A unit the source has less than half the skin of (a carried body cut at the
+  // shoulder) isn't fitted: its few points would turn the whole limb onto them.
   if(!source.tris.empty())
   {
     const physics::SurfaceIndex index(source.positions, source.tris);
@@ -655,22 +732,39 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
           sum += area[v];
       return sum;
     };
+    // which units the source has the skin of; a hand or foot takes in the fingers or toes the source has
+    // none of as its own (Skyrim's foot is one bone, toes and all)
+    std::vector<uint8_t> has(units.size(), 0);
+    for(size_t k = 0; k < units.size(); k++)
+    {
+      const RegionMask own = sided(units[k].own, units[k].side);
+      has[k]               = units[k].found && skinOf(source, sourceArea, own) >= 0.5 * skinOf(shapedBody, refArea, own);
+    }
     constexpr double kReach2 = 8.0 * 8.0;
     for(int level = 0; level < 4; level++)
       for(size_t k = 0; k < units.size(); k++)
       {
         Unit& u = units[k];
-        if(!u.found || u.level != level)
+        if(!u.found || u.level != level || !has[k])
           continue;
         const RegionMask own = sided(u.own, u.side);
-        if(skinOf(source, sourceArea, own) < 0.5 * skinOf(shapedBody, refArea, own))
-          continue;
-        std::vector<size_t> verts;
+        RegionMask       mine = own;
+        for(size_t c = 0; c < units.size(); c++)
+          if(units[c].chain == u.chain && units[c].level == u.level + 1 && units[c].level == 3 && !has[c])
+            mine |= sided(units[c].own, units[c].side);
+        std::vector<size_t> verts, theirs;
         for(size_t v = 0; v < nv; v++)
-          if(regions[v] == own)
+          if((regions[v] & mine) && !(regions[v] & ~mine))
             verts.push_back(v);
         if(verts.size() < 8)
           continue;
+        // moved: a limb's end; pulled by the source's points too: a hand and its fingers
+        const bool moved = reshape && u.level >= 2, twoWay = moved && u.chain < 2;
+        if(twoWay)
+          for(size_t s = 0; s < source.regions.size() && s < sourceArea.size(); s++)
+            if(sourceArea[s] > 0 && (source.regions[s] & mine) && !(source.regions[s] & ~mine))
+              theirs.push_back(s);
+        std::vector<Vec3> posed(verts.size());
         for(int round = 0; round < 12; round++)
         {
           // the unit's joint as posed
@@ -683,9 +777,11 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
             }
           std::vector<Vec3> from, to;
           physics::Stamps&  stamps = physics::threadStamps();
-          for(const size_t v : verts)
+          for(size_t i = 0; i < verts.size(); i++)
+            posed[i] = skinned(verts[i]);
+          for(size_t i = 0; i < verts.size(); i++)
           {
-            const Vec3    p      = skinned(v);
+            const Vec3    p      = posed[i];
             const auto    accept = [&](size_t t) { return (t >= source.outer.size() || source.outer[t]) && (triRegions[t] & own); };
             const int32_t id     = stamps.next(index.triangles());
             const auto    hit    = index.nearest(p.x, p.y, p.z, accept, kReach2, stamps.stamp, id);
@@ -701,14 +797,40 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
             from.push_back(p - joint);
             to.push_back(q - joint);
           }
+          // and the source's points of a limb's end to the closest of the unit's
+          for(const size_t s : theirs)
+          {
+            const Vec3 q{source.positions[s * 3], source.positions[s * 3 + 1], source.positions[s * 3 + 2]};
+            double     best    = kReach2;
+            size_t     closest = posed.size();
+            for(size_t i = 0; i < posed.size(); i++)
+              if(const double d2 = dot(posed[i] - q, posed[i] - q); d2 < best)
+                best = d2, closest = i;
+            if(closest < posed.size())
+            {
+              from.push_back(posed[closest] - joint);
+              to.push_back(q - joint);
+            }
+          }
           if(from.size() < 8)
             break;
+          // a limb's end: the turn about the points' middle, and the move between the middles
+          Vec3 mf, mt;
+          if(moved)
+          {
+            for(size_t i = 0; i < from.size(); i++)
+              mf = mf + from[i] * (1.0 / double(from.size())), mt = mt + to[i] * (1.0 / double(to.size()));
+            for(size_t i = 0; i < from.size(); i++)
+              from[i] = from[i] - mf, to[i] = to[i] - mt;
+          }
           const Quat step = bestTurn(from, to);
+          const Vec3 move = mt - rotate(mf, step);
+          u.shift         = u.shift + move;
           for(Unit& d : units)
             if(d.found && d.chain == u.chain && (&d == &u || d.level > u.level))
               d.world = (step * d.world).normalized();
           pose();
-          if(2 * std::acos(std::min(1.0, std::abs(step.w))) < 0.01 * kDeg)
+          if(2 * std::acos(std::min(1.0, std::abs(step.w))) < 0.01 * kDeg && length(move) < 1e-3)
             break;
         }
       }
@@ -716,7 +838,7 @@ std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vect
   if(turns)
     for(const Unit& u : units)
       if(u.found)
-        turns->push_back({u.name, u.side, 2 * std::acos(std::min(1.0, std::abs(u.world.w))) / kDeg});
+        turns->push_back({u.name, u.side, 2 * std::acos(std::min(1.0, std::abs(u.world.w))) / kDeg, length(u.shift), u.scale});
 
   for(size_t v = 0; v < nv; v++)
   {

@@ -1,10 +1,12 @@
 #include <figure/bodymap/regions.hpp>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cctype>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace fv::bodymap {
 
@@ -121,17 +123,32 @@ rig::Landmark regionLandmark(rig::Region region)
 
 RegionMask withNeighbours(RegionMask mask)
 {
+  // every region hanging from one, not only the one its joint aims at: the chest's breasts and collars
+  // with its neck, the hand's five fingers, the pelvis's abdomen and thighs
+  static const auto hanging = [] {
+    std::array<std::vector<rig::Region>, size_t(rig::Region::ePinkyToe) + 1> out;
+    for(int r = 1; r <= int(rig::Region::ePinkyToe); r++)
+      if(const rig::Region up = regionAbove(rig::Region(r)); up != rig::Region::eNone)
+        out[size_t(up)].push_back(rig::Region(r));
+    return out;
+  }();
   RegionMask out = mask;
   for(RegionMask m = mask; m; m &= m - 1)
   {
     const int         bit    = std::countr_zero(m);
     const rig::Region region = rig::Region(bit % kRightShift);
     const char        side   = bit >= kRightShift ? 'r' : 'l';
-    const auto        near   = [&](rig::Region r) { return regionBit(r, regionSided(r) ? side : 0); };
+    // a sided neighbour on the region's side; of an unsided region (the chest), on both
+    const auto near = [&](rig::Region r) {
+      if(!regionSided(r))
+        return regionBit(r);
+      return regionSided(region) ? regionBit(r, side) : regionBit(r, 'l') | regionBit(r, 'r');
+    };
     if(const rig::Region up = regionAbove(region); up != rig::Region::eNone)
       out |= near(up);
-    for(const rig::Region down : regionsBelow(region))
-      out |= near(down);
+    if(size_t(region) < hanging.size())
+      for(const rig::Region down : hanging[size_t(region)])
+        out |= near(down);
   }
   return out;
 }

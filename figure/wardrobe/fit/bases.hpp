@@ -27,6 +27,9 @@ struct BaseCage
   mesh::SkinInput skin;
   // the base figure's bones (names, not ids), with their file centres
   std::vector<SkelBone> skeleton;
+  // per vertex, its UV (u, v), where the reader keeps them (a Skyrim body's: a cut body is matched to
+  // its whole body by them); empty otherwise
+  std::vector<float> uvs;
 };
 
 // The installed base cage for `generation`, or null when none of its files are in the library.

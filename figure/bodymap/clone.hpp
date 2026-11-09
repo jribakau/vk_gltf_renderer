@@ -141,6 +141,8 @@ struct LimbTurn
   std::string joint;
   char        side    = 0;
   double      degrees = 0;
+  double      moved   = 0;  // cm a limb's end was moved off its parent's...
+  double      sized   = 1;  // ...and sized
 };
 // The reference's cage (`shaped`: its positions shaped as the source's by the clone) turned part by
 // part into the source's rest, then skinned by its own weights, without correctives. A clone reshapes
@@ -152,7 +154,14 @@ struct LimbTurn
 // band where it meets the next, as the source's is; then each part, parents first, takes the turn that
 // best brings its own vertices onto the source's skin in its region (closest points, Horn's fit, a few
 // rounds), the parts below it turning with it.
-std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vector<float>& shaped, const Body& source, std::vector<LimbTurn>* turns = nullptr);
+//
+// `reshape`, for a reference not shaped as the source (a fit): an arm's upper arm, forearm and hand take
+// the source's length too, band to band, and each finger its length, band to tip; a hand, finger, foot
+// or toe is moved onto the source's as well (a Skyrim body's palm and fingers are longer than Genesis
+// 9's). Not for a clone, already shaped: Genesis 2's wrist band lies elsewhere, and sized by it, its
+// forearm and hand went to the limits.
+std::vector<float> intoRest(const wardrobe::BaseCage& reference, const std::vector<float>& shaped, const Body& source, std::vector<LimbTurn>* turns = nullptr,
+                            bool reshape = false);
 
 // What a type's clone map is made from: the type's base, Genesis 9's, and Genesis 9's shaped as the
 // type by its clone (unposed). None when one of them isn't installed.

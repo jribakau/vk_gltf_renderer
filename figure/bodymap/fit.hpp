@@ -76,4 +76,15 @@ struct FitInputs
 // refusing its cut; with the frame turns. `fit`, when given, gets the fit's own numbers.
 TypeMap makeFittedMap(const FitInputs& inputs, const FitOptions& options = {}, FitResult* fit = nullptr);
 
+// A body cut from another of its topology (an outfit's carried body, from the body mod it was built on,
+// at the outfit's own preset), matched vertex to vertex (the plan's rule 3): each cut vertex to the whole
+// body's of the same UV, the nearest of those by position where several share it; a vertex whose UV is
+// another seam side's, to the nearest whole vertex next to its neighbours' matches. -1 where none.
+std::vector<int32_t> matchCut(const wardrobe::BaseCage& cut, const wardrobe::BaseCage& whole);
+
+// The cut body's map through the whole body's: a matched vertex lands where its match does, turned as it
+// is; a reference vertex keeps its place when the triangle it lands on is the cut body's too, else it is
+// unmapped. `cut` is the cut body as a map reads it.
+TypeMap cutMap(const TypeMap& whole, const Body& cut, const std::vector<int32_t>& match);
+
 }  // namespace fv::bodymap

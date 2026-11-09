@@ -525,6 +525,9 @@ std::shared_ptr<const wardrobe::BaseCage> baseCageOf(const Base& b, double scale
   for(int32_t& bone : cage->skin.bone)
     bone = built.bones[size_t(bone)];
   cage->skeleton = skelBones(b.skeleton, scale);
+  // each cage vertex's UV: the first of the cage's own, before the seams' overrides
+  if(built.input.uvs.size() >= cage->positions.size() / 3 * 2)
+    cage->uvs.assign(built.input.uvs.begin(), built.input.uvs.begin() + ptrdiff_t(cage->positions.size() / 3 * 2));
   return cage;
 }
 
@@ -546,6 +549,98 @@ std::shared_ptr<const wardrobe::BaseCage> carriedBody(const fs::path& file)
   std::vector<std::string> notes;
   const std::optional<Base> base = findBase(nif, file, notes);
   return base ? baseCageOf(*base, 1) : nullptr;
+}
+
+std::shared_ptr<const wardrobe::BaseCage> modBody(const fs::path& bodyFile)
+{
+  // the body, then the hands and feet beside it: the same name with "hands" or "feet" for "body"
+  const std::string                              name = utf8(bodyFile.filename());
+  const size_t                                   at   = lower(name).find("body");
+  std::vector<std::pair<fs::path, std::string>> parts{{bodyFile, "Body"}};
+  if(at != std::string::npos)
+    for(const auto& [part, label] : {std::pair{"hands", "Hands"}, std::pair{"feet", "Feet"}})
+    {
+      const fs::path p = bodyFile.parent_path() / fromUtf8(name.substr(0, at) + part + name.substr(at + 4));
+      std::error_code ec;
+      if(fs::is_regular_file(p, ec))
+        parts.emplace_back(p, label);
+    }
+  auto                                 cage = std::make_shared<wardrobe::BaseCage>();
+  std::unordered_map<std::string, int> boneOf;
+  cage->skin.start.push_back(0);
+  // the vertices so far by a 1 mm grid, so a part's seam welds to the one before it
+  constexpr double                                     kWeld = 1e-3;
+  std::unordered_map<int64_t, std::vector<uint32_t>> grid;
+  const auto cell = [](double x, double y, double z) {
+    const auto q = [](double c) { return int64_t(std::floor(c / 0.1)) & 0x1fffff; };
+    return (q(x) << 42) | (q(y) << 21) | q(z);
+  };
+  for(size_t part = 0; part < parts.size(); part++)
+  {
+    const File                f      = readFile(parts[part].first);
+    const std::vector<size_t> bodies = bodyShapes(f);
+    if(bodies.empty())
+    {
+      if(part == 0)
+        return nullptr;
+      continue;
+    }
+    const auto one = baseCageOf(Base{f, bodies[0], skeletonOf(f, {bodies[0]})}, 1);
+    std::vector<int> bone(one->skeleton.size());
+    for(size_t b = 0; b < one->skeleton.size(); b++)
+    {
+      const auto [it, added] = boneOf.emplace(one->skeleton[b].name, int(cage->skeleton.size()));
+      if(added)
+        cage->skeleton.push_back(one->skeleton[b]);
+      bone[b] = it->second;
+    }
+    const size_t          before = cage->positions.size() / 3, count = one->positions.size() / 3;
+    std::vector<uint32_t> index(count);
+    for(size_t v = 0; v < count; v++)
+    {
+      const double x = one->positions[v * 3], y = one->positions[v * 3 + 1], z = one->positions[v * 3 + 2];
+      int64_t      found = -1;
+      for(int dx = -1; dx <= 1 && found < 0; dx++)
+        for(int dy = -1; dy <= 1 && found < 0; dy++)
+          for(int dz = -1; dz <= 1 && found < 0; dz++)
+            if(const auto it = grid.find(cell(x + dx * 0.1, y + dy * 0.1, z + dz * 0.1)); it != grid.end())
+              for(const uint32_t w : it->second)
+                if(w < before && std::abs(cage->positions[w * 3] - x) < kWeld && std::abs(cage->positions[w * 3 + 1] - y) < kWeld
+                   && std::abs(cage->positions[w * 3 + 2] - z) < kWeld)
+                {
+                  found = w;
+                  break;
+                }
+      if(found >= 0)
+      {
+        index[v] = uint32_t(found);
+        continue;
+      }
+      index[v] = uint32_t(cage->positions.size() / 3);
+      grid[cell(x, y, z)].push_back(index[v]);
+      cage->positions.insert(cage->positions.end(), {float(x), float(y), float(z)});
+      if(one->uvs.size() >= (v + 1) * 2)
+        cage->uvs.insert(cage->uvs.end(), {one->uvs[v * 2], one->uvs[v * 2 + 1]});
+      for(int32_t i = one->skin.start[v]; i < one->skin.start[v + 1]; i++)
+      {
+        cage->skin.bone.push_back(bone[size_t(one->skin.bone[size_t(i)])]);
+        cage->skin.weight.push_back(one->skin.weight[size_t(i)]);
+      }
+      cage->skin.start.push_back(int32_t(cage->skin.bone.size()));
+    }
+    if(cage->uvs.size() != cage->positions.size() / 3 * 2)
+      cage->uvs.clear();  // a part without UVs: none for the whole
+    cage->surfaces.push_back(parts[part].second);
+    for(size_t t = 0; t * 3 + 2 < one->tris.size(); t++)
+    {
+      const uint32_t a = index[one->tris[t * 3]], b = index[one->tris[t * 3 + 1]], c = index[one->tris[t * 3 + 2]];
+      if(a == b || b == c || a == c)
+        continue;
+      cage->tris.insert(cage->tris.end(), {a, b, c});
+      cage->triSurface.push_back(uint16_t(cage->surfaces.size() - 1));
+    }
+  }
+  return cage;
 }
 
 std::vector<size_t> bodyShapes(const File& nif)

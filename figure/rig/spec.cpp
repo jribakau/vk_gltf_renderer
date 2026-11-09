@@ -132,6 +132,9 @@ Name parse(const std::string& name)
 {
   Name                    out;
   static const std::regex twist(R"(twist\d?$)");
+  // Skyrim's body mods name some bones without the "NPC ": 3BA's "L Breast01"
+  if(name.size() > 2 && (name[0] == 'L' || name[0] == 'R') && name[1] == ' ')
+    return parse("NPC " + name);
   // Skyrim's: "NPC L Thigh [LThg]", "NPC Spine1 [Spn1]", "NPC Head [Head]"
   if(name.size() > 4 && name.compare(0, 4, "NPC ") == 0)
   {

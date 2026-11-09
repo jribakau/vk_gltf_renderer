@@ -32,7 +32,7 @@ std::filesystem::path g_dir;
 std::atomic<uint64_t> g_hits{0}, g_misses{0};
 
 constexpr char     kMagic[4] = {'F', 'V', 'M', '1'};
-constexpr uint32_t kVersion  = 1;
+constexpr uint32_t kVersion  = 2;
 // the files kept, oldest written or read first to go: a Genesis map is about 4 MB
 constexpr uintmax_t kBudget = 256ull << 20;
 
@@ -209,6 +209,8 @@ void writeMap(const std::filesystem::path& file, const io::CacheKey& key, const 
     putText(body, t.joint);
     put(body, t.side);
     put(body, t.degrees);
+    put(body, t.moved);
+    put(body, t.sized);
   }
   const std::string bytes = body.str();
   Header            h{};
@@ -264,6 +266,8 @@ std::optional<TypeMap> readMap(const std::filesystem::path& file, const io::Cach
     c.getText(t.joint);
     c.get(t.side);
     c.get(t.degrees);
+    c.get(t.moved);
+    c.get(t.sized);
     m.turns.push_back(std::move(t));
   }
   if(!c.ok || c.at != c.end || m.source.positions.size() != ns * 3 || m.reference.positions.size() != nr * 3
