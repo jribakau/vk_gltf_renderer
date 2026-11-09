@@ -947,7 +947,12 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
         thread_local std::vector<float> scratch;
         return wardrobe::projectTarget(*binding, rigidity ? &*rigidity : nullptr, *bodyGeo, itemVertices, t, scratch);
       };
-      const auto files = std::make_shared<const std::map<std::string, std::string>>(own);
+      // its own copies of the body's morphs were shaped on the figure it was made for: refitted from
+      // another generation (a Genesis 3 item on Genesis 8, whose dials share names), they'd move it as
+      // that figure's T-pose and shape had it, so the body's morphs are projected onto it instead
+      const size_t k       = size_t(std::find(added.begin(), added.end(), worn->id) - added.begin());
+      const bool   refit   = k < p.fits.size() && p.fits[k].has_value();
+      const auto   files   = std::make_shared<const std::map<std::string, std::string>>(refit ? std::map<std::string, std::string>{} : own);
       f.label          = worn->label;
       f.hasOwn         = [files](const std::string& channel) { return ownMorphFile(*files, channel) != nullptr; };
       f.own            = [store = m_store, files, ref, itemVertices](const std::string& channel) -> std::shared_future<std::vector<dson::TargetPtr>> {
@@ -975,6 +980,18 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
       {
         timing::Scope ta("addFollower", 5);
         morphs->addFollower(std::move(f));
+      }
+      // its own joint correctives, driven by the figure's bones through their formulas: those the
+      // figure has no channel for would never fire (MUO Sweater's forearm twists on Genesis 9).
+      // Made for another generation, they read its bones and its T-pose
+      if(!refit)
+      {
+        std::vector<std::string> correctives;
+        for(const auto& [stem, file] : own)
+          if(dson::hiddenMorph(stemOf(file)))
+            correctives.push_back(file);
+        if(!correctives.empty())
+          addItemCorrectives(correctives, ref);
       }
       if(part.graft && !wardrobe::graftFits(*part.graft, *bodyGeoPtr))
       {

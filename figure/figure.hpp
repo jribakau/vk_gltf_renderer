@@ -244,6 +244,11 @@ public:
 
   // Starts loading the joint correctives, once (they join on the first pose change).
   void loadCorrectivesOnce();
+  // A worn item's own joint correctives (`files`, its Morphs folder's), for the ones whose names the
+  // figure has none of: MUO Sweater's forearm twists on Genesis 9. Read after the figure's own, so a
+  // name both have stays the figure's (whose follower brings the item's copy along); each adds its
+  // formulas to the driver and its target as a hidden channel on the item's mesh.
+  void addItemCorrectives(const std::vector<std::string>& files, const dson::MeshRef& ref);
 
   // the add-ons the scene file asks to be worn after the load (Genesis 9 eyes, mouth, lashes)
   std::vector<dson::PostLoadAddon> addons;
@@ -377,7 +382,12 @@ private:
     std::string                      file;
     std::shared_ptr<const dson::Doc> doc;
     std::vector<dson::MorphDef>      defs;
+    bool                             item = false;  // a worn item's (addItemCorrectives)
   };
+  // starts reading the items' corrective files waiting, but the ones the figure has a channel for
+  void startItemCorrectives();
+  // a morph of that name is the figure's: a channel, or a file in its Morphs folders
+  bool figureHas(const std::string& name) const;
 
   std::shared_ptr<dson::Store>                  m_store;
   bool                                          m_cageMorphs = false;  // dson::LoadOptions::cageMorphs
@@ -385,6 +395,9 @@ private:
   std::vector<std::string>                      m_correctiveFiles;
   std::vector<std::future<CorrectiveFile>>      m_correctiveJobs;
   bool                                          m_correctivesStarted = false;
+  // worn items' corrective files waiting for the figure's own to be read, and the channels they made
+  std::vector<std::pair<std::string, dson::MeshRef>> m_itemCorrectiveFiles;
+  std::set<std::string>                         m_itemCorrectives;
   std::future<MorphNotes>                       m_morphInfoJob;
   MorphNotes                                    m_morphNotes;
   // what each dial can do: it reads every morph's deltas, so nothing waits for it, settle() included

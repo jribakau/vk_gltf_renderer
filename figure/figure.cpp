@@ -382,9 +382,12 @@ void Figure::applyOtherDials(const dson::MorphContext& ctx, const std::vector<ds
 
 void Figure::loadCorrectivesOnce()
 {
-  if(m_correctivesStarted || m_correctiveFiles.empty() || !driver)
+  if(m_correctivesStarted || (m_correctiveFiles.empty() && m_itemCorrectiveFiles.empty()) || !driver)
     return;
   m_correctivesStarted = true;
+  // the items' wait for the figure's: with none of its own, they go now
+  if(m_correctiveFiles.empty())
+    startItemCorrectives();
   for(const std::string& file : m_correctiveFiles)
     m_correctiveJobs.push_back(jobs::pool().submit([source = m_source, file]() -> CorrectiveFile {
       CorrectiveFile out;
@@ -402,6 +405,59 @@ void Figure::loadCorrectivesOnce()
     }));
 }
 
+namespace {
+
+// "body_cbs_forearm_x80p_r-0xa326b10": DAZ's transfer tool tags a copied morph's id; the name is the rest
+std::string untagged(const std::string& id)
+{
+  static const std::regex hex(R"(-0x[0-9a-f]+$)", std::regex::icase);
+  return std::regex_replace(id, hex, "");
+}
+
+}  // namespace
+
+void Figure::addItemCorrectives(const std::vector<std::string>& files, const dson::MeshRef& ref)
+{
+  if(!driver)
+    return;
+  for(const std::string& f : files)
+    m_itemCorrectiveFiles.emplace_back(f, ref);
+  if(m_correctivesStarted && m_correctiveJobs.empty())
+    startItemCorrectives();
+}
+
+bool Figure::figureHas(const std::string& name) const
+{
+  return !m_itemCorrectives.count(name) && (morphs->has(name) || (m_source && m_source->find(name)));
+}
+
+void Figure::startItemCorrectives()
+{
+  for(auto& [file, ref] : std::exchange(m_itemCorrectiveFiles, {}))
+  {
+    // the figure's own of that name moves the item already, through its follower's copy: one it has a
+    // channel for, or a file in its Morphs folders that its formulas may read later (a FACS corrective)
+    const std::string name = untagged(stemOf(file));
+    if(figureHas(name))
+      continue;
+    m_correctiveJobs.push_back(jobs::pool().submit([store = m_store, file, ref]() -> CorrectiveFile {
+      CorrectiveFile out;
+      out.file = file;
+      out.item = true;
+      try
+      {
+        out.doc  = store->load(file);
+        out.defs = dson::morphsFromDoc(*out.doc, file, {ref});
+      }
+      catch(const std::exception&)
+      {
+        out.doc.reset();
+      }
+      return out;
+    }));
+  }
+}
+
 std::string Figure::busy() const
 {
   return m_correctiveJobs.empty() ? std::string() : "Loading joint correctives";
@@ -413,16 +469,29 @@ void Figure::finishCorrectives()
   for(auto& job : m_correctiveJobs)
     files.push_back(job.get());
   m_correctiveJobs.clear();
+  // the figure's first: a name an item's file shares is the figure's
+  std::stable_partition(files.begin(), files.end(), [](const CorrectiveFile& f) { return !f.item; });
   std::optional<timing::Scope> step;
   step.emplace("correctives: targets", 1);
   for(CorrectiveFile& f : files)
   {
     if(!f.doc)
       continue;
-    driver->graph.addDoc(f.doc->json, f.file);
+    // an item's file: only its correctives the figure has none of, and its formulas once a name (two
+    // items' copies of one would drive it twice)
+    bool fresh = !f.item;
+    if(f.item)
+      std::erase_if(f.defs, [&](const dson::MorphDef& m) {
+        if(figureHas(untagged(m.id)) || (morphs->has(m.id) && !m_itemCorrectives.count(m.id)))
+          return true;
+        fresh = m_itemCorrectives.insert(m.id).second || fresh;
+        return false;
+      });
+    if(fresh)
+      driver->graph.addDoc(f.doc->json, f.file);
     for(dson::MorphDef& m : f.defs)
     {
-      if(morphs->has(m.id))
+      if(!f.item && morphs->has(m.id))
         continue;
       for(const dson::MorphPart& part : m.parts)
       {
@@ -435,6 +504,8 @@ void Figure::finishCorrectives()
       }
     }
   }
+  // the items' that waited for these
+  startItemCorrectives();
   step.emplace("correctives: driver", 1);
   driver->update();
 }

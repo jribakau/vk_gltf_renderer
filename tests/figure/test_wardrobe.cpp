@@ -1796,3 +1796,25 @@ TEST(Fit, APropHungFromABoneKeepsItsPlaceOnTheJoint)
   // and the bone it names, on Genesis 9
   EXPECT_EQ(matchBone("lHand", {"hip", "head", "l_hand", "r_hand"}), std::optional<std::string>("l_hand"));
 }
+
+// A worn item's own joint corrective that the figure has no channel for fires by its own formula on
+// the figure's bone (MUO Sweater's forearm twists on Genesis 9): the head turned 40° moves the shirt's
+// vertex its full delta. It joins once the figure's own correctives have been read, on the first pose
+TEST(Wardrobe, AnItemsOwnCorrectiveFiresOnTheFiguresBone)
+{
+  const auto           figure = boxFigure();
+  const fv::WearResult worn   = figure->commitWear(figure->prepareWear(kBoxShirt, 1), kBoxShirt);
+  figure->settle();
+  const fv::WornItem* shirt = figure->item(worn.items.at(0));
+  ASSERT_NE(shirt, nullptr);
+  const int  mesh = shirt->meshes.front();
+  const auto x4   = [&] { return figure->morphs->morphedCage(mesh).at(4 * 3); };
+  const float before = x4();
+  figure->pose->setMany({{"head", fv::pose::ChannelKind::eRotation, "y", 40}});
+  figure->settle();
+  EXPECT_TRUE(figure->morphs->has("body_cbs_head_y40-0xa1"));
+  EXPECT_NEAR(x4() - before, 1, 1e-4);
+  figure->pose->setMany({{"head", fv::pose::ChannelKind::eRotation, "y", 0}});
+  figure->settle();
+  EXPECT_NEAR(x4() - before, 0, 1e-4);
+}
