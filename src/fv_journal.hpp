@@ -30,9 +30,11 @@
 // key names what the step touches, so both read the same things). A merge that ends where it began
 // leaves no step. Recording a step drops what could be redone.
 //
-// A gesture (a viewport drag from press to release, a slider's drag) is one step however long it
-// takes: its steps carry its id in their key and merge whatever the time between, and its last one
-// closes it.
+// A gesture (a viewport drag from press to release, a slider's drag, a face capture) is one step
+// however long it takes, whatever commands it sends: its steps carry its id and merge whatever the
+// time between, and its last one closes it. A merged step's redo op replaces the one alike before it
+// (the same command on the same things), and its undo op is kept only for what the gesture hadn't
+// touched yet, so a capture that sends dials and a head turn every frame stays one step of two ops.
 //
 // A group (a scene file opening: a clear, loads, restores, places) is one step under its own label,
 // whatever its steps touch: from begin to end their redo ops add up in the order they applied, and
@@ -63,6 +65,7 @@ struct JournalStep
   std::chrono::steady_clock::time_point at;
   bool gesture = false;  // merges with its key whatever the time between
   bool closes  = false;  // a gesture's last: nothing merges into it after
+  std::string gestureId;  // the gesture's id: its steps merge whatever command each one is
   bool open    = false;  // a scene file opening (begin's `open`): undone, the scene is no file's
   uint64_t serial = 0;   // given by record()
 };

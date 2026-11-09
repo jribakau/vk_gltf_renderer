@@ -351,6 +351,15 @@ TEST(MorphReach, NoFilesNoReach)
 
 // A worn item's own morph is a slider when it adjusts the item; a copy of a figure morph the figure
 // doesn't have (Genesis 8's FBMVictoria8 on Genesis 9) or DAZ's hidden figure-ID helper is not
+// Correctives and controllers are hidden; Genesis 8.1's joint units are the face's dials, as DAZ lists them
+TEST(MorphNames, CorrectivesAreHiddenAndFaceUnitsAreNot)
+{
+  for(const char* hidden : {"pJCMNeckFwd_35", "facs_cbs_EyeBlinkLeft_div2", "body_cbs_neck1_x25n", "PHMBrowCompression_HD"})
+    EXPECT_TRUE(fv::dson::hiddenMorph(hidden)) << hidden;
+  for(const char* dial : {"facs_jnt_JawOpen", "facs_jnt_EyeBlinkLeft", "facs_bs_MouthSmileLeft_div2", "facs_bs_JawOpen", "eCTRLEyesClosedL"})
+    EXPECT_FALSE(fv::dson::hiddenMorph(dial)) << dial;
+}
+
 TEST(MorphNames, AnItemsAdjustmentsAreDialsAndCopiesAreNot)
 {
   for(const char* dial : {"Loosen Neck", "Adjust Back", "body_bs_Loosen Thighs", "Expand All", "FBMExpandAll", "Sleeve Lift", "Skirt Length"})

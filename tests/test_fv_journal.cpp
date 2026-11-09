@@ -136,6 +136,60 @@ TEST(FvJournal, AGestureIsOneStepWhateverTheTimeUntilItsEnd)
   EXPECT_EQ(valueOf(first->redo), 0.6);
 }
 
+// A face capture sends the dials and the head's turn every frame under one gesture: one step of two
+// ops each way, the newest dials and pose to redo, the first frame's before to undo
+TEST(FvJournal, AGestureAcrossCommandsIsOneStepOfItsNewestOps)
+{
+  fv::Journal j;
+  j.record(dial(0, 0.1, 0s, ""));
+  const auto op = [](const char* cmd, const char* prop, const char* name, double v) {
+    return json::array({{{"cmd", cmd}, {"args", {{"prop", prop}, {"values", {{name, v}}}}}}});
+  };
+  const auto frame = [&](const char* cmd, const char* name, double from, double to, std::chrono::steady_clock::duration at) {
+    return fv::JournalStep{.redo = op(cmd, "p1", name, to), .undo = op(cmd, "p1", name, from), .label = cmd, .key = cmd, .at = t0 + at, .gesture = true, .gestureId = "\"face\""};
+  };
+  for(int i = 0; i < 50; i++)
+  {
+    j.record(frame("morph.set", "Jaw", i * 0.01, (i + 1) * 0.01, 1s + i * 33ms));
+    j.record(frame("pose.set", "head/rotation/y", i * 1.0, i + 1.0, 1s + i * 33ms));
+  }
+  // another figure's dials under the same gesture are ops of their own
+  fv::JournalStep other = frame("morph.set", "Jaw", 0, 0.7, 3s);
+  other.redo[0]["args"]["prop"] = other.undo[0]["args"]["prop"] = "p2";
+  j.record(other);
+  ASSERT_EQ(j.undoCount(), 2u);
+  const auto step = j.takeUndo();
+  ASSERT_TRUE(step);
+  EXPECT_EQ(step->label, "morph.set");
+  ASSERT_EQ(step->redo.size(), 3u);
+  ASSERT_EQ(step->undo.size(), 3u);
+  EXPECT_NEAR(step->redo[0]["args"]["values"]["Jaw"].get<double>(), 0.5, 1e-9);
+  EXPECT_EQ(step->redo[1]["args"]["values"]["head/rotation/y"].get<double>(), 50);
+  EXPECT_EQ(step->redo[2]["args"]["prop"], "p2");
+  EXPECT_EQ(step->undo[0]["args"]["values"]["Jaw"].get<double>(), 0);
+  EXPECT_EQ(step->undo[1]["args"]["values"]["head/rotation/y"].get<double>(), 0);
+  EXPECT_EQ(step->undo[2]["args"]["prop"], "p2");
+  EXPECT_EQ(valueOf(j.takeUndo()->undo), 0);
+}
+
+// Another gesture, or the same one after its end, starts a step of its own
+TEST(FvJournal, AGesturesIdKeepsItsStepsApartFromAnothers)
+{
+  fv::Journal j;
+  const auto step = [](const char* id, double to, bool closes = false) {
+    fv::JournalStep s = dial(to - 0.1, to, 0s, std::string("Taper|gesture ") + id);  // as the host keys it
+    s.gesture   = true;
+    s.gestureId = id;
+    s.closes    = closes;
+    return s;
+  };
+  j.record(step("1", 0.1));
+  j.record(step("1", 0.2, true));
+  j.record(step("1", 0.3));
+  j.record(step("2", 0.4));
+  EXPECT_EQ(j.undoCount(), 3u);
+}
+
 TEST(FvJournal, AGroupIsOneStepOfEverythingRecordedInIt)
 {
   fv::Journal j;

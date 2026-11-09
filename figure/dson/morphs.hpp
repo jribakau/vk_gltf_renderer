@@ -57,7 +57,8 @@ struct MorphDef
   std::vector<MorphPart> parts;
 };
 
-// Morph name prefixes that are bone-driven correctives or pure controllers in Genesis 8/9.
+// Morph name prefixes that are bone-driven correctives or pure controllers in Genesis 8/9. Genesis
+// 8.1's facs_jnt_ units move bones too, but they are the face's own dials (Jaw Open, Eye Blink Left).
 bool hiddenMorph(const std::string& name);
 // Whether a worn item's own morph that has no figure morph of the same name is worth a slider: fit
 // adjustments and styles are ("Loosen Neck", "Adjust Back"); copies of figure morphs that aren't

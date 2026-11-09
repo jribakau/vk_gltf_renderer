@@ -19,7 +19,49 @@
 
 #include "fv_journal.hpp"
 
+#include <algorithm>
+
 namespace fv {
+
+namespace {
+
+// what an op's args name, whatever the values: numbers and switches dropped, names (a prop's id) kept
+nlohmann::json shapeOf(const nlohmann::json& v)
+{
+  if(v.is_object())
+  {
+    nlohmann::json out = nlohmann::json::object();
+    for(auto it = v.begin(); it != v.end(); ++it)
+      out[it.key()] = shapeOf(it.value());
+    return out;
+  }
+  return v.is_string() ? v : nlohmann::json();
+}
+
+// the same command on the same things
+bool alike(const nlohmann::json& a, const nlohmann::json& b)
+{
+  return a.value("cmd", "") == b.value("cmd", "") && shapeOf(a.value("args", nlohmann::json())) == shapeOf(b.value("args", nlohmann::json()));
+}
+
+// a gesture's next step into the one it has: the newest redo of each thing, the undo of what it first changed
+void combine(JournalStep& into, JournalStep& step)
+{
+  for(nlohmann::json& o : step.redo)
+  {
+    const auto had = std::find_if(into.redo.begin(), into.redo.end(), [&](const nlohmann::json& r) { return alike(r, o); });
+    if(had != into.redo.end())
+      *had = std::move(o);
+    else
+      into.redo.push_back(std::move(o));
+  }
+  for(nlohmann::json& o : step.undo)
+    if(std::none_of(into.undo.begin(), into.undo.end(), [&](const nlohmann::json& u) { return alike(u, o); }))
+      into.undo.push_back(std::move(o));
+  into.at = step.at;
+}
+
+}  // namespace
 
 void Journal::record(JournalStep step)
 {
@@ -43,6 +85,14 @@ void Journal::record(JournalStep step)
     step.gesture = step.closes = false;
   }
   const bool sealed = std::exchange(m_sealed, step.closes);
+  if(!sealed && !m_undo.empty() && step.gesture && !step.gestureId.empty() && m_undo.back().gesture && m_undo.back().gestureId == step.gestureId)
+  {
+    JournalStep& last = m_undo.back();
+    combine(last, step);
+    if(last.redo == last.undo)
+      m_undo.pop_back();
+    return;
+  }
   if(!sealed && !step.key.empty() && !m_undo.empty())
   {
     JournalStep& last = m_undo.back();

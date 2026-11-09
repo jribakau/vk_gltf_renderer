@@ -734,17 +734,21 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
     for(const char* k : {"prop", "gesture"})
       shape.erase(k);
   std::string key = merges ? cmd + "|" + scope.dump() + "|" + shape.dump() : std::string();
-  // a gesture ({id, end?}: a viewport drag, a slider's drag) is one step however long it takes
-  const Json gesture = args.value("gesture", Json());
-  if(gesture.is_object() && gesture.contains("id"))
+  // a gesture ({id, end?, label?}: a viewport drag, a slider's drag, a face capture) is one step however
+  // long it takes and whatever it sends, under its own label when it gives one
+  const Json gesture   = args.value("gesture", Json());
+  const bool isGesture = gesture.is_object() && gesture.contains("id");
+  if(isGesture)
     key = cmd + "|" + scope.dump() + "|gesture " + gesture["id"].dump();
-  journal.record({.redo    = after,
-                  .undo    = before,
-                  .label   = label,
-                  .key     = key,
-                  .at      = std::chrono::steady_clock::now(),
-                  .gesture = gesture.is_object() && gesture.contains("id"),
-                  .closes  = gesture.is_object() && gesture.value("end", false)});
+  const Json named = isGesture ? gesture.value("label", Json()) : Json();
+  journal.record({.redo      = after,
+                  .undo      = before,
+                  .label     = named.is_string() && !named.get<std::string>().empty() ? named.get<std::string>() : label,
+                  .key       = key,
+                  .at        = std::chrono::steady_clock::now(),
+                  .gesture   = isGesture,
+                  .closes    = isGesture && gesture.value("end", false),
+                  .gestureId = isGesture ? gesture["id"].dump() : std::string()});
   publishHistory();
   pruneParked();
   if(failed)

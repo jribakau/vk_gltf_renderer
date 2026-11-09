@@ -97,7 +97,8 @@ const MeshRef* targetFor(const Json& mod, const std::string& file, const std::ve
 
 bool hiddenMorph(const std::string& name)
 {
-  static const std::regex re(R"(^(pjcm|pbmc|pcmc|jcm|mcm|pmcm|facs_jnt|facs_cbs|body_cbs|head_cbs|ctrl_?jcm)|_hd\d?$|HDLv\d)", std::regex::icase);
+  // not facs_jnt_: Genesis 8.1's joint units (Jaw Open, Eye Blink Left) are dials DAZ lists under Pose Controls
+  static const std::regex re(R"(^(pjcm|pbmc|pcmc|jcm|mcm|pmcm|facs_cbs|body_cbs|head_cbs|ctrl_?jcm)|_hd\d?$|HDLv\d)", std::regex::icase);
   return std::regex_search(name, re);
 }
 

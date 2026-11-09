@@ -127,8 +127,10 @@
 //   render.hold     {on}  -> {on}   an export is running: textures don't follow GPU memory until it ends,
 //                                                unless it runs past the budget
 //   material.set    {prop, material, values, gesture?}   edit a surface (fv_materials.hpp); material.reset {prop, material?}
-//                                                `gesture` {id, end?}: a slider's drag, one step of the history
-//                                                however long it takes, until the message that ends it
+//                                                `gesture` {id, end?, label?}: a slider's drag, one step of the history
+//                                                however long it takes, until the message that ends it; the
+//                                                commands sent under one id are one step whichever they are (a
+//                                                face capture's morph.set and pose.set), under `label` if given
 //   material.shader {prop, material, rel: string | null}   -> {job}: a shader preset (DAZ's "Metal - Gold", a fabric
 //                                                pack's) on those surfaces of a figure or DAZ prop, whatever
 //                                                their names. A whole one replaces each surface; an option

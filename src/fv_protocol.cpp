@@ -97,7 +97,7 @@ namespace {
 // 52: view.set's display "material", "object", "density" and "facing" (the Display views).
 // 53: view.set's display "time" (each pixel timed by the GPU's clock) and its `time` topic, the frame's
 // time by what the pixels show.
-constexpr int kProtocolVersion = 53;
+constexpr int kProtocolVersion = 54;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace
