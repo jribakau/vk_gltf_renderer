@@ -470,6 +470,18 @@ PoseClip retargetClip(const dson::Json& doc, const PoseRig& from, const PoseRig&
       sDone[size_t(b)]        = 1;
       return sWorld[size_t(b)];
     };
+    // A figure bone's local turn as it will show it: the channels it has, within its limits as setMany
+    // keeps them. The bones below are solved against that, so what it can't take (a bend past its
+    // limit, what a twist bone was left besides its twist) is made up further down
+    const auto shown = [&](int b, const Quat& local) {
+      std::array<double, 3> ch = to.rotationTotals(tb[size_t(b)], local, nearOf[size_t(b)]);
+      for(int a = 0; a < 3; a++)
+        if(const Axis* axis = tb[size_t(b)].axis(ChannelKind::eRotation, a); !axis)
+          ch[size_t(a)] = 0;
+        else if(axis->clamped)
+          ch[size_t(a)] = std::clamp(ch[size_t(a)], axis->min, axis->max);
+      return localTurn(tb[size_t(b)], ch);
+    };
     // the figure's: a matched limb turned from its rest as the source's from its own (in a re-aimed
     // arm's turn); the rest as they are at rest
     const std::function<Quat(int)> tw = [&](int b) -> Quat {
@@ -491,20 +503,17 @@ PoseClip retargetClip(const dson::Json& doc, const PoseRig& from, const PoseRig&
         const Quat            whole = (above.inverse() * sw(m.last) * aimAt(b)).normalized();
         std::array<double, 3> turn  = to.rotationTotals(tb[size_t(b)], whole, nearOf[size_t(b)]);
         if(m.bones.size() > 1)
-        {
-          turn[size_t(m.twist)]      = 0;
-          tLocal[size_t(b)]          = localTurn(tb[size_t(b)], fitAxes(tb[size_t(b)], whole, m.dir, turn));
+          turn[size_t(m.twist)] = 0;
+        tLocal[size_t(b)] = shown(b, localTurn(tb[size_t(b)], fitAxes(tb[size_t(b)], whole, m.dir, turn)));
+        // the twist bone takes the rest of what the top bone shows
+        if(m.bones.size() > 1)
           tLocal[size_t(m.bones[1])] = (tLocal[size_t(b)].inverse() * whole).normalized();
-        }
-        else
-          tLocal[size_t(b)] = localTurn(tb[size_t(b)], fitAxes(tb[size_t(b)], whole, m.dir, turn));
         tWorld[size_t(b)] = above * tLocal[size_t(b)];
       }
       else
       {
-        // a twist bone below the top: the twist split off it, or none further down
-        if(b != m.bones[1])
-          tLocal[size_t(b)] = Quat{};
+        // a twist bone below the top: the twist split off it, as it shows it, or none further down
+        tLocal[size_t(b)] = b == m.bones[1] ? shown(b, tLocal[size_t(b)]) : Quat{};
         tWorld[size_t(b)] = above * tLocal[size_t(b)];
       }
       tDone[size_t(b)] = 1;

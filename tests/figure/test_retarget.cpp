@@ -136,8 +136,12 @@ struct Figure
   std::unique_ptr<fv::pose::PoseRig> pose;
 
   Figure(bool g8, double armDown, double legOut, double hipHeight)
+      : Figure(fv::dson::Json::parse(skeleton(g8, armDown, legOut, hipHeight)))
   {
-    auto built = fv::dson::buildRig(scene, fv::dson::Json::parse(skeleton(g8, armDown, legOut, hipHeight)), nullptr);
+  }
+  explicit Figure(const fv::dson::Json& bones)
+  {
+    auto built = fv::dson::buildRig(scene, bones, nullptr);
     EXPECT_TRUE(built);
     rig  = *built;
     pose = std::make_unique<fv::pose::PoseRig>(scene, rig, std::vector<const fv::dson::Rig*>{});
@@ -294,6 +298,53 @@ TEST(Retarget, aGenesis9AnimationSplitsALimbsTwistOntoItsTwistBone)
     EXPECT_LT(degreesBetween(g9.turned("l_forearm", rest.way("lForearmBend", "lHand")), g8.way("lForearmBend", "lHand")), kElbowApart) << t;
   }
   EXPECT_NE(g8.pose->get("lShldrTwist")->posed(ChannelKind::eRotation, 0), 0.0) << "the twist went to the twist bone";
+}
+
+// What a figure's bone can't take of the source's turn, the bones below make up (wardrobe plan 0n): a
+// Genesis 8 elbow held to 30° under Genesis 9's 50° bend leaves the rest to the hand, and its twist bone,
+// whose axis lies 8° off the forearm and which takes only its twist, leaves the hand what else it was
+// given. The hand points where the file's does; it was solved as though its arm had taken all of it
+// (23° off at the held bend, 4° at the twist)
+TEST(Retarget, whatABoneCantTakeTheBonesBelowMakeUp)
+{
+  fv::dson::Json bones = fv::dson::Json::parse(skeleton(true, 48, 8, 105));
+  for(fv::dson::Json& b : bones)
+  {
+    if(b.value("id", "") == "lForearmBend")
+      for(fv::dson::Json& c : b["rotation"])
+        if(c.value("id", "") == "y")
+        {
+          c["min"] = -30;
+          c["max"] = 30;
+        }
+    if(b.value("id", "") == "lForearmTwist")
+      for(fv::dson::Json& c : b["orientation"])
+        if(c.value("id", "") == "z")
+          c["value"] = c.value("value", 0.0) + 8;
+  }
+  Figure       g8(bones), g9(false, 44, 2, 97);
+  const Figure rest(true, 48, 8, 105);
+  const auto   key = [](const std::string& bone, const char* channel, std::vector<std::pair<double, double>> keys) {
+    fv::dson::Json a = {{"url", "name://@selection/" + bone + ":?" + channel + "/value"}, {"keys", fv::dson::Json::array()}};
+    for(const auto& [t, v] : keys)
+      a["keys"].push_back({t, v});
+    return a;
+  };
+  fv::dson::Json anims = fv::dson::Json::array();
+  anims.push_back(key("l_upperarm", "rotation/z", {{0, 0}, {0.5, -25}, {1, -20}}));
+  anims.push_back(key("l_forearm", "rotation/y", {{0, 0}, {0.5, -50}, {1, -20}}));
+  anims.push_back(key("l_forearm", "rotation/x", {{0, 0}, {0.5, 40}, {1, -30}}));
+  anims.push_back(key("l_hand", "rotation/z", {{0, 0}, {0.5, 10}, {1, -5}}));
+  const fv::dson::Json     file = {{"asset_info", {{"type", "preset_pose"}}}, {"scene", {{"animations", anims}}}};
+  const fv::pose::PoseClip own  = fv::pose::loadPoseClip(g9.pose.get(), nullptr, file);
+  const fv::pose::PoseClip clip = fv::pose::retargetClip(file, *g9.pose, *g8.pose);
+  for(const float t : {0.5f, 1.f})
+  {
+    g9.apply(own, t);
+    g8.apply(clip, t);
+    EXPECT_GE(g8.rotation("lForearmBend", 1), -30 - 1e-9) << t;
+    EXPECT_LT(degreesBetween(g9.turned("l_hand", rest.tip("lHand")), g8.tip("lHand")), 0.5) << t;
+  }
 }
 
 // A face the file holds at rest stays the figure's own, though the two rigs place a jaw's and a
