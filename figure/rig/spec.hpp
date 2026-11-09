@@ -14,6 +14,22 @@
 //
 // Not recorded yet, for the steps that read them: each family's rest direction per joint (step 3
 // measures it), the regions a body's weights give the glutes (no joint has them).
+//
+// The conventions every rig is brought to (DAZ's; test RigSpec.ABonesTurnTranslationAndScaleAreTheSpecsConventions):
+// - At rest every bone's world rotation is the identity, in centimetres, Y up; a bone's axes are its
+//   `orientation`. A rig with bind rotations (glTF, VRM, Mixamo) has them baked into it at import.
+// - Rotation: for a rotation order "ABC" (DSON's `rotation_order`, one of the six), angles a, b, c
+//   about A, B, C, and the orientation's angles o:
+//     O    = R_A(o_A) R_B(o_B) R_C(o_C)            (the orientation's first axis outermost)
+//     turn = O R_C(c) R_B(b) R_A(a) O^-1           (the pose's first axis innermost: the twist axis
+//                                                   goes first, so a bend doesn't swing it)
+//   R_k(t) the turn by t about world axis k, applied right to left. Not yet checked against a DAZ
+//   Studio export of a bone with a multi-axis orientation: the step's open check.
+// - Translation is in the parent's frame, not turned by O.
+// - Scale is along the rest's axes (the parent's at rest), before the turn; general scale multiplies
+//   each axis; a bone that doesn't inherit scale divides its parent's own out.
+// - Shape formulas move `center_point` alone; `end_point` stays the base figure's, so nothing here
+//   leans on end points.
 
 #include <array>
 #include <cstdint>

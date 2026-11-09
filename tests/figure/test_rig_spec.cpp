@@ -20,7 +20,12 @@
 #include <unordered_map>
 #include <vector>
 
+#include <cmath>
+
+#include <figure/dson/rig.hpp>
+#include <figure/math/xform.hpp>
 #include <figure/pose/pose_rig.hpp>
+#include <figure/scene/graph.hpp>
 #include <figure/rig/aliases/aliases.hpp>
 #include <figure/rig/spec.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
@@ -410,6 +415,53 @@ TEST(RigSpec, EveryJointNamesOnlyJointsAndParentsComeFirst)
   EXPECT_EQ(fv::rig::twistPlacement(fv::rig::Family::eGenesis8), fv::rig::TwistPlacement::eInChain);
   EXPECT_EQ(fv::rig::twistPlacement(fv::rig::Family::eGenesis9), fv::rig::TwistPlacement::eHelpers);
   EXPECT_EQ(fv::rig::twistPlacement(fv::rig::Family::eGenesis2), fv::rig::TwistPlacement::eNone);
+}
+
+// The conventions the spec writes down (rig/spec.hpp), as the rig poses a bone: for a rotation order
+// "ABC" the turn is O R_C(c) R_B(b) R_A(a) O^-1, the pose's first axis innermost, with O = R_A R_B R_C
+// of the orientation's angles, its first axis outermost; translation is in the parent's frame, not
+// turned by O; scale is along the rest's axes, before the turn. Built from axis-angle turns, not from
+// the code's Euler helpers, so a change to either shows.
+TEST(RigSpec, ABonesTurnTranslationAndScaleAreTheSpecsConventions)
+{
+  const std::string channels = R"([{"id":"x","min":-180,"max":180},{"id":"y","min":-180,"max":180},{"id":"z","min":-180,"max":180}])";
+  const auto        rig      = [&](const std::string& order) {
+    return R"([{"id":"hip","type":"figure","name":"hip","center_point":[{"id":"y","value":100}]},)"
+           R"({"id":"lForearm","type":"bone","name":"lForearm","parent":"#hip","center_point":[{"id":"x","value":30},{"id":"y","value":140}],)"
+           R"("rotation_order":")" + order + R"(","orientation":[{"id":"x","value":12},{"id":"y","value":30},{"id":"z","value":-25}],)"
+           R"("rotation":)" + channels + R"(,"translation":)" + channels + R"(,"scale":)" + channels + "}]";
+  };
+  const auto turn = [](char axis, double degrees) {
+    const double h = degrees * fv::kDeg / 2;
+    return fv::Quat{axis == 'X' ? std::sin(h) : 0, axis == 'Y' ? std::sin(h) : 0, axis == 'Z' ? std::sin(h) : 0, std::cos(h)};
+  };
+  const std::map<char, double> orient{{'X', 12}, {'Y', 30}, {'Z', -25}}, angles{{'X', 25}, {'Y', -35}, {'Z', 15}};
+  for(const std::string order : {"XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"})
+  {
+    fv::SceneGraph scene;
+    const auto     built = fv::dson::buildRig(scene, fv::dson::Json::parse(rig(order)), nullptr);
+    ASSERT_TRUE(built);
+    fv::pose::PoseRig pose(scene, *built, {});
+    const int         node = built->byId("lForearm");
+    const fv::Vec3    rest = scene.nodes[size_t(node)].position;
+    pose.setMany({{"lForearm", fv::pose::ChannelKind::eRotation, "x", angles.at('X')},
+                  {"lForearm", fv::pose::ChannelKind::eRotation, "y", angles.at('Y')},
+                  {"lForearm", fv::pose::ChannelKind::eRotation, "z", angles.at('Z')},
+                  {"lForearm", fv::pose::ChannelKind::eTranslation, "x", 3},
+                  {"lForearm", fv::pose::ChannelKind::eScale, "y", 2}});
+    const char     a = order[0], b = order[1], c = order[2];
+    const fv::Quat o = turn(a, orient.at(a)) * turn(b, orient.at(b)) * turn(c, orient.at(c));
+    const fv::Quat q = o * (turn(c, angles.at(c)) * turn(b, angles.at(b)) * turn(a, angles.at(a))) * o.inverse();
+    const fv::Quat got = scene.nodes[size_t(node)].quaternion;
+    EXPECT_NEAR(std::abs(got.x * q.x + got.y * q.y + got.z * q.z + got.w * q.w), 1, 1e-12) << order;
+    const fv::Vec3 at = scene.nodes[size_t(node)].position, scale = scene.nodes[size_t(node)].scale;
+    EXPECT_NEAR(at.x - rest.x, 3, 1e-12) << order;
+    EXPECT_NEAR(at.y - rest.y, 0, 1e-12) << order;
+    EXPECT_NEAR(at.z - rest.z, 0, 1e-12) << order;
+    EXPECT_EQ(scale.x, 1) << order;
+    EXPECT_EQ(scale.y, 2) << order;
+    EXPECT_EQ(scale.z, 1) << order;
+  }
 }
 
 // A name read by the spec: its side, its joint, Skyrim's by its own table.
