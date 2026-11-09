@@ -377,6 +377,19 @@ Some things about the transport are worth knowing before touching it:
   from a table baked from the lobe (`nvshaders/ggx_albedo_table.h.slang`). Change the lobe, rerun
   `utils/ggx_albedo_table.py`: `BsdfLobes.TheGgxAlbedoFitIsTheLobesIntegral` checks them against
   each other.
+- A rough boundary's **refraction** lobe (`btdf_ggx_smith_sample`) is single scattering: light its
+  refracted ray's masking blocks is lost, where on a real microsurface it meets the surface again and
+  mostly goes in. At index 1.4 and roughness 0.5 the lobe let in 7% too little at 70°, 12% at 80°; at
+  roughness 0.7, 20% and 35%. Entering a medium from its rarer side, the lobe is now scaled up to Heitz
+  et al. 2016's microsurface random walk (every order of scattering): `ggxTransmissionGain`, from two
+  tables by index, roughness and view in `nvshaders/ggx_transmission_table.h.slang` (the lobe's share of
+  the walk's light, and its transmission with no Fresnel), baked by `utils/ggx_transmission_table.py`
+  (about 20 minutes). A specular weight below 1, as DAZ's skin splits its reflection over two lobes,
+  lets in all it doesn't reflect. `BsdfLobes.ARoughBoundaryLetsInWhatItsMicrosurfaceDoes` holds the lobe
+  to the walk written again in the test, `ALowerSpecularLetsInAllItDoesNotReflect` the sum to the light
+  that arrived. Not from the denser side, where total internal reflection is part of the lobe, nor on a
+  thin wall or Gaussian slopes (`bsdfRegainsMaskedTransmission`). The reflection's own multiple
+  scattering is not given back: 0.7% of the light at 70° there.
 - The **sheen** takes from the layers below what it reflects, max(sheenColor) times its lobe's albedo
   (KHR_materials_sheen's albedo scaling), and its lobe is divided by the same, as the specular lobes
   are. The albedo is baked from the lobe too (`nvshaders/sheen_albedo_table.h.slang`, rerun

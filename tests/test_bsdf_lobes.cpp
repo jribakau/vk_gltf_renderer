@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -788,6 +789,169 @@ TEST(BsdfLobes, GlassReflectsAndRefractsByEachMicrofacetsFresnel)
     EXPECT_GT(c.reflected.x + c.transmitted.x, 0.93f) << NoV;
     last = c.reflected.x;
   }
+}
+
+namespace {
+
+// Heitz et al. 2016's microsurface random walk on a rough dielectric boundary of index `eta` (GGX
+// slopes of `alpha`, uniform heights, every order of scattering, each microfacet's exact Fresnel): the
+// share of the light from cosine `NoV` above it that leaves below. The ground truth the transmission
+// table is baked from (utils/ggx_transmission_table.py), written again here.
+double walkTransmission(double eta, double alpha, double NoV, int N, uint32_t seed)
+{
+  std::mt19937_64                        rng(seed);
+  std::uniform_real_distribution<double> u(0.0, 1.0);
+  const double                           inf = std::numeric_limits<double>::infinity();
+  // Smith's Lambda, below the horizon -1 - Lambda(-w)
+  auto lambda = [alpha](const dvec3& w) {
+    if(w.z > 0.99999)
+      return 0.0;
+    if(w.z < -0.99999)
+      return -1.0;
+    const double a = w.z / (std::sqrt(std::max(1.0 - w.z * w.z, 1e-24)) * alpha);
+    return 0.5 * (-1.0 + (a < 0.0 ? -1.0 : 1.0) * std::sqrt(1.0 + 1.0 / (a * a)));
+  };
+  auto c1 = [](double h) { return std::clamp(0.5 * (h + 1.0), 0.0, 1.0); };
+  // where a ray along w from height h next meets the surface, infinity where it leaves
+  auto nextHeight = [&](const dvec3& w, double h, double x) {
+    if(w.z > 0.9999)
+      return inf;
+    if(w.z < -0.9999)
+      return 2.0 * x * c1(h) - 1.0;
+    if(std::abs(w.z) < 1e-4)
+      return h;
+    const double l  = lambda(w);
+    const double g1 = w.z > 0.0 ? std::pow(c1(h), l) : 0.0;
+    if(x > 1.0 - g1)
+      return inf;
+    return 2.0 * c1(h) / std::pow(1.0 - x, 1.0 / l) - 1.0;
+  };
+  // the normals visible from any direction, below the horizon too (Dupuy and Benyoub 2023's cap)
+  auto visibleNormal = [&](const dvec3& wi) {
+    const dvec3  s   = normalize(dvec3(wi.x * alpha, wi.y * alpha, wi.z));
+    const double phi = (2.0 * u(rng) - 1.0) * 3.14159265358979;
+    const double z   = (1.0 - u(rng)) * (1.0 + s.z) - s.z;
+    const double r   = std::sqrt(std::clamp(1.0 - z * z, 0.0, 1.0));
+    const dvec3  m   = dvec3(r * std::cos(phi), r * std::sin(phi), z) + s;
+    const dvec3  n   = dvec3(m.x * alpha, m.y * alpha, m.z);
+    return length(n) > 1e-12 ? normalize(n) : dvec3(0.0, 0.0, 1.0);
+  };
+  auto fresnel = [](double c, double e) {
+    c               = std::abs(c);
+    const double g2 = e * e - 1.0 + c * c;
+    if(g2 < 0.0)
+      return 1.0;
+    const double g = std::sqrt(g2), a = (g - c) / (g + c), b = (c * (g + c) - 1.0) / (c * (g - c) + 1.0);
+    return 0.5 * a * a * (1.0 + b * b);
+  };
+  int below = 0;
+  for(int p = 0; p < N; p++)
+  {
+    dvec3  w       = dvec3(-std::sqrt(1.0 - NoV * NoV), 0.0, -NoV);
+    double h       = 2.0;
+    bool   outside = true;
+    for(int order = 0; order < 1000; order++)
+    {
+      const double x = u(rng);
+      h              = outside ? nextHeight(w, h, x) : -nextHeight(-w, -h, x);
+      if(std::isinf(h))
+      {
+        below += outside ? 0 : 1;
+        break;
+      }
+      const dvec3  wi = -w;
+      const dvec3  m  = outside ? visibleNormal(wi) : -visibleNormal(-wi);
+      const double e  = outside ? eta : 1.0 / eta;
+      const double c  = dot(wi, m);
+      if(u(rng) < fresnel(c, e))
+        w = -wi + 2.0 * c * m;
+      else
+      {
+        const double ct = -std::sqrt(std::max(1.0 - (1.0 - c * c) / (e * e), 0.0));
+        w               = normalize(m * (c / e + ct) - wi / e);
+        outside         = !outside;
+      }
+    }
+  }
+  return double(below) / N;
+}
+
+PbrMaterial roughGlass(float eta, float roughness)
+{
+  PbrMaterial glass  = defaultPbrMaterial(vec3(1.0f), 0.0f, roughness, vec3(0, 0, 1), vec3(0, 0, 1));
+  glass.transmission = 1.0f;
+  glass.thickness    = 0.01f;
+  glass.ior2         = eta;
+  return glass;
+}
+
+}  // namespace
+
+// A rough boundary lets in what a random walk on its microsurface lets in, every order of scattering:
+// the refraction lobe alone lost what its refracted ray's masking blocked, 7% at index 1.4, roughness
+// 0.5 and 70 degrees, 20% at roughness 0.7. Between the table's points: index, roughness and angle.
+TEST(BsdfLobes, ARoughBoundaryLetsInWhatItsMicrosurfaceDoes)
+{
+  struct At
+  {
+    float eta, roughness, NoV;
+  };
+  for(const At at : {At{1.4f, 0.5f, 0.342f}, At{1.4f, 0.45f, 0.17f}, At{1.33f, 0.3f, 0.6f}, At{1.5f, 0.7f, 0.25f},
+                     At{1.45f, 0.6f, 0.9f}, At{2.0f, 0.8f, 0.5f}})
+  {
+    const PbrMaterial glass = roughGlass(at.eta, at.roughness);
+    const double      walk  = walkTransmission(at.eta, at.roughness * at.roughness, at.NoV, 200000, 29);
+    const float       lobe  = carriedAt(glass, at.NoV, 400000).transmitted.x;
+    EXPECT_NEAR(lobe, walk, 0.01 * walk + 0.002) << "eta " << at.eta << " roughness " << at.roughness << " NoV " << at.NoV;
+  }
+}
+
+// A specular weight below 1 (KHR_materials_specular; DAZ's skin puts 0.2-0.6 of its reflection in this
+// lobe) reflects less, and lets in all the rest: the lobes add up to the light that arrived, never more.
+// The share alone, the gain of a boundary with all its Fresnel, made Iray skin 3.4% brighter than the
+// light at a cosine of 0.15; with no reflection, the masking alone is lost and all of it comes back.
+TEST(BsdfLobes, ALowerSpecularLetsInAllItDoesNotReflect)
+{
+  for(float specular : {0.0f, 0.25f, 0.6f, 1.0f})
+    for(float roughness : {0.5f, 0.8f})
+      for(float NoV : {1.0f, 0.4f, 0.15f})
+      {
+        PbrMaterial glass = roughGlass(1.4f, roughness);
+        glass.specular    = specular;
+        const Carried c   = carriedAt(glass, NoV, 400000);
+        EXPECT_LE(c.all.x, 1.005f) << specular << ", " << roughness << ", " << NoV;
+        EXPECT_GE(c.all.x, specular == 0.0f ? 0.995f : 0.95f) << specular << ", " << roughness << ", " << NoV;
+      }
+}
+
+// Only a medium's boundary met from outside takes the walk's light back: the table knows neither total
+// internal reflection (the denser side), a thin wall's mirrored reflection, nor Gaussian slopes. A
+// smooth boundary gains nothing, a rough one the more the more slanted the view.
+TEST(BsdfLobes, OnlyAnEntryThroughARoughBoundaryGainsItsMaskedLight)
+{
+  PbrMaterial glass = roughGlass(1.4f, 0.5f);
+  EXPECT_TRUE(bsdfRegainsMaskedTransmission(glass));
+  PbrMaterial exit = glass;
+  exit.ior1        = 1.4f;
+  exit.ior2        = 1.0f;
+  EXPECT_FALSE(bsdfRegainsMaskedTransmission(exit));
+  PbrMaterial thin = glass;
+  thin.thickness   = 0.0f;
+  EXPECT_FALSE(bsdfRegainsMaskedTransmission(thin));
+  EXPECT_FALSE(bsdfRegainsMaskedTransmission(water(0.15f)));
+
+  for(float eta : {1.33f, 1.5f, 2.4f})
+    for(float NoV : {1.0f, 0.5f, 0.1f})
+      for(float specular : {0.0f, 0.3f, 1.0f})
+        EXPECT_NEAR(ggxTransmissionGain(eta, 0.0f, NoV, vec3(specular)).x, 1.0f, 1e-5f) << eta << ", " << NoV << ", " << specular;
+  float last = 0.0f;
+  for(float deg : {0.0f, 45.0f, 70.0f, 80.0f})
+  {
+    const float gain = ggxTransmissionGain(1.4f, 0.25f, std::cos(deg * 3.14159265f / 180.0f), vec3(1.0f)).x;
+    EXPECT_GE(gain, last) << deg;
+    last = gain;
+  }
+  EXPECT_NEAR(ggxTransmissionGain(1.4f, 0.25f, std::cos(70.0f * 3.14159265f / 180.0f), vec3(1.0f)).x, 1.07f, 0.01f);
 }
 
 // What a rough dielectric reflects is its GGX lobe weighed by each microfacet's own Fresnel, exactly:
