@@ -343,6 +343,11 @@ Some things about the transport are worth knowing before touching it:
   loop's roulette follows the throughput up to 1, since the bounce limit ends a path that keeps its
   energy. A walk has no such limit (a dense, high-albedo medium keeps the throughput near 1 for
   hundreds of events), so its cap must stay below 1: without roulette such a path never terminates.
+- **Bounce limits.** `ptMaxDepth` (0–64) counts the still's surface events. `ptMaxDepthDlss`
+  caps DLSS frames below it (`sample_schedule::frameMaxDepth`). Fibres, clear glass and water have
+  their own budgets. The app sends 32 and 8. At 8 a closed room of albedo 0.9 keeps 6.1 of its 10
+  parts of light; at 32 it keeps 9.7. The roulette ends most paths long before either limit, so
+  the limit costs time only where the throughput stays high.
 - Surfaces with a diffuse transmission lobe are lit from **both** hemispheres, so `sampleLights()`
   takes a flag that disables the punctual-light hemisphere rejection in
   `singleLightContribution()`. Without it, a light behind a backlit leaf or sheet contributes

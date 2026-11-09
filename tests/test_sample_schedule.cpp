@@ -101,6 +101,8 @@ TEST(SampleSchedule, DlssFramesTakeTheLowerBounceCap)
   EXPECT_EQ(sample_schedule::frameMaxDepth(8, 4, false), 8);  // the still keeps its own
   EXPECT_EQ(sample_schedule::frameMaxDepth(8, 0, true), 8);   // 0: the still's
   EXPECT_EQ(sample_schedule::frameMaxDepth(3, 6, true), 3);   // never above the still's
+  EXPECT_EQ(sample_schedule::frameMaxDepth(32, 8, true), 8);  // the app's defaults
+  EXPECT_EQ(sample_schedule::frameMaxDepth(32, 8, false), 32);
 }
 
 namespace {

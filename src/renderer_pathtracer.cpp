@@ -221,12 +221,18 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
   };
   // PathTracer-specific settings. Persist marks what survives a restart (see settings_registry.hpp).
   // ptSamples: the adaptive-sampling autopilot clamps to the same range at runtime.
-  settings->add({.name = "ptMaxDepth", .help = "PathTracer: Maximum ray depth", .callbackSuccess = reset}, &m_maxDepth, Persist::eYes, 0, 20);
+  // Up to 64 bounces: a closed room of albedo 0.9 keeps 6.1 of its 10 parts of light at 8 and 9.7 at
+  // 32; Russian roulette ends most paths long before, so a limit costs only where light keeps going
+  settings->add({.name            = "ptMaxDepth",
+                 .help            = "PathTracer: the bounces a path takes on the still (and on DLSS frames unless ptMaxDepthDlss is lower); "
+                                    "fibres, clear glass and water have their own",
+                 .callbackSuccess = reset},
+                &m_maxDepth, Persist::eYes, 0, 64);
   settings->add({.name            = "ptMaxDepthDlss",
                  .help            = "PathTracer: DLSS frames: the bounces a path takes, when below ptMaxDepth (0: ptMaxDepth). "
                                     "Biased: the light past it is lost while the view moves; the still keeps ptMaxDepth",
                  .callbackSuccess = reset},
-                &m_maxDepthDlss, Persist::eNo, 0, 20);
+                &m_maxDepthDlss, Persist::eNo, 0, 64);
   settings->add({.name            = "ptSamples",
                  .help            = "PathTracer: Samples per pixel traced each frame (see ptMaxSamples for the total)",
                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { m_adaptiveSampling = false; }},
