@@ -834,6 +834,80 @@ TEST(RetainedDeform, APoseRunsTheSkinAndOnlyAPoseDoes)
   expectClean(rig.scene, residency, gpu, "at rest: ");
 }
 
+// blasCompactDeforming: a deformed prim's BLAS is built to be refitted and for compaction; once its size
+// is known its compacted copy, smaller, takes its place, and a pose refits that copy where the original
+// stood. A build again (here after enough refits) is compacted in its turn.
+TEST(RetainedDeform, ADeformedBlasIsCompactedAndRefittedAsItsCopy)
+{
+  Rig            rig(false);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.refitsBeforeRebuild = 3, .compactDeforming = true});
+  residency.replace(rig.scene);
+  const Residency::DrawerGpu& d      = *residency.drawer(rig.body, rig.mesh);
+  const auto                  blases = [&] {
+    std::vector<AccelHandle> out;
+    for(int32_t p : d.prims)
+      if(p >= 0)
+        out.push_back(residency.prim(uint32_t(p))->blas);
+    return out;
+  };
+  const std::vector<AccelHandle> built = blases();
+  ASSERT_EQ(built.size(), 2u);
+  uint64_t builtBytes = 0;
+  for(AccelHandle b : built)
+  {
+    EXPECT_TRUE(gpu.blas(b)->flags & eAccelAllowUpdate);
+    EXPECT_TRUE(gpu.blas(b)->flags & eAccelAllowCompaction);
+    builtBytes += gpu.accelBytes(b);
+  }
+
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  const std::vector<AccelHandle> copies = blases();
+  uint64_t                       copyBytes = 0;
+  for(size_t i = 0; i < copies.size(); i++)
+  {
+    EXPECT_NE(copies[i], built[i]);
+    EXPECT_TRUE(gpu.blas(copies[i])->compacted);
+    copyBytes += gpu.accelBytes(copies[i]);
+  }
+  EXPECT_LT(copyBytes, builtBytes);
+  expectClean(rig.scene, residency, gpu, "compacted: ");
+
+  rig.bend(45);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_EQ(blases(), copies);
+  EXPECT_EQ(refitsOf(residency, gpu, d), 2u);
+  expectClean(rig.scene, residency, gpu, "posed: ");
+
+  // the third refit is a build again, built for compaction in its turn
+  rig.bend(30);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_EQ(blases(), copies);
+  rig.bend(60);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  const std::vector<AccelHandle> rebuilt = blases();
+  for(size_t i = 0; i < rebuilt.size(); i++)
+  {
+    EXPECT_NE(rebuilt[i], copies[i]);
+    EXPECT_FALSE(gpu.blas(rebuilt[i])->compacted);
+    EXPECT_TRUE(gpu.blas(rebuilt[i])->flags & eAccelAllowCompaction);
+  }
+  expectClean(rig.scene, residency, gpu, "built again: ");
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  for(AccelHandle b : blases())
+    EXPECT_TRUE(gpu.blas(b)->compacted);
+  expectClean(rig.scene, residency, gpu, "compacted again: ");
+  drain(gpu);
+  for(AccelHandle b : built)
+    EXPECT_EQ(gpu.blas(b), nullptr);  // retired
+  EXPECT_TRUE(gpu.errors().empty());
+}
+
 // Moving, turning or sizing what carries a figure moves its instances and leaves its bones where they are
 // relative to its meshes: the skin doesn't run again and no BLAS is refit, or a drag of a transform slider
 // would cost as much as a pose, however far off the origin the figure goes

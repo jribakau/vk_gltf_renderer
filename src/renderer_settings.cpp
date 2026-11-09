@@ -482,6 +482,15 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                             retained->setCompactStatic(m_resources.settings.blasCompactStatic);
                       }},
                  &m_resources.settings.blasCompactStatic, Persist::eNo);
+  m_settings.add({.name = "blasCompactDeforming",
+                  .help = "Retained scene: a deformed BLAS (posed figure, hair) is compacted and refitted as its copy",
+                  .callbackSuccess =
+                      [this](const nvutils::ParameterBase* const) {
+                        for(rs::RetainedSceneVk* retained : {m_resources.retainedGpu.get(), m_resources.retainedSpare.get()})
+                          if(retained)
+                            retained->setCompactDeforming(m_resources.settings.blasCompactDeforming);
+                      }},
+                 &m_resources.settings.blasCompactDeforming, Persist::eNo);
   // Debug, live (read at the next scene replace): every composition then retires the old scene's
   // slots and reallocates, so holes, slot reuse, capacity growth and deferred frees run on the GPU
   // before structural edits make them ordinary (daz-viewer docs/retained-scene-plan.md, P4).

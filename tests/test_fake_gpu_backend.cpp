@@ -188,7 +188,9 @@ TEST(FakeGpuBackend, ABlasHashesTheBytesItWasBuiltFrom)
   EXPECT_EQ(gpu.errors().size(), 1u);
 }
 
-TEST(FakeGpuBackend, RefitNeedsAllowUpdateTheSameAddressesAndNoCompaction)
+// A refit needs eAccelAllowUpdate and the same addresses; a compacted copy keeps its source's flags, so
+// the copy of one built to be refitted refits (blasCompactDeforming) and a static one's doesn't
+TEST(FakeGpuBackend, RefitNeedsAllowUpdateAndTheSameAddresses)
 {
   FakeGpuBackend gpu;
   Triangle       t = uploadTriangle(gpu);
@@ -211,6 +213,22 @@ TEST(FakeGpuBackend, RefitNeedsAllowUpdateTheSameAddressesAndNoCompaction)
 
   gpu.compactBlas(refittable);  // not built for compaction
   EXPECT_EQ(gpu.errors().size(), 3u);
+
+  gpu.refitBlas(compacted, t.input);  // the copy of one not built to be refitted
+  EXPECT_EQ(gpu.errors().size(), 4u);
+  const AccelHandle both = gpu.buildBlas(t.input, eAccelAllowUpdate | eAccelAllowCompaction);
+  gpu.beginFrame();
+  gpu.barrier(GpuBarrier::eFrameToWrite);
+  gpu.refitBlas(both, t.input);  // a refit since its build writes no size: the copy comes all the same
+  const AccelHandle copy = gpu.compactBlas(both);
+  ASSERT_NE(gpu.blas(copy), nullptr);
+  EXPECT_LT(gpu.accelBytes(copy), gpu.accelBytes(both));
+  EXPECT_GT(gpu.accelBytes(copy), gpu.accelBytes(compacted));
+  gpu.beginFrame();
+  gpu.barrier(GpuBarrier::eFrameToWrite);
+  gpu.refitBlas(copy, t.input);
+  EXPECT_EQ(gpu.blas(copy)->refits, 2u);  // its source's, and its own
+  EXPECT_EQ(gpu.errors().size(), 4u);
 }
 
 TEST(FakeGpuBackend, ATlasKeepsItsRowsAndUpdatesOnlyOverTheSameBlases)

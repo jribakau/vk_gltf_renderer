@@ -2674,12 +2674,14 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
     std::vector<EntityId> live;
 
     FakeGpuBackend gpu(2);
-    // odd seeds compact the static BLASes, every third builds a BLAS again after two refits
+    // odd seeds compact the static BLASes, every third builds a BLAS again after two refits, and seeds
+    // 2 and 3 of every four compact the deformed ones (refitting their copies)
     Residency residency(gpu, {.minInstances         = 4,
                               .minPrims             = 4,
                               .emissiveSettleFrames = 3,
                               .refitsBeforeRebuild  = seed % 3 == 0 ? 2u : 0u,
-                              .compactStatic        = seed % 2 == 1});
+                              .compactStatic        = seed % 2 == 1,
+                              .compactDeforming     = seed % 4 >= 2});
     residency.replace(scene);
     const auto pick = [&](auto& v) -> auto& { return v[std::uniform_int_distribution<size_t>(0, v.size() - 1)(rng)]; };
 

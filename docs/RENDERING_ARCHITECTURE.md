@@ -50,9 +50,14 @@ no slower refit-only); and retired with its prim after the last instance lets go
 freed a frame cycle later (`GpuBackend::retire`). A static prim (drawn from its mesh's own streams)
 is built for compaction (`blasCompactStatic`, on): the build writes its compacted size to a query,
 and once that frame has retired the next sync records the compacted copy, puts it in the TLAS and
-retires the original. A compacted BLAS can't be refitted, so a vertex edit builds it again,
-refittable from then on. The TLAS is built again over capacity whenever a row changes, keeping its
-handle until capacity grows.
+retires the original. That BLAS isn't built to be refitted, so a vertex edit builds it again,
+refittable from then on. A deformed prim (a posed figure, hair) is built both to be refitted and for
+compaction (`blasCompactDeforming`, on): its compacted copy keeps the build data and is refitted in
+the original's place, a seventh smaller (an updatable BVH compacts to 86-89%; a static one to about
+41%). Each build of one, a reshape's included, makes a copy a frame or two later. Settling under
+memory pressure still builds a quiet mesh's BVH again static and compacted, the smaller of the two.
+The TLAS is built again over capacity whenever a row changes, keeping its handle until capacity
+grows.
 
 **Sync order** (`rs::Residency::sync`, once a frame before the passes): a frame-to-write barrier
 (nothing below overwrites what a frame in flight reads before it); last sync's moved worlds and

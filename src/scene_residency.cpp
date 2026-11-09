@@ -432,28 +432,43 @@ static bool reshapedFar(const std::vector<glm::vec3>& built, const std::vector<g
   return apart / float(built.size()) > glm::length(hi - lo) * kFarShare;
 }
 
-void Residency::build(Prim& prim)
+void Residency::build(uint32_t p)
 {
-  prim.compactable = m_options.compactStatic && prim.drawer.isNone();
-  prim.compacting  = prim.compactable;
-  prim.blas = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | (prim.compactable ? eAccelAllowCompaction : eAccelAllowUpdate));
-  prim.refits   = 0;
-  prim.outgrown = false;
+  Prim&      prim     = *m_prims[p];
+  const bool deformed = !prim.drawer.isNone();
+  const bool compact  = deformed ? m_options.compactDeforming : m_options.compactStatic;
+  // a static BLAS compacted is built again should its vertices move; a deformed one is refitted, compacted or not
+  prim.refittable = deformed || !compact;
+  prim.compacting = compact;
+  prim.compacted  = false;
+  prim.blas       = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | (prim.refittable ? eAccelAllowUpdate : 0u)
+                                                    | (compact ? eAccelAllowCompaction : 0u));
+  prim.refits     = 0;
+  prim.outgrown   = false;
+  if(compact)
+    m_compacting.insert(p);
 }
 
-void Residency::refit(Prim& prim)
+void Residency::refit(uint32_t p)
 {
-  if(!prim.outgrown && !prim.compactable && (m_options.refitsBeforeRebuild == 0 || ++prim.refits < m_options.refitsBeforeRebuild))
+  Prim& prim = *m_prims[p];
+  if(!prim.outgrown && prim.refittable && (m_options.refitsBeforeRebuild == 0 || ++prim.refits < m_options.refitsBeforeRebuild))
   {
     m_gpu.refitBlas(prim.blas, prim.input);
     return;
   }
-  // refitted enough, out of its shape, or built for compaction: its vertices move after all
-  retireAccel(prim.blas, "built again: refitted enough, out of its shape, or built for compaction");
-  prim.blas        = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | eAccelAllowUpdate);
-  prim.refits      = 0;
-  prim.outgrown    = false;
-  prim.compactable = prim.compacting = false;
+  // refitted enough, out of its shape, or not built to be refitted: its vertices move after all, so
+  // refittable from now on, and compacted too when it is deformed and blasCompactDeforming is on
+  retireAccel(prim.blas, "built again: refitted enough, out of its shape, or not built to be refitted");
+  const bool compact = !prim.drawer.isNone() && m_options.compactDeforming;
+  prim.blas          = m_gpu.buildBlas(prim.input, eAccelPreferFastTrace | eAccelAllowUpdate | (compact ? eAccelAllowCompaction : 0u));
+  prim.refits        = 0;
+  prim.outgrown      = false;
+  prim.refittable    = true;
+  prim.compacting    = compact;
+  prim.compacted     = false;
+  if(compact)
+    m_compacting.insert(p);
 }
 
 bool Residency::takeCompacted()
@@ -479,8 +494,9 @@ bool Residency::takeCompacted()
     if(copy == prim.blas)
       continue;  // kept as built
     retireAccel(prim.blas, "compacted");
-    prim.blas = copy;
-    any       = true;
+    prim.blas      = copy;
+    prim.compacted = true;
+    any            = true;
   }
   return any;
 }
@@ -1406,6 +1422,13 @@ std::vector<std::pair<MeshId, uint64_t>> Residency::settleableMeshes() const
 {
   const MemoryLedger                       ledger = this->ledger();
   std::vector<std::pair<MeshId, uint64_t>> out;
+  // what building its BVHs again compacted frees: from a refittable one already compacted, what is left
+  // between the two shares
+  std::map<MeshId, uint64_t> bvhFreed;
+  for(const std::optional<Prim>& p : m_prims)
+    if(p && p->blas && p->refittable)
+      bvhFreed[p->mesh] += uint64_t(double(m_gpu.accelBytes(p->blas))
+                                    * (1.0 - kCompactedBlasShare / (p->compacted ? kCompactedRefittableBlasShare : 1.0)));
   for(const MemoryLedger::Mesh& m : ledger.meshes)
   {
     const auto mesh = m_meshes.find(m.mesh);
@@ -1421,7 +1444,7 @@ std::vector<std::pair<MeshId, uint64_t>> Residency::settleableMeshes() const
         quiet = quiet && d.ran && m_gpu.frame() >= d.writtenAt + m_options.settleQuietFrames;
       }
     if(drawn && quiet)
-      out.emplace_back(m.mesh, m.bytes.remake + m.bytes.working + m.bytes.unread + uint64_t(double(m.bytes.bvh) * (1.0 - kCompactedBlasShare)));
+      out.emplace_back(m.mesh, m.bytes.remake + m.bytes.working + m.bytes.unread + bvhFreed[m.mesh]);
   }
   // the largest first, so that few have to wake; what is being edited after everything else
   std::stable_sort(out.begin(), out.end(), [&](const auto& a, const auto& b) {
@@ -2973,7 +2996,7 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
     for(int32_t p : d.prims)
       if(p >= 0 && m_prims[size_t(p)]->blas)
       {
-        refit(*m_prims[size_t(p)]);
+        refit(uint32_t(p));
         refits = true;
       }
   }
@@ -3552,7 +3575,7 @@ std::set<MeshId> Residency::syncVertices(RetainedScene& scene, const std::set<Me
     return written;
   m_gpu.barrier(GpuBarrier::eTransferToBuild);
   for(uint32_t p : refits)
-    refit(*m_prims[p]);
+    refit(p);
   m_gpu.barrier(GpuBarrier::eBuildToBuild);  // the TLAS build reads them
   return written;
 }
@@ -3665,21 +3688,19 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
       break;
     }
     retireAccel(prim.blas, "settled: built again to be compacted");
-    prim.blas        = built;
-    prim.compactable = prim.compacting = true;
-    prim.refits      = 0;
-    prim.outgrown    = false;
+    prim.blas       = built;
+    prim.refittable = false;
+    prim.compacting = true;
+    prim.compacted  = false;
+    prim.refits     = 0;
+    prim.outgrown   = false;
     m_compacting.insert(p);
     it      = m_settleBuilds.erase(it);
     rebuilt = true;
   }
   tlasRows = tlasRows || rebuilt;
   for(uint32_t p : builds)
-  {
-    build(*m_prims[p]);
-    if(m_prims[p]->compacting)
-      m_compacting.insert(p);
-  }
+    build(p);
   if(!builds.empty() || tlasRows)
     m_gpu.barrier(GpuBarrier::eBuildToBuild);
   // (their scratch is found at that barrier, so any of them): the sync comes back here without them

@@ -111,6 +111,7 @@ public:
     uint32_t        builds      = 0;
     uint32_t        refits      = 0;
     uint64_t        builtFrame  = 0;  // the frame of its last build or refit
+    uint64_t        sizedFrame  = 0;  // the frame of its last build, whose compacted size a later frame reads
     bool            noMemory    = false;  // it found none (setMemoryLimit)
   };
   struct Micromap
@@ -195,11 +196,12 @@ public:
   AccelHandle createTlas(uint32_t capacity) override;
   void        buildTlas(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode) override;
   void        destroyAccel(AccelHandle accel) override;
-  // as a driver might: kBlasBytesPerTriangle a triangle as built, kCompactedBlasBytesPerTriangle compacted
+  // as a driver might: kBlasBytesPerTriangle a triangle as built, kCompactedBlasBytesPerTriangle compacted,
+  // kCompactedRefittableBlasBytesPerTriangle compacted when built to be refitted too
   uint64_t    accelBytes(AccelHandle accel) const override;
   uint64_t    buildScratchBytes() const override { return 0; }
   uint64_t    spilledBytes() const override { return m_spilledBuffers.size() + m_spilledImages.size() + m_spilledAccels.size(); }
-  static constexpr uint64_t kBlasBytesPerTriangle = 64, kCompactedBlasBytesPerTriangle = 26;
+  static constexpr uint64_t kBlasBytesPerTriangle = 64, kCompactedBlasBytesPerTriangle = 26, kCompactedRefittableBlasBytesPerTriangle = 56;
   // Everything alive on the fake device, retired or not: buffers, images and acceleration structures
   uint64_t    liveBytes() const;
   void        dispatchDeform(const DeformDispatch& dispatch) override;

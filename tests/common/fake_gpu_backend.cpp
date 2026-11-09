@@ -473,6 +473,7 @@ AccelHandle FakeGpuBackend::buildBlas(const BlasInput& input, AccelBuildFlags fl
   b.contentHash = contentHash(input);
   b.builds      = 1;
   b.builtFrame  = m_frame;
+  b.sizedFrame  = m_frame;
   if(!b.contentHash)
     error("buildBlas: its positions or indices are not inside a live buffer");
   readByBuild(input.vertexAddress, "buildBlas");
@@ -497,10 +498,10 @@ void FakeGpuBackend::refitBlas(AccelHandle handle, const BlasInput& input)
   Blas& b = it->second;
   if(b.noMemory)
     return;
+  // a compacted copy keeps its source's flags: refittable when that was
   if(!(b.flags & eAccelAllowUpdate))
-    error("refitBlas: the BLAS was not built with eAccelAllowUpdate");
-  if(b.compacted)
-    error("refitBlas: the BLAS is compacted");
+    error(b.compacted ? "refitBlas: the BLAS is a compacted copy of one not built with eAccelAllowUpdate"
+                      : "refitBlas: the BLAS was not built with eAccelAllowUpdate");
   if(input.vertexAddress != b.input.vertexAddress || input.indexAddress != b.input.indexAddress
      || input.indexCount != b.input.indexCount)
     error("refitBlas: the addresses or the index count changed (that needs a build)");
@@ -531,8 +532,10 @@ AccelHandle FakeGpuBackend::compactBlas(AccelHandle handle)
   }
   if(!(it->second.flags & eAccelAllowCompaction))
     error("compactBlas: the BLAS was not built with eAccelAllowCompaction");
-  if(it->second.builtFrame == m_frame)
-    return {};  // the size comes once the frame that built it has run
+  if(it->second.compacted)
+    error("compactBlas: the BLAS is a compacted copy already");
+  if(it->second.sizedFrame == m_frame)
+    return {};  // the size comes once the frame that built it has run (a refit since writes none)
   Blas copy        = it->second;
   copy.compacted   = true;
   copy.builtFrame  = m_frame;
@@ -545,7 +548,11 @@ AccelHandle FakeGpuBackend::compactBlas(AccelHandle handle)
 uint64_t FakeGpuBackend::accelBytes(AccelHandle handle) const
 {
   if(auto b = m_blases.find(handle.value); b != m_blases.end())
-    return b->second.noMemory ? 0 : uint64_t(b->second.input.indexCount / 3) * (b->second.compacted ? kCompactedBlasBytesPerTriangle : kBlasBytesPerTriangle);
+    return b->second.noMemory ? 0 :
+                                uint64_t(b->second.input.indexCount / 3)
+                                    * (!b->second.compacted                         ? kBlasBytesPerTriangle :
+                                       (b->second.flags & eAccelAllowUpdate) != 0u ? kCompactedRefittableBlasBytesPerTriangle :
+                                                                                     kCompactedBlasBytesPerTriangle);
   if(auto t = m_tlases.find(handle.value); t != m_tlases.end())
     return uint64_t(t->second.capacity) * 128;
   if(auto m = m_micromaps.find(handle.value); m != m_micromaps.end())

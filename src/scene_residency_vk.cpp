@@ -1178,7 +1178,11 @@ AccelHandle VulkanGpuBackend::compactBlas(AccelHandle handle)
   releaseCompactQuery(blas);
   if(read != VK_SUCCESS || size == 0 || size >= blas.data.sizeInfo.accelerationStructureSize)
     return handle;
-  flushBuilds();  // call order
+  // call order; and a refit of this one still queued is written before the copy reads it
+  const bool refitQueued = std::any_of(m_queued.begin(), m_queued.end(), [&](const QueuedBuild& q) { return q.blas == handle.value; });
+  flushBuilds();
+  if(refitQueued)
+    nvvk::accelerationStructureBarrier(m_cmd, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
   BlasEntry                                  compacted;
   const VkAccelerationStructureCreateInfoKHR info{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
                                                   .size  = size,
@@ -1187,7 +1191,16 @@ AccelHandle VulkanGpuBackend::compactBlas(AccelHandle handle)
     return handle;  // no room for the copy: it stays as built
   NVVK_DBG_NAME(compacted.accel.accel);
   m_memory.track(kMemBlas, compacted.accel.buffer.allocation);
-  // the copy keeps no build data: a compacted BLAS is never refitted
+  // A copy of one built to be refitted is refitted in its place (falcor's Scene::buildBlas does the same;
+  // DXR calls the copy functionally equivalent, and the validation layers take its build flags from
+  // the source's): it keeps the build data, and the micromap link its geometry points at. A copy of
+  // one that wasn't keeps none.
+  if(blas.data.buildInfo.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR)
+  {
+    compacted.data                              = blas.data;
+    compacted.data.sizeInfo.accelerationStructureSize = size;
+    compacted.micromap                          = std::move(blas.micromap);
+  }
   const VkCopyAccelerationStructureInfoKHR copy{.sType = VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR,
                                                 .src   = blas.accel.accel,
                                                 .dst   = compacted.accel.accel,

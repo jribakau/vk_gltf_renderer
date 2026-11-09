@@ -304,7 +304,8 @@ void GltfRenderer::replaceHostScene()
                              .blasScratchBudget   = VkDeviceSize(m_resources.settings.blasScratchBudgetMB) << 20,
                              .textureGraceBytes   = VkDeviceSize(m_resources.settings.textureGraceMB) << 20,
                              .refitsBeforeRebuild = m_resources.settings.blasRefitsBeforeRebuild,
-                             .compactStatic       = m_resources.settings.blasCompactStatic});
+                             .compactStatic       = m_resources.settings.blasCompactStatic,
+                             .compactDeforming    = m_resources.settings.blasCompactDeforming});
   // the queue is idle: what the old scene let go of isn't in the new one's way when it is fitted
   m_resources.retainedGpu->runRetired();
   {

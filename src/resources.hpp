@@ -307,6 +307,9 @@ struct Settings
   // `blasCompactStatic`: a retained static BLAS is compacted once its size is known (on since P7's
   // measure: Khronos props' BLASes 58% smaller, the image the same)
   bool blasCompactStatic = true;
+  // `blasCompactDeforming`: a retained deformed BLAS (posed figures, hair) is built to be refitted and
+  // compacted, and its compacted copy refitted (on: about a seventh smaller, falcor-ideas.md)
+  bool blasCompactDeforming = true;
   // `ptEstimator` (debug): what counts the light both a light sample and a BSDF ray reach
   // (SceneFrameInfo::estimator): 0 both (MIS), 1 light samples alone, 2 BSDF rays alone
   int ptEstimator = 0;

@@ -357,13 +357,13 @@ public:
   // A new BLAS, its build recorded in this frame. With no memory for it or its scratch, or over a buffer
   // that found none, one that holds nothing and no TLAS row reaches (takeAllocationFailed).
   virtual AccelHandle buildBlas(const BlasInput& input, AccelBuildFlags flags) = 0;
-  // In place; the BLAS was built with eAccelAllowUpdate, not compacted, and the input keeps its
-  // addresses and index count.
+  // In place; the BLAS was built with eAccelAllowUpdate (or is the compacted copy of one that was), and
+  // the input keeps its addresses and index count.
   virtual void refitBlas(AccelHandle blas, const BlasInput& input) = 0;
   // A compacted copy of a BLAS built with eAccelAllowCompaction, recorded in this frame; the caller
   // retires the original. None while its compacted size isn't known (the frame that built it is in
   // flight): ask again in a later frame. The BLAS itself when it stays as built (no smaller, or no
-  // size to read).
+  // size to read). The copy of one built with eAccelAllowUpdate too is refitted as the original was.
   virtual AccelHandle compactBlas(AccelHandle blas) = 0;
   // A TLAS of up to `capacity` rows; its handle stays until it is destroyed.
   virtual AccelHandle createTlas(uint32_t capacity)                                             = 0;

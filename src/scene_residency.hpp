@@ -128,6 +128,10 @@ struct ResidencyOptions
   // and replaced by its compacted copy once the size is known; a vertex edit builds it again
   // refittable
   bool compactStatic = false;
+  // blasCompactDeforming: the BLAS of a prim deformed for an entity (a posed figure, hair) is built to be
+  // refitted and compacted, and its compacted copy is refitted from then on: about a seventh smaller
+  // (1TEST's 80 such BLASes 1,083 to 933 MB, falcor-ideas.md)
+  bool compactDeforming = false;
   // A mesh settles only when nothing has written it for this many frames: a clip or a drag rules it out, and a
   // pause in one wakes it again at little cost. As long as this, what would show waits for what is about to settle.
   uint64_t settleQuietFrames = 60;
@@ -265,8 +269,9 @@ public:
     // its mesh has changed shape too far for a refit to leave a BLAS worth tracing: its next is a build
     bool         outgrown = false;
     uint32_t     users  = 0;  // instances drawing it
-    // its BLAS was built for compaction (not refittable), and the compacted copy is still to come
-    bool compactable = false, compacting = false;
+    // its BLAS was built to be refitted (a static one built for compaction isn't); its compacted copy is
+    // still to come; it is that copy
+    bool refittable = false, compacting = false, compacted = false;
     // the opacity micromap its BLAS links (input.micromap) and its micromap index buffer; none for none
     const OpacityMicromap* micromap = nullptr;
     BufferHandle           micromapIndices;
@@ -330,6 +335,8 @@ public:
   void setRefitsBeforeRebuild(uint32_t refits) { m_options.refitsBeforeRebuild = refits; }
   // blasCompactStatic (ResidencyOptions::compactStatic), for the BLASes built from now on
   void setCompactStatic(bool compact) { m_options.compactStatic = compact; }
+  // blasCompactDeforming (ResidencyOptions::compactDeforming), likewise
+  void setCompactDeforming(bool compact) { m_options.compactDeforming = compact; }
   // the images the last replace or sync decoded and the ones it took already decoded
   struct ImageCounts
   {
@@ -653,11 +660,12 @@ private:
   // `why`: what let go of it, for the log should the last TLAS built still point at it once it is destroyed
   void     retireAccel(AccelHandle accel, const char* why = "");
   void     retireImage(ImageHandle image, uint64_t bytes);
-  // the prim's BLAS built, for compaction when it is static and blasCompactStatic is on
-  void build(Prim& prim);
-  // the prim's BLAS refitted to its input, or built again once it has been refitted enough (or
-  // when it was built for compaction)
-  void refit(Prim& prim);
+  // prim slot p's BLAS built: for compaction when it is static and blasCompactStatic is on; refittable
+  // when it is deformed, and compacted too when blasCompactDeforming is on
+  void build(uint32_t p);
+  // prim slot p's BLAS refitted to its input, or built again once it has been refitted enough (or when
+  // it wasn't built to be refitted), refittable
+  void refit(uint32_t p);
   // the compacted copies of the BLASes built for compaction whose sizes are known; whether any came
   bool takeCompacted();
   // the record's streams; `vertices`: only what setMeshVertices writes (positions, normals, and the

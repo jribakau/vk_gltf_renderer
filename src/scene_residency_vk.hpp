@@ -327,6 +327,8 @@ public:
   void setRefitsBeforeRebuild(uint32_t refits) { m_residency.setRefitsBeforeRebuild(refits); }
   // blasCompactStatic: static BLASes built from now on are compacted
   void setCompactStatic(bool compact) { m_residency.setCompactStatic(compact); }
+  // blasCompactDeforming: deformed BLASes built from now on are compacted, and refitted as copies
+  void setCompactDeforming(bool compact) { m_residency.setCompactDeforming(compact); }
   // what the residency's last syncs could not do as asked, once each
   std::vector<std::string> takeNotices() { return m_residency.takeNotices(); }
   // what the user should hear of them
@@ -351,7 +353,7 @@ public:
   void setShaderFeatures(std::optional<nvvkgltf::SceneFeatureSet> features) { m_residency.setShaderFeatures(features); }
   // the images taken from a host's prefetches since the last call
   uint32_t takePrefetchCount() { return m_gpu.takePrefetchCount(); }
-  // blasCompactStatic: what the copies since the last call saved
+  // blasCompactStatic, blasCompactDeforming: what the copies since the last call saved
   VulkanGpuBackend::Compaction takeCompaction() { return m_gpu.takeCompaction(); }
   // Nothing resident (what was is retired), the decoded images kept in grace: a host's scene
   // between a cleanup and the next retained scene replace, which takes what it shares

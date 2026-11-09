@@ -190,5 +190,8 @@ inline uint64_t meshBufferBytes(const MeshCounts& m)
 // What a BLAS built for compaction holds once compacted, of what the driver says it holds as built: 98
 // static BLASes of an apartment went from 65.0 to 26.5 MB (docs/improvements.md)
 inline constexpr double kCompactedBlasShare = 0.41;
+// And one built to be refitted too (blasCompactDeforming): updatable BLASes measured 2026-11-08 came to
+// 86-87% (1TEST's 80, 1,083 to 933 MB; hairs 85%, bodies and garments 88-89%)
+inline constexpr double kCompactedRefittableBlasShare = 0.87;
 
 }  // namespace rs
