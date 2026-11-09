@@ -314,6 +314,8 @@ struct Settings
   int ptEstimator = 0;
   // the air's sun-shadow ray's roulette (SceneFrameInfo::aerialSunShare)
   float ptAerialSunShare = 0.05F;
+  // `ptSkinSlab` (debug): the thin preview's slab through thin skin (SceneFrameInfo::skinSlab)
+  bool ptSkinSlab = true;
   // `residencyRetireOnReplace` (debug): a stream host's scene replace syncs the new scene into the
   // backend it has, retiring the old one's slots, instead of starting the backend over
   bool residencyRetireOnReplace = false;

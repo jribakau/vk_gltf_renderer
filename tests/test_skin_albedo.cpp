@@ -21,6 +21,7 @@ using namespace glm;
 #include <nvshaders/slang_types.h>
 using namespace shaderio;
 #include "../shaders/skin_albedo.h.slang"
+#include "../shaders/skin_slab.h.slang"
 
 namespace {
 
@@ -138,6 +139,52 @@ double walkAlbedo(double omega, double mu0, int walks, uint32_t seed)
   return total / walks;
 }
 
+// What a slab of skin's medium does with light that enters its top face diffusely: the share of
+// walks that leave back through the top and through the bottom. The medium is the shader's for a map
+// A and a diffusion length of 1 (the direction-averaged inversion, the app's: sigma_t = 1 / sqrt(3 (1 -
+// alpha))), the slab `depth` diffusion lengths thick, laterally unbounded, so only the height matters.
+struct SlabWalk
+{
+  double reflected = 0, transmitted = 0;
+};
+SlabWalk walkSlab(float a, double depth, int walks, uint32_t seed)
+{
+  std::mt19937_64                        rng(seed);
+  std::uniform_real_distribution<double> u(0.0, 1.0);
+  const double                           omega  = multiToSingleScatterAlbedo(float3(a), 0.0f).x;
+  const double                           sigmaT = 1 / std::sqrt(3 * (1 - omega));
+  SlabWalk                               out;
+  for(int w = 0; w < walks; w++)
+  {
+    double z = 0, dz = -std::sqrt(u(rng)), weight = 1;  // by the cosine, downward
+    for(;;)
+    {
+      z += dz * -std::log(1 - u(rng)) / sigmaT;
+      if(z > 0)
+      {
+        out.reflected += weight;
+        break;
+      }
+      if(z < -depth)
+      {
+        out.transmitted += weight;
+        break;
+      }
+      weight *= omega;
+      if(weight < 1e-2)
+      {
+        if(u(rng) > 0.5)
+          break;
+        weight *= 2;
+      }
+      dz = 2 * u(rng) - 1;
+    }
+  }
+  out.reflected /= walks;
+  out.transmitted /= walks;
+  return out;
+}
+
 // the albedo either inversion gives, one channel at a time
 double faceOn(float a)
 {
@@ -223,4 +270,54 @@ TEST(SkinAlbedo, TheFaceOnInversionRisesWithTheMap)
   const float3 rgb = faceOnSingleScatterAlbedo(float3(0.8f, 0.55f, 0.45f));
   EXPECT_FLOAT_EQ(rgb.y, float(faceOn(0.55f)));
   EXPECT_FLOAT_EQ(rgb.z, float(faceOn(0.45f)));
+}
+
+// The thin preview's slab (skin_slab.h.slang): nothing in the way lets everything through, depth gives
+// back the map, and no depth makes or loses light it shouldn't
+TEST(SkinSlab, ItRunsFromClearToTheMap)
+{
+  const float3 A(0.6f, 0.35f, 0.2f);
+  const SkinSlab none = skinSlab(A, float3(0.0f));
+  EXPECT_NEAR(none.reflectance.x, 0.0f, 1e-6f);
+  EXPECT_NEAR(none.transmittance.y, 1.0f, 1e-6f);
+  const SkinSlab deep = skinSlab(A, float3(60.0f));
+  EXPECT_NEAR(deep.reflectance.x, 0.6f, 1e-5f);
+  EXPECT_NEAR(deep.reflectance.z, 0.2f, 1e-5f);
+  EXPECT_LT(deep.transmittance.x, 1e-20f);
+  float3 lastR(-1.0f), lastT(2.0f);
+  for(float depth = 0.0f; depth <= 12.0f; depth += 0.05f)
+  {
+    const SkinSlab s = skinSlab(A, float3(depth));
+    for(int c = 0; c < 3; c++)
+    {
+      EXPECT_GE(s.reflectance[c], lastR[c] - 1e-6f) << depth;  // deeper: more comes back (to rounding)
+      EXPECT_LE(s.transmittance[c], lastT[c] + 1e-6f) << depth;  // ...and less goes through
+      EXPECT_LE(s.reflectance[c] + s.transmittance[c], 1.0f + 1e-6f) << depth;
+      EXPECT_LE(s.reflectance[c], A[c] + 1e-6f) << depth;
+    }
+    lastR = s.reflectance;
+    lastT = s.transmittance;
+  }
+}
+
+// ...and it is the walk's: a slab of the medium the still walks through, entered diffusely, returns
+// and lets through what Kubelka-Munk says, within a few percent where the glow is (a light channel,
+// up to a few diffusion lengths) and low by up to a quarter for a dark channel deep in. The preview
+// probes to SKIN_SLAB_REACH lengths, where the light channel lets through almost nothing.
+TEST(SkinSlab, ItLetsThroughWhatTheWalkDoes)
+{
+  for(const float a : {0.6f, 0.35f, 0.2f})
+    for(const double depth : {0.25, 0.5, 1.0, 2.0, 3.0})
+    {
+      const SlabWalk walk = walkSlab(a, depth, 100000, uint32_t(a * 1000 + depth * 10));
+      const SkinSlab km   = skinSlab(float3(a), float3(float(depth)));
+      EXPECT_NEAR(km.reflectance.x, walk.reflected, 0.02) << "A " << a << " depth " << depth;
+      EXPECT_NEAR(km.transmittance.x, walk.transmitted, 0.08 * walk.transmitted + 0.016) << "A " << a << " depth " << depth;
+      if(a >= 0.5f)
+        EXPECT_NEAR(km.transmittance.x / walk.transmitted, 1.0, 0.06) << "depth " << depth;
+      std::printf("A %.2f depth %.2f: walk R %.3f T %.4f, slab R %.3f T %.4f\n", a, depth, walk.reflected, walk.transmitted,
+                  km.reflectance.x, km.transmittance.x);
+    }
+  const SkinSlab reach = skinSlab(float3(0.6f), float3(SKIN_SLAB_REACH));
+  EXPECT_LT(reach.transmittance.x, 1e-3f);
 }

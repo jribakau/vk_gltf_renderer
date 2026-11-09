@@ -548,6 +548,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                                      "under this share of the pixel (physical sky; 0: on every path)",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.ptAerialSunShare, Persist::eNo, 0.0F, 1.0F);
+  // The thin preview's slab (skin_slab.h.slang); off for the preview as it was, all of skin's light back where it went in
+  m_settings.add({.name            = "ptSkinSlab",
+                  .help            = "PathTracer (debug): the thin skin preview lets light through thin skin (ears, fingers) to its far side",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.ptSkinSlab, Persist::eNo);
   // Display › Time from a command line (view.set's display "time" in the app): each pixel coloured by how
   // long its thread ran against the frame's average (pixel_time.h.slang); where the frame's time went is
   // logged as it comes back

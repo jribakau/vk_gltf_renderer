@@ -369,6 +369,9 @@ struct SceneFrameInfo
   // What the Time view sums (pixel_time.h.slang kPixelTimeCount*): the clock (0), or a count of rays,
   // walk steps or shadow rays. (Appended, per the note above.)
   int pixelTimeCount = 0;
+  // ptSkinSlab (debug): the thin preview lets light through thin skin to its far side
+  // (skin_slab.h.slang); 0 sends it all back where it went in, as before. (Appended, per the note above.)
+  int skinSlab = 1;
 };
 
 enum PathtracerFlags

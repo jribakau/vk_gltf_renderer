@@ -387,6 +387,19 @@ Some things about the transport are worth knowing before touching it:
   transmittance toward the light, over its cosine-weighted mean (`diffuseExitFresnelWeight`,
   `ePtExitFresnel`): the entry paid (1 − F) on the camera's side, so the exit pays it on the
   light's. It weighs the sample, not the pdf, so both MIS sides keep the cosine lobe.
+- The **thin preview's slab** (`skin_slab.h.slang`, `ptSkinSlab`, debug, on): where the preview
+  shades measured skin (`ePtScatterAsThin` on DLSS frames, `ePtSimplifyScatter` after a rough
+  bounce), a probe goes in within 45° of the smooth normal (`probeSlabFarSide`, `INSTANCE_MASK_WALK`,
+  up to eight diffusion lengths). If it reaches the same material's far side, Kubelka-Munk (`skinSlab`)
+  splits the map's light by that depth along the normal: R comes back here, T goes through. One
+  sample takes one: this point with R, or the far side's point as a Lambertian surface with T, the
+  diffuse share of this side's lobes and the exit Fresnel. Each is weighed by one over its chance, so
+  it is unbiased for the model. The far side is shaded after the first-hit guides, which keep this
+  side. Against a walk through a slab (`SkinSlab.ItLetsThroughWhatTheWalkDoes`) Kubelka-Munk is
+  within a few percent on light channels. Lateral light is the rest: on a back-lit ear (faceTest,
+  hair off, the Sun low behind, 256 samples) the glow's red went from 0.51 of the walk's to 0.79,
+  green 0.76 to 0.87. A straight-in probe gave 0.73 with faceted, hard-edged glow and a dark concha.
+  The cost is +6-9% of the preview's trace where skin fills the frame.
 - A **sized light** (a point or spot light with a radius, a directional one with a disc, the sky's
   own sun aside) is reached by both techniques: `sampleLights()` draws its cone with a real pdf, and
   `sizedLightHits()` tests each path segment against the spheres (and, on escape, the discs),

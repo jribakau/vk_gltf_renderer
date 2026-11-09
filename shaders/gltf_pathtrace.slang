@@ -73,6 +73,7 @@ static bool doDebug = false;
 #include "common.h.slang"
 #include "aerial_perspective.h.slang"
 #include "contribution_roulette.h.slang"
+#include "skin_slab.h.slang"
 #include "aperture.h.slang"
 #include "sky_bruneton_radiance.h.slang"
 #include "sky_clouds.h.slang"
@@ -336,6 +337,56 @@ PbrMaterial lightReuseMaterialThere(PbrMaterial m, float3 shading)
   }
   m.N = n;
   return m;
+}
+#endif
+
+#if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+// The far side of thin skin under a thin-preview hit (skin_slab.h.slang, the slab in pathTraceOneBounce):
+// straight in from `origin` along `inward`, the first surface a walk would stop at (INSTANCE_MASK_WALK:
+// not the hair, lashes or clothing over it) within `reach`, if it is the same material, which a back
+// of an ear or a finger is and an eyeball under a lid or a tooth behind a lip is not. As a hit seen
+// from outside that side: getHitState turned its frame toward the probe, into the skin, and it turns
+// back out, as a walk's diffuse exit turns its own.
+struct SlabFarSide
+{
+  bool     found;
+  float    depth;  // how far in, along `inward`
+  HitState hit;
+};
+SlabFarSide probeSlabFarSide(float3 origin, float3 inward, float reach, int materialID)
+{
+  SlabFarSide far = {};
+  far.found       = false;
+  RayDesc probe;
+  probe.Origin    = origin;
+  probe.Direction = inward;
+  probe.TMin      = 0.0F;
+  probe.TMax      = reach;
+  PIXEL_TIME_COUNT(kPixelTimeCountRays);
+  RayQuery rayQuery;
+  rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE, INSTANCE_MASK_WALK, probe);
+  while(rayQuery.Proceed())
+  {
+  }  // opaque: nothing to decide
+  if(rayQuery.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+    return far;
+  const GltfRenderNode node = pushConst.gltfScene->renderNodes[rayQuery.CommittedInstanceIndex()];
+  if(node.materialID != materialID)
+    return far;
+  const GltfRenderPrimitive prim = pushConst.gltfScene->renderPrimitives[rayQuery.CommittedInstanceID()];
+  const float2              b    = rayQuery.CommittedTriangleBarycentrics();
+  HitState hit = getHitState(prim, float3(1.0F - b.x - b.y, b.x, b.y), node.worldToObject, node.objectToWorld,
+                             rayQuery.CommittedPrimitiveIndex(), inward);
+  hit.nrm       = -hit.nrm;
+  hit.geonrm    = -hit.geonrm;
+  hit.tangent   = -hit.tangent;
+  hit.bitangent = -hit.bitangent;
+  hit.frameSign = -hit.frameSign;
+  hit.shadowPos = hit.shadowPosOther;  // the terminator offset for the outer side, which the light is on
+  far.found     = true;
+  far.depth     = rayQuery.CommittedRayT();
+  far.hit       = hit;
+  return far;
 }
 #endif
 
@@ -1007,6 +1058,70 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
 #endif
 
+    // The thin preview's slab (skin_slab.h.slang). The preview sends all of skin's light back out where
+    // it went in, which a thick body does, but where measured skin is thin enough for light to reach
+    // its far side -- an ear, a finger, the wing of a nostril -- the still's walk lets some through,
+    // red the most, and a back-lit ear glows. A probe straight in along the face finds that far side
+    // (probeSlabFarSide, within a cone about the smooth normal: SKIN_SLAB_CONE_COS), Kubelka-Munk splits
+    // the map's light into what comes back here and what goes through, and one sample takes one of the
+    // two: this point with what comes back, or the far side's point as a Lambertian surface with what
+    // goes through (its light sample and its bounce there), each weighed by one over its chance. What
+    // goes through came past this side's specular layer, as the diffuse share does, and leaves with the
+    // walk's exit Fresnel. Thick skin, where no far side is within reach, is shaded as before (the
+    // probe's direction takes two numbers from the seed). After the guides: the camera sees this side.
+    bool slabFarSide = false;
+#if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+    if(simplifyScatter && frameInfo->skinSlab != 0 && !hitInfinitePlane && !hitWater && materialIndex >= 0 && hit.frontFace && !ptIsInside(pt)
+       && pbrMat.thickness > 0.0F && materials[materialIndex].scatterStrengthFactor > 0.0F && any(materials[materialIndex].scatterDistance > 0.0F))
+    {
+      const float3 diffusion = max(materials[materialIndex].scatterDistance, float3(1e-7F));
+      // in within the cone about the smooth normal (SKIN_SLAB_CONE_COS), never out past the face
+      const float3 axis = -hit.nrm;
+      const float  cosT = 1.0F - rand(seed) * (1.0F - SKIN_SLAB_CONE_COS);
+      const float  phi  = M_TWO_PI * rand(seed);
+      float3       tangent, bitangent;
+      orthonormalBasis(axis, tangent, bitangent);
+      float3 inward = normalize(axis * cosT + (tangent * cos(phi) + bitangent * sin(phi)) * sqrt(max(1.0F - cosT * cosT, 0.0F)));
+      if(dot(inward, hit.geonrm) >= -0.05F)
+        inward = -hit.geonrm;
+      const float       along = max(dot(inward, axis), SKIN_SLAB_CONE_COS);
+      const float       reach = SKIN_SLAB_REACH * max(diffusion.x, max(diffusion.y, diffusion.z)) / along;
+      const SlabFarSide far   = probeSlabFarSide(safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance), inward, reach, renderNode.materialID);
+      if(far.found)
+      {
+        const SkinSlab slab    = skinSlab(pbrMat.baseColor, far.depth * along / diffusion);
+        const float    through = luminance(slab.transmittance);
+        const float    chance  = min(through / max(through + luminance(slab.reflectance), 1e-6F), SKIN_SLAB_MAX_CHANCE);
+        if(chance > SKIN_SLAB_MIN_CHANCE)
+        {
+          if(rand(seed) < chance)
+          {
+            // this side's diffuse share at the view, and what a coat over it leaves of the colour
+            float3 tint = pbrMat.baseColor;
+            ARRAY_TYPE(float, LOBE_COUNT, lobeWeights) = computeLobeWeights(pbrMat, dot(-ray.Direction, pbrMat.N), tint);
+            const float3 underCoat = tint / max(pbrMat.baseColor, float3(1e-4F));
+            hit                    = far.hit;
+            pbrMat                 = defaultPbrMaterial(slab.transmittance * underCoat, 0.0F, 1.0F, hit.nrm, hit.geonrm);
+            pbrMat.specular        = 0.0F;
+            pbrMat.ior2            = 1.0F;
+            pbrMat.T               = hit.tangent;
+            pbrMat.B               = hit.bitangent;
+            pbrMat.Ns              = hit.nrm;
+            if(hasFlag(pushConst.flags, PathtracerFlags::ePtExitFresnel))
+              exitFresnelEta = clamp(materials[materialIndex].ior, 1.0F, 3.0F);
+            pt.throughput *= lobeWeights[LOBE_DIFFUSE_REFLECTION] / chance;
+            slabFarSide = true;
+          }
+          else
+          {
+            pbrMat.baseColor = slab.reflectance;
+            pt.throughput /= 1.0F - chance;
+          }
+        }
+      }
+    }
+#endif
+
     // Normal surface bounce: propagate the cone footprint to the next segment. The new ray
     // starts at hit.pos with the slant-corrected worldFoot as its starting width, so the
     // next Trace()'s texture LOD inherits the full accumulated footprint.
@@ -1111,7 +1226,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // frame's record at this pixel (reprojected under DLSS) is one more candidate, re-weighed here, and
     // what this vertex shades is written for the next frame, its W zeroed below if it was shadowed.
     // A smooth vertex resamples nothing: its one sample stands (smoothHere)
-    const bool reuseHere = firstRay && !hairOn && !smoothHere && hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuse)
+    // Not from a slab's far side: the record is this pixel's first surface, and that one is the near side
+    const bool reuseHere = firstRay && !hairOn && !smoothHere && !slabFarSide && hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuse)
                            && pushConst.lightReservoirs != nullptr;
     const int        candidates = reuseHere ? clamp(pushConst.lightCandidates, 1, LIGHT_RIS_MAX_CANDIDATES) :
                                               (smoothHere ? 1 : lightCandidatesHere(hairOn, pt.surfaceDepth));
