@@ -1611,6 +1611,40 @@ int main(int argc, char** argv)
             m.regions.push_back(cageRegions(w.scene, me));
             m.clearance.push_back(base && skinned ? signedClearance(base->positions, base->tris, me.geo->cagePositions) : std::vector<double>{});
           }
+          // a body the outfit carries (cut to what shows): how much of the item has that skin under it,
+          // its closest point within 5 cm and not on the body's cut, by region
+          if(w.sourceBase && !w.sourceBase->tris.empty())
+          {
+            const fv::bodymap::Body          b = fv::bodymap::bodyOf(*w.sourceBase);
+            const fv::bodymap::CutEdges      cut(b);
+            const fv::physics::SurfaceIndex  index(b.positions, b.tris);
+            fv::physics::Stamps&             stamps = fv::physics::threadStamps();
+            std::map<std::string, std::array<size_t, 2>> byRegion;  // covered, all
+            size_t                           covered = 0, all = 0;
+            for(size_t j = 0; j < item.meshes.size(); j++)
+            {
+              const fv::Mesh& me = w.scene.meshes[size_t(item.meshes[j])];
+              if(!me.geo || m.clearance[j].empty())
+                continue;
+              const auto& p = me.geo->cagePositions;
+              for(size_t v = 0; v * 3 + 2 < p.size(); v++)
+              {
+                const int32_t id  = stamps.next(index.triangles());
+                const auto    hit = index.nearest(p[v * 3], p[v * 3 + 1], p[v * 3 + 2], [](size_t) { return true; }, 25.0, stamps.stamp, id);
+                const double  w3[3] = {hit.u, hit.v, hit.w};
+                const bool    under = hit.tri >= 0 && !cut.on(size_t(hit.tri), w3);
+                const std::string& region = v < m.regions[j].size() ? m.regions[j][v] : std::string("?");
+                byRegion[region][0] += under, byRegion[region][1]++;
+                covered += under, all++;
+              }
+            }
+            std::ostringstream c;
+            c << std::fixed << std::setprecision(0) << "carried skin under " << (all ? 100.0 * double(covered) / double(all) : 0.0) << "% of its " << all
+              << " vertices:";
+            for(const auto& [region, n] : byRegion)
+              c << " " << region << " " << (n[1] ? 100.0 * double(n[0]) / double(n[1]) : 0.0) << "% of " << n[1];
+            m.body += "; " + c.str();
+          }
           made.push_back(std::move(m));
         }
         // worn: the same meshes, fitted, against the figure's body
