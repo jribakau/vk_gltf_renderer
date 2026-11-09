@@ -376,6 +376,10 @@ struct SceneFrameInfo
   // the still's walk lets it out (skin_spread.h.slang); 0 takes it where it lands, as before.
   // (Appended, per the note above.)
   int skinSpread = 1;
+  // ptSkinView (debug): the thin preview shades measured skin as the still's walk returns it, its colour
+  // by the view's angle and its diffuse by the exit's Fresnel toward the light (skin_albedo.h.slang); 0
+  // the map's Lambertian, as before. (Appended, per the note above.)
+  int skinView = 1;
 };
 
 enum PathtracerFlags

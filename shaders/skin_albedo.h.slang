@@ -45,4 +45,46 @@ float3 faceOnSingleScatterAlbedo(float3 A)
   return clamp(1.0F - c * c, float3(0.0F), float3(1.0F));
 }
 
+/*-------------------------------------------------------------------------------------------------
+ * The thin preview's skin as the walk returns it from the camera's angle. The still's walk enters by
+ * refraction along the view, so its albedo is 1 - H(mu0) sqrt(1 - alpha) at the refracted direction's
+ * cosine mu0, rising as the view slants (the light side is the diffuse exit's: diffuseExitFresnelWeight).
+ * Measured on a slab under one directional light against the preview's Lambertian map, the walk came
+ * back 3, 6 and 7% above it at a 45-degree view (A 0.6, 0.35, 0.25) and 6, 14 and 17% at 70; the
+ * H-function says 3.5, 5.8 and 6.8%, and 6.8, 11.7 and 13.8% (a rough boundary lets some light in
+ * shallower at a grazing view).
+ * -------------------------------------------------------------------------------------------------*/
+
+// Chandrasekhar's H-function of an isotropic half-space of single-scattering albedo omega, at direction
+// cosine mu, by Hapke's (2002) approximation: about 1% above the exact, by nearly the same at every mu
+float3 hFunctionApprox(float3 omega, float mu)
+{
+  const float  m  = clamp(mu, 1e-4F, 1.0F);
+  const float3 g  = sqrt(max(float3(1.0F) - omega, float3(0.0F)));
+  const float3 r0 = (float3(1.0F) - g) / (float3(1.0F) + g);
+  return float3(1.0F) / (float3(1.0F) - omega * m * (r0 + (float3(1.0F) - 2.0F * m * r0) * (0.5F * log((1.0F + m) / m))));
+}
+
+// What the walk returns entered by refraction from outside at cosine `cosView` through a boundary of
+// index `eta`
+float3 walkAlbedoAt(float3 alpha, float cosView, float eta)
+{
+  const float c   = clamp(cosView, 0.0F, 1.0F);
+  const float mu0 = sqrt(max(1.0F - (1.0F - c * c) / (eta * eta), 0.0F));
+  return float3(1.0F) - hFunctionApprox(alpha, mu0) * sqrt(max(float3(1.0F) - alpha, float3(0.0F)));
+}
+
+// The colour the thin preview gives measured skin of map A seen at cosine `cosView`: what the still's
+// walk through its medium (single-scattering albedo alpha) returns from that view. With the face-on
+// inversion A is that albedo head-on, so A is scaled by the walk's change from head-on, which cancels
+// the approximation's error; with the direction-averaged one the walk's own albedo at the view stands
+// (head-on 6-15% below the map, as tests/render/skin_furnace.py found).
+float3 skinViewAlbedo(float3 A, float3 alpha, float cosView, float eta, bool faceOn)
+{
+  const float3 atView = walkAlbedoAt(alpha, cosView, eta);
+  if(faceOn)
+    return A * atView / max(walkAlbedoAt(alpha, 1.0F, eta), float3(1e-4F));
+  return atView;
+}
+
 #endif

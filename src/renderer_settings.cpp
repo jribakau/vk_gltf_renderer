@@ -559,6 +559,12 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                                      "taking each channel's light where the walk lets it out",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.ptSkinSpread, Persist::eNo);
+  // The thin preview's skin by angle (skin_albedo.h.slang); off for the map's Lambertian, as before
+  m_settings.add({.name            = "ptSkinView",
+                  .help            = "PathTracer (debug): the thin skin preview returns light as the still's walk does, "
+                                     "brighter at a slanting view and with the exit's Fresnel toward the light",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.ptSkinView, Persist::eNo);
   // Display › Time from a command line (view.set's display "time" in the app): each pixel coloured by how
   // long its thread ran against the frame's average (pixel_time.h.slang); where the frame's time went is
   // logged as it comes back

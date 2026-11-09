@@ -441,3 +441,66 @@ TEST(SkinSpread, RedSpreadsFurthest)
     EXPECT_LT(1.7f / rate[c], 0.002f) << c;
   }
 }
+
+// The thin preview's skin by the view's angle (skinViewAlbedo, skin_albedo.h.slang). Hapke's H-function
+// is within 1.5% of the exact over the albedos skin maps make, and as a change from head-on, which is
+// how the face-on preview uses it, within 0.3% where a refraction at index 1.4 enters (a cosine inside of
+// 0.70 and up; at shallower ones, which only a lower index reaches, within about 1%).
+TEST(SkinViewAlbedo, HapkesHIsCloseAndItsChangeFromHeadOnCloser)
+{
+  for(const float a : {0.05f, 0.15f, 0.25f, 0.35f, 0.5f, 0.6f, 0.8f, 0.95f})
+  {
+    const double    omega = faceOn(a);
+    const double    s     = std::sqrt(1 - omega);
+    const HFunction H(omega);
+    const double    approxHeadOn = 1 - hFunctionApprox(float3(float(omega)), 1.0f).x * s;
+    for(const double mu : {0.05, 0.2, 0.4, 0.6, 0.72, 0.85, 1.0})
+    {
+      const double approx = hFunctionApprox(float3(float(omega)), float(mu)).x;
+      EXPECT_NEAR(approx / H(mu), 1.0, 0.015) << "A " << a << " mu " << mu;
+      const double exactChange  = (1 - H(mu) * s) / (1 - H(1.0) * s);
+      const double approxChange = (1 - approx * s) / approxHeadOn;
+      EXPECT_NEAR(approxChange / exactChange, 1.0, mu >= 0.7 ? 0.003 : 0.012) << "A " << a << " mu " << mu;
+    }
+  }
+}
+
+// With the face-on inversion the preview is the map head-on and rises as the view slants, a darker
+// channel the most, as the still's walk did on a slab under one light (A 0.6, 0.35, 0.25, specular
+// off, scratch skin_angles.py): 3.0, 6.0 and 7.2% above head-on at a 45-degree view, 6.2, 13.6 and 16.7%
+// at 70, where the rough boundary lets some light in shallower than the smooth one here
+TEST(SkinViewAlbedo, FaceOnItIsTheMapHeadOnAndRisesAtASlant)
+{
+  const float3 A     = float3(0.6f, 0.35f, 0.25f);
+  const float3 alpha = faceOnSingleScatterAlbedo(A);
+  const float3 head  = skinViewAlbedo(A, alpha, 1.0f, 1.4f, true);
+  for(int c = 0; c < 3; c++)
+    EXPECT_NEAR(head[c], A[c], 1e-5f) << c;
+  const float3 at45 = skinViewAlbedo(A, alpha, std::cos(0.25f * float(std::numbers::pi)), 1.4f, true) / A;
+  const float3 at70 = skinViewAlbedo(A, alpha, std::cos(70.0f * float(std::numbers::pi) / 180.0f), 1.4f, true) / A;
+  const float  walk45[3] = {1.030f, 1.060f, 1.072f}, walk70[3] = {1.062f, 1.136f, 1.167f};
+  for(int c = 0; c < 3; c++)
+  {
+    EXPECT_NEAR(at45[c], walk45[c], 0.01f) << c;
+    EXPECT_NEAR(at70[c], walk70[c], 0.035f) << c;
+    EXPECT_GT(at70[c], at45[c]) << c;
+  }
+  EXPECT_LT(at70.x, at70.y);
+  EXPECT_LT(at70.y, at70.z);
+}
+
+// With the direction-averaged inversion the walk's own albedo stands: head-on below the map, as a
+// refraction entry under that inversion comes back (tests/render/skin_furnace.py: 6-15% short), and
+// within 1.5% of the exact H-function's
+TEST(SkinViewAlbedo, DirectionAveragedItIsTheWalksOwn)
+{
+  for(const float a : {0.8f, 0.55f, 0.45f, 0.25f})
+  {
+    const double    omega = directionAveraged(a);
+    const HFunction H(omega);
+    const float     head  = skinViewAlbedo(float3(a), float3(float(omega)), 1.0f, 1.4f, false).x;
+    EXPECT_NEAR(head / (1 - H(1.0) * std::sqrt(1 - omega)), 1.0, 0.015) << a;
+    EXPECT_LT(head, 0.96f * a) << a;
+    EXPECT_GT(head, 0.80f * a) << a;
+  }
+}

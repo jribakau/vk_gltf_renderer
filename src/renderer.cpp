@@ -1181,6 +1181,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.aerialSunShare = std::clamp(m_resources.settings.ptAerialSunShare, 0.0F, 1.0F);
     finfo.skinSlab       = m_resources.settings.ptSkinSlab ? 1 : 0;
     finfo.skinSpread     = m_resources.settings.ptSkinSpread ? 1 : 0;
+    finfo.skinView       = m_resources.settings.ptSkinView ? 1 : 0;
     // the Time view: where this frame sums its pixels' time, and the scale a recent frame's gave it
     const PathTracer::PixelTimeFrame pixelTime = m_pathTracer.preparePixelTime(m_resources);
     finfo.pixelTime                            = pixelTime.sums;

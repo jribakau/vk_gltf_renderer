@@ -434,6 +434,22 @@ Some things about the transport are worth knowing before touching it:
   - **Not Christensen-Burley's fit:** theirs spreads two to five times wider at our scatter
     distances.
   - **Cost:** three short probes and three shadow rays, on the camera's skin hit only.
+- The **thin preview's skin by angle** (`skinViewAlbedo` in `skin_albedo.h.slang`, `ptSkinView`, debug,
+  on): the preview shades measured skin as the still's walk returns it. On the camera's side, the
+  walk enters by refraction along the view, so its albedo is 1 − H(mu0) sqrt(1 − alpha) at the
+  refracted cosine mu0, rising at a slant, darker channels most. H is Hapke's approximation,
+  `hFunctionApprox`: about 1% above the exact. With the face-on inversion it is taken as a change
+  from head-on, within 0.3% (`SkinViewAlbedo.*`). On the light's side the walk leaves through a
+  Lambertian exit that pays the boundary's Fresnel, so the preview's skin takes `exitFresnelEta` too:
+  on the light sample's diffuse, and on a continuation the diffuse lobe drew. Over a sky that factor
+  averages to 1; under one light it runs from 1.05 head-on to 0.44 at 85°.
+  - **Measured** on a slab under one directional light (scratch `skin_angles.py`), the walk against
+    the preview. Before: 4-6% above head-on and up to 17% at a 70° view, by Ft/c̄ in the light's
+    angle. After, with skin's specular: within 0-2% to a 45° view.
+  - **The remaining gap:** at 70° the preview is 2.5-4% brighter where the boundary is rough
+    (roughness 0.5; 0.1 matches). That is the still's: its rough transmission is single-scattering
+    (G1 of the refracted ray times 1 − F per microfacet, over 1 − E_R), and the light masking blocks
+    is lost, where the preview's layering keeps it.
 - A **sized light** (a point or spot light with a radius, a directional one with a disc, the sky's
   own sun aside) is reached by both techniques: `sampleLights()` draws its cone with a real pdf, and
   `sizedLightHits()` tests each path segment against the spheres (and, on escape, the discs),

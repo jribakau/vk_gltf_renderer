@@ -318,6 +318,8 @@ struct Settings
   bool ptSkinSlab = true;
   // `ptSkinSpread` (debug): the thin preview's spread of skin's light (SceneFrameInfo::skinSpread)
   bool ptSkinSpread = true;
+  // `ptSkinView` (debug): the thin preview's skin as the walk returns it by angle (SceneFrameInfo::skinView)
+  bool ptSkinView = true;
   // `residencyRetireOnReplace` (debug): a stream host's scene replace syncs the new scene into the
   // backend it has, retiring the old one's slots, instead of starting the backend over
   bool residencyRetireOnReplace = false;

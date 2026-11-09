@@ -637,6 +637,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     PbrMaterial        pbrMat;
     // A diffuse exit's boundary index, for its light-side Fresnel (ePtExitFresnel); 0: none
     float exitFresnelEta = 0.0F;
+    // Measured skin shaded as the thin preview, seen from outside, and its medium's single-scattering
+    // albedo as the still's walk makes it from the map (set where the material is evaluated)
+    bool   previewSkin      = false;
+    float3 previewSkinAlpha = float3(0.0F);
     // Volumetric scatter shades as the thin preview at this hit: the preview flag, or a rough path
     // arriving from outside any medium (a walk's own exit, from inside, stays volumetric)
     bool simplifyScatter = hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin)
@@ -778,6 +782,27 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           pbrMat.ior2 = GROUND_WATER_IOR;
       }
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
+      // The thin preview's skin as the still's walk shades it (skin_albedo.h.slang). The walk enters by
+      // refraction along the view and comes back more at a slant, darker channels the most; it leaves
+      // through a Lambertian exit that pays the boundary's Fresnel toward the light. The preview's
+      // Lambertian map had neither, so under the sun it read 0.92-0.98 of the still where the sun was
+      // steep on the skin, and below that seen at a slant; over a sky the exit's Fresnel averages out.
+      // Before the guides, so the albedo guide is the colour shaded.
+      if(simplifyScatter && hit.frontFace && !ptIsInside(pt) && pbrMat.thickness > 0.0F && materials[materialIndex].scatterStrengthFactor > 0.0F
+         && any(materials[materialIndex].scatterDistance > 0.0F))
+      {
+        const bool   faceOn = hasFlag(pushConst.flags, PathtracerFlags::ePtSkinFaceOn);
+        const float3 A      = clamp(pbrMat.baseColor, float3(1e-3F), float3(0.999F));
+        const float  eta    = clamp(materials[materialIndex].ior, 1.0F, 3.0F);
+        previewSkin         = true;
+        previewSkinAlpha    = faceOn ? faceOnSingleScatterAlbedo(A) : multiToSingleScatterAlbedo(A, 0.0F);
+        if(frameInfo->skinView != 0)
+        {
+          pbrMat.baseColor = skinViewAlbedo(A, previewSkinAlpha, dot(-ray.Direction, pbrMat.N), eta, faceOn);
+          if(hasFlag(pushConst.flags, PathtracerFlags::ePtExitFresnel))
+            exitFresnelEta = eta;
+        }
+      }
       if(diffuseExit)
       {
         // The exit lobe: Lambertian with no specular layer, since the walk already paid the
@@ -1104,20 +1129,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // and the still's walk lets it out millimetres away, so a shadow on skin -- a pendant's, the jaw's
     // on the neck -- had the hard edge and the dark core the still's lacks. On the camera's skin the
     // diffuse share of the light sample is taken, each channel, at a point of the skin as far off as
-    // that channel's profile puts it (its rate here, from the map before the slab below changes it),
+    // that channel's profile puts it (its rate here, from the medium the map makes, previewSkinAlpha),
     // with a shadow ray of its own; its glossy share keeps this point's. Below, at the shadow rays.
     bool   spreadHere = false;
     float3 spreadRate = float3(0.0F);
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
-    if(simplifyScatter && firstRay && frameInfo->skinSpread != 0 && !hitInfinitePlane && !hitWater && materialIndex >= 0 && hit.frontFace
-       && !ptIsInside(pt) && pbrMat.thickness > 0.0F && materials[materialIndex].scatterStrengthFactor > 0.0F
-       && any(materials[materialIndex].scatterDistance > 0.0F))
+    if(previewSkin && firstRay && frameInfo->skinSpread != 0 && !hitInfinitePlane && !hitWater && materialIndex >= 0)
     {
-      // the medium's single-scattering albedo as the still's walk makes it from the map (gltf_material_eval.h.slang)
-      const float3 A     = clamp(pbrMat.baseColor, float3(1e-3F), float3(0.999F));
-      const float3 alpha = hasFlag(pushConst.flags, PathtracerFlags::ePtSkinFaceOn) ? faceOnSingleScatterAlbedo(A) : multiToSingleScatterAlbedo(A, 0.0F);
-      spreadRate         = skinSpreadRate(alpha, materials[materialIndex].scatterDistance);
-      spreadHere         = true;
+      spreadRate = skinSpreadRate(previewSkinAlpha, materials[materialIndex].scatterDistance);
+      spreadHere = true;
     }
 #endif
 
@@ -1574,8 +1594,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         sampledLobe           = bsdfSampleCore(sampleData, pbrMat, mixturePdf);
       }
       // bsdfSampleSimple(sampleData, pbrMat);
-      // The exit's Fresnel weighs the sample, not its pdf: both MIS sides keep the cosine lobe's
-      if(exitFresnelEta > 0.0F && sampleData.event_type != BSDF_EVENT_ABSORB)
+      // The exit's Fresnel weighs the sample, not its pdf: both MIS sides keep the cosine lobe's. The
+      // diffuse lobe's alone (the sample's weight is its lobe's, under the mixture too): the preview's
+      // skin keeps its specular lobes beside it.
+      if(exitFresnelEta > 0.0F && sampleData.event_type != BSDF_EVENT_ABSORB && sampledLobe == LOBE_DIFFUSE_REFLECTION)
         sampleData.bsdf_over_pdf *= diffuseExitFresnelWeight(dot(pbrMat.N, sampleData.k2), exitFresnelEta);
 
       // Update the pt.throughput
