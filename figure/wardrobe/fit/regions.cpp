@@ -13,15 +13,7 @@ int16_t limbOfBone(const std::string& name)
 {
   const rig::Name n    = rig::parse(name);
   const bool      left = n.side != 'r';
-  rig::Limb       l    = n.joint ? n.joint->limb : rig::Limb::eNone;
-  // a toe or finger joint past the table's (a fourth knuckle, a fifth toe) by its name's ending
-  if(!n.joint)
-  {
-    static const std::regex toeN(R"(toe\d$)");
-    static const std::regex fingerN(R"(^(thumb|index|mid|ring|pinky)\d$)");
-    l = std::regex_search(n.slot, toeN) ? rig::Limb::eFoot : std::regex_search(n.slot, fingerN) ? rig::Limb::eHand : rig::Limb::eNone;
-  }
-  switch(l)
+  switch(rig::limbOf(n))
   {
     case rig::Limb::eFoot:
       return left ? limb::kLFoot : limb::kRFoot;

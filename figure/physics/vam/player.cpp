@@ -5,7 +5,7 @@
 #include <map>
 #include <set>
 
-#include <figure/wardrobe/fit/bones.hpp>
+#include <figure/rig/spec.hpp>
 
 namespace fv::physics::vam {
 
@@ -157,14 +157,14 @@ void Player::bind(const FigurePhysics& physics, const pose::PoseRig& rig, const 
   // the part a Genesis 2 bone is in on our figure: a part whose own bone is in its anatomical slot,
   // else one with such a bone merged into it
   const auto partFor = [&](const std::string& g2) {
-    const wardrobe::ParsedBone want = wardrobe::parseBone(g2);
-    int                        merged = -1;
+    const rig::Name want   = rig::parse(g2);
+    int             merged = -1;
     for(size_t i = 0; i < physics.parts().size(); i++)
     {
       const FigurePhysics::Part& part = physics.parts()[i];
       for(size_t m = 0; m < part.members.size(); m++)
       {
-        const wardrobe::ParsedBone p = wardrobe::parseBone(bones[size_t(part.members[m])].name);
+        const rig::Name p = rig::parse(bones[size_t(part.members[m])].name);
         if(p.slot != want.slot || p.side != want.side)
           continue;
         if(m == 0)

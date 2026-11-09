@@ -8,7 +8,6 @@
 #include <figure/physics/skin.hpp>
 #include <figure/io/timing.hpp>
 #include <figure/rig/spec.hpp>
-#include <figure/wardrobe/fit/bones.hpp>
 
 namespace fv::physics {
 
@@ -18,27 +17,11 @@ using pose::ChannelKind;
 
 constexpr double kGravity = 980;
 
-// the anatomical slots (wardrobe::parseBone) that are parts, and those merged into the part above: the
-// skeleton spec's part column
-const std::set<std::string>& slotsWithPart(rig::Part part)
+// a bone's place in the ragdoll by the skeleton spec's part column: a part of its own, merged into
+// the part above, or neither
+rig::Part ragdollPart(const rig::Name& name)
 {
-  static const std::map<rig::Part, std::set<std::string>> by = [] {
-    std::map<rig::Part, std::set<std::string>> out;
-    for(const rig::Joint& j : rig::joints())
-      out[j.part].insert(std::string(j.id));
-    return out;
-  }();
-  static const std::set<std::string> none;
-  const auto                         it = by.find(part);
-  return it == by.end() ? none : it->second;
-}
-const std::set<std::string>& partSlots()
-{
-  return slotsWithPart(rig::Part::eOwn);
-}
-const std::set<std::string>& mergedSlots()
-{
-  return slotsWithPart(rig::Part::eMerged);
+  return name.joint ? name.joint->part : rig::Part::eNone;
 }
 
 Vec3 originOf(const Mat4& m)
@@ -182,7 +165,7 @@ void FigurePhysics::build()
   for(size_t i = 0; i < bones.size(); i++)
     if(bones[i].bone >= 0 && size_t(bones[i].bone) < poseOfNode.size())
       poseOfNode[size_t(bones[i].bone)] = int(i);
-  const auto slotOf = [&](int poseBone) { return wardrobe::parseBone(bones[size_t(poseBone)].name); };
+  const auto slotOf = [&](int poseBone) { return rig::parse(bones[size_t(poseBone)].name); };
   // a twist bone is a part when a part's bone lies under it (G8's bend and twist chains); G9's twist
   // bones hang off the side and keep their formulas
   const auto partBelow = [&](int node) {
@@ -194,7 +177,7 @@ void FigurePhysics::build()
       if(const int pbc = poseOfNode[size_t(c)]; pbc >= 0)
       {
         const auto parsed = slotOf(pbc);
-        if(partSlots().count(parsed.slot) && !parsed.twist)
+        if(ragdollPart(parsed) == rig::Part::eOwn && !parsed.twist)
           return true;
       }
       stack.insert(stack.end(), m_scene.nodes[size_t(c)].children.begin(), m_scene.nodes[size_t(c)].children.end());
@@ -235,7 +218,7 @@ void FigurePhysics::build()
     if(pb.group == "Figure" || (!hasRotation(pb) && parsed.slot != "hip"))
       continue;
     const int  up     = partAbove(pb.bone);
-    const bool part   = partSlots().count(parsed.slot) && (!parsed.twist || partBelow(pb.bone));
+    const bool part   = ragdollPart(parsed) == rig::Part::eOwn && (!parsed.twist || partBelow(pb.bone));
     if(part && (parsed.slot == "hip" ? up < 0 && m_parts.empty() : up >= 0))
     {
       Part p;
@@ -247,7 +230,7 @@ void FigurePhysics::build()
       m_partOfNode[size_t(pb.bone)] = int(m_parts.size());
       m_parts.push_back(std::move(p));
     }
-    else if(mergedSlots().count(parsed.slot) && up >= 0 && m_partOfNode[size_t(m_scene.nodes[size_t(pb.bone)].parent)] == up)
+    else if(ragdollPart(parsed) == rig::Part::eMerged && up >= 0 && m_partOfNode[size_t(m_scene.nodes[size_t(pb.bone)].parent)] == up)
     {
       m_parts[size_t(up)].members.push_back(i);
       m_partOfNode[size_t(pb.bone)] = up;
@@ -763,7 +746,7 @@ Vec3 FigurePhysics::pinPoint(int part) const
 {
   const Part& p = m_parts[size_t(part)];
   // the knee is a shin's top: its joint, which is its bone's origin
-  if(wardrobe::parseBone(m_rig.bones()[size_t(p.poseBone)].name).slot == "shin")
+  if(rig::parse(m_rig.bones()[size_t(p.poseBone)].name).slot == "shin")
     return p.com * -1.0;
   return {};
 }

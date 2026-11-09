@@ -86,6 +86,7 @@
 #include <figure/physics/flesh/touch.hpp>
 #include <figure/physics/rig/figure_physics.hpp>
 #include <figure/pose/retarget.hpp>
+#include <figure/rig/spec.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
@@ -938,7 +939,7 @@ int main(int argc, char** argv)
         const auto limbOf = [](const fv::pose::PoseRig& rig, const std::string& slot, char side) {
           std::vector<const fv::pose::PoseBone*> out;
           for(const auto& pb : rig.bones())
-            if(const fv::wardrobe::ParsedBone p = fv::wardrobe::parseBone(pb.name); p.slot == slot && p.side == side)
+            if(const fv::rig::Name p = fv::rig::parse(pb.name); p.slot == slot && p.side == side)
               out.push_back(&pb);
           return out;
         };
@@ -998,10 +999,10 @@ int main(int argc, char** argv)
         };
         std::map<std::pair<std::string, char>, std::string> srcBy, dstBy;
         for(const auto& pb : from.bones())
-          if(const fv::wardrobe::ParsedBone p = fv::wardrobe::parseBone(pb.name); !p.twist)
+          if(const fv::rig::Name p = fv::rig::parse(pb.name); !p.twist)
             srcBy.try_emplace({p.slot, p.side}, pb.name);
         for(const auto& pb : to.bones())
-          if(const fv::wardrobe::ParsedBone p = fv::wardrobe::parseBone(pb.name); !p.twist)
+          if(const fv::rig::Name p = fv::rig::parse(pb.name); !p.twist)
             dstBy.try_emplace({p.slot, p.side}, pb.name);
         const auto apply = [](fv::pose::PoseRig& rig, const fv::pose::PoseClip& c, float t) {
           std::vector<fv::pose::ChannelValue> values;
@@ -1059,13 +1060,13 @@ int main(int argc, char** argv)
           if(ch.target.kind == fv::pose::PresetTarget::Kind::eBone && ch.target.channel == fv::pose::ChannelKind::eRotation
              && std::any_of(ch.values.begin(), ch.values.end(), [](double v) { return std::abs(v) > 0.01; }))
           {
-            const fv::wardrobe::ParsedBone p = fv::wardrobe::parseBone(ch.target.bone);
+            const fv::rig::Name p = fv::rig::parse(ch.target.bone);
             movedSlots.insert({p.slot, p.side});
           }
         Json held = Json::object();
         for(const auto& ch : clip.channels)
           if(ch.target.kind == fv::pose::PresetTarget::Kind::eBone && ch.target.channel == fv::pose::ChannelKind::eRotation)
-            if(const fv::wardrobe::ParsedBone p = fv::wardrobe::parseBone(ch.target.bone); !movedSlots.count({p.slot, p.side}))
+            if(const fv::rig::Name p = fv::rig::parse(ch.target.bone); !movedSlots.count({p.slot, p.side}))
               for(double v : ch.values)
                 if(std::abs(v) > 1)
                   held[ch.target.bone] = std::max(held.value(ch.target.bone, 0.0), r(std::abs(v)));

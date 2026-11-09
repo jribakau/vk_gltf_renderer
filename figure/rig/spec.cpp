@@ -184,6 +184,15 @@ Name parse(const std::string& name)
   return out;
 }
 
+Limb limbOf(const Name& name)
+{
+  if(name.joint)
+    return name.joint->limb;
+  static const std::regex toeN(R"(toe\d$)");
+  static const std::regex fingerN(R"(^(thumb|index|mid|ring|pinky)\d$)");
+  return std::regex_search(name.slot, toeN) ? Limb::eFoot : std::regex_search(name.slot, fingerN) ? Limb::eHand : Limb::eNone;
+}
+
 const Joint* genesisJoint(const std::string& token)
 {
   const auto it = aliases::genesis().find(token);

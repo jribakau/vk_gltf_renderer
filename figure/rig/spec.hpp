@@ -169,6 +169,10 @@ struct Name
 // token with no side and no joint.
 Name parse(const std::string& name);
 
+// A name's limb: its joint's, else a toe or finger joint past the table's (a fourth knuckle, a fifth
+// toe) by its slot's ending.
+Limb limbOf(const Name& name);
+
 // The joint a Genesis token is (its alias, else the token itself as an id), or null: what the Pose
 // tab groups by the table rather than by the name's words.
 const Joint* genesisJoint(const std::string& token);

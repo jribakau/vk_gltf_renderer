@@ -9,7 +9,7 @@
 #include <figure/physics/collide/cage_graph.hpp>
 #include <figure/physics/contact/contact.hpp>
 #include <figure/physics/flesh/touch.hpp>
-#include <figure/wardrobe/fit/bones.hpp>
+#include <figure/rig/spec.hpp>
 
 namespace fv::physics {
 
@@ -138,8 +138,8 @@ FleshModel buildFlesh(const FleshInput& in)
   {
     const auto& [name, c] = in.bones[b];
     bones.emplace_back(name, Vec3{c[0], c[1], c[2]});
-    const wardrobe::ParsedBone parsed = wardrobe::parseBone(name);
-    if(parsed.slot == "pectoral")
+    const rig::Name parsed = rig::parse(name);
+    if(parsed.joint && parsed.joint->region == rig::Region::eBreast)
       pectoral[b] = parsed.side == 'l' ? 1 : parsed.side == 'r' ? -1 : 0;
   }
   const mat::BodyLandmarks body = mat::bodyLandmarks(bones);

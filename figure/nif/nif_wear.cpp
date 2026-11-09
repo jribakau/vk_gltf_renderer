@@ -13,6 +13,7 @@
 #include <figure/dson/materials.hpp>
 #include <figure/mesh/mesh_build.hpp>
 #include <figure/wardrobe/fit/bases.hpp>
+#include <figure/rig/spec.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 #include <figure/wardrobe/fit/transfer.hpp>
 
@@ -859,7 +860,7 @@ dson::LoadResult loadWearable(const fs::path& file, const dson::LoadOptions& opt
       }
       // or is skinned to a calf
       for(const int node : nif.shapes[s].bones)
-        calves = calves || wardrobe::parseBone(nif.nodes[size_t(node)].name).slot == "shin";
+        calves = calves || rig::parse(nif.nodes[size_t(node)].name).slot == "shin";
     }
     if(feet && !body)
       item.region = calves ? wardrobe::FitRegion::eBoot : wardrobe::FitRegion::eShoe;

@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include <figure/wardrobe/fit/bones.hpp>
+#include <figure/rig/spec.hpp>
 
 namespace fv::morph {
 
@@ -117,7 +117,7 @@ mesh::CageDeltas girthDeltas(std::span<const float> cage, const mesh::SkinInput&
     bool                  on = false;
     std::array<double, 3> center{}, dir{};
   };
-  const auto slotOf = [&](size_t b) { return wardrobe::parseBone(bones[b].name).slot; };
+  const auto slotOf = [&](size_t b) { return rig::parse(bones[b].name).slot; };
   const ShapeBone* shared = nullptr;
   if(!recipe.axisSlot.empty())
     for(size_t b = 0; b < bones.size() && !shared; b++)

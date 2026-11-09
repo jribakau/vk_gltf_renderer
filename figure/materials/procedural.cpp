@@ -4,7 +4,7 @@
 #include <cmath>
 
 #include <figure/math/noise.hpp>
-#include <figure/wardrobe/fit/bones.hpp>
+#include <figure/rig/spec.hpp>
 
 namespace fv::mat {
 
@@ -80,7 +80,7 @@ BodyLandmarks bodyLandmarks(std::span<const std::pair<std::string, Vec3>> bones)
   BodyLandmarks out;
   for(const auto& [name, at] : bones)
   {
-    const wardrobe::ParsedBone parsed = wardrobe::parseBone(name);
+    const rig::Name parsed = rig::parse(name);
     // a limb's twist bone sits midway along it; the bend bone is its joint
     if(parsed.twist)
       continue;

@@ -9,7 +9,7 @@
 #include <figure/jobs/pool.hpp>
 #include <figure/physics/collide/cage_graph.hpp>
 #include <figure/physics/volume.hpp>
-#include <figure/wardrobe/fit/bones.hpp>
+#include <figure/rig/spec.hpp>
 #include <figure/wardrobe/fit/regions.hpp>
 #include <figure/wardrobe/fit/transfer.hpp>
 
@@ -481,36 +481,28 @@ uint8_t partOfBone(const SceneGraph& scene, int node)
 {
   for(int b = node; b >= 0 && size_t(b) < scene.nodes.size(); b = scene.nodes[size_t(b)].parent)
   {
-    const std::string&         name = scene.nodes[size_t(b)].name;
-    const wardrobe::ParsedBone p    = wardrobe::parseBone(name);
-    const bool                 left = p.side != 'r';
+    const rig::Name p    = rig::parse(scene.nodes[size_t(b)].name);
+    const bool      left = p.side != 'r';
     if(p.slot == "collar")
       return part::kTorso;
     if(p.slot == "upperarm")
       return left ? part::kLUpperArm : part::kRUpperArm;
     if(p.slot == "forearm")
       return left ? part::kLForearm : part::kRForearm;
-    switch(wardrobe::limbOfBone(name))
+    switch(rig::limbOf(p))
     {
-      case wardrobe::limb::kHead:
+      case rig::Limb::eHead:
         return part::kHead;
-      case wardrobe::limb::kLHand:
-        return part::kLHand;
-      case wardrobe::limb::kRHand:
-        return part::kRHand;
-      case wardrobe::limb::kLThigh:
-        return part::kLThigh;
-      case wardrobe::limb::kRThigh:
-        return part::kRThigh;
-      case wardrobe::limb::kLShin:
-        return part::kLShin;
-      case wardrobe::limb::kRShin:
-        return part::kRShin;
-      case wardrobe::limb::kLFoot:
-        return part::kLFoot;
-      case wardrobe::limb::kRFoot:
-        return part::kRFoot;
-      default:
+      case rig::Limb::eHand:
+        return left ? part::kLHand : part::kRHand;
+      case rig::Limb::eThigh:
+        return left ? part::kLThigh : part::kRThigh;
+      case rig::Limb::eShin:
+        return left ? part::kLShin : part::kRShin;
+      case rig::Limb::eFoot:
+        return left ? part::kLFoot : part::kRFoot;
+      case rig::Limb::eArm:
+      case rig::Limb::eNone:
         break;
     }
   }

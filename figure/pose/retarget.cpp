@@ -9,7 +9,7 @@
 #include <regex>
 #include <set>
 
-#include <figure/wardrobe/fit/bones.hpp>
+#include <figure/rig/spec.hpp>
 
 namespace fv::pose {
 
@@ -88,7 +88,7 @@ struct Limbs
           parent[i] = it->second;
           break;
         }
-      const wardrobe::ParsedBone p = wardrobe::parseBone(bones[i].name);
+      const rig::Name p = rig::parse(bones[i].name);
       slotOf.emplace_back(p.slot, p.side);
     }
     // a limb's bones in order from the top, down its own chain: a twist bone the next limb hangs from
