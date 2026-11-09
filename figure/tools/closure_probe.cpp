@@ -51,7 +51,8 @@ struct SamplerState
 struct Texture2D
 {
   vec4 colour{1.0f};
-  vec4 SampleLevel(const SamplerState&, vec2, float) const { return colour; }
+  vec4 mean{1.0f};  // the last mip's
+  vec4 SampleLevel(const SamplerState&, vec2, float lod) const { return lod >= 1.0f ? mean : colour; }
   vec4 SampleGrad(const SamplerState&, vec2, vec2, vec2) const { return colour; }
 };
 inline int NonUniformResourceIndex(int i)
@@ -89,11 +90,12 @@ const char* lobeName(int lobe)
   }
 }
 
-std::vector<ClosureAt> probeClosureBytes(const void* rowBytes, size_t rowSize, const void* infoBytes, size_t infoSize, size_t infoCount, const ClosureOptions& options)
+namespace {
+
+PbrMaterial evaluateBytes(const void* rowBytes, size_t rowSize, const void* infoBytes, size_t infoSize, size_t infoCount, const ClosureOptions& options)
 {
   if(rowSize != sizeof(GltfShadeMaterial) || infoSize != sizeof(GltfTextureInfo))
     throw std::logic_error("probeClosure: the row isn't the shader's");
-  static_assert(kLobeCount == LOBE_COUNT);
 
   GltfShadeMaterial row;
   std::memcpy(static_cast<void*>(&row), rowBytes, sizeof(row));
@@ -112,7 +114,15 @@ std::vector<ClosureAt> probeClosureBytes(const void* rowBytes, size_t rowSize, c
   std::vector<SamplerState> samplerArray(static_cast<size_t>(samplers));
   for(const uint16_t normal : {uint16_t(row.normalTexture), uint16_t(row.clearcoatNormalTexture), uint16_t(row.detailNormalTexture)})
     if(normal > 0 && normal < infos.size() && infos[normal].index >= 0)
-      imageArray[static_cast<size_t>(infos[normal].index)].colour = vec4(0.5f, 0.5f, 1.0f, 1.0f);
+      imageArray[static_cast<size_t>(infos[normal].index)].colour = imageArray[static_cast<size_t>(infos[normal].index)].mean = vec4(0.5f, 0.5f, 1.0f, 1.0f);
+  for(const ProbeImage& image : options.images)
+  {
+    if(image.texture < 0 || image.texture >= images)
+      throw std::logic_error("probeClosure: an image no texture info names");
+    Texture2D& t = imageArray[static_cast<size_t>(image.texture)];
+    t.colour     = vec4(image.colour[0], image.colour[1], image.colour[2], image.colour[3]);
+    t.mean       = vec4(image.mean[0], image.mean[1], image.mean[2], image.mean[3]);
+  }
 
   MeshState state;
   state.N     = vec3(0.0f, 0.0f, 1.0f);
@@ -121,7 +131,26 @@ std::vector<ClosureAt> probeClosureBytes(const void* rowBytes, size_t rowSize, c
   state.Ng    = state.N;
   state.tc[0] = vec2(0.5f);
   state.tc[1] = vec2(0.5f);
-  const PbrMaterial mat = evaluateMaterial(row, state, imageArray.data(), samplerArray.data(), infos.data(), options.thinScatter);
+  return evaluateMaterial(row, state, imageArray.data(), samplerArray.data(), infos.data(), options.thinScatter);
+}
+
+}  // namespace
+
+LobeRoughness probeRoughnessBytes(const void* rowBytes, size_t rowSize, const void* infoBytes, size_t infoSize, size_t infoCount, const ClosureOptions& options)
+{
+  const PbrMaterial mat = evaluateBytes(rowBytes, rowSize, infoBytes, infoSize, infoCount, options);
+  LobeRoughness     out;
+  out.alpha[0]  = mat.roughness.x;
+  out.alpha[1]  = mat.roughness.y;
+  out.clearcoat = mat.clearcoatRoughness;
+  out.specular2 = mat.specular2Roughness;
+  return out;
+}
+
+std::vector<ClosureAt> probeClosureBytes(const void* rowBytes, size_t rowSize, const void* infoBytes, size_t infoSize, size_t infoCount, const ClosureOptions& options)
+{
+  static_assert(kLobeCount == LOBE_COUNT);
+  const PbrMaterial mat = evaluateBytes(rowBytes, rowSize, infoBytes, infoSize, infoCount, options);
 
   std::vector<ClosureAt> out;
   for(const float cosine : options.cosines)

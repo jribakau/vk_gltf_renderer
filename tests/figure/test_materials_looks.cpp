@@ -221,8 +221,14 @@ TEST(Materials, SkinUnderAWalkHasTheMicroReliefAtItsSize)
   EXPECT_FLOAT_EQ(request->bumpHeight, fv::mat::kSkinMicroRelief);
   EXPECT_FALSE(request->srgb);
   EXPECT_FLOAT_EQ(*lowered.effective.microDetail, 1);
-  // the volume skin's walk melts it the same way
-  EXPECT_TRUE(loweredJson(skin, {}, {.skin = fv::mat::SkinMode::eVolume, .metresPerUv = kFaceMetresPerUv}).material["extensions"].contains("FV_materials_detail"));
+  // the moving view's preview reads how much its mips vary, for the roughness it takes in its place
+  EXPECT_TRUE(request->normalLength);
+  // the volume skin's walk melts it the same way; its preview, with no scatter distance, keeps the relief
+  const auto volume = loweredJson(skin, {}, {.skin = fv::mat::SkinMode::eVolume, .metresPerUv = kFaceMetresPerUv});
+  EXPECT_TRUE(volume.material["extensions"].contains("FV_materials_detail"));
+  const auto volumeRequest = std::find_if(volume.requests.begin(), volume.requests.end(), [](const auto& r) { return r.rel == fv::mat::kSkinMicroMap; });
+  ASSERT_NE(volumeRequest, volume.requests.end());
+  EXPECT_FALSE(volumeRequest->normalLength);
 }
 
 TEST(Materials, TheMicroReliefGoesOnlyOnSkinItCanLieOn)

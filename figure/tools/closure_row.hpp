@@ -23,6 +23,14 @@ inline std::vector<ClosureAt> closureOfGltf(const tinygltf::Material& material, 
   return probeClosure(row, infos, options);
 }
 
+// The roughness each lobe gets, through the same conversion
+inline LobeRoughness roughnessOfGltf(const tinygltf::Material& material, const ClosureOptions& options = {})
+{
+  std::vector<shaderio::GltfTextureInfo> infos(1);
+  const shaderio::GltfShadeMaterial      row = nvvkgltf::MaterialCache::convertOne(material, {}, 0, infos);
+  return probeRoughness(row, infos, options);
+}
+
 // A scene material as the build lowers it, every texture it asks for a neutral one of its own
 inline std::vector<ClosureAt> closureOf(const Material& m, mat::SkinMode skin, const ClosureOptions& options = {})
 {

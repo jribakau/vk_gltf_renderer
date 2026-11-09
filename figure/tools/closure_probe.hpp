@@ -31,15 +31,41 @@ struct ClosureAt
   float       total[3] = {0, 0, 0};  // every lobe's weight times its albedo: the surface's albedo here
 };
 
+// An image other than the neutral ones, by the texture's place in the row's table: what a sample at a
+// footprint reads, and what its last mip holds (a normal map's mean, short where it varies)
+struct ProbeImage
+{
+  int   texture   = 0;
+  float colour[4] = {1, 1, 1, 1};
+  float mean[4]   = {1, 1, 1, 1};
+};
+
 struct ClosureOptions
 {
   std::vector<float> cosines{1.0f, 0.7f, 0.4f, 0.15f};
   int                samples = 8192;
   // the interactive preview's closure of a medium: evaluateMaterial's scatterAsThin
   bool thinScatter = false;
+  std::vector<ProbeImage> images;
+};
+
+// The roughness evaluateMaterial gives each lobe: GGX alpha for the base along T and B, and the
+// coat's and the second specular lobe's as roughness
+struct LobeRoughness
+{
+  float alpha[2]  = {0, 0};
+  float clearcoat = 0;
+  float specular2 = 0;
 };
 
 std::vector<ClosureAt> probeClosureBytes(const void* row, size_t rowSize, const void* infos, size_t infoSize, size_t infoCount, const ClosureOptions& options);
+LobeRoughness probeRoughnessBytes(const void* row, size_t rowSize, const void* infos, size_t infoSize, size_t infoCount, const ClosureOptions& options);
+
+template <class Row, class Info>
+LobeRoughness probeRoughness(const Row& row, const std::vector<Info>& infos, const ClosureOptions& options = {})
+{
+  return probeRoughnessBytes(&row, sizeof(Row), infos.data(), sizeof(Info), infos.size(), options);
+}
 
 // `Row` is shaderio::GltfShadeMaterial and `Info` shaderio::GltfTextureInfo, with the table as
 // MaterialCache::convertOne fills it: a row names a texture by its place in `infos`, 0 for none

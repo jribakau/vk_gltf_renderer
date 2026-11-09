@@ -153,6 +153,97 @@ TEST(MaterialClosure, ACoatTakesItsShareFirst)
   EXPECT_GT(coated[3].lobes[kClearcoat].weight, coated[0].lobes[kClearcoat].weight);
 }
 
+namespace {
+
+// Skin in the walk's medium (FV_materials_subsurface), as the measured mode lowers it, with a detail
+// layer: its normal map is texture 2, at scale 1 and weight 0.6, as HID Kelly's
+constexpr int    kDetailTexture = 2;
+constexpr double kDetailWeight  = 0.6;
+
+tinygltf::Material detailSkin(double roughnessMul = 1.0)
+{
+  tinygltf::Material m;
+  m.pbrMetallicRoughness.baseColorFactor = {0.8, 0.5, 0.4, 1.0};
+  m.pbrMetallicRoughness.metallicFactor  = 0.0;
+  m.pbrMetallicRoughness.roughnessFactor = 0.5;
+  tinygltf::Value::Object subsurface;
+  subsurface["scatterDistance"]           = tinygltf::Value(tinygltf::Value::Array{tinygltf::Value(0.00367), tinygltf::Value(0.00137), tinygltf::Value(0.00068)});
+  m.extensions["FV_materials_subsurface"] = tinygltf::Value(subsurface);
+  tinygltf::Value::Object normal;
+  normal["index"] = tinygltf::Value(kDetailTexture);
+  normal["scale"] = tinygltf::Value(1.0);
+  tinygltf::Value::Object detail;
+  detail["detailNormalTexture"]       = tinygltf::Value(normal);
+  detail["detailWeightFactor"]        = tinygltf::Value(kDetailWeight);
+  detail["detailRoughnessFactor"]     = tinygltf::Value(roughnessMul);
+  m.extensions["FV_materials_detail"] = tinygltf::Value(detail);
+  return m;
+}
+
+// The detail normal map: a footprint's mip and the last mip each a flat normal of the given length,
+// as a map cooked to keep it (normalLength) holds them
+fv::probe::ClosureOptions detailMap(bool preview, float footprintLength, float meanLength)
+{
+  fv::probe::ClosureOptions options;
+  options.thinScatter = preview;
+  fv::probe::ProbeImage image;
+  image.texture = kDetailTexture;
+  for(int c = 0; c < 2; c++)
+    image.colour[c] = image.mean[c] = 0.5f;
+  image.colour[2] = 0.5f + 0.5f * footprintLength;
+  image.mean[2]   = 0.5f + 0.5f * meanLength;
+  options.images  = {image};
+  return options;
+}
+
+float toksvig(float length)
+{
+  return (1.0f - length) / length;
+}
+
+}  // namespace
+
+// The skin preview leaves a detail map's relief out (one sample a pixel would only shimmer with it),
+// and every lobe takes what the still's samples spread a highlight by instead: a mean normal of 0.957,
+// a pore map with slopes of 0.21 a side, at weight 0.6 adds 2 x 0.045 x 0.36 to alpha squared
+TEST(MaterialClosure, TheSkinPreviewTakesADetailMapsReliefAsRoughness)
+{
+  const float added   = 2.0f * toksvig(0.957f) * float(kDetailWeight * kDetailWeight);
+  const auto  still   = fv::probe::roughnessOfGltf(detailSkin(), detailMap(false, 1.0f, 0.957f));
+  const auto  preview = fv::probe::roughnessOfGltf(detailSkin(), detailMap(true, 1.0f, 0.957f));
+  // the still bends its normal by the relief instead
+  EXPECT_NEAR(still.alpha[0], 0.25f, 1e-5f);
+  EXPECT_NEAR(preview.alpha[0], std::sqrt(0.0625f + added), 1e-4f);
+  EXPECT_NEAR(preview.alpha[1], preview.alpha[0], 1e-6f);
+  // the coat and the second lobe lie on the relief too: alpha^2 + the same, as roughness
+  const auto widened = [&](float r) { return std::sqrt(std::sqrt(r * r * r * r + added)); };
+  EXPECT_NEAR(preview.clearcoat, widened(still.clearcoat), 1e-4f);
+  EXPECT_NEAR(preview.specular2, widened(still.specular2), 1e-4f);
+}
+
+// Only what the footprint's mip still holds: the rest the mip has averaged away for the still as well
+TEST(MaterialClosure, TheSkinPreviewTakesOnlyTheReliefTheStillResolves)
+{
+  const auto averaged = fv::probe::roughnessOfGltf(detailSkin(), detailMap(true, 0.957f, 0.957f));
+  EXPECT_NEAR(averaged.alpha[0], 0.25f, 1e-5f);
+  const auto  part  = fv::probe::roughnessOfGltf(detailSkin(), detailMap(true, 0.98f, 0.957f));
+  const float added = 2.0f * (toksvig(0.957f) - toksvig(0.98f)) * float(kDetailWeight * kDetailWeight);
+  EXPECT_NEAR(part.alpha[0], std::sqrt(0.0625f + added), 1e-4f);
+  // a map rebuilt unit length (BC5) tells nothing: no roughness, as before it kept its length
+  const auto unit = fv::probe::roughnessOfGltf(detailSkin(), detailMap(true, 1.0f, 1.0f));
+  EXPECT_NEAR(unit.alpha[0], 0.25f, 1e-5f);
+}
+
+// The detail's roughness multiplier holds in the preview as in the still, so the two agree on it
+TEST(MaterialClosure, TheSkinPreviewKeepsTheDetailsRoughnessMultiplier)
+{
+  const auto  still   = fv::probe::roughnessOfGltf(detailSkin(0.8), detailMap(false, 1.0f, 1.0f));
+  const auto  preview = fv::probe::roughnessOfGltf(detailSkin(0.8), detailMap(true, 1.0f, 1.0f));
+  const float mul     = 1.0f + (0.8f - 1.0f) * float(kDetailWeight);
+  EXPECT_NEAR(still.alpha[0], 0.25f * mul * mul, 1e-5f);
+  EXPECT_NEAR(preview.alpha[0], still.alpha[0], 1e-6f);
+}
+
 // The real channels' closures against tests/figure/data/closure_baseline.json. A lowering or closure
 // change that moves one fails here, listing what moved: read the list, then rewrite the baseline by
 // running with FV_UPDATE_CLOSURE_BASELINE=1 and commit it with the change.
