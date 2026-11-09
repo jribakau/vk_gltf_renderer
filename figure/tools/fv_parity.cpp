@@ -42,6 +42,10 @@
 // {"touch": label} bobs the figure's hip (2 cm at 2 Hz) for "frames" frames at the pose it is in, with
 // its soft flesh on and meeting its own limbs (its ragdoll's capsules, step 11): the most particles
 // pressed in a frame, how far the deepest went, which lobes, and a frame of the flesh's time.
+// {"bodymap": figure} maps a Genesis type's base ("Genesis 8 Female") onto Genesis 9's shaped as it by its
+// clone morph and back (figure/bodymap), and prints the gate of wardrobe plan step 3: how far the base lies
+// from where it lands, the round trip by where on the body, the shares mapped each way, the stretch
+// and the triangles turned over, and the time. Numbers only.
 // {"clearance": rel} wears a garment and reports, per region, how its clearance from the body changed
 // from the body it was shaped around (its generation's base cage, or a Skyrim outfit's carried body)
 // to the loaded figure's, fitted: the measure of wardrobe plan step 3. Numbers only.
@@ -70,6 +74,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include <figure/bodymap/clone.hpp>
 #include <figure/dson/store.hpp>
 #include <figure/physics/cloth/backend.hpp>
 #include <figure/physics/cloth/cloth.hpp>
@@ -1049,6 +1054,75 @@ int main(int argc, char** argv)
         if(!loaded)
           throw std::runtime_error("strandsInside before a figure loads");
         dumps[step.value("dump", std::string("strandsInside"))] = strandsInsideReport(*loaded, step["strandsInside"].get<std::string>());
+      }
+      else if(step.contains("bodymap"))
+      {
+        const std::string figureName = step["bodymap"].get<std::string>();
+        const auto        generation = fv::wardrobe::generationFromPath(figureName);
+        if(!generation)
+          throw std::runtime_error("bodymap: no generation in " + figureName);
+        const auto mapStart = std::chrono::steady_clock::now();
+        const auto made     = fv::bodymap::cloneMap(*store, *generation, fv::wardrobe::genderHint(figureName));
+        const double mapMs  = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - mapStart).count();
+        if(!made)
+          throw std::runtime_error("bodymap: " + figureName + "'s base, Genesis 9's or its clone isn't installed");
+        const fv::bodymap::MapQuality q = fv::bodymap::mapQuality(made->source, made->reference, made->map);
+        Json spreads = Json::object();
+        std::cerr << "[bodymap] " << figureName << " onto Genesis 9 (" << fv::bodymap::cloneFile(*generation, fv::wardrobe::genderHint(figureName)) << "): "
+                  << made->source.positions.size() / 3 << " and " << made->reference.positions.size() / 3 << " vertices, " << std::fixed << std::setprecision(0)
+                  << mapMs << " ms with the loads\n"
+                  << std::setprecision(1) << "  turned into its rest:";
+        for(const auto& t : made->turns)
+          std::cerr << " " << (t.side ? std::string(1, t.side) + " " : std::string()) << t.joint << " " << t.degrees;
+        std::cerr << "\n"
+                  << std::setprecision(4) << "  mapped " << q.mapped << ", the reference covered back " << q.inverseCovers << ", stretch p95 " << q.stretchP95
+                  << " max " << q.stretchMax << ", fold-free " << q.foldFree << "\n"
+                  << std::setprecision(3);
+        for(const auto& [what, table] : {std::pair{"from where it lands", &q.distance}, std::pair{"round trip", &q.roundTrip}})
+        {
+          std::cerr << "  " << what << " (cm):\n";
+          for(const auto& [cls, sp] : *table)
+          {
+            std::cerr << "    " << std::left << std::setw(13) << cls << std::right << " n " << std::setw(6) << sp.n << "  median " << std::setw(6) << sp.median
+                      << "  p95 " << std::setw(6) << sp.p95 << "  max " << std::setw(7) << sp.max << "\n";
+            spreads[what][cls] = {{"n", sp.n}, {"median", r(sp.median)}, {"p95", r(sp.p95)}, {"max", r(sp.max)}};
+          }
+        }
+        for(const auto& [what, counts] : {std::pair{"unmapped", &q.unmappedBy}, std::pair{"over 1 cm off", &q.farBy}, std::pair{"turned over", &q.foldedBy}})
+        {
+          std::vector<std::pair<size_t, std::string>> most;
+          for(const auto& [regions, n] : *counts)
+            most.emplace_back(n, regions);
+          std::sort(most.rbegin(), most.rend());
+          std::cerr << "  " << what << ", by region:";
+          for(size_t i = 0; i < most.size() && i < 40; i++)
+            std::cerr << (i ? ", " : " ") << most[i].second << " " << most[i].first;
+          std::cerr << (most.size() > 40 ? ", ..." : "") << "\n";
+        }
+        // the turned-over triangles by the surface they're on (nails, ears...)
+        if(const auto cage = fv::wardrobe::loadBaseCage(*store, *generation, fv::wardrobe::genderHint(figureName)))
+        {
+          std::map<std::string, size_t> bySurface, all;
+          for(size_t t = 0; t < cage->triSurface.size(); t++)
+            all[cage->triSurface[t] < cage->surfaces.size() ? cage->surfaces[cage->triSurface[t]] : "?"]++;
+          for(const uint32_t t : q.foldedTris)
+            bySurface[t < cage->triSurface.size() && cage->triSurface[t] < cage->surfaces.size() ? cage->surfaces[cage->triSurface[t]] : "?"]++;
+          std::cerr << "  turned over, by surface:";
+          size_t skin = 0, turned = 0, nails = 0, nailsTurned = 0;
+          for(const auto& [surface, n] : all)
+            if(fv::bodymap::outerSkin(surface))
+              (surface.find("nail") != std::string::npos ? nails : skin) += n;
+          for(const auto& [surface, n] : bySurface)
+          {
+            std::cerr << " " << surface << " " << n << " of " << all[surface];
+            (surface.find("nail") != std::string::npos ? nailsTurned : turned) += n;
+          }
+          std::cerr << std::setprecision(4) << "\n  fold-free outside the nails " << (skin ? 1 - double(turned) / double(skin) : 0.0) << ", on them "
+                    << (nails ? 1 - double(nailsTurned) / double(nails) : 0.0) << "\n";
+        }
+        std::cerr << std::defaultfloat << std::setprecision(6);
+        dumps[step.value("label", std::string("bodymap"))] = {{"bodymap", figureName}, {"ms", r(mapMs)}, {"mapped", r(q.mapped)}, {"inverseCovers", r(q.inverseCovers)},
+                                                               {"stretchP95", r(q.stretchP95)}, {"foldFree", r(q.foldFree)}, {"spreads", spreads}};
       }
       else if(step.contains("clearance"))
       {

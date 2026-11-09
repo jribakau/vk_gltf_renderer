@@ -68,15 +68,23 @@ std::shared_ptr<const BaseCage> build(const dson::Doc& doc)
     for(int v = 0; v < verts->count; v++)
       for(int c = 0; c < 3; c++)
         cage->positions[size_t(v) * 3 + size_t(c)] = float(verts->cell(v, c));
+    // each polygon's surface: its material group, the second cell of its row
+    if(const dson::Json* groups = get(get(best, "polygon_material_groups"), "values"); groups && groups->is_array())
+      for(const dson::Json& g : *groups)
+        cage->surfaces.push_back(g.is_string() ? g.get<std::string>() : std::string());
     const auto polys = doc.rows(get(get(best, "polylist"), "values"));
     for(int p = 0; p < polys->count; p++)
     {
       const int e = polys->size(p);
       if(e - 2 < 3)
         continue;
-      const uint32_t a = uint32_t(polys->cell(p, 2));
+      const uint32_t a       = uint32_t(polys->cell(p, 2));
+      const uint16_t surface = uint16_t(std::max(0.0, polys->cell(p, 1)));
       for(int k = 4; k < e; k++)
+      {
         cage->tris.insert(cage->tris.end(), {a, uint32_t(polys->cell(p, k - 1)), uint32_t(polys->cell(p, k))});
+        cage->triSurface.push_back(surface);
+      }
     }
   }
   // the skeleton: bone nodes with their names, parents and centres
@@ -161,33 +169,30 @@ void clearBaseCages()
 std::shared_ptr<const BaseCage> loadBaseCage(dson::Store& store, Generation generation, const std::string& gender)
 {
   for(const std::string& file : order(generation, gender))
-  {
-    {
-      std::lock_guard lock(mutex);
-      if(auto it = cache.find(file); it != cache.end())
-      {
-        if(it->second)
-          return it->second;
-        continue;
-      }
-    }
-    std::shared_ptr<const BaseCage> cage;
-    try
-    {
-      if(auto doc = store.load(file))
-        cage = build(*doc);
-    }
-    catch(const std::exception&)
-    {
-    }
-    {
-      std::lock_guard lock(mutex);
-      cache[file] = cage;
-    }
-    if(cage)
+    if(auto cage = loadBaseCageFile(store, file))
       return cage;
-  }
   return nullptr;
+}
+
+std::shared_ptr<const BaseCage> loadBaseCageFile(dson::Store& store, const std::string& file)
+{
+  {
+    std::lock_guard lock(mutex);
+    if(auto it = cache.find(file); it != cache.end())
+      return it->second;
+  }
+  std::shared_ptr<const BaseCage> cage;
+  try
+  {
+    if(auto doc = store.load(file))
+      cage = build(*doc);
+  }
+  catch(const std::exception&)
+  {
+  }
+  std::lock_guard lock(mutex);
+  cache[file] = cage;
+  return cage;
 }
 
 }  // namespace fv::wardrobe

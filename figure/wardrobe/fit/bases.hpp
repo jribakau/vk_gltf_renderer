@@ -20,6 +20,9 @@ struct BaseCage
 {
   std::vector<float>    positions;
   std::vector<uint32_t> tris;
+  // each triangle's surface (an index into `surfaces`, the file's material groups: "Torso", "Teeth")
+  std::vector<uint16_t>    triSurface;
+  std::vector<std::string> surfaces;
   // skin influences per vertex; `bone` indexes `skeleton`
   mesh::SkinInput skin;
   // the base figure's bones (names, not ids), with their file centres
@@ -28,6 +31,8 @@ struct BaseCage
 
 // The installed base cage for `generation`, or null when none of its files are in the library.
 std::shared_ptr<const BaseCage> loadBaseCage(dson::Store& store, Generation generation, const std::string& gender);
+// A figure file's base cage, read once (null when it holds none): the reference body maps are made on.
+std::shared_ptr<const BaseCage> loadBaseCageFile(dson::Store& store, const std::string& file);
 // The files loadBaseCage tries, in order: `gender`'s ("female", "male") first.
 std::vector<std::string> baseFiles(Generation generation, const std::string& gender);
 // Forget what was read, a base found missing too: an install or an uninstall changed the library.
