@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <atomic>
 #include <thread>
 
@@ -16,6 +17,7 @@
 #include <figure/physics/hair/strands.hpp>
 #include <figure/dson/dforce.hpp>
 #include <figure/figure.hpp>
+#include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/morph/morph_set.hpp>
 
@@ -1688,8 +1690,17 @@ TEST(Dforce, liveStartsUnderAPlayingClipAndTakesTheBodysCorrectivesInPlace)
   SkinnedVeil     v;
   fv::SceneGraph& scene    = v.scene;
   const int       rootNode = v.rootNode, bone = v.bone;
+  // and lashes, shown and skinned, that nothing collides with
+  scene.meshes.push_back(scene.meshes[0]);
+  {
+    fv::Node lashes;
+    lashes.kind = fv::NodeKind::eMesh;
+    lashes.mesh = 2;
+    scene.add(lashes, rootNode);
+  }
   morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
   physics::Cloth  d(scene, morphs, 0, rootNode);
+  d.collidesWith = [](int mesh) { return mesh != 2; };
   // a frame of a sixtieth of a second each pump, so each pump can step
   auto now = std::chrono::steady_clock::now();
   d.clock  = [&] { return now; };
@@ -1762,6 +1773,10 @@ TEST(Dforce, liveStartsUnderAPlayingClipAndTakesTheBodysCorrectivesInPlace)
 
   // a dent on the body, nothing else moving: in place as well
   d.changed({0}, false);
+  EXPECT_FALSE(d.busy());
+  // a dial on the lashes, which the simulation isn't made from: nothing to build again (it was, and
+  // the cloth settled again from the start)
+  d.changed({2}, false);
   EXPECT_FALSE(d.busy());
   // a dial on the cloth itself, nothing else moving: built again
   d.changed({1}, false);
@@ -3479,43 +3494,76 @@ TEST(Dforce, aLateLiveStepCarriesTheClothThroughWhatItCannotSimulate)
   EXPECT_EQ(sim->starts.back(), 0.f);
 }
 
+namespace {
+
+// A belt of 3,200 faces (a 6 cm square in quads of 0.15 cm, at y 1.5) between a body (mesh 0) and a veil
+// of 1 cm quads (mesh 2), all skinned to one bone: the belt (mesh 1) is met as a coarse copy.
+struct BeltScene
+{
+  fv::SceneGraph scene;
+  int            rootNode = -1, bone = -1;
+  BeltScene()
+  {
+    rootNode = scene.add(fv::Node{});
+    fv::Node boneNode;
+    boneNode.kind = fv::NodeKind::eBone;
+    bone          = scene.add(boneNode, rootNode);
+    Grid belt     = grid(40, 1.5f);
+    for(size_t v = 0; v < belt.pos.size() / 3; v++)
+    {
+      belt.pos[v * 3] *= 0.15f;
+      belt.pos[v * 3 + 2] *= 0.15f;
+    }
+    const auto skinned = [&](fv::Mesh m) {
+      const size_t n = m.geo->cagePositions.size() / 3;
+      m.bones        = {bone};
+      m.boneInverses = {fv::Mat4{}};
+      for(size_t v = 0; v <= n; v++)
+        m.cageSkin.start.push_back(int32_t(v));
+      m.cageSkin.bone.assign(n, 0);
+      m.cageSkin.weight.assign(n, 1.f);
+      return m;
+    };
+    scene.meshes.push_back(skinned(sceneMesh(grid(8, 0), false)));
+    scene.meshes.push_back(skinned(sceneMesh(belt, false)));
+    scene.meshes.push_back(skinned(sceneMesh(grid(4, 3), true)));
+    scene.materials.push_back({});
+    for(int i = 0; i < 3; i++)
+    {
+      fv::Node n;
+      n.kind = fv::NodeKind::eMesh;
+      n.mesh = i;
+      scene.add(n, rootNode);
+    }
+  }
+};
+
+// A target moving every vertex of a mesh `up` cm, a dial (or, hidden, a corrective the pose drives).
+void addLift(morph::MorphSet& morphs, const fv::SceneGraph& scene, const std::string& name, int mesh, float up, bool hidden)
+{
+  mesh::CageDeltas lift;
+  const auto&      cage = scene.meshes[size_t(mesh)].geo->cagePositions;
+  for(size_t v = 0; v < cage.size() / 3; v++)
+  {
+    lift.verts.push_back(int32_t(v));
+    lift.deltas.insert(lift.deltas.end(), {0.f, up, 0.f});
+  }
+  morph::ChannelOptions opts;
+  opts.hidden = hidden;
+  opts.value  = 0.0;
+  morphs.addTarget(name, mesh, std::make_shared<const mesh::RenderTarget>(mesh::target(*scene.meshes[size_t(mesh)].geo, lift)), opts);
+}
+
+}  // namespace
+
 TEST(Dforce, aWornItemMuchFinerThanTheClothIsMetAsACoarseCopyThatLiveReshapesInPlace)
 {
   // A belt of 3,200 faces (a 6 cm square in quads of 0.15 cm) between a body and a veil of 1 cm quads,
   // all skinned to one bone. The veil meets a coarse copy of the belt; in live mode the belt's
   // corrective (1 cm up) reaches the veil through the copy without a rebuild, as through the belt
-  fv::SceneGraph scene;
-  const int      rootNode = scene.add(fv::Node{});
-  fv::Node       boneNode;
-  boneNode.kind  = fv::NodeKind::eBone;
-  const int bone = scene.add(boneNode, rootNode);
-  Grid      belt = grid(40, 1.5f);
-  for(size_t v = 0; v < belt.pos.size() / 3; v++)
-  {
-    belt.pos[v * 3] *= 0.15f;
-    belt.pos[v * 3 + 2] *= 0.15f;
-  }
-  const auto skinned = [&](fv::Mesh m) {
-    const size_t n = m.geo->cagePositions.size() / 3;
-    m.bones        = {bone};
-    m.boneInverses = {fv::Mat4{}};
-    for(size_t v = 0; v <= n; v++)
-      m.cageSkin.start.push_back(int32_t(v));
-    m.cageSkin.bone.assign(n, 0);
-    m.cageSkin.weight.assign(n, 1.f);
-    return m;
-  };
-  scene.meshes.push_back(skinned(sceneMesh(grid(8, 0), false)));
-  scene.meshes.push_back(skinned(sceneMesh(belt, false)));
-  scene.meshes.push_back(skinned(sceneMesh(grid(4, 3), true)));
-  scene.materials.push_back({});
-  for(int i = 0; i < 3; i++)
-  {
-    fv::Node n;
-    n.kind = fv::NodeKind::eMesh;
-    n.mesh = i;
-    scene.add(n, rootNode);
-  }
+  BeltScene       b;
+  fv::SceneGraph& scene    = b.scene;
+  const int       rootNode = b.rootNode, bone = b.bone;
   morph::MorphSet morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
   physics::Cloth  d(scene, morphs, 0, rootNode);
 
@@ -3566,19 +3614,7 @@ TEST(Dforce, aWornItemMuchFinerThanTheClothIsMetAsACoarseCopyThatLiveReshapesInP
   EXPECT_LT(before, 2.2f) << "the veil lies on the belt";
 
   // the belt's corrective, 1 cm up over a hundred frames
-  {
-    mesh::CageDeltas up;
-    const auto&      cage = scene.meshes[1].geo->cagePositions;
-    for(size_t v = 0; v < cage.size() / 3; v++)
-    {
-      up.verts.push_back(int32_t(v));
-      up.deltas.insert(up.deltas.end(), {0.f, 1.f, 0.f});
-    }
-    morph::ChannelOptions opts;
-    opts.hidden = true;
-    opts.value  = 0.0;
-    morphs.addTarget("corrective", 1, std::make_shared<const mesh::RenderTarget>(mesh::target(*scene.meshes[1].geo, up)), opts);
-  }
+  addLift(morphs, scene, "corrective", 1, 1.f, true);
   int busy = 0;
   for(int i = 1; i <= 100; i++)
   {
@@ -3593,6 +3629,179 @@ TEST(Dforce, aWornItemMuchFinerThanTheClothIsMetAsACoarseCopyThatLiveReshapesInP
   }
   EXPECT_EQ(busy, 0) << "the simulation was built again";
   EXPECT_NEAR(lowest() - before, 1.f, 0.3f) << "the veil rose with the belt's copy";
+}
+
+TEST(Dforce, aCollidersCopyIsMadeOnceForEveryPoseAndAgainForADial)
+{
+  // A settle at each new pose simplified the belt again, on the app thread (about 0.2 s a settle in the
+  // app): its copy was kept by its rest shape, which the pose's correctives move. Now by what it's made
+  // from short of where its vertices stand, and the dials' generation: the pose's corrective takes the
+  // copy there is, of the belt as it is now, and a dial makes a fresh one
+  BeltScene       b;
+  morph::MorphSet morphs([&](int m) { return b.scene.meshes[size_t(m)].geo.get(); });
+  physics::Cloth  d(b.scene, morphs, 0, b.rootNode);
+  std::mutex      mutex;
+  int             made = 0;
+  fv::timing::setSink([&](const std::string& line) {
+    std::lock_guard lock(mutex);
+    if(line.find(" collides as ") != std::string::npos)
+      made++;
+  });
+  const auto belt = [&]() -> std::optional<physics::cloth::Surface> {
+    morphs.flush();
+    const auto p = d.prepared();
+    for(size_t slot = 0; p && slot < p->slotMesh.size(); slot++)
+      if(p->slotMesh[slot] == 1)
+        return p->bodies[slot];
+    return std::nullopt;
+  };
+  const auto first = belt();
+  ASSERT_TRUE(first);
+  EXPECT_LT(first->tris.size() / 3, 400u);
+  EXPECT_EQ(made, 1);
+
+  // the pose's corrective lifts it 1 cm: the same copy, lifted
+  addLift(morphs, b.scene, "corrective", 1, 1.f, true);
+  morphs.set("corrective", 1.0);
+  const auto posed = belt();
+  ASSERT_TRUE(posed);
+  EXPECT_EQ(made, 1) << "simplified again for a new pose";
+  EXPECT_EQ(posed->tris, first->tris);
+  ASSERT_EQ(posed->rest.size(), first->rest.size());
+  for(size_t v = 0; v < posed->rest.size() / 3; v++)
+    EXPECT_NEAR(posed->rest[v * 3 + 1], first->rest[v * 3 + 1] + 1.f, 1e-4f) << v;
+
+  // a dial lifts it another half: a fresh copy
+  addLift(morphs, b.scene, "Lift", 1, 0.5f, false);
+  morphs.set("Lift", 1.0);
+  const auto dialled = belt();
+  ASSERT_TRUE(dialled);
+  EXPECT_EQ(made, 2);
+  EXPECT_NEAR(dialled->rest[1], first->rest[1] + 1.5f, 1e-4f);
+  fv::timing::setSink({});
+}
+
+namespace {
+
+// A body as a closed tube along y, 32 cm long and 6 cm round, its sides in quads, which a capsule floor
+// fits inside (as test_cloth's tube does).
+Grid tubeGrid()
+{
+  Grid         g;
+  const int    rings = 16, segments = 24;
+  const double pi    = 3.14159265358979323846;
+  for(int i = 0; i <= rings; i++)
+    for(int j = 0; j < segments; j++)
+    {
+      const double phi = 2 * pi * j / segments;
+      g.pos.insert(g.pos.end(), {float(6 * std::cos(phi)), 32.f * float(i) / float(rings), float(6 * std::sin(phi))});
+    }
+  const int32_t bottom = int32_t(g.pos.size() / 3);
+  g.pos.insert(g.pos.end(), {0.f, 0.f, 0.f});
+  const int32_t top = int32_t(g.pos.size() / 3);
+  g.pos.insert(g.pos.end(), {0.f, 32.f, 0.f});
+  const auto at = [&](int i, int j) { return int32_t(i * segments + (j % segments)); };
+  const auto face = [&](std::initializer_list<int32_t> verts) {
+    g.polyVerts.insert(g.polyVerts.end(), verts);
+    g.polyStart.push_back(int32_t(g.polyVerts.size()));
+  };
+  for(int i = 0; i < rings; i++)
+    for(int j = 0; j < segments; j++)
+      face({at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)});
+  for(int j = 0; j < segments; j++)
+  {
+    face({bottom, at(0, j), at(0, j + 1)});
+    face({top, at(rings, j + 1), at(rings, j)});
+  }
+  return g;
+}
+
+// A simulation that does nothing, run where asked: on the thread that made it (a GPU with one queue) or
+// on the pool.
+class QueueSim final : public physics::cloth::Backend
+{
+public:
+  QueueSim(std::vector<physics::cloth::Surface> meshes, bool here)
+      : m_meshes(std::move(meshes))
+      , m_here(here)
+  {
+  }
+  void  frame(float, float, float, float) override {}
+  void  setTarget(size_t, const std::vector<fv::Mat4>&) override { targetSet(); }
+  void  setGravity(const std::array<float, 3>&) override {}
+  void  settle() override {}
+  float lastMove() const override { return 0.f; }
+  bool  ownerThreadOnly() const override { return m_here; }
+  std::vector<std::vector<float>> positions() const override
+  {
+    std::vector<std::vector<float>> out;
+    for(const physics::cloth::Surface& m : m_meshes)
+      out.push_back(m.rest);
+    return out;
+  }
+
+private:
+  std::vector<physics::cloth::Surface> m_meshes;
+  bool                                 m_here;
+};
+
+}  // namespace
+
+TEST(Dforce, liveOnAGpuWithOneQueueMeetsTheBodyAsItself)
+{
+  // Live's proxy (an A/B, FV_DFORCE_PROXY_LIVE) takes the body's faces out of the simulation and holds what
+  // is drawn out of them, on the pool's path. A GPU solver driven on this thread (one queue) writes each
+  // step as it is, so nothing held the cloth out of the body there. Now Live meets the body as itself on
+  // it: made again once it finds out, and from the start after
+  for(const bool here : {false, true})
+  {
+    fv::SceneGraph scene;
+    const int      rootNode = scene.add(fv::Node{});
+    fv::Node       boneNode;
+    boneNode.kind  = fv::NodeKind::eBone;
+    const int bone = scene.add(boneNode, rootNode);
+    const auto skinned = [&](fv::Mesh m) {
+      const size_t n = m.geo->cagePositions.size() / 3;
+      m.bones        = {bone};
+      m.boneInverses = {fv::Mat4{}};
+      for(size_t v = 0; v <= n; v++)
+        m.cageSkin.start.push_back(int32_t(v));
+      m.cageSkin.bone.assign(n, 0);
+      m.cageSkin.weight.assign(n, 1.f);
+      return m;
+    };
+    scene.meshes.push_back(skinned(sceneMesh(tubeGrid(), false)));
+    scene.meshes.push_back(skinned(sceneMesh(grid(4, 34), true)));
+    scene.materials.push_back({});
+    for(int i = 0; i < 2; i++)
+    {
+      fv::Node n;
+      n.kind = fv::NodeKind::eMesh;
+      n.mesh = i;
+      scene.add(n, rootNode);
+    }
+    morph::MorphSet   morphs([&](int m) { return scene.meshes[size_t(m)].geo.get(); });
+    physics::Cloth    d(scene, morphs, 0, rootNode);
+    std::vector<bool> faces;  // per simulation made: whether the body's faces are in it
+    d.liveProxy  = true;
+    d.makeGpuSim = [&](std::vector<physics::cloth::Surface> meshes, const physics::cloth::Options&) {
+      faces.push_back(std::any_of(meshes[0].collide.begin(), meshes[0].collide.end(), [](uint8_t c) { return c != 0; }));
+      return std::make_shared<QueueSim>(std::move(meshes), here);
+    };
+    d.setMode(physics::ClothMode::eLiveGpu);
+    ASSERT_TRUE(pumpUntilWritten(d)) << here;
+    if(!here)
+    {
+      // the pool's: the proxy, which takes the body's faces out
+      EXPECT_EQ(faces, std::vector<bool>{false});
+      continue;
+    }
+    EXPECT_EQ(faces, (std::vector<bool>{false, true})) << "made again with the body's faces";
+    // built again: with them from the start
+    d.resimulate();
+    ASSERT_TRUE(pumpUntilWritten(d));
+    EXPECT_EQ(faces, (std::vector<bool>{false, true, true}));
+  }
 }
 
 TEST(Dforce, theLightClothSwitchDrapesAgainTheOtherWayAndOnlyWhenItChanges)

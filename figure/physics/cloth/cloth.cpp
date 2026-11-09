@@ -67,9 +67,12 @@ bool sameGravity(const std::array<float, 3>& a, const std::array<float, 3>& b)
   return true;
 }
 
-// What a coarse copy is made from: its rest cage, its faces and which collide, its strength and what is
-// in the simulation, and the edge and error it is made for (FNV-1a over their bytes).
-uint64_t shapeKey(const cloth::Surface& s, float edge, float maxError)
+// What a coarse copy is made from, short of where its vertices stand: its mesh, its vertices and faces and
+// which collide, its strength and what is in the simulation, the dials' generation, and `edge` (FNV-1a over
+// their bytes). The pose's correctives move a rest shape a little at every new pose, and a copy kept is
+// taken of the shape as it is now (sameCopy, sameCloth); a dial makes a fresh one. A slot with no mesh
+// to know it by (no skin) is known by its rest shape as well
+uint64_t shapeKey(const cloth::Surface& s, int mesh, int dials, float edge)
 {
   uint64_t   h   = 1469598103934665603ull;
   const auto mix = [&](const void* data, size_t bytes) {
@@ -80,15 +83,23 @@ uint64_t shapeKey(const cloth::Surface& s, float edge, float maxError)
       h *= 1099511628211ull;
     }
   };
-  mix(s.rest.data(), s.rest.size() * sizeof(float));
+  const uint64_t vertices = s.vertexCount();
+  mix(&mesh, sizeof mesh);
+  mix(&vertices, sizeof vertices);
+  if(mesh < 0)
+    mix(s.rest.data(), s.rest.size() * sizeof(float));
   mix(s.tris.data(), s.tris.size() * sizeof(uint32_t));
   mix(s.collide.data(), s.collide.size());
   mix(s.strength.data(), s.strength.size() * sizeof(float));
   mix(s.visible.data(), s.visible.size());
+  mix(&dials, sizeof dials);
   mix(&edge, sizeof edge);
-  mix(&maxError, sizeof maxError);
   return h;
 }
+
+// A collider's copy is made for the cloth's mean edge, which the pose's correctives move a little too: one
+// made for an edge this near it serves
+constexpr float kCopyEdgeShare = 0.05f;
 
 bool samePose(const std::vector<Mat4>& a, const std::vector<Mat4>& b)
 {
@@ -114,6 +125,8 @@ struct Cloth::Job
   std::vector<cloth::Surface> bodies;
   // the mesh each body is, for reading its bones again; -1 when it has no skin
   std::vector<int> slotMesh;
+  // every mesh it was made from, skinned or not, its strand hairs too: what changes the simulation
+  std::set<int> from;
   // a coarse copy's vertices of its mesh's cage, per slot (physics/cloth/coarse.hpp); empty: all of them
   std::vector<std::vector<uint32_t>> slotKeep;
   // the body's slot, what a light copy's cloth is kept out of; SIZE_MAX: none
@@ -255,16 +268,18 @@ void Cloth::changed(const std::vector<int>& meshes, bool nodesMoved)
     // every frame), and a collider's change is its pose too (a dent, a dial on the body): the next step
     // skins from the new rest shape in place. A cloth's own shape changed with nothing moving is a dial:
     // the simulation is built again once it stops. The pose never puts off a build that is due (it
-    // reads the shapes as they are then), so one starts while a clip plays
+    // reads the shapes as they are then), so one starts while a clip plays. A mesh it wasn't made from
+    // (lashes, a card hair's dial) changes nothing in it; a strand hair it lets fall settles again
     bool rebuild = false;
     for(int mesh : meshes)
     {
-      const bool slot  = m_live && m_liveJob && mesh >= 0
+      const bool running = m_live && m_liveJob;
+      const bool slot    = running && mesh >= 0
                         && std::find(m_liveJob->slotMesh.begin(), m_liveJob->slotMesh.end(), mesh) != m_liveJob->slotMesh.end();
       const bool drape = slot && std::any_of(m_liveJob->drapes.begin(), m_liveJob->drapes.end(), [&](const Job::Drape& d) { return d.mesh == mesh; });
       if(slot && (nodesMoved || !drape))
         m_liveReshaped.insert(mesh);
-      else if(!nodesMoved)
+      else if(!nodesMoved && (!running || m_liveJob->from.count(mesh)))
         rebuild = true;
     }
     if(rebuild)
@@ -581,7 +596,14 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t, bool live) const
     }
   };
   for(int mesh = 0; mesh < int(m_scene.meshes.size()); mesh++)
+  {
+    const size_t bodies = job->bodies.size(), hairs = job->hairs.size();
     consider(mesh);
+    if(job->bodies.size() != bodies || job->hairs.size() != hairs)
+      job->from.insert(mesh);
+  }
+  if(bodySlot != SIZE_MAX)
+    job->from.insert(m_bodyMesh);
   if(job->drapes.empty() && job->hairs.empty())
     return nullptr;
 
@@ -589,7 +611,9 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t, bool live) const
   job->bodySlot = bodySlot;
   // Live meets the body as its floor, and what lies on the skin follows it (physics/cloth/proxy.hpp): before
   // the light copies, which take the cloth's strengths, and the coarse colliders, which copy what collides
-  if(live && liveProxy && bodySlot != SIZE_MAX && !job->drapes.empty())
+  // (not on a GPU solver driven on this thread, which writes each step as it is: m_gpuOnThisThread)
+  const bool gpuHere = m_mode == ClothMode::eLiveGpu && makeGpuSim && m_gpuOnThisThread;
+  if(live && liveProxy && !gpuHere && bodySlot != SIZE_MAX && !job->drapes.empty())
   {
     timing::Scope       tp("dforce: Live's proxy of the body");
     std::vector<size_t> slots;
@@ -602,6 +626,10 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t, bool live) const
                    + " cloth vertices held to the skin, " + std::to_string(p.eased) + " eased, " + std::to_string(p.folded)
                    + " worn vertices taken as skin");
   }
+  // The copies below are kept by what they're made from short of where the vertices stand, and the dials'
+  // generation (shapeKey); none is kept while a dial's shape is still on its way to the meshes
+  const bool keepCopies = !m_morphs.landing();
+  const int  dials      = m_morphs.dialVersion();
   // Light cloth: a cloth much finer than the faces asked for simulates as a coarse copy of itself, and
   // its own vertices ride on it. Before the colliders, which are then copied as fine as the copy
   std::map<uint64_t, std::shared_ptr<const physics::cloth::CoarseCloth>> lights;
@@ -610,10 +638,11 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t, bool live) const
     timing::Scope t("dforce: light cloth", 1);
     for(Job::Drape& d : job->drapes)
     {
-      cloth::Surface&                                        s   = job->bodies[d.slot];
-      const uint64_t                                     key = shapeKey(s, lightClothEdge, 0);
+      cloth::Surface&                                    s    = job->bodies[d.slot];
+      const uint64_t                                     key  = shapeKey(s, d.mesh, dials, lightClothEdge);
+      const auto                                         made = keepCopies ? m_light.find(key) : m_light.end();
       std::shared_ptr<const physics::cloth::CoarseCloth> c;
-      if(const auto made = m_light.find(key); made != m_light.end())
+      if(made != m_light.end())
       {
         // made for this shape before: the same copy, of the cloth as it is posed now
         if(made->second)
@@ -626,7 +655,8 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t, bool live) const
         const size_t had = s.vertexCount();
         if(auto fresh = physics::cloth::coarseCloth(s, lightClothEdge))
           c = std::make_shared<const physics::cloth::CoarseCloth>(std::move(*fresh));
-        lights[key] = c;
+        if(keepCopies)
+          lights[key] = c;
         if(c && timing::enabled())
           timing::line("dforce: " + m_scene.meshes[size_t(d.mesh)].name + " simulates as a light copy of " + std::to_string(c->keep.size())
                        + " of its " + std::to_string(had) + " vertices, faces " + std::to_string(lightClothEdge) + " cm wide");
@@ -642,7 +672,7 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t, bool live) const
 
   // What's worn much finer than the cloth (a necklace's 150k triangles of chain under a neckline, lace)
   // is met as a coarse copy, as fine as the cloth; not the body, the cage already, where a gap shows most
-  std::map<uint64_t, std::optional<physics::cloth::Coarse>> copies;
+  std::map<uint64_t, MadeCopy> copies;
   if(coarseColliders && !job->drapes.empty())
   {
     timing::Scope t("dforce: coarse colliders", 1);
@@ -659,23 +689,25 @@ std::shared_ptr<Cloth::Job> Cloth::prepare(uint64_t, bool live) const
     {
       if(slot == bodySlot || job->bodies[slot].tris.empty())
         continue;
-      const size_t   had = job->bodies[slot].tris.size() / 3;
-      const float    err = kCoarseError * std::min(edge, kCoarseErrorWidth);
-      const uint64_t key = shapeKey(job->bodies[slot], edge, err);
+      const size_t   had  = job->bodies[slot].tris.size() / 3;
+      const float    err  = kCoarseError * std::min(edge, kCoarseErrorWidth);
+      const uint64_t key  = shapeKey(job->bodies[slot], job->slotMesh[slot], dials, 0);
+      const auto     made = keepCopies ? m_coarse.find(key) : m_coarse.end();
       std::optional<physics::cloth::Coarse> c;
-      if(const auto made = m_coarse.find(key); made != m_coarse.end())
+      if(made != m_coarse.end() && std::fabs(made->second.edge - edge) <= kCopyEdgeShare * edge)
       {
-        // made for this shape before: the same copy, of the collider as it is posed now
-        if(made->second)
-          c = physics::cloth::sameCopy(job->bodies[slot], *made->second);
+        // made for this shape before, for a cloth as fine: the same copy, of the collider as it is posed now
+        if(made->second.copy)
+          c = physics::cloth::sameCopy(job->bodies[slot], *made->second.copy);
         copies[key] = made->second;
         if(!c)
           continue;
       }
       else
       {
-        c           = physics::cloth::coarsen(job->bodies[slot], edge, err);
-        copies[key] = c;
+        c = physics::cloth::coarsen(job->bodies[slot], edge, err);
+        if(keepCopies)
+          copies[key] = {edge, c};
         if(!c)
           continue;
         if(timing::enabled())
@@ -875,6 +907,8 @@ bool Cloth::pump()
             if(!m_gpuSim || !m_gpuSim->restart(job->bodies, opts))
               m_gpuSim = makeGpuSim(job->bodies, opts);
             m_settling = m_gpuSim;
+            if(m_settling && m_settling->ownerThreadOnly())
+              m_gpuOnThisThread = true;
           }
           if(!m_settling || !m_settling->ownerThreadOnly())
             onThePool(job, stale, std::exchange(m_settling, nullptr));
@@ -1037,7 +1071,27 @@ bool Cloth::pumpLive()
     cloth::Options opts;
     opts.air = kAir;
     if(m_mode == ClothMode::eLiveGpu && makeGpuSim)
+    {
       m_live = makeGpuSim(m_liveJob->bodies, opts);
+      // Driven on this thread (a GPU with one queue), its steps are written as they are. Live's proxy is
+      // made for the pool's, which hold the drawn cloth out of the body's faces and bind it afresh every
+      // step, so a job made with it is made again without it (and from now on, from the start)
+      if(m_live && m_live->ownerThreadOnly() && !m_gpuOnThisThread)
+      {
+        m_gpuOnThisThread = true;
+        if(m_liveJob->proxy)
+        {
+          m_live.reset();
+          m_liveJob = prepare(m_gen, true);
+          if(!m_liveJob || m_liveJob->drapes.empty())
+          {
+            m_liveJob.reset();
+            return wrote;
+          }
+          m_live = makeGpuSim(m_liveJob->bodies, opts);
+        }
+      }
+    }
     if(!m_live)
       m_live = std::make_shared<cloth::CpuBackend>(m_liveJob->bodies, opts);
     m_liveBones    = currentBones(*m_liveJob);

@@ -329,12 +329,22 @@ private:
   mutable const Job*                                 m_bodyAcrossOf = nullptr;
   std::set<int> m_draped;
   int           m_version = 0;
-  // the coarse copies of colliders the last job made, by the shape each was made from (its rest cage,
-  // faces, and the cloth's edge): a rebuild for the same shapes doesn't simplify them again (188 ms on
-  // a necklace, underwear and boots). None: one that isn't copied
-  mutable std::map<uint64_t, std::optional<physics::cloth::Coarse>> m_coarse;
+  // the coarse copies of colliders the last job made, by what each was made from short of where its
+  // vertices stand (its mesh, faces and flags, and the dials' generation), with the cloth's edge it was
+  // made for: a rebuild for the same shapes, or the same at a new pose, whose correctives move the rest a
+  // little, doesn't simplify them again (188 ms on a necklace, underwear and boots; about 0.2 s a
+  // settle). None: one that isn't copied
+  struct MadeCopy
+  {
+    float                                 edge = 0;
+    std::optional<physics::cloth::Coarse> copy;
+  };
+  mutable std::map<uint64_t, MadeCopy> m_coarse;
   // and the light copies of cloth, the same way (null: one that isn't copied)
   mutable std::map<uint64_t, std::shared_ptr<const physics::cloth::CoarseCloth>> m_light;
+  // the GPU's solver must be driven on this thread (a GPU with one queue): Live writes each of its steps
+  // as it is, which Live's proxy isn't made for, so a Live job on it meets the body as itself
+  bool m_gpuOnThisThread = false;
 };
 
 }  // namespace fv::physics
