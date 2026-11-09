@@ -2052,6 +2052,29 @@ TEST(Fit, AStrandsRootPushedOutOfTheBodyTakesTheStrandWithIt)
     EXPECT_NEAR(pushed[v * 3 + 2], 0.15f, 1e-3f) << v;
 }
 
+// Cloth sunk deeper than one push moves comes out over a few rounds: a patch 6 cm under the skin (a
+// CBBE dress's waist in Genesis 9's fuller one, where the dress carries no body to correct its shape
+// by) ends at the clearance. Footwear keeps the 3 cm reach, so a heel's stem below the sole stays.
+TEST(Fit, ClothSunkDeepInTheBodyComesOutOverRounds)
+{
+  using namespace fv::wardrobe;
+  const auto    body = fv::mesh::build(grid(20, 0));
+  const Surface onBody{body.cagePositions, body.dsonTris};
+  auto          cloth = fv::mesh::build(grid(8, -6));
+  for(size_t v = 0; v < cloth.cagePositions.size() / 3; v++)
+    cloth.cagePositions[v * 3] += 6, cloth.cagePositions[v * 3 + 1] += 6;
+  const auto out = pushOutOfBody(cloth.cagePositions, cloth.dsonTris, onBody, {}, {}, kSunkDepth);
+  ASSERT_EQ(out.size(), cloth.cagePositions.size());
+  for(size_t v = 0; v < out.size() / 3; v++)
+  {
+    EXPECT_NEAR(out[v * 3 + 2], 0.15f, 0.02f) << v;
+    EXPECT_NEAR(out[v * 3], cloth.cagePositions[v * 3], 1e-4f) << v;
+  }
+  const auto footwear = pushOutOfBody(cloth.cagePositions, cloth.dsonTris, onBody);
+  for(size_t v = 0; v < footwear.size() / 3; v++)
+    EXPECT_NEAR(footwear[v * 3 + 2], -6.f, 1e-4f) << v;
+}
+
 // A prop hung from a bone was placed around that joint on the figure it was made for: on another
 // generation it is mounted by the source base's joint, so it moves with the joint (Genesis 8's
 // glasses on its head stood 9 cm high on Genesis 9's)

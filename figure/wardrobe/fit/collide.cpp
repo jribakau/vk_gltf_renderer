@@ -4,10 +4,12 @@
 #include <cmath>
 #include <functional>
 #include <map>
+#include <memory>
 #include <queue>
 #include <unordered_map>
 #include <utility>
 
+#include <figure/physics/collide/surface_index.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 
 namespace fv::wardrobe {
@@ -226,16 +228,32 @@ std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const
 }
 
 std::vector<float> pushOutOfBody(std::span<const float> positions, std::span<const uint32_t> tris, const Surface& body, std::span<const int32_t> lineStart,
-                                 std::span<const int32_t> lineVerts)
+                                 std::span<const int32_t> lineVerts, float depth)
 {
   constexpr float kMargin = 0.15f;
   if(lineStart.empty())
   {
-    const SurfaceBinding binding = cachedBindToSurface(body.positions, body.tris, positions);
-    return smoothCorrection(positions, pushOut(positions, body, binding, kMargin), tris);
+    // A few rounds: what sank deeper than one push moves (cloth over skin a garment's own body
+    // doesn't have, where the figure is fuller: a CBBE dress's waist on Genesis 9, 3 to 7 cm in) comes
+    // out from its edge, the smoothing drawing the deeper cloth after it. The rounds after the first
+    // are of shapes no other fit asks for, so they aren't cached.
+    std::vector<float>                     out(positions.begin(), positions.end());
+    std::unique_ptr<physics::SurfaceIndex> index;
+    for(int round = 0; round < kPushRounds; round++)
+    {
+      if(round == 1)
+        index = std::make_unique<physics::SurfaceIndex>(body.positions, body.tris);
+      const SurfaceBinding binding = round == 0 ? cachedBindToSurface(body.positions, body.tris, out)
+                                                : bindToSurface(*index, body.tris, body.positions.size() / 3, out);
+      const std::vector<float> pushed = pushOut(out, body, binding, kMargin, depth);
+      if(pushed == out)
+        break;
+      out = smoothCorrection(out, pushed, tris);
+    }
+    return out;
   }
   const SurfaceBinding binding = cachedBindStrands(body.positions, body.tris, positions, lineStart, lineVerts, kStrandReach);
-  std::vector<float>   pushed  = pushOut(positions, body, binding, kMargin);
+  std::vector<float>   pushed  = pushOut(positions, body, binding, kMargin, depth);
   // what rides with a point of its strand moves as that point does
   const auto leader = strandLeaders(positions, body, binding, lineStart, lineVerts);
   for(size_t v = 0; v < leader.size(); v++)

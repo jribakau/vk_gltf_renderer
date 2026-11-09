@@ -259,7 +259,7 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     }
     // a dynamic surface owns its collision: dForce drapes it over the body, so it is not pushed out here
     if(!(m.dforce && m.dforce->simulated()))
-      positions = pushOutOfBody(positions, m.geo->dsonTris, bodySurface, m.geo->cageLineStart, m.geo->cageLineVerts);
+      positions = pushOutOfBody(positions, m.geo->dsonTris, bodySurface, m.geo->cageLineStart, m.geo->cageLineVerts, footwear ? 3.f : kSunkDepth);
     writeCage(*m.geo, positions);
   }
   detail.shaped = base.has_value();

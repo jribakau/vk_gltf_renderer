@@ -42,12 +42,17 @@ std::vector<int32_t> coveredPolys(std::span<const float>    body,
 // Laplacian steps on the correction (`next` - `prev`), leaving the garment's cut in place.
 std::vector<float> smoothCorrection(std::span<const float> prev, std::span<const float> next, std::span<const uint32_t> tris, int passes = 2);
 
-// The fitter's last step: what ended just under the skin pushed back out to 0.15 cm and the push
-// smoothed over the garment, the body searched through the bind cache. Strand hair (`lineStart`,
+// The fitter's last step: what ended under the skin, within `depth` of it, pushed back out to 0.15 cm
+// and the push smoothed over the garment, the body searched through the bind cache; up to kPushRounds
+// times, so cloth sunk deeper than one push moves comes out from its edge. Footwear keeps pushOut's
+// 3 cm (a heel's stem); cloth reaches kSunkDepth, as a garment over skin its own body doesn't have
+// sinks into a fuller figure (a CBBE dress's waist into Genesis 9's, 3 to 7 cm). Strand hair (`lineStart`,
 // `lineVerts`, as mesh::BuiltMesh has them) is bound along its strands (bindStrands, kStrandReach),
 // and a point further from the body than that moves as the point its strand last touched it at, so a
 // root pushed out of the scalp takes the strand with it.
+constexpr int   kPushRounds = 8;
+constexpr float kSunkDepth  = 10;
 std::vector<float> pushOutOfBody(std::span<const float> positions, std::span<const uint32_t> tris, const Surface& body,
-                                 std::span<const int32_t> lineStart = {}, std::span<const int32_t> lineVerts = {});
+                                 std::span<const int32_t> lineStart = {}, std::span<const int32_t> lineVerts = {}, float depth = 3);
 
 }  // namespace fv::wardrobe
