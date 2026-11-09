@@ -39,6 +39,8 @@
 #include <string_view>
 #include <vector>
 
+#include <figure/math/xform.hpp>
+
 namespace fv::rig {
 
 // The coarse limb the wardrobe binds by (wardrobe::limbOfBone, BindFilter): one side's leg is three,
@@ -186,5 +188,12 @@ struct Evidence
   bool                  genesis3or8 = false;
 };
 Evidence identify(const std::vector<std::string>& boneNames);
+
+// A bone's turn as the rotation convention above reads it, from its rotation values and its
+// orientation's angles (degrees, as DSON writes them) and its rotation order; and back, the values that
+// turn a bone of that orientation and order so (the Euler whose middle angle lies within 90 degrees).
+// An order that isn't one of the six reads as XYZ, as the pose does.
+Quat boneTurn(const std::array<double, 3>& degrees, const std::array<double, 3>& orientation, std::string_view order);
+std::array<double, 3> boneValues(const Quat& turn, const std::array<double, 3>& orientation, std::string_view order);
 
 }  // namespace fv::rig

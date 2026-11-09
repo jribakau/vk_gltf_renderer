@@ -1,8 +1,11 @@
 #include <figure/wardrobe/fit/heel.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <regex>
+#include <set>
 
+#include <figure/rig/spec.hpp>
 #include <figure/wardrobe/fit/bones.hpp>
 
 namespace fv::wardrobe {
@@ -59,7 +62,8 @@ std::vector<FootChannel> footChannels(const dson::Json& doc)
   return out;
 }
 
-std::vector<FootChannel> retargetFootPose(const std::vector<FootChannel>& channels, const std::vector<std::string>& targets)
+std::vector<FootChannel> retargetFootPose(const std::vector<FootChannel>& channels, const std::vector<std::string>& targets,
+                                          const std::map<std::string, BoneFrame>& from, const std::map<std::string, BoneFrame>& to)
 {
   // a degree's half, a dial's hundredth: what a file writes as rest is not a pose
   bool any = false;
@@ -68,11 +72,45 @@ std::vector<FootChannel> retargetFootPose(const std::vector<FootChannel>& channe
   std::vector<FootChannel> out;
   if(!any)
     return out;
+  const auto same = [](const BoneFrame& a, const BoneFrame& b) {
+    for(size_t i = 0; i < 3; i++)
+      if(std::abs(a.orientation[i] - b.orientation[i]) > 1e-9)
+        return false;
+    return a.order == b.order;
+  };
+  std::set<std::string> turned;
   for(const FootChannel& c : channels)
+  {
     if(!c.dial.empty())
+    {
       out.push_back(c);
-    else if(auto bone = matchBone(c.bone, targets))
+      continue;
+    }
+    const auto bone = matchBone(c.bone, targets);
+    if(!bone)
+      continue;
+    const auto f = from.find(c.bone);
+    const auto t = to.find(*bone);
+    if(f == from.end() || t == to.end() || same(f->second, t->second))
+    {
       out.push_back({*bone, c.axis, c.value});
+      continue;
+    }
+    if(!turned.insert(c.bone).second)
+      continue;
+    // the bone's angles together, those the file leaves out at rest, held to the limits the bone it was
+    // made on keeps
+    std::array<double, 3> angles{};
+    for(const FootChannel& o : channels)
+      if(o.dial.empty() && o.bone == c.bone && o.axis.size() == 1 && o.axis[0] >= 'x' && o.axis[0] <= 'z')
+      {
+        const size_t i = size_t(o.axis[0] - 'x');
+        angles[i]      = std::clamp(o.value, f->second.min[i], std::max(f->second.min[i], f->second.max[i]));
+      }
+    const std::array<double, 3> values = rig::boneValues(rig::boneTurn(angles, f->second.orientation, f->second.order), t->second.orientation, t->second.order);
+    for(size_t i = 0; i < 3; i++)
+      out.push_back({*bone, std::string(1, char('x' + i)), std::abs(values[i]) < 1e-9 ? 0 : values[i]});
+  }
   return out;
 }
 

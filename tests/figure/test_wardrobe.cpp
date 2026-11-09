@@ -34,6 +34,7 @@
 #include <figure/wardrobe/fit/collide.hpp>
 #include <figure/wardrobe/fit/fit.hpp>
 #include <figure/wardrobe/fit/generation.hpp>
+#include <figure/rig/spec.hpp>
 #include <figure/wardrobe/fit/heel.hpp>
 #include <figure/wardrobe/fit/transfer.hpp>
 #include <figure/wardrobe/follow.hpp>
@@ -520,6 +521,7 @@ std::unique_ptr<fv::Figure> footFigure()
 const char* const kFootHeels  = "People/Test/Clothing/Foot Heels.duf";
 const char* const kFootOutfit = "People/Test/Clothing/Foot Outfit.duf";
 const char* const kFootBoots  = "People/Test/Clothing/Foot Boots.duf";
+const char* const kFootHeelsG8 = "People/Test/Clothing/Foot Heels G8.duf";
 double            footX(const fv::Figure& figure)
 {
   return figure.pose->posed("l_foot", "rotation", "x").value_or(NAN);
@@ -546,6 +548,43 @@ TEST(Wardrobe, AHeelPointsTheFeetOfTheFigureItWasMadeFor)
 
   ASSERT_TRUE(figure->removeItem(worn.items[0]));
   EXPECT_EQ(footX(*figure), 0);
+}
+
+// A heel made on another figure's skeleton turns the foot as it did there: its file sets lFoot, a
+// Genesis 8 foot whose axes are 8 degrees about z from this figure's l_foot, and the figure's foot
+// takes the turn that gave at rest, not the angles copied axis by axis (which yaws the toe 4 degrees).
+TEST(Wardrobe, AHeelMadeOnAnotherSkeletonTurnsTheFootAsItDidThere)
+{
+  const auto turn = [](char axis, double degrees) {
+    const double h = degrees * fv::kDeg / 2;
+    return fv::Quat{axis == 'X' ? std::sin(h) : 0, axis == 'Y' ? std::sin(h) : 0, axis == 'Z' ? std::sin(h) : 0, std::cos(h)};
+  };
+  const auto apart = [](const fv::Quat& a, const fv::Quat& b) {
+    return 2 * std::acos(std::min(1.0, std::abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w))) / fv::kDeg;
+  };
+  // the file's turn by the spec's convention, rotation order XZY, orientation z 8: O R_Y(-6) R_X(30) O^-1
+  const fv::Quat o    = turn('Z', 8);
+  const fv::Quat want = o * turn('Y', -6) * turn('X', 30) * o.inverse();
+  // the same angles on l_foot's own axes (order XYZ, no orientation) are another turn
+  ASSERT_GT(apart(turn('Y', -6) * turn('X', 30), want), 3);
+
+  const auto           figure = footFigure();
+  const fv::WearResult worn   = figure->commitWear(figure->prepareWear(kFootHeelsG8, 1), kFootHeelsG8);
+  figure->settle();
+  ASSERT_EQ(worn.items.size(), 1u);
+  const auto& rig  = figure->loaded.rigs[size_t(figure->loaded.mainRig)];
+  const fv::Quat got = figure->loaded.scene.nodes[size_t(rig.find(figure->loaded.scene, "l_foot"))].quaternion;
+  EXPECT_LT(apart(got, want), 1);
+  // the toe's pitch, rest direction (0, -8, 10) from the foot's joint
+  const auto pitch = [](const fv::Quat& q) {
+    const fv::Vec3 toe = fv::rotate(fv::Vec3{0, -8, 10}, q);
+    return std::atan2(-toe.y, std::hypot(toe.x, toe.z)) / fv::kDeg;
+  };
+  EXPECT_NEAR(pitch(got), pitch(want), 1);
+
+  ASSERT_TRUE(figure->removeItem(worn.items[0]));
+  for(const char* axis : {"x", "y", "z"})
+    EXPECT_EQ(figure->pose->posed("l_foot", "rotation", axis).value_or(NAN), 0) << axis;
 }
 
 // An outfit's items all carry its file's pose, set once and kept by the item on the feet: the shirt
@@ -611,6 +650,33 @@ TEST(Fit, AHeelsFootChannelsAreItsBonesTurnsAndTheFiguresFootDials)
   // a dial a hundredth from rest is a pose; all of a file's channels at rest are none
   EXPECT_EQ(fv::wardrobe::retargetFootPose({{"", "", 0.02, "body_ctrl_lFootHeeledShoe"}}, {"l_foot"}).size(), 1u);
   EXPECT_TRUE(fv::wardrobe::retargetFootPose({{"", "", 0.005, "body_ctrl_lFootHeeledShoe"}, {"l_foot", "x", 0.2}}, {"l_foot"}).empty());
+}
+
+// A heel's foot turn goes over at rest from the frame of the bone it was made on to the figure's, its
+// angles first held to that bone's limits (a file past them was never posed so); a heel on the frame
+// it was made for is copied as it is, the axes it leaves out left alone.
+TEST(Fit, AHeelsFootTurnGoesOverAtRestHeldToTheLimitsItWasMadeWith)
+{
+  fv::wardrobe::BoneFrame made{{0, 0, 8}, "XZY"}, figure{};
+  made.min = {-45, -25, -45};
+  made.max = {65, 10, 30};
+  const std::vector<fv::wardrobe::FootChannel> feet = fv::wardrobe::retargetFootPose({{"lFoot", "x", 84.9}}, {"l_foot"}, {{"lFoot", made}}, {{"l_foot", figure}});
+  ASSERT_EQ(feet.size(), 3u);
+  std::array<double, 3> values{};
+  for(const fv::wardrobe::FootChannel& c : feet)
+  {
+    EXPECT_EQ(c.bone, "l_foot");
+    values[size_t(c.axis[0] - 'x')] = c.value;
+  }
+  const fv::Quat want = fv::rig::boneTurn({65, 0, 0}, made.orientation, made.order);
+  const fv::Quat got  = fv::rig::boneTurn(values, figure.orientation, figure.order);
+  EXPECT_NEAR(std::abs(got.x * want.x + got.y * want.y + got.z * want.z + got.w * want.w), 1, 1e-12);
+
+  const auto same = fv::wardrobe::retargetFootPose({{"lFoot", "x", 84.9}}, {"l_foot"}, {{"lFoot", made}}, {{"l_foot", made}});
+  ASSERT_EQ(same.size(), 1u);
+  EXPECT_EQ(same[0].bone, "l_foot");
+  EXPECT_EQ(same[0].axis, "x");
+  EXPECT_EQ(same[0].value, 84.9);
 }
 
 // A wear reads the skeleton and the body of a figure, on another thread: it isn't given the rest, which

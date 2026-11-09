@@ -454,6 +454,13 @@ TEST(RigSpec, ABonesTurnTranslationAndScaleAreTheSpecsConventions)
     const fv::Quat q = o * (turn(c, angles.at(c)) * turn(b, angles.at(b)) * turn(a, angles.at(a))) * o.inverse();
     const fv::Quat got = scene.nodes[size_t(node)].quaternion;
     EXPECT_NEAR(std::abs(got.x * q.x + got.y * q.y + got.z * q.z + got.w * q.w), 1, 1e-12) << order;
+    // the spec's own reading of it, and back to the angles
+    const std::array<double, 3> angle{angles.at('X'), angles.at('Y'), angles.at('Z')}, frame{orient.at('X'), orient.at('Y'), orient.at('Z')};
+    const fv::Quat              by = fv::rig::boneTurn(angle, frame, order);
+    EXPECT_NEAR(std::abs(by.x * q.x + by.y * q.y + by.z * q.z + by.w * q.w), 1, 1e-12) << order;
+    const std::array<double, 3> back = fv::rig::boneValues(q, frame, order);
+    for(size_t i = 0; i < 3; i++)
+      EXPECT_NEAR(back[i], angle[i], 1e-9) << order << i;
     const fv::Vec3 at = scene.nodes[size_t(node)].position, scale = scene.nodes[size_t(node)].scale;
     EXPECT_NEAR(at.x - rest.x, 3, 1e-12) << order;
     EXPECT_NEAR(at.y - rest.y, 0, 1e-12) << order;

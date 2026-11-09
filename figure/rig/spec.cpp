@@ -199,4 +199,36 @@ const Joint* genesisJoint(const std::string& token)
   return joint(it != aliases::genesis().end() ? std::string_view(it->second) : std::string_view(token));
 }
 
+namespace {
+
+std::string_view knownOrder(std::string_view order)
+{
+  for(const std::string_view o : {"XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"})
+    if(order == o)
+      return order;
+  return "XYZ";
+}
+
+Quat frameOf(const std::array<double, 3>& orientation, std::string_view order)
+{
+  return quatFromEuler(orientation[0] * kDeg, orientation[1] * kDeg, orientation[2] * kDeg, order);
+}
+
+}  // namespace
+
+Quat boneTurn(const std::array<double, 3>& degrees, const std::array<double, 3>& orientation, std::string_view order)
+{
+  const std::string_view o     = knownOrder(order);
+  const Quat             frame = frameOf(orientation, o);
+  return frame * quatFromEuler(degrees[0] * kDeg, degrees[1] * kDeg, degrees[2] * kDeg, threeOrder(o).data()) * frame.inverse();
+}
+
+std::array<double, 3> boneValues(const Quat& turn, const std::array<double, 3>& orientation, std::string_view order)
+{
+  const std::string_view      o     = knownOrder(order);
+  const Quat                  frame = frameOf(orientation, o);
+  const std::array<double, 3> e     = eulerFromQuat(frame.inverse() * turn.normalized() * frame, threeOrder(o).data());
+  return {e[0] / kDeg, e[1] / kDeg, e[2] / kDeg};
+}
+
 }  // namespace fv::rig

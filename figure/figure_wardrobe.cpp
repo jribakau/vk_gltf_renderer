@@ -874,10 +874,34 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   // comes off. A dial the figure lacks (a G9 heel on G8) is left out.
   if(pose && posesFeet && !w.items.empty())
   {
-    std::vector<std::string> names;
+    // the bones' frames, the figure's and those of the skeleton the file's items were made on: a pose
+    // goes over as the same turn at rest
+    const auto frameOf = [&](int node, std::map<std::string, wardrobe::BoneFrame>& into) {
+      const Node& n = dst.nodes[size_t(node)];
+      if(!n.joint)
+        return;
+      wardrobe::BoneFrame frame{n.joint->orientation, n.joint->rotationOrder};
+      for(const JointChannel& c : n.joint->rotation)
+        if(c.clamped && c.axis.size() == 1 && c.axis[0] >= 'x' && c.axis[0] <= 'z')
+        {
+          frame.min[size_t(c.axis[0] - 'x')] = c.min;
+          frame.max[size_t(c.axis[0] - 'x')] = c.max;
+        }
+      into.emplace(n.name, frame);
+    };
+    std::vector<std::string>                   names;
+    std::map<std::string, wardrobe::BoneFrame> made, figureFrames;
     for(const auto& [id, node] : loaded.rigs[size_t(loaded.mainRig)].bones)
+    {
       names.push_back(dst.nodes[size_t(node)].name);
-    const std::vector<wardrobe::FootChannel> feet  = wardrobe::retargetFootPose(w.items[0].footPose, names);
+      frameOf(node, figureFrames);
+    }
+    for(int id : added)
+      if(const WornItem* i = item(id))
+        for(int r : i->rigs)
+          for(const auto& [bid, node] : loaded.rigs[size_t(r)].bones)
+            frameOf(node, made);
+    const std::vector<wardrobe::FootChannel> feet  = wardrobe::retargetFootPose(w.items[0].footPose, names, made, figureFrames);
     WornItem*                                owner = nullptr;
     size_t                                   most  = 0;
     if(!feet.empty())
