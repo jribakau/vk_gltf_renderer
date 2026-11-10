@@ -465,6 +465,11 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     return impl->onApp(std::move(f));
   });
   s.view->onHelperPick([impl](const glm::vec2& px) { return impl->helperAt(px); });
+  // a body is one item to the hover, with its hair and what it wears
+  s.view->onHoverWhole([impl](const std::string& prop) {
+    const auto p = impl->findProp(prop);
+    return p && (p->kind == PropKind::eCharacter || p->kind == PropKind::eCreature);
+  });
   s.view->onPull([impl](const std::string& phase, const glm::vec2& px) { return impl->pullAt(phase, px); });
   s.view->onSolo([impl](const std::vector<std::string>& ids) { impl->setSolo(ids); });
   s.view->onNodeState([impl](const std::string& prop, int node) {

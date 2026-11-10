@@ -138,6 +138,14 @@ public:
   };
   // sees every click pick first; true keeps the renderer from changing the selection
   virtual void setPickObserver(std::function<bool(const std::optional<InstancePick>& pick, const glm::vec3& hit)> observer) = 0;
+  // The hover: with it on, the item under a resting pointer is outlined. `hoverAt` says where the
+  // pointer rests (a normalized viewport position, origin top-left; none: not over the view, or busy);
+  // what is there goes to the observer a frame or two later, which answers with `hoverEntity`, the
+  // entity whose branch is outlined (none: nothing). No frame is traced for any of it.
+  virtual void setHover(bool /*on*/) {}
+  virtual void hoverAt(std::optional<glm::vec2> /*uv*/) {}
+  virtual void hoverEntity(rs::EntityId /*entity*/) {}
+  virtual void setHoverObserver(std::function<void(const std::optional<InstancePick>& pick)> /*observer*/) {}
   // The pixel readout: what is at a normalized viewport position (origin top-left) and how bright it
   // is, read a frame or two later and again while the still refines (a few times a second), so it
   // settles as the image does; none: stop reading. Every reading goes to the observer.

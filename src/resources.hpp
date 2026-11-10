@@ -491,22 +491,31 @@ struct Resources
   nvvk::Buffer          bSelectionBitMask;
   bool                  selectionDirty = true;
 
-  // Build CPU-side selection bitmask from selectedRenderNodes. Cleared and refilled each call.
-  void updateSelectionBitMask(int numRenderNodes)
+  // The hover (GltfRenderer::setHover): whether it is on, so the path tracer keeps the object IDs for
+  // it (SelectionWrite::read), the render nodes of the item under the pointer, and their bitmask
+  bool                    hoverOn = false;
+  std::unordered_set<int> hoveredRenderNodes;
+  std::vector<uint32_t>   hoverBitMask;
+  nvvk::Buffer            bHoverBitMask;
+
+  // A silhouette's bitmask from its render nodes, one bit each. Cleared and refilled each call.
+  static void fillBitMask(std::vector<uint32_t>& mask, const std::unordered_set<int>& renderNodes, int numRenderNodes)
   {
     const size_t numWords = numRenderNodes > 0 ? (static_cast<size_t>(numRenderNodes) + 31u) / 32u : 1u;
-    selectionBitMask.resize(numWords, 0u);
-    std::fill(selectionBitMask.begin(), selectionBitMask.end(), 0u);
-    for(int rnIdx : selectedRenderNodes)
+    mask.resize(numWords, 0u);
+    std::fill(mask.begin(), mask.end(), 0u);
+    for(int rnIdx : renderNodes)
     {
       if(rnIdx >= 0 && static_cast<size_t>(rnIdx) < numRenderNodes)
       {
         const size_t word = static_cast<size_t>(rnIdx) / 32u;
         const size_t bit  = static_cast<size_t>(rnIdx) % 32u;
-        selectionBitMask[word] |= (1u << bit);
+        mask[word] |= (1u << bit);
       }
     }
   }
+  // Build CPU-side selection bitmask from selectedRenderNodes.
+  void updateSelectionBitMask(int numRenderNodes) { fillBitMask(selectionBitMask, selectedRenderNodes, numRenderNodes); }
 
   nvvkgltf::GpuMemoryTracker appMemoryTracker;  // Application-level GPU memory tracking (frame targets, denoisers, etc.)
 

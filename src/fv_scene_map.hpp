@@ -41,6 +41,16 @@ struct PropAddress
   std::vector<rs::MaterialId> materials;  // "m:<i>" of its materials topic -> its record (none: nothing draws it)
 };
 
+// What a hover outlines for a pick at `node` of a prop (HostAddress): a prop that is one item (a
+// character or a creature, with its hair and what it wears) its root, any other prop the node hit, so
+// a set's road, lamp and window are each their own; the root too when the node has no entity.
+inline rs::EntityId hoverItem(const PropAddress& prop, int node, bool oneItem)
+{
+  if(oneItem || node < 0 || node >= int(prop.entityOf.size()) || prop.entityOf[size_t(node)].isNone())
+    return prop.root;
+  return prop.entityOf[size_t(node)];
+}
+
 // A pick or a selection, back in the host's terms
 struct HostAddress
 {

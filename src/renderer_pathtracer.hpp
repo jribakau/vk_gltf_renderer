@@ -317,6 +317,9 @@ public:
   std::vector<AdaptiveCount> m_adaptiveCounts;  // per frame in flight: what the slot holds
   uint64_t                   m_accumulationId{0};
   SelectionWrite m_selectionWrite;  // when a frame traces the selection image's object IDs
+  // Whether the selection image's object IDs are not the picture's (no frame since the view last
+  // changed traced them): nothing can be outlined from it
+  bool selectionImageStale() const { return m_selectionWrite.stale; }
   bool m_pipelineUseSER{false};     // SER value the currently-live pipelines were built with.
 
   // Variant pipeline cache: avoids slow pipeline (re)compilation by reusing previously built

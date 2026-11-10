@@ -410,6 +410,30 @@ What makes a picture read as footage is mostly the camera's defects, so a look c
   headless: the rows bow outward, the edges fringe red and blue, the black around them is noisy. Its
   cost is not measured.
 
+## The hover's outline
+
+With the hover on (`view.set`'s `hover`, `GltfRenderer::setHover`), what is under a resting pointer
+is outlined, beside the selection's outline and by the same silhouette pass, in a pale colour and
+under the selection's.
+
+- **What is under the pointer:** the app says where the pointer rests (the input event `hover`);
+  the renderer makes a ray pick there with the click's picker, when no click's pick is waiting or
+  in flight, and again when the camera has changed under a resting pointer. The pick goes to the
+  view host, which names the entity to outline (`fv::hoverItem`): a character or a creature whole,
+  with its hair and what it wears, any other prop by the node hit.
+- **No frame is traced for it.** The outline is drawn from the selection image's object IDs, which
+  a moving DLSS frame does not trace unless something is selected. The hover reads them only once
+  the view rests (`SelectionWrite::read`): the first resting frame traces them once, a moving frame
+  pays nothing, and while they are stale nothing is outlined. A change of what is outlined changes
+  the image without a frame drawn, so the presenter counts it (`GltfRenderer::shownVersion`).
+- **Not through a bent lens:** the object IDs are the rendered image's, so a frame the lens bends
+  draws no hover outline and makes no hover pick, and the hover does not straighten the picture as
+  the other overlays do.
+- **Checked:** `SelectionWrite.TheHoverReadsItOnceTheViewRests`,
+  `FvSceneMap.AHoverTakesACharacterWholeAndASetByItsNodes`. Seen through the host on a one-figure
+  scene: an outline round body, clothes and hair as one with the pointer on the figure, none with
+  it on the backdrop or gone, and the still's samples climbing through all of it.
+
 ## The camera's flash
 
 A lens can carry a flash (`FvView::Lens::flash`, the view in use's: the free view's or a camera

@@ -129,6 +129,95 @@ void GltfRenderer::pickAt(glm::vec2 uv, bool center)
   };
 }
 
+void GltfRenderer::setHover(bool on)
+{
+  if(on == m_hover.on)
+    return;
+  m_hover            = {.on = on, .version = m_hover.version + 1};
+  m_resources.hoverOn = on;
+  m_resources.hoveredRenderNodes.clear();
+  // a finished still traces no frame that could take the object IDs: begin again, once
+  if(on && m_pathTracer.selectionImageStale())
+    resetFrame();
+}
+
+void GltfRenderer::hoverAt(std::optional<glm::vec2> uv)
+{
+  if(!m_hover.on || uv == m_hover.uv)
+    return;
+  m_hover.uv  = uv;
+  m_hover.due = uv.has_value();
+  if(!uv)
+    hoverEntity({});
+}
+
+void GltfRenderer::hoverEntity(rs::EntityId entity)
+{
+  if(entity == m_hover.entity)
+    return;
+  m_hover.entity = entity;
+  refreshEntityHover();
+  m_hover.version++;
+}
+
+void GltfRenderer::refreshEntityHover()
+{
+  m_resources.hoveredRenderNodes.clear();
+  if(!m_resources.hostFed || !m_resources.retainedScene)
+    return;
+  rs::RetainedScene& store = *m_resources.retainedScene;
+  if(!m_hover.entity.isNone() && !store.entity(m_hover.entity))
+    m_hover.entity = {};  // gone with what it was in
+  if(m_hover.entity.isNone() || !m_resources.retainedGpu)
+    return;
+  const rs::Residency& residency = m_resources.retainedGpu->residency();
+  for(uint32_t slot = 0; slot < residency.instanceHighWater(); slot++)
+    if(const rs::Residency::Instance* inst = residency.instance(slot))
+      if(store.isWithin(inst->entity, m_hover.entity))
+        m_resources.hoveredRenderNodes.insert(int(slot));
+}
+
+bool GltfRenderer::hoverDraws() const
+{
+  return m_hover.on && !m_lens.bent() && !m_pathTracer.selectionImageStale();
+}
+
+bool GltfRenderer::hoverPickDue()
+{
+  if(!m_hover.on || !m_hover.uv || !m_cameraManip || !hasValidScene())
+    return false;
+  // the scene moved under the pointer (the wheel, a camera looked through, an animation's camera)
+  const glm::mat4 camera = m_cameraManip->getPerspectiveMatrix() * m_cameraManip->getViewMatrix();
+  if(camera != m_hover.pickedWith)
+    m_hover.due = true;
+  if(!m_hover.due || !hoverDraws())
+    return false;
+  m_hover.due        = false;
+  m_hover.pickedWith = camera;
+  m_pendingClickPick = PendingClickPick{
+      .modelViewInv   = glm::inverse(m_cameraManip->getViewMatrix()),
+      .perspectiveInv = glm::inverse(m_cameraManip->getPerspectiveMatrix()),
+      .isOrthographic = (m_cameraManip->getProjectionType() == nvutils::CameraManipulator::Orthographic) ? 1 : 0,
+      .pickPos        = *m_hover.uv,
+      .isDoubleClick  = false,
+      .hover          = true,
+  };
+  return true;
+}
+
+void GltfRenderer::applyHoverPickResult(const nvvk::RayPicker::PickResult& pickResult)
+{
+  if(!m_hover.on || !m_hover.uv)
+    return;  // the pointer left meanwhile
+  std::optional<InstancePick> pick;
+  if(pickResult.instanceID >= 0)
+    pick = instancePickAt(pickResult.instanceID, pickResult.primitiveID);
+  if(m_hoverObserver)
+    m_hoverObserver(pick);
+  else
+    hoverEntity(pick ? pick->entity : rs::EntityId{});
+}
+
 void GltfRenderer::inspectAt(std::optional<glm::vec2> uv)
 {
   m_inspect.uv  = uv;
@@ -411,6 +500,10 @@ void GltfRenderer::updateClickPickState()
     return;
 
   const bool isDoubleClick = m_pendingClickResult->isDoubleClick;
+  const bool hover         = m_pendingClickResult->hover;
   m_pendingClickResult.reset();
-  applyClickPickResult(m_rayPicker.getResult(), isDoubleClick);
+  if(hover)
+    applyHoverPickResult(m_rayPicker.getResult());
+  else
+    applyClickPickResult(m_rayPicker.getResult(), isDoubleClick);
 }

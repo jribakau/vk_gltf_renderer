@@ -116,6 +116,28 @@ TEST(FvSceneMap, EveryEntityAndPickMapsBackToItsPropNodeAndSurface)
     EXPECT_GE(map.pick(item.entity, item.material).surface, 0);
 }
 
+// What a hover outlines: a prop that is one item (a character with its clothes) whole, any other by
+// the node under the pointer
+TEST(FvSceneMap, AHoverTakesACharacterWholeAndASetByItsNodes)
+{
+  rs::RetainedScene scene;
+  fv::PropAddress   prop;
+  prop.root     = scene.createEntity("set", {1, 0});
+  const auto lamp = scene.createEntity("lamp", {1, 0}, prop.root);
+  const auto road = scene.createEntity("road", {1, 0}, prop.root);
+  prop.entityOf = {prop.root, lamp, road, rs::EntityId{}};
+  // a set: the node hit
+  EXPECT_EQ(fv::hoverItem(prop, 1, false), lamp);
+  EXPECT_EQ(fv::hoverItem(prop, 2, false), road);
+  // a character: its root, whatever was hit (the body, the hair, a dress)
+  EXPECT_EQ(fv::hoverItem(prop, 1, true), prop.root);
+  EXPECT_EQ(fv::hoverItem(prop, 2, true), prop.root);
+  // the prop itself, a node that is not in the scene, or one the prop does not have: the root
+  EXPECT_EQ(fv::hoverItem(prop, -1, false), prop.root);
+  EXPECT_EQ(fv::hoverItem(prop, 3, false), prop.root);
+  EXPECT_EQ(fv::hoverItem(prop, 9, false), prop.root);
+}
+
 TEST(FvSceneMap, AnotherPropsMaterialOrAHandleThatWentMapsToNothing)
 {
   rs::RetainedScene scene;

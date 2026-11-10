@@ -91,7 +91,7 @@ src/
 ├── renderer_pathtracer.cpp/hpp # Monte Carlo path tracer (Vulkan ray tracing + ray query)
 ├── renderer_pathtracer_shaders.cpp # Its shaders and pipelines: compiling, the SPIR-V cache, the variants
 ├── sample_schedule.hpp         # Samples per frame: ending on stops (cap, --outputSamples), the Auto SPP controller
-├── renderer_silhouette.cpp/hpp # Selection highlight (compute shader)
+├── renderer_silhouette.cpp/hpp # Selection and hover outlines (compute shader)
 ├── env_image_loader.cpp/hpp    # Decodes .hdr / .exr lat-longs to float RGBA for HdrIbl
 ├── env_baker.cpp/hpp           # Bakes an analytic sky into the lat-long image + importance buffer
 │                               #   that HdrIbl consumes (preview vs. commit)
@@ -190,7 +190,7 @@ src/
 
 shaders/
 ├── gltf_pathtrace.slang        # Path tracer (compute + ray generation)
-├── silhouette.comp.slang       # Selection edge detection
+├── silhouette.comp.slang       # Edge detection for the selection's and the hover's outlines
 ├── skinning.comp.slang         # GPU skinning
 ├── morph.comp.slang            # GPU morph-target blending
 ├── animation_io.h.slang        # Skinning/morph shader I/O

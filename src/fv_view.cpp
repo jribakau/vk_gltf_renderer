@@ -114,6 +114,17 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
     m_renderer->selectEntity(p.root);
     return true;
   });
+  // what is under the resting pointer, as the hover outlines it: a character whole, a set by its nodes
+  m_renderer->setHoverObserver([this](const std::optional<HostRenderer::InstancePick>& pick) {
+    const fv::HostAddress at = pick ? m_map.pick(pick->entity, pick->material) : fv::HostAddress{};
+    if(at.prop < 0 || at.prop >= int(m_props.size()))
+    {
+      m_renderer->hoverEntity({});
+      return;
+    }
+    const PropNodes& p = m_props[size_t(at.prop)];
+    m_renderer->hoverEntity(fv::hoverItem(p, at.node, m_hoverWhole && m_hoverWhole(p.id)));
+  });
   m_renderer->setInspectObserver([this](const HostRenderer::PixelReadout& readout) { publishInspect(readout); });
   m_renderer->setPixelTimeObserver([this](const HostRenderer::PixelTimes& times) { publishPixelTimes(times); });
   // The pixel readout: what is at a pixel of the view (x, y and the frame's w, h, as the input events
@@ -355,6 +366,11 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
         m_select = args["select"].get<bool>();
       if(args.contains("helpers"))
         m_helpers = args["helpers"].get<bool>();
+      if(args.contains("hover"))
+      {
+        m_hover = args["hover"].get<bool>();
+        m_renderer->setHover(m_hover);
+      }
       if(args.contains("frameAspect"))
       {
         const double aspect = args["frameAspect"].is_null() ? 0.0 : args["frameAspect"].get<double>();
@@ -477,6 +493,19 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
   for(const fv::Json& e : events)
   {
     const std::string type = e.value("t", "");
+    // where the pointer rests with no button down, or that it left the view: the hover's alone
+    if(type == "hover")
+    {
+      const VkExtent2D size = m_renderer->renderSize();
+      if(m_hover && e.contains("x") && e.contains("y") && size.width && size.height)
+        m_renderer->hoverAt(glm::vec2(float(e["x"].get<double>() / size.width), float(e["y"].get<double>() / size.height)));
+      else
+        m_renderer->hoverAt(std::nullopt);
+      continue;
+    }
+    // a button down, a drag or the pointer gone: nothing is hovered until it rests again
+    if(m_hover && (type == "down" || type == "move" || type == "leave"))
+      m_renderer->hoverAt(std::nullopt);
     const double      x = e.value("x", m_x0), y = e.value("y", m_y0);
     const bool        left     = e.value("b", 0) == 0;
     const bool        pressed  = type == "down" && left;

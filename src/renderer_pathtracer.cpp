@@ -1615,7 +1615,8 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags = (resources.frameCount == 0 ? shaderio::ePtFirstFrame : 0);
   // The selection image only when something reads it on a DLSS frame (SelectionWrite): the selection ray
   // per pixel no one read was 8% of the moving trace (30.2 -> 27.9 ms, the harness figure at Optimal input)
-  const bool selectionRead = !resources.selectedRenderNodes.empty();
+  // (the hover's outline reads it too, once the view rests: SelectionWrite::read)
+  const bool selectionRead = SelectionWrite::read(!resources.selectedRenderNodes.empty(), resources.hoverOn, resources.frameCount == 0, useDlss);
   m_pushConst.flags |= m_selectionWrite.due(resources.frameCount == 0, useDlss, selectionRead) ? shaderio::ePtWriteSelection : 0;
 #if defined(USE_DLSSNR)
   // The per-material NR mask only while DLSS-NR runs: nothing else reads it

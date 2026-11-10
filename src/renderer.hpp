@@ -372,6 +372,9 @@ public:
   // Frames that ran a renderer so far (Resources::drawnFrameCount): a count that stands still is a
   // view with nothing to draw, which the frame stream slows the loop for.
   uint64_t drawnFrameCount() const { return m_resources.drawnFrameCount; }
+  // That count and the changes of what the hover outlines: what the presenter shows anew, since an
+  // outline changes the image without a frame drawn.
+  uint64_t shownVersion() const { return m_resources.drawnFrameCount + m_hover.version; }
   // The frame's profile as a JSON object for the viewport's stats (the frame stream's /stats):
   // `sections`, the profiler's frame sections in the order they ran (name, nesting level, CPU and
   // GPU ms averaged over its recent frames), and the device-local memory in use and its budget, in
@@ -441,6 +444,10 @@ public:
   /// without ImGui. `center` recenters the camera on the hit instead of selecting. The result is
   /// applied a frame or two later, once the pick's frame has finished (see m_pendingClickPick).
   void pickAt(glm::vec2 uv, bool center) override;
+  void setHover(bool on) override;
+  void hoverAt(std::optional<glm::vec2> uv) override;
+  void hoverEntity(rs::EntityId entity) override;
+  void setHoverObserver(std::function<void(const std::optional<InstancePick>& pick)> observer) override { m_hoverObserver = std::move(observer); }
   void inspectAt(std::optional<glm::vec2> uv) override;
   void setInspectObserver(std::function<void(const PixelReadout& readout)> observer) override { m_inspectObserver = std::move(observer); }
   /// Shaded, clay, normals and the other debug views (shaderio::Visualization).
@@ -575,6 +582,19 @@ private:
   // Applies a completed ray-pick result: selection, and on a double click, camera recenter. One to
   // two frames after the click itself (see m_pendingClickPick's comment for why).
   void applyClickPickResult(const nvvk::RayPicker::PickResult& pickResult, bool isDoubleClick);
+  // A hover's pick: what is under the pointer goes to the observer, which names the entity to outline
+  void applyHoverPickResult(const nvvk::RayPicker::PickResult& pickResult);
+  // The hovered entity's render nodes, as they are now (refreshEntitySelection's twin)
+  void refreshEntityHover();
+  // Whether a hover's pick is to be made this frame, and that pick: the pointer rests somewhere it
+  // has not been picked at with this camera, and its outline could be drawn
+  bool hoverPickDue();
+  // Whether the hover's outline can be drawn on this frame: on, not through a bent lens (the outline
+  // would sit beside the item), and the object IDs are the picture's
+  bool hoverDraws() const;
+  // One silhouette: `renderNodes` outlined in `color` from the object IDs, through `mask` and `buffer`
+  void cmdOutline(VkCommandBuffer cmd, const std::unordered_set<int>& renderNodes, std::vector<uint32_t>& mask,
+                  nvvk::Buffer& buffer, const glm::vec3& color);
   // The mesh and material of a TLAS instance slot hit at `primitiveID` (a merged group's own material)
   std::optional<InstancePick> instancePickAt(int instanceID, int primitiveID);
   // The pixel readout (inspectAt): record a reading at the frame's end when one is due, and hand the
@@ -743,6 +763,19 @@ private:
   GizmoHooks m_gizmoHooks;
   glm::vec2  m_gizmoInputLast{0.f};
   std::function<bool(const std::optional<InstancePick>&, const glm::vec3& hit)> m_pickObserver;
+  // The hover (setHover): where the pointer rests, whether a pick there is due, the camera the last
+  // pick was made with (a wheel moves the scene under a resting pointer), the entity outlined, and a
+  // count of its changes for the presenter
+  struct Hover
+  {
+    bool                     on  = false;
+    std::optional<glm::vec2> uv;
+    bool                     due = false;
+    glm::mat4                pickedWith{0.f};
+    rs::EntityId             entity;
+    uint64_t                 version = 0;
+  } m_hover;
+  std::function<void(const std::optional<InstancePick>&)> m_hoverObserver;
   // a stream host's scene: the entity selected and the one the gizmo is on, and the clip playing
   rs::EntityId   m_selectedEntity;
   rs::EntityId   m_gizmoEntity;
@@ -765,12 +798,14 @@ private:
     int       isOrthographic;
     glm::vec2 pickPos;
     bool      isDoubleClick;
+    bool      hover = false;  // the hover's pick, not a click's: it selects nothing (applyHoverPickResult)
   };
   std::optional<PendingClickPick> m_pendingClickPick;
   struct PendingClickResult
   {
     nvvk::SemaphoreState semaphoreState;
     bool                 isDoubleClick;
+    bool                 hover = false;
   };
   std::optional<PendingClickResult> m_pendingClickResult;
   // The pixel readout: where (none: off), whether a reading is due (a new place), when the last was

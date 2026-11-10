@@ -12,6 +12,15 @@ struct SelectionWrite
 {
   bool stale = true;  // the image holds no current object IDs
 
+  // Whether a frame has a reader of the image: a selection's silhouette on any frame, and the hover's
+  // outline (GltfRenderer::setHover) on any but a moving DLSS frame. A pointer rests while it hovers,
+  // so the hover takes the IDs once the view rests (due()'s one write for a late reader) and a moving
+  // frame doesn't pay the selection ray for it.
+  static bool read(bool selected, bool hover, bool firstFrame, bool dlssFrame)
+  {
+    return selected || (hover && !(firstFrame && dlssFrame));
+  }
+
   bool due(bool firstFrame, bool dlssFrame, bool read)
   {
     const bool write = firstFrame ? (!dlssFrame || read) : (read && stale);

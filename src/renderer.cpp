@@ -93,6 +93,8 @@ extern nvutils::ProfilerManager g_profilerManager;  // #PROFILER
 namespace {
 // Background clear color used when no scene is loaded or to show DLSS render resolution borders
 constexpr VkClearColorValue kBackgroundClearColor = {{0.17f, 0.21f, 0.25f, 1.f}};
+// The hover's outline (setHover), a display colour: pale, so the selection's own colour stays the selection's
+constexpr glm::vec3 kHoverColor{0.92f, 0.95f, 1.0f};
 
 
 }  // namespace
@@ -1246,6 +1248,12 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   // Async click ray-pick: record the pick dispatch on this frame's own command buffer - the TLAS is
   // already proven valid here (the path tracer just used it above) - then hand off a
   // frame-semaphore to poll instead of blocking. See m_pendingClickPick's comment (renderer.hpp).
+  // The hover's pick goes the same way, when no click's is waiting or in flight. A click made while
+  // a hover's is in flight takes the picker's one result: that hover is picked again.
+  if(m_pendingClickPick && m_pendingClickResult && m_pendingClickResult->hover)
+    m_hover.due = true;
+  if(!m_pendingClickPick && !m_pendingClickResult)
+    hoverPickDue();
   if(m_pendingClickPick)
   {
     m_rayPicker.run(cmd, {.modelViewInv   = m_pendingClickPick->modelViewInv,
@@ -1255,7 +1263,8 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
                           .tlas           = m_resources.gpuView().tlas()});
     m_pendingClickResult =
         PendingClickResult{.semaphoreState = nvvk::SemaphoreState::makeFixed(m_app->getFrameSignalSemaphore()),
-                           .isDoubleClick  = m_pendingClickPick->isDoubleClick};
+                           .isDoubleClick  = m_pendingClickPick->isDoubleClick,
+                           .hover          = m_pendingClickPick->hover};
     m_pendingClickPick.reset();
   }
   // The pixel readout reads the frame's image as drawn, after every pass that writes it
@@ -1465,55 +1474,67 @@ bool GltfRenderer::overlaysShown() const
 // applies a Sobel edge filter where the bit is set, then composites the outline onto the image.
 void GltfRenderer::silhouette(VkCommandBuffer cmd)
 {
-  // Run the silhouette pass only when something is selected (one primitive or a node and its branch).
-  // We rebuild the CPU bitmask from selectedRenderNodes, upload it, then dispatch the silhouette compute.
+  // The hover's outline first, pale, so the selection's lies over it where they are the same item;
+  // only from object IDs that are the picture's (hoverDraws)
+  const bool hover = hoverDraws() && !m_resources.hoveredRenderNodes.empty();
+  // Run the silhouette pass only when something is selected (one primitive or a node and its branch)
+  // or hovered.
+  if(m_resources.selectedRenderNodes.empty() && !hover)
+    return;
+  NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
+  auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
+  if(hover)
+    cmdOutline(cmd, m_resources.hoveredRenderNodes, m_resources.hoverBitMask, m_resources.bHoverBitMask, kHoverColor);
   if(!m_resources.selectedRenderNodes.empty())
+    cmdOutline(cmd, m_resources.selectedRenderNodes, m_resources.selectionBitMask, m_resources.bSelectionBitMask,
+               m_resources.settings.silhouetteColor);
+}
+
+// One silhouette: the CPU bitmask rebuilt from `renderNodes` and uploaded, then the silhouette compute
+// in `color`.
+void GltfRenderer::cmdOutline(VkCommandBuffer cmd, const std::unordered_set<int>& renderNodes, std::vector<uint32_t>& mask,
+                              nvvk::Buffer& buffer, const glm::vec3& color)
+{
+  // Rebuild the bitmask and ensure its GPU buffer exists and is up to date.
+  int numRenderNodes = static_cast<int>(m_resources.gpuView().renderNodeCapacity());
+  Resources::fillBitMask(mask, renderNodes, numRenderNodes);
+  const VkDeviceSize bitmaskBytes = mask.size() * sizeof(uint32_t);
+  if(bitmaskBytes > 0)
   {
-    NVVK_DBG_SCOPE(cmd);  // <-- Helps to debug in NSight
-    auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, __FUNCTION__);
-
-    // Rebuild selection bitmask and ensure GPU buffer exists and is up to date.
-    int numRenderNodes = static_cast<int>(m_resources.gpuView().renderNodeCapacity());
-    m_resources.updateSelectionBitMask(numRenderNodes);
-    const VkDeviceSize bitmaskBytes = m_resources.selectionBitMask.size() * sizeof(uint32_t);
-    if(bitmaskBytes > 0)
+    // Build or update the bitmask buffer, a power of two of the bytes it needs (render node capacity
+    // grows in powers of two); a smaller one goes once no frame in flight reads it
+    if(buffer.buffer == VK_NULL_HANDLE || buffer.bufferSize < bitmaskBytes)
     {
-      // Build or update the selection bitmask buffer, a power of two of the bytes it needs (render
-      // node capacity grows in powers of two); a smaller one goes once no frame in flight reads it
-      if(m_resources.bSelectionBitMask.buffer == VK_NULL_HANDLE || m_resources.bSelectionBitMask.bufferSize < bitmaskBytes)
-      {
-        if(m_resources.bSelectionBitMask.buffer != VK_NULL_HANDLE)
-          m_app->submitResourceFree([alloc = &m_resources.allocator, buffer = m_resources.bSelectionBitMask]() mutable {
-            alloc->destroyBuffer(buffer);
-          });
-        m_resources.bSelectionBitMask = {};
-        NVVK_CHECK(m_resources.allocator.createBuffer(m_resources.bSelectionBitMask, std::bit_ceil(bitmaskBytes),
-                                                      VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
-                                                          | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
-                                                      VMA_MEMORY_USAGE_CPU_TO_GPU));
-        NVVK_DBG_NAME(m_resources.bSelectionBitMask.buffer);
-      }
-
-      // In case the bitmask is too large (> 524,288 render nodes), we need to update it in chunks
-      constexpr VkDeviceSize kMaxCmdUpdateSize = 65536;
-      for(VkDeviceSize offset = 0; offset < bitmaskBytes; offset += kMaxCmdUpdateSize)
-      {
-        const VkDeviceSize chunkSize = std::min(kMaxCmdUpdateSize, bitmaskBytes - offset);
-        vkCmdUpdateBuffer(cmd, m_resources.bSelectionBitMask.buffer, offset, chunkSize,
-                          reinterpret_cast<const uint8_t*>(m_resources.selectionBitMask.data()) + offset);
-      }
-      nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+      if(buffer.buffer != VK_NULL_HANDLE)
+        m_app->submitResourceFree([alloc = &m_resources.allocator, old = buffer]() mutable { alloc->destroyBuffer(old); });
+      buffer = {};
+      NVVK_CHECK(m_resources.allocator.createBuffer(buffer, std::bit_ceil(bitmaskBytes),
+                                                    VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
+                                                        | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
+                                                    VMA_MEMORY_USAGE_CPU_TO_GPU));
+      NVVK_DBG_NAME(buffer.buffer);
     }
 
-    std::vector<VkDescriptorImageInfo> imageInfos = {
-        m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgSelection),
-        m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgTonemapped),
-    };
-    VkDescriptorBufferInfo bitmaskBufferInfo = {m_resources.bSelectionBitMask.buffer, 0, bitmaskBytes};
-    m_silhouette.dispatch(cmd, m_resources.gBuffers.getSize(), imageInfos, bitmaskBufferInfo,
-                          static_cast<uint32_t>(m_resources.selectionBitMask.size()));
-    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+    // In case the bitmask is too large (> 524,288 render nodes), we need to update it in chunks
+    constexpr VkDeviceSize kMaxCmdUpdateSize = 65536;
+    for(VkDeviceSize offset = 0; offset < bitmaskBytes; offset += kMaxCmdUpdateSize)
+    {
+      const VkDeviceSize chunkSize = std::min(kMaxCmdUpdateSize, bitmaskBytes - offset);
+      vkCmdUpdateBuffer(cmd, buffer.buffer, offset, chunkSize, reinterpret_cast<const uint8_t*>(mask.data()) + offset);
+    }
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
   }
+
+  std::vector<VkDescriptorImageInfo> imageInfos = {
+      m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgSelection),
+      m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgTonemapped),
+  };
+  VkDescriptorBufferInfo bitmaskBufferInfo = {buffer.buffer, 0, bitmaskBytes};
+  m_silhouette.setColor(color);
+  m_silhouette.dispatch(cmd, m_resources.gBuffers.getSize(), imageInfos, bitmaskBufferInfo, static_cast<uint32_t>(mask.size()));
+  // the next outline's compute, the overlays' fragment shaders
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1841,6 +1862,8 @@ void GltfRenderer::destroyResources()
   m_resources.allocator.destroyBuffer(m_resources.bFrameInfo);
   if(m_resources.bSelectionBitMask.buffer != VK_NULL_HANDLE)
     m_resources.allocator.destroyBuffer(m_resources.bSelectionBitMask);
+  if(m_resources.bHoverBitMask.buffer != VK_NULL_HANDLE)
+    m_resources.allocator.destroyBuffer(m_resources.bHoverBitMask);
 
   vkDestroyDescriptorSetLayout(m_device, m_resources.descriptorSetLayout[0], nullptr);
   vkDestroyDescriptorSetLayout(m_device, m_resources.descriptorSetLayout[1], nullptr);

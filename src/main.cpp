@@ -650,7 +650,8 @@ auto main(int argc, char** argv) -> int
       auto present   = std::make_shared<FramePresent>(FramePresentCreateInfo{
           .image       = [r] { return r->presentImage(); },
           .imageSize   = [r] { return r->renderSize(); },
-          .drawn       = [r] { return r->drawnFrameCount(); },
+          // with the hover's outline, which changes the image without a frame drawn
+          .drawn       = [r] { return r->shownVersion(); },
           .refining    = [r] { return r->isRefiningStill(); },
           .takeInput   = [streamRef]() -> int64_t {
             auto fs = streamRef->lock();

@@ -221,6 +221,10 @@ void GltfRenderer::cleanupScene(bool keepImagesForReuse)
   // be consumed by the newly loaded scene once its semaphore settles, applying a pick result to the wrong node indices.
   m_pendingClickPick.reset();
   m_pendingClickResult.reset();
+  // what was hovered went with it; the pointer's place is picked again
+  m_resources.hoveredRenderNodes.clear();
+  m_hover.entity = {};
+  m_hover.due    = m_hover.uv.has_value();
   // a reading in flight was of the outgoing scene; the readout reads the new one at its place
   m_inspect.inFlight.reset();
   m_inspect.due = m_inspect.uv.has_value();
@@ -345,6 +349,7 @@ void GltfRenderer::replaceHostScene()
   if(const nvutils::Bbox bounds = m_resources.gpuView().bounds(); !bounds.isEmpty())
     m_resources.settings.infinitePlaneDistance = bounds.min().y;
   refreshEntitySelection();
+  refreshEntityHover();
   resetFrame();
 }
 
@@ -645,9 +650,12 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
 // What a retained sync's result asks of the renderers; true when the frame changed
 bool GltfRenderer::afterRetainedSync(const rs::SyncResult& result)
 {
-  // instances came or went: the selection's outline follows
+  // instances came or went: the selection's outline follows, and the hover's
   if(result.drawListChanged)
+  {
     refreshEntitySelection();
+    refreshEntityHover();
+  }
   if(result.dlssReset)
     m_pathTracer.notifyDlssContentReset(m_resources);
   m_texturesMoved = m_texturesMoved || result.imagesMoved;

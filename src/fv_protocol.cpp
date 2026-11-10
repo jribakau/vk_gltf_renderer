@@ -104,7 +104,9 @@ namespace {
 // shadows). An older renderer refuses the lighting for a look that has them.
 // 58: the lens's flash: camera.set's and a camera prop's `flash`, a light on the camera (0 none, else
 // its strength as a spot light prop's), in the camera topic's and a camera prop's lens.
-constexpr int kProtocolVersion = 58;
+// 59: the hover: view.set's `hover` and the input event {t: "hover", x, y} (without x and y, the
+// pointer left): what is under a resting pointer is outlined, a character whole, a set by its nodes.
+constexpr int kProtocolVersion = 59;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

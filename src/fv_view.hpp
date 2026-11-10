@@ -31,7 +31,7 @@
 //   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation, flash}   the lens of the view in use
 //   camera.get    {}                         -> {position, target, up, focalLength}
 //   camera.goto   {position, target, up?, focalLength?}
-//   view.set      {display, grid, gizmo, pick, select, transform, space, snap, helpers, frameAspect, solo}  display: shaded, clay, wireframe, normals;
+//   view.set      {display, grid, gizmo, pick, select, transform, space, snap, helpers, hover, frameAspect, solo}  display: shaded, clay, wireframe, normals;
 //                                               pick: "object" (the default: a click selects the prop),
 //                                               "mesh" (the node hit), "bone" (the posed bone nearest) or
 //                                               "pull" (a drag on a figure in Physics mode pulls it, the
@@ -45,6 +45,12 @@
 //                                               snap: {move (m), rotate (degrees), scale}, a drag going in
 //                                               whole steps from where it started, or null for none;
 //                                               helpers: whether camera and light markers show;
+//                                               hover: whether what is under a resting pointer is
+//                                               outlined (off by default; protocol 59): a character or
+//                                               a creature whole, with its hair and what it wears, any
+//                                               other prop by the node hit (fv::hoverItem). The app says
+//                                               where the pointer rests with the input event
+//                                               {t: "hover", x, y}, and without x and y that it left;
 //                                               frameAspect: a frame's width over height the view is
 //                                               widened to hold, with a margin (0: none; fovForFrame);
 //                                               solo (Isolate): a prop or a list of them that alone show,
@@ -155,6 +161,8 @@ public:
   // The frame the view is composed for (view.set's frameAspect), 0 for none: camera markers take its shape.
   double frameAspect() const { return m_frameAspect; }
   void onHelperPick(std::function<std::string(const glm::vec2& px)> f) { m_helperPick = std::move(f); }
+  // Whether a prop is one item to the hover (a character or a creature), asked at each hover's pick
+  void onHoverWhole(std::function<bool(const std::string& prop)> f) { m_hoverWhole = std::move(f); }
   // The Pull tool's drag, in render pixels: "down" (true when it took hold of a figure: the drag is
   // then its, not the camera's), "move", "up".
   void onPull(std::function<bool(const std::string& phase, const glm::vec2& px)> f) { m_pull = std::move(f); }
@@ -227,6 +235,8 @@ private:
   bool                                          m_select    = true;  // a click picks (view.set select)
   std::string                                   m_transform = "move";
   bool                                          m_helpers   = true;
+  bool                                          m_hover     = false;  // what is under a resting pointer is outlined (view.set hover)
+  std::function<bool(const std::string&)>       m_hoverWhole;
   double                                        m_frameAspect = 0;
   std::function<std::string(const glm::vec2&)>  m_helperPick;
   std::function<bool(const std::string&, const glm::vec2&)> m_pull;
