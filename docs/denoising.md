@@ -361,6 +361,17 @@ gives the same at opacity 1 and 0).
 `dlssTraceSkipThinGlass` calls `alphaHashU` directly, so the clear-glass guides commit the cells
 the color keeps rather than cutting at half opacity.
 
+**Films.** The grid is a fraction of the triangle, sized for a hair card. A window painted as a
+half-open cutout is two triangles, so its cells came out centimetres wide: blocks of the pane's own
+face beside blocks of the room behind. Such a surface is a film (`GltfShadeMaterial::opacityFilm`,
+from `mat::Material::film`). While DLSS denoises, every traversal keeps a film's partly open texel
+(`opacityFilmKept`), so the film is the first hit, and the surface the guides describe, on every
+frame. The path then goes on through it by its open share, drawn from the path seed
+(`pathTraceOneBounce`): a null event, which spends the glass's budget. Stills are untouched: their
+any-hit draw already averages to the opacity. The guides are the film's own, so what shows through it
+is accumulated with the film's motion; a film open enough to deserve the surface behind as its guides
+(as clear glass gets) is not told apart.
+
 **Color-before-transparency guide.** NGX also accepts `pInColorBeforeTransparency` (a noisy color
 snapshot before transparencies are composited), meant for raster pipelines with ghosting
 particles. We prototyped it here by retracing pixels whose primary hit was transparent, with those

@@ -1137,6 +1137,31 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif  // USE_GUIDE_SHADER
     }
 
+#if USE_DLSS_SHADER && GLTF_USE_TRANSMISSION
+    // A film's cover (opacityFilmKept): the traversal kept this hit whatever its opacity, and the
+    // path goes on through it here by its open share, as a still's any-hit lets a sample through.
+    // After the guides: the camera's film is the first hit on every frame, whichever way this one's
+    // path went. The crossing is no event: nothing is lit or scattered here, and the light the ray
+    // reaches beyond is weighed against the vertex before (a film passes that vertex's shadow ray by
+    // the same share, shadowCrossSurface). It spends the glass's budget, as a pane does, then bounces.
+    if(materialIndex >= 0 && materials[materialIndex].opacityFilm != 0 && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+    {
+      const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
+      const float  cover = getOpacity(renderNode, renderPrim, payload.primitiveID, barys, float3(0.0F));  // a film is no weave: no direction
+      if(cover < 1.0F && rand(seed) >= cover)
+      {
+        pt.cone.width = worldFoot;
+        pt.nullDistance += payload.hitT;
+        ray.Origin = safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance);  // getHitState turned geonrm to the ray
+        if(pt.glassBounces < pushConst.glassBudget)
+          pt.glassBounces++;
+        else
+          pt.surfaceDepth++;
+        return PathStepResult.eEarlyContinue;
+      }
+    }
+#endif
+
     // The material's own roughness, before the regularisation below, read as the shadow rays read it
     // (crossingRoughnessMetallic): whether a refraction through it is a clear crossing
     // (CLEAR_CROSSING_ROUGHNESS) is decided by it, texel by texel as they decide. 1: no refracting mesh.
@@ -3087,7 +3112,7 @@ void rahitMain(inout HitPayload payload, in BuiltInTriangleIntersectionAttribute
   GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
 
   float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics, ObjectRayDirection());
-  if(stochasticOpacityU(instanceID, triangleID, barycentrics, payload.seed) >= opacity)
+  if(stochasticOpacityU(instanceID, triangleID, barycentrics, payload.seed) >= opacity && !opacityFilmKept(renderNode, opacity))
   {
     IgnoreHit();
   }

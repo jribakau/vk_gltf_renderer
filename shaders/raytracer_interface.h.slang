@@ -177,7 +177,7 @@ struct RayQueryRaytracer : IRaytracer
       float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics, rayQuery.CandidateObjectRayDirection());
 
       // do alpha blending the stochastically way
-      if(stochasticOpacityU(uint(instanceID), uint(triangleID), barycentrics, seed) < opacity)
+      if(stochasticOpacityU(uint(instanceID), uint(triangleID), barycentrics, seed) < opacity || opacityFilmKept(renderNode, opacity))
         rayQuery.CommitNonOpaqueTriangleHit();
     }
 

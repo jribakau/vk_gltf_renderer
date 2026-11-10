@@ -337,6 +337,24 @@ float stochasticOpacityU(uint renderNodeID, uint triangleID, float3 barycentrics
   return min(rand(seed), ALPHA_U_MAX);
 }
 
+// A film's hit (GltfShadeMaterial::opacityFilm: glass painted as a half-open cutout), which a
+// traversal keeps whatever the cell says while DLSS denoises the frame. The cells are a fraction of
+// the triangle, and a window's pane is two triangles: each cell came out centimetres wide, half of
+// them the pane's dark face and half the room behind (XI Street of Santorini's shop glass, a flat
+// 0.48). Kept, the pane is the surface DLSS's guides describe, the same every frame, and the path
+// goes on through it by its open share, drawn afresh each frame (pathTraceOneBounce): the two
+// average as the still's samples do. A texel fully open or closed is no film's: the test above
+// decides those alike on every frame. With the glass's budget, which the crossings spend.
+bool opacityFilmKept(GltfRenderNode renderNode, float opacity)
+{
+#if USE_DLSS_SHADER && GLTF_USE_TRANSMISSION
+  return opacity > 0.0F && opacity < 1.0F && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss)
+         && pushConst.gltfScene->materials[max(0, renderNode.materialID)].opacityFilm != 0;
+#else
+  return false;
+#endif
+}
+
 //-----------------------------------------------------------------------
 // Shadow transmission
 //-----------------------------------------------------------------------
@@ -2372,7 +2390,7 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float
         }
       }
     }
-    else if(u < opacity)
+    else if(u < opacity || opacityFilmKept(node, opacity))  // a film is the surface, as the path has it
     {
       rayQuery.CommitNonOpaqueTriangleHit();
       committedT = candidateT;

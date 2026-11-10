@@ -44,6 +44,11 @@ enum class Context
 // punctuation ("EyeMoisture_L", "3_Fingernail"), and a figure's lowercase compounds are listed.
 Kind classify(const std::string& name, Context context = Context::eBody);
 
+// Whether a surface's name says it is glass ("SOS_Shop_Glass", "Window_01", "Lens_L"), by whole words
+// as classify reads them. A "Window Frame" or a "Window Curtain" is not: a window only where the name
+// ends with it.
+bool saysGlass(const std::string& name);
+
 // A colour with an optional map that multiplies it.
 struct ColorMap
 {

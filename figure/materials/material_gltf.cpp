@@ -453,6 +453,11 @@ Material fromGltf(const tinygltf::Material& g)
       m.woven = it->second.Get<bool>();
       extras.erase(it);
     }
+    if(const auto it = extras.find("fvFilm"); it != extras.end() && it->second.IsBool())
+    {
+      m.film = it->second.Get<bool>();
+      extras.erase(it);
+    }
     if(!extras.empty())
       m.foreignExtras = tinygltf::Value(std::move(extras));
   }
@@ -691,6 +696,8 @@ Json materialJson(const Material& m, const char* key)
     extras["fvWalkThrough"] = true;
   if(m.woven)
     extras["fvWoven"] = true;
+  if(m.film)
+    extras["fvFilm"] = true;
   if(!extras.empty())
     out["extras"] = extras;
   else if(m.foreignExtras.Type() != tinygltf::NULL_TYPE && !m.foreignExtras.IsObject())

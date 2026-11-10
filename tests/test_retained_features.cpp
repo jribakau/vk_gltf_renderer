@@ -697,3 +697,14 @@ TEST(RetainedFeatures, OnlyAClearSolidKeepsTheMediumAround)
   EXPECT_FALSE(material(1.0, true, true).has(SceneFeatureSet::eNestedMedia)) << "skin, a fog: a walk";
   EXPECT_FALSE(material(1.0, false, false).has(SceneFeatureSet::eNestedMedia)) << "nothing gets in";
 }
+
+// A film's crossings spend the glass's budget, which the kernel carries with transmission: a scene
+// whose only see-through surface is a film still compiles it in.
+TEST(RetainedFeatures, AFilmBringsTheGlassBudget)
+{
+  tinygltf::Material plain;
+  EXPECT_FALSE(nvvkgltf::detectMaterialFeatures(plain).has(SceneFeatureSet::eTransmission));
+  tinygltf::Material film;
+  film.extras = object({{"fvFilm", tinygltf::Value(true)}});
+  EXPECT_TRUE(nvvkgltf::detectMaterialFeatures(film).has(SceneFeatureSet::eTransmission));
+}

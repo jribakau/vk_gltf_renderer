@@ -162,7 +162,8 @@ SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& m, bool water)
 {
   SceneFeatureSet set{};
 
-  if(m.transmission)
+  // a film's crossings go on the glass's budget, which the kernel has with transmission
+  if(m.transmission || m.film)
     set.enable(SceneFeatureSet::eTransmission);
   if(m.volume)
     set.enable(SceneFeatureSet::eVolume);

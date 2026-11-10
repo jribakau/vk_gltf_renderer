@@ -774,6 +774,11 @@ in glTF as the `fvWoven` extra): `getOpacity` takes the ray's direction and
 threads as the surface turns away from it, so sheer cloth darkens towards its outline. Camera rays,
 shadow rays and light samples all see the same opacity; holes and solid cloth do not change.
 
+Glass that does not refract is the exception: a set's window painted as a half-open cutout is a film
+(`mat::Material::film`, the `fvFilm` extra), told by its name (`mat::saysGlass`). It is as open at a
+slant as head-on, and the moving view draws its cover at the surface instead of by the triangle's
+cells ([denoising.md](denoising.md#stochastic-alpha)).
+
 ### A wear that doesn't fit GPU memory
 
 `GltfRenderer::geometryShortfall` weighs what a wear would add. Falling short is not the end while

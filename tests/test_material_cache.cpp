@@ -170,6 +170,7 @@ TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
   m.scatterDistance      = Rgb{0.003f, 0.002f, 0.001f};
   m.chamberIor           = 1.336f;
   m.pane                 = true;
+  m.film                 = true;
   m.detail               = Detail{.weight = 0.5f, .roughness = 0.6f, .normalMap = slot(25), .weightMap = slot(26), .roughnessMap = slot(27)};
   m.detail->normalMap.scale = 0.2f;
   m.hair                 = Hair{.longitudinal = 0.3f, .azimuthal = 0.4f, .rootAbsorption = {0.5f, 0.6f, 0.7f}, .tipAbsorption = {0.1f, 0.2f, 0.3f}, .rootFade = 0.06f, .rootV = 1, .specular = 0.5f, .strandRotation = 0.5f};
@@ -185,6 +186,7 @@ TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
   EXPECT_EQ(row.alphaMode, 1);
   EXPECT_FLOAT_EQ(row.alphaCutoff, 0.3f);
   EXPECT_EQ(row.doubleSided, 1);
+  EXPECT_EQ(row.opacityFilm, 1);
   EXPECT_EQ(row.emissiveFactor, glm::vec3(2, 1, 0.5f));
   EXPECT_FLOAT_EQ(row.normalTextureScale, 0.6f);
   EXPECT_FLOAT_EQ(row.occlusionStrength, 0.7f);

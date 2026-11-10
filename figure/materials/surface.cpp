@@ -68,6 +68,13 @@ Kind classify(const std::string& name, Context context)
   return std::regex_search(words, saysSkin) ? found : Kind::eOther;
 }
 
+bool saysGlass(const std::string& name)
+{
+  static const std::regex glass("\\b(glass(es)?|panes?|lens(es)?|windshield|windscreen|visor)\\b|\\bwindows?( mat(erial)?)? ?$",
+                                std::regex::ECMAScript | std::regex::optimize);
+  return std::regex_search(wordsOf(name), glass);
+}
+
 bool onTheFace(const Surface& s)
 {
   const auto f = std::regex::ECMAScript | std::regex::optimize;

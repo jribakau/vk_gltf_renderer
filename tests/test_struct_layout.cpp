@@ -321,7 +321,7 @@ HostStruct gltfShadeMaterial()
   return {"GltfShadeMaterial", sizeof(Self), {
     F(pbrBaseColorFactor), F(emissiveFactor), F(normalTextureScale), F(pbrRoughnessFactor), F(pbrMetallicFactor),
     F(alphaMode), F(alphaCutoff), F(occlusionStrength), F(doubleSided), F(emissiveLightScale), F(opacityWoven),
-    F(_wovenPad), F(attenuationColor), F(ior), F(transmissionFactor), F(chamberIor), F(plate), F(thicknessFactor),
+    F(opacityFilm), F(attenuationColor), F(ior), F(transmissionFactor), F(chamberIor), F(plate), F(thicknessFactor),
     F(attenuationDistance), F(clearcoatFactor), F(specularColorFactor), F(clearcoatRoughness),
     F(clearcoatNormalTextureScale), F(specular2Factor), F(specular2Roughness), F(clearcoatColor),
     F(_clearcoatColorPad), F(specularFactor), F(unlit), F(iridescenceFactor), F(iridescenceThicknessMinimum),

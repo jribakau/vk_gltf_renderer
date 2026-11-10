@@ -124,6 +124,7 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const fv::mat::
   dstMat.alphaCutoff        = srcMat.alphaCutoff;
   dstMat.doubleSided        = srcMat.doubleSided ? 1 : 0;
   dstMat.opacityWoven       = srcMat.woven ? 1 : 0;
+  dstMat.opacityFilm        = srcMat.film ? 1 : 0;
   dstMat.pbrBaseColorFactor = glm::vec4(srcMat.baseColor[0], srcMat.baseColor[1], srcMat.baseColor[2], srcMat.baseColor[3]);
   dstMat.pbrMetallicFactor  = srcMat.metallic;
   dstMat.pbrRoughnessFactor = srcMat.roughness;
