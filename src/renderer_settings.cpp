@@ -560,6 +560,12 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                                      "under this share of the pixel (physical sky; 0: on every path)",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.ptAerialSunShare, Persist::eNo, 0.0F, 1.0F);
+  // A still's shadow rays by the same roulette, against the pixel's mean so far; 0 for every ray traced
+  m_settings.add({.name            = "ptShadowShare",
+                  .help            = "PathTracer: a still's light sample traces its shadow ray as often as keeps the noise it "
+                                     "adds under this share of the pixel's mean so far (0: every one)",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.ptShadowShare, Persist::eNo, 0.0F, 1.0F);
   // The thin preview's slab (skin_slab.h.slang); off for the preview as it was, all of skin's light back where it went in
   m_settings.add({.name            = "ptSkinSlab",
                   .help            = "PathTracer (debug): the thin skin preview lets light through thin skin (ears, fingers) to its far side",

@@ -1150,6 +1150,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     fillHaze(finfo);
     finfo.estimator = std::clamp(m_resources.settings.ptEstimator, 0, 2);
     finfo.aerialSunShare = std::clamp(m_resources.settings.ptAerialSunShare, 0.0F, 1.0F);
+    finfo.shadowRayShare = std::clamp(m_resources.settings.ptShadowShare, 0.0F, 1.0F);
     finfo.skinSlab       = m_resources.settings.ptSkinSlab ? 1 : 0;
     finfo.skinSpread     = m_resources.settings.ptSkinSpread ? 1 : 0;
     finfo.skinView       = m_resources.settings.ptSkinView ? 1 : 0;

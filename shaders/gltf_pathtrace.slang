@@ -214,6 +214,11 @@ static uint g_sobolIndex    = 0u;  // the pixel's sample index: the accumulation
 static uint g_sobolPixel    = 0u;  // the pixel's scramble, the same in every frame
 static uint g_sobolDecision = 0u;
 static bool g_hitToCount    = false;  // the pixel counts, and its first hit is still to come (pushConst.hitSignal)
+// The pixel's mean so far, a luminance, for its shadow rays' roulette (SceneFrameInfo::shadowRayShare);
+// 0 where there is none to go by, and every ray is traced
+static float g_shadowRest = 0.0F;
+// The accumulation's samples a pixel has before its mean is taken for that
+static const int SHADOW_ROULETTE_FROM = 8;
 #if USE_PIXEL_TIME
 static uint g_timeSlot = kPixelTimeUnset;  // the Time view: what the pixel's first camera ray met (pixel_time.h.slang)
 #endif
@@ -1658,6 +1663,32 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       if(all(bounce.contribution == 0.0F) && all(bounce.spreadContribution == 0.0F))
         bounce.nextEventValid = false;
 
+      // Traced only as often as it can matter (contribution_roulette.h.slang): a sample that would add
+      // less than the share of what the pixel holds, were the light to reach it, is traced with the
+      // chance of its size against that and weighed by one over it. Unbiased: the mean it goes by is
+      // that of the accumulation's earlier frames, which this sample has no part in. A sample that is
+      // not finite is traced, and dropped as before. Not a vertex that wrote the pixel's record for the
+      // next frame, whose shadow ray says whether the record stands.
+      bool rouletteHere = bounce.nextEventValid && g_shadowRest > 0.0F;
+#if USE_LIGHT_RIS
+      rouletteHere = rouletteHere && !bounce.lightReuseWritten;
+#endif
+      if(rouletteHere)
+      {
+        const float term = luminance(bounce.contribution + bounce.spreadContribution);
+        if(term > 0.0F && term < pushConst.frameInfo->shadowRayShare * g_shadowRest)
+        {
+          const float chance = contributionTraceChance(term, g_shadowRest, pushConst.frameInfo->shadowRayShare);
+          if(rand(seed) < chance)
+          {
+            bounce.contribution       /= chance;
+            bounce.spreadContribution /= chance;
+          }
+          else
+            bounce.nextEventValid = false;
+        }
+      }
+
 #if GLTF_USE_VOLUME
       // The medium the shadow ray starts in, read before the BSDF sample below moves the path into
       // another one: the medium the ray arrived through, unless the light is behind a surface that
@@ -2375,6 +2406,18 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   g_cacheOn = (hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) || pushConst.frameInfo->radianceCacheStill != 0)
               && pushConst.frameInfo->radianceCache != nullptr && pushConst.frameInfo->radianceCacheSlots > 0;
   g_cacheUpdate = g_cacheOn && radianceCacheUpdatePixel(int(samplePos.x), int(samplePos.y), pushConst.frameInfo->radianceCacheFrame);
+#endif
+
+  // The shadow rays' roulette goes by the pixel's mean once the accumulation has a few samples of it
+  // (the Time view's image holds no light)
+  g_shadowRest = 0.0F;
+#if !USE_PIXEL_TIME
+  if(pushConst.frameInfo->shadowRayShare > 0.0F && accumulating && pushConst.totalSamples >= SHADOW_ROULETTE_FROM
+     && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+  {
+    const float mean = luminance(outImages[int(OutputImage::eResultImage)][int2(samplePos)].xyz);
+    g_shadowRest     = (mean > 0.0F && mean < 1e30F) ? mean : 0.0F;
+  }
 #endif
 
   // Initialize the random number

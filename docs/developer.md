@@ -486,6 +486,17 @@ Some things about the transport are worth knowing before touching it:
   bit-identical to before the switch. The test turns the firefly clamp off (`--ptFireflyClamp 0`):
   it cuts one technique's rare bright samples more than the other's. A command line's clamp holds
   when the dome loads; before 2026-11-08 `calibrateFireflyClamp` set it again from the dome.
+- **A still's shadow rays are traced as often as they can matter** (`ptShadowShare`,
+  `SceneFrameInfo::shadowRayShare`). A light sample that would add less than the share of the pixel's
+  mean so far, were the light to reach it, has its shadow ray traced with the chance of its size
+  against that, and is weighed by one over it (`shaders/contribution_roulette.h.slang`, the roulette
+  the air's sun ray takes; where `pathTraceOneBounce` sets `bounce.contribution`). The mean is the
+  accumulation's own image, read once the pixel has a few samples (`g_shadowRest` in `processPixel`),
+  which the sample being drawn has no part in, so the estimate stays unbiased. A sample let through
+  is never brighter than the share of the pixel. DLSS's frames, which have no mean to go by, the
+  accumulation's first samples and the Time view trace every ray; at 0 every ray is traced and no
+  number is drawn for it, as before the setting. Measured, it saves a few percent of a still's frame on a close-up of dark hair
+  and about one elsewhere: the app's `docs/improvements.md` has the numbers.
 - **The Time view** (Display › Time, view.set's display `time`, `--pixelTime 1` on a command line)
   times each pixel's thread by the device's clock (`VK_KHR_shader_clock`, `shaderDeviceClock`, an
   optional extension) in a variant of its own, `USE_PIXEL_TIME` (`VariantKey::pixelTime`, never

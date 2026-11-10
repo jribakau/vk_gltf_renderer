@@ -318,6 +318,8 @@ struct Settings
   int ptEstimator = 0;
   // the air's sun-shadow ray's roulette (SceneFrameInfo::aerialSunShare)
   float ptAerialSunShare = 0.05F;
+  // an accumulation's shadow rays' roulette (SceneFrameInfo::shadowRayShare); 0: every one traced
+  float ptShadowShare = 0.05F;
   // `ptSkinSlab` (debug): the thin preview's slab through thin skin (SceneFrameInfo::skinSlab)
   bool ptSkinSlab = true;
   // `ptSkinSpread` (debug): the thin preview's spread of skin's light (SceneFrameInfo::skinSpread)

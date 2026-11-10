@@ -380,6 +380,10 @@ struct SceneFrameInfo
   // ptRadianceCacheStill (debug): the frames of an accumulation read and feed the cache too, so its bias
   // can be measured on a converged image. (Appended, per the note above.)
   int radianceCacheStill = 0;
+  // ptShadowShare: an accumulation's light sample traces its shadow ray with a chance that keeps the
+  // noise it adds under this share of the pixel's mean so far (contribution_roulette.h.slang); 0 traces
+  // every one. (Appended, per the note above.)
+  float shadowRayShare = 0.0F;
 };
 
 enum PathtracerFlags
