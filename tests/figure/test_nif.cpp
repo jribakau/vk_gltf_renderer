@@ -169,17 +169,29 @@ struct Vert
   std::array<std::pair<uint8_t, float>, 2> skin;
 };
 
+// How a shape's skin is written, where a file may differ from the plain one.
+struct SkinAs
+{
+  V3   space{0, 0, 0};      // the skin's own space: where the file's origin lies in it (NiSkinData's overall transform)
+  bool dataWeights = true;  // NiSkinData lists each bone's vertices and weights
+  bool vertexSkin  = true;  // the vertex data carries weights and bone indices
+  bool partWeights = true;  // the partitions carry them
+  int  partitions  = 1;     // each over every vertex; the triangles are the first's
+};
+
 // A skinned shape, its vertices in the skin partition (as stream 100 keeps a skinned one's), its skin
-// data with every bone's bind (the inverse of where the bone stands: unturned here) and weights.
+// data with every bone's bind (the inverse of where the bone stands: unturned here) and weights. `verts`
+// and `boneAt` are in the file's space, whatever `as.space`.
 void skinnedShape(Writer& w, int32_t block, const std::string& name, const std::vector<Vert>& verts, const std::vector<uint16_t>& tris,
                   const std::vector<int32_t>& bones, const std::vector<V3>& boneAt, int32_t shader, int32_t alpha, std::vector<int32_t> extra = {},
-                  uint16_t slot = 32)
+                  uint16_t slot = 32, const SkinAs& as = {})
 {
   const int32_t skin = w.reserve("BSDismemberSkinInstance");
   const int32_t data = w.reserve("NiSkinData");
   const int32_t part = w.reserve("NiSkinPartition");
-  // position + W, half UV, normal + bitangent Y, skin: 36 bytes
-  const uint64_t desc = 9 | (4ull << 8) | (5ull << 16) | (6ull << 28) | (0x4Bull << 44);
+  // position + W, half UV, normal + bitangent Y, skin: 36 bytes; 24 without the skin
+  const uint64_t desc   = as.vertexSkin ? 9 | (4ull << 8) | (5ull << 16) | (6ull << 28) | (0x4Bull << 44) : 6 | (4ull << 8) | (5ull << 16) | (0x0Bull << 44);
+  const uint32_t stride = as.vertexSkin ? 36 : 24;
   {
     Buf b;
     avObject(w, b, name, {0, 0, 0}, extra);
@@ -212,20 +224,20 @@ void skinnedShape(Writer& w, int32_t block, const std::string& name, const std::
     Buf b;
     for(float f : {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f})
       b.f32(f);
-    b.v3({0, 0, 0});
+    b.v3(as.space);
     b.f32(1);
     b.u32(uint32_t(bones.size()));
-    b.u8(1);
+    b.u8(as.dataWeights ? 1 : 0);
     for(size_t k = 0; k < bones.size(); k++)
     {
       for(float f : {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f})
         b.f32(f);
-      b.v3({-boneAt[k][0], -boneAt[k][1], -boneAt[k][2]});
+      b.v3({-boneAt[k][0] - as.space[0], -boneAt[k][1] - as.space[1], -boneAt[k][2] - as.space[2]});
       b.f32(1);
       for(int i = 0; i < 4; i++)
         b.f32(0);
       std::vector<std::pair<uint16_t, float>> list;
-      for(size_t v = 0; v < verts.size(); v++)
+      for(size_t v = 0; v < verts.size() && as.dataWeights; v++)
         for(const auto& [bone, weight] : verts[v].skin)
           if(bone == k && weight > 0)
             list.push_back({uint16_t(v), weight});
@@ -240,13 +252,13 @@ void skinnedShape(Writer& w, int32_t block, const std::string& name, const std::
   }
   {
     Buf b;
-    b.u32(1);
-    b.u32(uint32_t(verts.size() * 36));
-    b.u32(36);
+    b.u32(uint32_t(as.partitions));
+    b.u32(uint32_t(verts.size() * stride));
+    b.u32(stride);
     b.u64(desc);
     for(const Vert& v : verts)
     {
-      b.v3(v.p);
+      b.v3({v.p[0] + as.space[0], v.p[1] + as.space[1], v.p[2] + as.space[2]});
       b.u32(0);
       b.u16(toHalf(v.uv[0]));
       b.u16(toHalf(v.uv[1]));
@@ -254,6 +266,8 @@ void skinnedShape(Writer& w, int32_t block, const std::string& name, const std::
       b.u8(128);
       b.u8(255);
       b.u8(128);
+      if(!as.vertexSkin)
+        continue;
       for(const auto& [bone, weight] : v.skin)
         b.u16(toHalf(weight));
       for(int i = 0; i < 2; i++)
@@ -263,33 +277,37 @@ void skinnedShape(Writer& w, int32_t block, const std::string& name, const std::
       b.u8(0);
       b.u8(0);
     }
-    // one partition over every vertex and bone
-    b.u16(uint16_t(verts.size()));
-    b.u16(uint16_t(tris.size() / 3));
-    b.u16(uint16_t(bones.size()));
-    b.u16(0);
-    b.u16(4);
-    for(size_t k = 0; k < bones.size(); k++)
-      b.u16(uint16_t(k));
-    b.u8(1);
-    for(size_t v = 0; v < verts.size(); v++)
-      b.u16(uint16_t(v));
-    b.u8(1);
-    for(const Vert& v : verts)
-      for(int j = 0; j < 4; j++)
-        b.f32(j < 2 ? v.skin[size_t(j)].second : 0);
-    b.u8(1);
-    for(uint16_t i : tris)
-      b.u16(i);
-    b.u8(1);
-    for(const Vert& v : verts)
-      for(int j = 0; j < 4; j++)
-        b.u8(j < 2 ? v.skin[size_t(j)].first : 0);
-    b.u8(0);
-    b.u8(1);
-    b.u64(desc);
-    for(uint16_t i : tris)
-      b.u16(i);
+    // each partition over every vertex and bone, the triangles in the first
+    for(int k = 0; k < as.partitions; k++)
+    {
+      const std::vector<uint16_t> own = k == 0 ? tris : std::vector<uint16_t>{};
+      b.u16(uint16_t(verts.size()));
+      b.u16(uint16_t(own.size() / 3));
+      b.u16(uint16_t(bones.size()));
+      b.u16(0);
+      b.u16(4);
+      for(size_t i = 0; i < bones.size(); i++)
+        b.u16(uint16_t(i));
+      b.u8(1);
+      for(size_t v = 0; v < verts.size(); v++)
+        b.u16(uint16_t(v));
+      b.u8(as.partWeights ? 1 : 0);
+      for(const Vert& v : verts)
+        for(int j = 0; j < 4 && as.partWeights; j++)
+          b.f32(j < 2 ? v.skin[size_t(j)].second : 0);
+      b.u8(1);
+      for(uint16_t i : own)
+        b.u16(i);
+      b.u8(as.partWeights ? 1 : 0);
+      for(const Vert& v : verts)
+        for(int j = 0; j < 4 && as.partWeights; j++)
+          b.u8(j < 2 ? v.skin[size_t(j)].first : 0);
+      b.u8(0);
+      b.u8(1);
+      b.u64(desc);
+      for(uint16_t i : own)
+        b.u16(i);
+    }
     w.set(part, std::move(b));
   }
 }
@@ -334,8 +352,10 @@ int32_t lightingShader(Writer& w, uint32_t type, const std::vector<std::string>&
 // Scene Root -> NPC COM -> NPC Pelvis -> (L Thigh, R Thigh, Spine); a skirt skinned to the pelvis, the
 // left thigh and the spine with a UV seam, the CBBE body it was built on, and a physics proxy with no material.
 // `standing`: feet under the thighs (at z 5) and a neck on the spine (z 108) that nothing is skinned to.
-// `slot`: the skirt's biped slot (32, the body's).
-std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32)
+// `slot`: the skirt's biped slot (32, the body's). `as`: how the skirt's skin is written. `thighBound`: how
+// far from where it stands the skirt was bound with the left thigh, its vertices carried with it by their
+// weights (the body keeps the plain bind, which is the node tree's).
+std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32, const SkinAs& as = {}, const V3& thighBound = {0, 0, 0})
 {
   Writer        w;
   const int32_t root = w.reserve("NiNode");
@@ -370,7 +390,7 @@ std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32)
     w.set(alpha, std::move(b));
   }
   // two triangles; vertex 3 is vertex 2 again with its UV, vertex 4 vertex 1 with another (a seam)
-  const std::vector<Vert> verts{
+  std::vector<Vert> verts{
       {{-6, 0, 60}, {0, 0}, {{{0, 0.5f}, {1, 0.5f}}}},
       {{-6, 0, 40}, {0, 1}, {{{1, 1.f}, {0, 0}}}},
       {{0, 0, 40}, {1, 1}, {{{0, 1.f}, {1, 0}}}},
@@ -378,7 +398,13 @@ std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32)
       {{-6, 0, 40}, {0.5f, 1}, {{{1, 1.f}, {0, 0}}}},
       {{0, 0, 60}, {1, 0}, {{{2, 1.f}, {1, 0}}}},
   };
-  skinnedShape(w, skirt, "_Test00_Skirt", verts, {0, 1, 2, 3, 4, 5}, {pelvis, lThigh, spine}, {{0, 0, 60}, {-6, 0, 60}, {0, 0, 68}}, dress, alpha, {}, slot);
+  for(Vert& v : verts)
+    for(const auto& [bone, weight] : v.skin)
+      if(bone == 1)
+        for(size_t k = 0; k < 3; k++)
+          v.p[k] += weight * thighBound[k];
+  skinnedShape(w, skirt, "_Test00_Skirt", verts, {0, 1, 2, 3, 4, 5}, {pelvis, lThigh, spine},
+               {{0, 0, 60}, {-6 + thighBound[0], thighBound[1], 60 + thighBound[2]}, {0, 0, 68}}, dress, alpha, {}, slot, as);
   const int32_t tri = w.reserve("NiStringExtraData");
   {
     Buf b;
@@ -399,6 +425,10 @@ struct Data
 {
   fs::path dir, home, nif;
   explicit Data(const std::string& name, bool standing = false, uint16_t slot = 32)
+      : Data(name, outfit(standing, slot))
+  {
+  }
+  Data(const std::string& name, const std::vector<uint8_t>& bytes)
   {
     dir  = fs::temp_directory_path() / ("fv_nif_" + name);
     home = dir / "library";
@@ -408,8 +438,7 @@ struct Data
     fs::create_directories(home);
     for(const char* t : {"dress_d.dds", "dress_n.dds", "dress_m.dds"})
       std::ofstream(dir / "data" / "textures" / "test" / t, std::ios::binary) << "x";
-    nif                        = dir / "data" / "meshes" / "test" / "skirt_1.nif";
-    const std::vector<uint8_t> bytes = outfit(standing, slot);
+    nif = dir / "data" / "meshes" / "test" / "skirt_1.nif";
     std::ofstream(nif, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
   }
   ~Data()
@@ -817,4 +846,100 @@ TEST(Nif, APieceOnTheFeetsSlotIsFootwear)
   const fv::dson::LoadResult body = fv::nif::loadWearable(skirt.nif, {}, {skirt.home});
   EXPECT_FALSE(body.items[0].region);
   EXPECT_EQ(fv::wardrobe::regionOf("Skyrim/Helga/meshes/Fuse00/Armor/Helga/Helga_boots_1.nif/Helga boots 1", {}), fv::wardrobe::FitRegion::eBoot);
+}
+
+namespace {
+
+// A shape vertex's influences by bone.
+std::map<uint16_t, float> influencesOf(const fv::nif::Shape& s, size_t v)
+{
+  std::map<uint16_t, float> out;
+  for(uint32_t i = s.weightStart[v]; i < s.weightStart[v + 1]; i++)
+    out[s.weightBone[i]] += s.weight[i];
+  return out;
+}
+
+// What a wear of `data` made: the skirt's cage, and each bone's place in the file by its name.
+struct Worn
+{
+  std::vector<float>                         cage;
+  std::map<std::string, std::array<double, 3>> joints;
+};
+Worn wornOf(const Data& data)
+{
+  const fv::dson::LoadResult w = fv::nif::loadWearable(data.nif, {}, {data.home});
+  Worn                       out;
+  out.cage = w.scene.meshes.at(size_t(w.items.at(0).meshes.at(0))).geo->cagePositions;
+  for(const fv::Node& n : w.scene.nodes)
+    if(n.joint)
+      out.joints[n.name] = n.joint->centerAuthored;
+  if(w.sourceBase)
+    out.cage.insert(out.cage.end(), w.sourceBase->positions.begin(), w.sourceBase->positions.end());
+  return out;
+}
+
+void expectSameWear(const Worn& a, const Worn& b)
+{
+  ASSERT_EQ(a.cage.size(), b.cage.size());
+  for(size_t i = 0; i < a.cage.size(); i++)
+    EXPECT_NEAR(a.cage[i], b.cage[i], 1e-3) << i;
+  ASSERT_EQ(a.joints.size(), b.joints.size());
+  for(const auto& [name, at] : a.joints)
+    for(size_t k = 0; k < 3; k++)
+      EXPECT_NEAR(at[k], b.joints.at(name)[k], 1e-3) << name;
+}
+
+}  // namespace
+
+TEST(Nif, WeightsComeFromTheVertexDataWhenTheSkinDataKeepsNone)
+{
+  SkinAs as;
+  as.dataWeights = false;
+  as.partWeights = false;
+  const fv::nif::File   f     = fv::nif::read(outfit(false, 32, as));
+  const fv::nif::Shape& skirt = f.shapes[0];
+  ASSERT_EQ(skirt.weightStart.size(), 7u);
+  EXPECT_EQ(influencesOf(skirt, 0), (std::map<uint16_t, float>{{0, 0.5f}, {1, 0.5f}}));
+  EXPECT_EQ(influencesOf(skirt, 1), (std::map<uint16_t, float>{{1, 1.f}}));
+  EXPECT_EQ(influencesOf(skirt, 5), (std::map<uint16_t, float>{{2, 1.f}}));
+}
+
+TEST(Nif, AVertexTwoPartitionsShareIsWeightedOnce)
+{
+  // neither the skin data nor the vertices carry weights: the partitions', both of which hold every vertex
+  SkinAs as;
+  as.dataWeights = false;
+  as.vertexSkin  = false;
+  as.partitions  = 2;
+  const fv::nif::File   f     = fv::nif::read(outfit(false, 32, as));
+  const fv::nif::Shape& skirt = f.shapes[0];
+  ASSERT_EQ(skirt.weightStart.size(), 7u);
+  EXPECT_EQ(skirt.triangles.size(), 6u);
+  EXPECT_EQ(influencesOf(skirt, 0), (std::map<uint16_t, float>{{0, 0.5f}, {1, 0.5f}}));
+  EXPECT_EQ(skirt.weightStart[1] - skirt.weightStart[0], 2u);
+  EXPECT_EQ(influencesOf(skirt, 5), (std::map<uint16_t, float>{{2, 1.f}}));
+}
+
+TEST(Nif, AShapeInItsOwnSkinSpaceStandsWithTheOthers)
+{
+  // the skirt's vertices and binds kept in a space of its own, as NiSkinData's overall transform says:
+  // worn, it and its bones are where the plain file's are, on the body beside it
+  const Data plain("space_plain");
+  SkinAs     as;
+  as.space = {3, -4, -10};
+  const Data moved("space_moved", outfit(false, 32, as));
+  expectSameWear(wornOf(moved), wornOf(plain));
+}
+
+TEST(Nif, AShapeBoundInAnotherPoseIsCarriedToTheFilesBind)
+{
+  // the skirt bound with the left thigh 2 units out and 3 up from where the body's bind and the node
+  // tree have it: the game poses both by one skeleton, so the skirt's cloth on the thigh comes with it
+  const Data plain("bind_plain");
+  const Data moved("bind_moved", outfit(false, 32, {}, {-2, 0, 3}));
+  expectSameWear(wornOf(moved), wornOf(plain));
+  // read alone, the vertices are as the file has them
+  const fv::nif::File f = fv::nif::read(outfit(false, 32, {}, {-2, 0, 3}));
+  EXPECT_FLOAT_EQ(f.shapes[0].positions[1][0], -8);
+  EXPECT_FLOAT_EQ(f.shapes[0].positions[0][0], -7);
 }

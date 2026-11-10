@@ -165,7 +165,8 @@ struct Vertices
 {
   std::vector<V3>                   positions, normals;
   std::vector<std::array<float, 2>> uvs;
-  // the weights in the vertex data, four per vertex, with indices that may be the partition's
+  // the weights in the vertex data, four per vertex, their indices into the skin's bones (as NifSkope
+  // and Outfit Studio read them)
   std::vector<std::array<float, 4>>   weights;
   std::vector<std::array<uint8_t, 4>> boneIndices;
 };
@@ -362,8 +363,8 @@ Alpha readAlpha(Reader r)
 }
 
 // The shape's skin: bones, their bind data and the weights per vertex (NiSkinData's lists where it
-// keeps them, else the partitions'), and from the partitions the vertices and triangles when the
-// shape keeps none of its own.
+// keeps them, else the vertex data's own, else the partitions'), and from the partitions the vertices
+// and triangles when the shape keeps none of its own.
 void readSkin(Shape& shape, int32_t skinRef, const Parser& p, const std::unordered_map<int32_t, int>& nodeOfBlock, Vertices& vertices,
               std::vector<uint32_t>& triangles)
 {
@@ -454,13 +455,24 @@ void readSkin(Shape& shape, int32_t skinRef, const Parser& p, const std::unorder
   }
   else
     throw std::runtime_error("its skin has no bind data (NiSkinData)");
-  // the partitions' weights, when the skin data keeps none: each partition's bone indices are its own
-  if(!fromData && part)
+  // the skin data keeps none: the vertex data's own, four a vertex
+  bool fromVertices = false;
+  if(!fromData && vertices.weights.size() == nv && vertices.boneIndices.size() == nv)
+    for(size_t v = 0; v < nv; v++)
+      for(size_t j = 0; j < 4; j++)
+        if(vertices.weights[v][j] > 0 && vertices.boneIndices[v][j] < nBones)
+        {
+          influences[v].push_back({uint16_t(vertices.boneIndices[v][j]), vertices.weights[v][j]});
+          fromVertices = true;
+        }
+  // nor the vertices: the partitions', each partition's bone indices its own. A vertex two partitions
+  // share (one on their seam) has the same weights in both: it takes the first's
+  if(!fromData && !fromVertices && part)
     for(const Partition& pt : part->partitions)
       for(size_t k = 0; k < pt.vertexMap.size(); k++)
       {
         const size_t v = pt.vertexMap[k];
-        if(v >= nv)
+        if(v >= nv || !influences[v].empty())
           continue;
         for(int j = 0; j < pt.perVertex; j++)
         {

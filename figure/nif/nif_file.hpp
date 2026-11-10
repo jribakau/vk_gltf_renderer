@@ -81,8 +81,9 @@ struct Shape
   std::vector<V3>                   positions, normals;
   std::vector<std::array<float, 2>> uvs;  // as stored: v runs down the image
   std::vector<uint32_t>             triangles;  // three per triangle
-  // skinned: the bones (into File::nodes), each one's skin-to-bone transform, the transform into skin
-  // space, and per vertex its influences: vertex v's are [weightStart[v], weightStart[v + 1])
+  // skinned: the bones (into File::nodes), each one's skin-to-bone transform, the transform from the
+  // file's space into the skin's, which the positions are in (NiSkinData's overall transform), and per
+  // vertex its influences: vertex v's are [weightStart[v], weightStart[v + 1])
   std::vector<int>       bones;
   std::vector<Transform> skinToBone;
   Transform              skinTransform;

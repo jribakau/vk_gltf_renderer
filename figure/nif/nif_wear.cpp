@@ -90,26 +90,124 @@ struct Skeleton
 {
   std::vector<Bone>                    bones;  // parents before children
   std::unordered_map<std::string, int> byName;
+  // the file's one bind (bindOf): node -> where the bone stands, in the file's space
+  std::map<int, Transform> binds;
 };
 
+// Where a skinned shape's bones stand in the pose it was bound in, in the file's space: its skin-to-bone
+// transforms undone, and the skin's own space with them (NiSkinData's overall transform leads from the
+// file's space into it; Outfit Studio's "global to skin").
+std::vector<Transform> bindsOf(const Shape& s)
+{
+  const Transform        toFile = s.skinTransform.inverse();
+  std::vector<Transform> out(s.bones.size(), toFile);
+  for(size_t i = 0; i < s.bones.size() && i < s.skinToBone.size(); i++)
+    out[i] = toFile * s.skinToBone[i].inverse();
+  return out;
+}
+
+// Two places for a bone that are one: within a twentieth of a unit (0.7 mm), a tenth of a degree and a
+// thousandth in size.
+bool sameBind(const Transform& a, const Transform& b)
+{
+  for(size_t i = 0; i < 3; i++)
+    if(std::abs(a.t[i] - b.t[i]) > 0.05f)
+      return false;
+  for(size_t i = 0; i < 9; i++)
+    if(std::abs(a.r[i] - b.r[i]) > 2e-3f)
+      return false;
+  return std::abs(a.s - b.s) <= 1e-3f;
+}
+
+// The file's one bind, per bone node. The game poses every shape by one skeleton, so shapes bound with a
+// bone in different places don't show as their vertices lie: each is carried from its own bind to this
+// one (placed). Where they differ, the bind that puts the bone where the file's node tree has it is taken
+// (the tree is the skeleton the file was exported over), else the first shape's.
+std::map<int, Transform> bindOf(const File& f)
+{
+  std::map<int, Transform> out;
+  std::set<int>            settled;  // differed, and took the node tree's
+  for(const Shape& s : f.shapes)
+  {
+    const std::vector<Transform> binds = bindsOf(s);
+    for(size_t i = 0; i < s.bones.size() && i < s.skinToBone.size(); i++)
+    {
+      const int node         = s.bones[i];
+      const auto [it, added] = out.emplace(node, binds[i]);
+      if(added || settled.count(node) || sameBind(it->second, binds[i]))
+        continue;
+      const Transform tree = f.world(node);
+      if(!sameBind(it->second, tree) && sameBind(binds[i], tree))
+        it->second = binds[i];
+      settled.insert(node);
+    }
+  }
+  return out;
+}
+
+// A shape's vertices in the file's space, as the game shows them over the file's one bind: out of the
+// skin's own space, and where the shape was bound with a bone elsewhere, carried with that bone to where
+// the bind has it, by the vertex's weights. An unskinned shape rides on the node it hangs from.
+std::vector<V3> placed(const File& f, const Shape& s, const std::map<int, Transform>& bind)
+{
+  std::vector<V3> out(s.positions.size());
+  if(!s.skinned())
+  {
+    const Transform toFile = f.world(s.parent) * s.local;
+    for(size_t v = 0; v < out.size(); v++)
+      out[v] = toFile.apply(s.positions[v]);
+    return out;
+  }
+  const Transform toFile = s.skinTransform.inverse();
+  for(size_t v = 0; v < out.size(); v++)
+    out[v] = toFile.apply(s.positions[v]);
+  const std::vector<Transform>          own = bindsOf(s);
+  std::vector<std::optional<Transform>> carry(s.bones.size());
+  bool                                  any = false;
+  for(size_t i = 0; i < s.bones.size() && i < s.skinToBone.size(); i++)
+    if(const auto to = bind.find(s.bones[i]); to != bind.end() && !sameBind(to->second, own[i]))
+    {
+      carry[i] = to->second * own[i].inverse();
+      any      = true;
+    }
+  if(!any || s.weightStart.size() != out.size() + 1)
+    return out;
+  for(size_t v = 0; v < out.size(); v++)
+  {
+    double p[3] = {0, 0, 0}, sum = 0;
+    for(uint32_t i = s.weightStart[v]; i < s.weightStart[v + 1]; i++)
+    {
+      const size_t b = s.weightBone[i];
+      if(b >= carry.size() || s.weight[i] <= 0)
+        continue;
+      const V3 q = carry[b] ? carry[b]->apply(out[v]) : out[v];
+      for(size_t k = 0; k < 3; k++)
+        p[k] += double(s.weight[i]) * q[k];
+      sum += s.weight[i];
+    }
+    if(sum > 0)
+      out[v] = {float(p[0] / sum), float(p[1] / sum), float(p[2] / sum)};
+  }
+  return out;
+}
+
 // The bones the shapes skin to and the file's other Skyrim bones, with every node above them up to the
-// file's root (left out): their places from the skins' bind data where a skin has them, else from the
-// node tree.
+// file's root (left out): their places from the file's bind where a skin has them, else from the node
+// tree.
 Skeleton skeletonOf(const File& f, const std::vector<size_t>& shapes)
 {
+  Skeleton out;
+  out.binds = bindOf(f);
   std::map<int, D3> bound;  // node -> its bind place, Skyrim's space
-  std::set<int>     wanted;
+  for(const auto& [node, at] : out.binds)
+    bound[node] = {at.t[0], at.t[1], at.t[2]};
+  std::set<int> wanted;
   for(size_t s : shapes)
   {
     const Shape& sh = f.shapes[s];
     for(size_t i = 0; i < sh.bones.size(); i++)
     {
       const int node = sh.bones[i];
-      if(i < sh.skinToBone.size() && !bound.count(node))
-      {
-        const V3 c  = sh.skinToBone[i].inverse().t;
-        bound[node] = {c[0], c[1], c[2]};
-      }
       for(int n = node, guard = 0; n >= 0 && guard < 512; n = f.nodes[size_t(n)].parent, guard++)
         if(f.nodes[size_t(n)].parent >= 0)  // the root itself is the item's
           wanted.insert(n);
@@ -128,7 +226,6 @@ Skeleton skeletonOf(const File& f, const std::vector<size_t>& shapes)
       for(int k = int(n), guard = 0; k >= 0 && guard < 512; k = f.nodes[size_t(k)].parent, guard++)
         if(f.nodes[size_t(k)].parent >= 0)
           wanted.insert(k);
-  Skeleton out;
   // depth first from the root's children, so a parent comes before its children
   std::map<int, std::vector<int>> children;
   for(int n : wanted)
@@ -255,22 +352,19 @@ struct Built
   std::vector<int> bones;
 };
 
-// The shape as a cage: welded positions in DAZ's space (times `scale`), its triangles, its UVs with
-// the seams as overrides, and the skin of each cage vertex (its first shape vertex's).
+// The shape as a cage: welded positions in DAZ's space (times `scale`) over the file's one bind, its
+// triangles, its UVs with the seams as overrides, and the skin of each cage vertex (its first shape
+// vertex's).
 Built cageOf(const File& f, const Shape& s, const Skeleton& sk, double scale)
 {
-  Built       out;
-  const Weld  w   = weld(s);
-  const auto  raw = [&](size_t v) {
-    if(s.skinned())
-      return s.positions[v];
-    return (f.world(s.parent) * s.local).apply(s.positions[v]);
-  };
+  Built                 out;
+  const Weld            w   = weld(s);
+  const std::vector<V3> raw = placed(f, s, sk.binds);
   mesh::MeshInput& in = out.input;
   in.positions.reserve(w.first.size() * 3);
   for(int v : w.first)
   {
-    const D3 p = scaled(toDaz(raw(size_t(v))), scale);
+    const D3 p = scaled(toDaz(raw[size_t(v)]), scale);
     in.positions.insert(in.positions.end(), {float(p[0]), float(p[1]), float(p[2])});
   }
   const bool hasUv = s.uvs.size() == s.positions.size();
