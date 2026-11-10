@@ -610,19 +610,30 @@ void PathTracer::updateDlssResources(VkCommandBuffer cmd, Resources& resources)
 // Bring the live shader, pipeline, and denoiser targets in line with the settings, however those
 // were changed (UI, command line, sequence script, MCP). Nothing but compares when they already
 // match. Returns false when this frame must be skipped because an async build was started.
-bool PathTracer::prepareFrame(Resources& resources)
+// What needs no frame: a variant built off the frame goes into the cache, the wanted one is swapped in
+// if the cache holds it, and a variant still missing starts building off the frame where it may.
+// Returns false when work is left that a frame's own preparation has to do (prepareFrame's compile
+// before the frame). Called by prepareFrame, and by the renderer on a frame that traces nothing: a
+// frame traced only to take a variant in added a sample past Max Samples to a finished still
+// (sample_schedule::frameSamples gives at least one), and its denoiser ran again on it.
+bool PathTracer::takeBuiltVariant(Resources& resources)
 {
   // A variant already in the cache is swapped in right here: only handles move (what the previous
   // frame may still use is released through the app's frame ring), so there is no queue wait, no
-  // BusyState and no accumulation reset. Anything else goes to an async job that shows the BusyState.
+  // BusyState and no accumulation reset.
   installBuiltVariant(resources);  // a variant built off the frame goes into the cache, swapped in below
   PendingCompileWork work = getPendingCompileWork(resources);
   if(work.recompile && tryRestoreCachedVariant(resources))
     work = getPendingCompileWork(resources);  // the cached pipelines may still need a rebuild (SER, technique)
   if(work.any() && buildsOffTheFrame(resources, work))
-    work = {};  // the live variant, or a cached one standing in, draws this frame
+    work = {};  // the live variant, or a cached one standing in, draws
+  return !work.any();
+}
 
-  if(work.any())
+bool PathTracer::prepareFrame(Resources& resources)
+{
+  // Anything takeBuiltVariant leaves goes to an async job that shows the BusyState.
+  if(!takeBuiltVariant(resources))
   {
     // SYNC NOTE: a rebuild destroys live handles the previous frame may still use. The wait is here,
     // on the application thread, before the worker starts; the worker itself never touches the queue.

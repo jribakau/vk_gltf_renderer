@@ -1071,11 +1071,12 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     resetFrame(/*sceneChanged=*/false);  // the sky the still is of changed: what the camera sees of it, not its light
   refreshSampleTargets();                    // --outputSamples: the stops this frame may end on
   bool frameChanged = updateFrameCounter();  // Check if the frame counter has changed
-  // A shader variant built off the frame goes in only when a frame draws: one draws for it even with
-  // the still converged, or the edits it holds back would wait for an unrelated change
-  const bool variantWaiting = m_pathTracer.variantBuilt();
+  // A shader variant built off the frame is taken in by the frame that traces, or here when none does
+  // (the still is complete, or paused): left waiting, the edits it holds back would wait for an
+  // unrelated change. It needs no frame of its own; one is traced only for what that leaves to do.
+  const bool variantLeftWork = !(changed || frameChanged) && m_pathTracer.variantBuilt() && !m_pathTracer.takeBuiltVariant(m_resources);
 
-  const bool traced = changed || frameChanged || variantWaiting;
+  const bool traced = sample_schedule::frameTraces(changed, frameChanged, variantLeftWork);
   if(traced)
   {
     if(m_resources.frameCount == 0)

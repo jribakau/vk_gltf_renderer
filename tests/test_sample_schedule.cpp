@@ -314,3 +314,20 @@ TEST(SampleSchedule, DepthStartsOverWhenAStillTakesOverFromDlss)
   EXPECT_TRUE(frameStartsDepth(true, false, 0));
   EXPECT_FALSE(frameStartsDepth(false, true, 5));
 }
+
+// A shader variant built off the frame is taken in on a frame that traces nothing, when the still is
+// complete: that is no reason to trace. A frame traced for it added a sample past the cap (frameSamples
+// gives at least one) and the still's denoiser ran again. Only a build it leaves for a frame's own
+// preparation asks for one.
+TEST(SampleSchedule, ACompleteStillTracesNothingForAVariantTakenIn)
+{
+  // the still is complete and nothing changed: the variant was taken in whole
+  EXPECT_FALSE(sample_schedule::frameTraces(/*changed=*/false, /*refining=*/false, /*variantLeftWork=*/false));
+  // what such a frame would have traced: one sample past the cap
+  EXPECT_EQ(sample_schedule::frameSamples(128, 4, 128, {}), 1);
+  // it left a compile that goes before a frame: that frame is drawn
+  EXPECT_TRUE(sample_schedule::frameTraces(false, false, true));
+  // a change or samples still owed trace as ever
+  EXPECT_TRUE(sample_schedule::frameTraces(true, false, false));
+  EXPECT_TRUE(sample_schedule::frameTraces(false, true, false));
+}

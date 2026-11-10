@@ -419,8 +419,10 @@ public:
   void                      startVariantJob(Resources& resources, const VariantKey& key);
   VariantBuilt              buildVariant(const VariantCompileJob& job);  // on the worker
   void                      installBuiltVariant(Resources& resources);
-  // A variant built off the frame waits to be installed, which only a drawn frame does
+  // A variant built off the frame waits to be taken in: by the frame that draws next (prepareFrame),
+  // or, when none does (the still is complete), by takeBuiltVariant alone
   bool                      variantBuilt() const { return m_variantJobs.done(); }
+  bool                      takeBuiltVariant(Resources& resources);
   void                      discardVariantJob();
 
   BusyState* m_busy{nullptr};  // Says what the async shader and pipeline compiles are doing

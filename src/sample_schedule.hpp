@@ -29,6 +29,7 @@
 //                         the count while the view is still.
 // ThroughputSearch:       Auto SPP's Throughput target, the samples per frame with the lowest frame
 //                         time per sample.
+// frameTraces():          the frame traces at all: something changed, or the accumulation has samples to add.
 // frameMaxDepth():        the bounces a frame's paths take: the still's, or the DLSS frames' cap below it.
 // dlssFrameSamples():     the samples a DLSS frame traces: the host's count once the view has held still,
 //                         as many of them as fit a short frame; 1 from the frame a change lands on.
@@ -50,6 +51,17 @@ inline int frameSamples(int accumulated, int perFrame, int maxSamples, std::span
   if(const auto next = std::upper_bound(stops.begin(), stops.end(), accumulated); next != stops.end())
     count = std::min(count, *next - accumulated);
   return std::max(count, 1);
+}
+
+// Whether the frame traces. `changed`: the scene or a setting did, and the accumulation starts over;
+// `refining`: the accumulation has samples to add (the renderer's frame counter). `variantLeftWork`: a
+// shader variant built off the frame was taken in on a frame with neither, and left a build that only a
+// frame's own preparation does (PathTracer::takeBuiltVariant). A variant taken in whole is no reason to
+// trace: frameSamples() gives at least one sample, so a frame traced for it put a finished still one
+// past Max Samples, and the still's denoiser ran again on the new count.
+inline bool frameTraces(bool changed, bool refining, bool variantLeftWork)
+{
+  return changed || refining || variantLeftWork;
 }
 
 // The view has reached Max Samples (`maxSamples`): `accumulated` samples per pixel since the last reset,
