@@ -126,6 +126,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({"tmBrightness", "Tonemapper: Brightness"}, &m_resources.tonemapperData.brightness, Persist::eYes, 0.0F, 2.0F);
   m_settings.add({"tmSaturation", "Tonemapper: Saturation"}, &m_resources.tonemapperData.saturation, Persist::eYes, 0.0F, 2.0F);
   m_settings.add({"tmVignette", "Tonemapper: Vignette (0 = none)"}, &m_resources.tonemapperData.vignette, Persist::eYes, -1.0F, 1.0F);
+  m_lens.registerParameters(&m_settings);
   m_bloom.registerParameters(&m_settings);
   m_localExposure.registerParameters(&m_settings);
   m_settings.add({"tmDither", "Tonemapper: Dither [Off:0, On:1]"}, &m_resources.tonemapperData.dither, Persist::eYes, 0, 1);
@@ -165,6 +166,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.tonemapperData.posterizeMix, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({"tmGrain", "Tonemapper: Film grain, 0 none to 1 heavy"}, &m_resources.tonemapperData.grain,
                  Persist::eYes, 0.0F, 1.0F);
+  // A small sensor's picture (the app's Footage looks)
+  m_settings.add({"tmSensorClip", "Tonemapper: A small sensor's highlights, clipped a channel at a time, in place of the curve's (0 none to 1)"},
+                 &m_resources.tonemapperData.sensorClip, Persist::eYes, 0.0F, 1.0F);
+  m_settings.add({"tmSensorNoise", "Tonemapper: A small sensor's noise, strongest in the shadows and coloured (0 none to 1 heavy)"},
+                 &m_resources.tonemapperData.sensorNoise, Persist::eYes, 0.0F, 1.0F);
   // Auto exposure (turn off for reproducible headless captures)
   m_settings.add({"tmAutoExposure", "Tonemapper: Auto-exposure [Off:0, On:1]"},
                  &m_resources.tonemapperData.autoExposure, Persist::eYes, 0, 1);

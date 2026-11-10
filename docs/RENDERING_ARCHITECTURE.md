@@ -379,6 +379,37 @@ The ray tracing pipeline's shadow hit group has no closest-hit shader. The non-S
 `ShadowPayload::missed`: if the miss shader never ran, the ray was blocked. The SER path checks
 `HitObject::IsHit()` instead and never runs closest-hit or miss shaders.
 
+## A cheap camera's lens and sensor
+
+What makes a picture read as footage is mostly the camera's defects, so a look can ask for them
+(the app's Footage looks; a look's `bend`, `fringe`, `clip` and `noise` in the lighting's
+`tonemap.look`, at the look's strength). All off by default, against the physical-accuracy target.
+
+- **The lens** (`src/lens.hpp`, `shaders/lens.slang`, the mapping in `shaders/lens.h.slang`;
+  `lensBend`, `lensFringe`): a pass on the image the tone mapper and the HDR output take, before
+  bloom. Barrel distortion draws the rendered image in toward its corners, most at the centre, so
+  the middle is larger, the edges are squeezed and straight lines bow; the corners stay, so nothing
+  outside the rendered frame is needed. Fringing reads red a little nearer the centre and blue a
+  little further out, by nothing at the centre and most at the corners. An .exr export keeps the
+  image without it.
+- **A bent picture and the image as rendered:** the path tracer, the pickers and the overlays work
+  in the image as rendered. A frame that draws an overlay (the selection's outline, the grid, the
+  gizmo; `GltfRenderer::overlaysShown`) is therefore not bent, so an overlay never sits beside what
+  it marks, and a click or a pixel readout on a bent frame is taken to its place in the rendered
+  image first (`Lens::rendered`). A screenshot's frame draws no overlay, so it is bent.
+- **The sensor** (nvshaders' `applyTonemap`; `tmSensorClip`, `tmSensorNoise`): `clip` gives the
+  tone curve's highlights way to a response that is straight up to white and clips there a channel
+  at a time (`sensorClipCurve`), exposed so middle grey stays where the curve has it; on an HDR
+  display those highlights stay at SDR white, as the Clip method's do. `noise` is strongest in the
+  shadows and coloured (`sensorNoise`), unlike film's grain, and moves with each frame drawn as the
+  grain does.
+- **Checked:** `tests/test_lens.cpp` (the centre and the corners stay, nothing outside the frame is
+  read, the middle's and the corners' magnification, the fringes' sides and sizes),
+  `TonemapLooks.ASensorClips*` and `TonemapLooks.SensorNoise*` in `tests/test_hdr_output.cpp`,
+  `FvLighting.ALooksCameraGoesToTheLensAndTheSensor`. Seen on a grid of glowing boxes rendered
+  headless: the rows bow outward, the edges fringe red and blue, the black around them is noisy. Its
+  cost is not measured.
+
 ## Bloom
 
 A lens's glow round bright light, and a star when the aperture has blades (`src/bloom.hpp`,

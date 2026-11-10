@@ -217,6 +217,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_silhouette.init(m_resources);
   // The frame an HDR display is shown
   m_hdrOutput.init(m_resources);
+  m_lens.init(m_resources);
   m_bloom.init(m_resources);
   m_localExposure.init(m_resources);
 
@@ -376,6 +377,7 @@ void GltfRenderer::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
   m_resources.appMemoryTracker.track("GBuffers", m_resources.gBuffers, Resources::eImgCount);
   m_pathTracer.onResize(cmd, size, m_resources);
   m_hdrOutput.onResize(cmd, size);
+  m_lens.onResize(cmd, size);
   m_bloom.onResize(cmd, size);
   m_localExposure.onResize(cmd, size);
   m_resources.tonemappedUi.update(m_resources.gBuffers.getUiImageView(Resources::eImgTonemapped));
@@ -949,7 +951,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   gpu_trail::frameStart(cmd, ++m_trailFrames);
   // for refuseFrameSize on the stream's thread
   m_frameBytesPerPixel.store(kPathTracerBytesPerPixel + (m_pathTracer.isDlssEnabled() ? kDlssBytesPerPixel : 0)
-                              + (m_hdrOutput.active() ? HdrOutput::kBytesPerPixel : 0) + (m_bloom.active() ? Bloom::kBytesPerPixel : 0)
+                              + (m_hdrOutput.active() ? HdrOutput::kBytesPerPixel : 0) + (m_lens.active() ? Lens::kBytesPerPixel : 0) + (m_bloom.active() ? Bloom::kBytesPerPixel : 0)
                               + (m_localExposure.active() ? LocalExposure::kBytesPerPixel : 0));
   {
     const VkExtent2D s = renderSize();
@@ -1401,12 +1403,19 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   // the grain moves with each frame drawn, as film's does, and holds on a finished still
   tonemapperData.grainSeed = uint32_t(m_resources.drawnFrameCount);
 
-  // The glow and the star (Bloom), then the shadows lifted and the highlights held (local exposure),
-  // on what the tone mapper and the HDR output take, not on a debug or guide view; an .exr keeps the
-  // image without them (m_tonemapInput below)
+  // The lens's bend and fringes (Lens), the glow and the star (Bloom), then the shadows lifted and the
+  // highlights held (local exposure), on what the tone mapper and the HDR output take, not on a debug
+  // or guide view; an .exr keeps the image without them (m_tonemapInput below)
   const VkDescriptorImageInfo unbloomed = inputBuffer;
   const bool  picture  = vizNormal && !usingGuideBuffer && !bypassTonemapper && tonemapperData.isActive;
   const float exposure = tonemapperData.autoExposure ? 1.0F : tonemapperData.exposure;
+  if(picture && m_lens.active())
+  {
+    auto lensSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Lens");
+    inputBuffer      = m_lens.cmdApply(cmd, m_resources, inputBuffer, gbufSize, overlaysShown());
+  }
+  else
+    m_lens.skipped();
   if(picture && m_bloom.active())
   {
     auto bloomSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Bloom");
@@ -1436,6 +1445,15 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
 
   // NR post-process is only valid on the main rendered path (not guide buffers, viz modes, or bypassed tonemapper).
   return vizNormal && !usingGuideBuffer && !bypassTonemapper;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Whether this frame draws something over the picture, in the image as rendered: the selection's
+// outline, the grid, the gizmo or the helpers' lines (as the frame before left them; they are synced
+// after the tone mapper). A screenshot's frame draws none. The lens keeps such a frame straight.
+bool GltfRenderer::overlaysShown() const
+{
+  return m_screenshotPending.empty() && (!m_resources.selectedRenderNodes.empty() || m_visualHelpers.shouldRender());
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1841,6 +1859,7 @@ void GltfRenderer::destroyResources()
   }
   m_silhouette.deinit(m_resources);
   m_hdrOutput.deinit(m_resources);
+  m_lens.deinit(m_resources);
   m_bloom.deinit(m_resources);
   m_localExposure.deinit(m_resources);
   if(m_wipeFrame.image)

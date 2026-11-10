@@ -339,6 +339,92 @@ TEST(TonemapLooks, TheExposureViewShowsNoGrain)
   EXPECT_EQ(applyTonemap(tm, float3(0.18F), float2(3.0F), float2(1920.0F, 1080.0F)), none);
 }
 
+// A small sensor's highlights: straight up to white and clipped there a channel at a time, with
+// middle grey where the curve has it
+TEST(TonemapLooks, ASensorClipsAChannelAtATimeAndKeepsMiddleGrey)
+{
+  const float2 at = float2(3.0F), size = float2(1920.0F, 1080.0F);
+  // to the rounding of sRGB's encoding and back
+  const auto near3 = [](float3 got, float3 want) {
+    EXPECT_NEAR(got.x, want.x, 2e-4F);
+    EXPECT_NEAR(got.y, want.y, 2e-4F);
+    EXPECT_NEAR(got.z, want.z, 2e-4F);
+  };
+  for(ToneMapMethod method : {ToneMapMethod::eKhronosPBR, ToneMapMethod::eACES, ToneMapMethod::eAgX, ToneMapMethod::eShaped, ToneMapMethod::eFilmic})
+  {
+    TonemapperData tm = plainGrade();
+    tm.method         = int(method);
+    const float3 curveGrey = applyTonemap(tm, float3(0.18F), at, size);
+    tm.sensorClip          = 1.0F;
+    // middle grey as the curve shows it
+    near3(applyTonemap(tm, float3(0.18F), at, size), curveGrey);
+    // a bright warm light: red and green at white, blue still below it, where the curve rolls all three off
+    const float  grey  = toLinear(curveGrey).y;
+    const float3 lamp  = float3(8.0F, 4.0F, 0.05F);
+    const float3 shown = applyTonemap(tm, lamp, at, size);
+    EXPECT_NEAR(shown.x, 1.0F, 1e-6F) << int(method);
+    EXPECT_NEAR(shown.y, 1.0F, 1e-6F) << int(method);
+    EXPECT_NEAR(shown.z, toSrgb(float3(0.05F * grey / 0.18F)).z, 2e-4F) << int(method);
+    EXPECT_LT(shown.z, 0.9F) << int(method);
+    // straight below white: twice the light is twice the (linear) value
+    const float a = toLinear(applyTonemap(tm, float3(0.1F), at, size)).x;
+    const float b = toLinear(applyTonemap(tm, float3(0.2F), at, size)).x;
+    EXPECT_NEAR(b / a, 2.0F, 1e-3F) << int(method);
+    // halfway, halfway between the curve's picture and the sensor's
+    tm.sensorClip      = 0.5F;
+    TonemapperData off = tm;
+    off.sensorClip     = 0.0F;
+    near3(applyTonemap(tm, lamp, at, size), (applyTonemap(off, lamp, at, size) + shown) * 0.5F);
+  }
+}
+
+// A small sensor's noise: none on average, most in the shadows, coloured, moving with the seed
+TEST(TonemapLooks, SensorNoiseIsStrongestInTheShadowsAndColoured)
+{
+  const float2 size = float2(1920.0F, 1080.0F);
+  const auto   stats = [&](float v, uint32_t seed) {
+    double sum = 0.0, sq = 0.0, most = 0.0, colour = 0.0;
+    int    n   = 0;
+    for(int y = 0; y < 96; y++)
+      for(int x = 0; x < 96; x++, n++)
+      {
+        const float3 c = sensorNoise(float3(v), 1.0F, float2(float(x), float(y)), size, seed) - float3(v);
+        sum += c.y;
+        sq += double(c.y) * c.y;
+        most = std::max(most, double(std::max(std::abs(c.x), std::max(std::abs(c.y), std::abs(c.z)))));
+        colour += std::abs(c.x - c.y) + std::abs(c.z - c.y);
+      }
+    const double mean = sum / n;
+    return std::array<double, 4>{mean, std::sqrt(sq / n - mean * mean), most, colour / n};
+  };
+  const auto dark = stats(0.05F, 1);
+  EXPECT_LT(std::abs(dark[0]), 0.01);                          // no brighter or darker on average
+  EXPECT_GT(dark[1], 0.02);                                    // visible
+  EXPECT_LE(dark[2], 0.15 * 1.1 * sensorNoiseWeight(0.05F) + 1e-6);  // within its bound: 0.6 + 0.5 of 0.15
+  EXPECT_GT(dark[3], 0.01);                                    // and coloured: the channels differ
+  // a quarter of it at white, against all of it at black
+  EXPECT_FLOAT_EQ(sensorNoiseWeight(0.0F), 1.0F);
+  EXPECT_FLOAT_EQ(sensorNoiseWeight(1.0F), 0.25F);
+  EXPECT_FLOAT_EQ(sensorNoiseWeight(4.0F), 0.25F);
+  EXPECT_LT(stats(0.9F, 1)[1], dark[1] * 0.4);
+  // the same seed is the same noise; another seed another
+  const float3 a = sensorNoise(float3(0.1F), 1.0F, float2(10.0F, 20.0F), size, 1);
+  EXPECT_EQ(a, sensorNoise(float3(0.1F), 1.0F, float2(10.0F, 20.0F), size, 1));
+  int moved = 0;
+  for(int x = 0; x < 32; x++)
+    moved += sensorNoise(float3(0.1F), 1.0F, float2(float(x), 5.0F), size, 1) != sensorNoise(float3(0.1F), 1.0F, float2(float(x), 5.0F), size, 2);
+  EXPECT_GT(moved, 28);
+}
+
+TEST(TonemapLooks, TheExposureViewShowsNoSensorNoise)
+{
+  TonemapperData tm = plainGrade();
+  tm.falseColor     = 1;
+  const float3 none = applyTonemap(tm, float3(0.18F), float2(3.0F), float2(1920.0F, 1080.0F));
+  tm.sensorNoise    = 1.0F;
+  EXPECT_EQ(applyTonemap(tm, float3(0.18F), float2(3.0F), float2(1920.0F, 1080.0F)), none);
+}
+
 // The exposure view: whole stops around middle grey, a band each, centred on its stop; what the
 // image shows clipped or crushed in colours of their own, whatever the stop
 TEST(HdrOutput, TheExposureViewBandsStopsAroundMiddleGrey)

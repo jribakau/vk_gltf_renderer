@@ -99,7 +99,10 @@ namespace {
 // time by what the pixels show.
 // 55: the pose topic's bones name their counterpart on the other side (`mirror`, read by the
 // skeleton spec), which the Pose tab's mirror swaps by.
-constexpr int kProtocolVersion = 56;
+// 57: a look's cheap camera: tonemap.look's bend and fringe (its lens: barrel distortion and colour
+// fringing) and clip and noise (its sensor: highlights clipped a channel at a time, noise in the
+// shadows). An older renderer refuses the lighting for a look that has them.
+constexpr int kProtocolVersion = 57;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -45,7 +45,8 @@
 //            app's camera metering), skyShare (of a clear sky's light on the figure, the share the
 //            sky gives rather than the sun, at this sun: the app's measured tables, sunPath.ts);
 //            read-only, cloudLight (the light the clouds leave the figure, against a clear sky's);
-//            look (null, or a grade over those sliders: Look's fields, the vectors [r, g, b]) and
+//            look (null, or a grade over those sliders: Look's fields, the vectors [r, g, b]; from
+//            protocol 57 with a cheap camera's bend, fringe, clip and noise) and
 //            lookStrength (0 to 1, how much of it); bloom (0 to 0.25, the share of the image's light
 //            moved into a glow round bright light, 0 none) and star (0 to 1, the share of that glow
 //            drawn as spikes across the aperture's blades; none for a round aperture), protocol 40;
@@ -156,6 +157,12 @@ struct Look
   double      posterize    = 0.0;  // levels a channel; under 2 none
   double      posterizeMix = 1.0;
   double      grain        = 0.0;
+  // A cheap camera's (protocol 57), 0 to 1 each: its lens (src/lens.hpp) and its sensor (tonemap_io's
+  // sensorClip, sensorNoise)
+  double      bend         = 0.0;  // barrel distortion
+  double      fringe       = 0.0;  // colour fringing toward the corners
+  double      clip         = 0.0;  // highlights that clip a channel at a time, in place of the curve's
+  double      noise        = 0.0;  // noise that is strongest in the shadows, and coloured
 };
 
 struct Tonemap
@@ -204,6 +211,10 @@ struct Grade
   double     posterize    = 0.0;
   double     posterizeMix = 0.0;
   double     grain        = 0.0;
+  double     bend         = 0.0;
+  double     fringe       = 0.0;
+  double     clip         = 0.0;
+  double     noise        = 0.0;
 };
 Grade grade(const Tonemap& t);
 

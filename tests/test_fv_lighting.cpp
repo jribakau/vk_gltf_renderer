@@ -603,8 +603,14 @@ TEST(FvLighting, TheGradeIsTheSlidersWithTheLookOverThem)
   EXPECT_EQ(g.posterizeMix, 0.0);
   // a look at full strength: its factors on the sliders, its own values as they are
   t.look = L::Look{.warmth = 20.0, .tint = -0.002, .contrast = 1.25, .saturation = 1.5, .vibrance = 0.3, .vignette = 0.2, .shadows = -0.1,
-                   .lift = {0.04, 0.02, 0.0}, .gain = {1.1, 1.0, 0.9}, .shadowTint = {0.9, 1.0, 1.1}, .mono = 0.5, .posterize = 6.0, .grain = 0.4};
+                   .lift = {0.04, 0.02, 0.0}, .gain = {1.1, 1.0, 0.9}, .shadowTint = {0.9, 1.0, 1.1}, .mono = 0.5, .posterize = 6.0, .grain = 0.4,
+                   .bend = 0.6, .fringe = 0.4, .clip = 0.8, .noise = 0.2};
   g      = L::grade(t);
+  // a cheap camera's lens and sensor, as the look has them
+  EXPECT_EQ(g.bend, 0.6);
+  EXPECT_EQ(g.fringe, 0.4);
+  EXPECT_EQ(g.clip, 0.8);
+  EXPECT_EQ(g.noise, 0.2);
   EXPECT_DOUBLE_EQ(g.contrast, 1.5);
   EXPECT_DOUBLE_EQ(g.saturation, 1.2);
   EXPECT_NEAR(g.vignette, 0.3, 1e-12);
@@ -624,17 +630,45 @@ TEST(FvLighting, TheGradeIsTheSlidersWithTheLookOverThem)
   expectNear(g.shadowTint, glm::dvec3(0.95, 1.0, 1.05));
   EXPECT_DOUBLE_EQ(g.mono, 0.25);
   EXPECT_DOUBLE_EQ(g.posterizeMix, 0.5);
+  EXPECT_DOUBLE_EQ(g.bend, 0.3);
+  EXPECT_DOUBLE_EQ(g.fringe, 0.2);
+  EXPECT_DOUBLE_EQ(g.clip, 0.4);
+  EXPECT_DOUBLE_EQ(g.noise, 0.1);
   EXPECT_NEAR(1e6 / g.temperature, 200.0 - 10.0, 1e-9);
   // nothing at 0, and within the renderer's ranges at the ends
   t.lookStrength = 0.0;
   EXPECT_DOUBLE_EQ(L::grade(t).contrast, 1.2);
   EXPECT_EQ(L::grade(t).grain, 0.0);
+  EXPECT_EQ(L::grade(t).bend, 0.0);
+  EXPECT_EQ(L::grade(t).clip, 0.0);
   t.lookStrength = 1.0;
   t.look->warmth = 300.0;
   t.temperature  = 10000.0;
   EXPECT_DOUBLE_EQ(L::grade(t).temperature, 15000.0);
   t.look->contrast = 2.0;
   EXPECT_DOUBLE_EQ(L::grade(t).contrast, 2.0);
+}
+
+// A look's cheap camera (protocol 57): its lens and its sensor, kept in the topic, clamped, and sent
+// on as the lens pass's and the tone mapper's parameters at the look's strength; none without a look
+TEST(FvLighting, ALooksCameraGoesToTheLensAndTheSensor)
+{
+  const Json none = L::rendererParams(L::State{}, {});
+  EXPECT_EQ(none["lensBend"], 0.0);
+  EXPECT_EQ(none["lensFringe"], 0.0);
+  EXPECT_EQ(none["tmSensorClip"], 0.0);
+  EXPECT_EQ(none["tmSensorNoise"], 0.0);
+  const Json look = {{"id", "bodycam"}, {"name", "Bodycam"}, {"bend", 0.5}, {"fringe", 0.4}, {"clip", 0.8}, {"noise", 3.0}};
+  L::State   s    = L::applyPatch(L::State{}, {{"tonemap", {{"look", look}, {"lookStrength", 0.5}}}});
+  EXPECT_EQ(s.tonemap.look->noise, 1.0);  // clamped
+  const Json topic = L::toJson(s);
+  EXPECT_EQ(topic["tonemap"]["look"]["bend"], 0.5);
+  EXPECT_EQ(L::toJson(L::applyPatch(L::State{}, topic)), topic);
+  const Json p = L::rendererParams(s, {});
+  EXPECT_DOUBLE_EQ(p["lensBend"].get<double>(), 0.25);
+  EXPECT_DOUBLE_EQ(p["lensFringe"].get<double>(), 0.2);
+  EXPECT_DOUBLE_EQ(p["tmSensorClip"].get<double>(), 0.4);
+  EXPECT_DOUBLE_EQ(p["tmSensorNoise"].get<double>(), 0.5);
 }
 
 TEST(FvLighting, TheRendererGradesWithTheLook)

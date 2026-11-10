@@ -58,6 +58,7 @@
 #include "resources.hpp"
 #include "renderer_silhouette.hpp"
 #include "bloom.hpp"
+#include "lens.hpp"
 #include "local_exposure.hpp"
 #include "hdr_output.hpp"
 #include "env_baker.hpp"
@@ -545,6 +546,7 @@ private:
   // Restarts the accumulation. `sceneChanged`: for something other than the camera (Resources::sceneChanges)
   void resetFrame(bool sceneChanged = true);
   void silhouette(VkCommandBuffer cmd);
+  bool overlaysShown() const;
   bool tonemap(VkCommandBuffer cmd);
   bool runTonemapPass(VkCommandBuffer cmd);
   void saveExr(const std::filesystem::path& filename);  // saveViewportImage's .exr
@@ -647,6 +649,7 @@ private:
   BusyState    m_busy;
   Silhouette    m_silhouette;     // Silhouette renderer
   HdrOutput     m_hdrOutput;      // The frame an HDR display is shown, and EXR exports
+  Lens          m_lens;           // A cheap wide lens's distortion and fringing on the image the tone mapper takes, before the bloom
   Bloom         m_bloom;          // The glow and the star on the image the tone mapper takes
   LocalExposure m_localExposure;  // Shadows lifted and highlights held, region by region, after the bloom
   // What the last frame's tonemapper took: an .exr export is made from it (saveExr)

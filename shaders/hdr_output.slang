@@ -89,8 +89,10 @@ void tonemapHdr(uint3 dispatchThreadID: SV_DispatchThreadID)
     tm.dither         = 0;
     const float3 sdr  = toLinear(saturate(applyTonemap(tm, color.xyz, float2(pixel), float2(size))));
     const float3 seen = mul(tm.inputMatrix, color.xyz);  // what the curve takes, as in applyTonemap
-    // the exposure view's colours stay at SDR white: they mark the SDR curve's clipping, not the display's
-    hdr = tm.falseColor != 0 ? sdr : sdr * hdrGain(tm.method, seen, sdrCurve(tm, seen), pc.peak);
+    // the exposure view's colours stay at SDR white: they mark the SDR curve's clipping, not the display's;
+    // and a sensor that clipped has no highlights to raise (tm.sensorClip), as the Clip method has none
+    const float gain = lerp(hdrGain(tm.method, seen, sdrCurve(tm, seen), pc.peak), 1.0F, tm.sensorClip);
+    hdr              = tm.falseColor != 0 ? sdr : sdr * gain;
   }
   else
   {

@@ -124,7 +124,7 @@ void GltfRenderer::pickAt(glm::vec2 uv, bool center)
       .modelViewInv   = glm::inverse(m_cameraManip->getViewMatrix()),
       .perspectiveInv = glm::inverse(m_cameraManip->getPerspectiveMatrix()),
       .isOrthographic = (m_cameraManip->getProjectionType() == nvutils::CameraManipulator::Orthographic) ? 1 : 0,
-      .pickPos        = uv,
+      .pickPos        = m_lens.rendered(uv),  // the picture's point, in the image the rays are traced for
       .isDoubleClick  = center,
   };
 }
@@ -168,7 +168,7 @@ void GltfRenderer::cmdInspect(VkCommandBuffer cmd, bool traced)
   const auto now = std::chrono::steady_clock::now();
   if(!m_inspect.due && !(m_inspect.traced && now - m_inspect.last >= kInspectEvery))
     return;
-  if(!m_pathTracer.cmdInspectPixel(cmd, m_resources, *m_inspect.uv))
+  if(!m_pathTracer.cmdInspectPixel(cmd, m_resources, m_lens.rendered(*m_inspect.uv)))
     return;
   m_inspect.due      = false;
   m_inspect.traced   = false;

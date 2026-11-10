@@ -335,6 +335,14 @@ void patchLook(Look& l, const Json& p)
       num(l.posterizeMix, d.posterizeMix, 0.0, 1.0);
     else if(k == "grain")
       num(l.grain, d.grain, 0.0, 1.0);
+    else if(k == "bend")
+      num(l.bend, d.bend, 0.0, 1.0);
+    else if(k == "fringe")
+      num(l.fringe, d.fringe, 0.0, 1.0);
+    else if(k == "clip")
+      num(l.clip, d.clip, 0.0, 1.0);
+    else if(k == "noise")
+      num(l.noise, d.noise, 0.0, 1.0);
     else
       reject("unknown key " + key);
   }
@@ -369,6 +377,10 @@ Json lookJson(const std::optional<Look>& look)
       {"posterize", l.posterize},
       {"posterizeMix", l.posterizeMix},
       {"grain", l.grain},
+      {"bend", l.bend},
+      {"fringe", l.fringe},
+      {"clip", l.clip},
+      {"noise", l.noise},
   };
 }
 
@@ -469,6 +481,10 @@ Grade grade(const Tonemap& t)
       .posterize     = k.posterize,
       .posterizeMix  = a * k.posterizeMix,
       .grain         = a * k.grain,
+      .bend          = a * k.bend,
+      .fringe        = a * k.fringe,
+      .clip          = a * k.clip,
+      .noise         = a * k.noise,
   };
 }
 
@@ -921,6 +937,11 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"tmPosterize", g2.posterize},
       {"tmPosterizeMix", g2.posterizeMix},
       {"tmGrain", g2.grain},
+      // a cheap camera's sensor, and its lens on the image the tone mapper takes (src/lens.hpp)
+      {"tmSensorClip", g2.clip},
+      {"tmSensorNoise", g2.noise},
+      {"lensBend", g2.bend},
+      {"lensFringe", g2.fringe},
       // the glow and the star on the image the tone mapper takes (src/bloom.hpp)
       {"bloomShare", t.bloom},
       {"bloomStar", t.star},
