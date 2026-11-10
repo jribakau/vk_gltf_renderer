@@ -58,6 +58,7 @@ constexpr std::array<FeatureName, SceneFeatureSet::kFeatureCount> kFeatureNames{
     {SceneFeatureSet::eEdgeTint, "edgeTint"},
     {SceneFeatureSet::eTextureTransform, "textureTransform"},
     {SceneFeatureSet::eDlssGuide, "dlssGuide"},
+    {SceneFeatureSet::eNestedMedia, "nestedMedia"},
 }};
 
 bool valueTreeHasTextureTransform(const tinygltf::Value& v)
@@ -151,6 +152,7 @@ int SceneFeatureSet::unusedExtensionCount() const
   // intentionally not counted here because it is not a MAT_EXT_* (it's its own gate).
   std::bitset<kFeatureCount> extensionBits = m_bits;
   extensionBits.reset(static_cast<std::size_t>(eDlssGuide));
+  extensionBits.reset(static_cast<std::size_t>(eNestedMedia));
   return static_cast<int>(kExtensionFeatureCount - extensionBits.count());
 }
 
@@ -206,6 +208,9 @@ SceneFeatureSet detectMaterialFeatures(const fv::mat::Material& m, bool water)
 
   if(materialHasTextureTransform(m))
     set.enable(SceneFeatureSet::eTextureTransform);
+  // a clear solid (surfaceBoundsMedium in the shader, with nothing scattering in it)
+  if(m.volume && m.volume->thickness > 0.f && !m.scatter && (m.transmission || m.diffuseTransmission))
+    set.enable(SceneFeatureSet::eNestedMedia);
 
   // Feature dependency promotion. The path tracer's bounce-loop code paths form a
   // strict containment chain, and consumers of this set should not have to re-derive

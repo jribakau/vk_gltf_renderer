@@ -420,6 +420,14 @@ TEST(RetainedFeatures, EveryExtensionTheDetectorKnowsFromAMaterialThatDrawsIt)
     cases.push_back({"transform " + std::to_string(at), m, SceneFeatureSet::eTextureTransform});
   }
 
+  // a clear solid: a thickness and a transmission, nothing scattering in it
+  {
+    tinygltf::Material m;
+    m.extensions[KHR_MATERIALS_TRANSMISSION_EXTENSION_NAME] = object({{"transmissionFactor", tinygltf::Value(1.0)}});
+    m.extensions[KHR_MATERIALS_VOLUME_EXTENSION_NAME]       = object({{"thicknessFactor", tinygltf::Value(1.0)}});
+    cases.push_back({"clear solid", m, SceneFeatureSet::eNestedMedia});
+  }
+
   SceneFeatureSet covered;
   for(const Case& c : cases)
   {
@@ -666,4 +674,26 @@ TEST(RetainedFeatures, RandomEditsOnImportedFixtures)
   if(tested == 0)
     GTEST_SKIP() << "no fixtures generated and no sample assets";
   std::printf("fuzzed the features of %d files\n", tested);
+}
+
+// The path tracer keeps the medium around the one a path is in only for a scene with a clear solid:
+// a thickness, a transmission, and nothing scattering inside. Skin's walk, a thin pane and a fog are
+// none, so their scenes' kernels are the ones they had.
+TEST(RetainedFeatures, OnlyAClearSolidKeepsTheMediumAround)
+{
+  const auto material = [](double thickness, bool transmission, bool scatter) {
+    tinygltf::Material m;
+    if(transmission)
+      m.extensions[KHR_MATERIALS_TRANSMISSION_EXTENSION_NAME] = object({{"transmissionFactor", tinygltf::Value(1.0)}});
+    m.extensions[KHR_MATERIALS_VOLUME_EXTENSION_NAME] = object({{"thicknessFactor", tinygltf::Value(thickness)}});
+    if(scatter)
+      m.extensions[KHR_MATERIALS_SCATTER_EXTENSION_NAME] = object({{"scatterStrengthFactor", tinygltf::Value(1.0)}});
+    return nvvkgltf::detectMaterialFeatures(m);
+  };
+  const SceneFeatureSet glass = material(1.0, true, false);
+  EXPECT_TRUE(glass.has(SceneFeatureSet::eNestedMedia));
+  EXPECT_TRUE(glass.has(SceneFeatureSet::eVolume));
+  EXPECT_FALSE(material(0.0, true, false).has(SceneFeatureSet::eNestedMedia)) << "a thin pane";
+  EXPECT_FALSE(material(1.0, true, true).has(SceneFeatureSet::eNestedMedia)) << "skin, a fog: a walk";
+  EXPECT_FALSE(material(1.0, false, false).has(SceneFeatureSet::eNestedMedia)) << "nothing gets in";
 }

@@ -550,15 +550,41 @@ Some things about the transport are worth knowing before touching it:
   records that medium for `pathTrace()` to start in. Without it, a camera inside a fog sees no fog
   in front of it and fog behind the far wall.
 
-A medium is bounded by its mesh, and a path leaves it through a back face. What a front face met
-from inside means depends on the medium (`frontFaceLeavesMedium` in `gltf_pathtrace.slang`). In one
-that scatters, a walk through skin, the mesh had an opening the walk escaped through (a figure's eye
-sockets or mouth) or reached what sits in one (an eyeball, a tooth): the medium ends there, and the
-inside state is cleared before the hit is shaded, instead of darkening everything the path meets
-afterwards. In one that only absorbs (glass, a liquid) the surface is inside the medium, and the path
-stays in it, its shadow rays too. A surface that bounds a medium of its own ends the current one
-either way, so that its refraction enters the new one. The segment up to the hit is charged first in
-every case.
+A medium is bounded by its mesh, and a path leaves it through a back face. The path keeps the medium
+it is in and the one around it (`PathTracerState::volumeMaterial` and `outerMaterial`, the materials
+that bound them), and what a surface is to them is decided in one place, `mediumBoundary` in
+[`medium_stack.h.slang`](../shaders/medium_stack.h.slang), which `tests/test_medium_stack.cpp`
+compiles as C++. The segment up to the hit is charged first in every case.
+
+- A front face met in a medium that scatters, a walk through skin: the mesh had an opening the walk
+  escaped through (a figure's eye sockets or mouth) or the walk reached what sits in one (an eyeball,
+  a tooth). The medium ends there, before the hit is shaded, instead of darkening everything the path
+  meets afterwards, and the path is back in the medium around it, if there is one (a hand in a tub of
+  water).
+- A front face met in one that only absorbs (glass, a liquid): the surface is inside the medium, and
+  the path stays in it, its shadow rays too. Its index of refraction is against the medium's, not
+  air's. If it bounds a medium of its own (oil in a bottle that is one solid of glass, ice in a
+  drink), a refraction enters that one, and leaving it puts the path back in the first.
+- Where two solids overlap (a drink modelled a little into its glass), the path is in the one it
+  entered last, and the back of the other, met inside it, is no boundary: the ray goes on from it
+  with no event. There are no priorities, as Falcor's `InteriorList` has: DAZ materials have no such
+  channel.
+- The back of an absorbing solid met from outside every medium (the path started inside it, or its
+  mesh is open) is that solid's way out: the path is outside after it. With one inside flag it
+  counted as a way in, and the path absorbed all the way to the next surface. A scattering surface's
+  back is still a way in: a walk that ended at an eyeball goes on from the inside of the lid.
+- Two deep: a third medium met inside two drops the outermost, which is then left into air. The
+  medium around is set where the inner surface is met, not where the path crosses it.
+  Shadow rays keep one inside flag and one extinction (`getShadowTransmission`): through nested
+  media their absorption is approximate.
+- The medium around is kept only in the kernel of a scene that draws a clear solid, a medium that
+  only absorbs (`SceneFeatureSet::eNestedMedia`, `VariantKey::nestedMedia`, `USE_NESTED_MEDIA`): a
+  shader variant of its own, optimal shader or not, compiled before the frame the first time such a
+  scene is drawn. In every kernel that one number of path state cost a frame 3% (1TEST,
+  2026-11-10); without it the rules above are the one-medium rules, since nothing absorbs.
+
+`tests/render/medium_nested.py` checks a liquid contained in glass, overlapping it and apart from
+it against the layers' analytic transmission.
 
 ### `FV_materials_detail`: a tiled detail layer
 

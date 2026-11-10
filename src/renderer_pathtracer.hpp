@@ -339,6 +339,9 @@ public:
     // True when the moving view's bounce cache is compiled in (USE_RADIANCE_CACHE: ptRadianceCache), for
     // the frames DLSS draws
     bool radianceCache = false;
+    // True when the path keeps the medium around the one it is in (USE_NESTED_MEDIA): the scene draws
+    // a clear solid (SceneFeatureSet::eNestedMedia), optimal shader or not
+    bool nestedMedia = false;
 
     // Same SPIR-V: every shader macro matches. dlssTransparency is a pipeline specialization
     // constant, not a macro, so it is left out. dlss and dlssGuide are compared in every mode (they
@@ -348,7 +351,7 @@ public:
     {
       return wireframe == o.wireframe && visualize == o.visualize && omm == o.omm && optimal == o.optimal
              && dlss == o.dlss && dlssGuide == o.dlssGuide && lightRis == o.lightRis && pixelTime == o.pixelTime
-             && radianceCache == o.radianceCache
+             && radianceCache == o.radianceCache && nestedMedia == o.nestedMedia
              && (optimal ? (features == o.features) : true);
     }
     bool operator==(const VariantKey& o) const { return sameShader(o) && dlssTransparency == o.dlssTransparency; }

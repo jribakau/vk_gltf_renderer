@@ -1306,6 +1306,8 @@ PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) co
       // the bounce cache, in the variant of the frames DLSS draws alone: the still keeps the embedded
       // shader and none of the cache's code, and a camera start or stop is a cached swap, as above
       radianceCacheFor(isDlssEnabled() && m_dlssShaderFrame),
+      // a medium inside another, only where the scene draws a clear solid for one to be in or around
+      resources.currentFeatureSet.has(nvvkgltf::SceneFeatureSet::eNestedMedia),
   };
 }
 
@@ -1325,6 +1327,7 @@ std::string PathTracer::VariantKey::shaderDiff(const VariantKey& to) const
   add("lightRis", lightRis, to.lightRis);
   add("pixelTime", pixelTime, to.pixelTime);
   add("radianceCache", radianceCache, to.radianceCache);
+  add("nestedMedia", nestedMedia, to.nestedMedia);
   if(optimal && to.optimal && features != to.features)
     diff += std::string(diff.empty() ? "" : ", ") + "features [" + features.toString() + "] -> [" + to.features.toString() + "]";
   return diff.empty() ? "no shader field changed" : diff;
@@ -1518,6 +1521,9 @@ std::vector<std::pair<std::string, std::string>> PathTracer::variantMacros(const
       // The moving view's bounce cache (radiance_cache.h.slang): compiled in only for the frames that
       // read it, as code a frame never runs still costs it
       {"USE_RADIANCE_CACHE", std::to_string(key.radianceCache ? 1 : 0)},
+      // The medium around the one a path is in (medium_stack.h.slang): compiled in only for a scene
+      // with a clear solid, as its state costs every frame
+      {"USE_NESTED_MEDIA", std::to_string(key.nestedMedia ? 1 : 0)},
   };
   nvvkgltf::SceneFeatureSet guide;
   guide.set(nvvkgltf::SceneFeatureSet::eDlssGuide, key.dlssGuide);

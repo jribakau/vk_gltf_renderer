@@ -310,24 +310,25 @@ bool hairCutHere(bool fibre, int hairBounces)
 }
 
 #if GLTF_USE_VOLUME
-// A path inside a medium leaves it through a back face; whether meeting the front face of a surface of
-// `material` takes it out too. In a medium that scatters, a walk through skin, such a face is an opening
-// the walk escaped through (an eye socket, a mouth) or what sits in one (an eyeball, a tooth): the
-// medium ends there. In one that only absorbs (glass, a liquid: closed solids) it is something inside
-// the medium, which the path meets and leaves in it, so that its light sample's shadow ray and the path
-// from it go on through the medium. A surface that bounds a medium of its own takes the path out of
-// this one either way, so that its refraction enters that one (the path is in one medium at a time).
+// What a mesh's surface is to the media the path is in: mediumBoundary (medium_stack.h.slang) from the
+// path's state and the surface's material. Worked out at each place that needs it (the hit, the shadow
+// ray's start behind the surface, the crossing) and not kept between them: once the hit has put the
+// path in `here`, the state is the same at all three and so is the answer.
 // `shadedThin`: scatter materials are shaded as the thin preview here, which has no inside to enter.
-bool frontFaceLeavesMedium(VolumeMedium medium, GltfShadeMaterial* material, bool shadedThin)
+MediumBoundary surfaceMedium(PathTracerState pt, GltfShadeMaterial* materials, int materialIndex, bool frontFace, bool shadedThin)
 {
-  bool scatters = false;
-  bool thin     = false;
+  bool walk     = false;  // the current medium scatters
+  bool scatters = false;  // the surface's own medium scatters
 #if GLTF_USE_SCATTER
-  const float3 sigmaS = float3(medium.scatterCoefficient);
-  scatters            = max(sigmaS.x, max(sigmaS.y, sigmaS.z)) > VOLUME_MIN_SCATTER;
-  thin                = shadedThin && material.scatterStrengthFactor > 0.0F;
+  const float3 sigmaS = float3(pt.volumeMedium.scatterCoefficient);
+  walk                = pt.isInside && max(sigmaS.x, max(sigmaS.y, sigmaS.z)) > VOLUME_MIN_SCATTER;
+  scatters            = materials[materialIndex].scatterStrengthFactor > 0.0F;
 #endif
-  return scatters || (!thin && surfaceBoundsMedium(material));
+  const bool bounds = surfaceBoundsMedium(materials + materialIndex) && !(shadedThin && scatters);
+  // The back of a scattering surface met outside every medium is a way into it, as it was before the
+  // stack: a walk that ended at an eyeball goes on through the head from the lid's inside. (An
+  // absorbing solid's is its way out: the path was in it unknown, and is outside after.)
+  return mediumBoundary(ptMedium(pt), materialIndex, bounds, frontFace || (bounds && scatters && !pt.isInside), walk);
 }
 #endif
 
@@ -693,6 +694,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     GltfTextureInfo*   texInfos      = pushConst.gltfScene->textureInfos;
     int                materialIndex = -1;
     PbrMaterial        pbrMat;
+    // A mesh's surface among the media the path is in (surfaceMedium), for its index pair: the ray is
+    // on the side of the surface's own medium, and the material whose medium its index is against (-1: air)
+    bool mediumOwnSide = false;
+    int  mediumAgainst = -1;
     // A diffuse exit's boundary index, for its light-side Fresnel (ePtExitFresnel); 0: none
     float exitFresnelEta = 0.0F;
     // Measured skin shaded as the thin preview, seen from outside, and its medium's single-scattering
@@ -765,23 +770,55 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       materialIndex = max(0, renderNode.materialID);
 
 #if GLTF_USE_VOLUME
-      // A front face met inside a medium (frontFaceLeavesMedium): where it ends the medium, the path
-      // continues outside it, this surface shaded from its front; the segment up to here was charged
-      // above either way. Where it doesn't, the medium stays: the absorbing box's panel in
-      // volume_transmittance came out 61% bright when it was dropped, its light's leg uncharged.
-      if(ptIsInside(pt) && hit.frontFace && frontFaceLeavesMedium(pt.volumeMedium, materials + materialIndex, simplifyScatter))
+      // What the surface is to the media the path is in (medium_stack.h.slang); the segment up to here
+      // was charged above either way.
+      //  - A front face met in a medium that scatters, a walk through skin, is an opening the walk
+      //    escaped through (an eye socket, a mouth) or what sits in one (an eyeball, a tooth): the
+      //    medium ends there, and the path is back in the one around it, if any.
+      //  - In one that only absorbs (glass, a liquid: closed solids) it is something inside the medium,
+      //    which the path meets and leaves in it, so that its light sample's shadow ray and the path
+      //    from it go on through the medium: the absorbing box's panel in volume_transmittance came out
+      //    61% bright when the medium was dropped, its light's leg uncharged. A surface that bounds a
+      //    medium of its own is met in it too (oil in a bottle that is one solid of glass, a hand in a
+      //    tub): its index is against this medium's, and the path is back in this one on leaving it.
+      //  - The back of the medium around the current one, where the two overlap, is no boundary.
+      // Only in a medium, or at the back of a surface with one: from outside, a front face is just a
+      // way in, and there is nothing to decide.
+      if(pt.isInside || (!hit.frontFace && materials[materialIndex].thicknessFactor > 0.0F))
       {
-        pt.isInside     = false;
-        pt.volumeMedium = {};
-#if GLTF_USE_SCATTER
-        pt.volumeMaterial = -1;
-        // Light that leaves a walk has scattered: the path is rough from here, as after the diffuse exit
-        if(pt.scatterBounces > 0)
+        const MediumState    arrived  = ptMedium(pt);
+        const MediumBoundary boundary = surfaceMedium(pt, materials, materialIndex, hit.frontFace, simplifyScatter);
+#if USE_NESTED_MEDIA
+        if(boundary.passed)
         {
-          pt.prefixIndirect = true;
-          pt.pathRoughness  = 1.0F;
+          pt.outerMaterial = -1;
+          pt.cone.width    = worldFoot;
+          pt.nullDistance += payload.hitT;
+          ray.Origin = safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance);  // getHitState turned geonrm to the ray
+          return PathStepResult.eEarlyContinue;
         }
 #endif
+        if(boundary.here.inside != arrived.inside || boundary.here.current != arrived.current)
+        {
+#if GLTF_USE_SCATTER
+          // Light that leaves a walk has scattered: the path is rough from here, as after the diffuse exit
+          const float3 sigmaS = float3(pt.volumeMedium.scatterCoefficient);
+          if(max(sigmaS.x, max(sigmaS.y, sigmaS.z)) > VOLUME_MIN_SCATTER && pt.scatterBounces > 0)
+          {
+            pt.prefixIndirect = true;
+            pt.pathRoughness  = 1.0F;
+          }
+#endif
+          ptSetMedium(pt, boundary.here, materials);
+        }
+#if USE_NESTED_MEDIA
+        // The medium a surface with one of its own is met in is the one around it, once entered: kept
+        // here, at the hit, whether or not the path goes in (medium_stack.h.slang)
+        if(boundary.here.outer != pt.outerMaterial)
+          pt.outerMaterial = boundary.here.outer;
+#endif
+        mediumOwnSide = boundary.ownSide;
+        mediumAgainst = boundary.against;
       }
 #endif
 
@@ -803,9 +840,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       }
       if(diffuseExit)
       {
-        pt.isInside         = false;
-        pt.volumeMedium     = {};
-        pt.volumeMaterial   = -1;
+        // out of the walk's medium, into the one around it (a hand in a tub: the water)
+        ptSetMedium(pt, mediumLeft(ptMedium(pt)), materials);
+        mediumOwnSide       = false;
+        mediumAgainst       = -1;
         pt.exitedVolumeWalk = false;
         // getHitState turned the normals towards the ray, i.e. into the medium; the exit faces out.
         // The whole frame turns back, as getHitState turned it: a bitangent left as it was mirrors
@@ -828,7 +866,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         if(materialIndex < pushConst.hitSignalSlots)
           InterlockedAdd(pushConst.hitSignal[materialIndex * HIT_SIGNAL_BINS + hitSignalBin(worldFoot * hit.texelDensity)], 1u);
       }
-      MeshState mesh    = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, ptIsInside(pt), texGrad);
+      // Whether the ray is on the side of the surface's own medium, for its index pair
+      bool ownSide = ptIsInside(pt);
+#if GLTF_USE_VOLUME
+      ownSide = mediumOwnSide;
+#endif
+      MeshState mesh    = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, ownSide, texGrad);
       mesh.baseColorVertexMul = hit.color;
       mesh.masks              = hit.masks;
 #if GLTF_USE_PROCEDURAL
@@ -845,6 +888,26 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         else if(pbrMat.ior2 == 1.0F)
           pbrMat.ior2 = GROUND_WATER_IOR;
       }
+#if GLTF_USE_VOLUME
+      // In a mesh's medium likewise (medium_stack.h.slang): oil in a bottle that is one solid of glass
+      // meets the glass, not air, and so does a spoon in a drink. A medium that only absorbs: a walk's
+      // boundary is no smooth glass, and what it meets inside ends it.
+      if(mediumAgainst >= 0)
+      {
+        bool walkAround = false;
+#if GLTF_USE_SCATTER
+        walkAround = materials[mediumAgainst].scatterStrengthFactor > 0.0F;
+#endif
+        float againstIor = 1.5F;  // glTF's default, as evaluateMaterial has it without KHR_materials_ior
+#if GLTF_USE_IOR
+        againstIor = materials[mediumAgainst].ior;
+#endif
+        if(!walkAround && mediumOwnSide)
+          pbrMat.ior2 = againstIor;
+        else if(!walkAround)
+          pbrMat.ior1 = againstIor;
+      }
+#endif
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
       // The thin preview's skin as the still's walk shades it (skin_albedo.h.slang). The walk enters by
       // refraction along the view and comes back more at a slant, darker channels the most; it leaves
@@ -1701,10 +1764,20 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #if GLTF_USE_SCATTER
       thinScatter = simplifyScatter && materialIndex >= 0 && materials[materialIndex].scatterStrengthFactor > 0.0F;
 #endif
-      if(dot(directLight.direction, hit.nrm) <= 0.0F && pbrMat.thickness > 0.0F && !thinScatter)
+      if(dot(directLight.direction, hit.nrm) <= 0.0F && pbrMat.thickness > 0.0F && !thinScatter && materialIndex >= 0)
       {
-        bounce.shadowRayInside     = !pt.isInside;
-        bounce.shadowRayExtinction = volumeExtinction(makeVolumeMedium(pbrMat));
+        // beyond the surface: in its own medium, or out of it in the one around it
+        bool backEntry = false;
+#if GLTF_USE_SCATTER
+        backEntry = !pt.isInside && materialIndex >= 0 && materials[materialIndex].scatterStrengthFactor > 0.0F;
+#endif
+        const MediumState left = mediumLeft(ptMedium(pt));
+        bounce.shadowRayInside     = hit.frontFace || backEntry || left.inside;
+        bounce.shadowRayExtinction = float3(0.0F);
+        if(hit.frontFace || backEntry)
+          bounce.shadowRayExtinction = volumeExtinction(makeVolumeMedium(pbrMat));
+        else if(left.inside)
+          bounce.shadowRayExtinction = volumeExtinction(absorbingMedium(materials + left.current));
       }
 #endif
     }
@@ -1854,25 +1927,38 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif
           if(!previewThin)
           {
-            pt.isInside = !pt.isInside;
 #if GLTF_USE_VOLUME
-            if(pt.isInside)
-              pt.volumeMedium = makeVolumeMedium(pbrMat);  // Entering volume: capture the medium for scatter/absorption
+            // Through the boundary (medium_stack.h.slang): into the surface's own medium, or out of it
+            // into the one around it, if any
+            // the back of a scattering surface met outside every medium is a way in (surfaceMedium)
+            bool backEntry = false;
+#if GLTF_USE_SCATTER
+            backEntry = !pt.isInside && materialIndex >= 0 && materials[materialIndex].scatterStrengthFactor > 0.0F;
+#endif
+            const bool enters = hit.frontFace || backEntry;
+            if(enters)
+            {
+              // (the medium around it is the path's already: set at the hit, surfaceMedium's `here`)
+              pt.isInside       = true;
+              pt.volumeMaterial = materialIndex;
+              pt.volumeMedium   = makeVolumeMedium(pbrMat);  // Entering volume: capture the medium for scatter/absorption
+            }
             else
-              pt.volumeMedium = {};
+              ptSetMedium(pt, mediumLeft(ptMedium(pt)), materials);
 #if GLTF_USE_SCATTER
             // A walk starts here: its material for the diffuse exit, a fresh event budget, and the
             // entry's normal, facing out of the medium, for walk guiding (its first step is unguided)
-            pt.volumeMaterial = pt.isInside ? materialIndex : -1;
-            if(pt.isInside)
+            if(enters)
             {
               pt.scatterBounces = 0;
               pt.walkNormal     = dot(ray.Direction, hit.nrm) < 0.0F ? hit.nrm : -hit.nrm;
               pt.walkGuide      = 0.0F;
             }
             const float3 sigmaS = float3(pt.volumeMedium.scatterCoefficient);
-            entersWalk          = pt.isInside && max(sigmaS.x, max(sigmaS.y, sigmaS.z)) > VOLUME_MIN_SCATTER;
+            entersWalk          = enters && max(sigmaS.x, max(sigmaS.y, sigmaS.z)) > VOLUME_MIN_SCATTER;
 #endif
+#else
+            pt.isInside = !pt.isInside;
 #endif
           }
         }

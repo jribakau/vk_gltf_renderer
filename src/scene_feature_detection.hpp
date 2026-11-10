@@ -83,6 +83,14 @@ struct SceneFeatureSet
     // shader keeps it on: that's the build in the exe (GltfRenderer::dlssGuideRequired).
     eDlssGuide,
 
+    // A clear solid is drawn: a medium that only absorbs (a thickness, a transmission, no
+    // scattering), which another medium can be inside or around: solid glass, a liquid. The path
+    // tracer then keeps the medium around the one a path is in (shaders/medium_stack.h.slang), in a
+    // variant of its own whether or not the shader is the optimal one (USE_NESTED_MEDIA,
+    // PathTracer::VariantKey::nestedMedia): in the kernel of every scene, the state it adds cost a
+    // frame 3% (1TEST, 2026-11-10). No extension's bit, so after them.
+    eNestedMedia,
+
     eCount
   };
 

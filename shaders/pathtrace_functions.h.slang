@@ -13,6 +13,15 @@
 #include "sky_background.h.slang"
 #include "ground.h.slang"
 #include "light_pick.h.slang"
+#include "medium_stack.h.slang"
+
+// A medium inside another (medium_stack.h.slang): the path keeps the medium around the one it is in.
+// Compiled in only for a scene with a clear solid, a medium that only absorbs (the host's
+// VariantKey::nestedMedia, from SceneFeatureSet::eNestedMedia): in every kernel, that one number of
+// state cost a frame 3% in scenes with no medium inside another (1TEST, 2026-11-10).
+#ifndef USE_NESTED_MEDIA
+#define USE_NESTED_MEDIA 0
+#endif
 #include "light_ris.h.slang"
 #include "walk_guide.h.slang"
 #include "light_tree.h.slang"
@@ -2728,14 +2737,19 @@ struct PathTracerState
   // environment or emitter hit while this is set contributes nothing. Cleared at the first
   // surface hit outside the medium, which is shaded on its own.
   bool exitedVolumeWalk = false;
+  // The material whose medium the path entered (-1: none, or the camera's medium), and the one whose
+  // medium it was in when it did (-1: none), which it is back in on leaving: medium_stack.h.slang.
+  // Both change only where the path crosses a medium's boundary. The diffuse exit divides out the
+  // first one's albedo, whatever surface the walk leaves through.
+  int volumeMaterial = -1;
+#if USE_NESTED_MEDIA
+  int outerMaterial = -1;  // only in the kernel of a scene with a clear solid: -1 in any other
+#endif
 #endif
 #if GLTF_USE_SCATTER
   int scatterBounces = 0;  // Scatter events of the current walk
 #endif
 #if GLTF_USE_VOLUME && GLTF_USE_SCATTER
-  // The material whose medium the path entered (-1: none, or the camera's medium). The diffuse exit
-  // divides out this medium's albedo, whatever surface the walk leaves through.
-  int volumeMaterial = -1;
   // Walk guiding (walk_guide.h.slang): the normal where the walk entered, facing out of the medium
   // (zero: a walk in the camera's medium, never guided), and what its last scatter drew the next step
   // with: 0 for no guiding (a walk's first step, or after the surface), else the guided over the phase
@@ -2849,6 +2863,49 @@ bool ptIsInside(PathTracerState pt)
   return false;
 #endif
 }
+
+#if GLTF_USE_VOLUME
+// The media the path is in, for medium_stack.h.slang's rules
+MediumState ptMedium(PathTracerState pt)
+{
+  MediumState s;
+  s.inside  = pt.isInside;
+  s.current = pt.volumeMaterial;
+  s.outer   = -1;
+#if USE_NESTED_MEDIA
+  s.outer = pt.outerMaterial;
+#endif
+  return s;
+}
+
+// The medium of a material that only absorbs, from its row alone (as getShadowTransmission has it):
+// the one a path is back in when it leaves a medium it entered inside it
+VolumeMedium absorbingMedium(GltfShadeMaterial* material)
+{
+  VolumeMedium medium;
+  medium.absorption         = float32_t3(volumeExtinctionCoefficient(material.attenuationColor, material.attenuationDistance));
+  medium.scatterCoefficient = float32_t3(0.0F);
+  medium.scatterAnisotropy  = float32_t(0.0F);
+  return medium;
+}
+
+// Puts the path in `s`, which it did not enter through the surface at hand (ptEnterMedium's case): out
+// of every medium, or back in the one around the one it leaves. Only a medium that absorbs is ever
+// around another (a walk ends at the first front face it meets), so its row gives it.
+void ptSetMedium(inout PathTracerState pt, MediumState s, GltfShadeMaterial* materials)
+{
+#if USE_NESTED_MEDIA
+  pt.outerMaterial = s.outer;
+#endif
+  if(pt.isInside == s.inside && pt.volumeMaterial == s.current)
+    return;  // the medium it is in already (the camera's has no row to read)
+  pt.isInside       = s.inside;
+  pt.volumeMaterial = s.current;
+  pt.volumeMedium   = {};
+  if(s.inside && s.current >= 0)
+    pt.volumeMedium = absorbingMedium(materials + s.current);
+}
+#endif
 
 // Whether the path has met nothing yet. Not surfaceDepth alone: a fibre or clear-glass event spends a
 // budget of its own and leaves it at 0, and a ray leaving one is no camera ray. It sees no backplate
