@@ -216,9 +216,11 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   std::string                             notLayered;  // why the layer, asked for, didn't fit it
   const std::string sourceGender = genderHint(rel), targetGender = genderHint(figure.folder);
   const auto        mapped       = [](Generation g, const std::string& gender) { return g == Generation::eG9 || !bodymap::cloneFile(g, gender).empty(); };
-  detail.commonAble = cage && !w.sourceBase && !footwear && mapped(source, sourceGender) && mapped(target, targetGender);
+  // a shoe keeps the bone transfer and the foot's box alone; a boot's shaft is cloth round the leg
+  const bool shoe   = region == FitRegion::eShoe;
+  detail.commonAble = cage && !w.sourceBase && !shoe && mapped(source, sourceGender) && mapped(target, targetGender);
   if(path == FitPath::eCommon && !detail.commonAble)
-    notLayered = footwear                        ? "footwear isn't fitted through the common layer yet"
+    notLayered = shoe                            ? "a shoe keeps the fit of its foot"
                  : source == Generation::eSkyrim ? "a Skyrim outfit has no body map to go through"
                  : !cage                         ? std::string("the ") + label(source) + " base figure isn't installed"
                                                  : std::string("there is no body map of ") + label(mapped(source, sourceGender) ? target : source);
@@ -297,7 +299,9 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
       decoded                            = garment::decode(addresses, decodeOnto);
       if(std::any_of(decoded.hold.begin(), decoded.hold.end(), [](float h) { return h > 0; }))
       {
-        positions     = garment::settle(positions, decoded.positions, decoded.hold, m.geo->dsonTris);
+        // a boot's shaft takes it, fading out onto the foot, as it takes the old shape correction
+        const std::vector<float> settled = garment::settle(positions, decoded.positions, decoded.hold, m.geo->dsonTris);
+        positions                        = boot ? fadeByFoot(positions, settled, onFoot) : settled;
         layered       = true;
         detail.common = true;
       }

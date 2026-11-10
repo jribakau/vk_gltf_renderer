@@ -24,7 +24,7 @@ struct FitDetail
   // whether the common layer fitted it (FitPath::eCommon, where it can): its cloth near the skin by
   // its addresses on the reference body
   bool common = false;
-  // whether the layer could fit it, asked or not: clothing, not footwear, between Genesis 9 and the
+  // whether the layer could fit it, asked or not: clothing or a boot, not a shoe, between Genesis 9 and the
   // generations it has a clone morph of, either way or from one of them to another (the Fit chooser is
   // offered for these)
   bool commonAble = false;
@@ -71,9 +71,9 @@ enum class FitPath
   eOld,
   // the common layer, where it can: cloth near the skin goes to its address on the reference body, at
   // the height it had over the body it was made on (figure/garment/), and the rest of the cloth with
-  // it. That is clothing (not footwear or strand hair) between Genesis 9 and the generations it has a
-  // clone morph of (2, 3, 8 and 8.1), either way or from one of those to another; anything else is
-  // fitted the old way.
+  // it. That is clothing and a boot's shaft (not a shoe, a boot's foot or strand hair) between Genesis 9
+  // and the generations it has a clone morph of (2, 3, 8 and 8.1), either way or from one of those to
+  // another; anything else is fitted the old way.
   eCommon,
 };
 // A vertex the layer placed counts as left there within this, cm (FitDetail::placed).
