@@ -6,9 +6,11 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <mutex>
 #include <set>
 #include <unordered_map>
 
+#include <figure/bodymap/fit.hpp>
 #include <figure/dson/channels.hpp>
 #include <figure/dson/materials.hpp>
 #include <figure/mesh/mesh_build.hpp>
@@ -737,6 +739,158 @@ std::shared_ptr<const wardrobe::BaseCage> modBody(const fs::path& bodyFile)
   return cage;
 }
 
+std::string genderOf(const fs::path& file)
+{
+  for(fs::path dir = file.parent_path(); !dir.empty() && dir != dir.parent_path(); dir = dir.parent_path())
+  {
+    const std::string name = lower(utf8(dir.filename()));
+    if(name == "f" || name == "female")
+      return "female";
+    if(name == "m" || name == "male")
+      return "male";
+    if(name == "meshes")
+      break;
+  }
+  std::string stem = lower(utf8(file.stem()));
+  std::string weight;
+  if(stem.size() > 2 && stem[stem.size() - 2] == '_' && (stem.back() == '0' || stem.back() == '1'))
+  {
+    weight = stem.substr(stem.size() - 2);
+    stem.resize(stem.size() - 2);
+  }
+  if(stem.find("female") != std::string::npos)
+    return "female";
+  if(stem.find("male") != std::string::npos)
+    return "male";
+  if(stem.empty())
+    return {};
+  const auto beside = [&](const std::string& name) {
+    std::error_code ec;
+    return !name.empty() && fs::is_regular_file(file.parent_path() / fromUtf8(name + weight + ".nif"), ec);
+  };
+  // the name without its last letter, and without the underscore before that ("boots_f")
+  const std::string cut  = stem.substr(0, stem.size() - 1);
+  const std::string bare = !cut.empty() && cut.back() == '_' ? cut.substr(0, cut.size() - 1) : cut;
+  if(stem.back() == 'f' && (beside(cut + "m") || beside(bare)))
+    return "female";
+  if(stem.back() == 'm' && beside(cut + "f"))
+    return "male";
+  if(beside(stem + "f") || beside(stem + "_f"))
+    return "male";
+  return {};
+}
+
+namespace {
+
+// A body file's whole body, read once and kept while the file stays as it is. Null when it doesn't read
+// or keeps no body.
+std::shared_ptr<const wardrobe::BaseCage> wholeCage(const fs::path& bodyFile)
+{
+  struct Held
+  {
+    fs::file_time_type                        time;
+    uintmax_t                                 size = 0;
+    std::shared_ptr<const wardrobe::BaseCage> body;
+  };
+  static std::mutex                  mutex;
+  static std::map<std::string, Held> held;
+  std::error_code                    ec;
+  const fs::file_time_type           time = fs::last_write_time(bodyFile, ec);
+  const uintmax_t                    size = ec ? 0 : fs::file_size(bodyFile, ec);
+  if(ec)
+    return nullptr;
+  const std::string key = lower(utf8(bodyFile));
+  {
+    std::lock_guard lock(mutex);
+    if(const auto it = held.find(key); it != held.end() && it->second.time == time && it->second.size == size)
+      return it->second.body;
+  }
+  std::shared_ptr<const wardrobe::BaseCage> body;
+  try
+  {
+    body = modBody(bodyFile);
+  }
+  catch(const std::exception&)
+  {
+    // a body that doesn't read is no body
+  }
+  std::lock_guard lock(mutex);
+  held[key] = {time, size, body};
+  return body;
+}
+
+// The Data folder a mesh is in: the folder its `meshes` is in. Empty when it is under none.
+fs::path dataFolderOf(const fs::path& file)
+{
+  for(fs::path dir = file.parent_path(); !dir.empty() && dir != dir.parent_path(); dir = dir.parent_path())
+    if(lower(utf8(dir.filename())) == "meshes")
+      return dir.parent_path();
+  return {};
+}
+
+}  // namespace
+
+std::optional<WholeBody> wholeBody(const fs::path& file, const wardrobe::BaseCage* carried, const fs::path& home)
+{
+  // nine in ten of a carried body's vertices matched, and those a median within this of their matches
+  // (cm): a body at another weight or preset of the file lies 0.5 to 0.8 off it, a man's on a woman's 2
+  constexpr double kMatched = 0.9, kApart = 1.2;
+  // where it lies within this of the file's, the file's body is the body it was made on as it is
+  constexpr double kSame = 0.02;
+
+  const std::string named = genderOf(file);
+  std::string       stem  = lower(utf8(file.stem()));
+  const std::string weight =
+      stem.size() > 2 && stem[stem.size() - 2] == '_' && (stem.back() == '0' || stem.back() == '1') ? stem.substr(stem.size() - 2) : std::string("_1");
+  // the Data folders: its own, then the installed mods' by name
+  std::vector<fs::path> folders;
+  const fs::path        own = dataFolderOf(file);
+  if(!own.empty())
+    folders.push_back(own);
+  std::error_code ec;
+  if(carried && !home.empty())
+  {
+    std::vector<fs::path> mods;
+    for(fs::directory_iterator it(home / kInstalledMods, ec), end; !ec && it != end; it.increment(ec))
+      if(it->is_directory(ec) && (own.empty() || !fs::equivalent(it->path(), own, ec)))
+        mods.push_back(it->path());
+    std::sort(mods.begin(), mods.end());
+    folders.insert(folders.end(), mods.begin(), mods.end());
+  }
+  if(!carried && named.empty())
+    return std::nullopt;
+
+  std::optional<WholeBody> best;
+  double                   bestApart = INFINITY;
+  for(const fs::path& data : folders)
+    for(const char* gender : {"female", "male"})
+    {
+      if(!named.empty() && named != gender)
+        continue;
+      const fs::path assets = data / "meshes" / "actors" / "character" / "character assets";
+      fs::path       bodyFile;
+      for(const std::string& w : {weight, std::string(weight == "_0" ? "_1" : "_0")})
+        if(const fs::path p = assets / fromUtf8(std::string(gender) + "body" + w + ".nif"); bodyFile.empty() && fs::is_regular_file(p, ec))
+          bodyFile = p;
+      if(bodyFile.empty())
+        continue;
+      const auto body = wholeCage(bodyFile);
+      if(!body)
+        continue;
+      if(!carried)
+        return WholeBody{body, {}, gender, bodyFile};
+      const std::vector<int32_t> match = bodymap::matchCut(*carried, *body);
+      const bodymap::CutFit      fit   = bodymap::cutFit(*carried, *body, match);
+      if(double(fit.matched) < kMatched * double(carried->positions.size() / 3) || fit.median > kApart || fit.median >= bestApart)
+        continue;
+      bestApart = fit.median;
+      best      = WholeBody{body, fit.p95 > kSame ? bodymap::atPreset(*body, *carried, match) : std::vector<float>{}, gender, bodyFile};
+      if(fit.p95 <= kSame)
+        return best;
+    }
+  return best;
+}
+
 std::vector<size_t> bodyShapes(const File& nif)
 {
   std::vector<size_t> out;
@@ -1138,7 +1292,16 @@ dson::LoadResult loadWearable(const fs::path& file, const dson::LoadOptions& opt
 
   if(base)
     out.sourceBase = baseCageOf(*base, scale);
-  else
+  // the whole body it was made on, where one is on this machine
+  const std::shared_ptr<const wardrobe::BaseCage> carried = base ? baseCageOf(*base, 1) : nullptr;
+  if(std::optional<WholeBody> whole = wholeBody(file, carried.get(), wear.textureHome))
+  {
+    out.sourceWhole       = std::move(whole->body);
+    out.sourceWholePreset = std::move(whole->preset);
+    out.sourceGender      = std::move(whole->gender);
+    out.sourceScale       = scale;
+  }
+  if(!base && !out.sourceWhole)
     out.warnings.push_back(fileName + ": no body to fit it against (neither this file nor the others beside it keep the CBBE or UNP body), so only its bones were fitted.");
   if(wear.textureHome.empty())
     out.warnings.push_back(fileName + ": its textures weren't linked into the content library (none is set), so it shows untextured.");

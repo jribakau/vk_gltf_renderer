@@ -69,4 +69,32 @@ std::shared_ptr<const bodymap::TypeMap> typeMap(dson::Store& store, wardrobe::Ge
   return made.map;
 }
 
+std::shared_ptr<const bodymap::TypeMap> bodyMap(dson::Store& store, const std::shared_ptr<const wardrobe::BaseCage>& body, const std::string& gender)
+{
+  // the bodies' maps, the last few asked for: a library has a body or two (the game's, a body mod's)
+  static std::vector<Held> bodies;
+  constexpr size_t         kKept = 4;
+  const auto               g9    = wardrobe::loadBaseCage(store, wardrobe::Generation::eG9, "");
+  if(!body || !g9)
+    return nullptr;
+  {
+    std::lock_guard lock(mutex);
+    for(const Held& h : bodies)
+      if(h.base == body && h.g9 == g9)
+        return h.map;
+  }
+  bodymap::FitInputs in{body, g9, {}};
+  const bool         male   = gender == "male";
+  auto               shaped = bodymap::cloneReference(store, wardrobe::Generation::eG8, male ? "male" : "female");
+  if(!shaped)
+    shaped = bodymap::cloneReference(store, wardrobe::Generation::eG8, male ? "female" : "male");
+  in.reference = shaped ? *shaped : bodymap::bodyOf(*g9);
+  Held made{body, g9, std::make_shared<const bodymap::TypeMap>(bodymap::cachedFittedMap(in))};
+  std::lock_guard lock(mutex);
+  bodies.push_back(made);
+  if(bodies.size() > kKept)
+    bodies.erase(bodies.begin());
+  return made.map;
+}
+
 }  // namespace fv::garment

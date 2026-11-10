@@ -366,6 +366,53 @@ TEST(BodyMapFit, AFittedMapReadBackIsTheOneMade)
   std::filesystem::remove_all(dir, ec);
 }
 
+// The whole body is read at the preset of the body cut from it: what matched lies where the cut body has
+// it, the skin below the cut goes on as the cut's edge moved, and a part none of it matched stays.
+TEST(BodyMapFit, AWholeBodyIsReadAtItsCutBodysPreset)
+{
+  fv::wardrobe::BaseCage whole    = leg(24, kStraight);
+  const size_t           legVerts = whole.positions.size() / 3;
+  // a part welded to nothing of the leg (a hand's file, say)
+  whole.positions.insert(whole.positions.end(), {40, 50, 0, 41, 50, 0, 40, 51, 0});
+  whole.uvs.insert(whole.uvs.end(), {0.91f, 0.91f, 0.92f, 0.91f, 0.91f, 0.92f});
+  whole.tris.insert(whole.tris.end(), {uint32_t(legVerts), uint32_t(legVerts + 1), uint32_t(legVerts + 2)});
+  for(int i = 0; i < 3; i++)
+  {
+    whole.skin.bone.push_back(3), whole.skin.weight.push_back(1);
+    whole.skin.start.push_back(int32_t(whole.skin.bone.size()));
+  }
+  // the leg above y = 70, 2% fuller and taller about the hip: its edge 0.6 cm lower and 0.1 cm further out
+  const fv::wardrobe::BaseCage cut = leg(24, kStraight, 1.02, {-0.2f, -2, 0}, 70);
+  const size_t                 nc  = cut.positions.size() / 3;
+
+  const std::vector<int32_t>   match = fv::bodymap::matchCut(cut, whole);
+  const fv::bodymap::CutFit    fit   = fv::bodymap::cutFit(cut, whole, match);
+  EXPECT_EQ(fit.matched, nc);
+  EXPECT_GT(fit.median, 0.1);
+  EXPECT_LT(fit.median, 0.6);
+  EXPECT_NEAR(fit.p95, std::hypot(0.6, 0.1), 0.02);
+  // a body cut from the file as it is lies on it
+  const fv::wardrobe::BaseCage same = leg(24, kStraight, 1, {}, 70);
+  EXPECT_EQ(fv::bodymap::cutFit(same, whole, fv::bodymap::matchCut(same, whole)).p95, 0);
+
+  const std::vector<float> at = fv::bodymap::atPreset(whole, cut, match);
+  ASSERT_EQ(at.size(), whole.positions.size());
+  for(size_t v = 0; v < nc; v++)
+    for(size_t i = 0; i < 3; i++)
+      EXPECT_NEAR(at[size_t(match[v]) * 3 + i], cut.positions[v * 3 + i], 1e-5) << v;
+  // below the cut: as far down as the edge went, and no further out than it did
+  for(size_t v = nc; v < legVerts; v++)
+  {
+    EXPECT_NEAR(at[v * 3 + 1] - whole.positions[v * 3 + 1], -0.6, 2e-3) << v;
+    const double out = std::hypot(at[v * 3] - whole.positions[v * 3], at[v * 3 + 2] - whole.positions[v * 3 + 2]);
+    EXPECT_LT(out, 0.1 + 2e-3) << v;
+  }
+  // the ring under the edge still most of the way out
+  EXPECT_GT(std::hypot(at[nc * 3] - whole.positions[nc * 3], at[nc * 3 + 2] - whole.positions[nc * 3 + 2]), 0.05);
+  for(size_t i = legVerts * 3; i < at.size(); i++)
+    EXPECT_EQ(at[i], whole.positions[i]);
+}
+
 // An outfit's carried body is matched to the whole body it was cut from by UV, whatever its own vertex
 // order and preset; its map is the whole body's through the match, and what it lacks stays unmapped.
 TEST(BodyMapFit, ACutBodyIsMatchedToItsWholeBodyAndMappedThroughIt)

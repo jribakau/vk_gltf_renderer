@@ -817,6 +817,94 @@ std::vector<int32_t> matchCut(const wardrobe::BaseCage& cut, const wardrobe::Bas
   return out;
 }
 
+CutFit cutFit(const wardrobe::BaseCage& cut, const wardrobe::BaseCage& whole, const std::vector<int32_t>& match)
+{
+  CutFit              out;
+  std::vector<double> apart;
+  const size_t        nc = cut.positions.size() / 3, nw = whole.positions.size() / 3;
+  for(size_t c = 0; c < nc && c < match.size(); c++)
+    if(match[c] >= 0 && size_t(match[c]) < nw)
+      apart.push_back(length(at(cut.positions, c) - at(whole.positions, size_t(match[c]))));
+  out.matched = apart.size();
+  if(apart.empty())
+    return out;
+  std::sort(apart.begin(), apart.end());
+  out.median = apart[apart.size() / 2];
+  out.p95    = apart[size_t(0.95 * double(apart.size() - 1))];
+  return out;
+}
+
+std::vector<float> atPreset(const wardrobe::BaseCage& whole, const wardrobe::BaseCage& cut, const std::vector<int32_t>& match)
+{
+  const size_t nc = cut.positions.size() / 3, nw = whole.positions.size() / 3;
+  // each matched whole vertex's move: to the middle of the cut vertices matched to it
+  std::vector<Vec3> move(nw);
+  std::vector<int>  count(nw, 0);
+  for(size_t c = 0; c < nc && c < match.size(); c++)
+    if(match[c] >= 0 && size_t(match[c]) < nw)
+    {
+      move[size_t(match[c])] = move[size_t(match[c])] + (at(cut.positions, c) - at(whole.positions, size_t(match[c])));
+      count[size_t(match[c])]++;
+    }
+  std::vector<std::vector<uint32_t>> ring(nw);
+  for(size_t t = 0; t * 3 + 2 < whole.tris.size(); t++)
+    for(size_t j = 0; j < 3; j++)
+    {
+      const uint32_t a = whole.tris[t * 3 + j], b = whole.tris[t * 3 + (j + 1) % 3];
+      if(a < nw && b < nw)
+      {
+        ring[a].push_back(b);
+        ring[b].push_back(a);
+      }
+    }
+  // the others: the nearest matched vertex's move, ring by ring out from them
+  std::vector<uint8_t>  reached(nw, 0);
+  std::vector<uint32_t> front;
+  for(uint32_t w = 0; w < nw; w++)
+    if(count[w] > 0)
+    {
+      move[w]    = move[w] * (1.0 / count[w]);
+      reached[w] = 1;
+      front.push_back(w);
+    }
+  while(!front.empty())
+  {
+    std::vector<uint32_t> next;
+    for(const uint32_t w : front)
+      for(const uint32_t n : ring[w])
+        if(!reached[n])
+        {
+          reached[n] = 1;
+          move[n]    = move[w];
+          next.push_back(n);
+        }
+    front = std::move(next);
+  }
+  // evened out: each a share of the way to its neighbours' mean, the matched ones kept
+  constexpr int kSweeps = 60;
+  for(int sweep = 0; sweep < kSweeps; sweep++)
+    for(size_t i = 0; i < nw; i++)
+    {
+      // forwards, then backwards, so a move spreads both ways alike
+      const size_t w = sweep % 2 ? nw - 1 - i : i;
+      if(count[w] > 0 || !reached[w] || ring[w].empty())
+        continue;
+      Vec3 mean;
+      for(const uint32_t n : ring[w])
+        mean = mean + move[n];
+      move[w] = mean * (1.0 / double(ring[w].size()));
+    }
+  std::vector<float> out(whole.positions);
+  for(size_t w = 0; w < nw; w++)
+    if(reached[w])
+    {
+      out[w * 3]     += float(move[w].x);
+      out[w * 3 + 1] += float(move[w].y);
+      out[w * 3 + 2] += float(move[w].z);
+    }
+  return out;
+}
+
 TypeMap cutMap(const TypeMap& whole, const Body& cut, const std::vector<int32_t>& match)
 {
   TypeMap      out;

@@ -1399,7 +1399,7 @@ int main(int argc, char** argv)
           }
           const auto carried = fv::nif::carriedBody(outfit);
           const auto whole   = fv::nif::modBody(pathOf(step["whole"].get<std::string>().c_str()));
-          const auto shaped  = fv::bodymap::cloneReference(*store, fv::wardrobe::Generation::eG8, "female");
+          const auto shaped  = fv::bodymap::cloneReference(*store, fv::wardrobe::Generation::eG8, fv::nif::genderOf(pathOf(step["whole"].get<std::string>().c_str())) == "male" ? "male" : "female");
           if(!carried || !whole || !shaped)
             throw std::runtime_error("bodymap: no carried body, whole body or CloneGenesis8Female");
           loadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - mapStart).count();
@@ -1445,13 +1445,14 @@ int main(int argc, char** argv)
             }
             std::string stem = file.filename().string();
             std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-            const bool modBody = stem.rfind("femalebody", 0) == 0;
+            const bool man     = stem.rfind("malebody", 0) == 0;
+            const bool modBody = man || stem.rfind("femalebody", 0) == 0;
             in.source          = modBody ? fv::nif::modBody(file) : fv::nif::carriedBody(file);
             if(!in.source)
               throw std::runtime_error(figureName + " carries no body");
-            const auto shaped = fv::bodymap::cloneReference(*store, fv::wardrobe::Generation::eG8, "female");
+            const auto shaped = fv::bodymap::cloneReference(*store, fv::wardrobe::Generation::eG8, man ? "male" : "female");
             if(!shaped)
-              throw std::runtime_error("bodymap: Genesis 9's CloneGenesis8Female isn't installed");
+              throw std::runtime_error("bodymap: Genesis 9's clone of Genesis 8 isn't installed");
             in.reference = *shaped;
             {
               const fv::bodymap::Body b = fv::bodymap::bodyOf(*in.source);
@@ -1470,7 +1471,7 @@ int main(int argc, char** argv)
                 lo = std::min(lo, b.positions[v]), hi = std::max(hi, b.positions[v]);
               how = std::string(modBody ? "the body mod's body (body, hands and feet)" : "its carried body") + " of " + std::to_string(b.positions.size() / 3)
                     + " vertices, " + std::to_string(open) + " open edges, " + std::to_string(int(lo)) + " to " + std::to_string(int(hi))
-                    + " cm high, fitted from Genesis 9 shaped by CloneGenesis8Female";
+                    + " cm high, fitted from Genesis 9 shaped by CloneGenesis8" + (man ? "Male" : "Female");
             }
           }
           else
@@ -1602,7 +1603,12 @@ int main(int argc, char** argv)
           const auto gens = fv::wardrobe::generationsOf(w, item, rel, figure);
           if(gens)
             m.source = fv::wardrobe::label(gens->first);
-          const auto base = w.sourceBase ? w.sourceBase : gens ? fv::wardrobe::loadBaseCage(*store, gens->first, fv::wardrobe::genderHint(rel)) : nullptr;
+          // the body the fit will read: a Skyrim outfit's whole body where the common fit takes one
+          const bool viaWhole = w.sourceWhole && step.value("fit", std::string()) == "common";
+          const auto base     = viaWhole       ? fv::wardrobe::wholeBase(w)
+                                : w.sourceBase ? w.sourceBase
+                                : gens         ? fv::wardrobe::loadBaseCage(*store, gens->first, fv::wardrobe::genderHint(rel))
+                                               : nullptr;
           if(base)
           {
             // the body's extent, which tells a carried body cut to what shows from a whole one
@@ -1611,7 +1617,11 @@ int main(int argc, char** argv)
               for(size_t i = 0; i < 3; i++)
                 lo[i] = std::min(lo[i], base->positions[v + i]), hi[i] = std::max(hi[i], base->positions[v + i]);
             std::ostringstream b;
-            b << std::fixed << std::setprecision(0) << (w.sourceBase ? "carried body, " : "base cage, ") << base->positions.size() / 3 << " vertices, x "
+            b << std::fixed << std::setprecision(0)
+              << (viaWhole ? "the " + w.sourceGender + " body it was made on" + (w.sourceWholePreset.empty() ? ", " : ", at its own preset, ")
+                  : w.sourceBase ? std::string("carried body, ")
+                                 : std::string("base cage, "))
+              << base->positions.size() / 3 << " vertices, x "
               << lo[0] << ".." << hi[0] << " y " << lo[1] << ".." << hi[1] << " z " << lo[2] << ".." << hi[2];
             m.body = b.str();
           }

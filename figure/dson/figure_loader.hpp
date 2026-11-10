@@ -144,6 +144,14 @@ struct LoadResult
   // the body an outfit from outside DAZ was built on (a Skyrim mesh's CBBE or UNP body), which the fit
   // measures it against in place of a Genesis base from the library; null for a DSON load
   std::shared_ptr<const wardrobe::BaseCage> sourceBase;
+  // The whole body such an outfit was made on, when one is on this machine (nif::wholeBody: the game's
+  // own, or a body mod's), which the common fit maps it through: the body file's, at the game's size;
+  // its vertices at the outfit's own preset where that differs (else empty); "female" or "male"; and
+  // the scale the outfit was loaded at, which that body takes to stand beside it.
+  std::shared_ptr<const wardrobe::BaseCage> sourceWhole;
+  std::vector<float>                        sourceWholePreset;
+  std::string                               sourceGender;
+  double                                    sourceScale = 1;
 };
 
 // Loads `rel` (library-relative). Throws when nothing could be built, with the reason (a missing

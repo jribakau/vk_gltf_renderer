@@ -21,6 +21,7 @@
 // lookup and saved scenes all find them by library path.
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include <figure/dson/figure_loader.hpp>
@@ -62,6 +63,35 @@ std::shared_ptr<const wardrobe::BaseCage> carriedBody(const std::filesystem::pat
 // name, its surfaces "Body", "Hands" and "Feet"; at the game's size, as carriedBody. Null when the body
 // file keeps no body; a hands or feet file missing is left out.
 std::shared_ptr<const wardrobe::BaseCage> modBody(const std::filesystem::path& bodyFile);
+
+// Whose body a piece is for, "female" or "male", as the game's own files tell it: a folder `f` or `m`
+// (`female`, `male`) above it; "female" or "male" in its name; a name ending in f or m beside its twin
+// of the other ending (torsof_1, torsom_1); a name ending in f beside the same name without it, or a
+// name beside the same with an f, the man's being the one the game leaves unmarked (goldamuletf_1,
+// goldamulet_1). Empty when none of that says (a helmet both wear, a mod's own naming).
+std::string genderOf(const std::filesystem::path& file);
+
+// The whole body a piece was made on, when one is on this machine (docs/wardrobe-plan.md, step 3b: "the
+// source is a whole body where one is on the user's machine"): the game's own, or a body mod's.
+struct WholeBody
+{
+  // the body file's body with its hands and feet (modBody), at the game's size; one object for every
+  // piece made on that file, so what is made of it (its map) is made once
+  std::shared_ptr<const wardrobe::BaseCage> body;
+  // its vertices (xyz) at the piece's own preset, where the body the piece carries lies off the file's
+  // (bodymap::atPreset); empty where it lies on it, or the piece carries none
+  std::vector<float> preset;
+  std::string           gender;  // "female" or "male": which body file it is
+  std::filesystem::path file;
+};
+// Looked for under `meshes\actors\character\character assets` (femalebody_1.nif, malebody_1.nif, of the
+// piece's own weight where there is one) in the piece's own Data folder, then in the other mods
+// installed in `home` (the content folder) under Skyrim/. A piece that carries a body (`carried`, at the
+// game's size) takes the body its own is cut from: the one its vertices match by UV and lie closest on,
+// nine in ten matched and a median within 1.2 cm, which a preset of that body is and another body isn't.
+// A piece that carries none takes its own Data folder's body of its gender, where genderOf says which:
+// the game's own boots are made on the game's own feet, and a mod's boots on nobody knows what.
+std::optional<WholeBody> wholeBody(const std::filesystem::path& file, const wardrobe::BaseCage* carried, const std::filesystem::path& home);
 
 // Where a texture a NIF names (`textures\x\y.dds`, or without its `textures\`) is on disk: under the
 // first folder up from `meshDir` that holds it. Empty when none does.

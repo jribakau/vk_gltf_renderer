@@ -94,6 +94,10 @@ enum class FitPath
 // A vertex the layer placed counts as left there within this, cm (FitDetail::placed).
 constexpr double kPlacedWithin = 0.05;
 
+// A Skyrim outfit's whole body (LoadResult::sourceWhole, which must be set) as the common fit's base: at
+// the outfit's own preset, and at the size the outfit was loaded at.
+std::shared_ptr<const BaseCage> wholeBase(const dson::LoadResult& wearable);
+
 // Fits one item of `wearable` onto `figure` when it was made for another generation: its meshes' cages
 // are rewritten in place (so call it before anything binds them). None leaves it untouched.
 std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& wearable, const dson::Item& item, const std::string& rel, const FitFigure& figure,

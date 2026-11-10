@@ -358,7 +358,10 @@ int32_t lightingShader(Writer& w, uint32_t type, const std::vector<std::string>&
 // far from where it stands the skirt was bound with the left thigh, its vertices carried with it by their
 // weights (the body keeps the plain bind, which is the node tree's). `odd`: three more shapes the reader
 // can't draw: one whose skin is a block of another kind, a BSDynamicTriShape, and one with an effect shader.
-std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32, const SkinAs& as = {}, const V3& thighBound = {0, 0, 0}, bool odd = false)
+// `bodyAt`: how far the body it carries lies from where the others' does (another preset, or another body).
+// `bare`: it carries no body, what would be one being a lining of the dress's cloth.
+std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32, const SkinAs& as = {}, const V3& thighBound = {0, 0, 0}, bool odd = false,
+                            const V3& bodyAt = {0, 0, 0}, bool bare = false)
 {
   Writer        w;
   const int32_t root = w.reserve("NiNode");
@@ -441,8 +444,14 @@ std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32, const Ski
     w.set(tri, std::move(b));
   }
   const int32_t skinShader = lightingShader(w, 5, {"textures\\actors\\character\\female\\femalebody_1.dds"});
-  skinnedShape(w, body, "CBBE", {{{-5, 0, 60}, {0, 0}, {{{0, 1.f}, {1, 0}}}}, {{-5, 0, 40}, {0, 1}, {{{1, 1.f}, {0, 0}}}}, {{0, 0, 40}, {1, 1}, {{{0, 1.f}, {1, 0}}}}},
-               {0, 1, 2}, {pelvis, lThigh}, {{0, 0, 60}, {-6, 0, 60}}, skinShader, -1, {tri});
+  std::vector<Vert> skin{{{-5, 0, 60}, {0, 0}, {{{0, 1.f}, {1, 0}}}}, {{-5, 0, 40}, {0, 1}, {{{1, 1.f}, {0, 0}}}}, {{0, 0, 40}, {1, 1}, {{{0, 1.f}, {1, 0}}}}};
+  for(Vert& v : skin)
+    for(size_t k = 0; k < 3; k++)
+      v.p[k] += bodyAt[k];
+  if(bare)
+    skinnedShape(w, body, "Lining", skin, {0, 1, 2}, {pelvis, lThigh}, {{0, 0, 60}, {-6, 0, 60}}, dress, -1);
+  else
+    skinnedShape(w, body, "CBBE", skin, {0, 1, 2}, {pelvis, lThigh}, {{0, 0, 60}, {-6, 0, 60}}, skinShader, -1, {tri});
   skinnedShape(w, proxy, "COLPANTS", {{{-5, 0, 60}, {0, 0}, {{{0, 1.f}, {1, 0}}}}, {{-5, 0, 40}, {0, 1}, {{{0, 1.f}, {1, 0}}}}, {{0, 0, 40}, {1, 1}, {{{0, 1.f}, {1, 0}}}}},
                {0, 1, 2}, {pelvis, lThigh}, {{0, 0, 60}, {-6, 0, 60}}, -1, -1);
   return w.bytes();
@@ -1000,6 +1009,116 @@ TEST(Nif, AShapeThatCantBeReadIsLeftOutNotTheFile)
   }
   EXPECT_EQ(left, 2u);
   EXPECT_EQ(glow, 1u);
+}
+
+// A Data folder's file at `rel`, its folders made.
+void put(const fs::path& data, const std::string& rel, const std::vector<uint8_t>& bytes = {})
+{
+  const fs::path p = data / fs::path(rel);
+  fs::create_directories(p.parent_path());
+  std::ofstream(p, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+}
+
+// Whose body a piece is for is read as the game's own files tell it: by a folder, by the name, or by the
+// twin beside it.
+TEST(Nif, APiecesGenderIsReadFromItsFolderAndItsName)
+{
+  const Data     data("gender");
+  const fs::path d = data.dir / "data";
+  for(const char* rel : {"meshes/armor/iron/f/cuirass_1.nif", "meshes/armor/iron/male/cuirass_1.nif", "meshes/clothes/farm/torsof_1.nif",
+                         "meshes/clothes/farm/torsom_1.nif", "meshes/armor/rings/goldf_0.nif", "meshes/armor/rings/gold_0.nif",
+                         "meshes/armor/db/hood_f_1.nif", "meshes/armor/db/hood_1.nif", "meshes/armor/guard/helm_1.nif",
+                         "meshes/armor/guard/scarf_1.nif", "meshes/armor/guard/femalecuffs.nif", "meshes/armor/guard/malecuffs.nif"})
+    put(d, rel);
+  const auto of = [&](const char* rel) { return fv::nif::genderOf(d / fs::path(rel)); };
+  EXPECT_EQ(of("meshes/armor/iron/f/cuirass_1.nif"), "female");
+  EXPECT_EQ(of("meshes/armor/iron/male/cuirass_1.nif"), "male");
+  EXPECT_EQ(of("meshes/clothes/farm/torsof_1.nif"), "female");
+  EXPECT_EQ(of("meshes/clothes/farm/torsom_1.nif"), "male");
+  // the man's is the one left unmarked
+  EXPECT_EQ(of("meshes/armor/rings/goldf_0.nif"), "female");
+  EXPECT_EQ(of("meshes/armor/rings/gold_0.nif"), "male");
+  EXPECT_EQ(of("meshes/armor/db/hood_f_1.nif"), "female");
+  EXPECT_EQ(of("meshes/armor/db/hood_1.nif"), "male");
+  EXPECT_EQ(of("meshes/armor/guard/femalecuffs.nif"), "female");
+  EXPECT_EQ(of("meshes/armor/guard/malecuffs.nif"), "male");
+  // a last letter alone says nothing: a helm, a scarf
+  EXPECT_EQ(of("meshes/armor/guard/helm_1.nif"), "");
+  EXPECT_EQ(of("meshes/armor/guard/scarf_1.nif"), "");
+}
+
+// A piece that carries a body takes the whole body its own is cut from, where one is on the machine: in
+// its own Data folder or an installed mod's, at its own preset where it lies off the file's, and not a
+// body it doesn't lie on.
+TEST(Nif, APieceIsMatchedToTheWholeBodyItWasCutFrom)
+{
+  const char*  kBody = "meshes/actors/character/character assets/femalebody_1.nif";
+  const double u     = fv::nif::kUnitCm;
+  {
+    // the game's body installed as a mod of its own, the outfit carrying a cut of it as it is
+    const Data data("whole");
+    put(data.home / "Skyrim" / "The Game", kBody, outfit());
+    const fv::dson::LoadResult w = fv::nif::loadWearable(data.nif, {}, {data.home});
+    ASSERT_TRUE(w.sourceWhole);
+    EXPECT_EQ(w.sourceWhole->positions.size(), 9u);
+    EXPECT_TRUE(w.sourceWholePreset.empty());
+    EXPECT_EQ(w.sourceGender, "female");
+    EXPECT_EQ(w.sourceScale, 1);
+    // the one object for the next piece made on it
+    EXPECT_EQ(fv::nif::loadWearable(data.nif, {}, {data.home}).sourceWhole, w.sourceWhole);
+    // with no library to look in there is none
+    EXPECT_FALSE(fv::nif::loadWearable(data.nif, {}, {}).sourceWhole);
+  }
+  {
+    // the outfit's body at a preset 0.3 units out: the whole body is read there
+    const Data data("whole_preset", outfit(false, 32, {}, {0, 0, 0}, false, {0, 0.3f, 0}));
+    put(data.dir / "data", kBody, outfit());
+    const fv::dson::LoadResult w = fv::nif::loadWearable(data.nif, {}, {data.home});
+    ASSERT_TRUE(w.sourceWhole);
+    ASSERT_EQ(w.sourceWholePreset.size(), 9u);
+    for(size_t v = 0; v < 3; v++)
+    {
+      EXPECT_NEAR(w.sourceWholePreset[v * 3], w.sourceWhole->positions[v * 3], 1e-4);
+      EXPECT_NEAR(w.sourceWholePreset[v * 3 + 1], w.sourceWhole->positions[v * 3 + 1], 1e-4);
+      // Skyrim's +y (its front) is DAZ's +z
+      EXPECT_NEAR(w.sourceWholePreset[v * 3 + 2], w.sourceWhole->positions[v * 3 + 2] + 0.3 * u, 1e-4);
+    }
+  }
+  {
+    // a body 3 units (4 cm) off isn't the body it was cut from
+    const Data data("whole_other", outfit(false, 32, {}, {0, 0, 0}, false, {0, 3, 0}));
+    put(data.dir / "data", kBody, outfit());
+    EXPECT_FALSE(fv::nif::loadWearable(data.nif, {}, {data.home}).sourceWhole);
+  }
+}
+
+// A piece that carries no body takes its own Data folder's body of its gender, where its place or name
+// says which; not another mod's body, which nothing says it was made on.
+TEST(Nif, APieceThatCarriesNoBodyTakesItsOwnFoldersBodyOfItsGender)
+{
+  const char*    kBody = "meshes/actors/character/character assets/femalebody_1.nif";
+  const auto     bare  = outfit(false, 32, {}, {0, 0, 0}, false, {0, 0, 0}, true);
+  const Data     data("whole_bare", bare);
+  const fs::path d = data.dir / "data";
+  put(d, "meshes/armor/iron/f/cuirass_0.nif", bare);
+  put(d, "meshes/armor/iron/m/cuirass_0.nif", bare);
+  // no body anywhere yet
+  EXPECT_FALSE(fv::nif::loadWearable(d / "meshes/armor/iron/f/cuirass_0.nif", {}, {data.home}).sourceWhole);
+  // another mod's body is not taken
+  put(data.home / "Skyrim" / "A Body", kBody, outfit());
+  EXPECT_FALSE(fv::nif::loadWearable(d / "meshes/armor/iron/f/cuirass_0.nif", {}, {data.home}).sourceWhole);
+  // its own folder's is: the woman's for the woman's piece (of the other weight, there being none of its own)
+  put(d, kBody, outfit());
+  const fv::dson::LoadResult w = fv::nif::loadWearable(d / "meshes/armor/iron/f/cuirass_0.nif", {}, {data.home});
+  ASSERT_TRUE(w.sourceWhole);
+  EXPECT_FALSE(w.sourceBase);
+  EXPECT_EQ(w.sourceGender, "female");
+  EXPECT_TRUE(w.sourceWholePreset.empty());
+  for(const std::string& warning : w.warnings)
+    EXPECT_EQ(warning.find("no body to fit"), std::string::npos) << warning;
+  // the man's piece has no man's body there, and a piece that doesn't say whose it is takes none
+  EXPECT_FALSE(fv::nif::loadWearable(d / "meshes/armor/iron/m/cuirass_0.nif", {}, {data.home}).sourceWhole);
+  EXPECT_FALSE(fv::nif::loadWearable(data.nif, {}, {data.home}).sourceWhole);
 }
 
 // A folder of real meshes, named by FV_NIF_DIR (the game's own, unpacked from its archives): how many

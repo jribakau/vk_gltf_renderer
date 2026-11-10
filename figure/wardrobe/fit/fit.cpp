@@ -115,6 +115,19 @@ std::vector<std::optional<V3>> mountsFrom(const dson::Item& item, const std::vec
   return out;
 }
 
+std::shared_ptr<const BaseCage> wholeBase(const dson::LoadResult& w)
+{
+  auto out = std::make_shared<BaseCage>(*w.sourceWhole);
+  if(w.sourceWholePreset.size() == out->positions.size())
+    out->positions = w.sourceWholePreset;
+  for(float& p : out->positions)
+    p = float(double(p) * w.sourceScale);
+  for(SkelBone& b : out->skeleton)
+    for(double& c : b.center)
+      c *= w.sourceScale;
+  return out;
+}
+
 std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const dson::Item& item, const std::string& rel, const FitFigure& figure,
                                  FitPath path)
 {
@@ -132,8 +145,11 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   detail.plan   = planLeaders(itemBones, figureNames);
   const std::vector<SkelBone> figureSkeleton = skeletonOf(figure.scene, {&figure.rig});
   // the source base, carried through the same bone transfer, is what the garment was shaped around:
-  // the body that came with it (a Skyrim outfit's), else its generation's from the library
-  const auto cage = w.sourceBase ? w.sourceBase : loadBaseCage(store, source, genderHint(rel));
+  // the body that came with it (a Skyrim outfit's), else its generation's from the library. The common
+  // fit takes a Skyrim outfit's whole body where one is on this machine: the body it carries is that
+  // body cut to what shows, and a piece may carry none
+  const bool viaWhole = path == FitPath::eCommon && w.sourceWhole;
+  const auto cage     = viaWhole ? wholeBase(w) : w.sourceBase ? w.sourceBase : loadBaseCage(store, source, genderHint(rel));
   std::vector<const dson::Rig*> itemRigs;
   for(int r : item.rigs)
     itemRigs.push_back(&w.rigs[size_t(r)]);
@@ -220,18 +236,31 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   // a shoe keeps the bone transfer and the foot's box alone; a boot's shaft is cloth round the leg
   const bool shoe   = region == FitRegion::eShoe;
   detail.footwear   = shoe;
-  const bool layerAble = cage && !w.sourceBase && !shoe && mapped(source, sourceGender) && mapped(target, targetGender);
-  // a Skyrim outfit has no map to be fitted through, and takes the body's weights where the direct fit lands it
+  // a Skyrim outfit goes through the map of its whole body, where one is on this machine
+  const bool layerAble =
+      !shoe && mapped(target, targetGender) && (w.sourceWhole ? true : cage && !w.sourceBase && mapped(source, sourceGender));
+  // without one it has no map to be fitted through, and takes the body's weights where the direct fit lands it
   const bool weightsOnly = source == Generation::eSkyrim && !shoe;
   detail.commonAble      = layerAble || weightsOnly;
   if(path == FitPath::eCommon && !detail.commonAble)
     notLayered = shoe                            ? "a shoe keeps the fit of its foot"
-                 : source == Generation::eSkyrim ? "a Skyrim outfit has no body map to go through"
+                 : source == Generation::eSkyrim ? "the body this Skyrim outfit was made on isn't installed"
                  : !cage                         ? std::string("the ") + label(source) + " base figure isn't installed"
                                                  : std::string("there is no body map of ") + label(mapped(source, sourceGender) ? target : source);
   if(path == FitPath::eCommon && layerAble)
   {
-    typeMap   = garment::typeMap(store, source, sourceGender);
+    if(viaWhole)
+    {
+      // its body's map, read at the outfit's preset and size: the map is by vertex, whatever the shape
+      if(const auto whole = garment::bodyMap(store, w.sourceWhole, w.sourceGender))
+      {
+        auto own              = std::make_shared<bodymap::TypeMap>(*whole);
+        own->source.positions = cage->positions;
+        typeMap               = std::move(own);
+      }
+    }
+    else
+      typeMap = garment::typeMap(store, source, sourceGender);
     targetMap = garment::typeMap(store, target, targetGender);
     if(typeMap && typeMap->source.positions.size() != cage->positions.size())
       typeMap = nullptr;
@@ -239,7 +268,8 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
       targetMap = nullptr;
     if(!typeMap || !targetMap)
     {
-      notLayered = std::string("Genesis 9's base, or its clone morph of ") + label(!typeMap ? source : target) + ", isn't installed";
+      notLayered = viaWhole && !typeMap ? std::string("Genesis 9's base isn't installed to map its body by")
+                                        : std::string("Genesis 9's base, or its clone morph of ") + label(!typeMap ? source : target) + ", isn't installed";
       typeMap    = nullptr;
     }
     else
@@ -389,7 +419,8 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   detail.shaped      = base.has_value();
   detail.bodyWeights = path == FitPath::eCommon && (detail.common || weightsOnly);
   detail.note        = std::string(label(source)) + " outfit on " + label(target) + ", "
-                + (detail.common                    ? std::string("fitted through the common layer")
+                + (detail.common && viaWhole        ? std::string("fitted through the common layer by the map of the ") + w.sourceGender + " body it was made on"
+                   : detail.common                  ? std::string("fitted through the common layer")
                    : base                           ? std::string("refitted to its skeleton and shape")
                    : source == Generation::eSkyrim ? std::string("refitted to its skeleton (no body came with it, so its shape wasn't matched)")
                                                     : std::string("refitted to its skeleton (the ") + label(source)

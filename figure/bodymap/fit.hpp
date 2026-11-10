@@ -82,6 +82,22 @@ TypeMap makeFittedMap(const FitInputs& inputs, const FitOptions& options = {}, F
 // another seam side's, to the nearest whole vertex next to its neighbours' matches. -1 where none.
 std::vector<int32_t> matchCut(const wardrobe::BaseCage& cut, const wardrobe::BaseCage& whole);
 
+// How a cut body lies on the whole body it was matched to: how many of its vertices matched, and how far
+// those lie from their matches (cm). A body cut from that file lies on it (0); one at another preset of
+// it some millimetres off; one of another body (a man's piece on the woman's body, which share their
+// UVs) centimetres off, or half unmatched.
+struct CutFit
+{
+  size_t matched = 0;
+  double median = 0, p95 = 0;
+};
+CutFit cutFit(const wardrobe::BaseCage& cut, const wardrobe::BaseCage& whole, const std::vector<int32_t>& match);
+
+// The whole body at the cut body's preset (xyz): a matched vertex where the cut body has it, the others
+// moved as the matched ones round them are (each takes the move of the nearest matched vertex over the
+// mesh, then the moves are evened out), and a part with no vertex matched left as it is.
+std::vector<float> atPreset(const wardrobe::BaseCage& whole, const wardrobe::BaseCage& cut, const std::vector<int32_t>& match);
+
 // The cut body's map through the whole body's: a matched vertex lands where its match does, turned as it
 // is; a reference vertex keeps its place when the triangle it lands on is the cut body's too, else it is
 // unmapped. `cut` is the cut body as a map reads it.
