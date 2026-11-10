@@ -121,6 +121,56 @@ TEST(GpuCrashTrail, AFaultsAddressIsNamedByWhatTheDriverBoundThere)
   gpu_trail::forgetJournals();
 }
 
+// What the driver's ray-tracing validation says (FV_RTV) is kept for the lost device's log: each different message
+// once, with the frames it was said in, a warning apart from an error, and only the last few
+TEST(GpuCrashTrail, WhatTheDriversValidationSaidIsKept)
+{
+  gpu_trail::forgetJournals();
+  gpu_trail::frameStart(VK_NULL_HANDLE, 41);
+  const auto say = [](VkDebugUtilsMessageSeverityFlagBitsEXT severity, const char* id, const char* text) {
+    const VkDebugUtilsMessengerCallbackDataEXT data{.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT, .pMessageIdName = id, .pMessage = text};
+    EXPECT_EQ(gpu_trail::validationMessage(severity, VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, &data, nullptr), VkBool32(VK_FALSE));
+  };
+  say(VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT, "RTV", "a BLAS update read a NaN position");
+  say(VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT, "RTV", "nothing wrong");  // not kept
+  gpu_trail::frameStart(VK_NULL_HANDLE, 42);
+  say(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT, nullptr, "a TLAS names a BLAS built after it");
+  for(uint64_t frame = 43; frame <= 45; frame++)
+  {
+    gpu_trail::frameStart(VK_NULL_HANDLE, frame);
+    say(VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT, "RTV", "a BLAS update read a NaN position");
+  }
+  EXPECT_EQ(gpu_trail::messages(), (std::vector<std::string>{"frames 41 to 45, 4 times, error: [RTV] a BLAS update read a NaN position",
+                                                             "frame 42, warning: a TLAS names a BLAS built after it"}));
+
+  for(int i = 0; i < 40; i++)
+    gpu_trail::message(true, "RTV", ("message " + std::to_string(i)).c_str(), false);
+  const std::vector<std::string> kept = gpu_trail::messages();
+  ASSERT_EQ(kept.size(), 16u);
+  EXPECT_EQ(kept.back(), "frame 45, error: [RTV] message 39");
+  EXPECT_EQ(kept.front(), "frame 45, error: [RTV] message 24");
+  gpu_trail::forgetJournals();
+  EXPECT_TRUE(gpu_trail::messages().empty());
+
+  // with the objects a message is about, by the names they were given; the instance says nothing
+  gpu_trail::frameStart(VK_NULL_HANDLE, 50);
+  const VkDebugUtilsObjectNameInfoEXT objects[] = {
+      {.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT, .objectType = VK_OBJECT_TYPE_INSTANCE, .objectHandle = 0x2000, .pObjectName = "instance"},
+      {.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT, .objectType = VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR, .objectHandle = 0x2001, .pObjectName = "BLAS hair"},
+      {.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT, .objectType = VK_OBJECT_TYPE_BUFFER, .objectHandle = 0x2002},
+  };
+  const VkDebugUtilsMessengerCallbackDataEXT about{.sType          = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT,
+                                                   .pMessageIdName = "NVIDIA",
+                                                   .pMessage       = "INVALID_VERTEX_COORDINATE\n    index: 3165\n",
+                                                   .objectCount    = 3,
+                                                   .pObjects       = objects};
+  for(int i = 0; i < 2; i++)
+    gpu_trail::validationMessage(VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT, VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, &about, nullptr);
+  EXPECT_EQ(gpu_trail::messages(), (std::vector<std::string>{"frames 50 to 50, 2 times, error: [NVIDIA] INVALID_VERTEX_COORDINATE\n    index: 3165\n"
+                                                             "    about acceleration structure 0x2001 'BLAS hair'\n    about buffer 0x2002"}));
+  gpu_trail::forgetJournals();
+}
+
 TEST(GpuCrashTrail, WithoutTheExtensionsNothingIsMarked)
 {
   // no device: init never ran, so checkpoints are off and a section or frame marks nothing

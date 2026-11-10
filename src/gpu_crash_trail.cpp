@@ -28,6 +28,8 @@ constexpr size_t kFrameMarkers = 16;  // more than frames in flight: a lost queu
 constexpr double kSlowFrameMs  = 1000;
 constexpr size_t kFreedKept    = 50000;  // buffers, images and memory destroyed, the last of them
 constexpr size_t kWhereShown   = 3;      // of those an address was in, the latest
+constexpr size_t kMessagesKept   = 16;   // of the driver's validation, the last different ones
+constexpr size_t kMessagesLogged = 200;  // and as many written as they come: a bad refit every frame says a dozen a frame
 
 // What a checkpoint points to, at an address that stays for the program's life: its text, and the frame slot it was set
 // in (FrameMarker), so that it names its frame
@@ -55,6 +57,15 @@ struct BufferRange
   bool            internal     = false;    // memory the driver bound for itself
 };
 
+// A validation message kept: what was said, the frames it was first and last said in, how often
+struct Said
+{
+  bool        error = false;
+  std::string text;
+  uint64_t    first = 0, last = 0;
+  uint64_t    count = 0;
+};
+
 struct State
 {
   std::recursive_mutex mutex;  // deviceLost can come from inside what holds it
@@ -76,6 +87,8 @@ struct State
   std::unordered_map<uint64_t, std::string>                   names;  // given before an object was bound
   bool                                                        reported = false;
   std::deque<BufferRange>                   freed;    // the last destroyed, oldest first
+  std::deque<Said>                          said;     // the last different validation messages, oldest first
+  size_t                                    saidLogged = 0;
   std::array<Frame, kFramesKept>         frames{};
   size_t                                 frameCount = 0;
   std::chrono::steady_clock::time_point  start      = std::chrono::steady_clock::now();
@@ -394,7 +407,75 @@ void forgetJournals()
   s.bound.clear();
   s.names.clear();
   s.freed.clear();
-  s.reported = false;
+  s.said.clear();
+  s.saidLogged = 0;
+  s.reported   = false;
+}
+
+void message(bool error, const char* id, const char* text, bool log)
+{
+  if(!text || !*text)
+    return;
+  std::string said = id && *id ? fmt::format("[{}] {}", id, text) : std::string(text);
+  while(!said.empty() && (said.back() == '\n' || said.back() == ' '))
+    said.pop_back();
+  State&                                s = state();
+  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  // one said every frame is one line in the log and one kept, counted
+  for(Said& kept : s.said)
+    if(kept.text == said)
+    {
+      kept.last = s.frame;
+      kept.count++;
+      return;
+    }
+  s.said.push_back({.error = error, .text = said, .first = s.frame, .last = s.frame, .count = 1});
+  if(s.said.size() > kMessagesKept)
+    s.said.pop_front();
+  if(!log || s.saidLogged > kMessagesLogged)
+    return;
+  if(s.saidLogged++ == kMessagesLogged)
+  {
+    LOGW("[gpu] ray-tracing validation: %zu messages written; the rest are only kept, the last %zu, for a lost device's log\n", kMessagesLogged, kMessagesKept);
+    return;
+  }
+  if(error)
+    LOGE("[gpu] ray-tracing validation, frame %llu: %s\n", static_cast<unsigned long long>(s.frame), said.c_str());
+  else
+    LOGW("[gpu] ray-tracing validation, frame %llu: %s\n", static_cast<unsigned long long>(s.frame), said.c_str());
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL validationMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT /*type*/,
+                                                 const VkDebugUtilsMessengerCallbackDataEXT* data, void* user)
+{
+  if(!data || !data->pMessage || !(severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)))
+    return VK_FALSE;
+  // with the objects it is about, by the names they were given. NVIDIA's ray-tracing validation gives only the
+  // instance (left out) and, in its text, an address that is none of ours: the primitive count there tells the mesh
+  std::string text = data->pMessage;
+  while(!text.empty() && (text.back() == '\n' || text.back() == ' '))
+    text.pop_back();
+  for(uint32_t i = 0; data->pObjects && i < data->objectCount; i++)
+  {
+    const VkDebugUtilsObjectNameInfoEXT& o = data->pObjects[i];
+    if(o.objectType == VK_OBJECT_TYPE_INSTANCE)
+      continue;
+    text += fmt::format("\n    about {} 0x{:x}{}", kindOf(o.objectType), o.objectHandle, o.pObjectName && *o.pObjectName ? fmt::format(" '{}'", o.pObjectName) : std::string());
+  }
+  message((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0, data->pMessageIdName, text.c_str(), user != nullptr);
+  return VK_FALSE;
+}
+
+std::vector<std::string> messages()
+{
+  State&                                s = state();
+  std::lock_guard<std::recursive_mutex> lock(s.mutex);
+  std::vector<std::string>              out;
+  for(const Said& kept : s.said)
+    out.push_back(kept.count == 1 ? fmt::format("frame {}, {}: {}", kept.first, kept.error ? "error" : "warning", kept.text) :
+                                    fmt::format("frames {} to {}, {} times, {}: {}", kept.first, kept.last, kept.count,
+                                                kept.error ? "error" : "warning", kept.text));
+  return out;
 }
 
 std::string whereIs(VkDeviceAddress address, VkDeviceSize precision)
@@ -495,6 +576,12 @@ void deviceLost()
   LOGE("[gpu]   the last %zu frames, oldest first:\n", frames.size());
   for(const Frame& f : frames)
     LOGE("[gpu]   %s\n", describe(f).c_str());
+  if(const std::vector<std::string> said = messages(); !said.empty())
+  {
+    LOGE("[gpu]   what the driver's ray-tracing validation said, oldest first:\n");
+    for(const std::string& line : said)
+      LOGE("[gpu]   %s\n", line.c_str());
+  }
 }
 
 }  // namespace gpu_trail

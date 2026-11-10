@@ -16,7 +16,8 @@
 // VK_EXT_device_fault reports (an address the GPU could not read or write, or none: it hung), and the last frames'
 // memory, one of which taking a second or more is logged as it happens; and what each address it could not reach was
 // in, from a journal of the buffers made and destroyed (a buffer's own, or one let go of too soon, or none: an image or
-// the driver's). Each part only where the device has its extension; the frames always.
+// the driver's); and what the driver's ray-tracing validation said, in a run that asked for it (FV_RTV). Each part
+// only where the device has its extension; the frames always.
 namespace gpu_trail {
 
 struct Frame
@@ -56,7 +57,17 @@ VKAPI_ATTR VkBool32 VKAPI_CALL bindingMessage(VkDebugUtilsMessageSeverityFlagBit
 // what the `precision` bytes from `address` were in: a buffer or an image still there, ones destroyed (and in which
 // frames), or none
 std::string whereIs(VkDeviceAddress address, VkDeviceSize precision);
-// every journal forgotten, the driver's report off again (tests)
+// What the driver's ray-tracing validation says (FV_RTV in the environment: VK_NV_ray_tracing_validation, through
+// a debug-utils messenger of its own): a warning or an error about an acceleration structure's build, refit or use
+// in a trace. `log` writes it as it comes, the first time it is said; the last few different ones are kept, each
+// with the frames it came in and how often, for deviceLost(). validationMessage() is the messenger's callback: a
+// `user` that isn't null logs (null where another messenger already writes the same message).
+void message(bool error, const char* id, const char* text, bool log);
+VKAPI_ATTR VkBool32 VKAPI_CALL validationMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
+                                                 const VkDebugUtilsMessengerCallbackDataEXT* data, void* user);
+// the kept ones, oldest first, as deviceLost() writes them
+std::vector<std::string> messages();
+// every journal and kept message forgotten, the driver's report off again (tests)
 void forgetJournals();
 // a frame's memory: the last few hundred are kept
 void record(Frame frame);

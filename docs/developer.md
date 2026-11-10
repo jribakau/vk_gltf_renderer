@@ -1118,6 +1118,22 @@ Use [RENDERING_ARCHITECTURE.md](RENDERING_ARCHITECTURE.md) as the source of trut
 - GPU buffer synchronization
 - TLAS/BLAS lifecycle
 
+### Run under a validator
+
+The app starts the renderer with its own arguments, so a diagnostic run is asked for in the
+environment, read in `main.cpp`:
+
+- `FV_VVL` turns on the Vulkan validation layer, or GPU-assisted validation, which checks what
+  shaders read through descriptors.
+- `FV_RTV` turns on NVIDIA's ray-tracing validation (`VK_NV_ray_tracing_validation`): the driver
+  checks what acceleration structures are built and refitted from and how they are used, and says
+  what is wrong (a NaN vertex in a refit, a mostly degenerate BLAS) before the device goes. Each
+  message is written to the log as it comes and kept for a lost device's log
+  (`gpu_trail::validationMessage`, `gpu_crash_trail.hpp`). The driver names no object of ours: the
+  primitive count in its text tells the mesh.
+
+Either marks the run as validated in `/stats`, so the app's watchdog waits through slower frames.
+
 ---
 
 ## The retained scene and `SceneGpuView`

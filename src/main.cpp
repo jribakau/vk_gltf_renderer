@@ -317,6 +317,7 @@ auto main(int argc, char** argv) -> int
   VkPhysicalDeviceFaultFeaturesEXT faultFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
   VkPhysicalDeviceAddressBindingReportFeaturesEXT bindingReportFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT};
   VkPhysicalDeviceShaderClockFeaturesKHR shaderClockFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
+  VkPhysicalDeviceRayTracingValidationFeaturesNV rtValidationFeature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_VALIDATION_FEATURES_NV};
   // clang-format on
 
   // Requesting the extensions and features needed
@@ -392,6 +393,24 @@ auto main(int argc, char** argv) -> int
     }
     else
       LOGW("FV_VVL=%s: the Vulkan validation layer is on\n", vvlEnv);
+  }
+
+  // FV_RTV=1: NVIDIA's driver checks what acceleration structures are built and refitted from and how they
+  // are traced (VK_NV_ray_tracing_validation), and says what is wrong before the device goes: in the log as
+  // it comes, and kept for a lost device's (gpu_crash_trail.hpp). Asked for only here: every feature of a
+  // requested extension is switched on, and this one slows builds and traces. The driver offers the
+  // extension only with its own variable set as it loads.
+  const char* rtvEnv       = std::getenv("FV_RTV");
+  const bool  rtValidation = rtvEnv && *rtvEnv && std::string_view(rtvEnv) != "0";
+  if(rtValidation)
+  {
+#ifdef _WIN32
+    _putenv_s("NV_ALLOW_RAYTRACING_VALIDATION", "1");
+#else
+    setenv("NV_ALLOW_RAYTRACING_VALIDATION", "1", 1);
+#endif
+    vkSetup.deviceExtensions.push_back({VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME, &rtValidationFeature, false});
+    validatedRun() = true;  // the app's watchdog waits through slower frames
   }
 
   // Optimize VVL for fast pipeline creation while keeping critical validation
@@ -500,6 +519,29 @@ auto main(int argc, char** argv) -> int
     };
     if(vkCreateDebugUtilsMessengerEXT(vkContext.getInstance(), &messenger, nullptr, &bindingMessenger) != VK_SUCCESS)
       bindingMessenger = VK_NULL_HANDLE;
+  }
+  // FV_RTV: the driver's ray-tracing validation speaks through a messenger of its own; where the validation
+  // layer's is on too, that one writes each message and this one only keeps it
+  VkDebugUtilsMessengerEXT rtvMessenger = VK_NULL_HANDLE;
+  if(rtValidation)
+  {
+    static int logs = 0;
+    const VkDebugUtilsMessengerCreateInfoEXT messenger{
+        .sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+        .messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+                           | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+        .pfnUserCallback = &gpu_trail::validationMessage,
+        .pUserData       = vkSetup.enableValidationLayers ? nullptr : &logs,
+    };
+    if(vkContext.hasExtensionEnabled(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME) && rtValidationFeature.rayTracingValidation
+       && vkCreateDebugUtilsMessengerEXT && vkCreateDebugUtilsMessengerEXT(vkContext.getInstance(), &messenger, nullptr, &rtvMessenger) == VK_SUCCESS)
+      LOGW("FV_RTV=%s: the driver's ray-tracing validation is on; builds and traces are slower\n", rtvEnv);
+    else
+    {
+      rtvMessenger = VK_NULL_HANDLE;
+      LOGW("FV_RTV=%s: this driver offers no ray-tracing validation (VK_NV_ray_tracing_validation); nothing is checked\n", rtvEnv);
+    }
   }
   if(faultReport)
   {
@@ -719,9 +761,11 @@ auto main(int argc, char** argv) -> int
   nvvk::CheckError::getInstance().setCallbackFunction(nullptr);
 #endif
 
-  // Deinit Vulkan context: the binding report's messenger first, as it belongs to the instance
+  // Deinit Vulkan context: the binding report's and the validation's messengers first, as they belong to the instance
   if(bindingMessenger)
     vkDestroyDebugUtilsMessengerEXT(vkContext.getInstance(), bindingMessenger, nullptr);
+  if(rtvMessenger)
+    vkDestroyDebugUtilsMessengerEXT(vkContext.getInstance(), rtvMessenger, nullptr);
   vkContext.deinit();
 
   return 0;
