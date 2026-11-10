@@ -7,6 +7,7 @@
 #include <figure/garment/graft.hpp>
 #include <figure/garment/maps.hpp>
 #include <figure/garment/pieces.hpp>
+#include <figure/garment/rigid.hpp>
 #include <figure/mesh/normals.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
@@ -103,6 +104,171 @@ std::optional<std::string> graftGender(dson::Store& store, const dson::LoadResul
   return std::nullopt;
 }
 
+// A part of the item with no skin (wardrobe plan step 4e): its node, the item's top-level object it
+// is under (an index into Item::objects, -1 for none), and the item's own bone above it ("" when it
+// hangs from the figure, or from nothing).
+struct RigidPart
+{
+  int         node   = -1;
+  int         object = -1;
+  std::string bone;
+};
+std::vector<RigidPart> rigidParts(const dson::LoadResult& w, const dson::Item& item)
+{
+  std::map<int, int> drawers;  // mesh -> nodes that draw it
+  for(const Node& n : w.scene.nodes)
+    if(n.mesh >= 0)
+      drawers[n.mesh]++;
+  std::vector<RigidPart> out;
+  for(size_t n = 0; n < w.scene.nodes.size(); n++)
+  {
+    const int m = w.scene.nodes[n].mesh;
+    if(m < 0 || std::find(item.meshes.begin(), item.meshes.end(), m) == item.meshes.end() || drawers[m] != 1)
+      continue;
+    const Mesh& mesh = w.scene.meshes[size_t(m)];
+    if(!mesh.geo || mesh.skinned() || mesh.geo->cagePositions.empty() || !mesh.geo->cageLineStart.empty())
+      continue;
+    RigidPart part;
+    part.node = int(n);
+    for(int at = int(n); at >= 0 && part.object < 0; at = w.scene.nodes[size_t(at)].parent)
+    {
+      for(size_t o = 0; o < item.objects.size(); o++)
+        if(item.objects[o].first == at)
+          part.object = int(o);
+      if(part.object < 0 && part.bone.empty() && at != int(n) && w.scene.nodes[size_t(at)].kind == NodeKind::eBone)
+        part.bone = w.scene.nodes[size_t(at)].name;
+    }
+    out.push_back(std::move(part));
+  }
+  return out;
+}
+
+// A figure bone's centre, by its name or the name another generation gives it ("lHand", "l_hand").
+std::optional<V3> figureCentre(const std::vector<SkelBone>& figure, const std::string& bone)
+{
+  std::vector<std::string> names;
+  for(const SkelBone& b : figure)
+  {
+    if(b.name == bone)
+      return b.center;
+    names.push_back(b.name);
+  }
+  if(const auto alias = matchBone(bone, names))
+    for(const SkelBone& b : figure)
+      if(b.name == *alias)
+        return b.center;
+  return std::nullopt;
+}
+
+// What moves the rigid parts have
+struct RigidPlaced
+{
+  int own = 0, skin = 0, bone = 0;
+};
+
+// Moves each rigid part of `item` as the surface it sits on moved (garment/rigid.hpp), in its mesh's
+// own frame, against what the commit does to it at rest: a part under one of the item's bones stays
+// where it was made (its bone follows the figure's from there), one hung from a figure bone moves by
+// the joint (mountFrom). Its surface, first that applies:
+// - its item's own mesh, where it lies within kOnOwn of it: `made` to `fitted`, per mesh;
+// - the skin round it, with the maps (`cage` the source body, `typeMap`, `targetMap`; `body` the
+//   figure's cage): the source's vertices within kSkinReach, to where the maps put them;
+// - the bone it hangs from among the item's, by the bone transfer (`rigid`).
+RigidPlaced placeRigidParts(dson::LoadResult& w, const dson::Item& item, const std::map<int, std::vector<float>>& made,
+                            const std::map<int, std::vector<float>>& fitted, const BaseCage* cage, const bodymap::TypeMap* typeMap,
+                            const bodymap::TypeMap* targetMap, std::span<const float> body, const std::vector<SkelBone>& figureSkeleton,
+                            const std::vector<std::optional<V3>>& mountFrom, const std::map<std::string, Rigid>& rigid)
+{
+  constexpr double kOnOwn = 1, kOwnReach = 3, kSkinReach = 5;
+  constexpr size_t kFewest = 8;
+  RigidPlaced      placed;
+  for(const RigidPart& part : rigidParts(w, item))
+  {
+    Mesh&              mesh  = w.scene.meshes[size_t(w.scene.nodes[size_t(part.node)].mesh)];
+    const Mat4         world = w.scene.world(part.node);
+    const auto&        local = mesh.geo->cagePositions;
+    std::vector<float> at(local.size());
+    for(size_t v = 0; v + 2 < local.size(); v += 3)
+    {
+      const Vec3 p = world.transformPoint({local[v], local[v + 1], local[v + 2]});
+      at[v] = float(p.x), at[v + 1] = float(p.y), at[v + 2] = float(p.z);
+    }
+    std::optional<garment::RigidMove> move;
+    // its item's own mesh
+    for(const auto& [m, before] : made)
+    {
+      const auto after = fitted.find(m);
+      if(after == fitted.end() || after->second.size() != before.size())
+        continue;
+      const garment::Near near = garment::nearVertices(before, at, kOwnReach);
+      if(near.least < 0 || near.least > kOnOwn || near.vertices.size() < kFewest)
+        continue;
+      std::vector<Vec3> a, b;
+      for(const size_t v : near.vertices)
+      {
+        a.push_back({before[v * 3], before[v * 3 + 1], before[v * 3 + 2]});
+        b.push_back({after->second[v * 3], after->second[v * 3 + 1], after->second[v * 3 + 2]});
+      }
+      move = garment::bestMove(a, b);
+      placed.own += move.has_value();
+      break;
+    }
+    // the skin round it
+    if(!move && cage && typeMap && targetMap)
+    {
+      const garment::Near near = garment::nearVertices(cage->positions, at, kSkinReach);
+      std::vector<Vec3>   a, b;
+      for(const size_t v : near.vertices)
+        if(const auto p = garment::onFigure(*typeMap, *targetMap, body, v))
+        {
+          a.push_back({cage->positions[v * 3], cage->positions[v * 3 + 1], cage->positions[v * 3 + 2]});
+          b.push_back(*p);
+        }
+      if(a.size() >= kFewest)
+      {
+        move = garment::bestMove(a, b);
+        placed.skin += move.has_value();
+      }
+    }
+    // the item's bone it hangs from, as the bone transfer moves that bone's skin
+    if(!move && !part.bone.empty())
+      if(const auto r = rigid.find(part.bone); r != rigid.end())
+      {
+        const Rigid& t = r->second;
+        // the transfer's turn as a quaternion, from its matrix (rows)
+        const double tr = t.r[0] + t.r[4] + t.r[8];
+        Quat         q;
+        if(tr > -0.999)
+        {
+          const double s = std::sqrt(1 + tr) * 2;
+          q              = {(t.r[7] - t.r[5]) / s, (t.r[2] - t.r[6]) / s, (t.r[3] - t.r[1]) / s, s / 4};
+        }
+        move = garment::RigidMove{q, {t.from[0], t.from[1], t.from[2]}, {t.to[0], t.to[1], t.to[2]}};
+        placed.bone++;
+      }
+    if(!move)
+      continue;
+    // what the commit does at rest: a figure bone's prop moves by its joint
+    Vec3 commit;
+    if(part.bone.empty() && part.object >= 0 && size_t(part.object) < mountFrom.size() && mountFrom[size_t(part.object)])
+      if(const auto to = figureCentre(figureSkeleton, item.objects[size_t(part.object)].second))
+      {
+        const V3& from = *mountFrom[size_t(part.object)];
+        commit         = {(*to)[0] - from[0], (*to)[1] - from[1], (*to)[2] - from[2]};
+      }
+    // into the mesh's frame: world back out, the commit's move undone, the part's move made
+    const Mat4         change = inverse(world) * compose(Vec3{} - commit, Quat{}, {1, 1, 1}) * move->matrix() * world;
+    std::vector<float> moved(local.size());
+    for(size_t v = 0; v + 2 < local.size(); v += 3)
+    {
+      const Vec3 p = change.transformPoint({local[v], local[v + 1], local[v + 2]});
+      moved[v] = float(p.x), moved[v + 1] = float(p.y), moved[v + 2] = float(p.z);
+    }
+    writeCage(*mesh.geo, moved);
+  }
+  return placed;
+}
+
 }  // namespace
 
 std::optional<std::pair<Generation, Generation>> generationsOf(const dson::LoadResult& wearable, const dson::Item& item, const std::string& rel,
@@ -195,14 +361,33 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     const Mesh& mesh = w.scene.meshes[size_t(m)];
     return mesh.geo && !mesh.cageSkin.start.empty();
   });
+  const std::string targetGender = genderHint(figure.folder);
   if(!skinned)
   {
     const bool onBones = std::any_of(item.objects.begin(), item.objects.end(), [](const auto& o) { return !o.second.empty(); });
     const bool carried = std::any_of(detail.mountFrom.begin(), detail.mountFrom.end(), [](const auto& f) { return f.has_value(); });
-    detail.note        = std::string(label(source)) + " prop on " + label(target)
-                + (!onBones  ? std::string(", placed as it was made.")
-                   : carried ? std::string(", moved with the joint it hangs from.")
-                             : std::string(": the ") + label(source) + " base figure isn't installed, so it hangs where it was made for that figure.");
+    // with the common fit, a prop near the skin moves as the skin round it does, through the maps
+    bool bySkin = false;
+    if(cage && !w.sourceBase && source != Generation::eSkyrim)
+    {
+      const auto typeMap   = garment::typeMap(store, source, sourceGender);
+      const auto targetMap = garment::typeMap(store, target, targetGender);
+      const auto& bodyCage = figure.scene.meshes[size_t(figure.mesh)].geo->cagePositions;
+      if(typeMap && targetMap && typeMap->source.positions.size() == cage->positions.size() && targetMap->source.positions.size() == bodyCage.size())
+      {
+        detail.commonAble = true;
+        if(path == FitPath::eCommon)
+        {
+          bySkin = placeRigidParts(w, item, {}, {}, cage.get(), typeMap.get(), targetMap.get(), bodyCage, figureSkeleton, detail.mountFrom, rigid).skin > 0;
+          detail.common = bySkin;
+        }
+      }
+    }
+    detail.note = std::string(label(source)) + " prop on " + label(target)
+                  + (bySkin    ? std::string(", moved with the skin it sits on, through the common layer.")
+                     : !onBones ? std::string(", placed as it was made.")
+                     : carried  ? std::string(", moved with the joint it hangs from.")
+                                : std::string(": the ") + label(source) + " base figure isn't installed, so it hangs where it was made for that figure.");
     return detail;
   }
   std::vector<float>       baseMoved;
@@ -255,7 +440,6 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   bodymap::Body                           onto;
   garment::Target                         decodeOnto;
   std::string                             notLayered;  // why the layer, asked for, didn't fit it
-  const std::string targetGender = genderHint(figure.folder);
   const auto        mapped       = [](Generation g, const std::string& gender) { return g == Generation::eG9 || !bodymap::cloneFile(g, gender).empty(); };
   // a shoe keeps the bone transfer and the foot's box alone; a boot's shaft is cloth round the leg
   const bool shoe   = region == FitRegion::eShoe;
@@ -313,6 +497,10 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     }
   }
 
+  // its parts with no skin (a pin on a beret) are moved after, as what they sit on was: its meshes as
+  // made and as fitted
+  const bool                          hasRigid = !rigidParts(w, item).empty();
+  std::map<int, std::vector<float>>   madeCages, fittedCages;
   for(int meshIdx : item.meshes)
   {
     Mesh& m = w.scene.meshes[size_t(meshIdx)];
@@ -469,8 +657,17 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
         if(auto hides = garment::hiddenThrough(*cage, g->hidden, *typeMap, *targetMap, body.cagePolyStart, body.cagePolyVerts); !hides.empty())
           detail.hides[meshIdx] = std::move(hides);
     }
+    if(hasRigid)
+    {
+      madeCages[meshIdx]   = m.geo->cagePositions;
+      fittedCages[meshIdx] = positions;
+    }
     writeCage(*m.geo, positions);
   }
+  RigidPlaced rigidMoved;
+  if(hasRigid)
+    rigidMoved = placeRigidParts(w, item, madeCages, fittedCages, path == FitPath::eCommon && typeMap ? cage.get() : nullptr, typeMap.get(), targetMap.get(),
+                                 body.cagePositions, figureSkeleton, detail.mountFrom, rigid);
   detail.shaped      = base.has_value();
   detail.bodyWeights = path == FitPath::eCommon && (detail.common || weightsOnly);
   detail.note        = std::string(label(source)) + " outfit on " + label(target) + ", "
@@ -484,6 +681,8 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
                    : weightsOnly                             ? std::string(", its cloth on the skin taking the body's weights")
                                                              : ", the old way: " + (notLayered.empty() ? std::string("none of its cloth lies near the skin") : notLayered))
                 + (detail.hides.empty() ? std::string() : std::string(", hiding the skin under it as it does on its own figure"))
+                + (rigidMoved.own + rigidMoved.skin + rigidMoved.bone == 0 ? std::string()
+                                                                           : std::string(", its parts with no skin moved with what they sit on"))
                 + ".";
   return detail;
 }

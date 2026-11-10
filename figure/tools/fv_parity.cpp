@@ -1915,6 +1915,144 @@ int main(int argc, char** argv)
         loaded->settle();
         dumps[step.value("label", std::string("clearance"))] = {{"clearance", items}, {"notes", worn.notes}};
       }
+      else if(step.contains("prop"))
+      {
+        // {"prop": rel}: wears a prop hung from a bone (no skin) and reports, vertex by vertex, its
+        // clearance from the skin on the base of the generation it was made for, as it was made, and on
+        // the loaded figure, worn: the measure of wardrobe plan step 4e. Then takes it off.
+        if(!loaded)
+          throw std::runtime_error("prop before a figure loads");
+        const std::string rel  = step["prop"].get<std::string>();
+        const std::string file = rel.substr(std::min(rel.find_first_not_of('/'), rel.size()));
+        const auto        pointsOf = [](const fv::SceneGraph& scene, int node) {
+          const fv::Mat4     world = scene.world(node);
+          const auto&        cage  = scene.meshes[size_t(scene.nodes[size_t(node)].mesh)].geo->cagePositions;
+          std::vector<float> out(cage.size());
+          for(size_t v = 0; v + 2 < cage.size(); v += 3)
+          {
+            const fv::Vec3 p = world.transformPoint({cage[v], cage[v + 1], cage[v + 2]});
+            out[v] = float(p.x), out[v + 1] = float(p.y), out[v + 2] = float(p.z);
+          }
+          return out;
+        };
+        const auto propNodes = [](const fv::SceneGraph& scene, const std::vector<int>& meshes) {
+          std::vector<int> out;
+          for(size_t n = 0; n < scene.nodes.size(); n++)
+          {
+            const int m = scene.nodes[n].mesh;
+            if(m >= 0 && std::find(meshes.begin(), meshes.end(), m) != meshes.end() && scene.meshes[size_t(m)].geo && !scene.meshes[size_t(m)].skinned())
+              out.push_back(int(n));
+          }
+          return out;
+        };
+        // how far a rigid part lies from its item's skinned meshes: what it was made to sit on
+        const auto offItem = [&](const fv::SceneGraph& scene, int node, const std::vector<int>& meshes) {
+          const std::vector<float> pts = pointsOf(scene, node);
+          double                   best = -1;
+          for(int m : meshes)
+          {
+            const fv::Mesh& me = scene.meshes[size_t(m)];
+            if(!me.geo || !me.skinned())
+              continue;
+            const auto& c = me.geo->cagePositions;
+            for(size_t a = 0; a + 2 < pts.size(); a += 3)
+              for(size_t b = 0; b + 2 < c.size(); b += 3)
+              {
+                const double d = std::sqrt(double(pts[a] - c[b]) * (pts[a] - c[b]) + double(pts[a + 1] - c[b + 1]) * (pts[a + 1] - c[b + 1])
+                                           + double(pts[a + 2] - c[b + 2]) * (pts[a + 2] - c[b + 2]));
+                best = best < 0 ? d : std::min(best, d);
+              }
+          }
+          return best;
+        };
+        std::vector<double> offBefore;
+        const auto          centroid = [](const std::vector<float>& p) {
+          double c[3] = {0, 0, 0};
+          for(size_t v = 0; v + 2 < p.size(); v += 3)
+            for(size_t k = 0; k < 3; k++)
+              c[k] += p[v + k];
+          const double n = std::max<double>(1, double(p.size() / 3));
+          return std::array<double, 3>{c[0] / n, c[1] / n, c[2] / n};
+        };
+        std::vector<std::array<double, 3>> centreBefore;
+        std::array<double, 3>              headFrom{}, headTo{};
+        // as made: against its generation's base
+        std::vector<std::vector<double>> before;
+        {
+          const auto            inputs = loaded->wearInputs();
+          fv::dson::LoadOptions options;
+          options.attach = fv::dson::AttachTarget{inputs.scene.get(), inputs.rig.get(), "measure"};
+          const fv::dson::LoadResult    w        = fv::dson::loadDson(*store, file, options);
+          const std::string             morphDir = inputs.morphDir;
+          const fv::wardrobe::FitFigure figure{*inputs.scene, *inputs.rig, inputs.bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
+          for(const fv::dson::Item& item : w.items)
+          {
+            const auto gens = fv::wardrobe::generationsOf(w, item, rel, figure);
+            const auto base = gens ? fv::wardrobe::loadBaseCage(*store, gens->first, fv::wardrobe::genderHint(rel)) : nullptr;
+            for(int n : propNodes(w.scene, item.meshes))
+            {
+              before.push_back(base ? signedClearance(base->positions, base->tris, pointsOf(w.scene, n)) : std::vector<double>{});
+              offBefore.push_back(offItem(w.scene, n, item.meshes));
+              centreBefore.push_back(centroid(pointsOf(w.scene, n)));
+            }
+            if(base)
+              for(const auto& b : base->skeleton)
+                if(b.name == "head")
+                  headFrom = {b.center[0], b.center[1], b.center[2]};
+          }
+          for(const auto& [id, node] : inputs.rig->bones)
+          {
+            const fv::Node& n = inputs.scene->nodes[size_t(node)];
+            if((n.name == "head") && n.joint)
+              headTo = {n.joint->center[0], n.joint->center[1], n.joint->center[2]};
+          }
+        }
+        auto wearInputs      = loaded->wearInputs();
+        wearInputs.commonFit = step.value("fit", std::string()) == "common";
+        const fv::WearResult worn = loaded->commitWear(loaded->prepareWear(rel, fv::WearQuality{}, wearInputs), rel);
+        loaded->settle();
+        const auto&                ctx  = loaded->loaded.morphs;
+        const fv::mesh::BuiltMesh& body = *loaded->loaded.scene.meshes[size_t(ctx.meshes[ctx.mainMeshes.at(0)].mesh)].geo;
+        std::vector<int>           meshes;
+        for(int id : worn.items)
+          if(const fv::WornItem* item = loaded->item(id))
+            meshes.insert(meshes.end(), item->meshes.begin(), item->meshes.end());
+        const std::vector<int> nodes = propNodes(loaded->loaded.scene, meshes);
+        Json                   props = Json::array();
+        for(size_t k = 0; k < nodes.size(); k++)
+        {
+          const std::vector<double> after = signedClearance(body.cagePositions, body.dsonTris, pointsOf(loaded->loaded.scene, nodes[k]));
+          if(k >= before.size() || before[k].size() != after.size() || after.empty())
+            continue;
+          std::vector<double> change(after.size()), was = before[k], now = after;
+          for(size_t v = 0; v < after.size(); v++)
+            change[v] = after[v] - before[k][v];
+          std::sort(change.begin(), change.end());
+          std::sort(was.begin(), was.end());
+          std::sort(now.begin(), now.end());
+          const auto q = [](const std::vector<double>& s, double f) { return s[std::min(s.size() - 1, size_t(f * double(s.size())))]; };
+          std::cerr << std::fixed << std::setprecision(2) << "prop " << loaded->loaded.scene.nodes[size_t(nodes[k])].name << " (" << after.size()
+                    << " vertices): nearest the skin as made " << was.front() << ", worn " << now.front() << "; median " << q(was, 0.5) << " to "
+                    << q(now, 0.5) << "; change " << q(change, 0.5) << " [" << q(change, 0.05) << ", " << q(change, 0.95) << "]";
+          if(k < offBefore.size() && offBefore[k] >= 0)
+            std::cerr << "; from its item's own mesh " << offBefore[k] << " to " << offItem(loaded->loaded.scene, nodes[k], meshes);
+          if(k < centreBefore.size())
+          {
+            const auto c = centroid(pointsOf(loaded->loaded.scene, nodes[k]));
+            std::cerr << "; moved " << c[0] - centreBefore[k][0] << " " << c[1] - centreBefore[k][1] << " " << c[2] - centreBefore[k][2] << " (head joint "
+                      << headTo[0] - headFrom[0] << " " << headTo[1] - headFrom[1] << " " << headTo[2] - headFrom[2] << ")";
+          }
+          std::cerr << "\n" << std::defaultfloat << std::setprecision(6);
+          props.push_back({{"node", loaded->loaded.scene.nodes[size_t(nodes[k])].name}, {"madeNearest", r(was.front())}, {"wornNearest", r(now.front())},
+                           {"change", r(q(change, 0.5))}, {"p05", r(q(change, 0.05))}, {"p95", r(q(change, 0.95))}});
+        }
+        for(const std::string& n : worn.notes)
+          std::cerr << "  note: " << n << "\n";
+        dumps[step.value("label", std::string("prop"))] = {{"props", props}, {"notes", worn.notes}};
+        for(int id : worn.items)
+          loaded->removeItem(id);
+        loaded->settle();
+      }
       else if(step.contains("graft"))
       {
         // {"graft": rel[, "fit": "common"]}: wears a geograft on the loaded figure and reports the body

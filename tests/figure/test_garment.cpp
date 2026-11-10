@@ -20,6 +20,7 @@
 #include <figure/figure.hpp>
 #include <figure/garment/pieces.hpp>
 #include <figure/garment/quads.hpp>
+#include <figure/garment/rigid.hpp>
 #include <figure/garment/weights.hpp>
 
 namespace {
@@ -381,6 +382,68 @@ TEST(Garment, AGraftWithNothingToReadHidesNothing)
   // a body read from elsewhere has no polygons to number
   const std::vector<int32_t> polyStart{0, 4}, polyVerts{0, 1, 6, 5}, hidden{0};
   EXPECT_TRUE(fv::garment::hiddenThrough(source, hidden, typeOf(body, body), typeOf(body, body), polyStart, polyVerts).empty());
+}
+
+TEST(GarmentRigid, TheBestMoveIsTheTurnAndShiftThatMadeIt)
+{
+  // a patch turned 12 degrees about y and shifted
+  const Quat        turn{0, std::sin(6 * std::numbers::pi / 180), 0, std::cos(6 * std::numbers::pi / 180)};
+  const Vec3        shift{1, -9, 2};
+  std::vector<Vec3> a, b;
+  for(int i = 0; i < 5; i++)
+    for(int j = 0; j < 5; j++)
+    {
+      const Vec3 p{double(i), 0.3 * i * j, double(j)};
+      a.push_back(p);
+      b.push_back(fv::rotate(p, turn) + shift);
+    }
+  const auto m = fv::garment::bestMove(a, b);
+  ASSERT_TRUE(m.has_value());
+  const Vec3 q = m->apply({10, 3, -4}), want = fv::rotate(Vec3{10, 3, -4}, turn) + shift;
+  EXPECT_NEAR(q.x, want.x, 1e-6);
+  EXPECT_NEAR(q.y, want.y, 1e-6);
+  EXPECT_NEAR(q.z, want.z, 1e-6);
+  // the matrix says the same
+  const Vec3 r = m->matrix().transformPoint({10, 3, -4});
+  EXPECT_NEAR(r.x, want.x, 1e-6);
+  EXPECT_NEAR(r.z, want.z, 1e-6);
+}
+
+TEST(GarmentRigid, FewPointsOrATurnTooFarMoveByTheShiftAlone)
+{
+  const std::vector<Vec3> a{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}, b{{0, 5, 0}, {0, 6, 0}, {-1, 5, 0}};
+  const auto              few = fv::garment::bestMove(a, b);
+  ASSERT_TRUE(few.has_value());
+  EXPECT_NEAR(few->turn.w, 1, 1e-12);
+  // a quarter turn about z, past kRigidMaxTurn
+  std::vector<Vec3> c, d;
+  for(int i = 0; i < 6; i++)
+  {
+    const Vec3 p{double(i % 3), double(i / 3), 0.5 * i};
+    c.push_back(p);
+    d.push_back({-p.y, p.x, p.z});
+  }
+  const auto far = fv::garment::bestMove(c, d);
+  ASSERT_TRUE(far.has_value());
+  EXPECT_NEAR(far->turn.w, 1, 1e-12);
+  EXPECT_FALSE(fv::garment::bestMove({}, {}).has_value());
+}
+
+TEST(GarmentRigid, ThePartsSurfaceIsWhatLiesWithinReach)
+{
+  const Body               body = plate(8, 16);  // 2 cm cells, x and z from -8 to 8
+  const std::vector<float> part{0.f, 0.5f, 0.f, 1.f, 0.5f, 0.f};
+  const auto               near = fv::garment::nearVertices(body.positions, part, 2.2);
+  EXPECT_NEAR(near.least, 0.5, 1e-6);
+  for(const size_t v : near.vertices)
+    EXPECT_LE(std::abs(body.positions[v * 3]) + std::abs(body.positions[v * 3 + 2]), 4.01f) << v;
+  EXPECT_GE(near.vertices.size(), 5u);
+  // a vertex of the reference lands on the figure where the reference's own map puts it
+  const TypeMap same = fv::garment::referenceMap(body);
+  const auto    p    = fv::garment::onFigure(same, same, body.positions, 40);
+  ASSERT_TRUE(p.has_value());
+  EXPECT_NEAR(p->x, body.positions[120], 1e-6);
+  EXPECT_NEAR(p->z, body.positions[122], 1e-6);
 }
 
 TEST(Garment, AnOffsetTurnsBackIntoTheTargetsFrame)
