@@ -19,6 +19,7 @@
 #include <figure/jobs/pool.hpp>
 #include <figure/nif/nif_wear.hpp>
 #include <figure/garment/decode.hpp>
+#include <figure/garment/pieces.hpp>
 #include <figure/garment/weights.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
@@ -636,6 +637,14 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
       if(std::none_of(hold.begin(), hold.end(), [](float h) { return h > 0; }))
         continue;
       m.cageSkin = garment::withBodyWeights(m.cageSkin, m.bones.size(), body.cageSkin, *out->bindings[i], hold);
+      // a hard piece on one set of weights, so a pose carries it whole
+      if(const auto pieces = fit.pieces.find(part.mesh); pieces != fit.pieces.end() && pieces->second.size() == hold.size())
+      {
+        garment::Pieces whole{pieces->second, 0};
+        for(int32_t p : whole.of)
+          whole.count = std::max(whole.count, p + 1);
+        m.cageSkin = garment::rigidSkin(m.cageSkin, whole);
+      }
       m.skin     = mesh::skin(*m.geo, m.cageSkin);
       out->bodySkinned.insert(part.mesh);
     }

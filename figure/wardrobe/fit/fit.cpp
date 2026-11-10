@@ -5,6 +5,7 @@
 #include <figure/garment/convert.hpp>
 #include <figure/garment/decode.hpp>
 #include <figure/garment/maps.hpp>
+#include <figure/garment/pieces.hpp>
 #include <figure/mesh/normals.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
@@ -353,6 +354,22 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     // a dynamic surface owns its collision: dForce drapes it over the body, so it is not pushed out here
     if(!(m.dforce && m.dforce->simulated()))
       positions = pushOutOfBody(positions, m.geo->dsonTris, bodySurface, m.geo->cageLineStart, m.geo->cageLineVerts, footwear ? 3.f : kSunkDepth);
+    // with the common fit, a hard piece (a button, a buckle, a plate on one bone) is put back in the
+    // shape it was made in, where the fit and the push left it. Not a shoe's, fitted as a whole
+    // already, nor cloth dForce drapes
+    if(path == FitPath::eCommon && !shoe && m.geo->cageLineStart.empty() && !(m.dforce && m.dforce->simulated()))
+    {
+      garment::Pieces pieces = garment::hardPieces(m.geo->cagePositions, m.geo->dsonTris, skin);
+      if(pieces.count > 0)
+      {
+        positions = garment::keepPieces(m.geo->cagePositions, positions, pieces);
+        // those a pose carries whole, for its skin
+        for(int32_t& p : pieces.of)
+          if(p >= 0 && !pieces.hard[size_t(p)])
+            p = -1;
+        detail.pieces[meshIdx] = std::move(pieces.of);
+      }
+    }
     // a vertex its address holds whole, left where the address put it, keeps that place on the body as
     // its binding (kPlacedWithin: the settle or the push moved the others, which bind by where they are)
     if(layered)

@@ -15,6 +15,7 @@
 #include <figure/garment/convert.hpp>
 #include <figure/garment/decode.hpp>
 #include <figure/garment/maps.hpp>
+#include <figure/garment/pieces.hpp>
 #include <figure/garment/weights.hpp>
 
 namespace {
@@ -538,4 +539,124 @@ TEST(Garment, ASeamTheBonesTearIsMended)
   for(float& x : shifted)
     x += 3;
   EXPECT_EQ(fv::garment::mend(made, shifted, tris), shifted);
+}
+
+namespace {
+
+// Cloth with a button: a plate 20 cm across at y = 0, and a 2 cm plate of 2 x 2 cells joined to nothing,
+// 1 cm over its middle. The cloth's vertices come first.
+struct Buttoned
+{
+  std::vector<float>    positions;
+  std::vector<uint32_t> tris;
+  size_t                cloth = 0;
+};
+Buttoned buttoned()
+{
+  Buttoned   out;
+  const Body cloth = plate(), button = plate(2, 2);
+  out.positions    = cloth.positions;
+  out.tris         = cloth.tris;
+  out.cloth        = cloth.positions.size() / 3;
+  for(size_t v = 0; v * 3 < button.positions.size(); v++)
+    out.positions.insert(out.positions.end(), {button.positions[v * 3], 1.f, button.positions[v * 3 + 2]});
+  for(uint32_t t : button.tris)
+    out.tris.push_back(uint32_t(out.cloth) + t);
+  return out;
+}
+
+}  // namespace
+
+TEST(GarmentPieces, ASmallPartJoinedToNothingIsAPiece)
+{
+  const Buttoned g = buttoned();
+  // every vertex on its own weights: nothing is a piece by its weights
+  std::vector<std::vector<std::pair<int, float>>> rows;
+  for(size_t v = 0; v * 3 < g.positions.size(); v++)
+    rows.push_back({{0, 0.5f + 0.004f * float(v % 100)}, {1, 0.5f - 0.004f * float(v % 100)}});
+  const auto pieces = fv::garment::hardPieces(g.positions, g.tris, skinOf(rows));
+  EXPECT_EQ(pieces.count, 1);
+  for(size_t v = 0; v < pieces.of.size(); v++)
+    EXPECT_EQ(pieces.of[v], v < g.cloth ? -1 : 0) << v;
+  // 2.8 cm corner to corner: a pose carries it whole. One of 6 cm keeps its shape in a fit and bends in a pose
+  ASSERT_EQ(pieces.hard.size(), 1u);
+  EXPECT_TRUE(pieces.hard[0]);
+  fv::garment::PieceOptions tiny;
+  tiny.stud = 1;
+  EXPECT_FALSE(fv::garment::hardPieces(g.positions, g.tris, skinOf(rows), tiny).hard[0]);
+  // a small garment's only part is its body, not a piece
+  const Body alone = plate(2, 2);
+  rows.resize(alone.positions.size() / 3);
+  EXPECT_EQ(fv::garment::hardPieces(alone.positions, alone.tris, skinOf(rows)).count, 0);
+}
+
+TEST(GarmentPieces, APartOnOneSetOfWeightsIsAPiece)
+{
+  // a plate 20 cm across all on one bone: a piece by its weights, whatever its size; unless it is
+  // longer than a plate is (a skirt hung all on the hip)
+  const Body one = plate();
+  const std::vector<std::vector<std::pair<int, float>>> rows(one.positions.size() / 3, {{3, 1.f}});
+  EXPECT_EQ(fv::garment::hardPieces(one.positions, one.tris, skinOf(rows)).count, 1);
+  const Body long_ = plate(8, 60);
+  EXPECT_EQ(fv::garment::hardPieces(long_.positions, long_.tris, skinOf(rows)).count, 0);
+}
+
+TEST(GarmentPieces, APieceKeepsItsShapeWhereTheFitPutIt)
+{
+  const Buttoned g = buttoned();
+  std::vector<std::vector<std::pair<int, float>>> rows(g.positions.size() / 3, {{0, 0.5f}, {1, 0.5f}});
+  for(size_t v = 0; v < g.cloth; v++)
+    rows[v] = {{0, 0.5f + 0.004f * float(v % 100)}, {1, 0.5f - 0.004f * float(v % 100)}};
+  const auto pieces = fv::garment::hardPieces(g.positions, g.tris, skinOf(rows));
+  ASSERT_EQ(pieces.count, 1);
+  // the fit: everything 3 cm up and a quarter turn about y, the cloth stretched and the button bent
+  // (its vertices pushed up by how far along x they lie)
+  std::vector<float> fitted = g.positions;
+  for(size_t v = 0; v * 3 < fitted.size(); v++)
+  {
+    const float x = g.positions[v * 3], y = g.positions[v * 3 + 1], z = g.positions[v * 3 + 2];
+    fitted[v * 3]     = z * (v < g.cloth ? 1.3f : 1.f);
+    fitted[v * 3 + 1] = y + 3 + (v < g.cloth ? 0.f : 0.4f * x * x);
+    fitted[v * 3 + 2] = -x;
+  }
+  const auto kept = fv::garment::keepPieces(g.positions, fitted, pieces);
+  // the cloth is the fit's
+  for(size_t i = 0; i < g.cloth * 3; i++)
+    EXPECT_FLOAT_EQ(kept[i], fitted[i]) << i;
+  // the button's edges are as long as they were made
+  for(size_t t = 0; t + 2 < g.tris.size(); t += 3)
+    for(size_t e = 0; e < 3; e++)
+    {
+      const size_t a = g.tris[t + e], b = g.tris[t + (e + 1) % 3];
+      if(a < g.cloth)
+        continue;
+      double was = 0, is = 0;
+      for(size_t c = 0; c < 3; c++)
+      {
+        was += double(g.positions[a * 3 + c] - g.positions[b * 3 + c]) * (g.positions[a * 3 + c] - g.positions[b * 3 + c]);
+        is += double(kept[a * 3 + c] - kept[b * 3 + c]) * (kept[a * 3 + c] - kept[b * 3 + c]);
+      }
+      EXPECT_NEAR(std::sqrt(is / was), 1, 0.2) << a;  // sized as a whole by what the bend added, no more
+    }
+  // and it went with the fit: about 3 cm up
+  EXPECT_NEAR(kept[g.cloth * 3 + 1], 4.3, 0.5);
+}
+
+TEST(GarmentPieces, APiecesVerticesShareOneSetOfWeights)
+{
+  fv::garment::Pieces pieces;
+  pieces.of    = {-1, 0, 0};
+  pieces.count = 1;
+  pieces.hard  = {1};
+  fv::mesh::SkinInput skin = skinOf({{{0, 1.f}}, {{1, 1.f}}, {{1, 0.5f}, {2, 0.5f}}});
+  skin.dualQuatMap         = {0.f, 1.f, 0.f};
+  const auto rigid = fv::garment::rigidSkin(skin, pieces);
+  EXPECT_NEAR(rowOf(rigid, 0).at(0), 1, 1e-6);
+  for(size_t v : {size_t(1), size_t(2)})
+  {
+    const auto row = rowOf(rigid, v);
+    EXPECT_NEAR(row.at(1), 0.75, 1e-6);
+    EXPECT_NEAR(row.at(2), 0.25, 1e-6);
+    EXPECT_NEAR(rigid.dualQuatMap[v], 0.5, 1e-6);
+  }
 }

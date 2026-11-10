@@ -40,6 +40,9 @@ struct FitDetail
   // what the layer fitted, and a Skyrim outfit, which the direct fit puts on and whose own rig has
   // fewer joints than the figure's. Asked for with the common fit.
   bool bodyWeights = false;
+  // per mesh with pieces a pose carries whole (garment::Pieces::hard; an index into the wearable's
+  // scene meshes), per cage vertex: its piece, or -1. With the common fit.
+  std::map<int, std::vector<int32_t>> pieces;
   // per mesh the layer fitted (an index into the wearable's scene meshes): each cage vertex's place on
   // the figure's body, as its address names it, for the vertices left there (garment::Decoded::at; all
   // weights zero for the rest). Their binding to the body is this, not the closest point's.

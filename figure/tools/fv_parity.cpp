@@ -77,6 +77,7 @@
 #include <unordered_map>
 
 #include <figure/bodymap/cache.hpp>
+#include <figure/garment/pieces.hpp>
 #include <figure/bodymap/clone.hpp>
 #include <figure/bodymap/fit.hpp>
 #include <figure/bodymap/frames.hpp>
@@ -1583,6 +1584,7 @@ int main(int argc, char** argv)
           std::vector<std::vector<std::string>> regions;
           std::vector<std::vector<double>>      clearance;
           std::vector<std::vector<float>>       cages;  // per mesh, its cage as made (empty: not measured)
+          std::vector<fv::mesh::SkinInput>      skins;  // per mesh, its skin as made
         };
         std::vector<Made> made;
         for(const fv::dson::Item& item : w.items)
@@ -1613,6 +1615,7 @@ int main(int argc, char** argv)
             m.regions.push_back(cageRegions(w.scene, me));
             m.clearance.push_back(base && skinned ? signedClearance(base->positions, base->tris, me.geo->cagePositions) : std::vector<double>{});
             m.cages.push_back(base && skinned ? me.geo->cagePositions : std::vector<float>{});
+            m.skins.push_back(base && skinned ? me.cageSkin : fv::mesh::SkinInput{});
           }
           // a body the outfit carries (cut to what shows): how much of the item has that skin under it,
           // its closest point within 5 cm and not on the body's cut, by region
@@ -1676,6 +1679,10 @@ int main(int argc, char** argv)
             float       at[3];
           };
           std::vector<Edge> long_;  // those over 3 mm as made
+          // its hard pieces (garment::hardPieces, of the cage and skin as made): how far the fit left each
+          // vertex of one from where the piece's made shape, moved as a whole, would have it
+          size_t              pieceCount = 0;
+          std::vector<double> bent;
           for(size_t j = 0; j < item->meshes.size() && j < made[k].clearance.size(); j++)
           {
             const fv::Mesh& me = scene.meshes[size_t(item->meshes[j])];
@@ -1683,6 +1690,17 @@ int main(int argc, char** argv)
               continue;
             const std::vector<float>& was = made[k].cages[j];
             const std::vector<float>& is  = me.geo->cagePositions;
+            if(was.size() == is.size() && me.geo->cageLineStart.empty())
+            {
+              const fv::garment::Pieces pieces = fv::garment::hardPieces(was, me.geo->dsonTris, made[k].skins[j]);
+              const std::vector<float>  whole  = fv::garment::keepPieces(was, is, pieces);
+              pieceCount += size_t(pieces.count);
+              for(size_t v = 0; v < pieces.of.size(); v++)
+                if(pieces.of[v] >= 0)
+                  bent.push_back(std::sqrt(double(whole[v * 3] - is[v * 3]) * (whole[v * 3] - is[v * 3])
+                                           + double(whole[v * 3 + 1] - is[v * 3 + 1]) * (whole[v * 3 + 1] - is[v * 3 + 1])
+                                           + double(whole[v * 3 + 2] - is[v * 3 + 2]) * (whole[v * 3 + 2] - is[v * 3 + 2])));
+            }
             if(was.size() == is.size())
               for(size_t t = 0; t + 2 < me.geo->dsonTris.size(); t += 3)
                 for(size_t e = 0; e < 3; e++)
@@ -1719,6 +1737,13 @@ int main(int argc, char** argv)
                       << std::setw(6) << a["source"].get<double>() << "  figure " << std::setw(6) << a["figure"].get<double>() << "  change "
                       << std::setw(6) << a["change"].get<double>() << " [" << a["changeP05"].get<double>() << ", " << a["changeP95"].get<double>() << "]"
                       << (st.contains("band") ? "" : " (none in the band)") << "\n";
+          }
+          if(!bent.empty())
+          {
+            std::sort(bent.begin(), bent.end());
+            std::cerr << "  pieces     n " << std::setw(6) << pieceCount << "  of " << bent.size() << " vertices, bent by " << bent[bent.size() / 2] << " cm median, "
+                      << bent[std::min(bent.size() - 1, size_t(0.95 * double(bent.size())))] << " p95, " << bent.back() << " most\n";
+            items.back()["pieces"] = {{"n", pieceCount}, {"vertices", bent.size()}, {"median", bent[bent.size() / 2]}, {"max", bent.back()}};
           }
           if(!stretch.empty())
           {
