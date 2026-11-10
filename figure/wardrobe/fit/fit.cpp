@@ -297,6 +297,9 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     garment::Decoded decoded;
     if(typeMap && m.geo->cageLineStart.empty())
     {
+      // the bones' tears mended first; not a boot's, whose foot has its box
+      if(!boot)
+        positions = garment::mend(m.geo->cagePositions, positions, m.geo->dsonTris);
       // bound to the base as it was made (a vertex's limb is the same moved or not)
       const auto               filter    = limbFilter(baseLimbs, meshLimbs(w.scene, m));
       const garment::Addresses addresses = garment::convert(m.geo->cagePositions, *typeMap, filter ? &*filter : nullptr);

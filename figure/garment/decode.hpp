@@ -55,7 +55,16 @@ struct SettleOptions
   // an edge between two held vertices pulled to this many times its length (or as much shorter) starts
   // to loosen their hold, and at `tearTo` they hold nothing: its ends lie either side of a crease
   float tearFrom = 1.3f, tearTo = 2.0f;
+  int   mendPasses = 6;  // times mend looks for edges its last evening left torn
 };
+
+// The bone transfer's cage with its tears mended. `made` is the garment as it was made, `moved` as the
+// bones put it on the target's skeleton. Where an edge comes out `tearTo` times its made length or
+// more (or as much shorter), its ends were carried by bones that went different ways: a dress's centre
+// seam between the legs, each side on its own thigh, which cross where the target stands narrower. Such
+// vertices take the middle of how far their neighbours moved instead, and those that leaves torn after
+// them, so the cloth keeps its shape across the seam.
+std::vector<float> mend(std::span<const float> made, std::span<const float> moved, std::span<const uint32_t> tris, const SettleOptions& options = {});
 
 // The fitted cage. `moved` is the garment as the bone transfer put it on the target's skeleton,
 // `decoded` and `hold` its addresses' answer. A vertex its address holds goes where that says; one it

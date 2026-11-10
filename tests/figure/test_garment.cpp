@@ -500,3 +500,42 @@ TEST(GarmentWeights, HoldFallsWithTheDistanceOffTheBody)
   EXPECT_FLOAT_EQ(hold[2], 0.f);
   EXPECT_FLOAT_EQ(hold[3], 0.f);  // bound to nothing
 }
+
+TEST(Garment, ASeamTheBonesTearIsMended)
+{
+  // a strip of 16 x 1 cells; the bones carry its left half 1.75 cm right and its right half as far left,
+  // so the halves cross at the seam between them. Mended, no edge is turned round or over twice its length
+  const int             n = 16;
+  std::vector<float>    made;
+  std::vector<uint32_t> tris;
+  for(int i = 0; i <= n; i++)
+    for(int j = 0; j < 2; j++)
+      made.insert(made.end(), {float(i), 0.f, float(j)});
+  for(int i = 0; i < n; i++)
+  {
+    const uint32_t a = uint32_t(i * 2);
+    tris.insert(tris.end(), {a, a + 1, a + 2, a + 2, a + 1, a + 3});
+  }
+  std::vector<float> moved = made;
+  for(int i = 0; i <= n; i++)
+    for(int j = 0; j < 2; j++)
+      moved[size_t(i * 2 + j) * 3] += i <= 8 ? 1.75f : -1.75f;
+  const auto out = fv::garment::mend(made, moved, tris);
+  for(int i = 0; i < n; i++)
+    for(int j = 0; j < 2; j++)
+    {
+      const double step = double(out[size_t((i + 1) * 2 + j) * 3]) - out[size_t(i * 2 + j) * 3];
+      EXPECT_GT(step, 0.0) << i;
+      EXPECT_LT(step, 2.0) << i;
+    }
+  // the ends, far from the seam, are where the bones put them
+  EXPECT_FLOAT_EQ(out[0], moved[0]);
+  EXPECT_FLOAT_EQ(out[size_t(n * 2) * 3], moved[size_t(n * 2) * 3]);
+  // and cloth the bones didn't tear is left alone
+  for(float& x : moved)
+    x += 3;
+  std::vector<float> shifted = made;
+  for(float& x : shifted)
+    x += 3;
+  EXPECT_EQ(fv::garment::mend(made, shifted, tris), shifted);
+}

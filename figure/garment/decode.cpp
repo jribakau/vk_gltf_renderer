@@ -156,15 +156,13 @@ wardrobe::SurfaceBinding withPlaces(const wardrobe::SurfaceBinding& bound, const
   return out;
 }
 
-std::vector<float> settle(std::span<const float> moved, std::span<const float> decoded, std::span<const float> hold, std::span<const uint32_t> tris,
-                          const SettleOptions& options)
+namespace {
+
+// Each vertex's neighbours along the cloth, as rows: v's are next[start[v] .. start[v + 1]). An inner
+// edge counts twice, which weighs them alike.
+void neighbours(size_t n, std::span<const uint32_t> tris, std::vector<uint32_t>& start, std::vector<uint32_t>& next)
 {
-  const size_t       n = moved.size() / 3;
-  std::vector<float> out(moved.begin(), moved.end());
-  if(decoded.size() != moved.size() || hold.size() != n)
-    return out;
-  // each vertex's neighbours along the cloth (an inner edge counts twice, which weighs them alike)
-  std::vector<uint32_t> start(n + 1, 0), next;
+  start.assign(n + 1, 0);
   for(size_t i = 0; i + 2 < tris.size(); i += 3)
     for(size_t j = 0; j < 3; j++)
       if(tris[i + j] < n)
@@ -172,18 +170,89 @@ std::vector<float> settle(std::span<const float> moved, std::span<const float> d
   for(size_t v = 0; v < n; v++)
     start[v + 1] += start[v];
   next.assign(start[n], 0);
+  std::vector<uint32_t> fill(start.begin(), start.end() - 1);
+  for(size_t i = 0; i + 2 < tris.size(); i += 3)
+    for(size_t j = 0; j < 3; j++)
+    {
+      const uint32_t a = tris[i + j], b = tris[i + (j + 1) % 3], c = tris[i + (j + 2) % 3];
+      if(a >= n)
+        continue;
+      next[fill[a]++] = b < n ? b : a;
+      next[fill[a]++] = c < n ? c : a;
+    }
+}
+
+}  // namespace
+
+std::vector<float> mend(std::span<const float> made, std::span<const float> moved, std::span<const uint32_t> tris, const SettleOptions& options)
+{
+  const size_t       n = moved.size() / 3;
+  std::vector<float> out(moved.begin(), moved.end());
+  if(made.size() != moved.size() || n == 0)
+    return out;
+  std::vector<uint32_t> start, next;
+  neighbours(n, tris, start, next);
+  // how far the bones moved each vertex: evened over the cloth round a tear, the cloth's own shape kept
+  std::vector<float> change(n * 3), even(n * 3);
+  for(size_t i = 0; i < n * 3; i++)
+    change[i] = moved[i] - made[i];
+  std::vector<uint8_t> loose(n, 0);
+  for(int pass = 0; pass < options.mendPasses; pass++)
   {
-    std::vector<uint32_t> fill(start.begin(), start.end() - 1);
-    for(size_t i = 0; i + 2 < tris.size(); i += 3)
-      for(size_t j = 0; j < 3; j++)
+    bool torn = false;
+    for(size_t v = 0; v < n; v++)
+      for(uint32_t i = start[v]; i < start[v + 1]; i++)
       {
-        const uint32_t a = tris[i + j], b = tris[i + (j + 1) % 3], c = tris[i + (j + 2) % 3];
-        if(a >= n)
+        const size_t u = next[i];
+        if(u <= v)
           continue;
-        next[fill[a]++] = b < n ? b : a;
-        next[fill[a]++] = c < n ? c : a;
+        double was = 0, is = 0;
+        for(size_t k = 0; k < 3; k++)
+        {
+          const double e = double(made[v * 3 + k]) - made[u * 3 + k];
+          const double f = e + change[v * 3 + k] - change[u * 3 + k];
+          was += e * e, is += f * f;
+        }
+        const double to = double(options.tearTo) * options.tearTo;
+        if(was <= 1e-10 || (is <= was * to && is * to >= was))
+          continue;
+        torn = torn || !loose[v] || !loose[u];
+        loose[v] = loose[u] = 1;
       }
+    if(!torn)
+      break;
+    for(int round = 0; round < options.smooth; round++)
+    {
+      even = change;
+      for(size_t v = 0; v < n; v++)
+      {
+        const uint32_t count = start[v + 1] - start[v];
+        if(!loose[v] || count == 0)
+          continue;
+        double sum[3] = {0, 0, 0};
+        for(uint32_t i = start[v]; i < start[v + 1]; i++)
+          for(size_t k = 0; k < 3; k++)
+            sum[k] += change[size_t(next[i]) * 3 + k];
+        for(size_t k = 0; k < 3; k++)
+          even[v * 3 + k] = float(sum[k] / count);
+      }
+      change.swap(even);
+    }
   }
+  for(size_t i = 0; i < n * 3; i++)
+    out[i] = made[i] + change[i];
+  return out;
+}
+
+std::vector<float> settle(std::span<const float> moved, std::span<const float> decoded, std::span<const float> hold, std::span<const uint32_t> tris,
+                          const SettleOptions& options)
+{
+  const size_t       n = moved.size() / 3;
+  std::vector<float> out(moved.begin(), moved.end());
+  if(decoded.size() != moved.size() || hold.size() != n)
+    return out;
+  std::vector<uint32_t> start, next;
+  neighbours(n, tris, start, next);
   // what each address asks of its vertex
   std::vector<float>    want(n * 3, 0.f), change(n * 3, 0.f);
   std::vector<uint8_t>  reached(n, 0);
