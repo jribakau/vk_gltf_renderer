@@ -28,8 +28,6 @@ NAMESPACE_SHADERIO_BEGIN()
 #define INLINE inline
 #else
 #define INLINE
-//#define fmod mod
-#define floorf floor
 #endif
 
 
@@ -94,46 +92,34 @@ inline float2 calculateMotionVector(float4   currWorldPos,  // Current homogeneo
 }
 #endif
 
-// #DLSS - Halton halton low discrepancy sequence, from https://www.shadertoy.com/view/wdXSW8
-INLINE float2 halton(int index)
+// The radical inverse of `index` in `base` (van der Corput): its digits mirrored about the point, so
+// 1, 2, 3, 4... in base 2 give 1/2, 1/4, 3/4, 1/8...
+INLINE float radicalInverse(uint32_t index, uint32_t base)
 {
-  const float2 coprimes = float2(2.0F, 3.0F);
-  float2       s        = float2(index, index);
-  float4       a        = float4(1, 1, 0, 0);
-  while(s.x > 0. && s.y > 0.)
+  const float inv    = 1.0F / float(base);
+  float       scale  = inv;
+  float       result = 0.0F;
+  while(index > 0u)
   {
-    a.x = a.x / coprimes.x;
-    a.y = a.y / coprimes.y;
-    a.z += a.x * fmod(s.x, coprimes.x);
-    a.w += a.y * fmod(s.y, coprimes.y);
-    s.x = floorf(s.x / coprimes.x);
-    s.y = floorf(s.y / coprimes.y);
+    result += float(index % base) * scale;
+    scale *= inv;
+    index /= base;
   }
-  return float2(a.z, a.w);
+  return result;
 }
 
-INLINE uint32_t wangHash(uint32_t seed)
+// #DLSS - The Halton sequence in bases 2 and 3, in [0, 1)^2. Each base by its own digits: one loop for
+// both ended with the base-3 digits, which are fewer, and left the base-2 coordinate without its top
+// ones (4 positions across the pixel in the first 8 frames, three of them on its edge).
+INLINE float2 halton(uint32_t index)
 {
-  seed = (seed ^ 61) ^ (seed >> 16);
-  seed *= 9;
-  seed = seed ^ (seed >> 4);
-  seed *= 0x27d4eb2d;
-  seed = seed ^ (seed >> 15);
-  return seed;
+  return float2(radicalInverse(index, 2u), radicalInverse(index, 3u));
 }
 
-
-INLINE float2 sampleDelta(uint32_t frameIndex)
-{
-  float2 delta;
-  delta.x = wangHash(frameIndex) / float(~0u);
-  delta.y = wangHash(frameIndex * 2) / float(~0u);
-  return delta - float2(0.5f);
-}
-
+// The frame's sub-pixel offset, in pixels about the pixel's centre. Never repeats: any 2^a * 3^b frames
+// in a row put one sample in each cell of a 2^a by 3^b grid over the pixel, wherever the run starts.
 INLINE float2 dlssJitter(uint32_t frameIndex)
 {
-  //return sampleDelta(frameIndex);
   return halton(frameIndex) - float2(0.5, 0.5);
 }
 

@@ -727,7 +727,7 @@ Dlss::FrameContext Dlss::beginFrame()
 
 void Dlss::notifyReset()
 {
-  // Restart the Halton sequence so we never feed NGX a partial cycle and arm the next evaluate() to drop temporal history.
+  // Restart the Halton sequence (it has no cycle: dlssJitter) and arm the next evaluate() to drop temporal history.
   m_frameIndex           = 0;
   m_forceResetUntilFrame = m_globalFrame + 1;
 #if defined(USE_DLSSNR)

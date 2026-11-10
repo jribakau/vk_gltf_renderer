@@ -376,8 +376,8 @@ rotation moves the environment. See the `calculateMotionVector` overload comment
 
 ## Jitter & reset
 
-- Halton jitter is applied as a ray subpixel offset (path tracer) or clip-space shift (raster),
-  never baked into `viewProjMatrix` / `prevMVP`; NGX de-jitters via `InJitterOffset` (negated in
+- Halton jitter (`dlssJitter` in `shaders/dlss_util.h`: bases 2 and 3, never repeating) is applied as
+  the ray's subpixel offset, never baked into `viewProjMatrix` / `prevMVP`; NGX de-jitters via `InJitterOffset` (negated in
   `src/dlss_wrapper.cpp`).
 - Temporal history is **intentionally not reset on camera motion.** `InReset` is only for
   discontinuities (resize, preset/quality change, re-enable, and a material/light property write via
