@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <iostream>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -998,4 +1000,142 @@ TEST(Nif, AShapeThatCantBeReadIsLeftOutNotTheFile)
   }
   EXPECT_EQ(left, 2u);
   EXPECT_EQ(glow, 1u);
+}
+
+// A folder of real meshes, named by FV_NIF_DIR (the game's own, unpacked from its archives): how many
+// read, what the others say, and what the skins are like (their own spaces, shapes bound apart), then
+// each piece a figure could wear loaded as one. A survey, printed: it fails only on a crash.
+TEST(Nif, ARealFolderReads)
+{
+  const char* dir = std::getenv("FV_NIF_DIR");
+  if(!dir || !*dir)
+    GTEST_SKIP() << "FV_NIF_DIR names no folder";
+  const auto lowered = [](std::string t) {
+    std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return t;
+  };
+  // a message without its file's name and its numbers, so alike ones count together
+  const auto kind = [](std::string why, const std::string& file) {
+    for(size_t at = why.find(file); at != std::string::npos; at = why.find(file))
+      why.replace(at, file.size(), "<file>");
+    for(char& c : why)
+      if(std::isdigit(static_cast<unsigned char>(c)))
+        c = '#';
+    return why.size() > 150 ? why.substr(0, 150) : why;
+  };
+  std::map<std::string, size_t>      unread, left, unworn, notices;
+  std::map<std::string, std::string> example;
+  size_t files = 0, read = 0, shapes = 0, skinned = 0, ownSpace = 0, apartFiles = 0, offTreeFiles = 0, noWeights = 0, worn = 0, wearable = 0, based = 0;
+  double farthest = 0;
+  const fs::path home = fs::temp_directory_path() / "fv_nif_folder";
+  for(const auto& e : fs::recursive_directory_iterator(dir))
+  {
+    if(!e.is_regular_file() || lowered(e.path().extension().string()) != ".nif")
+      continue;
+    files++;
+    const std::string name = e.path().filename().string();
+    fv::nif::File     f;
+    try
+    {
+      f = fv::nif::readFile(e.path());
+    }
+    catch(const std::exception& x)
+    {
+      const std::string k = kind(x.what(), name);
+      unread[k]++;
+      example.emplace(k, e.path().string());
+      continue;
+    }
+    read++;
+    for(const std::string& why : f.skipped)
+    {
+      const std::string k = kind(why.substr(why.find(": ") == std::string::npos ? 0 : why.find(": ") + 2), name);
+      left[k]++;
+      example.emplace(k, e.path().string());
+    }
+    // each bone's bind by the shapes that skin to it, in the file's space
+    std::map<int, std::vector<fv::nif::Transform>> binds;
+    bool                                           offTree = false;
+    for(const fv::nif::Shape& sh : f.shapes)
+    {
+      shapes++;
+      if(!sh.skinned())
+        continue;
+      skinned++;
+      const fv::nif::Transform& g = sh.skinTransform;
+      bool                      own = std::abs(g.s - 1) > 1e-3f;
+      for(size_t i = 0; i < 3; i++)
+        own = own || std::abs(g.t[i]) > 0.05f;
+      for(size_t i = 0; i < 9; i++)
+        own = own || std::abs(g.r[i] - (i % 4 == 0 ? 1.f : 0.f)) > 2e-3f;
+      ownSpace += own ? 1 : 0;
+      noWeights += sh.weight.empty() ? 1 : 0;
+      const fv::nif::Transform toFile = g.inverse();
+      for(size_t b = 0; b < sh.bones.size() && b < sh.skinToBone.size(); b++)
+      {
+        const fv::nif::Transform at = toFile * sh.skinToBone[b].inverse();
+        binds[sh.bones[b]].push_back(at);
+        const V3 tree = f.world(sh.bones[b]).t;
+        for(size_t k = 0; k < 3; k++)
+          offTree = offTree || std::abs(at.t[k] - tree[k]) > 0.05f;
+      }
+    }
+    bool apart = false;
+    for(const auto& [node, list] : binds)
+      for(size_t i = 1; i < list.size(); i++)
+        for(size_t k = 0; k < 3; k++)
+        {
+          const double d = std::abs(double(list[i].t[k]) - list[0].t[k]);
+          apart          = apart || d > 0.05;
+          farthest       = std::max(farthest, d);
+        }
+    apartFiles += apart ? 1 : 0;
+    offTreeFiles += offTree ? 1 : 0;
+
+    // what a figure could wear: not the actors' own, not the first person's or the ground's copy, one weight
+    const std::string rel  = lowered(e.path().generic_string());
+    const std::string stem = lowered(e.path().stem().string());
+    const auto        ends = [&](const char* tail) { return stem.size() >= std::strlen(tail) && stem.compare(stem.size() - std::strlen(tail), std::strlen(tail), tail) == 0; };
+    if(rel.find("/actors/") != std::string::npos || stem.rfind("1stperson", 0) == 0 || ends("gnd") || ends("go") || ends("_0"))
+      continue;
+    wearable++;
+    try
+    {
+      const fv::dson::LoadResult w = fv::nif::loadWearable(e.path(), {}, {home});
+      worn++;
+      based += w.sourceBase ? 1 : 0;
+      for(const std::string& n : w.warnings)
+      {
+        const std::string k = kind(n, name);
+        notices[k]++;
+        example.emplace(k, e.path().string());
+      }
+    }
+    catch(const std::exception& x)
+    {
+      const std::string k = kind(x.what(), name);
+      unworn[k]++;
+      example.emplace(k, e.path().string());
+    }
+  }
+  std::error_code ec;
+  fs::remove_all(home, ec);
+  std::cerr << "[nif folder] " << files << " files, " << read << " read; " << shapes << " shapes, " << skinned << " skinned, " << ownSpace
+            << " in a skin space of their own, " << noWeights << " skinned with no weights; files with shapes bound apart: " << apartFiles << " (farthest "
+            << farthest << " units), with a bind off the node tree: " << offTreeFiles << "\n";
+  const auto list = [&](const char* title, const std::map<std::string, size_t>& m) {
+    std::vector<std::pair<size_t, std::string>> by;
+    for(const auto& [k, n] : m)
+      by.emplace_back(n, k);
+    std::sort(by.rbegin(), by.rend());
+    std::cerr << "[nif folder] " << title << ": " << by.size() << " kinds\n";
+    for(size_t i = 0; i < by.size() && i < 12; i++)
+      std::cerr << "  " << by[i].first << "  " << by[i].second << "   (" << example[by[i].second] << ")\n";
+  };
+  list("not read", unread);
+  list("shapes left out", left);
+  std::cerr << "[nif folder] " << wearable << " to wear, " << worn << " loaded, " << based << " with a body to fit against\n";
+  list("not worn", unworn);
+  list("notices", notices);
+  EXPECT_GT(files, 0u);
 }

@@ -1195,7 +1195,15 @@ int main(int argc, char** argv)
     if(libraryDir.is_relative())
       libraryDir = root / libraryDir;
     fv::timing::setSink([](const std::string& line) { std::cerr << line << "\n"; });
-    auto store = std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{libraryDir}));
+    // "also": more library folders after it (a folder of meshes unpacked for a check)
+    std::vector<std::filesystem::path> libraryDirs{libraryDir};
+    if(c.contains("also"))
+      for(const Json& more : c["also"])
+      {
+        std::filesystem::path dir = pathOf(more.get<std::string>().c_str());
+        libraryDirs.push_back(dir.is_relative() ? root / dir : dir);
+      }
+    auto store = std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(libraryDirs));
     std::unique_ptr<fv::Figure>         loaded;
     Json                                dumps = Json::object();
     int                                 stepNo = 0;
