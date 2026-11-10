@@ -22,6 +22,7 @@
 // poses and viewport input.
 //
 
+#include "camera_controls.hpp"
 #include "fv_host_impl.hpp"
 
 #include <cmath>
@@ -436,6 +437,9 @@ constexpr double kFlyFast          = 4.0;
 constexpr double kFlyWheelStep     = 1.25;
 // The app sends the held keys each of its frames: silence this long is a release that got lost.
 constexpr auto kFlyTimeout = std::chrono::milliseconds(250);
+// How long a drag of the view waits for the point under the pointer to be picked (startDragPivot)
+// before it turns about the point of interest instead.
+constexpr auto kPivotWait = std::chrono::milliseconds(150);
 // The right button's look: a half turn across the frame's width, at the same rate up and down; it
 // follows the hand with this time constant (applyLook).
 constexpr double kLookTurnsPerWidth = 0.5;
@@ -476,8 +480,11 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
     glm::dvec3        flyMove{0.0};
     if(type == "fly" && e.contains("m") && e["m"].is_array() && e["m"].size() >= 3)
       flyMove = {e["m"][0].get<double>(), e["m"][1].get<double>(), e["m"][2].get<double>()};
-    // the wheel with the right button held sets the flying speed, which moves nothing
-    const bool moves = (type == "move" && (lmb || mmb || rmb)) || (type == "wheel" && !rmb) || flyMove != glm::dvec3(0.0);
+    const bool alt = e.value("alt", false);
+    // the wheel with the right button held sets the flying speed, which moves nothing; a drag of the
+    // left button alone is a click's
+    const bool moves = (type == "move" && camera_controls::dragMovesCamera({.lmb = lmb, .mmb = mmb, .rmb = rmb, .alt = alt}))
+                       || (type == "wheel" && !rmb) || flyMove != glm::dvec3(0.0);
     if(locked && moves)
     {
       if(!lockedNoticed)
@@ -486,10 +493,10 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
       continue;
     }
     const double x = e.value("x", mouseX), y = e.value("y", mouseY);
-    // left orbits, middle pans, right looks around and flies with the movement keys (applyFly), the
-    // wheel dollies; the modifiers pick the left drag's variants (camera_controls::dragMotion)
-    nvutils::CameraManipulator::Inputs inputs{.lmb = lmb, .mmb = mmb, .shift = e.value("shift", false), .ctrl = e.value("ctrl", false),
-                                              .alt = e.value("alt", false)};
+    // an editor's scheme (camera_controls::dragMotion): Alt+left orbits, middle pans, Alt+right
+    // dollies, right alone looks around and flies with the movement keys (applyFly), the wheel dollies
+    nvutils::CameraManipulator::Inputs inputs{.lmb = lmb, .mmb = mmb, .rmb = rmb, .shift = e.value("shift", false),
+                                              .ctrl = e.value("ctrl", false), .alt = alt};
     if(type == "down" || type == "up")
     {
       // each button on its own: the app reports a second button pressed or released during a drag
@@ -501,6 +508,9 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
         mouseX = x;
         mouseY = y;
         manip->setMousePosition({x, y});
+        // the first button of a drag that may move the view: what it turns about
+        if(!locked && (b == 1 || alt) && int(lmb) + int(mmb) + int(rmb) == 1)
+          startDragPivot(x, y);
       }
       else
       {
@@ -511,16 +521,31 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
           turnLook(std::exchange(lookPending, glm::dvec2(0.0)));
         }
         if(!lmb && !mmb && !rmb)
+        {
+          dragPivot = {};
           endViewGesture();
+        }
       }
     }
     else if(type == "move")
     {
-      manip->setMousePosition({mouseX, mouseY});
-      if(rmb)
+      if(rmb && !alt)
         lookPending += glm::dvec2(x - mouseX, y - mouseY);
-      else if(lmb || mmb)
+      else if(camera_controls::dragMotion(inputs, manip->getMode()) != nvutils::CameraManipulator::Actions::NoAction)
+      {
+        // the point under the pointer is being picked: the drag holds its moves until it comes (the
+        // next one carries them all, from the press)
+        if(dragPivot.waiting && std::chrono::steady_clock::now() - dragPivot.asked < kPivotWait)
+          continue;
+        dragPivot.waiting = false;
+        manip->setMousePosition({mouseX, mouseY});
+        // the anchor is this drag's: one left from another would pull this one toward it
+        if(dragPivot.at)
+          manip->setAnchor(*dragPivot.at);
+        else
+          manip->clearAnchor();
         manip->mouseMove({x, y}, inputs);
+      }
       mouseX = x;
       mouseY = y;
     }
@@ -540,11 +565,52 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
     else if(type == "leave" && (lmb || mmb || rmb))
     {
       lmb = mmb = rmb = false;
+      dragPivot = {};
       fly.move        = {};
       turnLook(std::exchange(lookPending, glm::dvec2(0.0)));
       endViewGesture();
     }
   }
+}
+
+// What the drag about to start turns about (dragMotion's orbit, its pan's and dolly's anchor): the
+// point a double-click recentred on while the selection is the one it was made with (none, after a
+// double-click on nothing: the point of interest); else the selection's middle; else what is under
+// the pointer, picked.
+void FvHost::Impl::startDragPivot(double x, double y)
+{
+  dragPivot = {};
+  if(recentred.set && recentred.selection == renderer->selectedEntity())
+  {
+    dragPivot.at = recentred.at;
+    return;
+  }
+  recentred = {};
+  if(const auto centre = selectionCentre())
+  {
+    dragPivot.at = centre;
+    return;
+  }
+  const VkExtent2D size = renderer->renderSize();
+  if(!size.width || !size.height)
+    return;
+  dragPivot.waiting = true;
+  dragPivot.asked   = std::chrono::steady_clock::now();
+  renderer->pivotAt({float(x / size.width), float(y / size.height)});
+}
+
+void FvHost::Impl::onPivot(const std::optional<glm::vec3>& at, bool fromDoubleClick)
+{
+  const std::optional<glm::dvec3> point = at ? std::optional<glm::dvec3>(glm::dvec3(*at)) : std::nullopt;
+  if(fromDoubleClick)
+  {
+    recentred = {.set = true, .at = point, .selection = renderer->selectedEntity()};
+    return;
+  }
+  if(!dragPivot.waiting)
+    return;  // the drag ended, or gave up waiting
+  dragPivot.waiting = false;
+  dragPivot.at      = point;
 }
 
 // The wheel dollies toward the point of interest, scaling the distance to it, and stops short of it.

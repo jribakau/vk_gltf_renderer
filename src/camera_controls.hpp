@@ -28,26 +28,30 @@ namespace camera_controls {
 
 using Manipulator = nvutils::CameraManipulator;
 
-// The motion a drag asks for, the left button first. Fly and Walk swap the left button's orbit and
-// look around, and Alt swaps them back.
+// The motion a drag asks for, as a game engine's editor has it (Unity, Unreal): Alt with the left
+// button orbits (Fly and Walk look around instead), the middle button pans with or without Alt, Alt
+// with the right button dollies. The left button alone is a click's, which selects, and the right
+// alone the host's look around (FvHost::Impl::applyInput), so neither moves the camera here. The left
+// button comes first.
 inline Manipulator::Actions dragMotion(const Manipulator::Inputs& inputs, Manipulator::Modes mode)
 {
-  const bool examine = mode == Manipulator::Examine;
   if(inputs.lmb)
   {
-    if(inputs.alt)
-      return examine ? Manipulator::Actions::LookAround : Manipulator::Actions::Orbit;
-    if(inputs.ctrl)
-      return Manipulator::Actions::Pan;
-    if(inputs.shift)
-      return Manipulator::Actions::Orbit;
-    return examine ? Manipulator::Actions::Orbit : Manipulator::Actions::LookAround;
+    if(!inputs.alt)
+      return Manipulator::Actions::NoAction;
+    return mode == Manipulator::Examine ? Manipulator::Actions::Orbit : Manipulator::Actions::LookAround;
   }
   if(inputs.mmb)
     return Manipulator::Actions::Pan;
-  if(inputs.rmb)
+  if(inputs.rmb && inputs.alt)
     return Manipulator::Actions::Dolly;
   return Manipulator::Actions::NoAction;
+}
+
+// Whether a drag with these buttons moves the camera (a locked camera refuses it)
+inline bool dragMovesCamera(const Manipulator::Inputs& inputs)
+{
+  return (inputs.lmb && inputs.alt) || inputs.mmb || inputs.rmb;
 }
 
 }  // namespace camera_controls

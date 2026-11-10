@@ -748,6 +748,24 @@ struct FvHost::Impl
   uint64_t          lastInputSeq = 0;  // the newest batch applied (normalizeInput)
   double            mouseX = 0, mouseY = 0;
   bool              lmb = false, mmb = false, rmb = false;
+  // What a drag of the view turns about (camera_controls::dragMotion; dragPivot): the point a
+  // double-click recentred on, while the selection is the one it had; else the selection's middle;
+  // else what is under the pointer as the drag starts, picked (the drag waits up to kPivotWait for it)
+  struct Recentred
+  {
+    bool                      set = false;
+    std::optional<glm::dvec3> at;  // none: the double-click framed the whole scene
+    rs::EntityId              selection;
+  } recentred;
+  struct DragPivot
+  {
+    bool                                  waiting = false;
+    std::optional<glm::dvec3>             at;
+    std::chrono::steady_clock::time_point asked{};
+  } dragPivot;
+  void                      startDragPivot(double x, double y);
+  void                      onPivot(const std::optional<glm::vec3>& at, bool recentred);
+  std::optional<glm::dvec3> selectionCentre();
   // flying: the movement keys the app holds down with the right button, as a direction in the view's
   // right, up and forward, sent again each of its frames; applyFly() moves the view once a frame
   struct Fly

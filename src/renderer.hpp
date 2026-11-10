@@ -448,6 +448,11 @@ public:
   void hoverAt(std::optional<glm::vec2> uv) override;
   void hoverEntity(rs::EntityId entity) override;
   void setHoverObserver(std::function<void(const std::optional<InstancePick>& pick)> observer) override { m_hoverObserver = std::move(observer); }
+  void pivotAt(glm::vec2 uv) override;
+  void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> observer) override
+  {
+    m_pivotObserver = std::move(observer);
+  }
   void inspectAt(std::optional<glm::vec2> uv) override;
   void setInspectObserver(std::function<void(const PixelReadout& readout)> observer) override { m_inspectObserver = std::move(observer); }
   /// Shaded, clay, normals and the other debug views (shaderio::Visualization).
@@ -799,6 +804,7 @@ private:
     glm::vec2 pickPos;
     bool      isDoubleClick;
     bool      hover = false;  // the hover's pick, not a click's: it selects nothing (applyHoverPickResult)
+    bool      pivot = false;  // the orbit's pivot (pivotAt): the point goes to m_pivotObserver
   };
   std::optional<PendingClickPick> m_pendingClickPick;
   struct PendingClickResult
@@ -806,7 +812,11 @@ private:
     nvvk::SemaphoreState semaphoreState;
     bool                 isDoubleClick;
     bool                 hover = false;
+    bool                 pivot = false;
   };
+  // a pivot's pick waiting for the picker (pivotAt), ahead of the hover's
+  std::optional<glm::vec2>                                                   m_pivotDue;
+  std::function<void(const std::optional<glm::vec3>& at, bool recentred)> m_pivotObserver;
   std::optional<PendingClickResult> m_pendingClickResult;
   // The pixel readout: where (none: off), whether a reading is due (a new place), when the last was
   // recorded and whether a frame was traced since, and the frame that has one in flight

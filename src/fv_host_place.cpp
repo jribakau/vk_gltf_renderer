@@ -559,6 +559,33 @@ void FvHost::Impl::gizmoNodeEdit(Prop& p, int node, const glm::vec3& t, const gl
     gizmoGesture++;
 }
 
+// The middle of what is selected: the props' bounds with what rides on them, or a part's (a set's
+// lamp), or where a bone or a light is; none with nothing selected
+std::optional<glm::dvec3> FvHost::Impl::selectionCentre()
+{
+  const rs::EntityId selected = renderer->selectedEntity();
+  if(selected.isNone() || !view || !renderer->feedsHostScene() || !renderer->hostScene().entity(selected))
+    return std::nullopt;
+  if(view->propOfRoot(selected))
+  {
+    std::vector<std::shared_ptr<Prop>> all;
+    for(const std::string& id : view->selectedProps())
+      if(auto q = findProp(id))
+        all.push_back(q);
+    if(const auto b = selectionBounds(all))
+      return glm::dvec3(((*b)[0] + (*b)[1]) * 0.5f);
+  }
+  rs::RetainedScene& scene = renderer->hostScene();
+  Bounds             b     = emptyBounds();
+  for(const rs::DrawItem& item : scene.drawItems())
+    if(item.shown && scene.isWithin(item.entity, selected))
+      if(const std::array<glm::vec3, 2> mb = scene.mesh(item.mesh)->bounds(); mb[0].x <= mb[1].x)
+        addBox(b, mb[0], mb[1], item.world);
+  if(!isEmpty(b))
+    return glm::dvec3((b[0] + b[1]) * 0.5f);
+  return glm::dvec3(scene.world(selected)[3]);
+}
+
 std::optional<glm::vec3> FvHost::Impl::nodePivot(rs::EntityId entity)
 {
   if(entity == nodePivotKept.entity)

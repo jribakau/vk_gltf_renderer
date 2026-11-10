@@ -146,6 +146,12 @@ public:
   virtual void hoverAt(std::optional<glm::vec2> /*uv*/) {}
   virtual void hoverEntity(rs::EntityId /*entity*/) {}
   virtual void setHoverObserver(std::function<void(const std::optional<InstancePick>& pick)> /*observer*/) {}
+  // The orbit's pivot: `pivotAt` picks what is under a normalized viewport position (origin top-left)
+  // for a drag of the view to turn about; the point (none: nothing there) goes to the observer a frame
+  // or two later, `recentred` false. A double-click's recentring on a point (pickAt's `center`) says
+  // where it went too, `recentred` true (none: it framed the whole scene).
+  virtual void pivotAt(glm::vec2 /*uv*/) {}
+  virtual void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> /*observer*/) {}
   // The pixel readout: what is at a normalized viewport position (origin top-left) and how bright it
   // is, read a frame or two later and again while the still refines (a few times a second), so it
   // settles as the image does; none: stop reading. Every reading goes to the observer.

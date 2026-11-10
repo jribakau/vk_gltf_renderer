@@ -28,6 +28,7 @@
 #include <fstream>
 #include <memory>
 
+#include "camera_controls.hpp"
 #include "fake_gpu_backend.hpp"
 #include "host_renderer.hpp"
 
@@ -94,6 +95,8 @@ public:
   void         selectEntity(rs::EntityId entity) override { m_selected = entity; }
   rs::EntityId selectedEntity() const override { return m_selected; }
   void         pickAt(glm::vec2 uv, bool center) override { picks.push_back({uv, center}); }
+  void         pivotAt(glm::vec2 uv) override { pivots.push_back(uv); }
+  void setPivotObserver(std::function<void(const std::optional<glm::vec3>&, bool)> observer) override { pivotObserver = std::move(observer); }
   void setPickObserver(std::function<bool(const std::optional<InstancePick>&, const glm::vec3&)> observer) override
   {
     pickObserver = std::move(observer);
@@ -162,6 +165,8 @@ public:
   std::function<bool(const std::optional<InstancePick>&, const glm::vec3&)>     pickObserver;
   std::vector<shaderio::lines::LineVertex>                                      helperLines;
   std::vector<std::pair<glm::vec2, bool>>                                       picks;  // pickAt(uv, center), in order
+  std::vector<glm::vec2>                                                        pivots;  // pivotAt(uv), in order
+  std::function<void(const std::optional<glm::vec3>&, bool)>                    pivotObserver;
   std::vector<std::optional<glm::vec2>>                                         inspects;  // inspectAt(uv), in order
   std::function<void(const PixelReadout&)>                                      inspectObserver;
   int stillSamples   = 0;  // what accumulatedSamples() and sampleCap() say
@@ -172,7 +177,7 @@ public:
 private:
   rs::RetainedScene                           m_scene;
   rs::EntityId                                m_selected;
-  std::shared_ptr<nvutils::CameraManipulator> m_camera = std::make_shared<nvutils::CameraManipulator>();
+  std::shared_ptr<nvutils::CameraManipulator> m_camera = std::make_shared<DragCameraManipulator>();  // the renderer's
   rs::ClipId                                  m_clip;
   float                                       m_clipTime = 0.f;
   AnimationControl                            m_animation;

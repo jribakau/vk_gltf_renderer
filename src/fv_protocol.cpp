@@ -111,7 +111,12 @@ namespace {
 // 61: an object pick selects what the hover outlines: of a set the node hit (the selection topic's
 // `node`), where the gizmo then moves that part as node.set does; any other prop whole, and the hover
 // outlines a prop, a vehicle and a model whole too (they were by their nodes).
-constexpr int kProtocolVersion = 61;
+// 62: an editor's scheme for the view (Unity, Unreal): Alt+left orbits, the middle pans, Alt+right
+// dollies, the right alone looks around and flies, the left alone moves nothing; a drag turns about
+// the selection's middle, else the point under the pointer as it starts, a double-click's point until
+// the selection changes. A Ctrl+click puts a prop in the selection or takes it out (it was
+// Ctrl+Shift), an Alt+click picks nothing.
+constexpr int kProtocolVersion = 62;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

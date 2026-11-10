@@ -56,7 +56,11 @@ void GltfRenderer::applyClickPickResult(const nvvk::RayPicker::PickResult& pickR
   {
     // a double-click on nothing frames the whole scene
     if(isDoubleClick)
+    {
       fitCamera(true);
+      if(m_pivotObserver)
+        m_pivotObserver(std::nullopt, true);
+    }
     return;
   }
   if(isDoubleClick)
@@ -66,7 +70,18 @@ void GltfRenderer::applyClickPickResult(const nvvk::RayPicker::PickResult& pickR
     m_cameraManip->getLookat(eye, center, up);
     m_cameraManip->setLookat(eye, worldPos, up, false);  // Nice with CameraManip.updateAnim();
     m_cameraManip->setSpeed(pickResult.hitT);            // Re-adjust speed based on the new distance
+    // the view turns about it from now on (FvHost::Impl::dragPivot)
+    if(m_pivotObserver)
+      m_pivotObserver(worldPos, true);
   }
+}
+
+void GltfRenderer::pivotAt(glm::vec2 uv)
+{
+  if(m_cameraManip && hasValidScene())
+    m_pivotDue = uv;
+  else if(m_pivotObserver)
+    m_pivotObserver(std::nullopt, false);
 }
 
 nvutils::Bbox GltfRenderer::instanceWorldBounds(uint32_t slot) const
@@ -501,8 +516,15 @@ void GltfRenderer::updateClickPickState()
 
   const bool isDoubleClick = m_pendingClickResult->isDoubleClick;
   const bool hover         = m_pendingClickResult->hover;
+  const bool pivot         = m_pendingClickResult->pivot;
   m_pendingClickResult.reset();
-  if(hover)
+  if(pivot)
+  {
+    const nvvk::RayPicker::PickResult r = m_rayPicker.getResult();
+    if(m_pivotObserver)
+      m_pivotObserver(r.instanceID >= 0 ? std::optional<glm::vec3>(r.worldRayOrigin + r.worldRayDirection * r.hitT) : std::nullopt, false);
+  }
+  else if(hover)
     applyHoverPickResult(m_rayPicker.getResult());
   else
     applyClickPickResult(m_rayPicker.getResult(), isDoubleClick);

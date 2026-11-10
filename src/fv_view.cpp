@@ -90,7 +90,7 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
 {
   m_renderer->setPickObserver([this](const std::optional<HostRenderer::InstancePick>& pick, const glm::vec3& hit) {
     const fv::HostAddress at = pick ? m_map.pick(pick->entity, pick->material) : fv::HostAddress{};
-    // a Ctrl+Shift+click puts a prop in the selection or takes it out, and on nothing changes nothing
+    // a Ctrl+click puts a prop in the selection or takes it out, and on nothing changes nothing
     if(m_clickAdd && m_pick == "object")
     {
       if(at.prop >= 0)
@@ -569,9 +569,10 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
     {
       const bool click = m_click && std::hypot(x - m_x0, y - m_y0) < 4;
       m_click          = false;
-      // a plain click selects where the app says so (Click to select); a Ctrl+click does either way
+      // a plain click selects where the app says so; a Ctrl+click does either way. An Alt+click is the
+      // start of an orbit (camera_controls::dragMotion) that didn't move: no pick
       const bool ctrl = e.value("ctrl", false);
-      if(!click || !(m_select || (ctrl && m_selectCtrl)))
+      if(!click || e.value("alt", false) || !(m_select || (ctrl && m_selectCtrl)))
         continue;
       // the second click of a double-click picks nothing: the first one selected, and picking again
       // would let go of a mesh it selected (the renderer's toggle); a third click picks again
@@ -585,7 +586,7 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
       const VkExtent2D size = m_renderer->renderSize();
       if(size.width == 0 || size.height == 0)
         continue;
-      m_clickAdd = ctrl && e.value("shift", false);
+      m_clickAdd = ctrl;
       // a camera or light marker under the pointer is the pick; they have nothing the ray could hit
       if(m_helpers && m_helperPick)
         if(const std::string prop = m_helperPick({float(x), float(y)}); !prop.empty())

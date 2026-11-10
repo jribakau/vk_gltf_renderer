@@ -2560,10 +2560,14 @@ TEST(FvHost, ADragOfTheViewThroughACameraIsOneStep)
   const Json start = rig.topic("scene").at("props").at(camera).at("transform");
 
   const auto orbit = [&](double from) {
-    rig.input({{{"t", "down"}, {"b", 0}, {"x", from}, {"y", 300}}});
-    rig.input({{{"t", "move"}, {"x", from + 40}, {"y", 310}}});
+    rig.input({{{"t", "down"}, {"b", 0}, {"x", from}, {"y", 300}, {"alt", true}}});
+    ASSERT_TRUE(rig.renderer.pivotObserver);
+    rig.renderer.pivotObserver(std::nullopt, false);
+    rig.input({{{"t", "move"}, {"x", from + 40}, {"y", 310}, {"alt", true}}});
     pauseBeyondMerge();
-    rig.input({{{"t", "move"}, {"x", from + 80}, {"y", 320}}, {{"t", "move"}, {"x", from + 120}, {"y", 330}}, {{"t", "up"}, {"b", 0}, {"x", from + 120}, {"y", 330}}});
+    rig.input({{{"t", "move"}, {"x", from + 80}, {"y", 320}, {"alt", true}},
+               {{"t", "move"}, {"x", from + 120}, {"y", 330}, {"alt", true}},
+               {{"t", "up"}, {"b", 0}, {"x", from + 120}, {"y", 330}, {"alt", true}}});
   };
   orbit(400);
   EXPECT_EQ(rig.topic("history").at("undo")[0], "Move Camera");
@@ -2665,6 +2669,96 @@ TEST(FvHost, AShiftWheelDolliesTowardThePointer)
   const glm::dvec2 pixel = pixelOf(rig, under);
   EXPECT_NEAR(pixel.x, 1000, 1e-6);
   EXPECT_NEAR(pixel.y, 200, 1e-6);
+}
+
+// An editor's scheme: the left button alone moves no camera; Alt with it orbits the selection's
+// middle, which stays where it is on screen, without picking anything
+TEST(FvHost, AnAltDragOrbitsTheSelectionsMiddle)
+{
+  HostRig           rig;
+  const std::string light = rig.cmd("prop.add", {{"kind", "light"}, {"transform", {{"t", {1.0, 1.0, 0.0}}}}}).at("result").at("prop").get<std::string>();
+  ASSERT_TRUE(rig.settle());
+  placeView(rig);
+  ASSERT_TRUE(rig.cmd("select", {{"prop", light}}).value("ok", false));
+  const glm::dvec3 middle(1, 1, 0);
+  const glm::dvec2 at = pixelOf(rig, middle);
+
+  rig.input({{{"t", "down"}, {"b", 0}, {"x", 640}, {"y", 360}}, {{"t", "move"}, {"x", 760}, {"y", 400}}, {{"t", "up"}, {"b", 0}, {"x", 760}, {"y", 400}}});
+  EXPECT_EQ(look(rig).eye, glm::dvec3(0, 1, 3)) << "a plain drag moved the camera";
+
+  rig.input({{{"t", "down"}, {"b", 0}, {"x", 640}, {"y", 360}, {"alt", true}},
+             {{"t", "move"}, {"x", 760}, {"y", 400}, {"alt", true}},
+             {{"t", "up"}, {"b", 0}, {"x", 760}, {"y", 400}, {"alt", true}}});
+  EXPECT_TRUE(rig.renderer.pivots.empty()) << "a selection has a middle: nothing to pick";
+  const Look l = look(rig);
+  EXPECT_GT(glm::length(l.eye - glm::dvec3(0, 1, 3)), 0.1);
+  EXPECT_NEAR(glm::length(l.eye - middle), glm::length(glm::dvec3(0, 1, 3) - middle), 1e-6);
+  const glm::dvec2 now = pixelOf(rig, middle);
+  EXPECT_NEAR(now.x, at.x, 1e-3);
+  EXPECT_NEAR(now.y, at.y, 1e-3);
+}
+
+// With nothing selected an Alt drag turns about what is under the pointer as it starts: it waits for
+// the pick; a double-click's point takes over until the selection changes
+TEST(FvHost, WithNothingSelectedADragTurnsAboutWhatIsUnderThePointer)
+{
+  HostRig rig;
+  placeView(rig);
+  ASSERT_TRUE(rig.renderer.pivotObserver);
+  const auto drag = [&](double toX) {
+    rig.input({{{"t", "move"}, {"x", toX}, {"y", 380}, {"alt", true}}, {{"t", "up"}, {"b", 0}, {"x", toX}, {"y", 380}, {"alt", true}}});
+  };
+  rig.input({{{"t", "down"}, {"b", 0}, {"x", 640}, {"y", 360}, {"alt", true}}, {{"t", "move"}, {"x", 700}, {"y", 360}, {"alt", true}}});
+  ASSERT_EQ(rig.renderer.pivots.size(), 1u);
+  EXPECT_NEAR(rig.renderer.pivots[0].x, 0.5f, 1e-6f);
+  EXPECT_EQ(look(rig).eye, glm::dvec3(0, 1, 3)) << "the drag turned before its pivot came";
+  const glm::dvec3 hit(0, 1, -1);
+  rig.renderer.pivotObserver(glm::vec3(hit), false);
+  drag(720);
+  Look l = look(rig);
+  EXPECT_GT(glm::length(l.eye - glm::dvec3(0, 1, 3)), 0.1);
+  EXPECT_NEAR(glm::length(l.eye - hit), 4.0, 1e-6);
+  glm::dvec2 px = pixelOf(rig, hit);
+  EXPECT_NEAR(px.x, 640, 1e-3);
+  EXPECT_NEAR(px.y, 360, 1e-3);
+
+  // a double-click's point, with nothing selected: no pick, it turns about that
+  placeView(rig);
+  const glm::dvec3 clicked(0.5, 1, 0);
+  rig.renderer.pivotObserver(glm::vec3(clicked), true);
+  const double before = glm::length(look(rig).eye - clicked);
+  rig.input({{{"t", "down"}, {"b", 0}, {"x", 640}, {"y", 360}, {"alt", true}}});
+  drag(760);
+  EXPECT_EQ(rig.renderer.pivots.size(), 1u);
+  EXPECT_NEAR(glm::length(look(rig).eye - clicked), before, 1e-6);
+
+  // something selected afterwards: its middle again
+  const std::string light = rig.cmd("prop.add", {{"kind", "light"}, {"transform", {{"t", {-1.0, 1.0, 0.0}}}}}).at("result").at("prop").get<std::string>();
+  ASSERT_TRUE(rig.settle());
+  ASSERT_TRUE(rig.cmd("select", {{"prop", light}}).value("ok", false));
+  placeView(rig);
+  rig.input({{{"t", "down"}, {"b", 0}, {"x", 640}, {"y", 360}, {"alt", true}}});
+  drag(760);
+  EXPECT_EQ(rig.renderer.pivots.size(), 1u);
+  EXPECT_NEAR(glm::length(look(rig).eye - glm::dvec3(-1, 1, 0)), glm::length(glm::dvec3(0, 1, 3) - glm::dvec3(-1, 1, 0)), 1e-6);
+
+  // the middle button pans, with no Alt, and Alt with the right dollies (toward the point of
+  // interest, nothing selected)
+  ASSERT_TRUE(rig.cmd("select", {{"prop", nullptr}}).value("ok", false));
+  placeView(rig);
+  rig.input({{{"t", "down"}, {"b", 1}, {"x", 640}, {"y", 360}}});
+  rig.renderer.pivotObserver(std::nullopt, false);  // nothing under the pointer
+  rig.input({{{"t", "move"}, {"x", 700}, {"y", 360}}, {{"t", "up"}, {"b", 1}, {"x", 700}, {"y", 360}}});
+  l = look(rig);
+  EXPECT_NEAR(l.eye.y, 1.0, 1e-9);
+  EXPECT_GT(std::abs(l.eye.x), 1e-3) << "no pan";
+  placeView(rig);
+  rig.input({{{"t", "down"}, {"b", 2}, {"x", 640}, {"y", 360}, {"alt", true}}});
+  rig.renderer.pivotObserver(std::nullopt, false);
+  rig.input({{{"t", "move"}, {"x", 640}, {"y", 300}, {"alt", true}}, {{"t", "up"}, {"b", 2}, {"x", 640}, {"y", 300}, {"alt", true}}});
+  l = look(rig);
+  EXPECT_NEAR(l.eye.x, 0.0, 1e-9);
+  EXPECT_GT(std::abs(l.eye.z - 3.0), 1e-3) << "no dolly";
 }
 
 TEST(FvHost, TheRightButtonLooksAroundAndFliesWithTheMovementKeys)
@@ -4042,37 +4136,44 @@ TEST(FvHost, ACtrlClickSelectsWhateverSelectSays)
   EXPECT_EQ(rig.renderer.picks.size(), 1u);
 }
 
-// A Ctrl+click on a prop selects it alone, as a plain click does; a Ctrl+Shift+click puts it in the
-// selection, and on nothing changes nothing
-TEST(FvHost, ACtrlShiftClickTogglesAPropInTheSelection)
+// A plain click on a prop selects it alone; a Ctrl+click puts it in the selection or takes it out,
+// and on nothing changes nothing; an Alt+click (an orbit that didn't move) picks nothing
+TEST(FvHost, ACtrlClickTogglesAPropInTheSelection)
 {
   Three t;
   ASSERT_TRUE(t.rig.cmd("view.set", {{"helpers", false}}).value("ok", false));
   ASSERT_TRUE(t.rig.cmd("select", {{"prop", t.a}}).value("ok", false));
-  rs::EntityId second;
-  for(const rs::EntityId root : t.rig.renderer.hostScene().roots())
-    if(const rs::Entity* e = t.rig.renderer.hostScene().entity(root); e && e->name == "Point light 2")
-      second = root;
-  ASSERT_FALSE(second.isNone());
-  t.rig.input(Json::array({{{"t", "down"}, {"x", 400}, {"y", 100}, {"b", 0}}, {{"t", "up"}, {"x", 400}, {"y", 100}, {"b", 0}, {"ctrl", true}}}));
-  ASSERT_TRUE(t.rig.renderer.pickObserver);
-  t.rig.renderer.pickObserver(HostRenderer::InstancePick{second, {}}, glm::vec3(1, 1, 0));
-  t.rig.host->onUpdate();
-  EXPECT_EQ(selectedOf(t.rig), Json::array({t.b})) << t.rig.topic("selection").dump();
-  ASSERT_TRUE(t.rig.cmd("select", {{"prop", t.a}}).value("ok", false));
-  t.rig.input(Json::array({{{"t", "down"}, {"x", 100}, {"y", 100}, {"b", 0}}, {{"t", "up"}, {"x", 100}, {"y", 100}, {"b", 0}, {"ctrl", true}, {"shift", true}}}));
-  ASSERT_TRUE(t.rig.renderer.pickObserver);
   rs::EntityId lightB;
   for(const rs::EntityId root : t.rig.renderer.hostScene().roots())
     if(const rs::Entity* e = t.rig.renderer.hostScene().entity(root); e && e->name == "Point light 2")
       lightB = root;
   ASSERT_FALSE(lightB.isNone());
+  ASSERT_TRUE(t.rig.renderer.pickObserver);
+  const auto click = [&](double x, Json mods) {
+    Json up = {{"t", "up"}, {"x", x}, {"y", 100}, {"b", 0}};
+    up.update(mods);
+    t.rig.input(Json::array({{{"t", "down"}, {"x", x}, {"y", 100}, {"b", 0}}, up}));
+  };
+  click(100, {{"ctrl", true}});
   t.rig.renderer.pickObserver(HostRenderer::InstancePick{lightB, {}}, glm::vec3(1, 1, 0));
   t.rig.host->onUpdate();
   EXPECT_EQ(selectedOf(t.rig), Json::array({t.b, t.a})) << t.rig.topic("selection").dump();
+  click(300, {{"ctrl", true}});
+  t.rig.renderer.pickObserver(HostRenderer::InstancePick{lightB, {}}, glm::vec3(1, 1, 0));
+  t.rig.host->onUpdate();
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.a})) << "a second Ctrl+click didn't take it out";
+  const size_t picks = t.rig.renderer.picks.size();
+  click(500, {{"alt", true}});
+  EXPECT_EQ(t.rig.renderer.picks.size(), picks) << "an Alt+click picked";
+  click(700, Json::object());
+  ASSERT_EQ(t.rig.renderer.picks.size(), picks + 1);
+  t.rig.renderer.pickObserver(HostRenderer::InstancePick{lightB, {}}, glm::vec3(1, 1, 0));
+  t.rig.host->onUpdate();
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.b}));
+  click(900, {{"ctrl", true}});
   t.rig.renderer.pickObserver(std::nullopt, glm::vec3(0));
   t.rig.host->onUpdate();
-  EXPECT_EQ(selectedOf(t.rig), Json::array({t.b, t.a}));
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.b}));
 }
 
 // A click on a prop selects it whole; on a set, the part hit (what the hover outlines)

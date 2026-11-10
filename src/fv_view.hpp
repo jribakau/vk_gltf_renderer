@@ -25,7 +25,7 @@
 //   select        {prop, node?} or {prop: null}   a prop (its root), or a node of its "nodes/<prop>" topic;
 //                 {props: [id]}                   several, the first the primary (the gizmo's, the panels');
 //                 {prop, add: true} or {prop, toggle: true}   one more, or one in or out (a
-//                                               Ctrl+Shift+click in the viewport toggles too)
+//                                               Ctrl+click in the viewport toggles too)
 //   camera.view   {name}                     front, back, left, right, top, bottom, threeQuarter
 //   camera.frame  {prop?, selected?}         the whole scene, a prop, or the selection
 //   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation, flash}   the lens of the view in use
@@ -43,9 +43,10 @@
 //                                               still centres the view);
 //                                               selectCtrl: whether a Ctrl+click picks, whatever `select`
 //                                               says (true, the default; protocol 60; the app turns it
-//                                               off while its pixel readout takes the clicks). With
-//                                               Shift too, an object pick puts the prop in the selection
-//                                               or takes it out;
+//                                               off while its pixel readout takes the clicks). An
+//                                               object pick's Ctrl+click puts the prop in the selection
+//                                               or takes it out (protocol 62; it took Shift too before),
+//                                               and an Alt+click picks nothing (an orbit's start);
 //                                               transform: the gizmo's "move", "rotate" or "scale";
 //                                               space: its handles along the world's axes (what the prop
 //                                               rides on) or the prop's own ("world", "local");
@@ -153,7 +154,7 @@ public:
   // The prop the selection is in, or "".
   const std::string& selectedProp() const { return m_selectedProp; }
   // every prop selected, the primary (selectedProp) first: select's props, add and toggle, and a
-  // Ctrl+Shift+click in the viewport, gather several; any other selection is one again
+  // Ctrl+click in the viewport, gather several; any other selection is one again
   const std::vector<std::string>& selectedProps() const { return m_selectedProps; }
   // the selection, if it is in `prop`, cleared and published (a prop leaving the scene)
   void deselect(const std::string& prop);
@@ -256,7 +257,7 @@ private:
   std::function<void(const std::vector<std::string>&)>      m_solo;
   std::function<fv::Json(const std::string&, int)>          m_nodeState;
   // the props selected, the primary first (m_selectedProp), and whether the click being picked adds
-  // to them or takes out (Ctrl+Shift held)
+  // to them or takes out (Ctrl held)
   std::vector<std::string> m_selectedProps;
   bool                     m_clickAdd = false;
   HostRenderer::GizmoOptions m_gizmo;  // view.set's space and snap

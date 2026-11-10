@@ -1250,8 +1250,21 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   // frame-semaphore to poll instead of blocking. See m_pendingClickPick's comment (renderer.hpp).
   // The hover's pick goes the same way, when no click's is waiting or in flight. A click made while
   // a hover's is in flight takes the picker's one result: that hover is picked again.
+  // A pivot's pick (pivotAt) goes before the hover's.
   if(m_pendingClickPick && m_pendingClickResult && m_pendingClickResult->hover)
     m_hover.due = true;
+  if(!m_pendingClickPick && !m_pendingClickResult && m_pivotDue && m_cameraManip)
+  {
+    m_pendingClickPick = PendingClickPick{
+        .modelViewInv   = glm::inverse(m_cameraManip->getViewMatrix()),
+        .perspectiveInv = glm::inverse(m_cameraManip->getPerspectiveMatrix()),
+        .isOrthographic = (m_cameraManip->getProjectionType() == nvutils::CameraManipulator::Orthographic) ? 1 : 0,
+        .pickPos        = m_lens.rendered(*m_pivotDue),
+        .isDoubleClick  = false,
+        .pivot          = true,
+    };
+    m_pivotDue.reset();
+  }
   if(!m_pendingClickPick && !m_pendingClickResult)
     hoverPickDue();
   if(m_pendingClickPick)
@@ -1264,7 +1277,8 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     m_pendingClickResult =
         PendingClickResult{.semaphoreState = nvvk::SemaphoreState::makeFixed(m_app->getFrameSignalSemaphore()),
                            .isDoubleClick  = m_pendingClickPick->isDoubleClick,
-                           .hover          = m_pendingClickPick->hover};
+                           .hover          = m_pendingClickPick->hover,
+                           .pivot          = m_pendingClickPick->pivot};
     m_pendingClickPick.reset();
   }
   // The pixel readout reads the frame's image as drawn, after every pass that writes it

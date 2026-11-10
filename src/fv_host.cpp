@@ -465,6 +465,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     return impl->onApp(std::move(f));
   });
   s.view->onHelperPick([impl](const glm::vec2& px) { return impl->helperAt(px); });
+  // what a drag of the view turns about: a point picked under the pointer, or a double-click's
+  s.renderer->setPivotObserver([impl](const std::optional<glm::vec3>& at, bool recentred) { impl->onPivot(at, recentred); });
   // a set is its parts to the pointer (a road, a lamp, a window); anything else is one item, a body
   // with its hair and what it wears. The Scene list's Treat as says which a prop is
   s.view->onOneItem([impl](const std::string& prop) {
@@ -632,6 +634,7 @@ void FvHost::onDetach()
   s.queue.clear();
   s.renderer->setGizmoHooks({});
   s.renderer->setPickObserver({});
+  s.renderer->setPivotObserver({});
   if(s.view)
     s.view->setProps({});
   for(const auto& p : s.props)

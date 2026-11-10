@@ -106,6 +106,7 @@ set(TEST_SOURCES
     test_fv_compose.cpp
     test_scene_merger.cpp
     test_camera_controls.cpp
+    ${CMAKE_SOURCE_DIR}/src/camera_controls.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_compose.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf_meshopt.cpp
     # A model prop's material with its edits, for the scene and for an export
