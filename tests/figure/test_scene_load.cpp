@@ -566,6 +566,50 @@ TEST(SceneLoad, ALibraryPathStaysInTheLibrary)
   fs::remove_all(root);
 }
 
+// A scene saves the axes of a node's channels it changed alone: a button turned a quarter about x,
+// whose scene node gives its centre's height and not its depth, turns about the centre its definition
+// has (it stays where it is), not about one 11 cm behind it (PrefoX's Arietta Dress's top button stood
+// 3.7 cm off the dress). The empty Instance Target channel DAZ Studio saves on such a node makes no
+// instance of it.
+TEST(SceneLoad, ANodesChannelsAreItsSceneAxesOverItsDefinitions)
+{
+  const fs::path root = fs::temp_directory_path() / "fv-scene-axes-test";
+  fs::remove_all(root);
+  writeFile(root / "data/T/Button/Button.dsf", R"({"file_version":"0.6.0.0","asset_info":{"id":"/data/T/Button/Button.dsf"},
+  "geometry_library":[{"id":"geometry","label":"Button","type":"polygon_mesh",
+    "vertices":{"count":4,"values":[[-1,114,11],[1,114,11],[1,116,11],[-1,116,11]]},
+    "polylist":{"count":1,"values":[[0,0,0,1,2,3]]},
+    "polygon_groups":{"count":1,"values":["g"]},
+    "polygon_material_groups":{"count":1,"values":["Button"]}}],
+  "node_library":[{"id":"Button","name":"Button","type":"node",
+    "center_point":[{"id":"x","value":0},{"id":"y","value":110},{"id":"z","value":11}],
+    "extra":[{"type":"studio_node_channels","channels":[{"channel":{"id":"Instance Target","type":"node","label":"Instance Target"}}]}]}]})");
+  writeFile(root / "Scenes/Button.duf", R"({"file_version":"0.6.0.0","asset_info":{"id":"/Scenes/Button.duf"},
+  "scene":{"nodes":[{"id":"Button","url":"/data/T/Button/Button.dsf#Button",
+    "center_point":[{"id":"y","current_value":115}],"rotation":[{"id":"x","current_value":90}],
+    "geometries":[{"id":"geometry","url":"/data/T/Button/Button.dsf#geometry"}]},
+   {"id":"Holder","url":"/data/T/Button/Button.dsf#Button","label":"Holder"}]}})");
+  fv::dson::Store store(std::make_shared<fv::dson::Library>(std::vector<fs::path>{root}));
+  const auto      r = fv::dson::loadDson(store, "Scenes/Button.duf");
+  EXPECT_FALSE(warned(r, "instance")) << (r.warnings.empty() ? "" : r.warnings.front());
+  const int mesh = meshIndex(r, "Button");
+  ASSERT_GE(mesh, 0);
+  int node = -1;
+  for(size_t n = 0; n < r.scene.nodes.size(); n++)
+    if(r.scene.nodes[n].mesh == mesh)
+      node = int(n);
+  ASSERT_GE(node, 0);
+  const fv::Mat4 world = r.scene.world(node);
+  const auto&    pos   = r.scene.meshes[size_t(mesh)].geo->cagePositions;
+  fv::Vec3       middle;
+  for(size_t v = 0; v < pos.size() / 3; v++)
+    middle = middle + world.transformPoint({pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]}) * 0.25;
+  EXPECT_NEAR(middle.x, 0, 1e-6);
+  EXPECT_NEAR(middle.y, 115, 1e-6);
+  EXPECT_NEAR(middle.z, 11, 1e-6);
+  fs::remove_all(root);
+}
+
 // A DAZ geometry shell (studio/node/shell) draws its source's mesh again: pushed out along the
 // normals by its push modifier, its own surfaces only where its visibility channels keep them, and
 // moved by every morph of the source

@@ -86,16 +86,23 @@ std::string replaceAll(std::string s, const std::string& from, const std::string
   return s;
 }
 
+// A vector channel of a node: the scene node's axes over its definition's. A scene saves the axes it
+// changed alone (a button's centre with its y and not its z), so a missing one is the definition's.
+std::array<double, 3> nodeVec3(const Json* node, const Json* def, std::string_view key, std::array<double, 3> fallback = {0, 0, 0})
+{
+  return vec3Channel(get(node, key), vec3Channel(get(def, key), fallback));
+}
+
 // A DSON node's transform: rotation and scale about its centre point, in its orientation frame, then
 // translation. Geometry is stored in rest-pose world space, so this is relative to the parent.
 void nodeTransform(Node& group, const Json* node, const Json* def)
 {
-  const auto        t     = vec3Channel(pick(node, def, "translation"));
-  const auto        r     = vec3Channel(pick(node, def, "rotation"));
-  const auto        s     = vec3Channel(pick(node, def, "scale"), {1, 1, 1});
+  const auto        t     = nodeVec3(node, def, "translation");
+  const auto        r     = nodeVec3(node, def, "rotation");
+  const auto        s     = nodeVec3(node, def, "scale", {1, 1, 1});
   const double      gs    = channelValue(pick(node, def, "general_scale"), 1);
-  const auto        c     = vec3Channel(pick(node, def, "center_point"));
-  const auto        o     = vec3Channel(pick(node, def, "orientation"));
+  const auto        c     = nodeVec3(node, def, "center_point");
+  const auto        o     = nodeVec3(node, def, "orientation");
   const std::string order = firstString({{def, "rotation_order"}, {node, "rotation_order"}}, "XYZ");
   const bool        xyz3  = order.size() == 3 && std::all_of(order.begin(), order.end(), [](char ch) { return ch == 'X' || ch == 'Y' || ch == 'Z'; });
   const Quat        orient = quatFromEuler(o[0] * kDeg, o[1] * kDeg, o[2] * kDeg, xyz3 ? order : "XYZ");
@@ -129,7 +136,15 @@ bool hiddenNode(const Json* node)
   return false;
 }
 
-// Whether a node is a DAZ Studio instance (a drawn copy of another node), which isn't loaded.
+// The scene node an Instance Target channel names ("" for none). DAZ Studio saves the channel, empty,
+// on nodes that are no instance (a button's rigid follow node has one).
+std::string instanceTargetOf(const Json& channel)
+{
+  return firstString({{&channel, "node"}, {&channel, "current_value"}});
+}
+
+// Whether a node is a DAZ Studio instance (a drawn copy of another node), which isn't loaded: its type
+// says so, or an Instance Target channel names a node.
 bool isDazInstance(const Json* node)
 {
   const Json* extra = get(node, "extra");
@@ -145,10 +160,21 @@ bool isDazInstance(const Json* node)
       {
         const Json* inner = get(&c, "channel");
         const Json& ch    = inner && !inner->is_null() ? *inner : c;
-        if(getString(&ch, "id") == "Instance Target")
+        if(getString(&ch, "id") == "Instance Target" && !instanceTargetOf(ch).empty())
           return true;
       }
   }
+  return false;
+}
+
+// Whether a node's type says it is a DAZ Studio instance, whatever its channels name.
+bool instanceByType(const Json* node)
+{
+  static const std::regex type(R"((^|/)instance(_group)?$)");
+  if(const Json* extra = get(node, "extra"); extra && extra->is_array())
+    for(const Json& e : *extra)
+      if(std::regex_search(getString(&e, "type"), type))
+        return true;
   return false;
 }
 
@@ -233,9 +259,13 @@ std::optional<NodeInstance> nodeInstance(const Json* node, const Json* def)
   const Json* value = pick(mode, mode, "current_value");
   if(!value)
     value = get(mode, "value");
+  // an empty one on a node of no instance type: DAZ Studio's channel on a plain node, no instance
+  const std::string named = instanceTargetOf(*target);
+  if(named.empty() && !instanceByType(node) && !instanceByType(def))
+    return std::nullopt;
   NodeInstance out;
   out.id       = getString(node, "id");
-  out.target   = decodeUri(lastSegment(firstString({{target, "node"}, {target, "current_value"}}), '#'));
+  out.target   = decodeUri(lastSegment(named, '#'));
   out.children = value && value->is_number() && value->get<double>() == 0;
   out.visible  = !hiddenNode(node);
   return out;

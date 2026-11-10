@@ -52,6 +52,8 @@
 // to the loaded figure's, fitted: the measure of wardrobe plan step 3. Numbers only.
 // {"graft": rel} wears a geograft and reports the body polygons it hides and their area against those it
 // hides on its own figure, and how far its seam lies from the edge of what it hides (step 4d).
+// {"follows": label} reports each rigid follow node (a button DAZ ties to a patch of its dress) against
+// that patch as the figure is now: how far what hangs from it stands from the patch, now and as made.
 // {"contact": label} runs the body's contact pass at the pose it is in with nothing near it, so only
 // its own parts press on one another (figure/physics/contact, step 10): the vertices pressed, the
 // dents, how many vertices moved and how far at most, by part, and the pass's time.
@@ -1355,6 +1357,86 @@ int main(int argc, char** argv)
         if(!loaded || !loaded->removeItem(step["remove"].get<int>()))
           throw std::runtime_error("no such item to remove");
         loaded->settle();
+      }
+      else if(step.contains("follows"))
+      {
+        // {"follows": label}: each rigid follow node (a dress's button) against the patch it follows, as
+        // the figure is now: how far what hangs from it stands from the patch's skinned middle, now and as
+        // made (the same when it follows), and how far the patch moved
+        if(!loaded)
+          throw std::runtime_error("follows before a figure loads");
+        (void)loaded->pump();
+        const fv::SceneGraph&       scene  = loaded->loaded.scene;
+        const std::vector<fv::Mat4> worlds = scene.worlds();
+        const std::vector<int>      nodeOf = fv::physics::nodeOfMesh(scene);
+        Json                        list   = Json::array();
+        for(const fv::dson::RigidFollow& f : loaded->loaded.follows)
+        {
+          const fv::Mesh&          mesh  = scene.meshes[size_t(f.mesh)];
+          const fv::Mat4&          world = worlds[size_t(nodeOf[size_t(f.mesh)])];
+          const std::vector<float> cage  = loaded->morphs->morphedCage(f.mesh);
+          const std::vector<float> now   = mesh.skinned() ? fv::physics::skinLocal(cage, fv::physics::cageSkin(mesh.cageSkin),
+                                                                                   fv::physics::currentSkin(scene, worlds, nodeOf, f.mesh), f.refs)
+                                                          : std::vector<float>{};
+          fv::Vec3 patchNow, patchMade;
+          for(size_t i = 0; i < f.refs.size(); i++)
+          {
+            const size_t v = f.refs[i];
+            const float* p = now.empty() ? &cage[v * 3] : &now[i * 3];
+            patchNow       = patchNow + world.transformPoint({p[0], p[1], p[2]}) * (1.0 / double(f.refs.size()));
+            patchMade = patchMade + world.transformPoint({mesh.geo->cagePositions[v * 3], mesh.geo->cagePositions[v * 3 + 1], mesh.geo->cagePositions[v * 3 + 2]})
+                                        * (1.0 / double(f.refs.size()));
+          }
+          // the meshes under the node, their middles now and as made (the node's world at rest in place of its world now)
+          const fv::Mat4 toMade = world * f.restInMesh * fv::inverse(worlds[size_t(f.node)]);
+          std::vector<int> under{f.node};
+          fv::Vec3         hangNow, hangMade;
+          size_t           count = 0;
+          for(size_t k = 0; k < under.size(); k++)
+          {
+            const fv::Node& n = scene.nodes[size_t(under[k])];
+            under.insert(under.end(), n.children.begin(), n.children.end());
+            if(n.mesh < 0 || !scene.meshes[size_t(n.mesh)].geo)
+              continue;
+            const auto& pos = scene.meshes[size_t(n.mesh)].geo->cagePositions;
+            for(size_t v = 0; v < pos.size() / 3; v++)
+            {
+              const fv::Vec3 at = worlds[size_t(under[k])].transformPoint({pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]});
+              hangNow           = hangNow + at;
+              hangMade          = hangMade + toMade.transformPoint(at);
+              count++;
+            }
+          }
+          if(count)
+          {
+            hangNow  = hangNow * (1.0 / double(count));
+            hangMade = hangMade * (1.0 / double(count));
+          }
+          // how far it is from the nearest vertex of what it follows, posed and as made
+          const std::vector<float> all = mesh.skinned() ? fv::physics::skinLocal(cage, fv::physics::cageSkin(mesh.cageSkin),
+                                                                                  fv::physics::currentSkin(scene, worlds, nodeOf, f.mesh))
+                                                         : cage;
+          double nearNow = 1e30, nearMade = 1e30;
+          for(size_t v = 0; v < all.size() / 3; v++)
+          {
+            nearNow  = std::min(nearNow, fv::length(world.transformPoint({all[v * 3], all[v * 3 + 1], all[v * 3 + 2]}) - hangNow));
+            nearMade = std::min(nearMade, fv::length(world.transformPoint({mesh.geo->cagePositions[v * 3], mesh.geo->cagePositions[v * 3 + 1],
+                                                                            mesh.geo->cagePositions[v * 3 + 2]})
+                                                     - hangMade));
+          }
+          list.push_back({{"node", scene.nodes[size_t(f.node)].name},
+                          {"follows", mesh.name},
+                          {"refs", f.refs.size()},
+                          {"offMade", r(fv::length(hangMade - patchMade))},
+                          {"offNow", r(fv::length(hangNow - patchNow))},
+                          {"patchMoved", r(fv::length(patchNow - patchMade))},
+                          {"hangMoved", r(fv::length(hangNow - hangMade))},
+                          {"height", r(hangNow.y)},
+                          {"nearestMade", r(nearMade)},
+                          {"nearestNow", r(nearNow)}});
+        }
+        std::cerr << "follows: " << list.dump() << "\n";
+        dumps[step.value("label", std::string("follows"))] = list;
       }
       else if(step.contains("cloth"))
       {
