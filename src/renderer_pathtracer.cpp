@@ -1204,33 +1204,30 @@ void PathTracer::updateAdaptiveSampling(Resources& resources)
   if(++m_accumulationFrames < 5)
     return;
 
-  // The profiler reports a GPU time frames after it was recorded. The throughput search compares counts,
-  // so it waits until every frame the time can come from traced the current count (not a frame ended
-  // early on a stop, nor the count before). The frame-rate targets step by one, where that lag is small.
-  if(m_performanceTarget == PerformanceTarget::eThroughput
-     && std::any_of(m_recentFrameSamples.begin(), m_recentFrameSamples.end(),
-                    [&](int samples) { return samples != m_adaptiveSamples; }))
+  if(m_performanceTarget == PerformanceTarget::eThroughput)
+  {
+    // Throughput counts the whole frame, by the clock: several samples per frame pay off by sharing the
+    // per-frame work, which the path-trace timer does not see. The work of a frame reaches that clock
+    // frames later (the GPU runs behind the recording), and the search compares counts, so it waits
+    // until every frame a time can come from traced the current count (not a frame ended early on a
+    // stop, nor the count before).
+    // No GPU timer is asked for: in a host's run the profiler's snapshot holds the path trace's on
+    // about one frame in five, and waiting for it made the search take ten times as long (5 s of a
+    // still at 2160x1395, 3.6 s of it at four samples a frame that cost a fifth more each, 2026-11-10).
+    if(std::any_of(m_recentFrameSamples.begin(), m_recentFrameSamples.end(), [&](int samples) { return samples != m_adaptiveSamples; }))
+      return;
+    m_adaptiveSamples = m_throughputSearch.update(m_adaptiveSamples, wallMs, getTargetFrameTimeMs(), MAX_ADAPTIVE_SAMPLES_PER_PIXEL);
     return;
+  }
 
-  // Get timing information for the path tracing section (the technique's timer)
+  // The frame-rate targets step by one from the path trace's GPU time (the technique's timer), which
+  // the profiler reports frames after it was recorded: a lag a step of one keeps small
   nvutils::ProfilerTimeline::TimerInfo timerInfo;
   static std::string apiName;  // an output nobody reads; kept so the per-frame call allocates nothing
   const std::string& timerName = (m_renderTechnique == RenderTechnique::RayQuery) ? kTimerPathTraceRq : kTimerPathTraceRtx;
-
   if(m_profilerTimeline->getFrameTimerInfo(timerName, timerInfo, apiName))
-  {
-    // Convert from microseconds to milliseconds
-    double currentFrameTimeMs = timerInfo.gpu.last / 1000.0;
-
-    // Throughput counts the whole frame: several samples per frame pay off by sharing the per-frame
-    // work, which the path-trace timer does not see
-    if(m_performanceTarget == PerformanceTarget::eThroughput)
-      m_adaptiveSamples =
-          m_throughputSearch.update(m_adaptiveSamples, wallMs, getTargetFrameTimeMs(), MAX_ADAPTIVE_SAMPLES_PER_PIXEL);
-    else
-      m_adaptiveSamples = m_frameRateControl.update(m_adaptiveSamples, currentFrameTimeMs, getTargetFrameTimeMs(),
-                                                    MIN_SAMPLES_PER_PIXEL, MAX_ADAPTIVE_SAMPLES_PER_PIXEL);
-  }
+    m_adaptiveSamples = m_frameRateControl.update(m_adaptiveSamples, timerInfo.gpu.last / 1000.0, getTargetFrameTimeMs(),
+                                                  MIN_SAMPLES_PER_PIXEL, MAX_ADAPTIVE_SAMPLES_PER_PIXEL);
 }
 
 
