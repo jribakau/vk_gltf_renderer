@@ -636,6 +636,34 @@ TEST(GarmentWeights, TheDualQuaternionShareGoesOverWithTheWeights)
   EXPECT_TRUE(fv::garment::withBodyWeights(item, 1, body, at, std::vector<float>{1, 1, 0}).dualQuatMap.empty());
 }
 
+TEST(GarmentWeights, ClothPastAJointNoItemBoneFollowsTakesThatJoint)
+{
+  // an item's two spine bones follow the figure's first and third: the figure's second, at 10 cm,
+  // has no item bone, so the lower bone's cloth past it bends there
+  const std::vector<fv::garment::Joint> item{{"spine", -1, {0, 0, 0}}, {"spine2", 0, {0, 20, 0}}};
+  const std::vector<fv::garment::Joint> figure{{"spine1", -1, {0, 0, 0}}, {"spine2", 0, {0, 10, 0}}, {"spine3", 1, {0, 20, 0}}};
+  const std::map<std::string, std::string> follow{{"spine", "spine1"}, {"spine2", "spine3"}};
+  const std::vector<float>                 positions{0, 2, 5, 0, 10, 5, 0, 18, 5, 0, 25, 5};
+  const auto skin = skinOf({{{0, 1.f}}, {{0, 1.f}}, {{0, 1.f}}, {{1, 1.f}}});
+  size_t     moved = 0;
+  const auto out   = fv::garment::transferChains(skin, item, follow, figure, {0, 1, 2}, positions, 1.5, &moved);
+  // the figure's spine2 is bone 2 + 1 of the result
+  EXPECT_NEAR(rowOf(out, 0)[0], 1, 1e-6);
+  EXPECT_NEAR(rowOf(out, 1)[0], 0.5, 1e-6);
+  EXPECT_NEAR(rowOf(out, 1)[3], 0.5, 1e-6);
+  EXPECT_NEAR(rowOf(out, 2)[3], 1, 1e-6);
+  // cloth on the upper bone follows it as before
+  EXPECT_NEAR(rowOf(out, 3)[1], 1, 1e-6);
+  EXPECT_EQ(moved, 2u);
+  // a joint the body's skin hasn't stays with the item's bone
+  const auto kept = fv::garment::transferChains(skin, item, follow, figure, {0, -1, 2}, positions);
+  EXPECT_NEAR(rowOf(kept, 2)[0], 1, 1e-6);
+  // with every figure joint followed there is nothing to move
+  const auto all = fv::garment::transferChains(skin, item, {{"spine", "spine1"}, {"spine2", "spine2"}}, figure, {0, 1, 2}, positions, 1.5, &moved);
+  EXPECT_EQ(moved, 0u);
+  EXPECT_NEAR(rowOf(all, 2)[0], 1, 1e-6);
+}
+
 TEST(GarmentWeights, HoldFallsWithTheDistanceOffTheBody)
 {
   const std::vector<float> body = {0, 0, 0, 10, 0, 0, 0, 0, 10};

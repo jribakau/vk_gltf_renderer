@@ -636,7 +636,33 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
       if(const auto foot = fit.onFoot.find(part.mesh); foot != fit.onFoot.end() && foot->second.size() == hold.size())
         for(size_t v = 0; v < hold.size(); v++)
           hold[v] *= 1 - foot->second[v];
-      if(std::none_of(hold.begin(), hold.end(), [](float h) { return h > 0; }))
+      // its own cloth past a joint of the figure's that none of its bones follows takes that joint
+      size_t transferred = 0;
+      {
+        const auto jointsOf = [](const SceneGraph& s, const std::vector<int>& bones) {
+          std::vector<garment::Joint> out;
+          for(const int b : bones)
+          {
+            const Node&     n = s.nodes[size_t(b)];
+            garment::Joint  j;
+            j.name = n.name;
+            for(int p = n.parent; p >= 0 && j.parent < 0; p = s.nodes[size_t(p)].parent)
+              if(const auto at = std::find(bones.begin(), bones.end(), p); at != bones.end())
+                j.parent = int(at - bones.begin());
+            if(n.joint)
+              j.center = n.joint->center;
+            out.push_back(std::move(j));
+          }
+          return out;
+        };
+        const std::vector<garment::Joint> figureJoints = jointsOf(scene, body.bones);
+        std::vector<int>                  bodyBone(figureJoints.size());
+        for(size_t j = 0; j < bodyBone.size(); j++)
+          bodyBone[j] = int(j);
+        m.cageSkin = garment::transferChains(m.cageSkin, jointsOf(out->loaded.scene, m.bones), fit.plan.follow, figureJoints, bodyBone, m.geo->cagePositions,
+                                             1.5, &transferred);
+      }
+      if(std::none_of(hold.begin(), hold.end(), [](float h) { return h > 0; }) && !transferred)
         continue;
       m.cageSkin = garment::withBodyWeights(m.cageSkin, m.bones.size(), body.cageSkin, *out->bindings[i], hold);
       // a hard piece on one set of weights, so a pose carries it whole

@@ -1793,6 +1793,33 @@ int main(int argc, char** argv)
                                      {was[a * 3], was[a * 3 + 1], was[a * 3 + 2]}});
                 }
             const std::vector<double> now = signedClearance(body.cagePositions, body.dsonTris, me.geo->cagePositions);
+            // cloth over 5 cm off the skin weighted to the figure's spine and neck joints: the body's weights
+            // reach no further than that, so this is the chain transfer's (wardrobe plan step 5)
+            {
+              std::map<std::string, size_t> loose;
+              for(size_t v = 0; v + 1 < me.cageSkin.start.size() && v < now.size(); v++)
+              {
+                if(std::abs(now[v]) <= 5)
+                  continue;
+                for(int32_t i = me.cageSkin.start[v]; i < me.cageSkin.start[v + 1]; i++)
+                {
+                  const int32_t b = me.cageSkin.bone[size_t(i)];
+                  if(me.cageSkin.weight[size_t(i)] < 0.05f || b < 0 || size_t(b) >= me.bones.size())
+                    continue;
+                  const std::string& name = scene.nodes[size_t(me.bones[size_t(b)])].name;
+                  for(const char* joint : {"spine1", "spine2", "spine3", "spine4", "neck1", "neck2", "chestUpper", "neckUpper"})
+                    if(name == joint)
+                      loose[name]++;
+                }
+              }
+              if(!loose.empty())
+              {
+                std::cerr << "  loose cloth on the figure's joints:";
+                for(const auto& [name, count] : loose)
+                  std::cerr << " " << name << " " << count;
+                std::cerr << "\n";
+              }
+            }
             // strand hair: its roots' clearance from the scalp, as made and worn (wardrobe plan step 4c)
             if(const auto& ls = me.geo->cageLineStart; ls.size() > 1)
             {
