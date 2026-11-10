@@ -5,6 +5,7 @@
 // and material. The layouts are niftools' nif.xml. A rotation is stored row by row and turns column
 // vectors (v' = R v): read that way, a bone's place from the node tree is the one the skin's bind
 // data gives it. Older Skyrim (stream 83, NiTriShape) and Fallout 4 files are refused with the reason.
+// One shape of a file that can't be read is left out with the reason (File::skipped), not the file.
 
 #include <array>
 #include <cstdint>
@@ -94,6 +95,8 @@ struct Shape
   std::vector<uint16_t> bodyParts;
   std::optional<Shader> shader;
   std::optional<Alpha>  alpha;
+  // drawn by a BSEffectShaderProperty (a glow, a magic effect), which no material is read from
+  bool effect = false;
   // NiStringExtraData on it: name and value (an outfit's body carries "BODYTRI")
   std::vector<std::pair<std::string, std::string>> extra;
 
@@ -107,6 +110,9 @@ struct File
   std::string        exporter;  // the export info's process script ("Exported using Outfit Studio.")
   std::vector<Node>  nodes;
   std::vector<Shape> shapes;
+  // shapes left out, each as its name and why: one this reader can't read (a BSDynamicTriShape, a skin
+  // of a kind it doesn't know, data that doesn't add up)
+  std::vector<std::string> skipped;
 
   // a node's transform into the file's root space
   Transform world(int node) const;

@@ -354,8 +354,9 @@ int32_t lightingShader(Writer& w, uint32_t type, const std::vector<std::string>&
 // `standing`: feet under the thighs (at z 5) and a neck on the spine (z 108) that nothing is skinned to.
 // `slot`: the skirt's biped slot (32, the body's). `as`: how the skirt's skin is written. `thighBound`: how
 // far from where it stands the skirt was bound with the left thigh, its vertices carried with it by their
-// weights (the body keeps the plain bind, which is the node tree's).
-std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32, const SkinAs& as = {}, const V3& thighBound = {0, 0, 0})
+// weights (the body keeps the plain bind, which is the node tree's). `odd`: three more shapes the reader
+// can't draw: one whose skin is a block of another kind, a BSDynamicTriShape, and one with an effect shader.
+std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32, const SkinAs& as = {}, const V3& thighBound = {0, 0, 0}, bool odd = false)
 {
   Writer        w;
   const int32_t root = w.reserve("NiNode");
@@ -363,8 +364,33 @@ std::vector<uint8_t> outfit(bool standing = false, uint16_t slot = 32, const Ski
                 spine = w.reserve("NiNode");
   const int32_t lFoot = standing ? w.reserve("NiNode") : -1, rFoot = standing ? w.reserve("NiNode") : -1, neck = standing ? w.reserve("NiNode") : -1;
   const int32_t skirt = w.reserve("BSTriShape"), body = w.reserve("BSTriShape"), proxy = w.reserve("BSTriShape");
+  const int32_t broken = odd ? w.reserve("BSTriShape") : -1, face = odd ? w.reserve("BSDynamicTriShape") : -1, glow = odd ? w.reserve("BSTriShape") : -1;
   const auto    only  = [&](int32_t n) { return n >= 0 ? std::vector<int32_t>{n} : std::vector<int32_t>{}; };
-  node(w, root, "Scene Root", {0, 0, 0}, {com, skirt, body, proxy});
+  node(w, root, "Scene Root", {0, 0, 0}, odd ? std::vector<int32_t>{com, skirt, body, proxy, broken, face, glow} : std::vector<int32_t>{com, skirt, body, proxy});
+  if(odd)
+  {
+    // a shape whose skin is a node: no skin this reader knows
+    Buf b;
+    avObject(w, b, "Broken", {0, 0, 0});
+    for(int i = 0; i < 4; i++)
+      b.f32(0);
+    b.i32(com);
+    b.i32(-1);
+    b.i32(-1);
+    b.u64(9 | (4ull << 8) | (5ull << 16) | (6ull << 28) | (0x4Bull << 44));
+    b.u16(0);
+    b.u16(0);
+    b.u32(0);
+    b.u32(0);
+    w.set(broken, std::move(b));
+    Buf f;
+    avObject(w, f, "Face", {0, 0, 0});
+    w.set(face, std::move(f));
+    const int32_t effect = w.reserve("BSEffectShaderProperty");
+    w.set(effect, Buf{});
+    skinnedShape(w, glow, "Glow", {{{-5, 0, 60}, {0, 0}, {{{0, 1.f}, {1, 0}}}}, {{-5, 0, 40}, {0, 1}, {{{0, 1.f}, {1, 0}}}}, {{0, 0, 40}, {1, 1}, {{{0, 1.f}, {1, 0}}}}},
+                 {0, 1, 2}, {pelvis, lThigh}, {{0, 0, 60}, {-6, 0, 60}}, effect, -1);
+  }
   node(w, com, "NPC COM [COM ]", {0, 0, 60}, {pelvis});
   node(w, pelvis, "NPC Pelvis [Pelv]", {0, 0, 0}, {lThigh, rThigh, spine});
   node(w, lThigh, "NPC L Thigh [LThg]", {-6, 0, 0}, only(lFoot));
@@ -942,4 +968,34 @@ TEST(Nif, AShapeBoundInAnotherPoseIsCarriedToTheFilesBind)
   const fv::nif::File f = fv::nif::read(outfit(false, 32, {}, {-2, 0, 3}));
   EXPECT_FLOAT_EQ(f.shapes[0].positions[1][0], -8);
   EXPECT_FLOAT_EQ(f.shapes[0].positions[0][0], -7);
+}
+
+TEST(Nif, AShapeThatCantBeReadIsLeftOutNotTheFile)
+{
+  const std::vector<uint8_t> bytes = outfit(false, 32, {}, {0, 0, 0}, true);
+  const fv::nif::File        f     = fv::nif::read(bytes);
+  // the skirt, the body, the proxy and the glow are read; the two that can't be are named with why
+  ASSERT_EQ(f.shapes.size(), 4u);
+  EXPECT_EQ(f.shapes[3].name, "Glow");
+  EXPECT_TRUE(f.shapes[3].effect);
+  EXPECT_FALSE(f.shapes[3].shader);
+  ASSERT_EQ(f.skipped.size(), 2u);
+  EXPECT_NE(f.skipped[0].find("Broken"), std::string::npos) << f.skipped[0];
+  EXPECT_NE(f.skipped[0].find("NiNode"), std::string::npos) << f.skipped[0];
+  EXPECT_NE(f.skipped[1].find("Face"), std::string::npos) << f.skipped[1];
+  EXPECT_NE(f.skipped[1].find("BSDynamicTriShape"), std::string::npos) << f.skipped[1];
+
+  // worn, the skirt comes in, and the wear says what didn't
+  const Data                 data("odd", bytes);
+  const fv::dson::LoadResult w = fv::nif::loadWearable(data.nif, {}, {data.home});
+  ASSERT_EQ(w.items.size(), 1u);
+  EXPECT_EQ(w.items[0].meshes.size(), 1u);
+  size_t left = 0, glow = 0;
+  for(const std::string& warning : w.warnings)
+  {
+    left += warning.find("was left out") != std::string::npos;
+    glow += warning.find("Glow isn't drawn") != std::string::npos;
+  }
+  EXPECT_EQ(left, 2u);
+  EXPECT_EQ(glow, 1u);
 }

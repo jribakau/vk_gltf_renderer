@@ -542,6 +542,8 @@ Shape readShape(const Block& b, const Parser& p, const std::unordered_map<int32_
   }
   if(const Block* sb = p.block(shaderRef); sb && sb->type == "BSLightingShaderProperty")
     s.shader = readShader(p.at(*sb), p);
+  else if(sb && sb->type == "BSEffectShaderProperty")
+    s.effect = true;
   if(const Block* ab = p.block(alphaRef); ab && ab->type == "NiAlphaProperty")
     s.alpha = readAlpha(p.at(*ab));
   return s;
@@ -731,9 +733,27 @@ File read(std::span<const uint8_t> bytes)
     const std::string& type = p.blocks[k].type;
     if(type == "NiTriShape" || type == "NiTriStrips")
       throw std::runtime_error("it keeps its meshes as " + type + ", as original Skyrim does; convert it to Special Edition first");
-    // (a BSDynamicTriShape, a face, keeps its positions elsewhere: not read)
-    if(type != "BSTriShape")
+    if(type != "BSTriShape" && type != "BSDynamicTriShape")
       continue;
+    // a shape that can't be read is left out, with its name and why, and the rest of the file is read
+    const auto named = [&]() {
+      try
+      {
+        Reader            nr   = p.at(p.blocks[k]);
+        const std::string name = readAvObject(nr, p).name;
+        if(!name.empty())
+          return name;
+      }
+      catch(const std::exception&)
+      {
+      }
+      return "shape " + std::to_string(k);
+    };
+    if(type == "BSDynamicTriShape")
+    {
+      out.skipped.push_back(named() + ": it keeps its vertices as a face or a hair does (BSDynamicTriShape), which isn't read");
+      continue;
+    }
     try
     {
       Shape s = readShape(p.blocks[k], p, nodeOfBlock);
@@ -743,7 +763,7 @@ File read(std::span<const uint8_t> bytes)
     }
     catch(const std::exception& e)
     {
-      throw std::runtime_error("shape " + std::to_string(k) + ": " + e.what());
+      out.skipped.push_back(named() + ": " + e.what());
     }
   }
   return out;

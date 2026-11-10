@@ -849,9 +849,12 @@ dson::LoadResult loadWearable(const fs::path& file, const dson::LoadOptions& opt
   }
   const std::vector<size_t> bodies = bodyShapes(nif);
   std::vector<size_t>       drawn;
+  std::string               effects;  // the shapes an effect shader draws, by name
   for(size_t i = 0; i < nif.shapes.size(); i++)
   {
     const Shape& s = nif.shapes[i];
+    if(s.effect && !s.hidden() && !s.positions.empty())
+      effects += (effects.empty() ? "" : ", ") + s.name;
     // no material: a physics proxy (HDT-SMP's collision shapes), never drawn in the game either
     if(!s.shader || s.hidden() || s.positions.empty() || s.triangles.empty())
       continue;
@@ -860,9 +863,15 @@ dson::LoadResult loadWearable(const fs::path& file, const dson::LoadOptions& opt
     drawn.push_back(i);
   }
   if(drawn.empty())
-    throw std::runtime_error(fileName + " has nothing to wear in it" + (bodies.empty() ? std::string() : " but the body it was made for"));
+    throw std::runtime_error(fileName + " has nothing to wear in it" + (bodies.empty() ? std::string() : " but the body it was made for")
+                             + (nif.skipped.empty() ? std::string() : " that could be read (" + nif.skipped.front() + ")")
+                             + (effects.empty() ? std::string() : "; " + effects + " is drawn by an effect shader, which isn't drawn here"));
 
   dson::LoadResult out;
+  for(const std::string& s : nif.skipped)
+    out.warnings.push_back(fileName + ": a part of it was left out. " + s + ".");
+  if(!effects.empty())
+    out.warnings.push_back(fileName + ": " + effects + " isn't drawn (an effect shader: a glow or a magic effect).");
   std::vector<std::string> notes;
   const Skeleton           sk   = skeletonOf(nif, drawn);
   const std::optional<Base> base = findBase(nif, file, notes);
