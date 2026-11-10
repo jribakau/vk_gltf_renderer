@@ -1147,7 +1147,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     if(materialIndex >= 0 && materials[materialIndex].opacityFilm != 0 && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
     {
       const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
-      const float  cover = getOpacity(renderNode, renderPrim, payload.primitiveID, barys, float3(0.0F));  // a film is no weave: no direction
+      // the opacity the traversal read: a weave's by the ray's direction, in the instance's space
+      const float cover = getOpacity(renderNode, renderPrim, payload.primitiveID, barys, mul(float4(ray.Direction, 0.0F), renderNode.worldToObject).xyz);
       if(cover < 1.0F && rand(seed) >= cover)
       {
         pt.cone.width = worldFoot;

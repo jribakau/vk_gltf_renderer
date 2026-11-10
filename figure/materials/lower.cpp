@@ -436,12 +436,13 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // stocking's outline, a veil's folds). Not a hair card or lashes, whose cutout is strands, nor
   // glass, nor a figure. Iray keeps a cutout the same from every side.
   const bool sheet = out.alphaMode == AlphaMode::eBlend && s.context == Context::eItem && s.kind == Kind::eOther && !s.hairFibre && !refractive;
-  // Glass that does not refract, a set's window painted as a half-open cutout (XI Street of Santorini's
-  // shop glass: a flat 0.48 Cutout Opacity map), is a film and no weave: as open at a slant as head-on,
-  // and its cover drawn at the surface while the view moves (Material::film). By its name: what the
-  // map holds is not known here.
-  out.film  = sheet && saysGlass(s.name);
-  out.woven = sheet && !out.film;
+  // Any such sheet is a film to the moving view, its cover drawn at the surface (Material::film): a
+  // set's window is often no glass that refracts but a half-open cutout, and as often a patch of its
+  // building's map as a surface of its own (XI Street of Santorini's "SOS_Shop_Glass", a flat 0.48,
+  // and its "SOS_B_House_Details_mat", 0.25 where the panes are), so no name tells it.
+  out.film = sheet;
+  // Glass that says so is no weave: as open at a slant as head-on.
+  out.woven = sheet && !saysGlass(s.name);
 
   // normal: the normal map and the bump map together when a surface has both (there is one slot),
   // else whichever one it has. DAZ skin keeps pores in the bump map. The bump strength is baked

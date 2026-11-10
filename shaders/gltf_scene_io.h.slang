@@ -244,8 +244,9 @@ struct GltfShadeMaterial
   // 1: the cutout is a fabric's weave, whose gaps close as the surface turns away from the ray
   // (wovenOpacity); 0: the opacity is the same from every direction, as glTF has it
   int opacityWoven = 0;
-  // 1: the cutout is a film's cover (a pane of glass painted as a half-open cutout): on the frames
-  // DLSS draws a hit of it is kept, and the path goes on through it by its open share (opacityFilmKept)
+  // 1: the cutout is a film's cover (a sheet: a pane of glass painted as a half-open cutout, sheer
+  // cloth; not strands): on the frames DLSS draws a hit of it is kept, and the path goes on through it
+  // by its open share (opacityFilmKept)
   int opacityFilm = 0;
 
 #if MAT_EXT_VOLUME

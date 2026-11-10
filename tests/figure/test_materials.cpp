@@ -514,9 +514,10 @@ TEST(Materials, ASheerGarmentIsAWeaveAndAHairCardIsNot)
   EXPECT_FALSE(fv::mat::lower(fv::dson::parseSurface("Stockings", channelsOf(sheer), fv::mat::Context::eItem), opaque, {}).material.woven);
 }
 
-// A set's window painted as a half-open cutout (XI Street of Santorini's shop glass) is glass by its
-// name: a film, as open at a slant as head-on, and no weave. Glass that refracts is no cutout at all.
-TEST(Materials, AGlassCutoutIsAFilmAndNoWeave)
+// A prop's or a garment's cutout is a film to the moving view, whatever it is called: a set's window
+// is as often a patch of its building's map as a surface of its own. Glass by its name is no weave
+// either, as open at a slant as head-on. Glass that refracts is no cutout at all.
+TEST(Materials, ASheetCutoutIsAFilmAndGlassNoWeave)
 {
   const char* halfOpen = R"({"extra":[{"type":"studio/material/uber_iray","channels":[
     {"channel":{"id":"diffuse","label":"Base Color","type":"color","current_value":[1,1,1]}},
@@ -530,12 +531,14 @@ TEST(Materials, AGlassCutoutIsAFilmAndNoWeave)
     EXPECT_TRUE(lowered(name).film) << name;
     EXPECT_FALSE(lowered(name).woven) << name;
   }
-  // cloth and wood at a window, and what only sounds like glass
-  for(const char* name : {"Curtain", "Window Curtain", "Window_Frame", "Stockings", "Sunglasses_Frame", "Panel"})
+  // a building's map with its panes in it, cloth and wood at a window, and what only sounds like glass
+  for(const char* name : {"SOS_B_House_Details_mat", "Curtain", "Window Curtain", "Window_Frame", "Stockings", "Sunglasses_Frame", "Panel"})
   {
-    EXPECT_FALSE(lowered(name).film) << name;
+    EXPECT_TRUE(lowered(name).film) << name;
     EXPECT_TRUE(lowered(name).woven) << name;
   }
+  // strands keep the triangle's cells
+  EXPECT_FALSE(lowered("Eyelashes").film);
   // a figure's own surface, and strands
   EXPECT_FALSE(lowered("Glass", fv::mat::Context::eBody).film);
   EXPECT_FALSE(lowered("Hair Glass", fv::mat::Context::eHair).film);

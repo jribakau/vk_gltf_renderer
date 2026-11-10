@@ -277,10 +277,11 @@ struct Material
   // stocking darkens towards the leg's outline (shaders/woven_opacity.h.slang). Off: the opacity is
   // the same from every direction, as glTF has it.
   bool woven = false;
-  // The cutout is a film's cover, a pane of glass painted as a half-open cutout: the moving view
-  // keeps the surface and lets the open share of each frame's paths through it, where a cutout's
-  // texels are kept or dropped by fixed cells of the triangle, which on a pane two triangles wide are
-  // centimetres across (shaders/pathtrace_functions.h.slang, opacityFilmKept).
+  // The cutout is a film's cover: a sheet (a pane of glass painted as a half-open cutout, sheer
+  // cloth), not strands. The moving view keeps the surface and lets the open share of each frame's
+  // paths through it, where a strand cutout's texels are kept or dropped by fixed cells of the
+  // triangle, which on a pane two triangles wide are centimetres across
+  // (shaders/pathtrace_functions.h.slang, opacityFilmKept).
   bool film = false;
 
   // What a file carried that nothing reads, to write back

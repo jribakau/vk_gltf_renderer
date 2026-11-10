@@ -363,8 +363,9 @@ the color keeps rather than cutting at half opacity.
 
 **Films.** The grid is a fraction of the triangle, sized for a hair card. A window painted as a
 half-open cutout is two triangles, so its cells came out centimetres wide: blocks of the pane's own
-face beside blocks of the room behind. Such a surface is a film (`GltfShadeMaterial::opacityFilm`,
-from `mat::Material::film`). While DLSS denoises, every traversal keeps a film's partly open texel
+face beside blocks of the room behind. A prop's or a garment's cutout that is a sheet, not strands,
+is a film (`GltfShadeMaterial::opacityFilm`, from `mat::Material::film`): a window's glass is as often
+a patch of its building's map as a surface with a name. While DLSS denoises, every traversal keeps a film's partly open texel
 (`opacityFilmKept`), so the film is the first hit, and the surface the guides describe, on every
 frame. The path then goes on through it by its open share, drawn from the path seed
 (`pathTraceOneBounce`): a null event, which spends the glass's budget. Stills are untouched: their
