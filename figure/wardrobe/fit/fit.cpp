@@ -211,11 +211,21 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   // the common layer: the source type's map, and the figure's body as a body of the reference's topology
   std::shared_ptr<const bodymap::TypeMap> typeMap;
   bodymap::Body                           onto;
-  if(path == FitPath::eCommon && cage && !w.sourceBase && !footwear && target == Generation::eG9)
+  std::string                             notLayered;  // why the layer, asked for, didn't fit it
+  detail.commonAble = cage && !w.sourceBase && !footwear && target == Generation::eG9 && !bodymap::cloneFile(source, genderHint(rel)).empty();
+  if(path == FitPath::eCommon && !detail.commonAble)
+    notLayered = footwear                          ? "footwear isn't fitted through the common layer yet"
+                 : source == Generation::eSkyrim   ? "a Skyrim outfit has no body map to go through"
+                 : target != Generation::eG9       ? "the common layer fits onto Genesis 9 only, for now"
+                 : !cage                           ? std::string("the ") + label(source) + " base figure isn't installed"
+                                                   : std::string("Genesis 9 has no clone morph of ") + label(source);
+  if(path == FitPath::eCommon && detail.commonAble)
   {
     typeMap = garment::typeMap(store, source, genderHint(rel));
     if(typeMap && (typeMap->source.positions.size() != cage->positions.size() || typeMap->reference.positions.size() != body.cagePositions.size()))
       typeMap = nullptr;
+    if(!typeMap)
+      notLayered = std::string("Genesis 9's clone morph of ") + label(source) + " isn't installed";
     if(typeMap)
     {
       onto.positions = body.cagePositions;
@@ -302,6 +312,8 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
                    : source == Generation::eSkyrim ? std::string("refitted to its skeleton (no body came with it, so its shape wasn't matched)")
                                                     : std::string("refitted to its skeleton (the ") + label(source)
                                                           + " base figure isn't installed, so its shape wasn't matched)")
+                + (path == FitPath::eCommon && !detail.common ? ", the old way: " + (notLayered.empty() ? std::string("none of its cloth lies near the skin") : notLayered)
+                                                              : std::string())
                 + ".";
   return detail;
 }

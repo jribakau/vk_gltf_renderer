@@ -168,6 +168,7 @@ struct Figure::PreparedWear
   // per entry of loaded.parts: the surface binding of a conforming part
   std::vector<std::shared_ptr<const wardrobe::SurfaceBinding>> bindings;
   std::string                                                  key;
+  bool                                                         commonFit = false;  // WearInputs::commonFit
   // per entry of loaded.parts: the body targets prepareWear was given, projected onto the part
   std::vector<std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>>> preprojected;
   // the wearable's own morph files, per Morphs folder: stem (lowercase) -> file
@@ -517,7 +518,8 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
   auto out = std::make_shared<PreparedWear>();
   // a key of its own until commitWear gives it its place among the worn items
   static std::atomic<int> s_prepares{0};
-  out->key = "p" + std::to_string(++s_prepares);
+  out->key       = "p" + std::to_string(++s_prepares);
+  out->commonFit = inputs.commonFit;
   dson::LoadOptions options;
   options.subdivision = quality.subdivision;
   options.strandKeep   = quality.strandKeep;
@@ -808,6 +810,12 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     else
       id = m_nextItem++;
     WornItem worn = record(it, int(k), w.parts, meshBase, rel, id);
+    if(fit)
+    {
+      worn.fitted  = fit->common ? "common" : "old";
+      worn.fitAble = fit->commonAble;
+    }
+    worn.commonFit = p.commonFit;
     added.push_back(worn.id);
     items.push_back(std::move(worn));
   }

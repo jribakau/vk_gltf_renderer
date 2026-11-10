@@ -44,6 +44,8 @@ void FvHost::Impl::publishWardrobe(Loaded& f)
                                           {"channels", w.channels.size()},
                                           {"collision", !w.collision.empty()},
                                           {"tight", w.tight},
+                                          // refitted from another generation: by which path, and whether there is a choice
+                                          {"fit", {{"by", w.fitted}, {"able", w.fitAble}, {"common", w.commonFit}}},
                                           {"skinHidden", w.tightPolys.size()},
                                           {"reduced", w.reduced},
                                           {"keepFull", w.keepFull},
@@ -251,7 +253,9 @@ uint64_t FvHost::Impl::startWear(std::shared_ptr<Loaded> target, std::vector<Wea
           return;
         job(jobId, {{"label", utf8Of(pathOf(request.rel).stem()) + ": loading"}, {"state", "running"}});
         const auto tPrep = Clock::now();
-        slot.prepared    = target->fig->prepareWear(request.rel, slot.quality, *inputs, target->texturesFlipped);
+        fv::Figure::WearInputs own = *inputs;
+        own.commonFit              = request.commonFit;
+        slot.prepared              = target->fig->prepareWear(request.rel, slot.quality, own, target->texturesFlipped);
         slot.msPrep      = msSince(tPrep);
         // the material presets that go with it, applied to the wearable before its textures are looked up
         fv::SceneGraph& preparedScene = fv::Figure::preparedScene(*slot.prepared);
@@ -732,6 +736,8 @@ Json FvHost::Impl::itemRecord(const Loaded& f, const fv::WornItem& w) const
     rec["tight"] = w.tight;
   if(w.keepFull)
     rec["keepFull"] = true;
+  if(w.commonFit)
+    rec["fit"] = "common";
   // its dials as they are set: they leave with it
   Json dials = Json::object();
   for(const std::string& name : w.channels)
@@ -771,6 +777,7 @@ Json FvHost::Impl::wardrobeRestore(const Json& args)
   request.keys.assign(request.ids.size(), "");
   request.keys.back() = rec.value("key", std::string());
   request.only        = true;
+  request.commonFit   = rec.value("fit", std::string()) == "common";
   // as it was: shown or hidden and its cloth before the build, its colour and edits once its surfaces are in
   auto before = [this, target, id, rec] {
     if(!wornItem(*target->fig, id))
@@ -890,6 +897,33 @@ Json FvHost::Impl::wardrobeCloth(const Json& args)
   if(figure->dforce)
     publishDforce(*figure, true);
   return {{"ok", true}};
+}
+
+// wardrobe.fit {prop, item, fit: "common" | "old"}: how an item made for another generation takes the
+// figure's shape (wardrobe::FitPath). A fit is made as the item goes on, so it is taken off and put
+// on again the other way, as it was: under its id, with its settings, dials, colour and surface edits.
+Json FvHost::Impl::wardrobeFit(const Json& args)
+{
+  auto figure = figureArg(args);
+  if(!figure)
+    throw std::runtime_error("no such figure");
+  const fv::WornItem* item = wornItem(*figure->fig, itemId(args));
+  if(!item)
+    throw std::runtime_error("no such item");
+  if(item->rel.empty())
+    throw std::runtime_error("an item that came with the scene file can't be fitted again");
+  const bool common = args.at("fit").get<std::string>() == "common";
+  if(item->commonFit == common)
+    return {{"ok", true}};
+  Json rec = itemRecord(*figure, *item);
+  if(common)
+    rec["fit"] = "common";
+  else
+    rec.erase("fit");
+  wardrobeRemove(args);
+  Json restore      = args;
+  restore["record"] = std::move(rec);
+  return wardrobeRestore(restore);
 }
 
 // wardrobe.tight {prop, item, amount}: how skin tight one item is, 0 as it was made to 1 on the skin

@@ -99,7 +99,7 @@ namespace {
 // time by what the pixels show.
 // 55: the pose topic's bones name their counterpart on the other side (`mirror`, read by the
 // skeleton spec), which the Pose tab's mirror swaps by.
-constexpr int kProtocolVersion = 55;
+constexpr int kProtocolVersion = 56;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

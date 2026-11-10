@@ -1153,6 +1153,9 @@ struct FvHost::Impl
     bool step = false;  // the user put it on: a step of the history
     // the file's foot pose goes on (a heel's); not for a scene file's items, whose feet it has
     bool posesFeet = true;
+    // its items made for another generation are fitted through the common layer where it can
+    // (wardrobe::FitPath::eCommon): the item's Fit choice
+    bool commonFit = false;
   };
   Json     wear(const Json& args);
   // What a restore sets on the figure besides its wardrobe, put on before the wear's composition so
@@ -1226,6 +1229,7 @@ struct FvHost::Impl
   Json wardrobeCollision(const Json& args);
   Json wardrobeCloth(const Json& args);
   Json wardrobeTight(const Json& args);
+  Json wardrobeFit(const Json& args);
   // body contact (fv_host_physics.cpp): what a figure's pass meets, the look each frame at what moved
   // near a figure, figure.contact and its topic
   // `bodies`: other people's too; `ragdoll`: for a ragdoll, which meets the people in Physics mode by

@@ -660,6 +660,8 @@ Json FvHost::Impl::sceneState(const Json& args)
         entry["tight"] = std::round(w.tight * 1e3) / 1e3;
       if(w.keepFull)
         entry["keepFull"] = true;
+      if(w.commonFit)
+        entry["fit"] = "common";
       // the colour chosen for it, null for its own
       if(const auto c = prop->figure->colors.find(w.id); c != prop->figure->colors.end())
         entry["color"] = c->second.rel.empty() ? Json(nullptr) : Json(c->second.rel);
@@ -1256,6 +1258,10 @@ Json FvHost::Impl::sceneRestore(const Json& args)
               request.keys[at] = key;
               request.only     = true;
             }
+          // a file is fitted one way: the common layer's when any of its items was saved so
+          for(const Json& same : worn)
+            if(relKey(same.value("rel", "")) == relKey(rel) && same.value("fit", std::string()) == "common")
+              request.commonFit = true;
           requests.push_back(std::move(request));
         }
       }

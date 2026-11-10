@@ -211,6 +211,10 @@
 //                                                the weights (figure.hpp, clothSettings)
 //   wardrobe.tight  {prop, item, amount}          how skin tight one item is, 0 as made to 1 on the skin;
 //                                                the collider applies it (figure/wardrobe/collider.hpp)
+//   wardrobe.fit    {prop, item, fit: "common" | "old"}   how an item made for another generation takes the
+//                                                figure's shape (wardrobe::FitPath): put on again that
+//                                                way, as it was; the wardrobe topic's item has `fit`
+//                                                {by: "" | "old" | "common", able, common} (protocol 56)
 //   dforce.enable   {prop, on}; dforce.resimulate {prop}   cloth drapes over the body (figure/physics/cloth)
 //   dforce.mode     {prop, mode: "settle" | "live" | "gpu"}   one settle once the pose stops (on the GPU solver
 //                                                where there is one), a step every frame, or that on the GPU

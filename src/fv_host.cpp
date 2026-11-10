@@ -188,6 +188,7 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("physics.secondary", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.secondary", args); }); });
   cmds.add("physics.soft", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("physics.soft", args); }); });
   cmds.add("wardrobe.cloth", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.cloth", args); }); });
+  cmds.add("wardrobe.fit", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("wardrobe.fit", args); }); });
   // answered at once, as morph.set: a slider sends faster than a path traced frame ends, and the steps
   // would queue behind each other. The latest for an item applies in onUpdate
   cmds.add("wardrobe.tight", [impl](const Json& args) {

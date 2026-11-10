@@ -23,6 +23,9 @@ struct FitDetail
   // whether the common layer fitted it (FitPath::eCommon, where it can): its cloth near the skin by
   // its addresses on the reference body
   bool common = false;
+  // whether the layer could fit it, asked or not: clothing from a Genesis that Genesis 9 has a clone
+  // morph of, on Genesis 9 (the Fit chooser is offered for these)
+  bool commonAble = false;
   // the pose rig's plan: item bone -> figure bone, and the item bones that inherit a followed ancestor
   LeaderPlan plan;
   // "Genesis 8 outfit on Genesis 9, refitted to its skeleton and shape."

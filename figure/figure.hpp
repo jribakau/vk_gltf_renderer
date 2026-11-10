@@ -111,6 +111,11 @@ struct WornItem
   std::string reduced;
   // short of GPU memory, its textures come down only when nothing else can
   bool keepFull = false;
+  // Made for another generation and refitted: by which path, "old" or "common" (wardrobe::FitPath); ""
+  // for one made for this figure, which isn't fitted. `fitAble`: the common layer can fit it, so there
+  // is a choice. `commonFit`: what its wear asked for (WearInputs::commonFit).
+  std::string fitted;
+  bool        fitAble = false, commonFit = false;
   // body polygons a geograft hides while it is worn and shown
   std::vector<int32_t> hiddenPolys;
   // the conforming meshes the collider keeps out of the body, with each one's smoothing settings
