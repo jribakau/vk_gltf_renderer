@@ -28,14 +28,18 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
 #include <random>
 #include <set>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <meshoptimizer.h>
 
 #include <figure/figure.hpp>
 #include <figure/mesh/mesh_build.hpp>
@@ -409,4 +413,112 @@ TEST(RetainedTangents, TheBoxFigureBodyUnderADial)
       was = now;
     }
   }
+}
+
+// A measurement, on a real figure (DAZ_LIBRARY set; TANGENT_FIGURE names one, Genesis 9 by default, at
+// TANGENT_SUBDIVISION, 1 by default): how far the tangents the renderer makes are from the ones a
+// normal map baked with MikkTSpace's (Substance, xNormal, Blender) was made in. Ours sum each
+// triangle's raw UV tangent at its vertices; MikkTSpace weighs a triangle by its angle at the vertex
+// and normalises first (meshoptimizer's meshopt_TangentCompatible). Both lie in the plane of the
+// vertex normal, so the angle between them is how far a decoded normal is turned about it: a texel
+// that leans the normal by d is off by about that angle times sin(d). Printed by surface, by area.
+TEST(RetainedTangents, HowFarFromMikkTSpaceOnAFigure)
+{
+  const char* lib = std::getenv("DAZ_LIBRARY");
+  if(!lib || !*lib)
+    GTEST_SKIP() << "DAZ_LIBRARY not set";
+  namespace fs          = std::filesystem;
+  const std::string rel = std::getenv("TANGENT_FIGURE") ? std::getenv("TANGENT_FIGURE") : "People/Genesis 9/Genesis 9.duf";
+  fv::dson::LoadOptions options;
+  options.subdivision = std::getenv("TANGENT_SUBDIVISION") ? std::atoi(std::getenv("TANGENT_SUBDIVISION")) : 1;
+  auto f = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<fs::path>{fs::path(lib)})), rel, options);
+  ASSERT_TRUE(f) << rel;
+  f->settle();
+  f->drain();
+  const int                  body  = f->loaded.morphs.meshes[size_t(f->loaded.morphs.mainMeshes[0])].mesh;
+  const auto&                mesh  = f->loaded.scene.meshes[size_t(body)];
+  const fv::mesh::BuiltMesh& geo   = *mesh.geo;
+  const size_t               count = geo.position.size() / 3;
+  ASSERT_GT(count, 0u);
+  ASSERT_EQ(geo.normal.size(), count * 3);
+  ASSERT_EQ(geo.uv.size(), count * 2);
+  std::vector<glm::vec3> positions(count), normals(count);
+  std::vector<glm::vec2> uvs(count);
+  std::memcpy(positions.data(), geo.position.data(), count * sizeof(glm::vec3));
+  std::memcpy(normals.data(), geo.normal.data(), count * sizeof(glm::vec3));
+  std::memcpy(uvs.data(), geo.uv.data(), count * sizeof(glm::vec2));
+  const std::vector<uint32_t>& index = geo.fullIndex;
+
+  std::vector<glm::vec4> ours(count, glm::vec4(0.f));
+  computeTangents(positions, normals, uvs, index, ours);
+  std::vector<float> mikk(index.size() * 4);
+  meshopt_generateTangents(mikk.data(), index.data(), index.size(), &positions[0].x, count, sizeof(glm::vec3), &normals[0].x,
+                           sizeof(glm::vec3), &uvs[0].x, sizeof(glm::vec2), meshopt_TangentCompatible);
+
+  struct Corner
+  {
+    float angle, area;
+  };
+  const auto inPlane = [](glm::vec3 t, glm::vec3 n) {
+    t -= n * glm::dot(n, t);
+    const float l = glm::length(t);
+    return l > 1e-12f ? t / l : glm::vec3(0.f);
+  };
+  std::printf("[tangents] %s, subdivision %d: %zu vertices, %zu triangles\n", rel.c_str(), options.subdivision, count, index.size() / 3);
+  std::printf("[tangents] %-22s %9s %8s %7s %7s %7s %7s %8s %8s %8s\n", "surface", "triangles", "mean", "median", "p90", "p99", "max", "over 5", "over 15", "mirrored");
+  std::vector<Corner> all;
+  double              allMirrored = 0.0, allArea = 0.0;
+  const auto report = [](const char* name, std::vector<Corner>& corners, double mirrored, double area) {
+    if(corners.empty() || area <= 0.0)
+      return;
+    std::sort(corners.begin(), corners.end(), [](const Corner& a, const Corner& b) { return a.angle < b.angle; });
+    double mean = 0.0, over5 = 0.0, over15 = 0.0, run = 0.0;
+    float  median = 0.f, p90 = 0.f, p99 = 0.f;
+    bool   m = false, n90 = false, n99 = false;
+    for(const Corner& c : corners)
+    {
+      mean += double(c.angle) * c.area;
+      over5 += c.angle > 5.f ? c.area : 0.0;
+      over15 += c.angle > 15.f ? c.area : 0.0;
+      run += c.area;
+      if(!m && run >= 0.5 * area)
+        median = c.angle, m = true;
+      if(!n90 && run >= 0.9 * area)
+        p90 = c.angle, n90 = true;
+      if(!n99 && run >= 0.99 * area)
+        p99 = c.angle, n99 = true;
+    }
+    std::printf("[tangents] %-22s %9zu %8.2f %7.2f %7.2f %7.2f %7.1f %7.1f%% %7.1f%% %7.2f%%\n", name, corners.size() / 3, mean / area, median, p90, p99,
+                corners.back().angle, 100.0 * over5 / area, 100.0 * over15 / area, 100.0 * mirrored / area);
+  };
+  for(const fv::mesh::Group& group : geo.groups)
+  {
+    std::vector<Corner> corners;
+    double              mirrored = 0.0, area = 0.0;
+    for(uint32_t t = group.start; t + 2 < group.start + group.count; t += 3)
+    {
+      const glm::vec3 a = positions[index[t]], b = positions[index[t + 1]], c = positions[index[t + 2]];
+      const float     third = glm::length(glm::cross(b - a, c - a)) / 6.f;
+      for(uint32_t k = t; k < t + 3; k++)
+      {
+        const uint32_t  v = index[k];
+        const glm::vec3 n = glm::normalize(normals[v]);
+        const glm::vec3 o = inPlane(glm::vec3(ours[v]), n);
+        const glm::vec3 w = inPlane(glm::vec3(mikk[k * 4], mikk[k * 4 + 1], mikk[k * 4 + 2]), n);
+        if(o == glm::vec3(0.f) || w == glm::vec3(0.f) || !(third > 0.f))
+          continue;
+        corners.push_back({glm::degrees(std::acos(glm::clamp(glm::dot(o, w), -1.f, 1.f))), third});
+        area += third;
+        if(ours[v].w * mikk[k * 4 + 3] < 0.f)
+          mirrored += third;
+      }
+    }
+    all.insert(all.end(), corners.begin(), corners.end());
+    allMirrored += mirrored;
+    allArea += area;
+    const std::string name = group.materialIndex >= 0 && size_t(group.materialIndex) < mesh.materialGroups.size() ? mesh.materialGroups[size_t(group.materialIndex)] : "?";
+    report(name.c_str(), corners, mirrored, area);
+  }
+  report("all", all, allMirrored, allArea);
+  EXPECT_FALSE(all.empty());
 }
