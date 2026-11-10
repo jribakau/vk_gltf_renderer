@@ -218,10 +218,10 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   const auto        mapped       = [](Generation g, const std::string& gender) { return g == Generation::eG9 || !bodymap::cloneFile(g, gender).empty(); };
   // a shoe keeps the bone transfer and the foot's box alone; a boot's shaft is cloth round the leg
   const bool shoe   = region == FitRegion::eShoe;
-  detail.footwear   = footwear;
+  detail.footwear   = shoe;
   const bool layerAble = cage && !w.sourceBase && !shoe && mapped(source, sourceGender) && mapped(target, targetGender);
   // a Skyrim outfit has no map to be fitted through, and takes the body's weights where the direct fit lands it
-  const bool weightsOnly = source == Generation::eSkyrim && !footwear;
+  const bool weightsOnly = source == Generation::eSkyrim && !shoe;
   detail.commonAble      = layerAble || weightsOnly;
   if(path == FitPath::eCommon && !detail.commonAble)
     notLayered = shoe                            ? "a shoe keeps the fit of its foot"
@@ -271,6 +271,25 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
       perBone.push_back(it == rigid.end() ? nullptr : &it->second);
     }
     std::vector<float> positions = rigidPositions(m.geo->cagePositions, skin, perBone);
+    // a boot's share on the foot's bones, for its skin (FitDetail::onFoot)
+    if(boot)
+    {
+      std::vector<bool> foot;
+      for(int b : m.bones)
+      {
+        const int16_t l = limbOfBone(w.scene.nodes[size_t(b)].name);
+        foot.push_back(l == limb::kLFoot || l == limb::kRFoot);
+      }
+      std::vector<float> share(positions.size() / 3, 0.f);
+      for(size_t v = 0; v < share.size(); v++)
+      {
+        for(int32_t i = skin.start[v]; i < skin.start[v + 1]; i++)
+          if(foot[size_t(skin.bone[size_t(i)])])
+            share[v] += skin.weight[size_t(i)];
+        share[v] = std::min(1.f, share[v]);
+      }
+      detail.onFoot[meshIdx] = std::move(share);
+    }
     // how much of each vertex rides on a foot
     std::vector<double> onFoot(positions.size() / 3, 0.0);
     for(const auto& [l, box] : feet)

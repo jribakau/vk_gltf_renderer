@@ -30,8 +30,12 @@ struct FitDetail
   // generations it has a clone morph of, either way or from one of them to another (the Fit chooser is
   // offered for these)
   bool commonAble = false;
-  // a shoe or a boot: its foot is a rigid thing, which the body's weights would bend with the toes
+  // a shoe: a rigid thing on the foot, which the body's weights would bend with the toes
   bool footwear = false;
+  // per mesh of a boot (an index into the wearable's scene meshes), per cage vertex: its weights' share
+  // on the foot's bones, 0 to 1, which keeps its own weights as a shoe does; the shaft, the rest, may
+  // take the body's
+  std::map<int, std::vector<float>> onFoot;
   // its cloth on the skin takes the body's weights there (garment::withBodyWeights, the plan's step 5):
   // what the layer fitted, and a Skyrim outfit, which the direct fit puts on and whose own rig has
   // fewer joints than the figure's. Asked for with the common fit.

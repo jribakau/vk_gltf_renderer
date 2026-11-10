@@ -613,9 +613,9 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
     strands.get();
   }
   // A mesh the common fit covers (FitDetail::bodyWeights) takes the body's weights where it lies on the
-  // skin (the plan's step 5): last, as nothing after it here reads the wearable's skins, whose bone indices past its
-  // own name the body's bones until the commit appends them. Not footwear, whose foot is rigid, nor
-  // strand hair.
+  // skin (the plan's step 5): last, as nothing after it here reads the wearable's skins, whose bone
+  // indices past its own name the body's bones until the commit appends them. Not a shoe or a boot's
+  // foot, which are rigid, nor strand hair.
   {
     timing::Scope ts("body weights", 1);
     const Mesh&   body = scene.meshes[size_t(bodyMesh)];
@@ -628,7 +628,11 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
       Mesh&                      m   = out->loaded.scene.meshes[size_t(part.mesh)];
       if(!fit.bodyWeights || fit.footwear || !m.geo || m.cageSkin.start.empty() || !m.geo->cageLineStart.empty() || out->bodySkinned.count(part.mesh))
         continue;
-      const std::vector<float> hold = garment::holdByDistance(m.geo->cagePositions, body.geo->cagePositions, *out->bindings[i]);
+      std::vector<float> hold = garment::holdByDistance(m.geo->cagePositions, body.geo->cagePositions, *out->bindings[i]);
+      // a boot's foot keeps its own weights
+      if(const auto foot = fit.onFoot.find(part.mesh); foot != fit.onFoot.end() && foot->second.size() == hold.size())
+        for(size_t v = 0; v < hold.size(); v++)
+          hold[v] *= 1 - foot->second[v];
       if(std::none_of(hold.begin(), hold.end(), [](float h) { return h > 0; }))
         continue;
       m.cageSkin = garment::withBodyWeights(m.cageSkin, m.bones.size(), body.cageSkin, *out->bindings[i], hold);
