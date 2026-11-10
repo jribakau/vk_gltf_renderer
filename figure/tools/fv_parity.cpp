@@ -78,6 +78,7 @@
 
 #include <figure/bodymap/cache.hpp>
 #include <figure/garment/pieces.hpp>
+#include <figure/garment/quads.hpp>
 #include <figure/bodymap/clone.hpp>
 #include <figure/bodymap/fit.hpp>
 #include <figure/bodymap/frames.hpp>
@@ -1683,11 +1684,25 @@ int main(int argc, char** argv)
           // vertex of one from where the piece's made shape, moved as a whole, would have it
           size_t              pieceCount = 0;
           std::vector<double> bent;
+          // as cloth (figure.hpp, clothSettings): its triangles that pair back into quads (garment::pairQuads),
+          // and of an outfit pinned by the skin (WornItem::pinBySkin), the vertices held, eased and left cloth
+          size_t triangles = 0, paired = 0, pinHeld = 0, pinEased = 0, pinFree = 0;
           for(size_t j = 0; j < item->meshes.size() && j < made[k].clearance.size(); j++)
           {
             const fv::Mesh& me = scene.meshes[size_t(item->meshes[j])];
             if(!me.geo || made[k].clearance[j].size() != me.geo->cagePositions.size() / 3)
               continue;
+            if(me.geo->cageLineStart.empty())
+            {
+              const fv::garment::Polys polys = fv::garment::pairQuads(me.geo->cagePositions, me.geo->cagePolyStart, me.geo->cagePolyVerts);
+              triangles += polys.triangles;
+              paired += polys.paired;
+            }
+            if(item->pinBySkin)
+              for(const fv::WornItem::Follow& f : item->follows)
+                if(f.mesh == item->meshes[j] && f.binding)
+                  for(const float free : fv::clothPins(*me.geo, me.cageSkin, body.cagePositions, *f.binding))
+                    (free <= 0 ? pinHeld : free >= 1 ? pinFree : pinEased)++;
             const std::vector<float>& was = made[k].cages[j];
             const std::vector<float>& is  = me.geo->cagePositions;
             if(was.size() == is.size() && me.geo->cageLineStart.empty())
@@ -1737,6 +1752,16 @@ int main(int argc, char** argv)
                       << std::setw(6) << a["source"].get<double>() << "  figure " << std::setw(6) << a["figure"].get<double>() << "  change "
                       << std::setw(6) << a["change"].get<double>() << " [" << a["changeP05"].get<double>() << ", " << a["changeP95"].get<double>() << "]"
                       << (st.contains("band") ? "" : " (none in the band)") << "\n";
+          }
+          if(triangles)
+          {
+            std::cerr << "  quads      " << paired << " of " << triangles << " triangles pair (" << 100.0 * double(paired) / double(triangles) << "%)\n";
+            items.back()["quads"] = {{"triangles", triangles}, {"paired", paired}};
+          }
+          if(pinHeld + pinEased + pinFree)
+          {
+            std::cerr << "  pinned     " << pinHeld << " held, " << pinEased << " eased, " << pinFree << " cloth\n";
+            items.back()["pinned"] = {{"held", pinHeld}, {"eased", pinEased}, {"cloth", pinFree}};
           }
           if(!bent.empty())
           {

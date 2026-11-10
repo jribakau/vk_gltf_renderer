@@ -20,6 +20,7 @@
 #include <figure/nif/nif_wear.hpp>
 #include <figure/garment/decode.hpp>
 #include <figure/garment/pieces.hpp>
+#include <figure/garment/quads.hpp>
 #include <figure/garment/weights.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
@@ -29,6 +30,7 @@
 #include <figure/wardrobe/fit/regions.hpp>
 #include <figure/wardrobe/fit/heel.hpp>
 #include <figure/wardrobe/follow.hpp>
+#include <figure/physics/cloth/proxy.hpp>
 
 namespace fv {
 
@@ -884,6 +886,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
       worn.fitAble = fit->commonAble;
     }
     worn.commonFit = p.commonFit;
+    worn.pinBySkin = it.madeFor == wardrobe::Generation::eSkyrim;
     added.push_back(worn.id);
     items.push_back(std::move(worn));
   }
@@ -1373,7 +1376,7 @@ std::vector<bool> walkThroughMaterials(const SceneGraph& scene, const std::vecto
 }
 
 std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo, const std::shared_ptr<const dson::DforceData>& file,
-                                                      std::optional<bool> on, float strength, int layer, float volume)
+                                                      std::optional<bool> on, float strength, int layer, float volume, std::span<const float> free)
 {
   const bool fileSimulates = file && file->simulated();
   const bool simulate      = on ? *on : fileSimulates;
@@ -1410,7 +1413,13 @@ std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo
   if(file && file->hasPolygons())
     data = std::make_shared<dson::DforceData>(*file);
   else if(geo.cagePolyStart.size() > 1)
-    data = dson::defaultDforce(geo.dsonVertexCount, geo.cagePolyStart, geo.cagePolyVerts, layer);
+  {
+    const garment::Polys polys = garment::pairQuads(geo.cagePositions, geo.cagePolyStart, geo.cagePolyVerts);
+    data                       = dson::defaultDforce(geo.dsonVertexCount, polys.start, polys.verts, layer);
+    if(free.size() == data->strength.size())
+      for(size_t v = 0; v < free.size(); v++)
+        data->strength[v] *= std::clamp(free[v], 0.f, 1.f);
+  }
   else
     return file;
   data->freeze  = false;
@@ -1428,6 +1437,24 @@ float clothLoosest(const std::shared_ptr<const dson::DforceData>& file)
   if(file && std::any_of(file->strength.begin(), file->strength.end(), [](float w) { return w > 0 && w < 1; }))
     return kClothLoosest;
   return 1.f;
+}
+
+std::vector<float> skinFree(std::span<const float> item, std::span<const float> body, const wardrobe::SurfaceBinding& at)
+{
+  std::vector<float> free = garment::holdByDistance(item, body, at, physics::cloth::kOnSkin, physics::cloth::kOnSkin + physics::cloth::kOnSkinFade);
+  for(float& f : free)
+    f = 1 - f;
+  return free;
+}
+
+std::vector<float> clothPins(const mesh::BuiltMesh& geo, const mesh::SkinInput& skin, std::span<const float> body, const wardrobe::SurfaceBinding& at)
+{
+  std::vector<float>    free   = skinFree(geo.cagePositions, body, at);
+  const garment::Pieces pieces = garment::hardPieces(geo.cagePositions, geo.dsonTris, skin);
+  for(size_t v = 0; v < free.size() && v < pieces.of.size(); v++)
+    if(pieces.of[v] >= 0)
+      free[v] = 0;
+  return free;
 }
 
 std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float strength, float volume)
@@ -1464,7 +1491,16 @@ std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float stre
     // the file's own settings, kept the first time the user changes this item
     if(!it->fileDforce.count(m))
       it->fileDforce[m] = mesh.dforce;
-    auto next = clothSettings(*mesh.geo, it->fileDforce[m], on, it->cloth.strength, layer, it->cloth.volume);
+    // an outfit with no pin map of its own: its cloth on the skin and its hard pieces stay
+    std::vector<float> free;
+    if(it->pinBySkin && on && *on && !loaded.morphs.mainMeshes.empty())
+    {
+      const Mesh& body   = loaded.scene.meshes[size_t(loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh)];
+      const auto  follow = std::find_if(it->follows.begin(), it->follows.end(), [&](const WornItem::Follow& f) { return f.mesh == m; });
+      if(body.geo && follow != it->follows.end() && follow->binding)
+        free = clothPins(*mesh.geo, mesh.cageSkin, body.geo->cagePositions, *follow->binding);
+    }
+    auto next = clothSettings(*mesh.geo, it->fileDforce[m], on, it->cloth.strength, layer, it->cloth.volume, free);
     if(next != mesh.dforce)
     {
       mesh.dforce = std::move(next);
@@ -1601,6 +1637,9 @@ ClothState Figure::clothOf(const WornItem& item) const
     if(file && (file->hasPolygons() || file->hasStrands()))
       s.native = true;
     s.loosest = std::max(s.loosest, clothLoosest(file));
+    // a pin map made here fades from held to cloth, which the strength can loosen
+    if(item.pinBySkin && !(file && file->hasPolygons()))
+      s.loosest = kClothLoosest;
     if(file && file->hasStrands())
       s.strands = true;
     if(mesh.dforce && mesh.dforce->simulated())

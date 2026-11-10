@@ -15,7 +15,9 @@
 #include <figure/garment/convert.hpp>
 #include <figure/garment/decode.hpp>
 #include <figure/garment/maps.hpp>
+#include <figure/figure.hpp>
 #include <figure/garment/pieces.hpp>
+#include <figure/garment/quads.hpp>
 #include <figure/garment/weights.hpp>
 
 namespace {
@@ -659,4 +661,187 @@ TEST(GarmentPieces, APiecesVerticesShareOneSetOfWeights)
     EXPECT_NEAR(row.at(2), 0.25, 1e-6);
     EXPECT_NEAR(rigid.dualQuatMap[v], 0.5, 1e-6);
   }
+}
+
+namespace {
+
+// A sheet of `nx` by `nz` cells, 1 by 1.3 cm, at y = 0, each cut into two triangles, every other one
+// the other way; wound to face up.
+struct Sheet
+{
+  std::vector<float>   positions;
+  std::vector<int32_t> start{0}, verts;
+};
+Sheet cutSheet(int nx, int nz)
+{
+  Sheet      s;
+  const auto id = [&](int i, int j) { return int32_t(j * (nx + 1) + i); };
+  for(int j = 0; j <= nz; j++)
+    for(int i = 0; i <= nx; i++)
+      s.positions.insert(s.positions.end(), {float(i), 0.f, 1.3f * float(j)});
+  const auto tri = [&](int32_t a, int32_t b, int32_t c) {
+    s.verts.insert(s.verts.end(), {a, b, c});
+    s.start.push_back(int32_t(s.verts.size()));
+  };
+  for(int j = 0; j < nz; j++)
+    for(int i = 0; i < nx; i++)
+    {
+      const int32_t a = id(i, j), b = id(i + 1, j), c = id(i + 1, j + 1), d = id(i, j + 1);
+      // facing +y: a, d, c, b
+      if((i + j) % 2)
+      {
+        tri(a, d, c);
+        tri(a, c, b);
+      }
+      else
+      {
+        tri(a, d, b);
+        tri(d, c, b);
+      }
+    }
+  return s;
+}
+
+}  // namespace
+
+TEST(GarmentQuads, ACutSheetIsItsQuadsAgain)
+{
+  const Sheet s     = cutSheet(4, 3);
+  const auto  polys = fv::garment::pairQuads(s.positions, s.start, s.verts);
+  EXPECT_EQ(polys.triangles, 24u);
+  EXPECT_EQ(polys.paired, 24u);
+  ASSERT_EQ(polys.start.size(), 12u + 1);
+  for(size_t p = 0; p + 1 < polys.start.size(); p++)
+  {
+    ASSERT_EQ(polys.start[p + 1] - polys.start[p], 4);
+    const int32_t* q = &polys.verts[size_t(polys.start[p])];
+    // a cell's four corners, each side a side of the cell (1 or 1.3 long), and facing up as it did
+    double up = 0;
+    for(size_t k = 0; k < 4; k++)
+    {
+      const float* a = &s.positions[size_t(q[k]) * 3];
+      const float* b = &s.positions[size_t(q[(k + 1) % 4]) * 3];
+      const double l = std::hypot(double(b[0] - a[0]), double(b[2] - a[2]));
+      EXPECT_TRUE(std::abs(l - 1) < 1e-5 || std::abs(l - 1.3) < 1e-5) << p << " side " << l;
+      up += double(a[2]) * b[0] - double(a[0]) * b[2];
+    }
+    EXPECT_GT(up, 0) << p;
+  }
+}
+
+TEST(GarmentQuads, EvenTrianglesAFoldAndAQuadStayAsTheyAre)
+{
+  // a strip of even triangles: no two make a shape near a rectangle
+  std::vector<float>   positions;
+  std::vector<int32_t> start{0}, verts;
+  const float          h = std::sqrt(3.f) / 2;
+  for(int i = 0; i < 6; i++)
+    positions.insert(positions.end(), {0.5f * float(i), 0.f, i % 2 ? h : 0.f});
+  for(int i = 0; i + 2 < 6; i++)
+  {
+    if(i % 2)
+      verts.insert(verts.end(), {i, i + 1, i + 2});
+    else
+      verts.insert(verts.end(), {i, i + 2, i + 1});
+    start.push_back(int32_t(verts.size()));
+  }
+  auto polys = fv::garment::pairQuads(positions, start, verts);
+  EXPECT_EQ(polys.paired, 0u);
+  EXPECT_EQ(polys.start, start);
+  EXPECT_EQ(polys.verts, verts);
+
+  // a square folded to a right angle along its diagonal is two faces, not one
+  positions = {0, 0, 0, 1, 0, 1, 1, 0, 0, 0.5f, 0.70710678f, 0.5f};
+  verts     = {0, 1, 2, 1, 0, 3};
+  start     = {0, 3, 6};
+  EXPECT_EQ(fv::garment::pairQuads(positions, start, verts).paired, 0u);
+  // flat, it is one
+  positions = {0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1};
+  polys     = fv::garment::pairQuads(positions, start, verts);
+  EXPECT_EQ(polys.paired, 2u);
+  EXPECT_EQ(polys.start, (std::vector<int32_t>{0, 4}));
+
+  // a quad is kept, and a triangle beside it isn't paired with it
+  positions = {0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 2, 0, 0};
+  verts     = {0, 1, 2, 3, 3, 2, 4};
+  start     = {0, 4, 7};
+  polys     = fv::garment::pairQuads(positions, start, verts);
+  EXPECT_EQ(polys.triangles, 1u);
+  EXPECT_EQ(polys.verts, verts);
+}
+
+TEST(GarmentQuads, AnOutfitsClothIsHeldWhereItLiesOnTheSkin)
+{
+  // three cloth vertices over one body triangle, 0.5, 1.5 and 4 cm off it: held, half, cloth; and one
+  // bound to nothing, cloth
+  const std::vector<float> body{0, 0, 0, 10, 0, 0, 0, 0, 10};
+  const std::vector<float> item{2, 0.5f, 2, 2, 1.5f, 2, 2, 4, 2, 2, 0.2f, 2};
+  fv::wardrobe::SurfaceBinding at;
+  for(int v = 0; v < 4; v++)
+  {
+    at.verts.insert(at.verts.end(), {0, 1, 2});
+    if(v < 3)
+      at.weights.insert(at.weights.end(), {0.6f, 0.2f, 0.2f});
+    else
+      at.weights.insert(at.weights.end(), {0.f, 0.f, 0.f});
+  }
+  const std::vector<float> free = fv::skinFree(item, body, at);
+  ASSERT_EQ(free.size(), 4u);
+  EXPECT_FLOAT_EQ(free[0], 0);
+  EXPECT_NEAR(free[1], 0.5, 1e-5);
+  EXPECT_FLOAT_EQ(free[2], 1);
+  EXPECT_FLOAT_EQ(free[3], 1);
+
+  // a button joined to nothing over cloth 6 cm off the skin: the cloth is cloth, the button held
+  {
+    const Buttoned      g = buttoned();
+    fv::mesh::MeshInput in;
+    in.positions = g.positions;
+    in.polyStart.push_back(0);
+    for(size_t t = 0; t + 2 < g.tris.size(); t += 3)
+    {
+      in.polyVerts.insert(in.polyVerts.end(), {int32_t(g.tris[t]), int32_t(g.tris[t + 1]), int32_t(g.tris[t + 2])});
+      in.polyStart.push_back(int32_t(in.polyVerts.size()));
+    }
+    in.polyMaterial.assign(in.polyStart.size() - 1, 0);
+    in.materialCount = 1;
+    const fv::mesh::BuiltMesh geo = fv::mesh::build(in);
+    const std::vector<float>  under{-100, -6, -100, 100, -6, -100, 0, -6, 100};
+    fv::wardrobe::SurfaceBinding on;
+    for(size_t v = 0; v * 3 < g.positions.size(); v++)
+    {
+      on.verts.insert(on.verts.end(), {0, 1, 2});
+      on.weights.insert(on.weights.end(), {0.25f, 0.25f, 0.5f});
+    }
+    std::vector<std::vector<std::pair<int, float>>> rows;
+    for(size_t v = 0; v * 3 < g.positions.size(); v++)
+      rows.push_back({{0, 0.5f + 0.004f * float(v % 100)}, {1, 0.5f - 0.004f * float(v % 100)}});
+    const std::vector<float> pins = fv::clothPins(geo, skinOf(rows), under, on);
+    ASSERT_EQ(pins.size(), g.positions.size() / 3);
+    for(size_t v = 0; v < pins.size(); v++)
+      EXPECT_FLOAT_EQ(pins[v], v < g.cloth ? 1.f : 0.f) << v;
+  }
+
+  // settings made for a mesh of triangles with that pin map: its quads again, and the map as its strength
+  const Sheet        s = cutSheet(2, 1);
+  fv::mesh::MeshInput in;
+  in.positions = s.positions;
+  in.polyStart = s.start;
+  in.polyVerts = s.verts;
+  in.polyMaterial.assign(s.start.size() - 1, 0);
+  in.materialCount = 1;
+  const fv::mesh::BuiltMesh geo = fv::mesh::build(in);
+  std::vector<float>        pin(s.positions.size() / 3, 1.f);
+  pin[0] = 0;
+  pin[1] = 0.25f;
+  const auto cloth = fv::clothSettings(geo, nullptr, true, 1.f, 0, fv::dson::kStrandVolume, pin);
+  ASSERT_TRUE(cloth && cloth->simulated());
+  EXPECT_EQ(cloth->polyStart, (std::vector<int32_t>{0, 4, 8}));
+  EXPECT_FLOAT_EQ(cloth->strength[0], 0);
+  EXPECT_FLOAT_EQ(cloth->strength[1], 0.25f);
+  EXPECT_FLOAT_EQ(cloth->strength[2], 1);
+  // loosened, what is held stays held and the rest goes towards cloth
+  const auto loose = fv::clothSettings(geo, nullptr, true, 2.f, 0, fv::dson::kStrandVolume, pin);
+  EXPECT_FLOAT_EQ(loose->strength[0], 0);
+  EXPECT_FLOAT_EQ(loose->strength[1], 1);
 }

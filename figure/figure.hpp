@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <atomic>
 #include <string>
 #include <unordered_map>
@@ -116,6 +117,9 @@ struct WornItem
   // is a choice. `commonFit`: what its wear asked for (WearInputs::commonFit).
   std::string fitted;
   bool        fitAble = false, commonFit = false;
+  // Its file has no simulation settings and none to be had (a Skyrim outfit): draped, its cloth on the
+  // skin and its hard pieces stay held (clothPins)
+  bool pinBySkin = false;
   // body polygons a geograft hides while it is worn and shown
   std::vector<int32_t> hiddenPolys;
   // the conforming meshes the collider keeps out of the body, with each one's smoothing settings
@@ -170,11 +174,24 @@ struct WornItem
 // above it lifts them towards fully cloth, there at kClothLoosest, a vertex the file holds at 0 stays
 // held. `layer` is the collision layer settings made here get. Null when the mesh has no polygons
 // (strand hair) or is left as the file has it with none.
+//
+// Settings made here, for a file with none, go over the cage's polygons with its triangles paired back
+// into quads (garment::pairQuads), so a mesh of triangles shears as cloth does. `free`, when it has a
+// value per cage vertex, is their weights: 0 held to the skin, 1 cloth (clothPins).
 constexpr float kClothLoosest = 2.f;
 std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo, const std::shared_ptr<const dson::DforceData>& file,
-                                                      std::optional<bool> on, float strength, int layer = 0, float volume = dson::kStrandVolume);
+                                                      std::optional<bool> on, float strength, int layer = 0, float volume = dson::kStrandVolume,
+                                                      std::span<const float> free = {});
 // The strength past which those settings no longer change: only weights between none and full can loosen.
 float clothLoosest(const std::shared_ptr<const dson::DforceData>& file);
+// A pin map for a mesh whose file has none, by how far off the skin each cage vertex lies where `at`
+// binds it to the body's cage: 0 (held) within physics::cloth::kOnSkin cm, 1 (cloth) from kOnSkinFade
+// further, as the live view holds what lies on the skin.
+std::vector<float> skinFree(std::span<const float> item, std::span<const float> body, const wardrobe::SurfaceBinding& at);
+// That, with the mesh's hard pieces held too (garment::hardPieces, by its cage and `skin`): a buckle or a
+// stud is joined to nothing, so as cloth it would fall from the cloth it sits on. Held, it stays where
+// the outfit's bones carry it, which is off the cloth where that drapes away from them.
+std::vector<float> clothPins(const mesh::BuiltMesh& geo, const mesh::SkinInput& skin, std::span<const float> body, const wardrobe::SurfaceBinding& at);
 
 // Per scene material: whether light scattering under the skin passes through it rather than
 // leaving the skin there (the renderer's "fvWalkThrough"). Lashes, hair, brows and the eyes' wet
