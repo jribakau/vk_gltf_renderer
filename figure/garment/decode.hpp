@@ -2,9 +2,6 @@
 
 // A garment's addresses onto a body (docs/wardrobe-plan.md, step 4a; "Decode"), and the cloth the
 // addresses don't hold settled round what they do.
-//
-// Not here yet: a target of another topology than the reference's (a Genesis 9 dress on Genesis 8),
-// which goes through that type's map.
 
 #include <span>
 #include <vector>
@@ -14,10 +11,42 @@
 
 namespace fv::garment {
 
-// Each held vertex on `target`, a body of the reference's topology in its own shape (Genesis 9's base as
-// the figure has it): the address's place on its skin, the height along its smooth normal there, and
-// the offset across. xyz per cage vertex; a vertex holding nothing is left at the origin.
-std::vector<float> decode(const Addresses& garment, const bodymap::Body& target);
+// The body a garment is decoded onto.
+struct Target
+{
+  // The reference's topology as it lies on the target: Genesis 9's base as the figure has it, or, for
+  // another type, the reference laid onto that type (its map's TypeMap::reference).
+  const bodymap::Body* reference = nullptr;
+  // The target's own skin, when it isn't the reference's topology (a Genesis 8 figure); null for the
+  // reference itself. An address's place on the laid reference lies a hair off this skin, and is put
+  // on it: the height is kept over the real skin.
+  const bodymap::Body* body = nullptr;
+  // Per vertex of `body`, the turn from its frame to the reference base's (its map's frameTurn); null,
+  // or empty, for none.
+  const std::vector<Quat>* frameTurn = nullptr;
+};
+
+struct Decoded
+{
+  // xyz per cage vertex; a vertex its address doesn't hold is left at the origin
+  std::vector<float> positions;
+  // per cage vertex, its place on the target's own skin: three of the target's vertices and their
+  // weights (all zero where nothing is held), the binding its address names
+  wardrobe::SurfaceBinding at;
+  // the addresses' hold, less what found no skin on the target
+  std::vector<float> hold;
+};
+
+// Each held vertex on the target: the address's place on its skin, the height along its smooth normal
+// there, and the offset across, turned into the target's frame.
+Decoded decode(const Addresses& garment, const Target& target);
+// The same onto a body of the reference's topology.
+Decoded decode(const Addresses& garment, const bodymap::Body& reference);
+
+// `bound` (a mesh's binding to the body by closest points) with the places decode named instead,
+// wherever `placed` has one (its weights not all zero): cloth in a crease stays on the side its
+// address is on.
+wardrobe::SurfaceBinding withPlaces(const wardrobe::SurfaceBinding& bound, const wardrobe::SurfaceBinding& placed);
 
 struct SettleOptions
 {

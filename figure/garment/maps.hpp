@@ -11,8 +11,12 @@
 
 namespace fv::garment {
 
-// The map of `generation`'s figure onto the reference, by Genesis 9's clone morph of it; null when
-// there is none (Genesis 9 itself, Skyrim, or a base or clone that isn't installed).
+// The map of `generation`'s figure onto the reference: by Genesis 9's clone morph of it, or, for Genesis
+// 9, the reference onto itself. Null when there is none (Skyrim, or a base or clone that isn't
+// installed).
 std::shared_ptr<const bodymap::TypeMap> typeMap(dson::Store& store, wardrobe::Generation generation, const std::string& gender);
+
+// The reference's own map: every vertex at itself, both ways, with no frame turns.
+bodymap::TypeMap referenceMap(const bodymap::Body& reference);
 
 }  // namespace fv::garment

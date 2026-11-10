@@ -5,6 +5,7 @@
 // item made for the figure's own generation is left exactly as authored. A port of
 // src/lib/wardrobe/fit/fit.ts.
 
+#include <map>
 #include <optional>
 #include <string>
 
@@ -23,9 +24,14 @@ struct FitDetail
   // whether the common layer fitted it (FitPath::eCommon, where it can): its cloth near the skin by
   // its addresses on the reference body
   bool common = false;
-  // whether the layer could fit it, asked or not: clothing from a Genesis that Genesis 9 has a clone
-  // morph of, on Genesis 9 (the Fit chooser is offered for these)
+  // whether the layer could fit it, asked or not: clothing, not footwear, between Genesis 9 and the
+  // generations it has a clone morph of, either way or from one of them to another (the Fit chooser is
+  // offered for these)
   bool commonAble = false;
+  // per mesh the layer fitted (an index into the wearable's scene meshes): each cage vertex's place on
+  // the figure's body, as its address names it, for the vertices left there (garment::Decoded::at; all
+  // weights zero for the rest). Their binding to the body is this, not the closest point's.
+  std::map<int, SurfaceBinding> placed;
   // the pose rig's plan: item bone -> figure bone, and the item bones that inherit a followed ancestor
   LeaderPlan plan;
   // "Genesis 8 outfit on Genesis 9, refitted to its skeleton and shape."
@@ -65,10 +71,13 @@ enum class FitPath
   eOld,
   // the common layer, where it can: cloth near the skin goes to its address on the reference body, at
   // the height it had over the body it was made on (figure/garment/), and the rest of the cloth with
-  // it. That is clothing (not footwear or strand hair) from a Genesis that Genesis 9 has a clone morph
-  // of, on a Genesis 9 figure; anything else is fitted the old way.
+  // it. That is clothing (not footwear or strand hair) between Genesis 9 and the generations it has a
+  // clone morph of (2, 3, 8 and 8.1), either way or from one of those to another; anything else is
+  // fitted the old way.
   eCommon,
 };
+// A vertex the layer placed counts as left there within this, cm (FitDetail::placed).
+constexpr double kPlacedWithin = 0.05;
 
 // Fits one item of `wearable` onto `figure` when it was made for another generation: its meshes' cages
 // are rewritten in place (so call it before anything binds them). None leaves it untouched.

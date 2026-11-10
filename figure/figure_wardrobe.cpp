@@ -18,6 +18,7 @@
 #include <figure/io/timing.hpp>
 #include <figure/jobs/pool.hpp>
 #include <figure/nif/nif_wear.hpp>
+#include <figure/garment/decode.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/collider.hpp>
@@ -584,6 +585,16 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
       }
     });
   out->bindings = bindParts(scene, bodyMesh, out->loaded.scene, out->loaded.parts);
+  // a mesh the common layer fitted: the vertices it placed keep the place on the body their address names
+  for(size_t i = 0; i < out->loaded.parts.size(); i++)
+  {
+    const dson::ItemPart& part = out->loaded.parts[i];
+    if(!out->bindings[i] || part.item < 0 || size_t(part.item) >= out->fits.size() || !out->fits[size_t(part.item)])
+      continue;
+    const auto& placed = out->fits[size_t(part.item)]->placed;
+    if(const auto at = placed.find(part.mesh); at != placed.end())
+      out->bindings[i] = std::make_shared<const wardrobe::SurfaceBinding>(garment::withPlaces(*out->bindings[i], at->second));
+  }
   // the wearable's own morph folders, listed here rather than at commit
   {
     timing::Scope tl("list own morphs", 1);

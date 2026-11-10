@@ -208,29 +208,47 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
         feet.emplace_back(limbId, *box);
     }
 
-  // the common layer: the source type's map, and the figure's body as a body of the reference's topology
-  std::shared_ptr<const bodymap::TypeMap> typeMap;
+  // the common layer: the maps of the type the item was made for and of the figure's own, and the
+  // figure's skin as its map's body has it
+  std::shared_ptr<const bodymap::TypeMap> typeMap, targetMap;
   bodymap::Body                           onto;
+  garment::Target                         decodeOnto;
   std::string                             notLayered;  // why the layer, asked for, didn't fit it
-  detail.commonAble = cage && !w.sourceBase && !footwear && target == Generation::eG9 && !bodymap::cloneFile(source, genderHint(rel)).empty();
+  const std::string sourceGender = genderHint(rel), targetGender = genderHint(figure.folder);
+  const auto        mapped       = [](Generation g, const std::string& gender) { return g == Generation::eG9 || !bodymap::cloneFile(g, gender).empty(); };
+  detail.commonAble = cage && !w.sourceBase && !footwear && mapped(source, sourceGender) && mapped(target, targetGender);
   if(path == FitPath::eCommon && !detail.commonAble)
-    notLayered = footwear                          ? "footwear isn't fitted through the common layer yet"
-                 : source == Generation::eSkyrim   ? "a Skyrim outfit has no body map to go through"
-                 : target != Generation::eG9       ? "the common layer fits onto Genesis 9 only, for now"
-                 : !cage                           ? std::string("the ") + label(source) + " base figure isn't installed"
-                                                   : std::string("Genesis 9 has no clone morph of ") + label(source);
+    notLayered = footwear                        ? "footwear isn't fitted through the common layer yet"
+                 : source == Generation::eSkyrim ? "a Skyrim outfit has no body map to go through"
+                 : !cage                         ? std::string("the ") + label(source) + " base figure isn't installed"
+                                                 : std::string("there is no body map of ") + label(mapped(source, sourceGender) ? target : source);
   if(path == FitPath::eCommon && detail.commonAble)
   {
-    typeMap = garment::typeMap(store, source, genderHint(rel));
-    if(typeMap && (typeMap->source.positions.size() != cage->positions.size() || typeMap->reference.positions.size() != body.cagePositions.size()))
+    typeMap   = garment::typeMap(store, source, sourceGender);
+    targetMap = garment::typeMap(store, target, targetGender);
+    if(typeMap && typeMap->source.positions.size() != cage->positions.size())
       typeMap = nullptr;
-    if(!typeMap)
-      notLayered = std::string("Genesis 9's clone morph of ") + label(source) + " isn't installed";
-    if(typeMap)
+    if(targetMap && targetMap->source.positions.size() != body.cagePositions.size())
+      targetMap = nullptr;
+    if(!typeMap || !targetMap)
+    {
+      notLayered = std::string("Genesis 9's base, or its clone morph of ") + label(!typeMap ? source : target) + ", isn't installed";
+      typeMap    = nullptr;
+    }
+    else
     {
       onto.positions = body.cagePositions;
-      onto.tris      = typeMap->reference.tris;
-      onto.outer     = typeMap->reference.outer;
+      onto.tris      = targetMap->source.tris;
+      onto.outer     = targetMap->source.outer;
+      if(target == Generation::eG9)
+        decodeOnto.reference = &onto;
+      else
+      {
+        // the reference laid on the figure's type, the figure's own skin, and its frames' turns
+        decodeOnto.reference = &targetMap->reference;
+        decodeOnto.body      = &onto;
+        decodeOnto.frameTurn = &targetMap->map.frameTurn;
+      }
     }
   }
 
@@ -269,15 +287,17 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     // its file sets (its heel below the floor), not around the flat base a correction measures
     // against, which would bend it. A boot's shaft takes the correction, fading out onto the foot. It
     // is all still pushed out of the foot: a sole stays, lying off the foot's faces rather than behind them
-    bool layered = false;
+    bool             layered = false;
+    garment::Decoded decoded;
     if(typeMap && m.geo->cageLineStart.empty())
     {
       // bound to the base as it was made (a vertex's limb is the same moved or not)
       const auto               filter    = limbFilter(baseLimbs, meshLimbs(w.scene, m));
       const garment::Addresses addresses = garment::convert(m.geo->cagePositions, *typeMap, filter ? &*filter : nullptr);
-      if(std::any_of(addresses.hold.begin(), addresses.hold.end(), [](float h) { return h > 0; }))
+      decoded                            = garment::decode(addresses, decodeOnto);
+      if(std::any_of(decoded.hold.begin(), decoded.hold.end(), [](float h) { return h > 0; }))
       {
-        positions     = garment::settle(positions, garment::decode(addresses, onto), addresses.hold, m.geo->dsonTris);
+        positions     = garment::settle(positions, decoded.positions, decoded.hold, m.geo->dsonTris);
         layered       = true;
         detail.common = true;
       }
@@ -303,6 +323,20 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     // a dynamic surface owns its collision: dForce drapes it over the body, so it is not pushed out here
     if(!(m.dforce && m.dforce->simulated()))
       positions = pushOutOfBody(positions, m.geo->dsonTris, bodySurface, m.geo->cageLineStart, m.geo->cageLineVerts, footwear ? 3.f : kSunkDepth);
+    // a vertex its address holds whole, left where the address put it, keeps that place on the body as
+    // its binding (kPlacedWithin: the settle or the push moved the others, which bind by where they are)
+    if(layered)
+    {
+      for(size_t v = 0; v < decoded.hold.size(); v++)
+      {
+        double off2 = 0;
+        for(size_t k = 0; k < 3; k++)
+          off2 += double(positions[v * 3 + k] - decoded.positions[v * 3 + k]) * (positions[v * 3 + k] - decoded.positions[v * 3 + k]);
+        if(decoded.hold[v] < 1 || off2 > kPlacedWithin * kPlacedWithin)
+          decoded.at.weights[v * 3] = decoded.at.weights[v * 3 + 1] = decoded.at.weights[v * 3 + 2] = 0;
+      }
+      detail.placed[meshIdx] = std::move(decoded.at);
+    }
     writeCage(*m.geo, positions);
   }
   detail.shaped = base.has_value();

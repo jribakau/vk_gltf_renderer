@@ -12,6 +12,7 @@
 #include <figure/bodymap/clone.hpp>
 #include <figure/garment/convert.hpp>
 #include <figure/garment/decode.hpp>
+#include <figure/garment/maps.hpp>
 
 namespace {
 
@@ -72,6 +73,23 @@ Body plate(int n = 8, double size = 20)
   return b;
 }
 
+// Two plates facing each other, a crease `gap` cm deep: the lower in the xz plane facing up, the
+// upper over it facing down. The lower's vertices come first.
+Body crease(double gap, int n = 8, double size = 20)
+{
+  Body         b     = plate(n, size);
+  const size_t lower = b.positions.size() / 3;
+  const Body   top   = plate(n, size);
+  for(size_t v = 0; v < lower; v++)
+    b.positions.insert(b.positions.end(), {top.positions[v * 3], float(gap), top.positions[v * 3 + 2]});
+  // turned over: the same triangles wound the other way
+  for(size_t t = 0; t + 2 < top.tris.size(); t += 3)
+    b.tris.insert(b.tris.end(), {uint32_t(lower) + top.tris[t], uint32_t(lower) + top.tris[t + 2], uint32_t(lower) + top.tris[t + 1]});
+  b.outer.assign(b.tris.size() / 3, 1);
+  b.regions.assign(b.positions.size() / 3, 0);
+  return b;
+}
+
 // A type whose reference lies on it: the map of `source` onto `reference`.
 TypeMap typeOf(const Body& source, const Body& reference)
 {
@@ -91,7 +109,7 @@ TEST(Garment, ConvertedAndDecodedOntoItsOwnBodyIsUnchanged)
   const TypeMap type  = typeOf(body, body);
   const Body    shell = sphere(10.6, 11, 17);  // another tessellation, so its vertices lie over faces and edges
   const auto    a     = fv::garment::convert(shell.positions, type);
-  const auto    back  = fv::garment::decode(a, body);
+  const auto    back  = fv::garment::decode(a, body).positions;
   ASSERT_EQ(back.size(), shell.positions.size());
   for(size_t v = 0; v < a.hold.size(); v++)
   {
@@ -109,7 +127,7 @@ TEST(Garment, AShellKeepsItsHeightOnAThickerBody)
   const TypeMap type   = typeOf(source, laid);
   const Body    shell  = sphere(10.8, 12, 18);
   const auto    a      = fv::garment::convert(shell.positions, type);
-  const auto    worn   = fv::garment::decode(a, target);
+  const auto    worn   = fv::garment::decode(a, target).positions;
   for(size_t v = 0; v < a.hold.size(); v++)
   {
     ASSERT_GT(a.hold[v], 0.f) << v;
@@ -138,7 +156,7 @@ TEST(Garment, AnOffsetTurnsWithTheBodysFrame)
   // one vertex over the plate, one past its edge: its offset has a part across the skin
   const std::vector<float> item = {3, 1.5f, 2, 12, 1, 0};
   const auto               a    = fv::garment::convert(item, type);
-  const auto               worn = fv::garment::decode(a, target);
+  const auto               worn = fv::garment::decode(a, target).positions;
   EXPECT_NEAR(a.height[0], 1.5, 1e-5);
   EXPECT_NEAR(a.height[1], 1, 1e-5);
   for(size_t v = 0; v < 2; v++)
@@ -258,4 +276,105 @@ TEST(Garment, AnAddressMovesAVertexNoFurtherThanTheCap)
   options.cap    = 5;
   const auto out = fv::garment::settle(moved, decoded, hold, {}, options);
   EXPECT_NEAR(out[1], 5, 1e-5);
+}
+
+TEST(Garment, AShellGoesOntoABodyOfAnotherTopology)
+{
+  // made on one tessellation of a sphere; worn on a thicker body of a third tessellation, through the
+  // reference laid on each
+  const Body    source = sphere(10, 16, 24), laidOnSource = sphere(10, 20, 30);
+  const Body    laidOnTarget = sphere(12, 20, 30), body = sphere(12, 14, 22);
+  const TypeMap type  = typeOf(source, laidOnSource);
+  const Body    shell = sphere(10.8, 12, 18);
+  const auto    a     = fv::garment::convert(shell.positions, type);
+  fv::garment::Target target;
+  target.reference = &laidOnTarget;
+  target.body      = &body;
+  const auto worn  = fv::garment::decode(a, target);
+  for(size_t v = 0; v < a.hold.size(); v++)
+  {
+    ASSERT_GT(worn.hold[v], 0.f) << v;
+    EXPECT_NEAR(radiusOf(worn.positions, v), 12.8, 0.15) << v;
+    // bound to the body's own vertices, at weights that sum to one
+    float sum = 0;
+    for(size_t j = 0; j < 3; j++)
+    {
+      EXPECT_LT(worn.at.verts[v * 3 + j], body.positions.size() / 3);
+      sum += worn.at.weights[v * 3 + j];
+    }
+    EXPECT_NEAR(sum, 1, 1e-4) << v;
+  }
+}
+
+TEST(Garment, AnOffsetTurnsBackIntoTheTargetsFrame)
+{
+  // the target's frames lie a quarter turn from the reference base's, as the source's do: what was
+  // turned into the base's frame is turned back out of it, and the garment is unchanged
+  const Body source = plate();
+  TypeMap    type   = typeOf(source, source);
+  const Quat turn{0, 0, -std::sqrt(0.5), std::sqrt(0.5)};
+  type.map.frameTurn.assign(source.positions.size() / 3, turn);
+  const std::vector<float> item = {12, 1, 0, -11, 0.5f, 3};  // past the plate's edges
+  const auto               a    = fv::garment::convert(item, type);
+  fv::garment::Target      target;
+  target.reference = &source;
+  target.body      = &source;
+  target.frameTurn = &type.map.frameTurn;
+  const auto worn  = fv::garment::decode(a, target);
+  for(size_t i = 0; i < item.size(); i++)
+    EXPECT_NEAR(worn.positions[i], item[i], 1e-4) << i;
+}
+
+TEST(Garment, AVertexInACreaseIsBoundOnItsAddresssSide)
+{
+  // cloth 2 mm over the lower side of a crease 1 cm deep, made for that side (its limb). On the target
+  // the crease is 3 mm deep: the upper side is the nearer skin, and the address still names the lower
+  const Body   source = crease(1.0), target = crease(0.3);
+  const size_t lower  = source.positions.size() / 6;
+  const TypeMap type  = typeOf(source, source);
+  fv::wardrobe::BindFilter filter;
+  filter.bodyLimb.assign(source.positions.size() / 3, 2);
+  std::fill(filter.bodyLimb.begin(), filter.bodyLimb.begin() + ptrdiff_t(lower), int16_t(1));
+  const std::vector<float> item = {0.3f, 0.2f, 0.4f, -4.1f, 0.2f, 2.2f};
+  filter.itemMask.assign(2, 1 << 1);
+  const auto a    = fv::garment::convert(item, type, &filter);
+  const auto worn = fv::garment::decode(a, target);
+  for(size_t v = 0; v < 2; v++)
+  {
+    ASSERT_FLOAT_EQ(worn.hold[v], 1.f);
+    EXPECT_NEAR(worn.positions[v * 3 + 1], 0.2, 1e-5);
+    for(size_t j = 0; j < 3; j++)
+      if(worn.at.weights[v * 3 + j] != 0)
+        EXPECT_LT(worn.at.verts[v * 3 + j], lower) << v;
+  }
+  // and that place replaces the closest point's in the mesh's binding, which is on the upper side
+  const fv::wardrobe::SurfaceBinding bound = fv::wardrobe::bindToSurface(target.positions, target.tris, worn.positions);
+  bool                               upper = false;
+  for(size_t i = 0; i < bound.verts.size(); i++)
+    upper = upper || (bound.weights[i] != 0 && bound.verts[i] >= lower);
+  EXPECT_TRUE(upper);
+  const fv::wardrobe::SurfaceBinding kept = fv::garment::withPlaces(bound, worn.at);
+  for(size_t i = 0; i < kept.verts.size(); i++)
+    if(kept.weights[i] != 0)
+    {
+      EXPECT_LT(kept.verts[i], lower) << i;
+      EXPECT_TRUE(kept.used[kept.verts[i]]);
+    }
+  // a vertex decode didn't place keeps the closest point's
+  fv::wardrobe::SurfaceBinding none = worn.at;
+  std::fill(none.weights.begin(), none.weights.end(), 0.f);
+  EXPECT_EQ(fv::garment::withPlaces(bound, none).verts, bound.verts);
+}
+
+TEST(Garment, TheReferencesOwnMapPutsEveryVertexAtItself)
+{
+  const Body    body  = sphere(10, 16, 24);
+  const TypeMap type  = fv::garment::referenceMap(body);
+  const Body    shell = sphere(10.5, 11, 17);
+  const auto    a     = fv::garment::convert(shell.positions, type);
+  const auto    back  = fv::garment::decode(a, body);
+  for(size_t i = 0; i < shell.positions.size(); i++)
+    EXPECT_NEAR(back.positions[i], shell.positions[i], 1e-4) << i;
+  // on the reference the address is the binding
+  EXPECT_EQ(back.at.verts, a.at.verts);
 }
