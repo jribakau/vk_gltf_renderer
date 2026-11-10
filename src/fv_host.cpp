@@ -933,6 +933,7 @@ void FvHost::onUpdate()
   if(s.frameIn > 0 && --s.frameIn == 0)
     s.frameCamera();
   s.drawHelpers();
+  s.applyFlash();
   if(s.view)
     s.view->onFrame();
   endPhase();

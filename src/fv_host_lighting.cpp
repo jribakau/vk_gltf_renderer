@@ -270,6 +270,63 @@ void FvHost::Impl::feedSun(rs::RetainedScene& scene)
                            {"aim", {s.azimuth, s.elevation}}};
 }
 
+// The flash as a light: a white spot of that strength (a spot light prop's units)
+tinygltf::Light FvHost::Impl::flashPayload(double strength) const
+{
+  tinygltf::Light light;
+  light.name                = "Flash";
+  light.type                = "spot";
+  light.color               = {1.0, 1.0, 1.0};
+  light.intensity           = strength;
+  light.spot.innerConeAngle = fv::lighting::kFlashInner;
+  light.spot.outerConeAngle = fv::lighting::kFlashOuter;
+  tinygltf::Value::Object extras;
+  extras["radius"] = tinygltf::Value(fv::lighting::kFlashRadius);
+  light.extras     = tinygltf::Value(extras);
+  return light;
+}
+
+// The flash where the camera is now, at the lens's strength; only what changed is written, so a
+// still view with the flash on edits nothing and its still refines.
+void FvHost::Impl::applyFlash()
+{
+  auto manip = renderer->getCameraManipulator();
+  if(!renderer->feedsHostScene() || !view || !manip)
+    return;
+  rs::RetainedScene& scene    = renderer->hostScene();
+  const double       strength = view->lens().flash;
+  const bool         have     = scene.entity(flashEntity) && scene.light(flashLight);
+  if(!have)
+    flashApplied = {};
+  if(strength <= 0.0)
+  {
+    if(have && flashApplied.on)
+      scene.setLightShown(flashLight, false);
+    flashApplied.on = false;
+    return;
+  }
+  glm::dvec3 eye, center, up;
+  manip->getLookat(eye, center, up);
+  const fv::lighting::FlashPose pose = fv::lighting::flashPose(glm::vec3(eye), glm::vec3(center), glm::vec3(up));
+  if(!have)
+  {
+    flashEntity = scene.createEntity("Flash", {0, -1});
+    scene.setLocal(flashEntity, {.translation = pose.position, .rotation = pose.rotation});
+    flashLight = scene.addLight({.owner = {0, -1}, .payload = flashPayload(strength)});
+    scene.setEntityLight(flashEntity, flashLight);
+    scene.release(flashLight);
+    flashApplied = {.on = true, .strength = strength, .position = pose.position, .rotation = pose.rotation};
+    return;
+  }
+  if(!flashApplied.on)
+    scene.setLightShown(flashLight, true);
+  if(flashApplied.strength != strength)
+    scene.setLight(flashLight, flashPayload(strength));
+  if(pose.position != flashApplied.position || pose.rotation != flashApplied.rotation)
+    scene.setLocal(flashEntity, {.translation = pose.position, .rotation = pose.rotation});
+  flashApplied = {.on = true, .strength = strength, .position = pose.position, .rotation = pose.rotation};
+}
+
 // A batch of renderer parameters, validated whole before any is applied; callbacks fire as over MCP,
 // and a value the batch names holds against them (setExposedParameters).
 void FvHost::Impl::setParams(const Json& values)

@@ -770,6 +770,11 @@ void FvHost::Impl::releaseFed()
     renderer->hostScene().destroyEntity(sunEntity);
   sunEntity = {};
   sunLight  = {};
+  if(renderer->feedsHostScene() && renderer->hostScene().entity(flashEntity))
+    renderer->hostScene().destroyEntity(flashEntity);
+  flashEntity  = {};
+  flashLight   = {};
+  flashApplied = {};
   for(const auto& p : props)
   {
     if(p->figure)

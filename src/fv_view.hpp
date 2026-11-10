@@ -28,7 +28,7 @@
 //                                               in the viewport toggles too)
 //   camera.view   {name}                     front, back, left, right, top, bottom, threeQuarter
 //   camera.frame  {prop?, selected?}         the whole scene, a prop, or the selection
-//   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation}   the lens of the view in use
+//   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation, flash}   the lens of the view in use
 //   camera.get    {}                         -> {position, target, up, focalLength}
 //   camera.goto   {position, target, up?, focalLength?}
 //   view.set      {display, grid, gizmo, pick, select, transform, space, snap, helpers, frameAspect, solo}  display: shaded, clay, wireframe, normals;
@@ -176,6 +176,7 @@ public:
     double      focusDistance = 3;
     int         blades        = 0;  // aperture blades: 0 a round aperture, else 3 to 16 straight blades
     double      bladeRotation = 0;  // degrees, the first blade's corner from the camera's right toward its up
+    double      flash         = 0;  // a light on the camera, its strength as a spot light prop's (0: none; protocol 58)
   };
   const Lens& lens() const { return m_lens; }
   void        setLens(const Lens& lens);

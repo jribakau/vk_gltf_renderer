@@ -649,6 +649,30 @@ TEST(FvLighting, TheGradeIsTheSlidersWithTheLookOverThem)
   EXPECT_DOUBLE_EQ(L::grade(t).contrast, 2.0);
 }
 
+// The camera's flash: a little above the lens along the camera's up, shining where the camera looks
+TEST(FvLighting, TheFlashSitsOverTheLensAndLooksWhereTheCameraLooks)
+{
+  const glm::vec3 eye(1.0F, 1.5F, 4.0F), center(0.0F, 1.0F, 0.0F), up(0.0F, 1.0F, 0.0F);
+  const L::FlashPose pose = L::flashPose(eye, center, up);
+  const glm::vec3    ahead = glm::normalize(center - eye);
+  // a spot light shines along its -Z
+  const glm::vec3 shines = pose.rotation * glm::vec3(0.0F, 0.0F, -1.0F);
+  EXPECT_NEAR(glm::dot(shines, ahead), 1.0F, 1e-5F);
+  // over the lens by kFlashAbove, straight up in the camera's frame: not ahead, not to a side
+  const glm::vec3 offset = pose.position - eye;
+  EXPECT_NEAR(glm::length(offset), float(L::kFlashAbove), 1e-6F);
+  EXPECT_NEAR(glm::dot(offset, ahead), 0.0F, 1e-6F);
+  EXPECT_NEAR(glm::dot(offset, glm::normalize(glm::cross(ahead, up))), 0.0F, 1e-6F);
+  EXPECT_GT(offset.y, 0.0F);
+  // its cone takes in a 24 mm lens's corners (42 degrees from the axis on a 3:2 frame)
+  EXPECT_GT(L::kFlashInner, glm::radians(42.0));
+  EXPECT_GT(L::kFlashOuter, L::kFlashInner);
+  // an eye on its target has no direction: the flash stays at the eye, unturned
+  const L::FlashPose none = L::flashPose(eye, eye, up);
+  EXPECT_EQ(none.position, eye);
+  EXPECT_EQ(none.rotation, glm::quat(1.0F, 0.0F, 0.0F, 0.0F));
+}
+
 // A look's cheap camera (protocol 57): its lens and its sensor, kept in the topic, clamped, and sent
 // on as the lens pass's and the tone mapper's parameters at the look's strength; none without a look
 TEST(FvLighting, ALooksCameraGoesToTheLensAndTheSensor)

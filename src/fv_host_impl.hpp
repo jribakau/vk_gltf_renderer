@@ -1410,6 +1410,20 @@ struct FvHost::Impl
   void applyLighting(bool everything);
   void requestEnvironment();
   void applySun(bool force);
+  // the camera's flash (the lens's `flash` of the view in use): a spot light that goes where the
+  // camera goes (fv::lighting::flashPose). Made the first time it is on and hidden while off, so a
+  // scene that never used one has no light for it. Every frame.
+  rs::EntityId flashEntity;
+  rs::LightId  flashLight;
+  struct FlashApplied
+  {
+    bool      on       = false;
+    double    strength = 0.0;
+    glm::vec3 position{0.0F};
+    glm::quat rotation{1.0F, 0.0F, 0.0F, 0.0F};
+  } flashApplied;
+  void            applyFlash();
+  tinygltf::Light flashPayload(double strength) const;
   // the "Sun" light as the current state has it, and its entity in `scene` (marked as the sky's sun)
   tinygltf::Light sunPayload() const;
   void            feedSun(rs::RetainedScene& scene);

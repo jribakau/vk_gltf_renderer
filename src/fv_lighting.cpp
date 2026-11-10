@@ -488,6 +488,15 @@ Grade grade(const Tonemap& t)
   };
 }
 
+FlashPose flashPose(const glm::vec3& eye, const glm::vec3& center, const glm::vec3& up)
+{
+  if(glm::length(center - eye) < 1e-6F)
+    return {.position = eye};
+  // the camera's frame: its columns are its right, its up and where it looks from (-Z ahead)
+  const glm::mat4 look = glm::inverse(glm::lookAt(eye, center, up));
+  return {.position = eye + glm::vec3(look[1]) * float(kFlashAbove), .rotation = glm::quat_cast(glm::mat3(look))};
+}
+
 Tonemap previewed(const Tonemap& t, const Json& preview)
 {
   if(!preview.is_object() || !preview.contains("look"))

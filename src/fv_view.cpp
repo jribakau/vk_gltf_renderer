@@ -606,7 +606,8 @@ void FvView::setCameraExtra(fv::Json extra)
 fv::Json FvView::lensJson(const Lens& lens)
 {
   return {{"focalLength", lens.focalLength}, {"dof", lens.dof}, {"fStop", lens.fStop}, {"focusMode", lens.focusMode},
-          {"focusDistance", lens.focusDistance}, {"blades", lens.blades}, {"bladeRotation", lens.bladeRotation}};
+          {"focusDistance", lens.focusDistance}, {"blades", lens.blades}, {"bladeRotation", lens.bladeRotation},
+          {"flash", lens.flash}};
 }
 
 FvView::Lens FvView::lensOf(const fv::Json& args, Lens base)
@@ -633,6 +634,8 @@ FvView::Lens FvView::lensOf(const fv::Json& args, Lens base)
   }
   if(args.contains("bladeRotation"))
     base.bladeRotation = args["bladeRotation"].get<double>();
+  if(args.contains("flash"))
+    base.flash = std::clamp(args["flash"].get<double>(), 0.0, 1000.0);
   return base;
 }
 

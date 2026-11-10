@@ -102,7 +102,9 @@ namespace {
 // 57: a look's cheap camera: tonemap.look's bend and fringe (its lens: barrel distortion and colour
 // fringing) and clip and noise (its sensor: highlights clipped a channel at a time, noise in the
 // shadows). An older renderer refuses the lighting for a look that has them.
-constexpr int kProtocolVersion = 57;
+// 58: the lens's flash: camera.set's and a camera prop's `flash`, a light on the camera (0 none, else
+// its strength as a spot light prop's), in the camera topic's and a camera prop's lens.
+constexpr int kProtocolVersion = 58;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

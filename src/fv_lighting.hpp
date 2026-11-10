@@ -223,6 +223,20 @@ Grade grade(const Tonemap& t);
 // std::invalid_argument as applyPatch does.
 Tonemap previewed(const Tonemap& t, const Json& preview);
 
+// The camera's flash (the view's lens.flash): a small spot light a little above the lens, looking
+// where the camera looks, wide enough for a wide lens's frame. Above the lens, as a camera's is, so
+// what it lights throws a thin hard shadow below it.
+constexpr double kFlashAbove  = 0.06;  // metres over the lens, along the camera's up
+constexpr double kFlashRadius = 0.01;  // metres: a hard light
+constexpr double kFlashInner  = 0.75;  // radians from its axis: full strength inside
+constexpr double kFlashOuter  = 1.05;  // and none outside
+struct FlashPose
+{
+  glm::vec3 position{0.0F};
+  glm::quat rotation{1.0F, 0.0F, 0.0F, 0.0F};  // a spot light shines along its -Z, as a camera looks
+};
+FlashPose flashPose(const glm::vec3& eye, const glm::vec3& center, const glm::vec3& up);
+
 // What the physical sky's clouds leave of its light, as the renderer's last full bake measured it
 // (EnvBaker::cloudLight): `sky`, the sky's own light on a figure, with the clouds against without;
 // `sun`, the share of the sun that gets past them. 1 and 1 under a clear sky.

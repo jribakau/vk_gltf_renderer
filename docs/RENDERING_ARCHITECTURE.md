@@ -410,6 +410,20 @@ What makes a picture read as footage is mostly the camera's defects, so a look c
   headless: the rows bow outward, the edges fringe red and blue, the black around them is noisy. Its
   cost is not measured.
 
+## The camera's flash
+
+A lens can carry a flash (`FvView::Lens::flash`, the view in use's: the free view's or a camera
+prop's; `camera.set`). It is a scene light like any other, so the path tracer has nothing of its
+own for it: the host keeps a spot light on an entity of its own just above the lens, looking where
+the camera looks (`fv::lighting::flashPose`), and moves it when the camera has moved
+(`FvHost::Impl::applyFlash`, every frame; only what changed is written, so a still view's still
+refines). The light is made the first time a flash is on and hidden while it is off, so a scene that
+never used one carries no light for it. Its strength is in a spot light prop's units.
+
+- **Checked:** `FvLighting.TheFlashSitsOverTheLensAndLooksWhereTheCameraLooks`. Seen through the
+  host on a one-figure scene under a dim studio: the frame brighter with it on, still lit from the
+  camera after a quarter turn round the figure, and back to the picture without it when off.
+
 ## Bloom
 
 A lens's glow round bright light, and a star when the aperture has blades (`src/bloom.hpp`,
