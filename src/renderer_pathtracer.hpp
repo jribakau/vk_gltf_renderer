@@ -101,6 +101,14 @@ public:
   bool compileShader(Resources& resources, bool fromFile = true) override;
   // The scene features the live variant has compiled in: the optimal build's; none when every one
   // is (the optimal shader off, or the embedded build standing in for a failed compile)
+  // The part of the G-buffer's depth image, from its corner, that holds the view's depth: the size of
+  // the frame that last started it (a DLSS frame's is DLSS's input size), the whole of `image` before any
+  VkExtent2D depthExtent(VkExtent2D image) const
+  {
+    const bool none = m_depthExtent.width == 0 || m_depthExtent.height == 0;
+    return none || m_depthExtent.width > image.width || m_depthExtent.height > image.height ? image : m_depthExtent;
+  }
+
   // Whether what first hits want is counted (countHits): memory is near full
   void setCountHits(bool on) { m_countHits = on; }
   // The Time view (shaders/pixel_time.h.slang), for the frame info: where this frame sums its pixels'
@@ -456,6 +464,7 @@ public:
   bool                                  m_dlssFrame{false};
   bool                                  m_prevDlssFrame{false};
   bool                                  m_handoffFrame{false};
+  VkExtent2D m_depthExtent{};  // the size of the frame that last started the depth image (frameStartsDepth); none: not yet
   int                                   m_dlssHandoffDelayMs{0};
   bool                                  m_stillWaits{false};  // setStillWaits
   std::chrono::steady_clock::time_point m_accumulationStart{};

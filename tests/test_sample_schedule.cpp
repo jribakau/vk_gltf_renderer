@@ -294,3 +294,23 @@ TEST(SampleSchedule, FrameRateStaysInRange)
   EXPECT_EQ(climb([](int) { return 0.01; }, 30.0, 40).back(), 40);  // still climbing, one a frame
   EXPECT_EQ(climb([](int) { return 100.0; }, 30.0, 10).back(), 1);  // never under one
 }
+
+// The depth image starts over with the picture, at the size its frame traces: a first frame, and the
+// frame a still takes over from DLSS, whose depth was at DLSS's input size in the image's corner. A
+// still handed off kept DLSS's corner and brought its own full-size depth nearer over it.
+TEST(SampleSchedule, DepthStartsOverWhenAStillTakesOverFromDlss)
+{
+  using sample_schedule::frameStartsDepth;
+  // a moving view: every frame a first frame, DLSS's
+  EXPECT_TRUE(frameStartsDepth(/*firstFrame=*/true, /*dlssFrame=*/true, 0));
+  // it rests: DLSS's frames of the hand-off's delay keep the depth of the frame it stopped on
+  EXPECT_FALSE(frameStartsDepth(false, true, 0));
+  // the still takes over: its first frame, no samples before it
+  EXPECT_TRUE(frameStartsDepth(false, false, 0));
+  // and from there only brings the depth nearer
+  EXPECT_FALSE(frameStartsDepth(false, false, 1));
+  EXPECT_FALSE(frameStartsDepth(false, false, 64));
+  // an accumulation without DLSS starts on its first frame; a still DLSS refines alone never hands off
+  EXPECT_TRUE(frameStartsDepth(true, false, 0));
+  EXPECT_FALSE(frameStartsDepth(false, true, 5));
+}

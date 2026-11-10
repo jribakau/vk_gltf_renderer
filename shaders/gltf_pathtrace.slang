@@ -2488,9 +2488,8 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
 
 
   // NDC depth from first-hit world position (Vulkan [0,1] range, 1.0 = far/miss).
-  // Written to two targets: outDepth (main GBuffer, full viewport resolution, frame 0 only)
-  // and eDlssDepth (DLSS guide buffer, DLSS render resolution, every frame when DLSS active).
-  // Both use the same NDC value but the images differ in resolution.
+  // Written to two targets: outDepth (the main G-buffer's, at this frame's size: a DLSS frame's fills
+  // the image's corner) and eDlssDepth (DLSS guide buffer, every frame when DLSS is active).
   const bool hasSolidHit = sampleResult.radiance.w > 0.0f;
   float4     clipPos =
       hasSolidHit ? mul(float4(sampleResult.hitPosition, 1.0), pushConst.frameInfo->viewProjMatrix) : float4(0, 0, 1, 1);
@@ -2506,9 +2505,14 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   // Through an accumulation, the nearest depth any of its samples saw: the first frame's one jittered
   // sample often misses the strands that cover part of a pixel of hair, and the grid's axis showed
   // through the hair of a still as a dotted line.
-  if(firstFrame)
+  // The depth starts over where the image does (sample_schedule::frameStartsDepth, which tells the
+  // overlays its size): on a first frame, and on the frame a still takes over from DLSS, its samples at
+  // none again. DLSS's depth is at its input size, in the image's corner: the nearest of that and this
+  // frame's, at the image's own size, was two pictures in one.
+  const bool dlssFrame = hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss);
+  if(firstFrame || (!dlssFrame && pushConst.totalSamples == 0))
     outDepth[int2(samplePos)] = ndcDepth;
-  else if(!hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) && ndcDepth < outDepth[int2(samplePos)])
+  else if(!dlssFrame && ndcDepth < outDepth[int2(samplePos)])
     outDepth[int2(samplePos)] = ndcDepth;
 
 #if USE_PIXEL_TIME

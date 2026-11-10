@@ -32,6 +32,7 @@
 // frameMaxDepth():        the bounces a frame's paths take: the still's, or the DLSS frames' cap below it.
 // dlssFrameSamples():     the samples a DLSS frame traces: the host's count once the view has held still,
 //                         as many of them as fit a short frame; 1 from the frame a change lands on.
+// frameStartsDepth():     the frame writes the view's depth afresh, at the size it traces.
 // accumulationComplete(): the cap is reached: the samples, or the frames of a view that has none; or
 //                         the adaptive stop found nearly every pixel done.
 //-------------------------------------------------------------------------------------------------------
@@ -84,6 +85,16 @@ inline bool accumulationComplete(int frameCount, int accumulated, int maxSamples
 inline int frameMaxDepth(int maxDepth, int maxDepthDlss, bool dlss)
 {
   return dlss && maxDepthDlss > 0 ? std::min(maxDepth, maxDepthDlss) : maxDepth;
+}
+
+// The frame writes the view's depth afresh, at the size it traces (processPixel's rule; the frames
+// between only bring a still's depth nearer, sample by sample). `firstFrame`: an accumulation's first
+// (ePtFirstFrame). `dlssFrame`: DLSS draws it, at its input size, into the corner of the depth image.
+// `accumulated`: the still's samples before it, none again on the frame a still takes over from DLSS.
+// What reads the depth (the grid, the gizmo) reads it at the size of the last frame that started it.
+inline bool frameStartsDepth(bool firstFrame, bool dlssFrame, int accumulated)
+{
+  return firstFrame || (!dlssFrame && accumulated == 0);
 }
 
 // The samples a DLSS frame traces, `asked` the host's (ptSamplesDlss: more than 1 only while a still

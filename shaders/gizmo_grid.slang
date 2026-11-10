@@ -179,21 +179,32 @@ struct GridFragmentOutput
 // The scene's depth is the nearest of the 3x3 texels around: a path-traced DLSS frame's depth is one
 // jittered sample a pixel, which in hair often misses the strands, and the axis flickered through the
 // hair as a dotted line. A line stops a texel short of an object's edge.
+//
+// That nearest depth comes from up to `reach` pixels away: the texels around (larger than a pixel under
+// DLSS's smaller input), and through a still the nearest any of its samples saw, each a Gaussian's
+// throw from its pixel's centre (three of the path tracer's ANTIALIASING_STANDARD_DEVIATION). On a
+// surface the line lies in, it is nearer than the line's own point by the depth's slope over that
+// reach, and the line's slope is the surface's there: so that much more is allowed, or a still's floor
+// hid its grid in dots. Only for the lines of the ground plane, which a floor can lie in: the upright
+// axis lies in no surface, and with the allowance it showed in dots through skin a centimetre in front.
 bool occludedByScene(float2 fragCoord, float3 worldPos)
 {
-  const float4 clip = mul(float4(worldPos, 1.0), pc.sceneViewProj);
+  const float4 clip  = mul(float4(worldPos, 1.0), pc.sceneViewProj);
+  const float  line  = clip.z / clip.w;
+  const float2 texel = pc.viewportSize / pc.depthBufferSize;  // a depth texel, in pixels
+  const float  reach = 1.5 * max(texel.x, texel.y) + 1.3;
+  const float  slope = abs(worldPos.y) < 1e-4 ? reach * fwidth(line) : 0.0;  // fwidth before any branch: a derivative
   if(clip.w <= 0.0)
     return false;
-  const int2 texel = int2(fragCoord * (pc.depthBufferSize / pc.viewportSize));
-  const int2 last  = int2(pc.depthBufferSize) - 1;
-  float      scene = 1.0;
+  const int2 centre = int2(fragCoord / texel);
+  const int2 last   = int2(pc.depthBufferSize) - 1;
+  float      scene  = 1.0;
   for(int dy = -1; dy <= 1; ++dy)
     for(int dx = -1; dx <= 1; ++dx)
-      scene = min(scene, sceneDepth.Load(int3(clamp(texel + int2(dx, dy), int2(0), last), 0)));
-  const float line = clip.z / clip.w;
+      scene = min(scene, sceneDepth.Load(int3(clamp(centre + int2(dx, dy), int2(0), last), 0)));
   if(pc.isPerspective != 0)
-    return (1.0 - scene) > (1.0 - line) * 1.002;  // 1 - depth falls as 1 / distance
-  return scene < line - 1e-5;
+    return (1.0 - scene) > (1.0 - line) * 1.002 + slope;  // 1 - depth falls as 1 / distance
+  return scene < line - 1e-5 - slope;
 }
 
 [shader("fragment")]

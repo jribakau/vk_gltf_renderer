@@ -1519,16 +1519,11 @@ void GltfRenderer::renderVisualHelpers(VkCommandBuffer cmd)
 
   const VkExtent2D size = m_resources.gBuffers.getSize();
   glm::vec2        viewportSize(static_cast<float>(size.width), static_cast<float>(size.height));
-  glm::vec2        depthBufferSize = viewportSize;
-#if defined(USE_DLSS)
-  // The path tracer writes depth at the DLSS render size into the corner of the G-buffer depth.
-  // isActive() is strict (false during async init), so we never pick up a 0x0 inner extent.
-  if(const Dlss* dlss = activeDlss(); dlss && dlss->isActive())
-  {
-    const VkExtent2D rs = dlss->getRenderSize();
-    depthBufferSize     = {static_cast<float>(rs.width), static_cast<float>(rs.height)};
-  }
-#endif
+  // The path tracer writes depth at the size it traces, from the depth image's corner: a DLSS frame at
+  // DLSS's input size, a still's frames at the image's own. Not by whether DLSS is up: it stays up
+  // through a still it handed to the accumulation, whose depth is full-size.
+  const VkExtent2D depthExtent = m_pathTracer.depthExtent(size);
+  const glm::vec2  depthBufferSize(static_cast<float>(depthExtent.width), static_cast<float>(depthExtent.height));
 
   m_visualHelpers.render(cmd, m_resources.gBuffers.getColorImage(Resources::eImgTonemapped),
                          m_resources.gBuffers.getColorAttachmentView(Resources::eImgTonemapped), m_resources.descriptorSet,

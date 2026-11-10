@@ -42,9 +42,15 @@ In `main()` we attach:
 
 ### Path-traced depth
 
-On the first frame after a reset, the path tracer writes NDC depth (`outDepth`) so picking and the
-overlays drawn after it (grid, gizmo) can depth-test against the path-traced image. It writes the
-G-buffer depth image directly as a storage image when the depth format supports it.
+The path tracer writes NDC depth (`outDepth`) so the overlays drawn after it (grid, gizmo) can
+depth-test against the path-traced image. A frame writes it at the size it traces, from the depth
+image's corner: a DLSS frame at DLSS's input size, an accumulation's frame at the image's own. The
+depth starts over where the picture does (`sample_schedule::frameStartsDepth`: a first frame, and the
+frame a still takes over from DLSS), and a still's later frames only bring it nearer, so a strand one
+sample missed still hides the grid. The overlays read it at the size of the frame that last started it
+(`PathTracer::depthExtent`), not by whether DLSS is up: DLSS stays up through a still it has handed to
+the accumulation. It writes the G-buffer depth image directly as a storage image when the depth format
+supports it.
 `nvvk::RenderTarget` only grants STORAGE usage in that case, and Vulkan does not require it for any
 depth format; `D32_SFLOAT` lacks it on AMD. There `PathTracer` binds an `R32_SFLOAT` staging image
 instead and copies it into the depth image through a buffer (`PathTracer::cmdCopyStagedDepth`),

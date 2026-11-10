@@ -556,6 +556,7 @@ void PathTracer::onDetach(Resources& resources)
 // Resize the G-Buffer and the renderers
 void PathTracer::onResize(VkCommandBuffer cmd, const VkExtent2D& /*size*/, Resources& resources)
 {
+  m_depthExtent = {};  // a new depth image: nothing in it until a frame is traced
   updateDepthStaging(cmd, resources);
   updateConvergence(cmd, resources);
   updateDlssResources(cmd, resources);
@@ -717,6 +718,11 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
 
   // Setting up the push constant
   const shaderio::PathtracePushConstant pushConst = setupPushConstant(cmd, resources, renderingSize);
+  // The depth image holds this frame's depth from here on, at this frame's size (depthExtent)
+  const bool depthStarts = sample_schedule::frameStartsDepth((pushConst.flags & shaderio::ePtFirstFrame) != 0,
+                                                             (pushConst.flags & shaderio::ePtUseDlss) != 0, pushConst.totalSamples);
+  if(depthStarts)
+    m_depthExtent = renderingSize;
 
   // The hand-off frame, after DLSS's: keep DLSS's image for the hand-off before the path tracer
   // overwrites it. The barrier below orders that write after the copy.
@@ -769,9 +775,10 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
 
-  // Depth is only traced on the first frame (see processPixel); bring it into the depth buffer
-  // before anything reads it (overlays and picking).
-  if(m_depthViaStaging && m_depthCopyable && resources.frameCount == 0)
+  // Where the depth format cannot be a storage image the trace wrote a staging image: the frame that
+  // starts the depth brings it into the depth buffer before the overlays read it. (What a still's later
+  // frames bring nearer, processPixel, stays in the staging image on such a device.)
+  if(m_depthViaStaging && m_depthCopyable && depthStarts)
     cmdCopyStagedDepth(cmd, resources);
 
 #if defined(USE_DLSS)
