@@ -19,6 +19,7 @@
 #include <figure/jobs/pool.hpp>
 #include <figure/nif/nif_wear.hpp>
 #include <figure/garment/decode.hpp>
+#include <figure/garment/weights.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
 #include <figure/wardrobe/collider.hpp>
@@ -170,6 +171,10 @@ struct Figure::PreparedWear
   std::vector<std::shared_ptr<const wardrobe::SurfaceBinding>> bindings;
   std::string                                                  key;
   bool                                                         commonFit = false;  // WearInputs::commonFit
+  // the meshes of loaded.scene whose skin has the body's weights worked in (garment::withBodyWeights):
+  // the body's bones follow the mesh's own in its skin, and the commit appends them to the mesh (its
+  // own bones' node indices move with the merge; the figure's don't)
+  std::set<int> bodySkinned;
   // per entry of loaded.parts: the body targets prepareWear was given, projected onto the part
   std::vector<std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>>> preprojected;
   // the wearable's own morph files, per Morphs folder: stem (lowercase) -> file
@@ -607,6 +612,30 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
     timing::Scope ts("strands beside the bind (wait)", 1);
     strands.get();
   }
+  // A mesh the common fit covers (FitDetail::bodyWeights) takes the body's weights where it lies on the
+  // skin (the plan's step 5): last, as nothing after it here reads the wearable's skins, whose bone indices past its
+  // own name the body's bones until the commit appends them. Not footwear, whose foot is rigid, nor
+  // strand hair.
+  {
+    timing::Scope ts("body weights", 1);
+    const Mesh&   body = scene.meshes[size_t(bodyMesh)];
+    for(size_t i = 0; i < out->loaded.parts.size() && body.geo && !body.cageSkin.start.empty(); i++)
+    {
+      const dson::ItemPart& part = out->loaded.parts[i];
+      if(!part.conforms || !out->bindings[i] || part.item < 0 || size_t(part.item) >= out->fits.size() || !out->fits[size_t(part.item)])
+        continue;
+      const wardrobe::FitDetail& fit = *out->fits[size_t(part.item)];
+      Mesh&                      m   = out->loaded.scene.meshes[size_t(part.mesh)];
+      if(!fit.bodyWeights || fit.footwear || !m.geo || m.cageSkin.start.empty() || !m.geo->cageLineStart.empty() || out->bodySkinned.count(part.mesh))
+        continue;
+      const std::vector<float> hold = garment::holdByDistance(m.geo->cagePositions, body.geo->cagePositions, *out->bindings[i]);
+      if(std::none_of(hold.begin(), hold.end(), [](float h) { return h > 0; }))
+        continue;
+      m.cageSkin = garment::withBodyWeights(m.cageSkin, m.bones.size(), body.cageSkin, *out->bindings[i], hold);
+      m.skin     = mesh::skin(*m.geo, m.cageSkin);
+      out->bodySkinned.insert(part.mesh);
+    }
+  }
   return out;
 }
 
@@ -717,12 +746,27 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
       n.mesh += meshBase;
     dst.nodes.push_back(std::move(n));
   }
-  for(fv::Mesh& m : w.scene.meshes)
+  // the body's bones as they are bound now, for the meshes skinned to them too (PreparedWear::bodySkinned)
+  std::vector<int>  bodyBones;
+  std::vector<Mat4> bodyInverses;
+  if(!p.bodySkinned.empty() && !loaded.morphs.mainMeshes.empty())
   {
-    for(int& mi : m.materials)
-      mi += materialBase;
+    const Mesh& body = dst.meshes[size_t(loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh)];
+    bodyBones        = body.bones;
+    bodyInverses     = body.boneInverses;
+  }
+  for(size_t mi = 0; mi < w.scene.meshes.size(); mi++)
+  {
+    fv::Mesh& m = w.scene.meshes[mi];
+    for(int& i : m.materials)
+      i += materialBase;
     for(int& b : m.bones)
       b += nodeBase;
+    if(p.bodySkinned.count(int(mi)))
+    {
+      m.bones.insert(m.bones.end(), bodyBones.begin(), bodyBones.end());
+      m.boneInverses.insert(m.boneInverses.end(), bodyInverses.begin(), bodyInverses.end());
+    }
     dst.meshes.push_back(std::move(m));
   }
   for(fv::Material& m : w.scene.materials)
@@ -823,7 +867,7 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     WornItem worn = record(it, int(k), w.parts, meshBase, rel, id);
     if(fit)
     {
-      worn.fitted  = fit->common ? "common" : "old";
+      worn.fitted  = fit->common || fit->bodyWeights ? "common" : "old";
       worn.fitAble = fit->commonAble;
     }
     worn.commonFit = p.commonFit;

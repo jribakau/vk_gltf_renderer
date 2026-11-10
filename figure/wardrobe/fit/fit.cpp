@@ -218,13 +218,17 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   const auto        mapped       = [](Generation g, const std::string& gender) { return g == Generation::eG9 || !bodymap::cloneFile(g, gender).empty(); };
   // a shoe keeps the bone transfer and the foot's box alone; a boot's shaft is cloth round the leg
   const bool shoe   = region == FitRegion::eShoe;
-  detail.commonAble = cage && !w.sourceBase && !shoe && mapped(source, sourceGender) && mapped(target, targetGender);
+  detail.footwear   = footwear;
+  const bool layerAble = cage && !w.sourceBase && !shoe && mapped(source, sourceGender) && mapped(target, targetGender);
+  // a Skyrim outfit has no map to be fitted through, and takes the body's weights where the direct fit lands it
+  const bool weightsOnly = source == Generation::eSkyrim && !footwear;
+  detail.commonAble      = layerAble || weightsOnly;
   if(path == FitPath::eCommon && !detail.commonAble)
     notLayered = shoe                            ? "a shoe keeps the fit of its foot"
                  : source == Generation::eSkyrim ? "a Skyrim outfit has no body map to go through"
                  : !cage                         ? std::string("the ") + label(source) + " base figure isn't installed"
                                                  : std::string("there is no body map of ") + label(mapped(source, sourceGender) ? target : source);
-  if(path == FitPath::eCommon && detail.commonAble)
+  if(path == FitPath::eCommon && layerAble)
   {
     typeMap   = garment::typeMap(store, source, sourceGender);
     targetMap = garment::typeMap(store, target, targetGender);
@@ -343,15 +347,17 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     }
     writeCage(*m.geo, positions);
   }
-  detail.shaped = base.has_value();
-  detail.note   = std::string(label(source)) + " outfit on " + label(target) + ", "
+  detail.shaped      = base.has_value();
+  detail.bodyWeights = path == FitPath::eCommon && (detail.common || weightsOnly);
+  detail.note        = std::string(label(source)) + " outfit on " + label(target) + ", "
                 + (detail.common                    ? std::string("fitted through the common layer")
                    : base                           ? std::string("refitted to its skeleton and shape")
                    : source == Generation::eSkyrim ? std::string("refitted to its skeleton (no body came with it, so its shape wasn't matched)")
                                                     : std::string("refitted to its skeleton (the ") + label(source)
                                                           + " base figure isn't installed, so its shape wasn't matched)")
-                + (path == FitPath::eCommon && !detail.common ? ", the old way: " + (notLayered.empty() ? std::string("none of its cloth lies near the skin") : notLayered)
-                                                              : std::string())
+                + (path != FitPath::eCommon || detail.common ? std::string()
+                   : weightsOnly                             ? std::string(", its cloth on the skin taking the body's weights")
+                                                             : ", the old way: " + (notLayered.empty() ? std::string("none of its cloth lies near the skin") : notLayered))
                 + ".";
   return detail;
 }

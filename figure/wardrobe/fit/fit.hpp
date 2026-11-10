@@ -24,10 +24,18 @@ struct FitDetail
   // whether the common layer fitted it (FitPath::eCommon, where it can): its cloth near the skin by
   // its addresses on the reference body
   bool common = false;
-  // whether the layer could fit it, asked or not: clothing or a boot, not a shoe, between Genesis 9 and the
+  // whether the common fit does anything for it, asked or not (the Fit chooser is offered for these):
+  // a Skyrim outfit that isn't footwear, which takes the body's weights; and what the layer can fit,
+  // clothing or a boot, not a shoe, between Genesis 9 and the
   // generations it has a clone morph of, either way or from one of them to another (the Fit chooser is
   // offered for these)
   bool commonAble = false;
+  // a shoe or a boot: its foot is a rigid thing, which the body's weights would bend with the toes
+  bool footwear = false;
+  // its cloth on the skin takes the body's weights there (garment::withBodyWeights, the plan's step 5):
+  // what the layer fitted, and a Skyrim outfit, which the direct fit puts on and whose own rig has
+  // fewer joints than the figure's. Asked for with the common fit.
+  bool bodyWeights = false;
   // per mesh the layer fitted (an index into the wearable's scene meshes): each cage vertex's place on
   // the figure's body, as its address names it, for the vertices left there (garment::Decoded::at; all
   // weights zero for the rest). Their binding to the body is this, not the closest point's.

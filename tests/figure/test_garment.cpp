@@ -6,13 +6,16 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <map>
 #include <numbers>
+#include <utility>
 #include <vector>
 
 #include <figure/bodymap/clone.hpp>
 #include <figure/garment/convert.hpp>
 #include <figure/garment/decode.hpp>
 #include <figure/garment/maps.hpp>
+#include <figure/garment/weights.hpp>
 
 namespace {
 
@@ -88,6 +91,32 @@ Body crease(double gap, int n = 8, double size = 20)
   b.outer.assign(b.tris.size() / 3, 1);
   b.regions.assign(b.positions.size() / 3, 0);
   return b;
+}
+
+// A skin of rows of (bone, weight), one row a vertex.
+fv::mesh::SkinInput skinOf(const std::vector<std::vector<std::pair<int, float>>>& rows)
+{
+  fv::mesh::SkinInput s;
+  s.start.push_back(0);
+  for(const auto& row : rows)
+  {
+    for(const auto& [bone, weight] : row)
+    {
+      s.bone.push_back(bone);
+      s.weight.push_back(weight);
+    }
+    s.start.push_back(int32_t(s.bone.size()));
+  }
+  return s;
+}
+
+// A vertex's influences, by bone.
+std::map<int, float> rowOf(const fv::mesh::SkinInput& s, size_t v)
+{
+  std::map<int, float> out;
+  for(int32_t i = s.start[v]; i < s.start[v + 1]; i++)
+    out[s.bone[size_t(i)]] += s.weight[size_t(i)];
+  return out;
 }
 
 // A type whose reference lies on it: the map of `source` onto `reference`.
@@ -377,4 +406,97 @@ TEST(Garment, TheReferencesOwnMapPutsEveryVertexAtItself)
     EXPECT_NEAR(back.positions[i], shell.positions[i], 1e-4) << i;
   // on the reference the address is the binding
   EXPECT_EQ(back.at.verts, a.at.verts);
+}
+
+TEST(GarmentWeights, ClothOnTheSkinTakesTheSkinsWeightsThere)
+{
+  // a body of three vertices on bones 0, 1 and 2 (the last shared with 1), and a garment of two bones
+  // of its own. Its first vertex lies on the skin at 0.5, 0.3, 0.2 of the three; its second hangs free
+  const fv::mesh::SkinInput body = skinOf({{{0, 1.f}}, {{1, 1.f}}, {{1, 0.5f}, {2, 0.5f}}});
+  const fv::mesh::SkinInput item = skinOf({{{0, 0.25f}, {1, 0.75f}}, {{1, 1.f}}});
+  fv::wardrobe::SurfaceBinding at;
+  at.verts   = {0, 1, 2, 0, 1, 2};
+  at.weights = {0.5f, 0.3f, 0.2f, 1, 0, 0};
+  const std::vector<float> hold = {1, 0};
+  const auto               skin = fv::garment::withBodyWeights(item, 2, body, at, hold);
+  ASSERT_EQ(skin.start.size(), 3u);
+  // the body's bones come after the garment's two
+  const auto first = rowOf(skin, 0);
+  ASSERT_EQ(first.size(), 3u);
+  EXPECT_NEAR(first.at(2), 0.5, 1e-6);
+  EXPECT_NEAR(first.at(3), 0.3 + 0.1, 1e-6);
+  EXPECT_NEAR(first.at(4), 0.1, 1e-6);
+  // the free vertex keeps what it was made with
+  const auto second = rowOf(skin, 1);
+  ASSERT_EQ(second.size(), 1u);
+  EXPECT_NEAR(second.at(1), 1, 1e-6);
+  // strongest first, as the drawn skin's four are taken
+  EXPECT_EQ(skin.bone[size_t(skin.start[0])], 2);
+}
+
+TEST(GarmentWeights, ClothHeldInPartTakesAShareOfEach)
+{
+  const fv::mesh::SkinInput body = skinOf({{{0, 1.f}}});
+  const fv::mesh::SkinInput item = skinOf({{{0, 1.f}}, {}});
+  fv::wardrobe::SurfaceBinding at;
+  at.verts   = {0, 0, 0, 0, 0, 0};
+  at.weights = {1, 0, 0, 1, 0, 0};
+  const auto skin = fv::garment::withBodyWeights(item, 1, body, at, std::vector<float>{0.25f, 0.5f});
+  const auto a    = rowOf(skin, 0);
+  EXPECT_NEAR(a.at(0), 0.75, 1e-6);
+  EXPECT_NEAR(a.at(1), 0.25, 1e-6);
+  // a vertex made with no weights rides the garment's root bone for the share that isn't the body's
+  const auto b = rowOf(skin, 1);
+  EXPECT_NEAR(b.at(item.rootBone), 0.5, 1e-6);
+  EXPECT_NEAR(b.at(1), 0.5, 1e-6);
+}
+
+TEST(GarmentWeights, ACornerWithNoWeightsIsLeftOut)
+{
+  // bound between a weighted body vertex and one with none (an eyeball's, say): the weighted one's are all it takes
+  const fv::mesh::SkinInput body = skinOf({{{3, 1.f}}, {}});
+  const fv::mesh::SkinInput item = skinOf({{{0, 1.f}}});
+  fv::wardrobe::SurfaceBinding at;
+  at.verts   = {0, 1, 1};
+  at.weights = {0.4f, 0.6f, 0};
+  const auto row = rowOf(fv::garment::withBodyWeights(item, 1, body, at, std::vector<float>{1}), 0);
+  ASSERT_EQ(row.size(), 1u);
+  EXPECT_NEAR(row.at(1 + 3), 1, 1e-6);
+  // and bound to nothing weighted, it keeps its own
+  at.weights     = {0, 1, 0};
+  const auto own = rowOf(fv::garment::withBodyWeights(item, 1, body, at, std::vector<float>{1}), 0);
+  EXPECT_NEAR(own.at(0), 1, 1e-6);
+}
+
+TEST(GarmentWeights, TheDualQuaternionShareGoesOverWithTheWeights)
+{
+  fv::mesh::SkinInput body = skinOf({{{0, 1.f}}, {{0, 1.f}}});
+  body.dualQuatMap         = {1.f, 0.5f};
+  fv::mesh::SkinInput item = skinOf({{{0, 1.f}}, {{0, 1.f}}, {{0, 1.f}}});
+  item.dualQuat            = 0;
+  fv::wardrobe::SurfaceBinding at;
+  at.verts   = {0, 1, 1, 0, 1, 1, 0, 1, 1};
+  at.weights = {1, 0, 0, 0.5f, 0.5f, 0, 1, 0, 0};
+  const auto skin = fv::garment::withBodyWeights(item, 1, body, at, std::vector<float>{1, 1, 0});
+  ASSERT_EQ(skin.dualQuatMap.size(), 3u);
+  EXPECT_NEAR(skin.dualQuatMap[0], 1, 1e-6);
+  EXPECT_NEAR(skin.dualQuatMap[1], 0.75, 1e-6);
+  EXPECT_NEAR(skin.dualQuatMap[2], 0, 1e-6);
+  // all linear on both: no map
+  body.dualQuatMap.clear();
+  EXPECT_TRUE(fv::garment::withBodyWeights(item, 1, body, at, std::vector<float>{1, 1, 0}).dualQuatMap.empty());
+}
+
+TEST(GarmentWeights, HoldFallsWithTheDistanceOffTheBody)
+{
+  const std::vector<float> body = {0, 0, 0, 10, 0, 0, 0, 0, 10};
+  const std::vector<float> item = {1, 1, 1, 1, 3.5f, 1, 1, 7, 1, 1, 1, 1};
+  fv::wardrobe::SurfaceBinding at;
+  at.verts   = {0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2};
+  at.weights = {0.8f, 0.1f, 0.1f, 0.8f, 0.1f, 0.1f, 0.8f, 0.1f, 0.1f, 0, 0, 0};
+  const auto hold = fv::garment::holdByDistance(item, body, at);
+  EXPECT_FLOAT_EQ(hold[0], 1.f);
+  EXPECT_NEAR(hold[1], 0.5, 1e-4);
+  EXPECT_FLOAT_EQ(hold[2], 0.f);
+  EXPECT_FLOAT_EQ(hold[3], 0.f);  // bound to nothing
 }

@@ -1742,6 +1742,65 @@ int main(int argc, char** argv)
           }
           std::cerr << std::defaultfloat << std::setprecision(6);
         }
+        // "poses": [pose preset, ...]: under each, how the cloth near the skin keeps its clearance from the
+        // posed body (the cages skinned and morphed as they are drawn, with no collision pass): the change
+        // from the rest pose for the vertices within 3 cm of the skin there, and how many end over 3 mm
+        // under it. What a garment's skin weights are worth (the plan's step 5).
+        if(step.contains("poses") && loaded->pose)
+        {
+          std::vector<int> meshes{int(ctx.meshes[ctx.mainMeshes.at(0)].mesh)};
+          for(int id : worn.items)
+            if(const fv::WornItem* item = loaded->item(id))
+              for(int m : item->meshes)
+                if(scene.meshes[size_t(m)].geo && !scene.meshes[size_t(m)].cageSkin.start.empty())
+                  meshes.push_back(m);
+          const auto measure = [&] {
+            const auto          cages = fv::physics::posedCages(scene, *loaded->morphs, meshes, loaded->loaded.root);
+            std::vector<double> out;
+            for(size_t k = 1; k < cages.size(); k++)
+            {
+              const std::vector<double> c = signedClearance(cages[0], body.dsonTris, cages[k]);
+              out.insert(out.end(), c.begin(), c.end());
+            }
+            return out;
+          };
+          loaded->pose->reset();
+          loaded->settle();
+          const std::vector<double> rest = measure();
+          Json                      posed = Json::object();
+          for(const Json& pose : step["poses"])
+          {
+            const std::string file = pose.get<std::string>();
+            loaded->pose->reset();
+            loaded->applyPosePreset(store->load(file)->json);
+            loaded->settle();
+            const std::vector<double> now = measure();
+            std::vector<double>       change;
+            size_t                    under = 0, underAtRest = 0;
+            for(size_t v = 0; v < rest.size() && v < now.size(); v++)
+            {
+              if(rest[v] > 3)
+                continue;
+              change.push_back(now[v] - rest[v]);
+              under += now[v] < -0.3;
+              underAtRest += rest[v] < -0.3;
+            }
+            if(change.empty())
+              continue;
+            std::sort(change.begin(), change.end());
+            const auto        at   = [&](double q) { return change[std::min(change.size() - 1, size_t(q * double(change.size())))]; };
+            const std::string name = std::filesystem::path(file).stem().string();
+            std::cerr << "  posed      n " << std::setw(6) << change.size() << std::fixed << std::setprecision(2) << "  change " << at(0.5) << " [" << at(0.05)
+                      << ", " << at(0.95) << "]  least " << change.front() << "  most " << change.back() << "  under the skin over 3 mm: " << under << " ("
+                      << underAtRest << " at rest)  " << name << "\n"
+                      << std::defaultfloat << std::setprecision(6);
+            posed[name] = {{"n", change.size()}, {"median", at(0.5)}, {"p05", at(0.05)}, {"p95", at(0.95)}, {"min", change.front()},
+                           {"max", change.back()}, {"under", under}, {"underAtRest", underAtRest}};
+          }
+          loaded->pose->reset();
+          loaded->settle();
+          items.push_back({{"posed", posed}});
+        }
         // off again, so the next garment measured isn't fitted over this one
         for(int id : worn.items)
           loaded->removeItem(id);
