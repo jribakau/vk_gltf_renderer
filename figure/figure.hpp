@@ -22,6 +22,7 @@
 #include <figure/dson/addons.hpp>
 #include <figure/dson/figure_loader.hpp>
 #include <figure/morph/morph_set.hpp>
+#include <figure/physics/skin.hpp>
 #include <figure/pose/figure_driver.hpp>
 #include <figure/pose/morph_reach.hpp>
 #include <figure/pose/pose_clip.hpp>
@@ -250,14 +251,16 @@ public:
   // null without a skeleton
   std::unique_ptr<pose::PoseRig> pose;
 
-  // What changed since last asked: bone nodes to re-pose, meshes whose vertices moved, and meshes
-  // whose skins were bound again at new joint centres.
+  // What changed since last asked: bone nodes to re-pose, meshes whose vertices moved, meshes whose
+  // skins were bound again at new joint centres, and nodes carried by what they ride on (rigid follow
+  // nodes: moved to feed, but no pose of their own, so nothing that answers a pose need look again).
   struct Changes
   {
     std::set<int>                  nodes;
     std::vector<morph::MeshChange> meshes;
     std::vector<int>               rebound;
-    bool                           empty() const { return nodes.empty() && meshes.empty() && rebound.empty(); }
+    std::set<int>                  carried;
+    bool empty() const { return nodes.empty() && meshes.empty() && rebound.empty() && carried.empty(); }
   };
   Changes drain();
 
@@ -418,6 +421,18 @@ private:
   // Tells the channels what their files say of them, when that has been read or new channels came,
   // and loads the files that read dials that moved. True when that left a load or the driver to run.
   bool noteMorphs();
+  // Moves the rigid follow nodes (dson::RigidFollow) with the patches they follow when a pose, a shape
+  // or a drape moved those, and adds the nodes it moved to `c.carried`.
+  void followRigid(Changes& c);
+  // per entry of loaded.follows (empty: to be made again): its reference vertices at rest and as the
+  // morphs last had them, and their skin
+  struct FollowState
+  {
+    std::vector<float> rest, morphed;
+    physics::CageSkin  skin;
+    bool               skinned = false;
+  };
+  std::vector<FollowState> m_followState;
 
   struct MorphNotes
   {

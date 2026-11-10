@@ -33,8 +33,8 @@ struct RigidMove
 constexpr double kRigidMaxTurn = 20;
 
 // The best move taking each of `from` to its `to`; a shift alone with fewer than four points, or a
-// turn past kRigidMaxTurn. None with no points.
-std::optional<RigidMove> bestMove(const std::vector<Vec3>& from, const std::vector<Vec3>& to);
+// turn past `maxTurn` degrees (180: any turn). None with no points.
+std::optional<RigidMove> bestMove(const std::vector<Vec3>& from, const std::vector<Vec3>& to, double maxTurn = kRigidMaxTurn);
 
 // The vertices of `surface` (xyz) within `reach` cm of `part` (xyz), measured from up to `samples` of
 // the part's vertices spread over it; and the least distance found from part to surface.

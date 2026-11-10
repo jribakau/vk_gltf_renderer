@@ -928,6 +928,34 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
   }
   for(auto& [owner, idx] : w.morphs.itemOf)
     loaded.morphs.itemOf[owner] = idx + itemBase;
+  // its rigid follow nodes; one that follows the figure it is worn on follows the body's mesh, when its
+  // item wasn't refitted from another generation (its vertex numbers are its own figure's)
+  for(dson::RigidFollow f : w.follows)
+  {
+    const bool refit = f.item >= 0 && size_t(f.item) < p.fits.size() && p.fits[size_t(f.item)];
+    f.node += nodeBase;
+    if(f.item >= 0)
+      f.item += itemBase;
+    if(f.mesh >= 0)
+      f.mesh += meshBase;
+    else
+    {
+      if(refit || loaded.morphs.mainMeshes.empty())
+        continue;
+      const int   body     = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
+      const Mesh& bodyMesh = dst.meshes[size_t(body)];
+      int         drawn    = -1;
+      for(size_t n = 0; n < dst.nodes.size() && drawn < 0; n++)
+        if(dst.nodes[n].mesh == body && !takenOff(dst, int(n)))
+          drawn = int(n);
+      if(drawn < 0 || !bodyMesh.geo
+         || std::any_of(f.refs.begin(), f.refs.end(), [&](uint32_t v) { return int(v) >= bodyMesh.geo->dsonVertexCount; }))
+        continue;
+      f.mesh       = body;
+      f.restInMesh = inverse(dst.world(drawn)) * f.restWorld;
+    }
+    loaded.follows.push_back(std::move(f));
+  }
   const auto itemOfMesh = [&](int mesh) -> WornItem* {
     for(size_t k = 0; k < added.size(); k++)
       for(WornItem& i : items)

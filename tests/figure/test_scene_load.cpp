@@ -502,8 +502,6 @@ TEST(SceneLoad, TheBuiltGltfHoldsTheFiguresMeshesAndSkins)
     ADD_FAILURE() << p;
 }
 
-// A DAZ geometry shell (studio/node/shell) draws its source's mesh again: pushed out along the
-// normals by its push modifier, its own surfaces only where its visibility channels keep them, and
 // A mesh's tables come from a file: one that can't be right is left out, with the reason, and is never
 // read past its buffers
 TEST(SceneLoad, AMalformedMeshIsSkippedNotTrusted)
@@ -568,6 +566,8 @@ TEST(SceneLoad, ALibraryPathStaysInTheLibrary)
   fs::remove_all(root);
 }
 
+// A DAZ geometry shell (studio/node/shell) draws its source's mesh again: pushed out along the
+// normals by its push modifier, its own surfaces only where its visibility channels keep them, and
 // moved by every morph of the source
 TEST(SceneLoad, AGeometryShellDrawsItsSourceAgainPushedOutWithoutItsHiddenSurfaces)
 {

@@ -38,6 +38,7 @@
 #include <figure/wardrobe/fit/heel.hpp>
 #include <figure/wardrobe/fit/transfer.hpp>
 #include <figure/wardrobe/follow.hpp>
+#include <figure/wardrobe/rigid_follow.hpp>
 
 #include "../common/failing_allocations.hpp"
 #include "scene_import_gltf.hpp"
@@ -2171,4 +2172,166 @@ TEST(Fit, ATwistBoneFollowsATwistBoneToPose)
   const auto onG9 = planLeaders({{"lShldrBend", std::nullopt}, {"lShldrTwist", std::string("lShldrBend")}}, g9);
   EXPECT_EQ(onG9.inherit.count("lShldrTwist"), 1u);
   EXPECT_EQ(onG9.follow.count("lShldrTwist"), 0u);
+}
+
+// A rigid follow node goes where the patch it follows goes, turned and shifted as one: a square patch
+// turned a quarter about z and lifted takes a node beside it round with it, in the mesh's frame.
+TEST(Wardrobe, ARigidFollowTakesTheTurnAndShiftOfItsPatch)
+{
+  const std::vector<float> rest{0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+  // a quarter about z, then 5 up: (x, y) -> (-y, x)
+  std::vector<float> now;
+  for(size_t v = 0; v < 4; v++)
+    now.insert(now.end(), {-rest[v * 3 + 1], rest[v * 3], rest[v * 3 + 2] + 5});
+  // the node stands at (2, 0.5, 0) at rest; the mesh's frame is 10 along x in the world
+  const fv::Mat4 meshWorld  = fv::compose({10, 0, 0}, {}, {1, 1, 1});
+  const fv::Mat4 restInMesh = fv::compose({2, 0.5, 0}, {}, {1, 1, 1});
+  const fv::Mat4 world      = fv::wardrobe::followWorld(meshWorld, restInMesh, rest, now, true);
+  const fv::Vec3 at         = world.transformPoint({});
+  EXPECT_NEAR(at.x, 10 - 0.5, 1e-9);
+  EXPECT_NEAR(at.y, 2, 1e-9);
+  EXPECT_NEAR(at.z, 5, 1e-9);
+  // its own x axis turned onto y
+  const fv::Vec3 x = world.transformPoint({1, 0, 0}) - at;
+  EXPECT_NEAR(x.x, 0, 1e-9);
+  EXPECT_NEAR(x.y, 1, 1e-9);
+  // rotation_mode "none": the patch's centre moved by (-1, 0, 5), and so does the node, unturned
+  const fv::Vec3 shifted = fv::wardrobe::followWorld(meshWorld, restInMesh, rest, now, false).transformPoint({});
+  EXPECT_NEAR(shifted.x, 12 - 1, 1e-9);
+  EXPECT_NEAR(shifted.y, 0.5, 1e-9);
+  EXPECT_NEAR(shifted.z, 5, 1e-9);
+
+  fv::Node node;
+  fv::wardrobe::setTransform(node, world);
+  const fv::Mat4 back = fv::compose(node.position, node.quaternion, node.scale);
+  for(size_t i = 0; i < 16; i++)
+    EXPECT_NEAR(back.e[i], world.e[i], 1e-9) << i;
+}
+
+// A button DAZ Studio made a rigid follow node of (studio/node/rigid_follow, its Follow Target the
+// tunic, its rigidity group the tunic's front face) goes where the tunic's front goes: the head turned,
+// which carries the tunic, carries the button with it, and back. Before, it hung from the tunic's node,
+// which no pose moves, and stayed where it was made (a dress's buttons off the dress). Taken off with
+// the tunic, it follows nothing.
+TEST(Wardrobe, ARigidFollowNodeGoesWithThePatchItFollows)
+{
+  const std::filesystem::path library = std::filesystem::path(FV_TEST_DATA) / "daz-library";
+  const std::filesystem::path extra   = std::filesystem::temp_directory_path() / "fv-rigid-follow-test";
+  std::filesystem::remove_all(extra);
+  const auto write = [&](const std::filesystem::path& rel, const std::string& text) {
+    std::filesystem::create_directories((extra / rel).parent_path());
+    std::ofstream(extra / rel, std::ios::binary) << text;
+  };
+  // a tunic over the box's head half, all on its head bone, and a button on its front face (z = 11)
+  write("data/Test/Box Tunic/Box Tunic.dsf", R"({"file_version":"0.6.0.0","asset_info":{"id":"/data/Test/Box%20Tunic/Box%20Tunic.dsf","type":"figure"},
+"geometry_library":[{"id":"BoxTunic-1","name":"BoxTunic","label":"Box Tunic","type":"polygon_mesh",
+ "vertices":{"count":8,"values":[[-11,22,-11],[11,22,-11],[11,22,11],[-11,22,11],[-11,38,-11],[11,38,-11],[11,38,11],[-11,38,11]]},
+ "polygon_groups":{"count":1,"values":["Tunic"]},"polygon_material_groups":{"count":1,"values":["Tunic"]},
+ "polylist":{"count":4,"values":[[0,0,0,4,5,1],[0,0,1,5,6,2],[0,0,2,6,7,3],[0,0,3,7,4,0]]}}],
+"node_library":[{"id":"BoxTunic","name":"BoxTunic","label":"Box Tunic","type":"figure","rotation_order":"YZX"},
+ {"id":"hip","name":"hip","label":"Hip","type":"bone","parent":"#BoxTunic","rotation_order":"YZX","center_point":[{"id":"x","value":0},{"id":"y","value":10},{"id":"z","value":0}],"end_point":[{"id":"x","value":0},{"id":"y","value":20},{"id":"z","value":0}]},
+ {"id":"head","name":"head","label":"Head","type":"bone","parent":"#hip","rotation_order":"YZX","center_point":[{"id":"x","value":0},{"id":"y","value":20},{"id":"z","value":0}],"end_point":[{"id":"x","value":0},{"id":"y","value":40},{"id":"z","value":0}]}],
+"modifier_library":[{"id":"SkinBinding","name":"SkinBinding","parent":"#BoxTunic-1","skin":{"node":"#BoxTunic","geometry":"#BoxTunic-1","vertex_count":8,
+ "joints":[{"id":"head","node":"#head","node_weights":{"count":8,"values":[[0,1],[1,1],[2,1],[3,1],[4,1],[5,1],[6,1],[7,1]]}}]}}],
+"material_library":[{"id":"Tunic","name":"Tunic","geometry":"#BoxTunic-1","groups":["Tunic"],"diffuse":{"channel":{"id":"diffuse","type":"color","value":[0.6,0.2,0.2]}}}]})");
+  write("data/Test/Box Button/Box Button.dsf", R"({"file_version":"0.6.0.0","asset_info":{"id":"/data/Test/Box%20Button/Box%20Button.dsf"},
+"geometry_library":[{"id":"BoxButton-1","name":"BoxButton","label":"Box Button","type":"polygon_mesh",
+ "vertices":{"count":4,"values":[[-1,29,11.5],[1,29,11.5],[1,31,11.5],[-1,31,11.5]]},
+ "polygon_groups":{"count":1,"values":["Button"]},"polygon_material_groups":{"count":1,"values":["Button"]},
+ "polylist":{"count":1,"values":[[0,0,0,1,2,3]]}}],
+"node_library":[{"id":"BoxButton","name":"BoxButton","label":"Box Button","type":"node"}],
+"material_library":[{"id":"Button","name":"Button","geometry":"#BoxButton-1","groups":["Button"],"diffuse":{"channel":{"id":"diffuse","type":"color","value":[0.1,0.1,0.1]}}}]})");
+  // as DAZ Studio saves one: the follow node's group in the wear's own node library, the node in the
+  // scene naming its target, the button's geometry under it, moved back by as much as the node stands
+  write("People/Test/Clothing/Buttoned Box Tunic.duf", R"({"file_version":"0.6.0.0","asset_info":{"id":"/People/Test/Clothing/Buttoned%20Box%20Tunic.duf","type":"wearable"},
+"node_library":[{"id":"ButtonFollow","name":"ButtonFollow","label":"Button Follow","type":"node",
+ "extra":[{"type":"studio/node/rigid_follow","rigidity_group":{"id":"FollowGroup","rotation_mode":"full","scale_modes":["none","none","none"],
+  "reference_vertices":{"count":4,"values":[2,3,6,7]}}}]}],
+"scene":{"nodes":[
+ {"id":"BoxTunic","url":"/data/Test/Box%20Tunic/Box%20Tunic.dsf#BoxTunic","name":"BoxTunic","label":"Box Tunic","parent":"name://@selection","conform_target":"name://@selection",
+  "geometries":[{"id":"BoxTunic-1","url":"/data/Test/Box%20Tunic/Box%20Tunic.dsf#BoxTunic-1"}]},
+ {"id":"hip","url":"/data/Test/Box%20Tunic/Box%20Tunic.dsf#hip","parent":"#BoxTunic","conform_target":"name://@selection#hip"},
+ {"id":"head","url":"/data/Test/Box%20Tunic/Box%20Tunic.dsf#head","parent":"#hip","conform_target":"name://@selection#head"},
+ {"id":"ButtonFollow-1","url":"#ButtonFollow","name":"ButtonFollow","label":"Button Follow","parent":"#BoxTunic",
+  "translation":[{"id":"x","current_value":0},{"id":"y","current_value":30},{"id":"z","current_value":11.5}],
+  "extra":[{"type":"studio/node/rigid_follow"},{"type":"studio_node_channels","version":4,"channels":[{"channel":{"id":"Follow Target","type":"node","node":"#BoxTunic"}}]}]},
+ {"id":"BoxButton-1","url":"/data/Test/Box%20Button/Box%20Button.dsf#BoxButton","name":"BoxButton","label":"Box Button","parent":"#ButtonFollow-1",
+  "translation":[{"id":"x","current_value":0},{"id":"y","current_value":-30},{"id":"z","current_value":-11.5}],
+  "geometries":[{"id":"BoxButton-g","url":"/data/Test/Box%20Button/Box%20Button.dsf#BoxButton-1"}]}],
+"materials":[{"id":"Tunic","url":"/data/Test/Box%20Tunic/Box%20Tunic.dsf#Tunic","geometry":"#BoxTunic-1","groups":["Tunic"]},
+ {"id":"Button","url":"/data/Test/Box%20Button/Box%20Button.dsf#Button","geometry":"#BoxButton-g","groups":["Button"]}]}})");
+
+  auto figure = fv::Figure::load(std::make_shared<fv::dson::Store>(std::make_shared<fv::dson::Library>(std::vector<std::filesystem::path>{library, extra})),
+                                 "People/Test/Box Figure.duf", {});
+  figure->settle();
+  const char* const    kTunic = "People/Test/Clothing/Buttoned Box Tunic.duf";
+  const fv::WearResult worn   = figure->commitWear(figure->prepareWear(kTunic, 1), kTunic);
+  figure->settle();
+  (void)figure->pump();
+  ASSERT_EQ(figure->loaded.follows.size(), 1u);
+  const fv::dson::RigidFollow follow = figure->loaded.follows.front();
+  EXPECT_EQ(follow.refs, (std::vector<uint32_t>{2, 3, 6, 7}));
+  const fv::SceneGraph& scene = figure->loaded.scene;
+  EXPECT_EQ(scene.meshes[size_t(follow.mesh)].name, "Box Tunic");
+
+  // the button where it was made, and the head that carries the tunic
+  const std::vector<int> nodeOf = fv::physics::nodeOfMesh(scene);
+  int                    button = -1;
+  for(size_t m = 0; m < scene.meshes.size(); m++)
+    if(scene.meshes[m].name == "Box Button" && scene.meshes[m].geo)
+      button = int(m);
+  ASSERT_GE(button, 0);
+  const auto placed = [&] {
+    std::vector<fv::Vec3> out;
+    const fv::Mat4        world = scene.world(nodeOf[size_t(button)]);
+    const auto&           cage  = scene.meshes[size_t(button)].geo->cagePositions;
+    for(size_t v = 0; v < cage.size() / 3; v++)
+      out.push_back(world.transformPoint({cage[v * 3], cage[v * 3 + 1], cage[v * 3 + 2]}));
+    return out;
+  };
+  const std::vector<fv::Vec3> made = placed();
+  ASSERT_EQ(made.size(), 4u);
+  // the figure's Stretch, which the scene sets, reshapes the tunic: the button moved with its front,
+  // its centre still half a centimetre off the front's (as made: 30 up, at z 11.5 over 11)
+  {
+    const std::vector<float> cage  = figure->morphs->morphedCage(follow.mesh);
+    const fv::Mat4           world = scene.world(nodeOf[size_t(follow.mesh)]);
+    fv::Vec3                 front, centre;
+    for(const uint32_t v : follow.refs)
+      front = front + world.transformPoint({cage[v * 3], cage[v * 3 + 1], cage[v * 3 + 2]}) * 0.25;
+    for(const fv::Vec3& p : made)
+      centre = centre + p * 0.25;
+    EXPECT_NEAR(fv::length(centre - front), 0.5, 1e-4);
+  }
+  const int head = figure->loaded.rigs[size_t(figure->loaded.mainRig)].byId("head");
+  ASSERT_GE(head, 0);
+  const fv::Mat4 headRest = scene.world(head);
+
+  figure->pose->setMany({{"head", fv::pose::ChannelKind::eRotation, "x", 40}});
+  // carried, not posed: what answers a pose (the cloth, the collider) needn't look again for it
+  const fv::Figure::Changes changes = figure->pump();
+  EXPECT_EQ(changes.carried.count(follow.node), 1u);
+  EXPECT_EQ(changes.nodes.count(follow.node), 0u);
+  const fv::Mat4              carry = scene.world(head) * fv::inverse(headRest);
+  const std::vector<fv::Vec3> turned = placed();
+  for(size_t v = 0; v < made.size(); v++)
+  {
+    const fv::Vec3 want = carry.transformPoint(made[v]);
+    EXPECT_NEAR(turned[v].x, want.x, 1e-4) << v;
+    EXPECT_NEAR(turned[v].y, want.y, 1e-4) << v;
+    EXPECT_NEAR(turned[v].z, want.z, 1e-4) << v;
+  }
+  EXPECT_GT(fv::length(turned[0] - made[0]), 5);  // it went somewhere
+
+  figure->pose->setMany({{"head", fv::pose::ChannelKind::eRotation, "x", 0}});
+  (void)figure->pump();
+  const std::vector<fv::Vec3> back = placed();
+  for(size_t v = 0; v < made.size(); v++)
+    EXPECT_LT(fv::length(back[v] - made[v]), 1e-6) << v;
+
+  ASSERT_TRUE(figure->removeItem(worn.items.at(0)));
+  figure->settle();
+  (void)figure->pump();
+  EXPECT_TRUE(figure->loaded.follows.empty());
+  std::filesystem::remove_all(extra);
 }

@@ -11,6 +11,7 @@
 #include <figure/jobs/pool.hpp>
 #include <figure/morph/shape_sliders.hpp>
 #include <figure/pose/retarget.hpp>
+#include <figure/wardrobe/rigid_follow.hpp>
 
 namespace fv {
 
@@ -546,7 +547,104 @@ Figure::Changes Figure::drain()
       c.rebound = pose->rebind();
   }
   c.meshes = morphs->takeChanges();
+  followRigid(c);
   return c;
+}
+
+void Figure::followRigid(Changes& c)
+{
+  SceneGraph& scene = loaded.scene;
+  // those taken off with their items, or whose mesh went
+  const auto gone = [&](const dson::RigidFollow& f) {
+    return f.node < 0 || size_t(f.node) >= scene.nodes.size() || takenOff(scene, f.node) || f.mesh < 0 || size_t(f.mesh) >= scene.meshes.size()
+           || !scene.meshes[size_t(f.mesh)].geo;
+  };
+  if(std::any_of(loaded.follows.begin(), loaded.follows.end(), gone))
+  {
+    loaded.follows.erase(std::remove_if(loaded.follows.begin(), loaded.follows.end(), gone), loaded.follows.end());
+    m_followState.clear();
+  }
+  if(loaded.follows.empty())
+    return;
+  // new ones (a wear) start from where they are made; a pose or a rebind moves them all, a mesh's
+  // change the ones on it
+  const bool    fresh = m_followState.size() != loaded.follows.size();
+  std::set<int> reshaped;
+  for(const morph::MeshChange& m : c.meshes)
+    reshaped.insert(m.mesh);
+  const bool posed = fresh || !c.nodes.empty() || !c.rebound.empty();
+  if(!posed && std::none_of(loaded.follows.begin(), loaded.follows.end(), [&](const dson::RigidFollow& f) { return reshaped.count(f.mesh) > 0; }))
+    return;
+  timing::Scope t("rigid follows", 1);
+  if(fresh)
+    m_followState.assign(loaded.follows.size(), {});
+  const std::vector<Mat4> worlds = scene.worlds();
+  const std::vector<int>  nodeOf = physics::nodeOfMesh(scene);
+  std::map<int, physics::SkinPose> poses;
+  std::vector<float>               scratch;
+  for(size_t i = 0; i < loaded.follows.size(); i++)
+  {
+    const dson::RigidFollow& f    = loaded.follows[i];
+    FollowState&             s    = m_followState[i];
+    const Mesh&              mesh = scene.meshes[size_t(f.mesh)];
+    const int                drawn = nodeOf[size_t(f.mesh)];
+    if(drawn < 0 || mesh.geo->cagePositions.size() < size_t(mesh.geo->dsonVertexCount) * 3)
+      continue;
+    const bool made = s.rest.empty();
+    if(made)
+    {
+      for(const uint32_t v : f.refs)
+        s.rest.insert(s.rest.end(), {mesh.geo->cagePositions[size_t(v) * 3], mesh.geo->cagePositions[size_t(v) * 3 + 1],
+                                     mesh.geo->cagePositions[size_t(v) * 3 + 2]});
+      // the reference vertices' own skin, a few rows of the mesh's
+      s.skinned = mesh.skinned() && mesh.cageSkin.start.size() == size_t(mesh.geo->dsonVertexCount) + 1;
+      if(s.skinned)
+      {
+        mesh::SkinInput rows;
+        rows.start.push_back(0);
+        rows.rootBone = mesh.cageSkin.rootBone;
+        rows.dualQuat = mesh.cageSkin.dualQuat;
+        for(const uint32_t v : f.refs)
+        {
+          for(int k = mesh.cageSkin.start[v]; k < mesh.cageSkin.start[v + 1]; k++)
+          {
+            rows.bone.push_back(mesh.cageSkin.bone[size_t(k)]);
+            rows.weight.push_back(mesh.cageSkin.weight[size_t(k)]);
+          }
+          rows.start.push_back(int32_t(rows.bone.size()));
+          if(mesh.cageSkin.dualQuatMap.size() == size_t(mesh.geo->dsonVertexCount))
+            rows.dualQuatMap.push_back(mesh.cageSkin.dualQuatMap[v]);
+        }
+        s.skin = physics::cageSkin(rows);
+      }
+    }
+    if(s.morphed.empty() || reshaped.count(f.mesh))
+    {
+      const std::span<const float> cage = morphs->morphedCageView(f.mesh, scratch);
+      if(cage.size() < size_t(mesh.geo->dsonVertexCount) * 3)
+        continue;
+      s.morphed.clear();
+      for(const uint32_t v : f.refs)
+        s.morphed.insert(s.morphed.end(), {cage[size_t(v) * 3], cage[size_t(v) * 3 + 1], cage[size_t(v) * 3 + 2]});
+    }
+    std::vector<float> now = s.morphed;
+    if(s.skinned)
+    {
+      auto pose = poses.find(f.mesh);
+      if(pose == poses.end())
+        pose = poses.emplace(f.mesh, physics::currentSkin(scene, worlds, nodeOf, f.mesh)).first;
+      now = physics::skinLocal(s.morphed, s.skin, pose->second);
+    }
+    const Mat4  world  = wardrobe::followWorld(worlds[size_t(drawn)], f.restInMesh, s.rest, now, f.turns);
+    Node&       node   = scene.nodes[size_t(f.node)];
+    const Mat4  local  = node.parent >= 0 ? inverse(worlds[size_t(node.parent)]) * world : world;
+    const Vec3  before = node.position;
+    const Quat  turned = node.quaternion;
+    wardrobe::setTransform(node, local);
+    const Quat& q = node.quaternion;
+    if(made || length(node.position - before) > 1e-6 || std::abs(q.x * turned.x + q.y * turned.y + q.z * turned.z + q.w * turned.w) < 1 - 1e-12)
+      c.carried.insert(f.node);
+  }
 }
 
 bool Figure::noteMorphs()

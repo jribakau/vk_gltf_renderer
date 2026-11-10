@@ -15,7 +15,7 @@ Mat4 RigidMove::matrix() const
   return compose(back, turn, {1, 1, 1});
 }
 
-std::optional<RigidMove> bestMove(const std::vector<Vec3>& from, const std::vector<Vec3>& to)
+std::optional<RigidMove> bestMove(const std::vector<Vec3>& from, const std::vector<Vec3>& to, double maxTurn)
 {
   const size_t n = std::min(from.size(), to.size());
   if(n == 0)
@@ -38,7 +38,7 @@ std::optional<RigidMove> bestMove(const std::vector<Vec3>& from, const std::vect
   }
   const Quat   q       = bodymap::bestTurn(a, b);
   const double degrees = 2 * std::acos(std::clamp(std::abs(q.w), 0.0, 1.0)) * 180 / std::numbers::pi;
-  if(degrees <= kRigidMaxTurn)
+  if(degrees <= maxTurn)
     m.turn = q;
   return m;
 }

@@ -126,6 +126,23 @@ struct ItemPart
   std::string defFile;
 };
 
+// A DAZ rigid follow node (wardrobe/rigid_follow.hpp): a group carried by a patch of another mesh.
+struct RigidFollow
+{
+  int node = -1;  // its group (into SceneGraph::nodes)
+  // the mesh it follows (into SceneGraph::meshes); -1 for the figure it is worn on (a Follow Target of
+  // name://@selection), which a wear binds to the body's mesh
+  int mesh = -1;
+  int item = -1;  // the worn item it is part of (into LoadResult::items), -1 without
+  // the cage vertices of that mesh it follows
+  std::vector<uint32_t> refs;
+  bool                  turns = true;  // rotation_mode other than "none"
+  // its world at rest in the followed mesh's frame: inverse(mesh world) · node world
+  Mat4 restInMesh;
+  // its world at rest, for a follow of the figure worn on, whose mesh a wear finds
+  Mat4 restWorld;
+};
+
 struct LoadResult
 {
   SceneGraph  scene;
@@ -137,6 +154,7 @@ struct LoadResult
   int               mainGroup = -1;
   std::vector<Item>     items;
   std::vector<ItemPart> parts;
+  std::vector<RigidFollow> follows;
   MorphContext             morphs;
   std::vector<std::string> warnings;
   // library files this load referenced and aren't installed

@@ -766,6 +766,7 @@ void FvHost::onUpdate()
       const auto drainInto = [&] {
         fv::Figure::Changes more = f.fig->drain();
         changes.nodes.insert(more.nodes.begin(), more.nodes.end());
+        changes.carried.insert(more.carried.begin(), more.carried.end());
         changes.meshes.insert(changes.meshes.end(), std::make_move_iterator(more.meshes.begin()), std::make_move_iterator(more.meshes.end()));
         changes.rebound.insert(changes.rebound.end(), more.rebound.begin(), more.rebound.end());
       };
@@ -847,6 +848,8 @@ void FvHost::onUpdate()
       if(f.contact ? posedOrShaped
                    : (!changes.nodes.empty() || std::any_of(changes.meshes.begin(), changes.meshes.end(), [](const fv::morph::MeshChange& m) { return !m.caughtUp; })))
         f.contactRev++;
+      // the nodes posed, and those carried by what they ride on (a dress's buttons)
+      changes.nodes.insert(changes.carried.begin(), changes.carried.end());
       if(!changes.nodes.empty())
       {
         const auto t0 = std::chrono::steady_clock::now();

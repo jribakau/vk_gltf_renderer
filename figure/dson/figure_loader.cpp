@@ -170,6 +170,44 @@ const Json* extraChannel(const Json* node, std::string_view id)
   return nullptr;
 }
 
+// A DAZ Studio rigid follow node: the scene node it follows (its Follow Target, as written: "#id" or
+// name://@selection:), and its rigidity group's reference vertices and rotation mode, the scene node's
+// own over its definition's.
+struct FollowNode
+{
+  std::string           target;
+  std::vector<uint32_t> refs;
+  bool                  turns = true;
+};
+
+std::optional<FollowNode> followNode(const Json& node, const Json* def)
+{
+  if(!hasExtraType(node, "studio/node/rigid_follow") && !(def && hasExtraType(*def, "studio/node/rigid_follow")))
+    return std::nullopt;
+  FollowNode  out;
+  const Json* target = extraChannel(&node, "Follow Target");
+  if(!target)
+    target = extraChannel(def, "Follow Target");
+  out.target         = firstString({{target, "node"}, {target, "current_value"}});
+  const Json* group  = nullptr;
+  for(const Json* src : {&node, def})
+    if(const Json* extra = get(src, "extra"); !group && extra && extra->is_array())
+      for(const Json& e : *extra)
+        if(const Json* g = get(&e, "rigidity_group"); g && g->is_object())
+        {
+          group = g;
+          break;
+        }
+  if(const Json* values = get(get(group, "reference_vertices"), "values"); values && values->is_array())
+    for(const Json& v : *values)
+      if(v.is_number_integer() && v.get<int64_t>() >= 0)
+        out.refs.push_back(uint32_t(v.get<int64_t>()));
+  out.turns = getString(group, "rotation_mode", "full") != "none";
+  if(out.target.empty() || out.refs.empty())
+    return std::nullopt;
+  return out;
+}
+
 // A DAZ Studio node instance: another scene node drawn again where the instance stands (its
 // transform takes the target's place), with that node's children when its Instance Mode is "Node
 // and Children" (0) rather than "Single Node" (1).
@@ -878,6 +916,12 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
   std::vector<NodeInstance>                  nodeInstances;
   std::unordered_map<std::string, std::vector<std::string>> childrenOf;  // scene node -> its child nodes with groups
   std::unordered_map<std::string, std::vector<int>>         meshNodesOf;  // scene node -> its mesh nodes
+  struct PendingFollow
+  {
+    int        group, item;
+    FollowNode follow;
+  };
+  std::vector<PendingFollow> pendingFollows;  // rigid follow nodes, their targets found once every mesh is built
   auto newItem = [&](const Json& node) {
     Item item;
     item.key   = options.attach ? options.attach->key + (out.items.empty() ? std::string() : "." + std::to_string(out.items.size()))
@@ -995,6 +1039,8 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     }
     instanceGroups[id] = group;
     childrenOf[parentId].push_back(id);
+    if(auto follow = followNode(node, def))
+      pendingFollows.push_back({group, item, std::move(*follow)});
     const Json* geos   = get(&node, "geometries");
     if(!geos || !geos->is_array() || geos->empty())
     {
@@ -1548,6 +1594,42 @@ LoadResult loadDson(Store& store, const std::string& rel, const LoadOptions& opt
     m.boneInverses.clear();
     for(int b : m.bones)
       m.boneInverses.push_back(inverse(worlds[b]));
+  }
+
+  // rigid follow nodes: the mesh each follows, and where it stands at rest in that mesh's frame
+  for(PendingFollow& p : pendingFollows)
+  {
+    RigidFollow f;
+    f.node      = p.group;
+    f.item      = p.item;
+    f.refs      = std::move(p.follow.refs);
+    f.turns     = p.follow.turns;
+    f.restWorld = worlds[size_t(p.group)];
+    const std::string& name = scene.nodes[size_t(p.group)].name;
+    if(p.follow.target.rfind("name://@selection", 0) == 0)
+    {
+      // the figure it is worn on, which only a wear has
+      if(options.attach)
+        out.follows.push_back(std::move(f));
+      continue;
+    }
+    const std::string target = decodeUri(lastSegment(p.follow.target, '#'));
+    const auto        drawn  = meshNodesOf.find(target);
+    if(drawn == meshNodesOf.end() || drawn->second.empty())
+    {
+      warn(name + " follows " + target + ", which isn't drawn here, so it stays where it was made");
+      continue;
+    }
+    const int   meshNode = drawn->second[0];
+    const Mesh& followed = scene.meshes[size_t(scene.nodes[size_t(meshNode)].mesh)];
+    if(std::any_of(f.refs.begin(), f.refs.end(), [&](uint32_t v) { return int(v) >= followed.geo->dsonVertexCount; }))
+    {
+      warn(name + " follows vertices " + followed.name + " doesn't have, so it stays where it was made");
+      continue;
+    }
+    f.mesh       = scene.nodes[size_t(meshNode)].mesh;
+    f.restInMesh = inverse(worlds[size_t(meshNode)]) * f.restWorld;
+    out.follows.push_back(std::move(f));
   }
 
   // DAZ Studio node instances: what the target draws, drawn again under the instance's group. The
