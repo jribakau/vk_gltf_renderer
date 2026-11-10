@@ -412,9 +412,10 @@ rotation moves the environment. See the `calculateMotionVector` overload comment
 - **A DLSS frame's samples share its jitter.** `ptSamplesDlss` (1 by default) is how many samples
   a DLSS frame traces, all through the frame's one jittered position: the guides, written from the
   last sample, describe that point, so the extra samples take noise out of its light only. Under
-  Ray Reconstruction a still's frame of 1 sample looked no better than a moving one; the app sends
-  more while a still refines with DLSS (Render › Refine with DLSS › Samples a frame, 4 by default)
-  and 1 when the view moves, with no reset, so RR keeps its history. They count toward Max Samples:
+  Ray Reconstruction a still's frame of 1 sample looked no better than a moving one; a host sends
+  more while a still refines under DLSS and 1 when the view moves, with no reset, so RR keeps its
+  history (the app did, as its DLSS refine, until that was taken out on 2026-11-10: it showed no
+  gain to the eye over accumulation, and nothing sends more than 1 now). They count toward Max Samples:
   128 at 4 a frame end after 32 frames. The renderer traces them only once the view has held still
   for 250 ms, and only as many as fit 33 ms of path trace at the last measured cost of a sample
   (`sample_schedule::dlssFrameSamples`): at first they were traced from the app's word alone, so
