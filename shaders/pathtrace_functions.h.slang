@@ -2738,6 +2738,14 @@ struct PathTracerState
 #if WIREFRAME
   float firstHitWireframeAlpha = 0.0;
 #endif
+#if USE_RADIANCE_CACHE
+  // An update path of the bounce cache (radiance_cache.h.slang): the slot of the cell it feeds (-1: its
+  // vertex is still to come; -2: it had one that found no slot), and its throughput and radiance at
+  // that vertex, which its radiance at the end is measured against
+  int    cacheSlot       = -1;
+  float3 cacheThroughput = float3(0.0F);
+  float3 cacheRadiance   = float3(0.0F);
+#endif
 };
 
 struct BounceScratch

@@ -190,6 +190,7 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
 #endif
 
   m_handoff.init(resources);
+  m_radianceCache.init(resources);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -503,6 +504,7 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
   m_rrStill->registerParameters(settings);
 #endif
   m_handoff.registerParameters(settings);
+  m_radianceCache.registerParameters(settings, resetAccumulation);
 }
 
 
@@ -542,6 +544,7 @@ void PathTracer::onDetach(Resources& resources)
   m_dlss->deinit(resources);
 #endif
   m_handoff.deinit(resources);
+  m_radianceCache.deinit(resources);
   vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
   vkDestroyShaderModule(m_device, m_shaderModule, nullptr);
   vkDestroyPipeline(m_device, m_rtxPipeline, nullptr);
@@ -569,6 +572,7 @@ void PathTracer::onSceneInvalidated(Resources& /*resources*/)
 {
   // a variant that failed to build off the frame may build for the next scene (it may have run out of memory)
   m_failedVariant.reset();
+  m_radianceCache.clear();  // the cells hold the outgoing scene's light
 #if defined(USE_DLSS)
   m_dlss->notifyReset();
 #endif
@@ -734,6 +738,9 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   if(resources.frameCount == 0 && pushConst.cameraMedium != nullptr)
     probeCameraMedium(cmd, pushConst);
 
+  // The bounce cache: a new table cleared, a change to the scene noted (every traced frame, a still's too)
+  m_radianceCache.cmdBeforeTrace(cmd, resources);
+
   // Last frame's light records (ePtLightReuse) are read and this frame's written by the trace below
   if(pushConst.lightReservoirs != nullptr)
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
@@ -745,6 +752,10 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
         m_profiler->cmdFrameSection(cmd, m_renderTechnique == RenderTechnique::RayQuery ? kTimerPathTraceRq : kTimerPathTraceRtx);
     dispatchRays(cmd, renderingSize);
   }
+
+  // The bounce cache: what this frame's paths fed it, folded in for the next frame's to read
+  if(m_radianceCache.reads((pushConst.flags & shaderio::ePtUseDlss) != 0))
+    m_radianceCache.cmdResolve(cmd, m_profiler);
 
   // The Time view's sums, for the host once the frame is done (preparePixelTime)
   if(m_timeSlots > 0)

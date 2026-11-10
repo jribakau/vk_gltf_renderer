@@ -542,7 +542,8 @@ private:
   std::optional<nvvkgltf::SceneFeatureSet> drawableFeatures();
   rs::VulkanGpuBackend::Info retainedBackendInfo();
   void destroyResources();
-  void resetFrame();
+  // Restarts the accumulation. `sceneChanged`: for something other than the camera (Resources::sceneChanges)
+  void resetFrame(bool sceneChanged = true);
   void silhouette(VkCommandBuffer cmd);
   bool tonemap(VkCommandBuffer cmd);
   bool runTonemapPass(VkCommandBuffer cmd);

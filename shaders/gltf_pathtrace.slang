@@ -73,6 +73,7 @@ static bool doDebug = false;
 #include "common.h.slang"
 #include "aerial_perspective.h.slang"
 #include "contribution_roulette.h.slang"
+#include "radiance_cache.h.slang"
 #include "skin_slab.h.slang"
 #include "skin_spread.h.slang"
 #include "aperture.h.slang"
@@ -219,6 +220,58 @@ static uint g_timeSlot = kPixelTimeUnset;  // the Time view: what the pixel's fi
 #if USE_LIGHT_RIS
 static int2 g_reusePixel       = int2(0);  // ePtLightReuse: the pixel whose record its first hit reads and writes...
 static bool g_reuseFirstSample = true;     // ...its frame's first sample, which reads last frame's record (the rest, this frame's)
+#endif
+
+#if USE_RADIANCE_CACHE
+// The bounce cache (radiance_cache.h.slang), set per pixel in processPixel: the frame's paths read it
+// (a DLSS frame the host gave a table), and this pixel's path feeds it
+static bool g_cacheOn     = false;
+static bool g_cacheUpdate = false;
+
+// The slot of `key`'s cell, taking a free one of its bucket where it has none yet; -1: the bucket is full
+int radianceCacheClaim(uint* table, RadianceCacheKey key)
+{
+  for(int i = 0; i < RC_BUCKET; i++)
+  {
+    const uint slot = key.bucket + uint(i);
+    const uint word = slot * uint(RC_WORDS) + uint(RC_KEY);
+    uint       seen = table[word];
+    if(seen == 0u)
+      InterlockedCompareExchange(table[word], 0u, key.fingerprint, seen);  // another path may take it first
+    if(seen == 0u || seen == key.fingerprint)
+      return int(slot);
+  }
+  return -1;
+}
+
+// `value` added to the float a word of the table holds, while other paths add to it. Given up after
+// sixteen of them got in first, which would take as many paths ending on one cell at the same instant.
+void radianceCacheAddFloat(uint* table, uint word, float value)
+{
+  if(value == 0.0F)
+    return;
+  uint seen = table[word];
+  for(int i = 0; i < 16; i++)
+  {
+    uint before;
+    InterlockedCompareExchange(table[word], seen, asuint(asfloat(seen) + value), before);
+    if(before == seen)
+      return;
+    seen = before;
+  }
+}
+
+// An update path's sample, into its cell's sums of the frame
+void radianceCacheAdd(uint* table, int slot, RadianceCacheSample s)
+{
+  const uint base = uint(slot) * uint(RC_WORDS);
+  [ForceUnroll]
+  for(int c = 0; c < 3; c++)
+  {
+    radianceCacheAddFloat(table, base + uint(RC_SUM_LIGHT + c), s.light[c]);
+    radianceCacheAddFloat(table, base + uint(RC_SUM_WEIGHT + c), s.weight[c]);
+  }
+}
 #endif
 
 void beginSobolSample(uint index)
@@ -646,6 +699,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     bool simplifyScatter = hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin)
                            || (hasFlag(pushConst.flags, PathtracerFlags::ePtSimplifyScatter) && !ptIsInside(pt)
                                && pt.pathRoughness >= SCATTER_SIMPLIFY_ROUGHNESS);
+
+#if USE_RADIANCE_CACHE
+    // The bounce cache: only a vertex reached through no medium, as the segment came (the rules below
+    // may leave one: a walk's exit is the walk's own estimate, not a place to stop)
+    bool cacheSurface = g_cacheOn && !ptIsInside(pt) && !pt.inWater && !hitWater && pt.pathRoughness >= RC_PATH_ROUGHNESS;
+#endif
 
     // Compute the ray-cone footprint at the hit point which is used to compute the texture-LOD gradient
     float worldFoot = rayConeWorldFootprint(pt.cone, payload.hitT, hit.geonrm, -ray.Direction);
@@ -1122,6 +1181,60 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // is 4% of itself
       addRadiance(pt, pt.throughput * pbrMat.baseColor, pt.prefixIndirect);
       return PathStepResult.eBreak;
+    }
+#endif
+
+#if USE_RADIANCE_CACHE
+    // The bounce cache (radiance_cache.h.slang). The path has scattered roughly and this vertex is a
+    // surface that lets no light through: what it sends back, its own emission aside (added above, with
+    // its MIS weight), is in the cell here once enough paths have fed it, and the path ends with that in
+    // place of its light sample and every bounce to come. An update path instead marks its first such
+    // vertex and goes on, to add what it gathers from here to the cell (pathTrace); at its later ones it
+    // reads the cache as the others do, so a cell's light comes to hold every bounce after it.
+#if GLTF_USE_HAIR
+    if(materialIndex >= 0 && materials[materialIndex].hairFactor > 0.0F)
+      cacheSurface = false;
+#endif
+    if(cacheSurface && pbrMat.transmission <= MIN_TRANSMISSION)
+    {
+      const float3 eye  = frameInfo->viewInv[3].xyz;
+      const float  cell = frameInfo->radianceCacheCell;
+      const float  size = radianceCacheCellSize(radianceCacheLevel(length(hit.pos - eye), cell), cell);
+      if(radianceCacheFarEnough(payload.hitT, size, rand(seed)))
+      {
+        uint*      table = frameInfo->radianceCache;
+        const uint slots = uint(frameInfo->radianceCacheSlots);
+        if(g_cacheUpdate && pt.cacheSlot == -1)
+        {
+          const int slot     = radianceCacheClaim(table, radianceCacheKey(hit.pos, hit.geonrm, eye, cell, slots));
+          pt.cacheSlot       = slot >= 0 ? slot : -2;
+          pt.cacheThroughput = pt.throughput;
+          pt.cacheRadiance   = pt.radiance;
+        }
+        else
+        {
+          // the cell of a point up to half a cell off, so the cells' edges do not show; where that one
+          // is empty (past a wall's end), this point's own
+          const float3 near = radianceCacheJitter(hit.pos, radianceCacheFace(hit.geonrm), size, float2(rand(seed), rand(seed)));
+          int          slot = radianceCacheFind(table, radianceCacheKey(near, hit.geonrm, eye, cell, slots));
+          RadianceCacheCell held;
+          held.light  = float3(0.0F);
+          held.weight = float3(0.0F);
+          if(slot >= 0)
+            held = radianceCacheRead(table, slot);
+          if(!radianceCacheValid(held))
+          {
+            slot = radianceCacheFind(table, radianceCacheKey(hit.pos, hit.geonrm, eye, cell, slots));
+            if(slot >= 0)
+              held = radianceCacheRead(table, slot);
+          }
+          if(radianceCacheValid(held))
+          {
+            addRadiance(pt, pt.throughput * radianceCacheRadiance(held), true);
+            return PathStepResult.eBreak;
+          }
+        }
+      }
     }
 #endif
 
@@ -1973,6 +2086,17 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       pt.surfaceDepth++;
   }
 
+#if USE_RADIANCE_CACHE
+  // An update path of the bounce cache: what it gathered after its vertex, and what it arrived there
+  // with (before the air of the camera's segment below, which is not the vertex's)
+  if(pt.cacheSlot >= 0)
+  {
+    const RadianceCacheSample cached = radianceCacheSample(pt.radiance - pt.cacheRadiance, pt.cacheThroughput);
+    if(cached.valid)
+      radianceCacheAdd(pushConst.frameInfo->radianceCache, pt.cacheSlot, cached);
+  }
+#endif
+
 #if WIREFRAME
   if(pt.firstHitWireframeAlpha > 0.0)
     pt.radiance = lerp(pt.radiance, float3(0.9, 0.0, 0.0), pt.firstHitWireframeAlpha);
@@ -2242,6 +2366,15 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     g_reuseFirstSample = true;
     pushConst.lightReservoirs[lightReuseSlot(g_reusePixel, hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuseParity)) + 1] = uint4(0u);
   }
+#endif
+
+#if USE_RADIANCE_CACHE
+  // The bounce cache, on a DLSS frame the host gave a table for (a frame after the setting went off has
+  // none), and on an accumulation's only for the debug setting that measures it; one pixel in sixteen
+  // feeds it
+  g_cacheOn = (hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) || pushConst.frameInfo->radianceCacheStill != 0)
+              && pushConst.frameInfo->radianceCache != nullptr && pushConst.frameInfo->radianceCacheSlots > 0;
+  g_cacheUpdate = g_cacheOn && radianceCacheUpdatePixel(int(samplePos.x), int(samplePos.y), pushConst.frameInfo->radianceCacheFrame);
 #endif
 
   // Initialize the random number

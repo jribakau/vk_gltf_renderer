@@ -451,6 +451,9 @@ struct Resources
   AnimationControl animationControl{};
 
   int frameCount{0};
+  // Restarts of the accumulation for anything but the camera (GltfRenderer::resetFrame): an edit, a light, a
+  // setting. The moving view's bounce cache lets its light go faster after one (RadianceCache).
+  uint64_t sceneChanges{0};
 
   // The adaptive stop found all but a few of this accumulation's pixels done (the path tracer sets it,
   // and clears it as an accumulation starts)

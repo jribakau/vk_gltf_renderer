@@ -369,6 +369,17 @@ struct SceneFrameInfo
   // by the view's angle and its diffuse by the exit's Fresnel toward the light (skin_albedo.h.slang); 0
   // the map's Lambertian, as before. (Appended, per the note above.)
   int skinView = 1;
+  // The moving view's bounce cache (USE_RADIANCE_CACHE, radiance_cache.h.slang): its table's slots (a
+  // power of two), where it is (null: the frame has none), the width of the cells nearest the eye in
+  // metres, and the frame's number, which says which pixels feed it. (Appended, per the note above; the
+  // count before the pointer keeps it 8-byte aligned.)
+  int   radianceCacheSlots = 0;
+  uint* radianceCache;
+  float radianceCacheCell  = 0.04F;
+  int   radianceCacheFrame = 0;
+  // ptRadianceCacheStill (debug): the frames of an accumulation read and feed the cache too, so its bias
+  // can be measured on a converged image. (Appended, per the note above.)
+  int radianceCacheStill = 0;
 };
 
 enum PathtracerFlags
@@ -489,6 +500,15 @@ struct DenoiserHandoffPushConstant
 {
   float weight = 0.0F;      // Share of the second image (the hand-off: the denoised one, handoffWeight)
   float limit  = 65504.0F;  // Largest magnitude written: a half float's for an RGBA16F output
+};
+
+// The bounce cache's pass after a frame (radiance_cache_resolve.slang): each cell's sums of the frame
+// folded into what it keeps, at most `maxWeight` of throughput received
+struct RadianceCacheResolvePushConstant
+{
+  uint* table;
+  uint  slots     = 0;
+  float maxWeight = 0.0F;
 };
 
 struct SilhouettePushConstant

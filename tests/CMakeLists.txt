@@ -357,13 +357,14 @@ set_target_properties(${TEST_NAME} PROPERTIES
 
 # Shader code compiled as C++ (nvshaders' BSDF, the aperture sampler, the light pick and its resampling, the ground, the thin scatter lobe, a
 # woven cutout, metallic flakes, the sky's clouds, a curved mirror's image, what a skin map means to its walk, the vertex streams' packed
-# normals and tangents, the Display views' colours, the roulette by contribution): its own executable, since the BSDF
+# normals and tangents, the Display views' colours, the roulette by contribution, the bounce cache): its own executable, since the BSDF
 # header needs GLM's swizzles
 set(BSDF_TEST_NAME ${PROJECT_NAME}_bsdf_tests)
 add_executable(${BSDF_TEST_NAME} test_bsdf_lobes.cpp test_aperture.cpp test_light_pick.cpp test_light_ris.cpp test_sobol.cpp test_ground.cpp test_walk_guide.cpp
                test_thin_scatter.cpp test_hair_bsdf.cpp test_hdr_output.cpp test_woven_opacity.cpp test_flake_noise.cpp
                test_sky_clouds.cpp test_mirror_image.cpp test_skin_albedo.cpp test_haze.cpp test_bloom.cpp
-               test_local_exposure.cpp test_unit_vector_pack.cpp test_debug_colors.cpp test_contribution_roulette.cpp)
+               test_local_exposure.cpp test_unit_vector_pack.cpp test_debug_colors.cpp test_contribution_roulette.cpp
+               test_radiance_cache.cpp)
 target_link_libraries(${BSDF_TEST_NAME} PRIVATE GTest::gtest GTest::gtest_main glm)
 target_include_directories(${BSDF_TEST_NAME} PRIVATE ${NVSHADERS_DIR})
 gtest_discover_tests(${BSDF_TEST_NAME})

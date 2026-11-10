@@ -1068,7 +1068,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     resetFrame();
   }
   if(updateCloudView(cmd))
-    resetFrame();  // the sky the still is of changed
+    resetFrame(/*sceneChanged=*/false);  // the sky the still is of changed: what the camera sees of it, not its light
   refreshSampleTargets();                    // --outputSamples: the stops this frame may end on
   bool frameChanged = updateFrameCounter();  // Check if the frame counter has changed
   // A shader variant built off the frame goes in only when a frame draws: one draws for it even with
@@ -1159,6 +1159,13 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.pixelTimeSlots                       = pixelTime.slots;
     finfo.pixelTimeScale                       = pixelTime.scale;
     finfo.pixelTimeCount = std::clamp(m_resources.settings.pixelTimeCount, shaderio::kPixelTimeCountClock, shaderio::kPixelTimeCountShadowRays);
+    // the moving view's bounce cache: where its table is (null without one), for the frames DLSS draws
+    const RadianceCache::Frame radianceCache = m_pathTracer.prepareRadianceCache(m_resources);
+    finfo.radianceCache                      = radianceCache.table;
+    finfo.radianceCacheSlots                 = radianceCache.slots;
+    finfo.radianceCacheCell                  = radianceCache.cell;
+    finfo.radianceCacheFrame                 = radianceCache.frame;
+    finfo.radianceCacheStill                 = radianceCache.still ? 1 : 0;
     // The clouds where the camera looks, while the view image holds the clouds of the moment: it
     // looks where it was baked, which the camera may since have turned from (updateCloudView).
     if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.viewCurrent())
@@ -1759,10 +1766,12 @@ bool GltfRenderer::compileShaders()
 
 //--------------------------------------------------------------------------------------------------
 // Reset the frame counter
-void GltfRenderer::resetFrame()
+void GltfRenderer::resetFrame(bool sceneChanged)
 {
   m_resources.frameCount = -1;
   m_framesSinceChange    = 0;
+  if(sceneChanged)
+    m_resources.sceneChanges++;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1780,7 +1789,7 @@ bool GltfRenderer::updateFrameCounter()
 
   if(ref_camera != currentCamera)
   {
-    resetFrame();
+    resetFrame(/*sceneChanged=*/false);
     ref_camera = currentCamera;
   }
 

@@ -162,6 +162,7 @@ src/
 ├── rr_still_denoiser.cpp/hpp   # DLSS-RR as the still's denoiser (its own NGX feature, averaged guides)
 ├── denoiser_schedule.hpp       # The still denoiser's auto-denoise interval, DLSS hand-off weight
 ├── denoiser_handoff.cpp/hpp    # DLSS hand-off: blend from DLSS-RR's moving image to the denoised still
+├── radiance_cache.cpp/hpp      # The moving view's bounce cache: its table on the device and the pass after each frame
 │
 ├── gizmo_transform_vk.cpp/hpp  # 3D translate/rotate/scale gizmo
 ├── gizmo_grid_vk.cpp/hpp       # Infinite procedural grid
@@ -199,6 +200,8 @@ shaders/
 ├── gizmo_visuals.slang         # Transform gizmo overlays
 ├── gizmo_visuals_shaderio.h.slang # Gizmo shader I/O
 ├── denoiser_handoff.slang      # DLSS hand-off blend of two images
+├── radiance_cache.h.slang      # The moving view's bounce cache: cells, keys, a path's sample, a cell's mean (unit-tested as C++)
+├── radiance_cache_resolve.slang # Folds a frame's samples into the cells' means and frees stale cells
 ├── hdr_output.slang            # HDR display output (tone map, overlays) and the EXR export's linear image
 ├── hdr_output.h.slang          # Its tone curve: Neutral with the display's peak, the others' shoulder opened (unit-tested)
 ├── hdr_output_io.h.slang       # Its bindings and push constant
@@ -947,6 +950,26 @@ carrying `EXT_lights_ies` (`UiInspector::renderNodeProperties` -> `renderIesEdit
 undoable via `EditNodeIesCommand`. The profile index itself is read-only (it refers to the loaded
 `.ies` file array). A node that also carries `KHR_lights_punctual` keeps only the IES light: the KHR
 attachment is ignored.
+
+## The moving view's bounce cache
+
+In a room most of a moving frame goes on light that has bounced many times. With `ptRadianceCache` on,
+the frames DLSS draws stop a path at the first surface it reaches after a rough bounce and take what that
+surface sends back from a cache kept in world space, a hash grid of cells that one path in sixteen
+feeds; the cache's own header, [`shaders/radiance_cache.h.slang`](../shaders/radiance_cache.h.slang),
+describes the scheme and holds its constants. What the camera sees directly, in a mirror or through
+glass is always traced, and a still never reads the cache: it is biased (a cell holds one colour, and
+follows a change over some frames).
+
+- The path tracer's part is compiled in only for the variant of DLSS's frames
+  (`USE_RADIANCE_CACHE`, `VariantKey::radianceCache`), so a still runs none of its code. A variant with
+  it and one without stand in for each other while the other builds off the frame.
+- [`src/radiance_cache.hpp`](../src/radiance_cache.hpp) owns the table and runs the pass after each
+  such frame. The frame's info carries the table's address (`SceneFrameInfo::radianceCache`); a null
+  address is a frame without a cache.
+- The cells keep their light across stills. A restart of the accumulation for anything but the camera
+  (`Resources::sceneChanges`, counted by `GltfRenderer::resetFrame`) cuts every cell's weight, so an
+  edited light or pose is taken up within some frames; replacing the scene empties the table.
 
 ## Environment Lighting
 

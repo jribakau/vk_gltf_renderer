@@ -43,6 +43,7 @@
 #include <nvvk/sbt_generator.hpp>
 #include <nvutils/profiler.hpp>
 #include "denoiser_handoff.hpp"
+#include "radiance_cache.hpp"
 #include "renderer_base.hpp"
 #include "pipeline_build_record.hpp"
 #include "sample_schedule.hpp"
@@ -112,6 +113,9 @@ public:
     float     scale = 0.0F;
   };
   PixelTimeFrame preparePixelTime(Resources& resources);
+  // The moving view's bounce cache (RadianceCache): where this frame finds its table, null without one.
+  // Before the frame info is written.
+  RadianceCache::Frame prepareRadianceCache(Resources& resources) { return m_radianceCache.prepare(resources, isDlssEnabled()); }
   // The latest frame's sums once it has come back, once
   std::optional<pixel_time::Reading> takePixelTimeReading() { return std::exchange(m_timeReading, std::nullopt); }
   // The view is on and the device has the clock
@@ -324,6 +328,9 @@ public:
     bool lightRis = false;
     // True when each pixel is timed (USE_PIXEL_TIME, the Time view: pixelTimeOn)
     bool pixelTime = false;
+    // True when the moving view's bounce cache is compiled in (USE_RADIANCE_CACHE: ptRadianceCache), for
+    // the frames DLSS draws
+    bool radianceCache = false;
 
     // Same SPIR-V: every shader macro matches. dlssTransparency is a pipeline specialization
     // constant, not a macro, so it is left out. dlss and dlssGuide are compared in every mode (they
@@ -333,6 +340,7 @@ public:
     {
       return wireframe == o.wireframe && visualize == o.visualize && omm == o.omm && optimal == o.optimal
              && dlss == o.dlss && dlssGuide == o.dlssGuide && lightRis == o.lightRis && pixelTime == o.pixelTime
+             && radianceCache == o.radianceCache
              && (optimal ? (features == o.features) : true);
     }
     bool operator==(const VariantKey& o) const { return sameShader(o) && dlssTransparency == o.dlssTransparency; }
@@ -439,6 +447,7 @@ public:
   // DLSS's image is no sample of the accumulation, and the hand-off blends from it
   bool                       m_dlssFrame0{false};
   DenoiserHandoff            m_handoff;
+  RadianceCache              m_radianceCache;  // the moving view's bounce cache (ptRadianceCache)
   // Whether DLSS renders this frame (dlssFrame(), set at the frame's start), whether it rendered the
   // one before, and whether this is the hand-off frame: the first the accumulation traces after DLSS's.
   // With dlssHandoffDelayMs DLSS renders on past frame 0 until the view has been still that long
@@ -531,6 +540,10 @@ public:
   {
     return dlssFrame ? (m_lightCandidatesDlss > 1 || m_lightReuseDlss) : (m_lightCandidates > 1 || m_lightReuse);
   }
+  // Whether the variant for DLSS's frames, or the still's, has the bounce cache compiled in
+  // (VariantKey::radianceCache): DLSS's alone while the setting is on (the still's too for the debug
+  // setting that measures the cache)
+  bool radianceCacheFor(bool dlssFrame) const { return m_radianceCache.reads(dlssFrame); }
   // DLSS rendered the last frame (every frame, frame 0, or the frames of the hand-off delay)
   bool dlssFrame() const { return m_dlssFrame; }
   // DLSS renders on while the hand-off delay runs: those frames are no part of the accumulation,

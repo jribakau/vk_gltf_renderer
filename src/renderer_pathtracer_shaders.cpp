@@ -1303,6 +1303,9 @@ PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) co
       lightRisFor(isDlssEnabled() && m_dlssShaderFrame),
       // the Time view's clock: never embedded, so the view's first switch compiles it, as Clay's does
       pixelTimeOn(resources),
+      // the bounce cache, in the variant of the frames DLSS draws alone: the still keeps the embedded
+      // shader and none of the cache's code, and a camera start or stop is a cached swap, as above
+      radianceCacheFor(isDlssEnabled() && m_dlssShaderFrame),
   };
 }
 
@@ -1321,6 +1324,7 @@ std::string PathTracer::VariantKey::shaderDiff(const VariantKey& to) const
   add("dlssGuide", dlssGuide, to.dlssGuide);
   add("lightRis", lightRis, to.lightRis);
   add("pixelTime", pixelTime, to.pixelTime);
+  add("radianceCache", radianceCache, to.radianceCache);
   if(optimal && to.optimal && features != to.features)
     diff += std::string(diff.empty() ? "" : ", ") + "features [" + features.toString() + "] -> [" + to.features.toString() + "]";
   return diff.empty() ? "no shader field changed" : diff;
@@ -1511,6 +1515,9 @@ std::vector<std::pair<std::string, std::string>> PathTracer::variantMacros(const
       // The Time view: each pixel timed by the device's clock (pixel_time.h.slang), whose capability
       // needs VK_KHR_shader_clock, so only where the device has it
       {"USE_PIXEL_TIME", std::to_string(key.pixelTime ? 1 : 0)},
+      // The moving view's bounce cache (radiance_cache.h.slang): compiled in only for the frames that
+      // read it, as code a frame never runs still costs it
+      {"USE_RADIANCE_CACHE", std::to_string(key.radianceCache ? 1 : 0)},
   };
   nvvkgltf::SceneFeatureSet guide;
   guide.set(nvvkgltf::SceneFeatureSet::eDlssGuide, key.dlssGuide);
@@ -1558,13 +1565,16 @@ bool PathTracer::buildsOffTheFrame(Resources& resources, const PendingCompileWor
   const VariantKey wanted = makeVariantKey(resources);
   // A variant with the light samples' resampling compiled in or out draws the image the other does (in
   // expectation: both are unbiased), so either stands in while the other builds as a job, with no frame
-  // waiting on a Slang compile and the driver's pipeline (seconds, tens of them cold)
+  // waiting on a Slang compile and the driver's pipeline (seconds, tens of them cold). So does one with
+  // the moving view's bounce cache compiled in or out: without the code a frame traces its paths whole,
+  // and with it but no table (the setting off, RadianceCache::prepare) it does the same.
   if(work.recompile && !work.stalePipeline && !(m_failedVariant && *m_failedVariant == wanted))
   {
     const auto otherRis = [&](const VariantKey& k) {
       VariantKey same = k;
-      same.lightRis   = wanted.lightRis;
-      return k.lightRis != wanted.lightRis && same == wanted;
+      same.lightRis      = wanted.lightRis;
+      same.radianceCache = wanted.radianceCache;
+      return (k.lightRis != wanted.lightRis || k.radianceCache != wanted.radianceCache) && same == wanted;
     };
     const bool rayQuery = m_renderTechnique == RenderTechnique::RayQuery;
     bool       standIn  = false;
@@ -1769,6 +1779,7 @@ void PathTracer::installBuiltVariant(Resources& resources)
   VariantKey sibling = job.key;
   sibling.dlss       = !job.key.dlss;
   sibling.lightRis   = lightRisFor(sibling.dlss);  // the still's settings, not DLSS's (or the other way)
+  sibling.radianceCache = radianceCacheFor(sibling.dlss);
   bool known         = false;
   {
     std::lock_guard<std::mutex> lock(m_compileMutex);
