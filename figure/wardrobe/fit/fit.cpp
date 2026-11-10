@@ -2,6 +2,9 @@
 
 #include <algorithm>
 
+#include <figure/garment/convert.hpp>
+#include <figure/garment/decode.hpp>
+#include <figure/garment/maps.hpp>
 #include <figure/mesh/normals.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
@@ -111,7 +114,8 @@ std::vector<std::optional<V3>> mountsFrom(const dson::Item& item, const std::vec
   return out;
 }
 
-std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const dson::Item& item, const std::string& rel, const FitFigure& figure)
+std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const dson::Item& item, const std::string& rel, const FitFigure& figure,
+                                 FitPath path)
 {
   const auto gens = generationsOf(w, item, rel, figure);
   if(!gens)
@@ -204,6 +208,22 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
         feet.emplace_back(limbId, *box);
     }
 
+  // the common layer: the source type's map, and the figure's body as a body of the reference's topology
+  std::shared_ptr<const bodymap::TypeMap> typeMap;
+  bodymap::Body                           onto;
+  if(path == FitPath::eCommon && cage && !w.sourceBase && !footwear && target == Generation::eG9)
+  {
+    typeMap = garment::typeMap(store, source, genderHint(rel));
+    if(typeMap && (typeMap->source.positions.size() != cage->positions.size() || typeMap->reference.positions.size() != body.cagePositions.size()))
+      typeMap = nullptr;
+    if(typeMap)
+    {
+      onto.positions = body.cagePositions;
+      onto.tris      = typeMap->reference.tris;
+      onto.outer     = typeMap->reference.outer;
+    }
+  }
+
   for(int meshIdx : item.meshes)
   {
     Mesh& m = w.scene.meshes[size_t(meshIdx)];
@@ -239,7 +259,20 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     // its file sets (its heel below the floor), not around the flat base a correction measures
     // against, which would bend it. A boot's shaft takes the correction, fading out onto the foot. It
     // is all still pushed out of the foot: a sole stays, lying off the foot's faces rather than behind them
-    if(region != FitRegion::eShoe)
+    bool layered = false;
+    if(typeMap && m.geo->cageLineStart.empty())
+    {
+      // bound to the base as it was made (a vertex's limb is the same moved or not)
+      const auto               filter    = limbFilter(baseLimbs, meshLimbs(w.scene, m));
+      const garment::Addresses addresses = garment::convert(m.geo->cagePositions, *typeMap, filter ? &*filter : nullptr);
+      if(std::any_of(addresses.hold.begin(), addresses.hold.end(), [](float h) { return h > 0; }))
+      {
+        positions     = garment::settle(positions, garment::decode(addresses, onto), addresses.hold, m.geo->dsonTris);
+        layered       = true;
+        detail.common = true;
+      }
+    }
+    if(region != FitRegion::eShoe && !layered)
     {
       if(base)
       {
@@ -264,7 +297,8 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   }
   detail.shaped = base.has_value();
   detail.note   = std::string(label(source)) + " outfit on " + label(target) + ", "
-                + (base                             ? std::string("refitted to its skeleton and shape")
+                + (detail.common                    ? std::string("fitted through the common layer")
+                   : base                           ? std::string("refitted to its skeleton and shape")
                    : source == Generation::eSkyrim ? std::string("refitted to its skeleton (no body came with it, so its shape wasn't matched)")
                                                     : std::string("refitted to its skeleton (the ") + label(source)
                                                           + " base figure isn't installed, so its shape wasn't matched)")

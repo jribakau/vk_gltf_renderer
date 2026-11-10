@@ -1551,7 +1551,8 @@ int main(int argc, char** argv)
       }
       else if(step.contains("clearance"))
       {
-        // {"clearance": rel[, "label": name]}: wears `rel` on the loaded figure and reports, per region of
+        // {"clearance": rel[, "label": name][, "fit": "common"]}: wears `rel` on the loaded figure (through
+        // the common layer where "fit" asks and it can, wardrobe::FitPath) and reports, per region of
         // each garment (its vertices' strongest bones, by the skeleton spec), how its clearance from the
         // body changed: against the body it was shaped around (its generation's base cage, or the body a
         // Skyrim outfit carries), as it was made, and against this figure's body, fitted and worn
@@ -1581,6 +1582,7 @@ int main(int argc, char** argv)
           std::string                           label, source, body;
           std::vector<std::vector<std::string>> regions;
           std::vector<std::vector<double>>      clearance;
+          std::vector<std::vector<float>>       cages;  // per mesh, its cage as made (empty: not measured)
         };
         std::vector<Made> made;
         for(const fv::dson::Item& item : w.items)
@@ -1610,6 +1612,7 @@ int main(int argc, char** argv)
             const bool skinned = me.geo && me.cageSkin.start.size() == me.geo->cagePositions.size() / 3 + 1;
             m.regions.push_back(cageRegions(w.scene, me));
             m.clearance.push_back(base && skinned ? signedClearance(base->positions, base->tris, me.geo->cagePositions) : std::vector<double>{});
+            m.cages.push_back(base && skinned ? me.geo->cagePositions : std::vector<float>{});
           }
           // a body the outfit carries (cut to what shows): how much of the item has that skin under it,
           // its closest point within 5 cm and not on the body's cut, by region
@@ -1648,7 +1651,9 @@ int main(int argc, char** argv)
           made.push_back(std::move(m));
         }
         // worn: the same meshes, fitted, against the figure's body
-        const fv::WearResult worn = loaded->commitWear(loaded->prepareWear(rel, 0), rel);
+        auto wearInputs      = loaded->wearInputs();
+        wearInputs.commonFit = step.value("fit", std::string()) == "common";
+        const fv::WearResult worn = loaded->commitWear(loaded->prepareWear(rel, fv::WearQuality{}, wearInputs), rel);
         loaded->settle();
         const fv::SceneGraph&      scene = loaded->loaded.scene;
         const auto&                ctx   = loaded->loaded.morphs;
@@ -1661,11 +1666,42 @@ int main(int argc, char** argv)
             continue;
           std::vector<std::string> regions;
           std::vector<double>      before, after;
+          // each cage edge's length fitted over its length as made: the fit's stretch along the cloth,
+          // which the clearance (off the skin only) doesn't see
+          std::vector<double> stretch;
+          struct Edge
+          {
+            double      ratio, made;
+            std::string region;
+            float       at[3];
+          };
+          std::vector<Edge> long_;  // those over 3 mm as made
           for(size_t j = 0; j < item->meshes.size() && j < made[k].clearance.size(); j++)
           {
             const fv::Mesh& me = scene.meshes[size_t(item->meshes[j])];
             if(!me.geo || made[k].clearance[j].size() != me.geo->cagePositions.size() / 3)
               continue;
+            const std::vector<float>& was = made[k].cages[j];
+            const std::vector<float>& is  = me.geo->cagePositions;
+            if(was.size() == is.size())
+              for(size_t t = 0; t + 2 < me.geo->dsonTris.size(); t += 3)
+                for(size_t e = 0; e < 3; e++)
+                {
+                  const size_t a = me.geo->dsonTris[t + e], b = me.geo->dsonTris[t + (e + 1) % 3];
+                  if(a >= b || b * 3 + 2 >= is.size())
+                    continue;
+                  double l0 = 0, l1 = 0;
+                  for(size_t c = 0; c < 3; c++)
+                  {
+                    l0 += double(was[a * 3 + c] - was[b * 3 + c]) * (was[a * 3 + c] - was[b * 3 + c]);
+                    l1 += double(is[a * 3 + c] - is[b * 3 + c]) * (is[a * 3 + c] - is[b * 3 + c]);
+                  }
+                  if(l0 > 1e-8)
+                    stretch.push_back(std::sqrt(l1 / l0));
+                  if(l0 > 0.09)
+                    long_.push_back({std::sqrt(l1 / l0), std::sqrt(l0), a < made[k].regions[j].size() ? made[k].regions[j][a] : std::string("?"),
+                                     {was[a * 3], was[a * 3 + 1], was[a * 3 + 2]}});
+                }
             const std::vector<double> now = signedClearance(body.cagePositions, body.dsonTris, me.geo->cagePositions);
             regions.insert(regions.end(), made[k].regions[j].begin(), made[k].regions[j].end());
             before.insert(before.end(), made[k].clearance[j].begin(), made[k].clearance[j].end());
@@ -1683,6 +1719,26 @@ int main(int argc, char** argv)
                       << std::setw(6) << a["source"].get<double>() << "  figure " << std::setw(6) << a["figure"].get<double>() << "  change "
                       << std::setw(6) << a["change"].get<double>() << " [" << a["changeP05"].get<double>() << ", " << a["changeP95"].get<double>() << "]"
                       << (st.contains("band") ? "" : " (none in the band)") << "\n";
+          }
+          if(!stretch.empty())
+          {
+            std::sort(stretch.begin(), stretch.end());
+            const auto   at    = [&](double q) { return stretch[std::min(stretch.size() - 1, size_t(q * double(stretch.size())))]; };
+            const size_t over  = size_t(stretch.end() - std::upper_bound(stretch.begin(), stretch.end(), 1.25));
+            const size_t under = size_t(std::lower_bound(stretch.begin(), stretch.end(), 0.8) - stretch.begin());
+            std::cerr << "  edges      n " << std::setw(6) << stretch.size() << "  stretch " << at(0.5) << " [" << at(0.01) << ", " << at(0.99) << "]  least "
+                      << stretch.front() << "  most " << stretch.back() << "  over 1.25: " << over << "  under 0.8: " << under << "\n";
+            std::sort(long_.begin(), long_.end(), [](const Edge& x, const Edge& y) { return x.ratio > y.ratio; });
+            size_t longOver = 0, longUnder = 0;
+            for(const Edge& e : long_)
+              longOver += e.ratio > 1.5, longUnder += e.ratio < 0.5;
+            std::cerr << "  edges over 3 mm: " << long_.size() << ", stretched past 1.5: " << longOver << ", shrunk under 0.5: " << longUnder << "; worst:";
+            for(size_t e = 0; e < long_.size() && e < 6; e++)
+              std::cerr << "  " << long_[e].ratio << "x of " << long_[e].made << " cm (" << long_[e].region << " at " << std::setprecision(0) << long_[e].at[0]
+                        << " " << long_[e].at[1] << " " << long_[e].at[2] << std::setprecision(2) << ")";
+            std::cerr << "\n";
+            items.back()["stretch"] = {{"median", at(0.5)}, {"p01", at(0.01)}, {"p99", at(0.99)}, {"min", stretch.front()},
+                                       {"max", stretch.back()}, {"over", over},  {"under", under}};
           }
           std::cerr << std::defaultfloat << std::setprecision(6);
         }

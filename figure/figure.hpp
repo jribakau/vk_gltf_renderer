@@ -287,6 +287,9 @@ public:
     int                               bodyMesh = -1;
     std::string                       morphDir;
     std::vector<dson::TargetPtr>      bodyTargets;  // activeBodyTargets()
+    // not the figure's, the caller's choice for this wear: an item of another generation is fitted
+    // through the common layer where that can fit it (wardrobe::FitPath::eCommon)
+    bool commonFit = false;
   };
   // Owning thread. Throws when there is no figure with a skeleton to wear things on.
   WearInputs wearInputs() const;

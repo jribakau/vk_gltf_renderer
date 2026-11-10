@@ -562,7 +562,7 @@ std::shared_ptr<Figure::PreparedWear> Figure::prepareWear(const std::string& rel
     wardrobe::FitFigure figure{scene, *inputs.rig, bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
     for(const dson::Item& it : out->loaded.items)
     {
-      out->fits.push_back(wardrobe::fitItem(*m_store, out->loaded, it, rel, figure));
+      out->fits.push_back(wardrobe::fitItem(*m_store, out->loaded, it, rel, figure, inputs.commonFit ? wardrobe::FitPath::eCommon : wardrobe::FitPath::eOld));
       out->ownRig.push_back(wardrobe::madeForFigure(out->loaded, it, rel, figure));
     }
   }

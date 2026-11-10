@@ -20,6 +20,9 @@ struct FitDetail
   Generation source{}, target{};
   // whether the base mesh of the source generation was found, so the shape was corrected too
   bool shaped = false;
+  // whether the common layer fitted it (FitPath::eCommon, where it can): its cloth near the skin by
+  // its addresses on the reference body
+  bool common = false;
   // the pose rig's plan: item bone -> figure bone, and the item bones that inherit a followed ancestor
   LeaderPlan plan;
   // "Genesis 8 outfit on Genesis 9, refitted to its skeleton and shape."
@@ -52,8 +55,21 @@ std::optional<std::pair<Generation, Generation>> generationsOf(const dson::LoadR
 // then its own (a hair's strands, a skirt's panels), riding on the ones they share.
 bool madeForFigure(const dson::LoadResult& wearable, const dson::Item& item, const std::string& rel, const FitFigure& figure);
 
+// How an item of another generation takes the figure's shape (docs/wardrobe-plan.md, step 4a).
+enum class FitPath
+{
+  // each vertex near the source generation's base moves as far as the figure's body lies from it
+  eOld,
+  // the common layer, where it can: cloth near the skin goes to its address on the reference body, at
+  // the height it had over the body it was made on (figure/garment/), and the rest of the cloth with
+  // it. That is clothing (not footwear or strand hair) from a Genesis that Genesis 9 has a clone morph
+  // of, on a Genesis 9 figure; anything else is fitted the old way.
+  eCommon,
+};
+
 // Fits one item of `wearable` onto `figure` when it was made for another generation: its meshes' cages
 // are rewritten in place (so call it before anything binds them). None leaves it untouched.
-std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& wearable, const dson::Item& item, const std::string& rel, const FitFigure& figure);
+std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& wearable, const dson::Item& item, const std::string& rel, const FitFigure& figure,
+                                 FitPath path = FitPath::eOld);
 
 }  // namespace fv::wardrobe
