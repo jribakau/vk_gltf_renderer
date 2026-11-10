@@ -561,6 +561,16 @@ driver's cache (<cacheDir>/driver) is keyed by the SPIR-V, not by the exe.
     1e-11); at the first sample 0.05-0.07% of them, two thirds by under 1e-5 of their value and the
     most by 3%, the same path a little off, with the image's mean the same to 3e-7. A single loop in
     the shader, by contrast, left every bit as it was.
+- **What the kernel carries, measured (2026-11-10):** a path's state is live across every trace and
+  reorder, and what that costs depends on how often it is written. On the club (1TEST, 2160x1395, trace
+  GPU time, timing-only builds against the current one): 32 values that never change, carried through
+  the kernel, cost 1%; 16 values added to `PathTracerState` and updated at every bounce cost 10% of
+  the moving frame and of a still's sample alike. The other way, the light-pick record
+  (`PathTracerState::lightPick`) not carried at all would save 4%, the ray read back from the hit
+  object after the reorder saves nothing, and the guides (written once, at the first hits) under 3%.
+  None of those was built (the app's `docs/improvements.md`, *Checked and rejected*); the rule they
+  leave is for new state: a value a path rewrites at every bounce costs about 0.6% of the frame, a
+  value written once next to nothing.
 - **Measured:**
 
   | Shaders | Cold build of the still's pipeline |
