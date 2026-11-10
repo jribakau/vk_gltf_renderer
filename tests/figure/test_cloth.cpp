@@ -1823,3 +1823,30 @@ TEST(ClothLeash, leashAllHoldsWhatIsDrawnHoweverFarItWentFromWhereItWasBound)
   EXPECT_EQ(tied, now);
   EXPECT_GT(std::sqrt(drawn[0] * drawn[0] + drawn[2] * drawn[2]), 6.f);
 }
+
+TEST(ClothModel, aPolygonOfTwoIsAStitch)
+{
+  // a triangle of cloth and a vertex 1 cm over it, joined to nothing but by three polygons of two (a
+  // garment's trim sewn on, garment::stitchPieces): each is one stretch row at its rest length, no face
+  // and no mass, and the cloth under a stitched vertex is in its rings, so it doesn't collide with it
+  Surface s = Surface::collider({0, 0, 0, 4, 0, 0, 0, 0, 4, 1, 1, 1}, {0, 0, 0, 4, 0, 0, 0, 0, 4, 1, 1, 1}, {0, 2, 1}, 0, 0.2f, 0.4f);
+  s.kind    = Surface::Kind::eDynamic;
+  s.strength.assign(4, 1.f);
+  s.selfCollide.assign(4, 1);
+  s.polyVerts = {0, 2, 1, 3, 0, 3, 1, 3, 2};
+  s.polyStart = {0, 3, 5, 7, 9};
+  const auto model = physics::cloth::Model::build({s}, 0.15f);
+  std::map<int, float> stitched;  // the cloth vertex -> the row's rest length
+  for(const physics::cloth::Distance& e : model.edges)
+    if(e.kind == physics::cloth::DistanceKind::eStretch && (e.a == 3 || e.b == 3))
+      stitched[e.a == 3 ? e.b : e.a] = e.rest;
+  ASSERT_EQ(stitched.size(), 3u);
+  EXPECT_NEAR(stitched.at(0), std::sqrt(3.f), 1e-5);
+  EXPECT_NEAR(stitched.at(1), std::sqrt(11.f), 1e-5);
+  EXPECT_NEAR(stitched.at(2), std::sqrt(11.f), 1e-5);
+  for(const physics::cloth::Distance& e : model.edges)
+    EXPECT_FALSE(e.kind != physics::cloth::DistanceKind::eStretch && (e.a == 3 || e.b == 3)) << "a stitch bends and shears nothing";
+  const std::vector<int> ring(model.ring2.begin() + model.ring2Start[3], model.ring2.begin() + model.ring2Start[4]);
+  for(int v : {0, 1, 2})
+    EXPECT_TRUE(std::find(ring.begin(), ring.end(), v) != ring.end()) << v;
+}

@@ -792,7 +792,8 @@ TEST(GarmentQuads, AnOutfitsClothIsHeldWhereItLiesOnTheSkin)
   EXPECT_FLOAT_EQ(free[2], 1);
   EXPECT_FLOAT_EQ(free[3], 1);
 
-  // a button joined to nothing over cloth 6 cm off the skin: the cloth is cloth, the button held
+  // a button joined to nothing, 1 cm over cloth 6 cm off the skin: the cloth is cloth, and the button is
+  // sewn to it, each vertex to three of the cloth's; over cloth on the skin, it is held with it
   {
     const Buttoned      g = buttoned();
     fv::mesh::MeshInput in;
@@ -816,10 +817,46 @@ TEST(GarmentQuads, AnOutfitsClothIsHeldWhereItLiesOnTheSkin)
     std::vector<std::vector<std::pair<int, float>>> rows;
     for(size_t v = 0; v * 3 < g.positions.size(); v++)
       rows.push_back({{0, 0.5f + 0.004f * float(v % 100)}, {1, 0.5f - 0.004f * float(v % 100)}});
-    const std::vector<float> pins = fv::clothPins(geo, skinOf(rows), under, on);
-    ASSERT_EQ(pins.size(), g.positions.size() / 3);
-    for(size_t v = 0; v < pins.size(); v++)
-      EXPECT_FLOAT_EQ(pins[v], v < g.cloth ? 1.f : 0.f) << v;
+    const fv::ClothPins pins = fv::clothPins(geo, skinOf(rows), under, on);
+    ASSERT_EQ(pins.free.size(), g.positions.size() / 3);
+    for(size_t v = 0; v < pins.free.size(); v++)
+      EXPECT_FLOAT_EQ(pins.free[v], 1.f) << v;
+    EXPECT_EQ(pins.sewn, 1u);
+    EXPECT_EQ(pins.held, 0u);
+    const size_t button = g.positions.size() / 3 - g.cloth;
+    ASSERT_EQ(pins.stitches.size(), button * 3 * 2);
+    for(size_t i = 0; i + 1 < pins.stitches.size(); i += 2)
+    {
+      EXPECT_GE(size_t(pins.stitches[i]), g.cloth) << i;
+      EXPECT_LT(size_t(pins.stitches[i + 1]), g.cloth) << i;
+      double d2 = 0;
+      for(size_t k = 0; k < 3; k++)
+        d2 += double(g.positions[size_t(pins.stitches[i]) * 3 + k] - g.positions[size_t(pins.stitches[i + 1]) * 3 + k])
+              * (g.positions[size_t(pins.stitches[i]) * 3 + k] - g.positions[size_t(pins.stitches[i + 1]) * 3 + k]);
+      EXPECT_LT(std::sqrt(d2), 4.2) << i;  // a corner of the 2.5 cm face under it, 1 cm down
+    }
+    // the settings carry each stitch as a polygon of two, after the cloth's own
+    const auto cloth = fv::clothSettings(geo, nullptr, true, 1.f, 0, fv::dson::kStrandVolume, pins.free, pins.stitches);
+    ASSERT_TRUE(cloth);
+    size_t two = 0;
+    for(size_t p = 0; p + 1 < cloth->polyStart.size(); p++)
+      two += cloth->polyStart[p + 1] - cloth->polyStart[p] == 2;
+    EXPECT_EQ(two, button * 3);
+
+    // the skin 0.5 cm under the cloth: all of it held, the button too, and nothing sewn
+    const std::vector<float> close{-100, -0.5f, -100, 100, -0.5f, -100, 0, -0.5f, 100};
+    const std::vector<uint32_t> face{0, 1, 2};
+    const fv::ClothPins      held = fv::clothPins(geo, skinOf(rows), close, fv::wardrobe::bindToSurface(close, face, g.positions));
+    for(size_t v = 0; v < held.free.size(); v++)
+      EXPECT_FLOAT_EQ(held.free[v], 0.f) << v;
+    EXPECT_TRUE(held.stitches.empty());
+    EXPECT_EQ(held.held, 1u);
+    // a button too far from any cloth to be sewn is held
+    fv::garment::Pieces one = fv::garment::hardPieces(g.positions, g.tris, skinOf(rows));
+    EXPECT_TRUE(fv::garment::stitchPieces(g.positions, g.tris, one, 0.5f).pairs.empty());
+    EXPECT_FALSE(fv::garment::stitchPieces(g.positions, g.tris, one, 0.5f).sewn.at(0));
+    // and a plate isn't trim
+    EXPECT_TRUE(fv::garment::stitchPieces(g.positions, g.tris, one, 3, 1).pairs.empty());
   }
 
   // settings made for a mesh of triangles with that pin map: its quads again, and the map as its strength

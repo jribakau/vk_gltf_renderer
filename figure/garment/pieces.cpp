@@ -6,6 +6,7 @@
 #include <numeric>
 
 #include <figure/bodymap/clone.hpp>
+#include <figure/wardrobe/bind.hpp>
 
 namespace fv::garment {
 
@@ -212,6 +213,96 @@ mesh::SkinInput rigidSkin(const mesh::SkinInput& skin, const Pieces& pieces)
   }
   if(mapped)
     out.dualQuatMap = std::move(map);
+  return out;
+}
+
+}  // namespace fv::garment
+
+namespace fv::garment {
+
+Stitches stitchPieces(std::span<const float> positions, std::span<const uint32_t> tris, const Pieces& pieces, float reach, float longest)
+{
+  const size_t n = positions.size() / 3;
+  Stitches     out;
+  out.sewn.assign(size_t(std::max(pieces.count, 0)), 0);
+  if(pieces.of.size() != n || pieces.count <= 0)
+    return out;
+  const auto piece = [&](size_t v) { return pieces.of[v] >= 0 && pieces.of[v] < pieces.count ? pieces.of[v] : -1; };
+  // the cloth: the faces no piece has a corner of
+  std::vector<uint32_t> cloth;
+  for(size_t t = 0; t + 2 < tris.size(); t += 3)
+    if(tris[t] < n && tris[t + 1] < n && tris[t + 2] < n && piece(tris[t]) < 0 && piece(tris[t + 1]) < 0 && piece(tris[t + 2]) < 0)
+      cloth.insert(cloth.end(), {tris[t], tris[t + 1], tris[t + 2]});
+  if(cloth.empty())
+    return out;
+  // the pieces short enough to be trim, and their vertices
+  std::vector<std::array<float, 6>> box(size_t(pieces.count), {1e30f, 1e30f, 1e30f, -1e30f, -1e30f, -1e30f});
+  std::vector<size_t>               count(size_t(pieces.count), 0);
+  for(size_t v = 0; v < n; v++)
+    if(const int32_t p = piece(v); p >= 0)
+    {
+      count[size_t(p)]++;
+      for(size_t k = 0; k < 3; k++)
+      {
+        box[size_t(p)][k]     = std::min(box[size_t(p)][k], positions[v * 3 + k]);
+        box[size_t(p)][3 + k] = std::max(box[size_t(p)][3 + k], positions[v * 3 + k]);
+      }
+    }
+  std::vector<uint8_t> trim(size_t(pieces.count), 0);
+  for(size_t p = 0; p < trim.size(); p++)
+  {
+    double diagonal = 0;
+    for(size_t k = 0; k < 3; k++)
+      diagonal += double(box[p][3 + k] - box[p][k]) * (box[p][3 + k] - box[p][k]);
+    trim[p] = count[p] > 0 && std::sqrt(diagonal) <= longest;
+  }
+  std::vector<uint32_t> verts;
+  std::vector<float>    at;
+  for(size_t v = 0; v < n; v++)
+    if(const int32_t p = piece(v); p >= 0 && trim[size_t(p)])
+    {
+      verts.push_back(uint32_t(v));
+      at.insert(at.end(), {positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]});
+    }
+  if(verts.empty())
+    return out;
+  const wardrobe::SurfaceBinding on = wardrobe::bindToSurface(positions, cloth, at);
+  if(on.verts.size() < verts.size() * 3 || on.weights.size() < verts.size() * 3)
+    return out;
+  // each vertex's nearest place on the cloth, where that is within reach
+  std::vector<uint8_t> near(verts.size(), 0);
+  std::vector<size_t>  found(size_t(pieces.count), 0);
+  for(size_t i = 0; i < verts.size(); i++)
+  {
+    double q[3] = {0, 0, 0}, sum = 0;
+    for(size_t j = 0; j < 3; j++)
+    {
+      const size_t c = on.verts[i * 3 + j];
+      const double w = on.weights[i * 3 + j];
+      if(c >= n)
+        continue;
+      for(size_t k = 0; k < 3; k++)
+        q[k] += w * positions[c * 3 + k];
+      sum += w;
+    }
+    if(sum <= 0)
+      continue;
+    double d2 = 0;
+    for(size_t k = 0; k < 3; k++)
+      d2 += (at[i * 3 + k] - q[k] / sum) * (at[i * 3 + k] - q[k] / sum);
+    if(d2 <= double(reach) * reach)
+    {
+      near[i] = 1;
+      found[size_t(pieces.of[verts[i]])]++;
+    }
+  }
+  for(size_t p = 0; p < out.sewn.size(); p++)
+    out.sewn[p] = trim[p] && found[p] * 2 >= count[p];
+  for(size_t i = 0; i < verts.size(); i++)
+    if(near[i] && out.sewn[size_t(pieces.of[verts[i]])])
+      for(size_t j = 0; j < 3; j++)
+        if(on.verts[i * 3 + j] < n)
+          out.pairs.insert(out.pairs.end(), {int32_t(verts[i]), int32_t(on.verts[i * 3 + j])});
   return out;
 }
 

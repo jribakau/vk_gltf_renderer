@@ -1686,7 +1686,7 @@ int main(int argc, char** argv)
           std::vector<double> bent;
           // as cloth (figure.hpp, clothSettings): its triangles that pair back into quads (garment::pairQuads),
           // and of an outfit pinned by the skin (WornItem::pinBySkin), the vertices held, eased and left cloth
-          size_t triangles = 0, paired = 0, pinHeld = 0, pinEased = 0, pinFree = 0;
+          size_t triangles = 0, paired = 0, pinHeld = 0, pinEased = 0, pinFree = 0, sewn = 0, kept = 0, stitches = 0;
           for(size_t j = 0; j < item->meshes.size() && j < made[k].clearance.size(); j++)
           {
             const fv::Mesh& me = scene.meshes[size_t(item->meshes[j])];
@@ -1701,8 +1701,14 @@ int main(int argc, char** argv)
             if(item->pinBySkin)
               for(const fv::WornItem::Follow& f : item->follows)
                 if(f.mesh == item->meshes[j] && f.binding)
-                  for(const float free : fv::clothPins(*me.geo, me.cageSkin, body.cagePositions, *f.binding))
+                {
+                  const fv::ClothPins pins = fv::clothPins(*me.geo, me.cageSkin, body.cagePositions, *f.binding);
+                  for(const float free : pins.free)
                     (free <= 0 ? pinHeld : free >= 1 ? pinFree : pinEased)++;
+                  sewn += pins.sewn;
+                  kept += pins.held;
+                  stitches += pins.stitches.size() / 2;
+                }
             const std::vector<float>& was = made[k].cages[j];
             const std::vector<float>& is  = me.geo->cagePositions;
             if(was.size() == is.size() && me.geo->cageLineStart.empty())
@@ -1760,8 +1766,9 @@ int main(int argc, char** argv)
           }
           if(pinHeld + pinEased + pinFree)
           {
-            std::cerr << "  pinned     " << pinHeld << " held, " << pinEased << " eased, " << pinFree << " cloth\n";
-            items.back()["pinned"] = {{"held", pinHeld}, {"eased", pinEased}, {"cloth", pinFree}};
+            std::cerr << "  pinned     " << pinHeld << " held, " << pinEased << " eased, " << pinFree << " cloth; pieces: " << sewn << " sewn to free cloth by "
+                      << stitches << " stitches, " << kept << " held\n";
+            items.back()["pinned"] = {{"held", pinHeld}, {"eased", pinEased}, {"cloth", pinFree}, {"sewn", sewn}, {"piecesHeld", kept}, {"stitches", stitches}};
           }
           if(!bent.empty())
           {

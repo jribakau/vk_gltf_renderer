@@ -1376,7 +1376,8 @@ std::vector<bool> walkThroughMaterials(const SceneGraph& scene, const std::vecto
 }
 
 std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo, const std::shared_ptr<const dson::DforceData>& file,
-                                                      std::optional<bool> on, float strength, int layer, float volume, std::span<const float> free)
+                                                      std::optional<bool> on, float strength, int layer, float volume, std::span<const float> free,
+                                                      std::span<const int32_t> stitches)
 {
   const bool fileSimulates = file && file->simulated();
   const bool simulate      = on ? *on : fileSimulates;
@@ -1414,8 +1415,14 @@ std::shared_ptr<const dson::DforceData> clothSettings(const mesh::BuiltMesh& geo
     data = std::make_shared<dson::DforceData>(*file);
   else if(geo.cagePolyStart.size() > 1)
   {
-    const garment::Polys polys = garment::pairQuads(geo.cagePositions, geo.cagePolyStart, geo.cagePolyVerts);
-    data                       = dson::defaultDforce(geo.dsonVertexCount, polys.start, polys.verts, layer);
+    garment::Polys polys = garment::pairQuads(geo.cagePositions, geo.cagePolyStart, geo.cagePolyVerts);
+    // a stitch is a polygon of two: one length for the cloth to keep, and no face
+    for(size_t i = 0; i + 1 < stitches.size(); i += 2)
+    {
+      polys.verts.insert(polys.verts.end(), {stitches[i], stitches[i + 1]});
+      polys.start.push_back(int32_t(polys.verts.size()));
+    }
+    data = dson::defaultDforce(geo.dsonVertexCount, polys.start, polys.verts, layer);
     if(free.size() == data->strength.size())
       for(size_t v = 0; v < free.size(); v++)
         data->strength[v] *= std::clamp(free[v], 0.f, 1.f);
@@ -1447,14 +1454,37 @@ std::vector<float> skinFree(std::span<const float> item, std::span<const float> 
   return free;
 }
 
-std::vector<float> clothPins(const mesh::BuiltMesh& geo, const mesh::SkinInput& skin, std::span<const float> body, const wardrobe::SurfaceBinding& at)
+ClothPins clothPins(const mesh::BuiltMesh& geo, const mesh::SkinInput& skin, std::span<const float> body, const wardrobe::SurfaceBinding& at)
 {
-  std::vector<float>    free   = skinFree(geo.cagePositions, body, at);
-  const garment::Pieces pieces = garment::hardPieces(geo.cagePositions, geo.dsonTris, skin);
-  for(size_t v = 0; v < free.size() && v < pieces.of.size(); v++)
-    if(pieces.of[v] >= 0)
-      free[v] = 0;
-  return free;
+  ClothPins out;
+  out.free                       = skinFree(geo.cagePositions, body, at);
+  const garment::Pieces   pieces = garment::hardPieces(geo.cagePositions, geo.dsonTris, skin);
+  const garment::Stitches sewn   = garment::stitchPieces(geo.cagePositions, geo.dsonTris, pieces);
+  if(pieces.count <= 0 || pieces.of.size() != out.free.size())
+    return out;
+  // each sewn piece as free as the cloth its stitches end on, all of it alike
+  std::vector<double> sum(size_t(pieces.count), 0);
+  std::vector<size_t> n(size_t(pieces.count), 0);
+  for(size_t i = 0; i + 1 < sewn.pairs.size(); i += 2)
+  {
+    const size_t p = size_t(pieces.of[size_t(sewn.pairs[i])]);
+    sum[p] += out.free[size_t(sewn.pairs[i + 1])];
+    n[p]++;
+  }
+  std::vector<float> freeOf(size_t(pieces.count), 0.f);
+  for(size_t p = 0; p < freeOf.size(); p++)
+  {
+    if(p < sewn.sewn.size() && sewn.sewn[p] && n[p])
+      freeOf[p] = float(sum[p] / double(n[p]));
+    (freeOf[p] > 0 ? out.sewn : out.held)++;
+  }
+  for(size_t v = 0; v < out.free.size(); v++)
+    if(pieces.of[v] >= 0 && pieces.of[v] < pieces.count)
+      out.free[v] = freeOf[size_t(pieces.of[v])];
+  for(size_t i = 0; i + 1 < sewn.pairs.size(); i += 2)
+    if(freeOf[size_t(pieces.of[size_t(sewn.pairs[i])])] > 0)
+      out.stitches.insert(out.stitches.end(), {sewn.pairs[i], sewn.pairs[i + 1]});
+  return out;
 }
 
 std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float strength, float volume)
@@ -1491,16 +1521,16 @@ std::vector<int> Figure::setItemCloth(int id, std::optional<bool> on, float stre
     // the file's own settings, kept the first time the user changes this item
     if(!it->fileDforce.count(m))
       it->fileDforce[m] = mesh.dforce;
-    // an outfit with no pin map of its own: its cloth on the skin and its hard pieces stay
-    std::vector<float> free;
+    // an outfit with no pin map of its own: its cloth on the skin stays, and its trim is sewn on
+    ClothPins pins;
     if(it->pinBySkin && on && *on && !loaded.morphs.mainMeshes.empty())
     {
       const Mesh& body   = loaded.scene.meshes[size_t(loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh)];
       const auto  follow = std::find_if(it->follows.begin(), it->follows.end(), [&](const WornItem::Follow& f) { return f.mesh == m; });
       if(body.geo && follow != it->follows.end() && follow->binding)
-        free = clothPins(*mesh.geo, mesh.cageSkin, body.geo->cagePositions, *follow->binding);
+        pins = clothPins(*mesh.geo, mesh.cageSkin, body.geo->cagePositions, *follow->binding);
     }
-    auto next = clothSettings(*mesh.geo, it->fileDforce[m], on, it->cloth.strength, layer, it->cloth.volume, free);
+    auto next = clothSettings(*mesh.geo, it->fileDforce[m], on, it->cloth.strength, layer, it->cloth.volume, pins.free, pins.stitches);
     if(next != mesh.dforce)
     {
       mesh.dforce = std::move(next);

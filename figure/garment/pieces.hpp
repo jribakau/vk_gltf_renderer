@@ -49,4 +49,16 @@ std::vector<float> keepPieces(std::span<const float> made, std::span<const float
 // quaternion shares).
 mesh::SkinInput rigidSkin(const mesh::SkinInput& skin, const Pieces& pieces);
 
+// Pieces sewn to the cloth under them, for a garment that drapes: a piece is joined to nothing, so as
+// cloth it would fall from the cloth it sits on, and held to its bones it stays behind when that cloth
+// drapes away. Each of its vertices is tied to the three corners of the nearest face of the cage that is
+// no piece's, when that lies within `reach` cm: three lengths to keep, which carry it with the face.
+struct Stitches
+{
+  std::vector<int32_t> pairs;  // (piece vertex, cloth vertex), two entries a stitch
+  std::vector<uint8_t> sewn;   // per piece: it is sewn on (half its vertices or more found cloth)
+};
+// Only pieces no longer than `longest` cm corner to corner are sewn: a plate is armour, not trim.
+Stitches stitchPieces(std::span<const float> positions, std::span<const uint32_t> tris, const Pieces& pieces, float reach = 3, float longest = 8);
+
 }  // namespace fv::garment
