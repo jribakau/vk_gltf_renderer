@@ -808,10 +808,13 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
 // cap, the cap was lowered below it, or the denoiser came on since).
 void PathTracer::onAccumulationComplete(VkCommandBuffer cmd, Resources& resources)
 {
+  // What an earlier frame copied into this frame's slot first: a copy recorded below runs when this
+  // frame's commands do, and is read when the slot comes round again (reading it here took whatever the
+  // buffer held before, and cleared the flag, so the count itself was never read)
+  takeHitCounts(resources);
   // a view whose samples ended before its window did counted what it counted, and traces nothing from here
   if(m_hitFrames > 0)
     copyHitCounts(cmd, resources);
-  takeHitCounts(resources);
   takePixelTimes(resources);  // the accumulation's last frames, as they come back
 #if defined(USE_DLSS)
   // an accumulation the adaptive stop ended before the cap, or one complete when RR's still came on
@@ -943,9 +946,12 @@ void PathTracer::takeHitCounts(Resources& resources)
     resources.retainedGpu->setMaterialHits(*resources.retainedScene, {reinterpret_cast<const uint32_t*>(m_hitReadback[slot].mapping), size_t(m_hitReadback[slot].bufferSize / sizeof(uint32_t))});
 }
 
+// Records the copy in this frame's commands: the host reads it (takeHitCounts) no sooner than the next
+// time the frame ring is at this slot, when the application has waited for this frame.
 void PathTracer::copyHitCounts(VkCommandBuffer cmd, Resources& resources)
 {
   const uint32_t slot = resources.app->getFrameCycleIndex() % uint32_t(m_hitCopied.size());
+  assert(m_hitCopied[slot] == 0 && "take the slot's earlier copy before recording another (takeHitCounts)");
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                          VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
   const VkBufferCopy region{0, 0, m_hitReadback[slot].bufferSize};
