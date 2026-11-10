@@ -225,7 +225,7 @@ HostStruct pathtracePushConstant()
   using Self = PathtracePushConstant;
   return {"PathtracePushConstant", sizeof(Self), {
     F(maxDepth), F(frameCount), F(fireflyClampThreshold), F(texGradScale), F(fireflyClampStill), F(hairBudget),
-    F(numSamples), F(totalSamples), F(focalDistance), F(aperture), F(flags), F(pixelAngle), F(seed),
+    F(frameSample), F(totalSamples), F(focalDistance), F(aperture), F(flags), F(pixelAngle), F(seed),
     F(guideSamples), F(mouseCoord), F(renderSize), F(bladeCount), F(bladeRotation), F(hairRouletteDlss),
     F(hairRouletteFrom), F(hairCutDlss), F(hairCutTail), F(adaptiveThreshold), F(adaptiveMin), F(hairResponsivity),
     F(glassBudget), F(adaptiveRelax), F(adaptiveRelaxBase), F(hitSignalSlots), F(lightCandidates),

@@ -536,6 +536,31 @@ driver's cache (<cacheDir>/driver) is keyed by the SPIR-V, not by the exe.
     double the lobes of every sum over them: next-event estimation's, and the sampler's mixture pdf.
 
   Each draws the same numbers in the same order as before.
+- **One sample a pass (2026-11-10):** `samplePixel`, the whole kernel, was called for a frame's first
+  sample and again in a loop for its later ones, so all of it was compiled twice. The kernel now traces
+  one sample a pixel, and the host runs a pass of it for each sample of the frame
+  (`PathTracer::cmdTraceFrameSamples`, `PathtracePushConstant::frameSample`): a later pass is no first
+  frame, has the samples before it as its total and its guides' count, and adds its sample to what the
+  passes before it left in the images. A frame of one sample, which is every frame the app draws but a
+  still refined with DLSS, is one pass as before.
+  - **The build:** the start-up warm-ups, side by side, took 27.2 s (still) and 33.0 s (DLSS), against
+    61.8 s and 75.2 s the same morning.
+  - **The frame:** the second copy also ran slower, since it carried the frame's sums (colour, second
+    moment, guides) through every trace and reorder. On the club (1TEST, 2160x1395, 20 bounces, trace
+    GPU time, two sessions of each build alternating): a sample of a still 84.5 ms at one a frame,
+    106.8 at two and 111.5 at four before; 81.4 ms at any count after. The moving frame 20.87 to
+    20.48 ms. A single loop in the shader around the one call (tried first) halved the build too but
+    cost the one-sample frame 8-10%, the sums being live through the kernel; with the sums left out of
+    it (a timing experiment) that cost went, which is what a pass a sample gives without losing them.
+  - **The image:** a later pass draws its own numbers (its seed takes `frameSample`), where the loop
+    went on with the first sample's sequence, so a frame of several samples is another sample set of
+    the same estimator: stills of 64 samples at four a frame against one a frame have the same mean
+    within 0.05% and the same noise between seeds, and the moving view at four a frame loses its
+    near-black pixel values as the loop's did. At one a frame the golden gate's views differ by
+    rounding, more than the reshapings below gave: at 32 samples about 1% of the pixels (relMSE 1e-8 to
+    1e-11); at the first sample 0.05-0.07% of them, two thirds by under 1e-5 of their value and the
+    most by 3%, the same path a little off, with the image's mean the same to 3e-7. A single loop in
+    the shader, by contrast, left every bit as it was.
 - **Measured:**
 
   | Shaders | Cold build of the still's pipeline |

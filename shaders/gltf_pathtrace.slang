@@ -2390,12 +2390,17 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   if(adaptiveStop && accumulating && WaveActiveAllTrue(outImages[int(OutputImage::eConvergence)][int2(samplePos)].y > 0.0F))
     return;
 
+  // A pass traces one sample a pixel, and the host runs a pass for each sample of the frame
+  // (PathTracer::onRender): this one is the frame's first, or a later one (frameSample)
+  const bool laterSample = pushConst.frameSample > 0;
+
 #if USE_LIGHT_RIS
   if(hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuse) && pushConst.lightReservoirs != nullptr)
   {
     g_reusePixel       = int2(samplePos);
-    g_reuseFirstSample = true;
-    pushConst.lightReservoirs[lightReuseSlot(g_reusePixel, hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuseParity)) + 1] = uint4(0u);
+    g_reuseFirstSample = !laterSample;
+    if(!laterSample)
+      pushConst.lightReservoirs[lightReuseSlot(g_reusePixel, hasFlag(pushConst.flags, PathtracerFlags::ePtLightReuseParity)) + 1] = uint4(0u);
   }
 #endif
 
@@ -2421,8 +2426,10 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
 #endif
 
   // Initialize the random number
-  // pushConst.seed selects another sequence (0: the default one), e.g. for a reference independent of a test render
-  uint seed = xxhash32(uint3(uint2(samplePos.xy), uint(pushConst.frameCount) + uint(pushConst.seed) * 0x9E3779B9u));
+  // pushConst.seed selects another sequence (0: the default one), e.g. for a reference independent of a test render;
+  // each of a frame's samples has its own
+  uint seed = xxhash32(uint3(uint2(samplePos.xy), uint(pushConst.frameCount) + uint(pushConst.seed) * 0x9E3779B9u
+                                                      + uint(pushConst.frameSample) * 0x85EBCA6Bu));
   // A Sobol pixel draws its points at its sample index, under a scramble of its own that every frame keeps
   g_sobol      = hasFlag(pushConst.flags, PathtracerFlags::ePtSobol) && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss);
   g_sobolPixel = xxhash32(uint3(uint2(samplePos.xy), uint(pushConst.seed) + 0x5bd1e995u));
@@ -2445,11 +2452,17 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     subpixelJitter = gaussianSubpixelJitter(seed);
   }
 
-  // Sampling n times the pixel
+  // One sample of the pixel. The frame traces exactly the samples the host counts, a pass each: a
+  // frame DLSS denoises gets ptSamplesDlss (1 but for the DLSS refine of a still: DLSS does its own
+  // temporal accumulation); with DLSS-RR's still on, the frames after DLSS's frame 0 get Auto SPP's
+  // or ptSamples' count. samplePixel is called here alone: called again in a loop for a frame's later
+  // samples, the driver compiled the whole kernel twice, and the second copy carried the frame's sums
+  // through every trace, a fifth to a half slower a sample (RENDERING_ARCHITECTURE.md, "The path
+  // tracer's build time").
   SampleResult sampleResult = samplePixel(raytracer, seed, samplePos, subpixelJitter, imageSize, pushConst.frameInfo->projInv,
                                           pushConst.frameInfo->viewInv, pushConst.focalDistance, pushConst.aperture);
   float4 pixelColor = sampleResult.radiance;
-  float  lumSquared = square(luminance(sampleResult.radiance.xyz));  // the samples' second moment, for ePtAdaptiveStop
+  float  lumSquared = square(luminance(sampleResult.radiance.xyz));  // the sample's second moment, for ePtAdaptiveStop
 
 #if USE_GUIDE_SHADER
   // The denoiser guides average every sample of the frame, like the color
@@ -2472,38 +2485,6 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
 #endif
   }
 #endif
-
-  // The frame traces exactly the samples the host counts (numSamples): the host decides, per frame.
-  // A frame DLSS denoises gets ptSamplesDlss (1 but for the DLSS refine of a still: DLSS does its own
-  // temporal accumulation); with DLSS-RR's still on, the frames after DLSS's frame 0 get Auto SPP's
-  // or ptSamples' count.
-  for(int s = 1; s < pushConst.numSamples; s++)
-  {
-#if USE_LIGHT_RIS
-    g_reuseFirstSample = false;
-#endif
-    beginSobolSample(uint(pushConst.totalSamples + s));
-    // the same pixel filter as the first sample; a DLSS frame's all go through its jittered position,
-    // the one Ray Reconstruction's guides (written from the last sample) describe
-    if(!hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
-      subpixelJitter = gaussianSubpixelJitter(seed);
-    sampleResult   = samplePixel(raytracer, seed, samplePos, subpixelJitter, imageSize, pushConst.frameInfo->projInv,
-                                 pushConst.frameInfo->viewInv, pushConst.focalDistance, pushConst.aperture);
-    pixelColor += sampleResult.radiance;
-    lumSquared += square(luminance(sampleResult.radiance.xyz));
-#if USE_GUIDE_SHADER
-    if(denoiserGuides)
-    {
-      addDenoiserGuides(sampleResult, albedoSum, normalSum);
-      guideCount++;
-#if USE_DLSS_SHADER
-      if(rrStillGuides)
-        addRrStillGuides(sampleResult, specularSum, depthMin);
-#endif
-    }
-#endif
-  }
-  pixelColor /= pushConst.numSamples;
 
 
   // NDC depth from first-hit world position (Vulkan [0,1] range, 1.0 = far/miss).
@@ -2538,14 +2519,14 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   {
     const bool     counting  = pushConst.frameInfo->pixelTimeCount != kPixelTimeCountClock;
     const uint64_t elapsed   = counting ? uint64_t(g_timeCount) : pixelTimeClock() - clockStart;
-    const float    perSample = float(elapsed) / float(pushConst.numSamples);
+    const float    perSample = float(elapsed);
     float          mean      = perSample;
     if(!hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
     {
       if(!firstFrame && pushConst.totalSamples > 0)
         mean = (outImages[int(OutputImage::eConvergence)][int2(samplePos)].x * float(pushConst.totalSamples)
-                + perSample * float(pushConst.numSamples))
-               / float(pushConst.totalSamples + pushConst.numSamples);
+                + perSample)
+               / float(pushConst.totalSamples + 1);
       outImages[int(OutputImage::eConvergence)][int2(samplePos)] = float4(mean, 0.0F, 0.0F, 0.0F);
     }
     // before a frame has been summed, against a tenth of a millisecond of NVIDIA's clock (or ten of a count)
@@ -2553,24 +2534,25 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     pixelColor        = float4(pixelTimeColor(mean * scale), pixelColor.w);
     if(pushConst.frameInfo->pixelTime != nullptr)
       addPixelTime(g_timeSlot == kPixelTimeUnset ? kPixelTimeSky : g_timeSlot,
-                   uint(min(counting ? elapsed : elapsed >> kPixelTimeUnitShift, uint64_t(0x7FFFFFFFu))), uint(pushConst.numSamples));
+                   uint(min(counting ? elapsed : elapsed >> kPixelTimeUnitShift, uint64_t(0x7FFFFFFFu))), 1u);
   }
   outImages[int(OutputImage::eResultImage)][int2(samplePos)] = pixelColor;
 #else
   // Saving result
   // Nothing accumulated yet (the first frame, or the first after DLSS's frame 0): replace the value in
-  // the buffer, never weigh it by 0, which an infinite value would turn into NaN
-  if(firstFrame || pushConst.totalSamples == 0 || hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+  // the buffer, never weigh it by 0, which an infinite value would turn into NaN. A DLSS frame's first
+  // sample replaces it too, and its later ones (totalSamples then counts the frame's so far) join it.
+  if(firstFrame || pushConst.totalSamples == 0 || (hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) && !laterSample))
   {
     outImages[int(OutputImage::eResultImage)][int2(samplePos)] = pixelColor;
   }
   else
   {
     // Do accumulation over time using uniform weighting
-    float  totalSamplesAfter = float(pushConst.totalSamples + pushConst.numSamples);
+    float  totalSamplesAfter = float(pushConst.totalSamples + 1);
     float4 old_color         = outImages[0][int2(samplePos)];
     outImages[int(OutputImage::eResultImage)][int2(samplePos)] =
-        (old_color * pushConst.totalSamples + pixelColor * pushConst.numSamples) / totalSamplesAfter;
+        (old_color * pushConst.totalSamples + pixelColor) / totalSamplesAfter;
   }
 #endif
 
@@ -2578,8 +2560,8 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   if(adaptiveStop)
   {
     const int2  pixel   = int2(samplePos);
-    const int   samples = (accumulating ? pushConst.totalSamples : 0) + pushConst.numSamples;
-    float       second  = lumSquared / float(pushConst.numSamples);
+    const int   samples = (accumulating ? pushConst.totalSamples : 0) + 1;
+    float       second  = lumSquared;
     if(accumulating)
       second = (outImages[int(OutputImage::eConvergence)][pixel].x * pushConst.totalSamples + lumSquared) / float(samples);
     const float mean = luminance(outImages[int(OutputImage::eResultImage)][pixel].xyz);

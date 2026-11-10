@@ -460,7 +460,7 @@ struct PathtracePushConstant
   float           texGradScale          = 0.f;     // Ray-footprint gradient scale
   float           fireflyClampStill     = 0.f;     // Clamp for the frames that accumulate a still (0: fireflyClampThreshold)
   int             hairBudget            = 0;       // Fibre events a path takes before they count as surface bounces (also keeps mouseCoord 8-byte aligned)
-  int             numSamples            = 1;       // Number of samples per pixel per frame
+  int             frameSample           = 0;       // Which of the frame's samples this pass traces, 0 the first (a pass traces one a pixel)
   int             totalSamples          = 0;       // Total samples accumulated so far
   float           focalDistance         = 0.0f;    // Focal distance for depth of field
   float           aperture              = 0.0f;    // Aperture for depth of field

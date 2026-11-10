@@ -408,7 +408,7 @@ void GltfRenderer::alignMaxSamplesForHeadless(uint32_t headlessFrames)
   if(m_parameterParser && m_parameterParser->wasParsed("ptMaxSamples"))
     return;
   const int samplesPerFrame =
-      m_pathTracer.m_adaptiveSampling ? PathTracer::MAX_ADAPTIVE_SAMPLES_PER_PIXEL : m_pathTracer.m_pushConst.numSamples;
+      m_pathTracer.m_adaptiveSampling ? PathTracer::MAX_ADAPTIVE_SAMPLES_PER_PIXEL : m_pathTracer.m_samplesPerFrame;
   const int64_t needed = std::min<int64_t>(int64_t(headlessFrames) * std::max(samplesPerFrame, 1), INT_MAX);
   if(m_resources.settings.maxSamples < needed)
   {

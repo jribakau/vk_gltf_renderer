@@ -70,7 +70,6 @@ PathTracer::PathTracer()
   m_maxDepth                        = 5;
   m_pushConst.frameCount            = 0;
   m_pushConst.fireflyClampThreshold = 10.;
-  m_pushConst.numSamples            = 1;  // Number of samples per pixel
 
 #if defined(USE_DLSS)
   m_dlss    = std::make_unique<Dlss>(Dlss::Kind::RR);
@@ -225,7 +224,7 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: Samples per pixel traced each frame (see ptMaxSamples for the total); "
                                     "setting it turns Auto SPP (ptAdaptiveSampling) off",
                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { m_adaptiveSampling = false; }},
-                &m_pushConst.numSamples, Persist::eYes, MIN_SAMPLES_PER_PIXEL, MAX_SAMPLES_PER_PIXEL);
+                &m_samplesPerFrame, Persist::eYes, MIN_SAMPLES_PER_PIXEL, MAX_SAMPLES_PER_PIXEL);
   // A DLSS frame's samples go through its jittered position, so Ray Reconstruction's guides stay that
   // point's and the samples only take noise out of its light. The app sends more while the view is
   // still under the DLSS refine, 1 when it moves; no reset, Ray Reconstruction keeps its history. A
@@ -746,11 +745,11 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR);
 
-  // Tracing the rays: Ray Query or Ray Tracing
+  // Tracing the rays: Ray Query or Ray Tracing, a pass for each of the frame's samples
   {
     auto timerSection =
         m_profiler->cmdFrameSection(cmd, m_renderTechnique == RenderTechnique::RayQuery ? kTimerPathTraceRq : kTimerPathTraceRtx);
-    dispatchRays(cmd, renderingSize);
+    cmdTraceFrameSamples(cmd, pushConst, renderingSize);
   }
 
   // The bounce cache: what this frame's paths fed it, folded in for the next frame's to read
@@ -1330,6 +1329,43 @@ bool PathTracer::bindTechnique(VkCommandBuffer cmd, Resources& resources)
   return true;
 }
 
+//--------------------------------------------------------------------------------------------------
+// The frame's samples, a pass of the kernel for each: the kernel traces one sample a pixel
+// (processPixel), so that it is compiled once and carries no sums through its traces. The first pass
+// is the frame as `first` describes it. A later one adds its sample to what the passes before it
+// left in the images: it is no first frame, it has the samples before it as its total (an
+// accumulation's and the frame's earlier ones; on a frame DLSS denoises, which replaces the image,
+// the frame's alone) and as its guides' count, and it leaves to the first pass what a frame does
+// once: the selection ray and the count of first hits. The adaptive stop's count of pixels still
+// sampling is the last pass's.
+void PathTracer::cmdTraceFrameSamples(VkCommandBuffer cmd, const shaderio::PathtracePushConstant& first, VkExtent2D size) const
+{
+  const int samples = std::max(m_frameSamples, 1);
+  for(int s = 0; s < samples; s++)
+  {
+    shaderio::PathtracePushConstant pass = first;
+    if(s > 0)
+    {
+      pass.frameSample  = s;
+      pass.flags        = first.flags & ~(shaderio::ePtFirstFrame | shaderio::ePtWriteSelection);
+      pass.totalSamples = ((first.flags & shaderio::ePtUseDlss) ? 0 : first.totalSamples) + s;
+      pass.guideSamples = first.guideSamples + s;
+      pass.hitSignal    = nullptr;
+    }
+    if(s + 1 < samples)
+      pass.adaptiveActive = nullptr;
+    if(samples > 1)
+    {
+      // a pass reads the images the one before it wrote
+      if(s > 0)
+        nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR);
+      vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(shaderio::PathtracePushConstant), &pass);
+    }
+    dispatchRays(cmd, size);
+  }
+}
+
 void PathTracer::dispatchRays(VkCommandBuffer cmd, VkExtent2D size) const
 {
   if(m_renderTechnique == RenderTechnique::RayQuery)
@@ -1522,7 +1558,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
 
   // Samples per frame: the setting (ptSamples), Auto SPP's count, or with DLSS dlssFrameSamples() (1
   // but for the DLSS refine of a still that has held)
-  int  samplesPerFrame = m_adaptiveSampling ? m_adaptiveSamples : m_pushConst.numSamples;
+  int  samplesPerFrame = m_adaptiveSampling ? m_adaptiveSamples : m_samplesPerFrame;
   bool useDlss         = false;
 #if defined(USE_DLSS)
   useDlss = getEffectiveDlssEnabled(resources);
@@ -1666,9 +1702,9 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   const double projYY    = resources.cameraManip->getPerspectiveMatrix()[1][1];
   m_pushConst.pixelAngle = static_cast<float>(2.0 / (std::max(std::abs(projYY), 1e-9) * std::max(double(renderingSize.height), 1.0)));
 
-  // numSamples is the setting (ptSamples); the shader gets this frame's count
+  // The frame's first sample; onRender pushes the later ones' (cmdTraceFrameSamples)
   shaderio::PathtracePushConstant pushConst = m_pushConst;
-  pushConst.numSamples                      = m_frameSamples;
+  pushConst.frameSample                     = 0;
   vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(shaderio::PathtracePushConstant), &pushConst);
   return pushConst;
 }

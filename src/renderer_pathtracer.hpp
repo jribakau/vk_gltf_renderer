@@ -474,6 +474,7 @@ public:
   // The DLSS refine's frames: its samples once the view has held this long, as many as fit this much path trace
   static constexpr double kDlssHoldMs        = 250.0;
   static constexpr double kDlssRefineTraceMs = 33.0;
+  int m_samplesPerFrame{1};  // ptSamples: samples per pixel a frame traces, a pass of the kernel each
   int m_frameSamples{1};  // Samples per pixel traced this frame: ptSamples, fewer on a frame that ends on a stop
   // Samples traced by the last frames, as far back as the profiler's GPU times lag (Auto SPP)
   std::array<int, nvutils::ProfilerTimeline::MAX_FRAME_DELAY + 1> m_recentFrameSamples{};
@@ -528,7 +529,7 @@ public:
   // setting (ptSamples), or when DLSS renders every frame dlssFrameSamples()
   int samplesPerFrame() const
   {
-    return isDlssEveryFrame() ? dlssFrameSamples() : (m_adaptiveSampling ? m_adaptiveSamples : m_pushConst.numSamples);
+    return isDlssEveryFrame() ? dlssFrameSamples() : (m_adaptiveSampling ? m_adaptiveSamples : m_samplesPerFrame);
   }
 
   // DLSS-RR renders every frame, one sample each. Not with the still's denoiser on: DLSS renders only
@@ -614,6 +615,7 @@ private:
   // Bind the selected technique's pipeline and descriptors once per frame (false: it has no
   // pipeline), then launch it over `size`, once per launch; the caller times each launch.
   bool bindTechnique(VkCommandBuffer cmd, Resources& resources);
+  void cmdTraceFrameSamples(VkCommandBuffer cmd, const shaderio::PathtracePushConstant& first, VkExtent2D size) const;
   void dispatchRays(VkCommandBuffer cmd, VkExtent2D size) const;
   // Find the medium the camera is in (ePtProbeCameraMedium) on the bound pipeline, then push
   // `pushConst` back for the frame.
