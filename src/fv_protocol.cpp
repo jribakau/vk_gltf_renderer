@@ -88,7 +88,7 @@ namespace {
 // point), view.set's solo (Isolate) and the scene topic's `solo`, and prop.set's `label`.
 // 47: a node inside a prop: node.set (hidden, moved, or back), the nodes topic's `hidden`, the
 // selection's `state` for a node, and scene.state's `nodes`.
-// 48: several selected: select's props, add and toggle, the selection topic's `props`, a Ctrl+click
+// 48: several selected: select's props, add and toggle, the selection topic's `props`, a Ctrl+click (since 60 a Ctrl+Shift+click)
 // toggling, the gizmo moving them together; prop.setMany; prop.add's group `props` and prop.ungroup.
 // 49: the gizmo's space ("world", "local") and snap ({move, rotate, scale} | null) in view.set.
 // 50: prop.place, the selection put where the pointer's ray meets the scene.
@@ -106,7 +106,9 @@ namespace {
 // its strength as a spot light prop's), in the camera topic's and a camera prop's lens.
 // 59: the hover: view.set's `hover` and the input event {t: "hover", x, y} (without x and y, the
 // pointer left): what is under a resting pointer is outlined, a character whole, a set by its nodes.
-constexpr int kProtocolVersion = 59;
+// 60: a Ctrl+click picks whatever view.set's `select` says (view.set's `selectCtrl` turns that off),
+// and it is a Ctrl+Shift+click that puts a prop in the selection or takes it out (it was a Ctrl+click).
+constexpr int kProtocolVersion = 60;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

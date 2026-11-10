@@ -3962,7 +3962,7 @@ TEST(FvHost, aDazPropsHiddenNodeStaysHiddenAsItPoses)
 }
 
 //--------------------------------------------------------------------------------------------------
-// Several selected: select's props, add and toggle, a Ctrl+click; the gizmo moves them together as one
+// Several selected: select's props, add and toggle, a Ctrl+Shift+click; the gizmo moves them together as one
 // step; a group holds them, ungrouped they keep their place.
 
 namespace {
@@ -4018,13 +4018,49 @@ TEST(FvHost, severalAreSelectedTheFirstThePrimary)
   EXPECT_EQ(selectedOf(t.rig), Json::array({t.c}));
 }
 
-// A Ctrl+click on a prop puts it in the selection; on nothing it changes nothing
-TEST(FvHost, aCtrlClickTogglesAPropInTheSelection)
+// A Ctrl+click selects with Click to select off, where a plain click picks nothing; not while the
+// app keeps the clicks for itself (its pixel readout)
+TEST(FvHost, ACtrlClickSelectsWhateverSelectSays)
+{
+  HostRig rig;
+  const auto click = [](double x, bool ctrl) {
+    return Json::array({{{"t", "down"}, {"b", 0}, {"x", x}, {"y", 180}, {"ctrl", ctrl}}, {{"t", "up"}, {"b", 0}, {"x", x}, {"y", 180}, {"ctrl", ctrl}}});
+  };
+  ASSERT_TRUE(rig.cmd("view.set", {{"select", false}}).value("ok", false));
+  rig.input(click(320, false));
+  EXPECT_TRUE(rig.renderer.picks.empty());
+  rig.input(click(320, true));
+  ASSERT_EQ(rig.renderer.picks.size(), 1u);
+  EXPECT_FALSE(rig.renderer.picks[0].second) << "a click's pick, not a double-click's turn of the view";
+  // a Ctrl+drag pans and picks nothing
+  rig.input(Json::array({{{"t", "down"}, {"b", 0}, {"x", 600}, {"y", 180}, {"ctrl", true}},
+                         {{"t", "move"}, {"x", 640}, {"y", 180}, {"ctrl", true}},
+                         {{"t", "up"}, {"b", 0}, {"x", 640}, {"y", 180}, {"ctrl", true}}}));
+  EXPECT_EQ(rig.renderer.picks.size(), 1u);
+  ASSERT_TRUE(rig.cmd("view.set", {{"selectCtrl", false}}).value("ok", false));
+  rig.input(click(900, true));
+  EXPECT_EQ(rig.renderer.picks.size(), 1u);
+}
+
+// A Ctrl+click on a prop selects it alone, as a plain click does; a Ctrl+Shift+click puts it in the
+// selection, and on nothing changes nothing
+TEST(FvHost, ACtrlShiftClickTogglesAPropInTheSelection)
 {
   Three t;
   ASSERT_TRUE(t.rig.cmd("view.set", {{"helpers", false}}).value("ok", false));
   ASSERT_TRUE(t.rig.cmd("select", {{"prop", t.a}}).value("ok", false));
-  t.rig.input(Json::array({{{"t", "down"}, {"x", 100}, {"y", 100}, {"b", 0}}, {{"t", "up"}, {"x", 100}, {"y", 100}, {"b", 0}, {"ctrl", true}}}));
+  rs::EntityId second;
+  for(const rs::EntityId root : t.rig.renderer.hostScene().roots())
+    if(const rs::Entity* e = t.rig.renderer.hostScene().entity(root); e && e->name == "Point light 2")
+      second = root;
+  ASSERT_FALSE(second.isNone());
+  t.rig.input(Json::array({{{"t", "down"}, {"x", 400}, {"y", 100}, {"b", 0}}, {{"t", "up"}, {"x", 400}, {"y", 100}, {"b", 0}, {"ctrl", true}}}));
+  ASSERT_TRUE(t.rig.renderer.pickObserver);
+  t.rig.renderer.pickObserver(HostRenderer::InstancePick{second, {}}, glm::vec3(1, 1, 0));
+  t.rig.host->onUpdate();
+  EXPECT_EQ(selectedOf(t.rig), Json::array({t.b})) << t.rig.topic("selection").dump();
+  ASSERT_TRUE(t.rig.cmd("select", {{"prop", t.a}}).value("ok", false));
+  t.rig.input(Json::array({{{"t", "down"}, {"x", 100}, {"y", 100}, {"b", 0}}, {{"t", "up"}, {"x", 100}, {"y", 100}, {"b", 0}, {"ctrl", true}, {"shift", true}}}));
   ASSERT_TRUE(t.rig.renderer.pickObserver);
   rs::EntityId lightB;
   for(const rs::EntityId root : t.rig.renderer.hostScene().roots())

@@ -90,8 +90,8 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
 {
   m_renderer->setPickObserver([this](const std::optional<HostRenderer::InstancePick>& pick, const glm::vec3& hit) {
     const fv::HostAddress at = pick ? m_map.pick(pick->entity, pick->material) : fv::HostAddress{};
-    // a Ctrl+click puts a prop in the selection or takes it out, and on nothing changes nothing
-    if(m_clickCtrl && m_pick == "object")
+    // a Ctrl+Shift+click puts a prop in the selection or takes it out, and on nothing changes nothing
+    if(m_clickAdd && m_pick == "object")
     {
       if(at.prop >= 0)
         toggleMember(m_props[size_t(at.prop)].id);
@@ -364,6 +364,8 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
       }
       if(args.contains("select"))
         m_select = args["select"].get<bool>();
+      if(args.contains("selectCtrl"))
+        m_selectCtrl = args["selectCtrl"].get<bool>();
       if(args.contains("helpers"))
         m_helpers = args["helpers"].get<bool>();
       if(args.contains("hover"))
@@ -558,7 +560,9 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
     {
       const bool click = m_click && std::hypot(x - m_x0, y - m_y0) < 4;
       m_click          = false;
-      if(!click || !m_select)
+      // a plain click selects where the app says so (Click to select); a Ctrl+click does either way
+      const bool ctrl = e.value("ctrl", false);
+      if(!click || !(m_select || (ctrl && m_selectCtrl)))
         continue;
       // the second click of a double-click picks nothing: the first one selected, and picking again
       // would let go of a mesh it selected (the renderer's toggle); a third click picks again
@@ -572,7 +576,7 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
       const VkExtent2D size = m_renderer->renderSize();
       if(size.width == 0 || size.height == 0)
         continue;
-      m_clickCtrl = e.value("ctrl", false);
+      m_clickAdd = ctrl && e.value("shift", false);
       // a camera or light marker under the pointer is the pick; they have nothing the ray could hit
       if(m_helpers && m_helperPick)
         if(const std::string prop = m_helperPick({float(x), float(y)}); !prop.empty())
@@ -580,7 +584,7 @@ std::vector<fv::Json> FvView::onInput(const std::vector<fv::Json>& events)
           const auto it = std::find_if(m_props.begin(), m_props.end(), [&](const PropNodes& p) { return p.id == prop; });
           if(it != m_props.end())
           {
-            if(m_clickCtrl && m_pick == "object")
+            if(m_clickAdd && m_pick == "object")
               toggleMember(prop);
             else
             {

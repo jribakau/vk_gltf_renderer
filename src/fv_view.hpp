@@ -24,21 +24,26 @@
 // Commands (application thread; the host runs them there):
 //   select        {prop, node?} or {prop: null}   a prop (its root), or a node of its "nodes/<prop>" topic;
 //                 {props: [id]}                   several, the first the primary (the gizmo's, the panels');
-//                 {prop, add: true} or {prop, toggle: true}   one more, or one in or out (a Ctrl+click
-//                                               in the viewport toggles too)
+//                 {prop, add: true} or {prop, toggle: true}   one more, or one in or out (a
+//                                               Ctrl+Shift+click in the viewport toggles too)
 //   camera.view   {name}                     front, back, left, right, top, bottom, threeQuarter
 //   camera.frame  {prop?, selected?}         the whole scene, a prop, or the selection
 //   camera.set    {focalLength, dof, fStop, focusMode, focusDistance, blades, bladeRotation, flash}   the lens of the view in use
 //   camera.get    {}                         -> {position, target, up, focalLength}
 //   camera.goto   {position, target, up?, focalLength?}
-//   view.set      {display, grid, gizmo, pick, select, transform, space, snap, helpers, hover, frameAspect, solo}  display: shaded, clay, wireframe, normals;
+//   view.set      {display, grid, gizmo, pick, select, selectCtrl, transform, space, snap, helpers, hover, frameAspect, solo}  display: shaded, clay, wireframe, normals;
 //                                               pick: "object" (the default: a click selects the prop),
 //                                               "mesh" (the node hit), "bone" (the posed bone nearest) or
 //                                               "pull" (a drag on a figure in Physics mode pulls it, the
 //                                               view still orbiting from anywhere else);
-//                                               select: whether a click picks at all (true, the default;
-//                                               off, the selection stays as it is and a double-click
+//                                               select: whether a plain click picks (true, the default;
+//                                               off, it leaves the selection as it is and a double-click
 //                                               still centres the view);
+//                                               selectCtrl: whether a Ctrl+click picks, whatever `select`
+//                                               says (true, the default; protocol 60; the app turns it
+//                                               off while its pixel readout takes the clicks). With
+//                                               Shift too, an object pick puts the prop in the selection
+//                                               or takes it out;
 //                                               transform: the gizmo's "move", "rotate" or "scale";
 //                                               space: its handles along the world's axes (what the prop
 //                                               rides on) or the prop's own ("world", "local");
@@ -145,7 +150,7 @@ public:
   // The prop the selection is in, or "".
   const std::string& selectedProp() const { return m_selectedProp; }
   // every prop selected, the primary (selectedProp) first: select's props, add and toggle, and a
-  // Ctrl+click in the viewport, gather several; any other selection is one again
+  // Ctrl+Shift+click in the viewport, gather several; any other selection is one again
   const std::vector<std::string>& selectedProps() const { return m_selectedProps; }
   // the selection, if it is in `prop`, cleared and published (a prop leaving the scene)
   void deselect(const std::string& prop);
@@ -232,7 +237,8 @@ private:
   std::optional<glm::dvec2>                     m_inspectAt;  // the pixel read out (view.inspect), render pixels; none: off
   bool                                          m_pixelTime = false;  // the display is the Time view
   std::string                                   m_pick      = "object";
-  bool                                          m_select    = true;  // a click picks (view.set select)
+  bool                                          m_select    = true;  // a plain click picks (view.set select)
+  bool                                          m_selectCtrl = true;  // a Ctrl+click picks (view.set selectCtrl)
   std::string                                   m_transform = "move";
   bool                                          m_helpers   = true;
   bool                                          m_hover     = false;  // what is under a resting pointer is outlined (view.set hover)
@@ -242,9 +248,10 @@ private:
   std::function<bool(const std::string&, const glm::vec2&)> m_pull;
   std::function<void(const std::vector<std::string>&)>      m_solo;
   std::function<fv::Json(const std::string&, int)>          m_nodeState;
-  // the props selected, the primary first (m_selectedProp), and whether the click being picked held Ctrl
+  // the props selected, the primary first (m_selectedProp), and whether the click being picked adds
+  // to them or takes out (Ctrl+Shift held)
   std::vector<std::string> m_selectedProps;
-  bool                     m_clickCtrl = false;
+  bool                     m_clickAdd = false;
   HostRenderer::GizmoOptions m_gizmo;  // view.set's space and snap
   // a prop in or out of the selection, the primary moving to what is left
   void toggleMember(const std::string& prop);
