@@ -134,11 +134,11 @@ Host — build the emitter list (`rs::Residency`, with `buildEmissiveTable` in `
    read, so the factor alone weighs it; 0 for an all-black texture, which is then no light).
 3. For each triangle of that primitive, in order, store a **reference** — render node, primitive,
    triangle index — plus the radiance (not baked vertices, so the shader reads live
-   geometry/transforms) and its **selection**: the weight over its area that both MIS sides read. A
+   geometry/transforms) and its **weight**, which both MIS sides read. A
    textured emitter's light sample reads the texel at its point; the pdf, and a BSDF hit's MIS weight
-   (`emitterSelection`, which finds the hit triangle's record at its leaf's first plus its primitive
-   index, never the material row), use the selection, which is what picked it. A degenerate triangle
-   keeps its place at selection 0, never sampled. A texture that lands later with a different mean
+   (`emitterWeight`, which finds the hit triangle's record at its leaf's first plus its primitive
+   index, never the material row), use the weight, which is what picked it. A degenerate triangle
+   keeps its place at weight 0, never sampled. A texture that lands later with a different mean
    changes the row, and the residency rebuilds the table in that sync (`m_relitSlots`).
 4. A **textured** emitter's triangles are each weighed by their own texels: the residency asks the
    backend once for its texture's mean colour over every triangle of its drawn run
@@ -147,8 +147,8 @@ Host — build the emitter list (`rs::Residency`, with `buildEmissiveTable` in `
    and transform (`Residency::TexelKey`), and builds the table again when it comes back a few frames
    later; until then, and on a backend without the pass, the emitter is weighed whole. A facade whose
    emission mask is mostly black then spends its light samples on its lit signs.
-5. Compute the triangle's **world-space area** (verts × node transform) and give it a **selection
-   weight = area × selection** (see the defensive tweak below). Build a **Vose alias table** from the
+5. Compute the triangle's **world-space area** (the mesh record's vertices × node transform) and give
+   it a **weight = area × selection luminance** (see the defensive tweak below). Build a **Vose alias table** from the
    weights (`aliasProb` / `aliasIndex` per triangle) for O(1) GPU selection, plus the totals
    (`numEmissiveTriangles`, `emissiveTotalWeight`).
 6. Upload the flat list + those scalars to the scene descriptor.
@@ -189,11 +189,11 @@ walk; with a light or two there is nothing to save.
 **Details / why it's shaped this way**
 
 The list is derived data, regenerated wholesale (never patched). It stores references, but each
-emitter's **selection weight is its world-space area × luminance**, so it also depends on the
+emitter's **weight is its world-space area × luminance**, so it also depends on the
 emitter's transform. The sync rebuilds it when materials, the emitter set, or an emitter's transform
-change. The shader samples the emitter at its **live** GPU transform, and the pdf cancels the world
-area (below), so the host table and the live geometry must agree on that area — a stale table biases
-the estimate, it does not merely add noise.
+change. The shader samples the emitter's **live** geometry, and its pdfs are of the triangle's area
+there (below), so a table that lags or never sees a deformation only sends the samples to the wrong
+places: more noise, the same picture.
 
 Selection is **power-weighted** (an O(1) **Vose alias table**, not a CDF binary search), with a
 **defensive floor** so a dim emitter next to a bright one is never starved: each emitter's mean
@@ -201,12 +201,20 @@ luminance `L` is pulled toward the scene's area-weighted mean, `(1−f)·L + f·
 (`EMISSIVE_DEFENSIVE_FRACTION`, host only), and that weight is shared among its triangles by area
 times their own luminance (`Emitter::triangleLuminance` where it has one, so a black part of a
 textured emitter stays at 0). The alias table samples the same distribution
-`P(i) = weightᵢ / emissiveTotalWeight`, so the pdf is unchanged. The world area **cancels** in the
-solid-angle pdf (`pdf = selectionᵢ · dist² / (W · cos)`, with `W` the total or the leaf's weight), so
-the BSDF-hit MIS weight is recoverable from local hit geometry and the hit triangle's record alone;
-the shader holds none of the host's weighting policy. The weight uses world area, so the sync rebuilds the list whenever
-an emitter's transform changes. Morph/skin-deformed emitters are the one remaining case that falls
-back to last-rebuilt-pose sampling. The scene-descriptor scalars refresh whenever the count
+`P(i) = weightᵢ / emissiveTotalWeight`, so the pdf is unchanged. The point is then drawn evenly over
+the triangle as the shader reads it, so the solid-angle pdf is
+`weightᵢ · dist² / (W · areaᵢ · cos)` (`emissiveTrianglePdf`), with `W` the total or the leaf's weight
+and `areaᵢ` the triangle's world area **there**, which both sides compute from its vertices
+(`sampleEmissiveTriangle`, `triangleWorldArea` at a BSDF hit). Until 2026-11-10 the table stored the
+weight over its own area and the pdf let the area cancel, which is right only while the table's area
+is the live one: a skinned emitter's table is built from the mesh record's positions, before its skin
+(and before a glTF morph's weights), so a triangle a pose had stretched was dimmed by the stretch, and
+one a dial was still moving by the lag. The BSDF-hit MIS weight is recoverable from local hit geometry
+and the hit triangle's record alone; the shader holds none of the host's weighting policy. The weight
+uses world area, so the sync rebuilds the list whenever an emitter's transform changes.
+Skin- and morph-deformed emitters are still **weighed and bounded** by the mesh record's positions
+(the triangles' shares within the emitter, and its leaf's centre, radius and cone in the light tree):
+that costs noise where a pose has carried the emitter far from its bind pose, not correctness. The scene-descriptor scalars refresh whenever the count
 **or** the weights change, so radiance-only edits (e.g. dragging emissive strength) take effect
 immediately.
 

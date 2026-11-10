@@ -70,9 +70,11 @@ struct EmissiveTable
 };
 
 // Every triangle of the emitters that emit, each emitter's in order, weighted by area times its
-// selection (EmissiveTriangle::selection: its luminance, with each emitter's mean pulled toward the
-// area-weighted mean so a dim emitter is never starved; 0 for a degenerate or black triangle, which is
-// never sampled), with a Vose alias table over those weights for O(1) selection. With `maxCut` above 0, one leaf per emitter
+// selection luminance (EmissiveTriangle::weight: the luminance with each emitter's mean pulled toward
+// the area-weighted mean so a dim emitter is never starved; 0 for a degenerate or black triangle, which
+// is never sampled), with a Vose alias table over those weights for O(1) selection. The area is of
+// `Emitter::positions` under `world`: for a mesh a skin or a morph deforms on the GPU, its undeformed
+// one, which the shader's pdfs do not rely on (emissiveTrianglePdf). With `maxCut` above 0, one leaf per emitter
 // (shaderio::EmissiveGroup), each with an alias table of its own over its triangles, in a light tree
 // (shaders/light_tree.h.slang) whose cut holds at most `maxCut` nodes; with 0, one table over all of
 // them.

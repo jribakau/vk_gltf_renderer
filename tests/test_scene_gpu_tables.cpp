@@ -115,7 +115,7 @@ TEST(SceneGpuTables, TheAliasTableSamplesTheWeightsItWasBuiltFrom)
 }
 
 // An emitter's triangles keep their places (first + triangleID, as a BSDF hit reads its record), a
-// degenerate or black one at selection 0 and never picked; a triangle's own luminance shares out its
+// degenerate or black one at weight 0 and never picked; a triangle's own luminance shares out its
 // emitter's defensive weight, so the black part of a textured emitter stays black, and the leaf's
 // bounds hold only what can be sampled; an emitter with nothing to sample has no entries
 TEST(SceneGpuTables, AnEmittersTrianglesKeepTheirPlacesAndTheirOwnLuminance)
@@ -142,15 +142,16 @@ TEST(SceneGpuTables, AnEmittersTrianglesKeepTheirPlacesAndTheirOwnLuminance)
       EXPECT_EQ(table.triangles[table.groups[g].first + t].triangleID, t);
       EXPECT_EQ(table.triangles[table.groups[g].first + t].renderNodeID, g);
     }
-  EXPECT_EQ(table.triangles[1].selection, 0.f) << "degenerate";
-  EXPECT_EQ(table.triangles[3].selection, 0.f) << "black";
+  EXPECT_EQ(table.triangles[1].weight, 0.f) << "degenerate";
+  EXPECT_EQ(table.triangles[3].weight, 0.f) << "black";
 
   // the means: emitter 0 lights 1.0 of area at 1, emitter 1 lights 0.5 at 2
   const float f    = shaderio::EMISSIVE_DEFENSIVE_FRACTION;
   const float mean = (1.f * 1.f + 0.5f * 2.f) / 1.5f;
   EXPECT_NEAR(table.meanLum, mean, 1e-5f);
-  EXPECT_NEAR(table.triangles[0].selection, (1.f - f) * 1.f + f * mean, 1e-5f);
-  EXPECT_NEAR(table.triangles[4].selection, (1.f - f) * 2.f + f * mean, 1e-5f) << "its emitter's mean is its own";
+  // a triangle's weight: its area (half a unit square) times its selection luminance
+  EXPECT_NEAR(table.triangles[0].weight, 0.5f * ((1.f - f) * 1.f + f * mean), 1e-5f);
+  EXPECT_NEAR(table.triangles[4].weight, 0.5f * ((1.f - f) * 2.f + f * mean), 1e-5f) << "its emitter's mean is its own";
   for(uint32_t g = 0; g < 2; g++)
   {
     const shaderio::EmissiveGroup& group = table.groups[g];
@@ -160,11 +161,11 @@ TEST(SceneGpuTables, AnEmittersTrianglesKeepTheirPlacesAndTheirOwnLuminance)
     {
       picked[i] += table.triangles[i].aliasProb / double(group.count);
       picked[table.triangles[i].aliasIndex] += (1.0 - table.triangles[i].aliasProb) / double(group.count);
-      sum += 0.5 * table.triangles[i].selection;  // every triangle here has area 0.5, or selection 0
+      sum += table.triangles[i].weight;
     }
     EXPECT_NEAR(group.weight, sum, 1e-5);
     for(uint32_t i = group.first; i < group.first + group.count; i++)
-      EXPECT_NEAR(picked[i], 0.5 * table.triangles[i].selection / group.weight, 1e-6) << "triangle " << i;
+      EXPECT_NEAR(picked[i], table.triangles[i].weight / group.weight, 1e-6) << "triangle " << i;
   }
   // the second leaf bounds its lit triangle at the origin, not the black one at x = 10
   EXPECT_LT(table.groups[1].center.x, 1.f);

@@ -161,7 +161,7 @@ void main(uint3 id : SV_DispatchThreadID)
   GltfScene       scene = pushConst.gltfScene[0];
   float v = frame.envBlur + frame.sunDisk[0].horizonMu + pushConst.cameraMedium[0].anisotropy;
   v += scene.materials[i].pbrRoughnessFactor + float(scene.textureInfos[i].index) + float(scene.renderNodes[i].materialID);
-  v += scene.renderPrimitives[i].vertexBuffer.positions[i].x + scene.lights[i].intensity + scene.emissiveTriangles[i].selection;
+  v += scene.renderPrimitives[i].vertexBuffer.positions[i].x + scene.lights[i].intensity + scene.emissiveTriangles[i].weight;
   v += scene.emissiveGroups[i].weight + float(pushConst.hitSignal[i]) + frame.skyOmi.gradient.sunCurve + frame.skyOmi.plain.color.x;
   v += scene.waterGrids[i].damp + scene.waterItems[i].height + float(scene.waterCells[i].x + scene.waterRefs[i]);
   output[i] = v;
@@ -397,7 +397,7 @@ HostStruct emissiveTriangle()
   using Self = EmissiveTriangle;
   return {"EmissiveTriangle", sizeof(Self), {
     F(radiance), F(aliasProb), F(renderNodeID), F(renderPrimID), F(triangleID), F(doubleSided), F(aliasIndex),
-    F(selection)
+    F(weight)
   }};
 }
 

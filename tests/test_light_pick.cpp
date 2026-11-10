@@ -570,3 +570,31 @@ TEST(LightPick, ALightLeftToTheBsdfRayComesOnce)
   EXPECT_NEAR(leftToBsdf / reference, 1.0, 0.01);
   EXPECT_LT(allDropped / reference, 0.85);
 }
+
+// A light sample of an emissive triangle is picked by the table's weight, then drawn evenly over the
+// triangle as the shader reads it, and its pdf is of that. The table weighs a skinned emitter's
+// triangles by the mesh's own positions, areas a pose has since changed: with the pdf by the area that
+// is there, the samples still measure what is there (here the emitter's area, the simplest thing to
+// measure). With the table's area cancelled out of the pdf, as it once was, they measured the table's.
+TEST(LightPick, AnEmissiveTrianglesPdfIsOfItsAreaAsItIsNow)
+{
+  // three triangles the table weighed at areas 1, 1 and 2 (luminance 3, 1, 1); posed, they are 4, 0.5 and 2
+  const float tableArea[] = {1.0f, 1.0f, 2.0f}, luminance[] = {3.0f, 1.0f, 1.0f}, area[] = {4.0f, 0.5f, 2.0f};
+  float       weight[3], total = 0.0f;
+  for(int i = 0; i < 3; i++)
+  {
+    weight[i] = tableArea[i] * luminance[i];
+    total += weight[i];
+  }
+  const float dist2 = 6.25f, cosLight = 0.3f;  // any: they turn the pdf to one over area and back
+  double      estimate = 0.0, cancelled = 0.0;
+  for(int i = 0; i < 3; i++)
+  {
+    const double chance  = weight[i] / total;
+    const double pdfArea = emissiveTrianglePdf(weight[i], total, area[i], dist2, cosLight) * cosLight / dist2;
+    estimate += chance / pdfArea;
+    cancelled += chance / (luminance[i] / total);  // selection over the total: the table's area cancelled
+  }
+  EXPECT_NEAR(estimate, 4.0 + 0.5 + 2.0, 1e-5);
+  EXPECT_NEAR(cancelled, 1.0 + 1.0 + 2.0, 1e-5) << "the table's areas, not the emitter's";
+}

@@ -407,8 +407,9 @@ EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters, int maxCut)
   // Second pass: defensive selection, per emitter. Each emitter's mean luminance L is pulled toward
   // the area-weighted mean over all of them, so a dim emitter is never starved: its weight is its area
   // times (1-f)*L + f*meanLum, shared among its triangles by area times their own luminance, so a black
-  // triangle of a textured emitter stays at 0. A triangle's selection is its weight over its area,
-  // which the shader's pdfs read (the area cancels in the solid-angle pdf).
+  // triangle of a textured emitter stays at 0. The shader's pdfs read a triangle's weight, over the
+  // area it has there (emissiveTrianglePdf): the area here is the mesh's own positions', which a skin
+  // or a morph on the GPU has since moved, and only says where the samples go.
   const float         meanLum = (sumArea > 0.0) ? static_cast<float>(sumAreaLum / sumArea) : 0.0f;
   const float         f       = shaderio::EMISSIVE_DEFENSIVE_FRACTION;
   std::vector<double> triWeight(tris.size(), 0.0);
@@ -420,8 +421,8 @@ EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters, int maxCut)
     const float  scale = ((1.0f - f) * mean + f * meanLum) / mean;
     for(size_t i = first; i < end; ++i)
     {
-      tris[i].selection = triLum[i] * scale;
-      triWeight[i]      = static_cast<double>(triArea[i]) * tris[i].selection;
+      triWeight[i]   = static_cast<double>(triArea[i]) * (triLum[i] * scale);
+      tris[i].weight = static_cast<float>(triWeight[i]);
       totalWeight += triWeight[i];
     }
   }

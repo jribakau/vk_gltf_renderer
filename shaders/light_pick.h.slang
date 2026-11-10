@@ -22,6 +22,18 @@ static const int LIGHT_PICK_MAX_LIGHTS = 64;
 // figure shades, or a glossy lobe's reflection of a light the irradiance calls dim.
 static const float LIGHT_PICK_DEFENSIVE = 0.1F;
 
+// The solid-angle pdf of a point of an emissive triangle, seen `dist2` away at `cosLight` to its
+// normal: the triangle picked with `weight` among `totalWeight` (EmissiveTriangle::weight; all the
+// triangles', or its leaf's), the point then even over its `area`. The area is the triangle's as the
+// shader reads it now, in world space, on both MIS sides -- not the one the table weighed it with: a
+// skinned emitter's table is built from the mesh's own positions, and with that area cancelled out of
+// the pdf (as it once was) a triangle a pose had stretched was dimmed by the stretch. The table's
+// weights now only say where the samples go.
+float emissiveTrianglePdf(float weight, float totalWeight, float area, float dist2, float cosLight)
+{
+  return weight * dist2 / (totalWeight * area * cosLight);
+}
+
 // The cosine at which a surface of unit `normal` can at best face a sphere of `radius` whose centre
 // lies along `toCenter` (PBRT-v4's LightBounds::Importance, Falcor's boundCosineTerm):
 // cos(max(0, theta - thetaB)), theta from the normal to the centre and thetaB the half angle the sphere

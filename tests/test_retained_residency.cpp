@@ -2528,13 +2528,13 @@ TEST(RetainedResidency, ATexturedEmittersTrianglesWeighTheirOwnTexels)
   expectClean(scene, residency, gpu, "asked: ");
   EXPECT_EQ(gpu.texelAveragesAsked(), 8u);
   ASSERT_EQ(residency.emissiveCount(), 8u);
-  const auto selections = [&] {
+  const auto weights = [&] {
     std::vector<float> out(8);
     for(size_t i = 0; i < 8; i++)
-      out[i] = tableRow<shaderio::EmissiveTriangle>(gpu, residency.emissiveTable(), i).selection;
+      out[i] = tableRow<shaderio::EmissiveTriangle>(gpu, residency.emissiveTable(), i).weight;
     return out;
   };
-  for(float s : selections())
+  for(float s : weights())
     EXPECT_GT(s, 0.f) << "weighed whole until the averages come";
 
   for(int frame = 0; frame < 4; frame++)
@@ -2544,12 +2544,12 @@ TEST(RetainedResidency, ATexturedEmittersTrianglesWeighTheirOwnTexels)
   }
   expectClean(scene, residency, gpu, "landed: ");
   EXPECT_EQ(residency.texelMeansHeld(), 1u);
-  const std::vector<float> landed = selections();
+  const std::vector<float> landed = weights();
   for(size_t t = 0; t < 8; t++)
   {
     const bool lit = (t / 2) % 2 == 1;  // cells (y, x) in order, two triangles each: x = 1 is u >= 0.5
     if(lit)
-      EXPECT_NEAR(landed[t], 2.f, 1e-5f) << "triangle " << t << ": the factor's luminance, its only emitter's mean";
+      EXPECT_NEAR(landed[t], 0.5f * 2.f, 1e-5f) << "triangle " << t << ": half a cell at the factor's luminance, its only emitter's mean";
     else
       EXPECT_EQ(landed[t], 0.f) << "triangle " << t << " is black";
   }
@@ -2562,8 +2562,8 @@ TEST(RetainedResidency, ATexturedEmittersTrianglesWeighTheirOwnTexels)
   residency.sync(scene);
   expectClean(scene, residency, gpu, "brighter: ");
   EXPECT_EQ(gpu.texelAveragesAsked(), 8u);
-  EXPECT_NEAR(tableRow<shaderio::EmissiveTriangle>(gpu, residency.emissiveTable(), 2).selection, 4.f, 1e-5f);
-  EXPECT_EQ(tableRow<shaderio::EmissiveTriangle>(gpu, residency.emissiveTable(), 0).selection, 0.f);
+  EXPECT_NEAR(tableRow<shaderio::EmissiveTriangle>(gpu, residency.emissiveTable(), 2).weight, 0.5f * 4.f, 1e-5f);
+  EXPECT_EQ(tableRow<shaderio::EmissiveTriangle>(gpu, residency.emissiveTable(), 0).weight, 0.f);
   drain(gpu);
   for(const std::string& p : residencyLeaks(residency, gpu))
     ADD_FAILURE() << p;

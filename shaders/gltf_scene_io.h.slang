@@ -82,10 +82,12 @@ struct EmissiveTriangle
   uint   triangleID;    // triangle within the primitive
   uint   doubleSided;   // 1 = emit from both faces
   uint   aliasIndex;    // Vose alias table: fallback bin (with emitter groups, within the triangle's group)
-  // its selection weight over its area: what both MIS sides weigh it by (a light sample's pdf, a BSDF
-  // ray's MIS weight on hitting it). 0: never sampled (a degenerate or black triangle, kept so an
-  // emitter's triangles sit at first + triangleID).
-  float  selection;
+  // its weight among the triangles it is picked with (all of them, or its leaf's): the chance of the
+  // pick is this over their total. What both MIS sides read (emissiveTrianglePdf), with the triangle's
+  // area as it is now: the point is drawn evenly over the triangle the shader reads, which a skin or a
+  // morph has moved since the table weighed it by the mesh's own positions. 0: never sampled (a
+  // degenerate or black triangle, kept so an emitter's triangles sit at first + triangleID).
+  float  weight;
 };
 
 // A node of the emitters' light tree (light_tree.h.slang). A leaf is the emissive triangles of one

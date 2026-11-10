@@ -492,6 +492,10 @@ Some things about the transport are worth knowing before touching it:
   bit-identical to before the switch. The test turns the firefly clamp off (`--ptFireflyClamp 0`):
   it cuts one technique's rare bright samples more than the other's. A command line's clamp holds
   when the dome loads; before 2026-11-08 `calibrateFireflyClamp` set it again from the dome.
+  `tests/render/emitter_skinned.py` uses the modes on an emitter a skin has stretched, against the
+  same surface unskinned: the light table knows the first by its mesh's own positions, so the test
+  fails if an emissive triangle's pdf is of any area but the one drawn
+  ([RENDERING_ARCHITECTURE.md](RENDERING_ARCHITECTURE.md), the emissive table).
 - **A still's shadow rays are traced as often as they can matter** (`ptShadowShare`,
   `SceneFrameInfo::shadowRayShare`). A light sample that would add less than the share of the pixel's
   mean so far, were the light to reach it, has its shadow ray traced with the chance of its size
