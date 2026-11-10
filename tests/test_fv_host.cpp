@@ -4075,6 +4075,77 @@ TEST(FvHost, ACtrlShiftClickTogglesAPropInTheSelection)
   EXPECT_EQ(selectedOf(t.rig), Json::array({t.b, t.a}));
 }
 
+// A click on a prop selects it whole; on a set, the part hit (what the hover outlines)
+TEST(FvHost, aClickOnASetSelectsThePartHit)
+{
+  HostRig           rig;
+  const std::string stool = addDaz(rig, {{"rel", "Props/Test/Box Stool.duf"}});
+  int               node  = nodeOfKind(rig, stool, "skinned");
+  if(node < 0)
+    node = nodeOfKind(rig, stool, "mesh");
+  ASSERT_GE(node, 0) << rig.topic("nodes/" + stool).dump();
+  ASSERT_TRUE(rig.cmd("select", {{"prop", stool}, {"node", node}}).value("ok", false));
+  const rs::EntityId part = rig.renderer.selectedEntity();
+  ASSERT_FALSE(part.isNone());
+  ASSERT_TRUE(rig.cmd("select", {{"prop", nullptr}}).value("ok", false));
+  ASSERT_TRUE(rig.renderer.pickObserver);
+  const auto click = [&](double x) {
+    rig.input(Json::array({{{"t", "down"}, {"x", x}, {"y", 100}, {"b", 0}}, {{"t", "up"}, {"x", x}, {"y", 100}, {"b", 0}}}));
+    rig.renderer.pickObserver(HostRenderer::InstancePick{part, {}}, glm::vec3(0));
+    rig.host->onUpdate();
+    return rig.topic("selection");
+  };
+  Json sel = click(100);
+  EXPECT_EQ(sel.value("prop", ""), stool);
+  EXPECT_TRUE(sel["node"].is_null()) << sel.dump();
+  EXPECT_NE(rig.renderer.selectedEntity(), part);
+
+  const Json kind = rig.cmd("prop.set", {{"prop", stool}, {"kind", "set"}});
+  ASSERT_TRUE(kind.value("ok", false)) << kind.dump();
+  ASSERT_TRUE(rig.settle());
+  sel = click(400);
+  EXPECT_EQ(sel.value("prop", ""), stool);
+  EXPECT_EQ(sel.value("node", -1), node) << sel.dump();
+  EXPECT_EQ(rig.renderer.selectedEntity(), part);
+  EXPECT_EQ(selectedOf(rig), Json::array({stool}));
+}
+
+// The gizmo on a selected part of a prop (object picking) moves it as node.set does, the drag one
+// step; a part that goes where its bones are gets no gizmo
+TEST(FvHost, theGizmoMovesASelectedPart)
+{
+  Seated    s;
+  const int node = nodeOfKind(s.rig, s.box, "mesh");
+  ASSERT_GE(node, 0) << s.rig.topic("nodes/" + s.box).dump();
+  ASSERT_TRUE(s.rig.cmd("select", {{"prop", s.box}, {"node", node}}).value("ok", false));
+  const rs::EntityId part = s.rig.renderer.selectedEntity();
+  ASSERT_FALSE(part.isNone());
+  ASSERT_TRUE(s.rig.renderer.gizmo.attach);
+  EXPECT_NE(s.rig.renderer.gizmo.attach(part), 0u) << "no gizmo on a part node.set can move";
+
+  const size_t steps = undoSteps(s.rig);
+  ASSERT_TRUE(s.rig.renderer.gizmo.edit);
+  s.rig.renderer.gizmo.edit(part, {0.f, 1.5f, 0.f}, glm::quat(1.f, 0.f, 0.f, 0.f), glm::vec3(1.f), false);
+  s.rig.renderer.gizmo.edit(part, {0.f, 2.f, 0.f}, glm::quat(1.f, 0.f, 0.f, 0.f), glm::vec3(1.f), true);
+  s.rig.host->onUpdate();
+  const Json sel = s.rig.topic("selection");
+  EXPECT_NEAR(sel["state"]["t"][1].get<double>(), 2.0, 1e-5) << sel.dump();
+  EXPECT_EQ(undoSteps(s.rig), steps + 1);
+  s.rig.cmd("history.undo");
+  s.rig.host->onUpdate();
+  EXPECT_LT(s.rig.topic("selection")["state"]["t"][1].get<double>(), 1.0) << s.rig.topic("selection").dump();
+
+  // a figure's bone, selected in object picking: the Pose tab's to move
+  const int bone = nodeOfKind(s.rig, s.figure, "bone");
+  if(bone >= 0)
+  {
+    ASSERT_TRUE(s.rig.cmd("select", {{"prop", s.figure}, {"node", bone}}).value("ok", false));
+    const rs::EntityId boneEntity = s.rig.renderer.selectedEntity();
+    if(s.rig.topic("selection").contains("bone"))
+      EXPECT_EQ(s.rig.renderer.gizmo.attach(boneEntity), 0u);
+  }
+}
+
 // The gizmo on the primary moves the others by as much, and the drag is one step
 TEST(FvHost, theGizmoMovesSeveralAsOneStep)
 {

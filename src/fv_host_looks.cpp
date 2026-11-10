@@ -72,6 +72,8 @@ std::optional<glm::vec3> FvHost::Impl::gizmoPivot(rs::EntityId entity)
 {
   const FvView::PropNodes* nodes = view ? view->propOfRoot(entity) : nullptr;
   const auto               p     = nodes ? findProp(nodes->id) : nullptr;
+  if(!nodes && view && view->pickMode() == "object")
+    return nodePivot(entity);
   // several selected turn and scale about their bottom middle, in the primary's space
   if(p && view->selectedProps().size() > 1 && renderer->feedsHostScene() && renderer->hostScene().entity(p->root))
   {

@@ -465,10 +465,11 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     return impl->onApp(std::move(f));
   });
   s.view->onHelperPick([impl](const glm::vec2& px) { return impl->helperAt(px); });
-  // a body is one item to the hover, with its hair and what it wears
-  s.view->onHoverWhole([impl](const std::string& prop) {
+  // a set is its parts to the pointer (a road, a lamp, a window); anything else is one item, a body
+  // with its hair and what it wears. The Scene list's Treat as says which a prop is
+  s.view->onOneItem([impl](const std::string& prop) {
     const auto p = impl->findProp(prop);
-    return p && (p->kind == PropKind::eCharacter || p->kind == PropKind::eCreature);
+    return !p || p->kind != PropKind::eSet;
   });
   s.view->onPull([impl](const std::string& phase, const glm::vec2& px) { return impl->pullAt(phase, px); });
   s.view->onSolo([impl](const std::vector<std::string>& ids) { impl->setSolo(ids); });
@@ -506,7 +507,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
         const std::string& pick = impl->view->pickMode();
         if(pick == "object")
         {
-          if(!impl->view->propOfRoot(entity))
+          // a prop, or a part of one that node.set can move (a set's lamp)
+          if(!impl->view->propOfRoot(entity) && !impl->movableNodeAt(entity).first)
             return 0;
           const std::string& t = impl->view->transformMode();
           return t == "rotate" ? HostRenderer::eGizmoRotation :
@@ -578,6 +580,13 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
                 impl->gizmoGesture++;
               return;
             }
+            // a part of a prop, under object picking: its own transform, as node.set writes it
+            if(impl->view && impl->view->pickMode() == "object")
+              if(const auto [part, node] = impl->movableNodeAt(entity); part)
+              {
+                impl->gizmoNodeEdit(*part, node, t, r, scale, done);
+                return;
+              }
             // the release repeats the last move's transform; a click on a handle with no drag has only the release
             if(done)
             {

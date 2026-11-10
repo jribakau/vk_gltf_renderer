@@ -1077,7 +1077,22 @@ struct FvHost::Impl
   std::string  nodeName(const Prop& p, int node) const;
   // why it can't be edited (a bone, the root, a worn item's), "" when it can
   std::string nodeRefusal(const Prop& p, int node) const;
+  // whether node.set can move it: not a posed bone or a skinned mesh, which go where the pose says
+  bool        nodeMoves(const Prop& p, int node) const;
   Json        nodeSet(const Json& args);
+  // The gizmo on a part (object picking with a node selected: a set's lamp, picked in the viewport
+  // or the Nodes list): the prop and node of an entity node.set can move, else {nullptr, -1}; a drag
+  // of it, one step of the history from press to release; and where the gizmo sits on it, in its own
+  // space: its origin where that is on the part, else its bottom middle (a set's parts are often
+  // modelled in place, their origin the set's)
+  std::pair<std::shared_ptr<Prop>, int> movableNodeAt(rs::EntityId entity);
+  void gizmoNodeEdit(Prop& p, int node, const glm::vec3& t, const glm::quat& r, const glm::vec3& scale, bool done);
+  std::optional<glm::vec3> nodePivot(rs::EntityId entity);
+  struct NodePivot
+  {
+    rs::EntityId             entity;
+    std::optional<glm::vec3> at;
+  } nodePivotKept;  // the last one found: it is the part's own, whatever moves the part
   void        applyNodeEdit(Prop& p, int node);
   void        applyNodeEdits(Prop& p);
   // {visible, t, e, s, edited} as the panels show it (metres, degrees), null for one that can't be edited

@@ -38,10 +38,29 @@ nlohmann::json shapeOf(const nlohmann::json& v)
   return v.is_string() ? v : nlohmann::json();
 }
 
+// Whether two shapes name the same things. A field that holds values is the same field unset: a
+// node's transform is an object once it is moved and null while it is as its file has it, and a drag
+// that began there undoes to the null, not to the first place it passed
+bool sameThings(const nlohmann::json& a, const nlohmann::json& b)
+{
+  if(a.is_object() && b.is_object())
+  {
+    if(a.size() != b.size())
+      return false;
+    for(auto it = a.begin(); it != a.end(); ++it)
+      if(!b.contains(it.key()) || !sameThings(it.value(), b[it.key()]))
+        return false;
+    return true;
+  }
+  if(a.is_object() || b.is_object())
+    return a.is_null() || b.is_null();
+  return a == b;
+}
+
 // the same command on the same things
 bool alike(const nlohmann::json& a, const nlohmann::json& b)
 {
-  return a.value("cmd", "") == b.value("cmd", "") && shapeOf(a.value("args", nlohmann::json())) == shapeOf(b.value("args", nlohmann::json()));
+  return a.value("cmd", "") == b.value("cmd", "") && sameThings(shapeOf(a.value("args", nlohmann::json())), shapeOf(b.value("args", nlohmann::json())));
 }
 
 // a gesture's next step into the one it has: the newest redo of each thing, the undo of what it first changed

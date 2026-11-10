@@ -108,7 +108,10 @@ namespace {
 // pointer left): what is under a resting pointer is outlined, a character whole, a set by its nodes.
 // 60: a Ctrl+click picks whatever view.set's `select` says (view.set's `selectCtrl` turns that off),
 // and it is a Ctrl+Shift+click that puts a prop in the selection or takes it out (it was a Ctrl+click).
-constexpr int kProtocolVersion = 60;
+// 61: an object pick selects what the hover outlines: of a set the node hit (the selection topic's
+// `node`), where the gizmo then moves that part as node.set does; any other prop whole, and the hover
+// outlines a prop, a vehicle and a model whole too (they were by their nodes).
+constexpr int kProtocolVersion = 61;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

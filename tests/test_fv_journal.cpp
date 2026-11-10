@@ -172,6 +172,27 @@ TEST(FvJournal, AGestureAcrossCommandsIsOneStepOfItsNewestOps)
   EXPECT_EQ(valueOf(j.takeUndo()->undo), 0);
 }
 
+// A drag of a set's part that began as its file has it (node.set's transform null) undoes to that,
+// not to the first place the drag passed; another prop's part in the same gesture is its own
+TEST(FvJournal, AGestureUndoesAFieldToWhereItBeganUnset)
+{
+  fv::Journal j;
+  const auto move = [](const char* prop, json from, double to) {
+    const auto set = [&](json transform) { return json::array({{{"cmd", "node.set"}, {"args", {{"prop", prop}, {"node", 3}, {"transform", std::move(transform)}}}}}); };
+    return fv::JournalStep{.redo = set({{"t", {0.0, to, 0.0}}}), .undo = set(std::move(from)), .label = "Move", .key = "node.set", .at = t0, .gesture = true, .gestureId = "\"gizmo:1\""};
+  };
+  j.record(move("p:1", nullptr, 1.5));
+  j.record(move("p:1", {{"t", {0.0, 1.5, 0.0}}}, 2.0));
+  j.record(move("p:2", nullptr, 4.0));
+  ASSERT_EQ(j.undoCount(), 1u);
+  const auto step = j.takeUndo();
+  ASSERT_EQ(step->undo.size(), 2u) << step->undo.dump();
+  EXPECT_TRUE(step->undo[0]["args"]["transform"].is_null()) << step->undo.dump();
+  EXPECT_EQ(step->undo[1]["args"].value("prop", ""), "p:2");
+  ASSERT_EQ(step->redo.size(), 2u);
+  EXPECT_EQ(step->redo[0]["args"]["transform"]["t"][1], 2.0);
+}
+
 // Another gesture, or the same one after its end, starts a step of its own
 TEST(FvJournal, AGesturesIdKeepsItsStepsApartFromAnothers)
 {

@@ -506,22 +506,83 @@ Json FvHost::Impl::nodeState(const Prop& p, int node)
   Json out       = transformJson(e->local, unitOf(p));
   out["visible"] = e->visible;
   out["edited"]  = p.nodeEdits.count(node) > 0;
-  bool moves     = true;
+  out["moves"]   = nodeMoves(p, node);
+  return out;
+}
+
+bool FvHost::Impl::nodeMoves(const Prop& p, int node) const
+{
   if(p.figure)
   {
     const fv::SceneGraph& graph = p.figure->fig->loaded.scene;
-    const fv::Node&       n     = graph.nodes[size_t(node)];
+    if(node < 0 || node >= int(graph.nodes.size()))
+      return false;
+    const fv::Node& n = graph.nodes[size_t(node)];
     if(p.figure->fig->pose)
       for(const auto& pb : p.figure->fig->pose->bones())
         if(pb.bone == node && !pb.axes.empty())
-          moves = false;
+          return false;
     if(n.mesh >= 0 && n.mesh < int(graph.meshes.size()) && graph.meshes[size_t(n.mesh)].skinned())
-      moves = false;
+      return false;
   }
-  else if(p.model && node < int(p.model->nodes.size()) && p.model->nodes[size_t(node)].skin >= 0)
-    moves = false;
-  out["moves"] = moves;
-  return out;
+  else if(p.model && node >= 0 && node < int(p.model->nodes.size()) && p.model->nodes[size_t(node)].skin >= 0)
+    return false;
+  return true;
+}
+
+std::pair<std::shared_ptr<Prop>, int> FvHost::Impl::movableNodeAt(rs::EntityId entity)
+{
+  const auto [nodes, node] = view ? view->nodeOf(entity) : std::pair<const FvView::PropNodes*, int>{nullptr, -1};
+  const auto p             = nodes && node >= 0 ? findProp(nodes->id) : nullptr;
+  if(!p || (!p->figure && !p->model) || !renderer->feedsHostScene() || !nodeRefusal(*p, node).empty() || !nodeMoves(*p, node))
+    return {nullptr, -1};
+  return {p, node};
+}
+
+void FvHost::Impl::gizmoNodeEdit(Prop& p, int node, const glm::vec3& t, const glm::quat& r, const glm::vec3& scale, bool done)
+{
+  const float     unit = float(unitOf(p));
+  const glm::quat q    = glm::normalize(r);
+  const Json      args = {{"prop", p.id},
+                          {"node", node},
+                          {"transform", {{"t", {t.x * unit, t.y * unit, t.z * unit}}, {"r", {q.x, q.y, q.z, q.w}}, {"s", {scale.x, scale.y, scale.z}}}},
+                          {"gesture", {{"id", "gizmo:" + std::to_string(gizmoGesture)}, {"end", done}}}};
+  try
+  {
+    edit("node.set", args);
+  }
+  catch(const std::exception& e)
+  {
+    notice(p.name + ": " + problemOf(e));
+  }
+  if(done)
+    gizmoGesture++;
+}
+
+std::optional<glm::vec3> FvHost::Impl::nodePivot(rs::EntityId entity)
+{
+  if(entity == nodePivotKept.entity)
+    return nodePivotKept.at;
+  nodePivotKept = {entity, std::nullopt};
+  if(!movableNodeAt(entity).first)
+    return std::nullopt;
+  rs::RetainedScene& scene = renderer->hostScene();
+  Bounds             b     = emptyBounds();
+  for(const rs::DrawItem& item : scene.drawItems())
+    if(item.shown && scene.isWithin(item.entity, entity))
+      if(const std::array<glm::vec3, 2> mb = scene.mesh(item.mesh)->bounds(); mb[0].x <= mb[1].x)
+        addBox(b, mb[0], mb[1], item.world);
+  if(isEmpty(b))
+    return std::nullopt;
+  // its own origin where the part is around it (a chair modelled about its feet)
+  const glm::mat4 world  = scene.world(entity);
+  const glm::vec3 origin = glm::vec3(world[3]);
+  const glm::vec3 margin = 0.1f * (b[1] - b[0]) + glm::vec3(1e-3f);
+  if(glm::all(glm::greaterThanEqual(origin, b[0] - margin)) && glm::all(glm::lessThanEqual(origin, b[1] + margin)))
+    return std::nullopt;
+  const glm::vec3 bottom((b[0].x + b[1].x) * 0.5f, b[0].y, (b[0].z + b[1].z) * 0.5f);
+  nodePivotKept.at = glm::vec3(glm::inverse(world) * glm::vec4(bottom, 1.f));
+  return nodePivotKept.at;
 }
 
 // node.set {prop, node, visible?: bool | null, transform?: {t (metres), e (degrees) | r, s} | null}: a

@@ -110,11 +110,12 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
       m_renderer->selectEntity(entity.isNone() ? p.root : entity);
       return true;
     }
+    // the prop, or of a set the part hit: what the hover outlines
     m_selectedProps = {p.id};
-    m_renderer->selectEntity(p.root);
+    m_renderer->selectEntity(fv::hoverItem(p, at.node, oneItem(p)));
     return true;
   });
-  // what is under the resting pointer, as the hover outlines it: a character whole, a set by its nodes
+  // what is under the resting pointer, as the hover outlines it: a prop whole, a set by its nodes
   m_renderer->setHoverObserver([this](const std::optional<HostRenderer::InstancePick>& pick) {
     const fv::HostAddress at = pick ? m_map.pick(pick->entity, pick->material) : fv::HostAddress{};
     if(at.prop < 0 || at.prop >= int(m_props.size()))
@@ -123,7 +124,7 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
       return;
     }
     const PropNodes& p = m_props[size_t(at.prop)];
-    m_renderer->hoverEntity(fv::hoverItem(p, at.node, m_hoverWhole && m_hoverWhole(p.id)));
+    m_renderer->hoverEntity(fv::hoverItem(p, at.node, oneItem(p)));
   });
   m_renderer->setInspectObserver([this](const HostRenderer::PixelReadout& readout) { publishInspect(readout); });
   m_renderer->setPixelTimeObserver([this](const HostRenderer::PixelTimes& times) { publishPixelTimes(times); });
@@ -480,6 +481,14 @@ void FvView::toggleMember(const std::string& prop)
   m_surfaceProp.clear();
   m_surface.clear();
   publishSelection(true);
+}
+
+std::pair<const FvView::PropNodes*, int> FvView::nodeOf(rs::EntityId entity) const
+{
+  const fv::HostAddress at = m_map.locate(entity);
+  if(at.prop < 0 || at.prop >= int(m_props.size()))
+    return {nullptr, -1};
+  return {&m_props[size_t(at.prop)], at.node};
 }
 
 const FvView::PropNodes* FvView::propOfRoot(rs::EntityId entity) const

@@ -419,8 +419,13 @@ under the selection's.
 - **What is under the pointer:** the app says where the pointer rests (the input event `hover`);
   the renderer makes a ray pick there with the click's picker, when no click's pick is waiting or
   in flight, and again when the camera has changed under a resting pointer. The pick goes to the
-  view host, which names the entity to outline (`fv::hoverItem`): a character or a creature whole,
-  with its hair and what it wears, any other prop by the node hit.
+  view host, which names the entity to outline (`fv::hoverItem`): a prop whole (a character with
+  its hair and what it wears), a set by the node hit.
+- **It is what a click selects.** An object pick selects the same entity, so on a set the selection
+  is the part hit, not the set. The host puts the gizmo on such a part where `node.set` can move it
+  (`FvHost::Impl::movableNodeAt`), a drag writing the part's own transform as one step of the
+  history, and sits it on the part's origin, or on its bottom middle where the origin is off the
+  part (`nodePivot`: a set's parts are often modelled in place, their origin the set's).
 - **No frame is traced for it.** The outline is drawn from the selection image's object IDs, which
   a moving DLSS frame does not trace unless something is selected. The hover reads them only once
   the view rests (`SelectionWrite::read`): the first resting frame traces them once, a moving frame
@@ -430,7 +435,8 @@ under the selection's.
   draws no hover outline and makes no hover pick, and the hover does not straighten the picture as
   the other overlays do.
 - **Checked:** `SelectionWrite.TheHoverReadsItOnceTheViewRests`,
-  `FvSceneMap.AHoverTakesACharacterWholeAndASetByItsNodes`. Seen through the host on a one-figure
+  `FvSceneMap.AHoverTakesACharacterWholeAndASetByItsNodes`,
+  `FvHost.aClickOnASetSelectsThePartAndTheGizmoMovesIt`. Seen through the host on a one-figure
   scene: an outline round body, clothes and hair as one with the pointer on the figure, none with
   it on the backdrop or gone, and the still's samples climbing through all of it.
 
