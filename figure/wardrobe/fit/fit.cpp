@@ -4,6 +4,7 @@
 
 #include <figure/garment/convert.hpp>
 #include <figure/garment/decode.hpp>
+#include <figure/garment/graft.hpp>
 #include <figure/garment/maps.hpp>
 #include <figure/garment/pieces.hpp>
 #include <figure/mesh/normals.hpp>
@@ -13,6 +14,7 @@
 #include <figure/wardrobe/fit/collide.hpp>
 #include <figure/wardrobe/fit/regions.hpp>
 #include <figure/wardrobe/fit/transfer.hpp>
+#include <figure/wardrobe/follow.hpp>
 
 namespace fv::wardrobe {
 
@@ -78,6 +80,27 @@ std::pair<std::optional<Generation>, std::optional<Generation>> identified(const
   for(const BoneRef& b : boneRefs(wearable.scene, wearable, item))
     itemNames.push_back(b.name);
   return {identifyGeneration(rel, itemNames, item.conformTarget, item.madeFor), identifyGeneration(figure.folder, figureNames, {})};
+}
+
+// The geograft a mesh of the wearable is, or null.
+const Graft* graftOf(const dson::LoadResult& w, int mesh)
+{
+  for(const dson::ItemPart& part : w.parts)
+    if(part.mesh == mesh && part.graft)
+      return &*part.graft;
+  return nullptr;
+}
+
+// Whose base an item's geograft was made on, where it says by its vertex count and the path doesn't
+// ("Genesis 8 Male Genitalia For G8F" is the woman's): the gender whose base has that count.
+std::optional<std::string> graftGender(dson::Store& store, const dson::LoadResult& w, const dson::Item& item, Generation source)
+{
+  for(int m : item.meshes)
+    if(const Graft* g = graftOf(w, m); g && g->vertexCount >= 0)
+      for(const char* gender : {"female", "male"})
+        if(const auto base = loadBaseCage(store, source, gender); base && base->positions.size() == size_t(g->vertexCount) * 3)
+          return std::string(gender);
+  return std::nullopt;
 }
 
 }  // namespace
@@ -148,8 +171,9 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   // the body that came with it (a Skyrim outfit's), else its generation's from the library. The common
   // fit takes a Skyrim outfit's whole body where one is on this machine: the body it carries is that
   // body cut to what shows, and a piece may carry none
-  const bool viaWhole = path == FitPath::eCommon && w.sourceWhole;
-  const auto cage     = viaWhole ? wholeBase(w) : w.sourceBase ? w.sourceBase : loadBaseCage(store, source, genderHint(rel));
+  const bool        viaWhole     = path == FitPath::eCommon && w.sourceWhole;
+  const std::string sourceGender = graftGender(store, w, item, source).value_or(genderHint(rel));
+  const auto        cage         = viaWhole ? wholeBase(w) : w.sourceBase ? w.sourceBase : loadBaseCage(store, source, sourceGender);
   std::vector<const dson::Rig*> itemRigs;
   for(int r : item.rigs)
     itemRigs.push_back(&w.rigs[size_t(r)]);
@@ -231,7 +255,7 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
   bodymap::Body                           onto;
   garment::Target                         decodeOnto;
   std::string                             notLayered;  // why the layer, asked for, didn't fit it
-  const std::string sourceGender = genderHint(rel), targetGender = genderHint(figure.folder);
+  const std::string targetGender = genderHint(figure.folder);
   const auto        mapped       = [](Generation g, const std::string& gender) { return g == Generation::eG9 || !bodymap::cloneFile(g, gender).empty(); };
   // a shoe keeps the bone transfer and the foot's box alone; a boot's shaft is cloth round the leg
   const bool shoe   = region == FitRegion::eShoe;
@@ -354,6 +378,29 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
       const auto               filter    = limbFilter(baseLimbs, meshLimbs(w.scene, m));
       const garment::Addresses addresses = garment::convert(m.geo->cagePositions, *typeMap, filter ? &*filter : nullptr);
       decoded                            = garment::decode(addresses, decodeOnto);
+      // a geograft's seam is welded to its own figure's skin: here it lies on the skin at its place, not
+      // at the height its address carries (the reference laid on the source lies a millimetre or two off)
+      if(const Graft* g = graftOf(w, meshIdx))
+        for(size_t i = 0; i + 1 < g->pairs.size(); i += 2)
+        {
+          const size_t v = size_t(g->pairs[i]);
+          if(v >= decoded.hold.size() || decoded.hold[v] <= 0)
+            continue;
+          float p[3] = {0, 0, 0}, sum = 0;
+          for(size_t j = 0; j < 3; j++)
+          {
+            const size_t c  = decoded.at.verts[v * 3 + j];
+            const float  wj = decoded.at.weights[v * 3 + j];
+            if(wj <= 0 || c * 3 + 2 >= body.cagePositions.size())
+              continue;
+            for(size_t k = 0; k < 3; k++)
+              p[k] += wj * body.cagePositions[c * 3 + k];
+            sum += wj;
+          }
+          if(sum > 0)
+            for(size_t k = 0; k < 3; k++)
+              decoded.positions[v * 3 + k] = p[k] / sum;
+        }
       if(std::any_of(decoded.hold.begin(), decoded.hold.end(), [](float h) { return h > 0; }))
       {
         // a boot's shaft takes it, fading out onto the foot, as it takes the old shape correction
@@ -381,8 +428,11 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
         positions = boot ? fadeByFoot(positions, corrected, onFoot) : corrected;
       }
     }
-    // a dynamic surface owns its collision: dForce drapes it over the body, so it is not pushed out here
-    if(!(m.dforce && m.dforce->simulated()))
+    // a dynamic surface owns its collision: dForce drapes it over the body, so it is not pushed out here.
+    // Nor a geograft the layer fitted: its seam lies on the skin and its inside under it, as on its own
+    // figure, and the skin it covers is hidden (hides)
+    const bool graftLaid = layered && graftOf(w, meshIdx);
+    if(!(m.dforce && m.dforce->simulated()) && !graftLaid)
       positions = pushOutOfBody(positions, m.geo->dsonTris, bodySurface, m.geo->cageLineStart, m.geo->cageLineVerts, footwear ? 3.f : kSunkDepth);
     // with the common fit, a hard piece (a button, a buckle, a plate on one bone) is put back in the
     // shape it was made in, where the fit and the push left it. Not a shoe's, fitted as a whole
@@ -413,6 +463,11 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
           decoded.at.weights[v * 3] = decoded.at.weights[v * 3 + 1] = decoded.at.weights[v * 3 + 2] = 0;
       }
       detail.placed[meshIdx] = std::move(decoded.at);
+      // a geograft made for another mesh hides the figure's skin under it, found through the maps
+      if(const Graft* g = graftOf(w, meshIdx);
+         g && !g->hidden.empty() && !graftFits(*g, body) && cage && (g->polyCount < 0 || g->polyCount == cage->polyCount))
+        if(auto hides = garment::hiddenThrough(*cage, g->hidden, *typeMap, *targetMap, body.cagePolyStart, body.cagePolyVerts); !hides.empty())
+          detail.hides[meshIdx] = std::move(hides);
     }
     writeCage(*m.geo, positions);
   }
@@ -428,6 +483,7 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
                 + (path != FitPath::eCommon || detail.common ? std::string()
                    : weightsOnly                             ? std::string(", its cloth on the skin taking the body's weights")
                                                              : ", the old way: " + (notLayered.empty() ? std::string("none of its cloth lies near the skin") : notLayered))
+                + (detail.hides.empty() ? std::string() : std::string(", hiding the skin under it as it does on its own figure"))
                 + ".";
   return detail;
 }

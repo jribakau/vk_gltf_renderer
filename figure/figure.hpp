@@ -404,10 +404,12 @@ private:
   // A conforming part's mesh (`mesh`, into the scene) follows the body by `binding`: the body's morphs
   // projected onto it (`preprojected`: those made ahead), its own copies of them from `own` where it
   // has one (none when `refit`, made for another generation), its own joint correctives, a graft's
-  // hidden skin; what can't be done goes to `warnings`.
+  // hidden skin (`carriedHides` for a graft made for another mesh: the body's polygons the common fit
+  // found under it, wardrobe::FitDetail::hides); what can't be done goes to `warnings`.
   void followBody(WornItem& worn, const dson::ItemPart& part, int mesh, std::shared_ptr<const wardrobe::SurfaceBinding> binding,
                   const std::map<std::string, std::string>& own, const dson::MeshRef& ref, bool refit,
-                  std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>> preprojected, std::vector<std::string>& warnings);
+                  std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>> preprojected, std::vector<std::string>& warnings,
+                  const std::vector<int32_t>* carriedHides = nullptr);
   // Its own morphs in `own` that aren't copies of a figure morph, fit adjustments ("Loosen Neck") and
   // styles, as dials of its own ("Loosen Neck@<key>").
   void addAdjustments(WornItem& worn, const std::map<std::string, std::string>& own, const dson::MeshRef& ref);

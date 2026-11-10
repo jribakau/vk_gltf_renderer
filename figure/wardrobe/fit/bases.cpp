@@ -73,6 +73,7 @@ std::shared_ptr<const BaseCage> build(const dson::Doc& doc)
       for(const dson::Json& g : *groups)
         cage->surfaces.push_back(g.is_string() ? g.get<std::string>() : std::string());
     const auto polys = doc.rows(get(get(best, "polylist"), "values"));
+    cage->polyCount  = polys->count;
     for(int p = 0; p < polys->count; p++)
     {
       const int e = polys->size(p);
@@ -84,6 +85,7 @@ std::shared_ptr<const BaseCage> build(const dson::Doc& doc)
       {
         cage->tris.insert(cage->tris.end(), {a, uint32_t(polys->cell(p, k - 1)), uint32_t(polys->cell(p, k))});
         cage->triSurface.push_back(surface);
+        cage->triPoly.push_back(uint32_t(p));
       }
     }
   }

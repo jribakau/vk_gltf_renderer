@@ -47,6 +47,10 @@ struct FitDetail
   // the figure's body, as its address names it, for the vertices left there (garment::Decoded::at; all
   // weights zero for the rest). Their binding to the body is this, not the closest point's.
   std::map<int, SurfaceBinding> placed;
+  // per geograft mesh the layer fitted onto a figure of another mesh than the one it was made for (an
+  // index into the wearable's scene meshes): the figure's polygons it hides, carried through the two
+  // bodies' maps (garment::hiddenThrough)
+  std::map<int, std::vector<int32_t>> hides;
   // the pose rig's plan: item bone -> figure bone, and the item bones that inherit a followed ancestor
   LeaderPlan plan;
   // "Genesis 8 outfit on Genesis 9, refitted to its skeleton and shape."

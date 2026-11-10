@@ -14,7 +14,9 @@
 #include <figure/bodymap/clone.hpp>
 #include <figure/garment/convert.hpp>
 #include <figure/garment/decode.hpp>
+#include <figure/garment/graft.hpp>
 #include <figure/garment/maps.hpp>
+#include <figure/wardrobe/fit/bases.hpp>
 #include <figure/figure.hpp>
 #include <figure/garment/pieces.hpp>
 #include <figure/garment/quads.hpp>
@@ -336,6 +338,49 @@ TEST(Garment, AShellGoesOntoABodyOfAnotherTopology)
     }
     EXPECT_NEAR(sum, 1, 1e-4) << v;
   }
+}
+
+TEST(Garment, AGraftOnAnotherTopologyHidesThePolygonsUnderItNotByNumber)
+{
+  // made on a plate of 10 x 10 cells (2 cm each), hiding the middle 4 x 4 (x and z within 4 cm of the
+  // middle); worn on a plate of 7 x 7, through a reference of 13 x 13
+  const Body              sourceBody = plate(10), reference = plate(13), target = plate(7);
+  fv::wardrobe::BaseCage  source;
+  source.positions = sourceBody.positions;
+  source.tris      = sourceBody.tris;
+  source.polyCount = 100;
+  for(size_t t = 0; t < source.tris.size() / 3; t++)
+    source.triPoly.push_back(uint32_t(t / 2));
+  std::vector<int32_t> hidden;
+  for(int i = 3; i < 7; i++)
+    for(int j = 3; j < 7; j++)
+      hidden.push_back(i * 10 + j);
+  std::vector<int32_t> polyStart{0}, polyVerts;
+  for(int i = 0; i < 7; i++)
+    for(int j = 0; j < 7; j++)
+    {
+      for(const auto& [a, b] : {std::pair{i, j}, std::pair{i, j + 1}, std::pair{i + 1, j + 1}, std::pair{i + 1, j}})
+        polyVerts.push_back(a * 8 + b);
+      polyStart.push_back(int32_t(polyVerts.size()));
+    }
+  const auto hides = fv::garment::hiddenThrough(source, hidden, typeOf(sourceBody, reference), typeOf(target, reference), polyStart, polyVerts);
+  // the target's cells whose middles lie inside: 2.86 cm cells, middles 0 and 2.86 cm off the plate's
+  std::vector<int32_t> under;
+  for(int i = 2; i < 5; i++)
+    for(int j = 2; j < 5; j++)
+      under.push_back(i * 7 + j);
+  EXPECT_EQ(hides, under);
+}
+
+TEST(Garment, AGraftWithNothingToReadHidesNothing)
+{
+  const Body             body = plate(4);
+  fv::wardrobe::BaseCage source;
+  source.positions = body.positions;
+  source.tris      = body.tris;
+  // a body read from elsewhere has no polygons to number
+  const std::vector<int32_t> polyStart{0, 4}, polyVerts{0, 1, 6, 5}, hidden{0};
+  EXPECT_TRUE(fv::garment::hiddenThrough(source, hidden, typeOf(body, body), typeOf(body, body), polyStart, polyVerts).empty());
 }
 
 TEST(Garment, AnOffsetTurnsBackIntoTheTargetsFrame)

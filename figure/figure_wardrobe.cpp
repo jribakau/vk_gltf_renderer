@@ -1058,8 +1058,12 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
     {
       const size_t k     = size_t(std::find(added.begin(), added.end(), worn->id) - added.begin());
       const bool   refit = k < p.fits.size() && p.fits[k].has_value();
+      const std::vector<int32_t>* hides = nullptr;
+      if(refit)
+        if(const auto h = p.fits[k]->hides.find(part.mesh); h != p.fits[k]->hides.end())
+          hides = &h->second;
       followBody(*worn, part, mesh, p.bindings[i], own, ref, refit, i < p.preprojected.size() ? std::move(p.preprojected[i]) : decltype(p.preprojected)::value_type{},
-                 result.warnings);
+                 result.warnings, hides);
     }
     addAdjustments(*worn, own, ref);
   }
@@ -1115,7 +1119,8 @@ WearResult Figure::commitWear(std::shared_ptr<PreparedWear> wear, const std::str
 
 void Figure::followBody(WornItem& worn, const dson::ItemPart& part, int mesh, std::shared_ptr<const wardrobe::SurfaceBinding> binding,
                         const std::map<std::string, std::string>& own, const dson::MeshRef& ref, bool refit,
-                        std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>> preprojected, std::vector<std::string>& warnings)
+                        std::vector<std::pair<dson::TargetPtr, dson::TargetPtr>> preprojected, std::vector<std::string>& warnings,
+                        const std::vector<int32_t>* carriedHides)
 {
   SceneGraph& dst        = loaded.scene;
   const int   body       = loaded.morphs.meshes[loaded.morphs.mainMeshes[0]].mesh;
@@ -1176,17 +1181,22 @@ void Figure::followBody(WornItem& worn, const dson::ItemPart& part, int mesh, st
     if(!correctives.empty())
       addItemCorrectives(correctives, ref);
   }
-  if(part.graft && !wardrobe::graftFits(*part.graft, *bodyGeoPtr))
+  // its hidden polygons number the mesh it was made for: on another, those the common fit carried over
+  const bool                  fits   = part.graft && wardrobe::graftFits(*part.graft, *bodyGeoPtr);
+  const std::vector<int32_t>* hides  = !part.graft ? nullptr : fits ? &part.graft->hidden : carriedHides;
+  if(part.graft && !fits && !hides)
   {
-    const std::string why = worn.label + " is a geograft made for another figure's mesh: here it can't hide the skin under it or join its seam to the body.";
+    const std::string why = worn.label
+                            + " is a geograft made for another figure's mesh: here it can't hide the skin under it or join its seam to the body"
+                              " (the Common fit can hide it, where the figures' body maps are installed).";
     if(std::find(warnings.begin(), warnings.end(), why) == warnings.end())
       warnings.push_back(why);
   }
-  else if(part.graft && !part.graft->hidden.empty())
+  else if(hides && !hides->empty())
   {
     auto& hidden = dst.meshes[size_t(body)].geo->hiddenPolys[worn.key];
-    hidden.insert(hidden.end(), part.graft->hidden.begin(), part.graft->hidden.end());
-    worn.hiddenPolys.insert(worn.hiddenPolys.end(), part.graft->hidden.begin(), part.graft->hidden.end());
+    hidden.insert(hidden.end(), hides->begin(), hides->end());
+    worn.hiddenPolys.insert(worn.hiddenPolys.end(), hides->begin(), hides->end());
   }
 }
 

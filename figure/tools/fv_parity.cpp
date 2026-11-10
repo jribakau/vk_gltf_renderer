@@ -50,6 +50,8 @@
 // {"clearance": rel} wears a garment and reports, per region, how its clearance from the body changed
 // from the body it was shaped around (its generation's base cage, or a Skyrim outfit's carried body)
 // to the loaded figure's, fitted: the measure of wardrobe plan step 3. Numbers only.
+// {"graft": rel} wears a geograft and reports the body polygons it hides and their area against those it
+// hides on its own figure, and how far its seam lies from the edge of what it hides (step 4d).
 // {"contact": label} runs the body's contact pass at the pose it is in with nothing near it, so only
 // its own parts press on one another (figure/physics/contact, step 10): the vertices pressed, the
 // dents, how many vertices moved and how far at most, by part, and the pass's time.
@@ -134,6 +136,37 @@ std::filesystem::path pathOf(const char* utf8)
 double r(double v)
 {
   return std::floor(v * 1e6 + 0.5) / 1e6;
+}
+
+// The area of the triangle of vertices a, b, c of `p` (xyz per vertex).
+double triArea(const std::vector<float>& p, uint32_t a, uint32_t b, uint32_t c)
+{
+  double u[3], v[3];
+  for(size_t k = 0; k < 3; k++)
+  {
+    u[k] = double(p[size_t(b) * 3 + k]) - p[size_t(a) * 3 + k];
+    v[k] = double(p[size_t(c) * 3 + k]) - p[size_t(a) * 3 + k];
+  }
+  const double x = u[1] * v[2] - u[2] * v[1], y = u[2] * v[0] - u[0] * v[2], z = u[0] * v[1] - u[1] * v[0];
+  return 0.5 * std::sqrt(x * x + y * y + z * z);
+}
+
+// How far point q lies from the segment a-b.
+double segmentDistance(const float* q, const float* a, const float* b)
+{
+  double ab[3], aq[3], len2 = 0, dot = 0;
+  for(size_t k = 0; k < 3; k++)
+  {
+    ab[k] = double(b[k]) - a[k];
+    aq[k] = double(q[k]) - a[k];
+    len2 += ab[k] * ab[k];
+    dot += ab[k] * aq[k];
+  }
+  const double t = len2 > 0 ? std::clamp(dot / len2, 0.0, 1.0) : 0.0;
+  double       d2 = 0;
+  for(size_t k = 0; k < 3; k++)
+    d2 += (aq[k] - t * ab[k]) * (aq[k] - t * ab[k]);
+  return std::sqrt(d2);
 }
 
 // The bits of a float array (FNV-1a, 64 bits, hex): two drapes with the same hash came out the same to
@@ -1881,6 +1914,156 @@ int main(int argc, char** argv)
           loaded->removeItem(id);
         loaded->settle();
         dumps[step.value("label", std::string("clearance"))] = {{"clearance", items}, {"notes", worn.notes}};
+      }
+      else if(step.contains("graft"))
+      {
+        // {"graft": rel[, "fit": "common"]}: wears a geograft on the loaded figure and reports the body
+        // polygons it hides and their area, against those it hides on the figure it was made for (its
+        // base cage), and how far its open edge (the seam) lies from the edge of what it hides, which on
+        // its own figure is nothing (wardrobe plan step 4d). Then takes it off. Numbers only.
+        if(!loaded)
+          throw std::runtime_error("graft before a figure loads");
+        const std::string rel  = step["graft"].get<std::string>();
+        const std::string file = rel.substr(std::min(rel.find_first_not_of('/'), rel.size()));
+        // its own figure: the base whose vertex count the graft names
+        double ownArea = 0;
+        size_t ownPolys = 0;
+        {
+          const auto            inputs = loaded->wearInputs();
+          fv::dson::LoadOptions options;
+          options.attach = fv::dson::AttachTarget{inputs.scene.get(), inputs.rig.get(), "measure"};
+          const fv::dson::LoadResult w = fv::dson::loadDson(*store, file, options);
+          const std::string          morphDir = inputs.morphDir;
+          const fv::wardrobe::FitFigure figure{*inputs.scene, *inputs.rig, inputs.bodyMesh, morphDir.substr(0, morphDir.rfind("/Morphs"))};
+          for(const fv::dson::ItemPart& part : w.parts)
+          {
+            if(!part.graft || part.item < 0)
+              continue;
+            const auto gens = fv::wardrobe::generationsOf(w, w.items[size_t(part.item)], rel, figure);
+            if(!gens)
+              continue;
+            for(const char* gender : {"female", "male"})
+            {
+              const auto base = fv::wardrobe::loadBaseCage(*store, gens->first, gender);
+              if(!base || base->positions.size() != size_t(part.graft->vertexCount) * 3 || base->triPoly.size() * 3 != base->tris.size())
+                continue;
+              const std::set<int32_t> hidden(part.graft->hidden.begin(), part.graft->hidden.end());
+              ownPolys += hidden.size();
+              for(size_t t = 0; t < base->triPoly.size(); t++)
+                if(hidden.count(int32_t(base->triPoly[t])))
+                  ownArea += triArea(base->positions, base->tris[t * 3], base->tris[t * 3 + 1], base->tris[t * 3 + 2]);
+              break;
+            }
+          }
+        }
+        auto wearInputs      = loaded->wearInputs();
+        wearInputs.commonFit = step.value("fit", std::string()) == "common";
+        const fv::WearResult worn = loaded->commitWear(loaded->prepareWear(rel, fv::WearQuality{}, wearInputs), rel);
+        loaded->settle();
+        const auto&                ctx  = loaded->loaded.morphs;
+        const fv::mesh::BuiltMesh& body = *loaded->loaded.scene.meshes[size_t(ctx.meshes[ctx.mainMeshes.at(0)].mesh)].geo;
+        std::set<int32_t>          hidden;
+        std::vector<int>           meshes;
+        for(int id : worn.items)
+          if(const fv::WornItem* item = loaded->item(id))
+          {
+            hidden.insert(item->hiddenPolys.begin(), item->hiddenPolys.end());
+            meshes.insert(meshes.end(), item->meshes.begin(), item->meshes.end());
+          }
+        // the body's polygons hidden, their area, and the edges between them and the skin still drawn
+        const auto& ps = body.cagePolyStart;
+        const auto& pv = body.cagePolyVerts;
+        double      area = 0;
+        std::map<std::pair<int32_t, int32_t>, std::array<int, 2>> edgeSides;  // shown, hidden polygons along an edge
+        for(size_t p = 0; p + 1 < ps.size(); p++)
+        {
+          const bool h = hidden.count(int32_t(p)) > 0;
+          for(int32_t c = ps[p]; c < ps[p + 1]; c++)
+          {
+            const int32_t a = pv[size_t(c)], b = pv[size_t(c + 1 < ps[p + 1] ? c + 1 : ps[p])];
+            edgeSides[{std::min(a, b), std::max(a, b)}][h ? 1 : 0]++;
+            if(h && c >= ps[p] + 2)
+              area += triArea(body.cagePositions, uint32_t(pv[size_t(ps[p])]), uint32_t(pv[size_t(c - 1)]), uint32_t(pv[size_t(c)]));
+          }
+        }
+        std::vector<std::pair<int32_t, int32_t>> border;
+        for(const auto& [e, n] : edgeSides)
+          if(n[0] && n[1])
+            border.push_back(e);
+        // the graft's open edge: its cage's edges on one triangle only
+        std::vector<double> gap;
+        std::vector<float>  seam;  // its open edge's vertices, for their height off the skin
+        for(int m : meshes)
+        {
+          const auto& geo = *loaded->loaded.scene.meshes[size_t(m)].geo;
+          std::map<std::pair<uint32_t, uint32_t>, int> uses;
+          for(size_t t = 0; t + 2 < geo.dsonTris.size(); t += 3)
+            for(size_t k = 0; k < 3; k++)
+            {
+              const uint32_t a = geo.dsonTris[t + k], b = geo.dsonTris[t + (k + 1) % 3];
+              uses[{std::min(a, b), std::max(a, b)}]++;
+            }
+          std::set<uint32_t> open;
+          for(const auto& [e, n] : uses)
+            if(n == 1)
+              open.insert({e.first, e.second});
+          for(const uint32_t v : open)
+          {
+            const float* q    = &geo.cagePositions[size_t(v) * 3];
+            seam.insert(seam.end(), q, q + 3);
+            double       best = border.empty() ? -1 : 1e30;
+            for(const auto& [a, b] : border)
+              best = std::min(best, segmentDistance(q, &body.cagePositions[size_t(a) * 3], &body.cagePositions[size_t(b) * 3]));
+            if(best >= 0)
+              gap.push_back(best);
+          }
+        }
+        std::sort(gap.begin(), gap.end());
+        const auto at = [&](double q) { return gap.empty() ? 0.0 : gap[std::min(gap.size() - 1, size_t(q * double(gap.size())))]; };
+        // which side of the edge a seam vertex is on: its nearest body vertex drawn only (the skin runs
+        // on under the graft's rim), hidden only (a hole between the rim and the skin), or on the edge
+        {
+          std::vector<uint8_t> side(body.cagePositions.size() / 3, 0);  // bit 1 shown, bit 2 hidden
+          for(size_t p = 0; p + 1 < ps.size(); p++)
+            for(int32_t c = ps[p]; c < ps[p + 1]; c++)
+              side[size_t(pv[size_t(c)])] |= hidden.count(int32_t(p)) ? 2 : 1;
+          size_t over = 0, open = 0, onEdge = 0;
+          for(size_t s = 0; s + 2 < seam.size(); s += 3)
+          {
+            size_t best = 0;
+            double d2   = 1e30;
+            for(size_t v = 0; v < side.size(); v++)
+            {
+              double e = 0;
+              for(size_t k = 0; k < 3; k++)
+                e += (double(seam[s + k]) - body.cagePositions[v * 3 + k]) * (double(seam[s + k]) - body.cagePositions[v * 3 + k]);
+              if(e < d2)
+                d2 = e, best = v;
+            }
+            (side[best] == 1 ? over : side[best] == 2 ? open : onEdge)++;
+          }
+          std::cerr << "  its open edge's nearest skin: drawn " << over << ", hidden " << open << ", on the edge " << onEdge << "\n";
+        }
+        std::vector<double> height = seam.empty() ? std::vector<double>{} : signedClearance(body.cagePositions, body.dsonTris, seam);
+        std::sort(height.begin(), height.end());
+        const auto up = [&](double q) { return height.empty() ? 0.0 : height[std::min(height.size() - 1, size_t(q * double(height.size())))]; };
+        std::cerr << std::fixed << std::setprecision(2) << "  its open edge off the skin, cm: median " << up(0.5) << " [" << up(0.05) << ", " << up(0.95)
+                  << "]\n"
+                  << std::defaultfloat << std::setprecision(6);
+        std::cerr << std::fixed << std::setprecision(2) << "graft " << rel << "\n  on its own figure: " << ownPolys << " polygons hidden, " << ownArea
+                  << " cm2\n  here: " << hidden.size() << " of " << ps.size() - 1 << " polygons hidden, " << area << " cm2; its open edge ("
+                  << gap.size() << " vertices) from the edge of what it hides, cm: median " << at(0.5) << ", p95 " << at(0.95) << ", most "
+                  << (gap.empty() ? 0.0 : gap.back()) << "\n"
+                  << std::defaultfloat << std::setprecision(6);
+        for(const std::string& n : worn.notes)
+          std::cerr << "  note: " << n << "\n";
+        for(const std::string& n : worn.warnings)
+          std::cerr << "  warning: " << n << "\n";
+        dumps[step.value("label", std::string("graft"))] = {{"ownPolys", ownPolys}, {"ownArea", r(ownArea)}, {"hidden", hidden.size()}, {"area", r(area)},
+                                                            {"gapMedian", r(at(0.5))}, {"gapP95", r(at(0.95))}, {"notes", worn.notes}, {"warnings", worn.warnings}};
+        for(int id : worn.items)
+          loaded->removeItem(id);
+        loaded->settle();
       }
       else if(step.contains("fit"))
       {

@@ -23,6 +23,10 @@ struct BaseCage
   // each triangle's surface (an index into `surfaces`, the file's material groups: "Torso", "Teeth")
   std::vector<uint16_t>    triSurface;
   std::vector<std::string> surfaces;
+  // each triangle's polygon in the file, and how many polygons it has (a geograft's hidden polygons
+  // number them); empty and 0 for a body read from elsewhere
+  std::vector<uint32_t> triPoly;
+  int                   polyCount = 0;
   // skin influences per vertex; `bone` indexes `skeleton`
   mesh::SkinInput skin;
   // the base figure's bones (names, not ids), with their file centres
