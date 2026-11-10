@@ -8,6 +8,7 @@
 #include <figure/garment/maps.hpp>
 #include <figure/garment/pieces.hpp>
 #include <figure/garment/rigid.hpp>
+#include <figure/garment/strands.hpp>
 #include <figure/mesh/normals.hpp>
 #include <figure/wardrobe/bind.hpp>
 #include <figure/wardrobe/bind_cache.hpp>
@@ -622,6 +623,18 @@ std::optional<FitDetail> fitItem(dson::Store& store, dson::LoadResult& w, const 
     const bool graftLaid = layered && graftOf(w, meshIdx);
     if(!(m.dforce && m.dforce->simulated()) && !graftLaid)
       positions = pushOutOfBody(positions, m.geo->dsonTris, bodySurface, m.geo->cageLineStart, m.geo->cageLineVerts, footwear ? 3.f : kSunkDepth);
+    // strand hair through the layer: each root on the scalp where its address puts it, at the height it
+    // had over its own (the fit and the push leave roots 1.5 mm off), its strand carried with it
+    if(typeMap && cage && !m.geo->cageLineStart.empty())
+    {
+      garment::CarriedRoots carried = garment::carryRoots(m.geo->cagePositions, positions, m.geo->cageLineStart, m.geo->cageLineVerts, cage->positions,
+                                                          cage->tris, *typeMap, decodeOnto, body.cagePositions);
+      if(carried.moved > 0)
+      {
+        positions     = std::move(carried.positions);
+        detail.common = true;
+      }
+    }
     // with the common fit, a hard piece (a button, a buckle, a plate on one bone) is put back in the
     // shape it was made in, where the fit and the push left it. Not a shoe's, fitted as a whole
     // already, nor cloth dForce drapes

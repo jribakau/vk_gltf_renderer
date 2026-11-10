@@ -21,6 +21,7 @@
 #include <figure/garment/pieces.hpp>
 #include <figure/garment/quads.hpp>
 #include <figure/garment/rigid.hpp>
+#include <figure/garment/strands.hpp>
 #include <figure/garment/weights.hpp>
 
 namespace {
@@ -382,6 +383,43 @@ TEST(Garment, AGraftWithNothingToReadHidesNothing)
   // a body read from elsewhere has no polygons to number
   const std::vector<int32_t> polyStart{0, 4}, polyVerts{0, 1, 6, 5}, hidden{0};
   EXPECT_TRUE(fv::garment::hiddenThrough(source, hidden, typeOf(body, body), typeOf(body, body), polyStart, polyVerts).empty());
+}
+
+TEST(GarmentStrands, ARootGoesOntoTheSkinAtItsHeightAndItsStrandFollows)
+{
+  // strands made on a sphere of 10 cm, roots 0.05 cm off it, running 4 cm straight out; worn on a
+  // sphere of 12 cm of another tessellation, where the fit left each strand 0.3 cm too far out
+  const Body    source = sphere(10, 16, 24), laidOnSource = sphere(10, 20, 30);
+  const Body    laidOnTarget = sphere(12, 20, 30), body = sphere(12, 14, 22);
+  const TypeMap type = typeOf(source, laidOnSource);
+  std::vector<float>   made, fitted;
+  std::vector<int32_t> lineStart{0}, lineVerts;
+  const Vec3 dirs[] = {{1, 0, 0}, {0, 0.6, 0.8}, {-0.6, 0.8, 0}};
+  for(const Vec3& d : dirs)
+  {
+    for(int i = 0; i < 9; i++)
+    {
+      const double along = 0.5 * i;
+      lineVerts.push_back(int32_t(made.size() / 3));
+      for(const double c : {d.x, d.y, d.z})
+        made.push_back(float(c * (10.05 + along)));
+      for(const double c : {d.x, d.y, d.z})
+        fitted.push_back(float(c * (12.35 + along)));
+    }
+    lineStart.push_back(int32_t(lineVerts.size()));
+  }
+  fv::garment::Target target;
+  target.reference = &laidOnTarget;
+  target.body      = &body;
+  const auto carried = fv::garment::carryRoots(made, fitted, lineStart, lineVerts, source.positions, source.tris, type, target, body.positions, 2);
+  EXPECT_EQ(carried.moved, 3u);
+  for(size_t l = 0; l < 3; l++)
+  {
+    // the root on the new skin at its own height (a flat facet lies a little inside the sphere)
+    EXPECT_NEAR(radiusOf(carried.positions, size_t(lineVerts[l * 9])), 12.05, 0.15) << l;
+    // past the fade, as the fit left it
+    EXPECT_NEAR(radiusOf(carried.positions, size_t(lineVerts[l * 9 + 8])), 16.35, 1e-4) << l;
+  }
 }
 
 TEST(GarmentRigid, TheBestMoveIsTheTurnAndShiftThatMadeIt)

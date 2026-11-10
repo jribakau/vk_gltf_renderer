@@ -1793,6 +1793,33 @@ int main(int argc, char** argv)
                                      {was[a * 3], was[a * 3 + 1], was[a * 3 + 2]}});
                 }
             const std::vector<double> now = signedClearance(body.cagePositions, body.dsonTris, me.geo->cagePositions);
+            // strand hair: its roots' clearance from the scalp, as made and worn (wardrobe plan step 4c)
+            if(const auto& ls = me.geo->cageLineStart; ls.size() > 1)
+            {
+              std::vector<double> rootChange, rootWas;
+              for(size_t l = 0; l + 1 < ls.size(); l++)
+              {
+                const size_t v = size_t(me.geo->cageLineVerts[size_t(ls[l])]);
+                if(v < now.size() && v < made[k].clearance[j].size())
+                {
+                  rootChange.push_back(now[v] - made[k].clearance[j][v]);
+                  rootWas.push_back(made[k].clearance[j][v]);
+                }
+              }
+              if(!rootChange.empty())
+              {
+                std::sort(rootChange.begin(), rootChange.end());
+                std::sort(rootWas.begin(), rootWas.end());
+                const auto q = [](const std::vector<double>& s, double f) { return s[std::min(s.size() - 1, size_t(f * double(s.size())))]; };
+                size_t     lifted = 0, sunk = 0;
+                for(const double c : rootChange)
+                  lifted += c > 0.2, sunk += c < -0.2;
+                std::cerr << std::fixed << std::setprecision(2) << "  roots      n " << std::setw(6) << rootChange.size() << "  as made " << q(rootWas, 0.5) << " ["
+                          << q(rootWas, 0.05) << ", " << q(rootWas, 0.95) << "]  change " << q(rootChange, 0.5) << " [" << q(rootChange, 0.05) << ", "
+                          << q(rootChange, 0.95) << "]  lifted over 2 mm " << lifted << ", sunk " << sunk << "\n"
+                          << std::defaultfloat << std::setprecision(6);
+              }
+            }
             regions.insert(regions.end(), made[k].regions[j].begin(), made[k].regions[j].end());
             before.insert(before.end(), made[k].clearance[j].begin(), made[k].clearance[j].end());
             after.insert(after.end(), now.begin(), now.end());
