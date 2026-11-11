@@ -40,8 +40,25 @@ inline LobeRoughness roughnessOfGltf(const tinygltf::Material& material, const C
   return probeRoughness(row, infos, options);
 }
 
-// A scene material as the build lowers it, every texture it asks for a neutral one of its own
-inline std::vector<ClosureAt> closureOf(const Material& m, mat::SkinMode skin, const ClosureOptions& options = {})
+// A case's "skin" ("measured", "volume", "thin", "raster")
+inline mat::SkinMode skinNamed(const std::string& name)
+{
+  return name == "volume" ? mat::SkinMode::eVolume :
+         name == "thin"   ? mat::SkinMode::eThin :
+         name == "raster" ? mat::SkinMode::eRaster :
+                            mat::SkinMode::eMeasured;
+}
+
+// The views of a glTF material (probeViews), through the same conversion
+inline MaterialViews viewsOfGltf(const tinygltf::Material& material, const ClosureOptions& options = {}, const ViewOptions& views = {})
+{
+  std::vector<shaderio::GltfTextureInfo> infos(1);
+  const shaderio::GltfShadeMaterial      row = nvvkgltf::MaterialCache::convertOne(material, probeSlots(options), 0, infos);
+  return probeViews(row, infos, options, views);
+}
+
+// A scene material as the build lowers it to glTF, every texture it asks for a neutral one of its own
+inline tinygltf::Material loweredGltf(const Material& m, mat::SkinMode skin)
 {
   int                      next = 0;
   std::vector<std::string> extensions;
@@ -52,7 +69,17 @@ inline std::vector<ClosureAt> closureOf(const Material& m, mat::SkinMode skin, c
     r.index = next++;
     return r;
   };
-  return closureOfGltf(fv::build::materialToGltf(m, lowering, resolve, extensions), options);
+  return fv::build::materialToGltf(m, lowering, resolve, extensions);
+}
+
+inline std::vector<ClosureAt> closureOf(const Material& m, mat::SkinMode skin, const ClosureOptions& options = {})
+{
+  return closureOfGltf(loweredGltf(m, skin), options);
+}
+
+inline MaterialViews viewsOf(const Material& m, mat::SkinMode skin, const ClosureOptions& options = {}, const ViewOptions& views = {})
+{
+  return viewsOfGltf(loweredGltf(m, skin), options, views);
 }
 
 }  // namespace fv::probe

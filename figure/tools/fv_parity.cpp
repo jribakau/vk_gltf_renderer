@@ -121,6 +121,7 @@
 
 #include "fv_figure_feed.hpp"
 #include "material_sweep.hpp"
+#include "material_views.hpp"
 #include "fv_figure_feed_check.hpp"
 #include "scene_retained.hpp"
 
@@ -3634,6 +3635,12 @@ int main(int argc, char** argv)
       else if(step.contains("sweep"))
       {
         dumps[step["sweep"].get<std::string>()] = fv::probe::materialSweep(libraryDir, root, step);
+      }
+      else if(step.contains("slice"))
+      {
+        // {"slice": label, "out": folder, ...}: each surface's BRDF slices and balls (material_views.hpp)
+        dumps[step["slice"].get<std::string>()] =
+            fv::probe::materialViews(libraryDir, root, step, loaded ? &loaded->loaded.scene.materials : nullptr);
       }
       else if(step.contains("surfaces"))
       {

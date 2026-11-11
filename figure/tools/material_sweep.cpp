@@ -81,14 +81,6 @@ const char* kindName(mat::Kind k)
   }
 }
 
-mat::SkinMode skinOf(const std::string& name)
-{
-  return name == "volume" ? mat::SkinMode::eVolume :
-         name == "thin"   ? mat::SkinMode::eThin :
-         name == "raster" ? mat::SkinMode::eRaster :
-                            mat::SkinMode::eMeasured;
-}
-
 // A path as the library's relative paths are: UTF-8, forward slashes (.string() throws on some names)
 std::string utf8(const std::filesystem::path& p)
 {
@@ -367,7 +359,7 @@ Json materialSweep(const std::filesystem::path& libraryDir, const std::filesyste
   const unsigned hardware = std::max(2u, std::thread::hardware_concurrency());
   const int      threads  = step.value("threads", 0) > 0 ? step.value("threads", 0) : int(hardware / 2);
   const int      limit    = step.value("limit", 0);
-  const auto     skin     = skinOf(step.value("skin", std::string("measured")));
+  const auto     skin     = skinNamed(step.value("skin", std::string("measured")));
   const auto     library  = std::make_shared<dson::Library>(std::vector<std::filesystem::path>{libraryDir});
 
   std::atomic<size_t> next{0};
