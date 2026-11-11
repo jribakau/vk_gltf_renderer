@@ -290,7 +290,7 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
         out.places.emplace_back(e, entity->mesh->parts.at(0).mesh);
         // on the ground where it lies, a little into it
         const glm::mat4 w      = scene.world(e);
-        const float     ground = fv::backdrop::height(spec, w[3].x, w[3].z);
+        const float     ground = fv::backdrop::groundAt(spec, w[3].x, w[3].z);
         EXPECT_LE(w[3].y, ground + 1e-3F);
         EXPECT_GE(w[3].y, ground - 0.5F);
         continue;
@@ -321,7 +321,7 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
       EXPECT_EQ(scene.world(e), glm::mat4(1.f)) << "a variant's own place in its file is dropped";
       const glm::mat4& m = entity->mesh->copies[entity->mesh->copies.size() / 2];
       // on the ground, or a tree's foot a little into it (the far, grown ones the most)
-      const float ground = fv::backdrop::height(spec, m[3].x, m[3].z);
+      const float ground = fv::backdrop::groundAt(spec, m[3].x, m[3].z);
       EXPECT_LE(m[3].y, ground + 1e-3F);
       EXPECT_GE(m[3].y, ground - 1.5F);
     }

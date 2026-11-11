@@ -96,6 +96,14 @@ inline constexpr float kWoods = 260.0F;
 // The ground's height over the floor at (x, z)
 float height(const Spec& spec, float x, float z);
 
+// The ground's height at (x, z) as its mesh draws it (`terrain`): the height at the mesh's vertices,
+// flat across each triangle between. What stands on the ground stands on this: the mesh's triangles
+// are metres across a few tens of metres out and tens of metres across a few hundred out, and the
+// height's bumps, some ten metres across, bulge through them, so grass laid on `height` was buried
+// to half its blades on the triangles' ridges (paler squares where the ground showed through) and
+// floated over their hollows.
+float groundAt(const Spec& spec, float x, float z);
+
 // How much of a place is wood that no tree stands for, 0 to 1: beyond where the far trees keep
 // their cover (they thin, and each grows, until its growth is spent), where their layer's groves
 // are. The ground is that much the colour of a wood seen from afar, so the few trees that still
@@ -200,14 +208,18 @@ struct Tile
   auto    operator<=>(const Tile&) const = default;
 };
 
-// The grass's tiles for where one looks from (`foci`, (x, z) each; none: the origin): every coarse
-// cell within reach of a focus is one sparse tile, or, nearer, its four cells of the middle level,
-// each of those one tile or its four thick ones. No ground is covered twice or left out. `was`, the
-// tiles as last asked for: a cell that was split stays split until a little further than where it
-// splits, so a view that hovers at a boundary changes nothing.
-std::vector<Tile> grassTiles(const Spec& spec, std::span<const glm::vec2> foci, std::span<const Tile> was = {});
+// Where one looks from: (x, how high over the ground, z). A level's reach is a distance from that
+// point, so a camera up in the air has the thick grass under it only once it is near enough to see
+// its blades, and none at all above the grass's last reach.
+using Focus = glm::vec3;
+// The grass's tiles for where one looks from (`foci`; none: the origin): every coarse cell within
+// reach of a focus is one sparse tile, or, nearer, its four cells of the middle level, each of those
+// one tile or its four thick ones. No ground is covered twice or left out. `was`, the tiles as last
+// asked for: a cell that was split stays split until a little further than where it splits, so a
+// view that hovers at a boundary changes nothing.
+std::vector<Tile> grassTiles(const Spec& spec, std::span<const Focus> foci, std::span<const Tile> was = {});
 // The drifts' tiles: `level` 0 a drift's middle, 1 its edge (Drifts::covers), on the middle grid
-std::vector<Tile> driftTiles(const Spec& spec, std::span<const glm::vec2> foci);
+std::vector<Tile> driftTiles(const Spec& spec, std::span<const Focus> foci);
 
 // Where a tile `size` metres across lies: its centre on the ground, sunk by `sink`, leaning as the
 // ground does there and turned a quarter turn or more by its cell, so its neighbours don't repeat it

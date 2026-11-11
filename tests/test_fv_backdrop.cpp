@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <limits>
 #include <set>
 
 #include <gtest/gtest.h>
@@ -186,6 +187,50 @@ TEST(BackdropGround, TheMeshIsTheHeightFunctions)
   EXPECT_LT(t.indices.size() / 3, 100000u);
 }
 
+// What stands on the ground stands on the ground as drawn: the mesh's triangles, not the height
+// function they sample, which bulged through them by tens of centimetres a hundred metres out
+// (burying the grass's blades) and by metres a few hundred out.
+TEST(BackdropGround, WhatStandsOnItStandsOnTheMeshesTriangles)
+{
+  const B::Spec    spec = meadow();
+  const B::Terrain t    = B::terrain(spec, 2.0F);
+  // the height on the triangle under a point, by brute force over the mesh
+  const auto onMesh = [&](float x, float z) {
+    for(size_t i = 0; i < t.indices.size(); i += 3)
+    {
+      const glm::vec3 a = t.positions[t.indices[i]], b = t.positions[t.indices[i + 1]], c = t.positions[t.indices[i + 2]];
+      const float     area = (b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z);
+      const float     wa   = ((b.x - x) * (c.z - z) - (c.x - x) * (b.z - z)) / area;
+      const float     wb   = ((c.x - x) * (a.z - z) - (a.x - x) * (c.z - z)) / area;
+      const float     wc   = 1.0F - wa - wb;
+      if(wa >= -1e-5F && wb >= -1e-5F && wc >= -1e-5F)
+        return wa * a.y + wb * b.y + wc * c.y;
+    }
+    return std::numeric_limits<float>::quiet_NaN();
+  };
+  float apart = 0.0F;  // the most the height function and the drawn ground part, over the points
+  int   checked = 0;
+  for(const float d : {2.0F, 12.0F, 35.0F, 85.0F, 140.0F, 400.0F, 1300.0F})
+    for(int k = 0; k < 12; k++)
+    {
+      const float a = 0.37F + 0.523F * float(k);
+      const float x = d * std::cos(a), z = d * std::sin(a);
+      const float mesh = onMesh(x, z);
+      if(std::isnan(mesh))
+        continue;  // between a ring's chord and its circle, which no triangle covers
+      EXPECT_NEAR(B::groundAt(spec, x, z), mesh, 1e-3F * std::max(1.0F, std::abs(mesh))) << d << " " << k;
+      apart = std::max(apart, std::abs(B::height(spec, x, z) - mesh));
+      checked++;
+    }
+  EXPECT_GT(checked, 70);
+  // what was wrong with standing on the height function: the drawn ground is a different one by more
+  // than a blade of grass is tall
+  EXPECT_GT(apart, 0.3F);
+  // the clearing is flat, and the far side of the land's end is the height function's
+  EXPECT_EQ(B::groundAt(spec, 0.2F, 0.1F), 0.0F);
+  EXPECT_EQ(B::groundAt(spec, B::kLandsEnd + 10.0F, 0.0F), B::height(spec, B::kLandsEnd + 10.0F, 0.0F));
+}
+
 TEST(BackdropScatter, PlantsStandOnTheGroundWhereTheirLayerSays)
 {
   const B::Spec  spec = meadow();
@@ -205,7 +250,7 @@ TEST(BackdropScatter, PlantsStandOnTheGroundWhereTheirLayerSays)
       EXPECT_GE(scale, 0.7F - 1e-4F);
       EXPECT_LE(scale, 1.6F + 1e-4F);
       EXPECT_NEAR(m[1].y, scale, 1e-4F);
-      EXPECT_NEAR(at.y, B::height(spec, at.x, at.z) - 0.1F * scale, 1e-4F);
+      EXPECT_NEAR(at.y, B::groundAt(spec, at.x, at.z) - 0.1F * scale, 1e-4F);
     }
   }
   // as many as the layer's density over its ring, about
@@ -501,6 +546,19 @@ std::pair<double, bool> covered(const B::Spec& spec, const std::vector<B::Tile>&
 
 }  // namespace
 
+// A focus on the ground at a place
+B::Focus on(glm::vec2 at, float above = 0.0F)
+{
+  return {at.x, above, at.y};
+}
+std::vector<B::Focus> on(std::initializer_list<glm::vec2> at)
+{
+  std::vector<B::Focus> out;
+  for(const glm::vec2& a : at)
+    out.push_back(on(a));
+  return out;
+}
+
 TEST(BackdropTiles, TheGrassCoversTheGroundOnceThickWhereOneLooksFrom)
 {
   const B::Spec spec  = meadow();
@@ -509,7 +567,7 @@ TEST(BackdropTiles, TheGrassCoversTheGroundOnceThickWhereOneLooksFrom)
   EXPECT_LT(reach[1], reach[2]);
   const glm::vec2              away(210.0F, -95.0F);
   const std::vector<glm::vec2> foci{{0.0F, 0.0F}, away};
-  const std::vector<B::Tile>   tiles = B::grassTiles(spec, foci);
+  const std::vector<B::Tile>   tiles = B::grassTiles(spec, on({{0.0F, 0.0F}, away}));
   // no tile twice, every level there
   EXPECT_EQ(std::set<B::Tile>(tiles.begin(), tiles.end()).size(), tiles.size());
   std::array<size_t, B::kGrassLevels> count{};
@@ -543,8 +601,44 @@ TEST(BackdropTiles, TheGrassCoversTheGroundOnceThickWhereOneLooksFrom)
         EXPECT_EQ(t.level, 0) << t.x << "," << t.z;
   }
   // no focus given: round the origin
-  EXPECT_EQ(B::grassTiles(spec, {}), B::grassTiles(spec, std::vector<glm::vec2>{{0.0F, 0.0F}}));
-  EXPECT_TRUE(B::grassTiles(B::Spec{}, foci).empty());
+  EXPECT_EQ(B::grassTiles(spec, {}), B::grassTiles(spec, on({{0.0F, 0.0F}})));
+  EXPECT_TRUE(B::grassTiles(B::Spec{}, on({{0.0F, 0.0F}})).empty());
+}
+
+// A camera up in the air is that much further from the grass: its levels reach as far from the eye
+// as from one standing, so the thick grass under it goes first as it climbs, and above the last
+// level's reach it has none (from 300 m a meadow's thousands of tiles were laid where no blade shows).
+TEST(BackdropTiles, ACameraInTheAirHasTheGrassItsHeightLeavesIt)
+{
+  const B::Spec   spec  = meadow();
+  const auto      reach = B::grassReach(spec);
+  const glm::vec2 at(150.0F, 40.0F);
+  const auto      levels = [&](float above) {
+    std::array<size_t, B::kGrassLevels> count{};
+    for(const B::Tile& t : B::grassTiles(spec, std::vector<B::Focus>{on(at, above)}))
+      count[t.level]++;
+    return count;
+  };
+  const auto standing = levels(1.7F);
+  const auto low      = levels(0.5F * reach[0]);
+  const auto high     = levels(0.5F * (reach[0] + reach[1]));
+  const auto higher   = levels(0.5F * (reach[1] + reach[2]));
+  EXPECT_GT(standing[0], 0u);
+  EXPECT_GT(low[0], 0u);
+  EXPECT_LT(low[0], standing[0]);
+  EXPECT_EQ(high[0], 0u);
+  EXPECT_GT(high[1], 0u);
+  EXPECT_EQ(higher[0] + higher[1], 0u);
+  EXPECT_GT(higher[2], 0u);
+  EXPECT_TRUE(B::grassTiles(spec, std::vector<B::Focus>{on(at, reach[2] + 1.0F)}).empty());
+  EXPECT_TRUE(B::driftTiles(spec, std::vector<B::Focus>{on(at, B::drifts(spec).reach + 1.0F)}).empty());
+  // what is laid is within reach of the eye, not of the ground under it
+  for(const B::Tile& t : B::grassTiles(spec, std::vector<B::Focus>{on(at, 30.0F)}))
+  {
+    const auto [corner, size] = squareOf(spec, t);
+    const glm::vec2 centre    = corner + glm::vec2(0.5F * size);
+    EXPECT_LT(glm::length(glm::vec3(centre.x - at.x, 30.0F, centre.y - at.y)), reach[2] + 8.0F);
+  }
 }
 
 TEST(BackdropTiles, ASmallMoveChangesAFewTilesAndNoneNear)
@@ -552,13 +646,13 @@ TEST(BackdropTiles, ASmallMoveChangesAFewTilesAndNoneNear)
   const B::Spec spec  = meadow();
   const auto    reach = B::grassReach(spec);
   glm::vec2     at(3.0F, 7.0F);
-  std::vector<B::Tile> tiles = B::grassTiles(spec, std::vector<glm::vec2>{at});
+  std::vector<B::Tile> tiles = B::grassTiles(spec, std::vector<B::Focus>{on(at)});
   size_t               most  = 0;
   // a walk of 60 m, a metre a step
   for(int step = 0; step < 60; step++)
   {
     at += glm::vec2(0.8F, 0.6F);
-    const std::vector<B::Tile> next = B::grassTiles(spec, std::vector<glm::vec2>{at}, tiles);
+    const std::vector<B::Tile> next = B::grassTiles(spec, std::vector<B::Focus>{on(at)}, tiles);
     std::vector<B::Tile>       a = tiles, b = next, changed;
     std::sort(a.begin(), a.end());
     std::sort(b.begin(), b.end());
@@ -578,16 +672,16 @@ TEST(BackdropTiles, ASmallMoveChangesAFewTilesAndNoneNear)
   EXPECT_GT(most, 0u);
   EXPECT_LT(most, tiles.size() / 5);
   // a step back and forth across a boundary changes nothing: a cell that split stays split a little further
-  const std::vector<B::Tile> there = B::grassTiles(spec, std::vector<glm::vec2>{at + glm::vec2(0.3F, 0.0F)}, tiles);
-  const std::vector<B::Tile> back  = B::grassTiles(spec, std::vector<glm::vec2>{at}, there);
-  EXPECT_EQ(B::grassTiles(spec, std::vector<glm::vec2>{at + glm::vec2(0.3F, 0.0F)}, back), there);
+  const std::vector<B::Tile> there = B::grassTiles(spec, std::vector<B::Focus>{on(at + glm::vec2(0.3F, 0.0F))}, tiles);
+  const std::vector<B::Tile> back  = B::grassTiles(spec, std::vector<B::Focus>{on(at)}, there);
+  EXPECT_EQ(B::grassTiles(spec, std::vector<B::Focus>{on(at + glm::vec2(0.3F, 0.0F))}, back), there);
 }
 
 TEST(BackdropTiles, FlowersAndFernsStandInDriftsNearWhereOneLooksFrom)
 {
   for(const B::Spec& spec : {meadow(), forest()})
   {
-    const auto      tiles = B::driftTiles(spec, std::vector<glm::vec2>{{0.0F, 0.0F}});
+    const auto      tiles = B::driftTiles(spec, on({{0.0F, 0.0F}}));
     const B::Drifts in    = B::drifts(spec);
     const float     size  = in.covers[0].tile;
     size_t          thick = 0;
@@ -620,11 +714,11 @@ TEST(BackdropTiles, ATileLiesOnTheGroundLeaningAsItDoes)
   {
     const B::Place p = B::tilePlace(spec, 4.0F, i, -i / 2, 0.1F);
     EXPECT_FLOAT_EQ(p.position.x, (float(i) + 0.5F) * 4.0F);
-    EXPECT_NEAR(p.position.y, B::height(spec, p.position.x, p.position.z) - 0.1F, 1e-4F);
+    EXPECT_NEAR(p.position.y, B::groundAt(spec, p.position.x, p.position.z) - 0.1F, 1e-4F);
     const glm::vec3 up = p.rotation * glm::vec3(0.0F, 1.0F, 0.0F);
     const float     e  = 2.0F;
-    const float     dx = (B::height(spec, p.position.x + e, p.position.z) - B::height(spec, p.position.x - e, p.position.z)) / (2.0F * e);
-    const float     dz = (B::height(spec, p.position.x, p.position.z + e) - B::height(spec, p.position.x, p.position.z - e)) / (2.0F * e);
+    const float     dx = (B::groundAt(spec, p.position.x + e, p.position.z) - B::groundAt(spec, p.position.x - e, p.position.z)) / (2.0F * e);
+    const float     dz = (B::groundAt(spec, p.position.x, p.position.z + e) - B::groundAt(spec, p.position.x, p.position.z - e)) / (2.0F * e);
     EXPECT_NEAR(glm::length(up - glm::normalize(glm::vec3(-dx, 1.0F, -dz))), 0.0F, 1e-4F);
     EXPECT_NEAR(glm::length(p.rotation), 1.0F, 1e-5F);
     // and tiles are turned differently about the vertical, so one patch doesn't read as a pattern

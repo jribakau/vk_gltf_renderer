@@ -149,17 +149,68 @@ float height(const Spec& spec, float x, float z)
   return float(spec.relief) * rise * (rolling + hills + ridges);
 }
 
+namespace {
+
+// The ground mesh's rings: half a metre apart underfoot, then 6% further each, so the ground's detail
+// follows what a camera near the origin sees of it; each of kSegments vertices round
+constexpr uint32_t kSegments = 192;
+const std::vector<float>& meshRadii()
+{
+  static const std::vector<float> radii = [] {
+    std::vector<float> out;
+    for(float r = 0.5F; r < kLandsEnd; r += std::max(0.5F, kMeshGrowth * r))
+      out.push_back(r);
+    out.push_back(kLandsEnd);
+    return out;
+  }();
+  return radii;
+}
+
+// A vertex of a ring's, on the ground's plan
+glm::vec2 meshVertex(float r, uint32_t segment)
+{
+  const float a = 2.0F * kPi * float(segment) / float(kSegments);
+  return {r * std::cos(a), r * std::sin(a)};
+}
+
+}  // namespace
+
+float groundAt(const Spec& spec, float x, float z)
+{
+  const std::vector<float>& radii = meshRadii();
+  const float               d     = std::sqrt(x * x + z * z);
+  // inside the first ring, and in the clearing round it, the ground is flat; past the last, nothing
+  if(d < radii.front() || d >= radii.back())
+    return height(spec, x, z);
+  const size_t   ring = size_t(std::upper_bound(radii.begin(), radii.end(), d) - radii.begin()) - 1U;
+  float          a    = std::atan2(z, x);
+  if(a < 0.0F)
+    a += 2.0F * kPi;
+  const uint32_t s = std::min(uint32_t(a / (2.0F * kPi) * float(kSegments)), kSegments - 1U);
+  // the quad between the rings, split as terrain() splits it: (a, b, c) and (b, d, c)
+  const glm::vec2 pa = meshVertex(radii[ring], s), pb = meshVertex(radii[ring], s + 1U);
+  const glm::vec2 pc = meshVertex(radii[ring + 1], s), pd = meshVertex(radii[ring + 1], s + 1U);
+  const glm::vec2 p(x, z);
+  // barycentric weights of p in a triangle on the plan; the triangle p is in, or least outside of
+  const auto weights = [&](glm::vec2 u, glm::vec2 v, glm::vec2 w) {
+    const float area = (v.x - u.x) * (w.y - u.y) - (w.x - u.x) * (v.y - u.y);
+    const float wu   = ((v.x - p.x) * (w.y - p.y) - (w.x - p.x) * (v.y - p.y)) / area;
+    const float wv   = ((w.x - p.x) * (u.y - p.y) - (u.x - p.x) * (w.y - p.y)) / area;
+    return glm::vec3(wu, wv, 1.0F - wu - wv);
+  };
+  const glm::vec3 first  = weights(pa, pb, pc);
+  const glm::vec3 second = weights(pb, pd, pc);
+  const auto      h      = [&](glm::vec2 q) { return height(spec, q.x, q.y); };
+  if(std::min({first.x, first.y, first.z}) >= std::min({second.x, second.y, second.z}))
+    return first.x * h(pa) + first.y * h(pb) + first.z * h(pc);
+  return second.x * h(pb) + second.y * h(pd) + second.z * h(pc);
+}
+
 Terrain terrain(const Spec& spec, float tile)
 {
   Terrain t;
-  // rings half a metre apart underfoot, then 6% further each, so the ground's detail follows what a
-  // camera near the origin sees of it
-  std::vector<float> radii;
-  for(float r = 0.5F; r < kLandsEnd; r += std::max(0.5F, kMeshGrowth * r))
-    radii.push_back(r);
-  radii.push_back(kLandsEnd);
-  constexpr uint32_t kSegments = 192;
-  const float        scale     = tile > 0.0F ? 1.0F / tile : 1.0F;
+  const std::vector<float>& radii = meshRadii();
+  const float               scale = tile > 0.0F ? 1.0F / tile : 1.0F;
   // `e`: half the distance the slope is taken over, a ring's width where the rings are wide
   const auto         vertex    = [&](float x, float z, float e) {
     const float h = height(spec, x, z);
@@ -178,8 +229,8 @@ Terrain terrain(const Spec& spec, float tile)
   for(const float r : radii)
     for(uint32_t s = 0; s < kSegments; s++)
     {
-      const float a = 2.0F * kPi * float(s) / float(kSegments);
-      vertex(r * std::cos(a), r * std::sin(a), std::max(0.25F, 0.5F * kMeshGrowth * r));
+      const glm::vec2 v = meshVertex(r, s);
+      vertex(v.x, v.y, std::max(0.25F, 0.5F * kMeshGrowth * r));
     }
   // counter-clockwise seen from above: the fan round the centre, then a quad a segment between rings
   const auto at = [&](size_t ring, uint32_t s) { return uint32_t(1 + ring * kSegments + s % kSegments); };
@@ -297,7 +348,7 @@ std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer
       const uint32_t variant = mix(h + 3U) % variants;
       const float    yaw     = 2.0F * kPi * unit(mix(h + 4U));
       const float    scale   = (layer.scaleMin + (layer.scaleMax - layer.scaleMin) * unit(mix(h + 5U))) * growth;
-      glm::mat4      m       = glm::translate(glm::mat4(1.0F), glm::vec3(x, height(spec, x, z) - layer.sink * scale, z));
+      glm::mat4      m       = glm::translate(glm::mat4(1.0F), glm::vec3(x, groundAt(spec, x, z) - layer.sink * scale, z));
       m                      = glm::rotate(m, yaw, glm::vec3(0.0F, 1.0F, 0.0F));
       m                      = glm::scale(m, glm::vec3(scale));
       out[variant].push_back(m);
@@ -410,12 +461,19 @@ glm::vec2 cellCentre(float size, int32_t x, int32_t z)
   return {(float(x) + 0.5F) * size, (float(z) + 0.5F) * size};
 }
 
-float nearest(std::span<const glm::vec2> foci, glm::vec2 at)
+// How far the nearest focus is from a place on the ground
+float nearest(std::span<const Focus> foci, glm::vec2 at)
 {
   float d = std::numeric_limits<float>::max();
-  for(const glm::vec2& f : foci)
-    d = std::min(d, glm::distance(f, at));
+  for(const Focus& f : foci)
+    d = std::min(d, glm::length(glm::vec3(f.x - at.x, f.y, f.z - at.y)));
   return d;
+}
+
+// How far along the ground from under a focus a reach goes: none when the focus is that high
+float acrossGround(const Focus& f, float reach)
+{
+  return f.y < reach ? std::sqrt(reach * reach - f.y * f.y) : -1.0F;
 }
 
 // A cell that was split stays split out to this much further than where one splits
@@ -423,14 +481,14 @@ constexpr float kStaysSplit = 1.12F;
 
 }  // namespace
 
-std::vector<Tile> grassTiles(const Spec& spec, std::span<const glm::vec2> foci, std::span<const Tile> was)
+std::vector<Tile> grassTiles(const Spec& spec, std::span<const Focus> foci, std::span<const Tile> was)
 {
   std::vector<Tile> out;
   if(!planted(spec))
     return out;
-  const glm::vec2            origin(0.0F);
-  std::span<const glm::vec2> round = foci.empty() ? std::span<const glm::vec2>(&origin, 1) : foci;
-  const auto                 covers = grassCovers(spec);
+  const Focus            origin(0.0F);
+  std::span<const Focus> round  = foci.empty() ? std::span<const Focus>(&origin, 1) : foci;
+  const auto             covers = grassCovers(spec);
   const auto                 reach  = grassReach(spec);
   // the cells that were split, by their own level: a thick tile's parent and grandparent, a middle
   // tile's parent
@@ -453,13 +511,17 @@ std::vector<Tile> grassTiles(const Spec& spec, std::span<const glm::vec2> foci, 
   // every coarse cell within reach of a focus, once
   const float     coarse = covers[2].tile;
   std::set<Tile> cells;
-  for(const glm::vec2& f : round)
+  for(const Focus& f : round)
   {
-    const int n  = int(std::ceil(reach[2] / coarse)) + 1;
-    const int cx = int(std::floor(f.x / coarse)), cz = int(std::floor(f.y / coarse));
+    const float across = acrossGround(f, reach[2]);
+    if(across < 0.0F)
+      continue;
+    const glm::vec2 under(f.x, f.z);
+    const int       n  = int(std::ceil(across / coarse)) + 1;
+    const int       cx = int(std::floor(under.x / coarse)), cz = int(std::floor(under.y / coarse));
     for(int z = cz - n; z <= cz + n; z++)
       for(int x = cx - n; x <= cx + n; x++)
-        if(glm::distance(cellCentre(coarse, x, z), f) < reach[2])
+        if(glm::distance(cellCentre(coarse, x, z), under) < across)
           cells.insert({x, z, 2});
   }
   for(const Tile& c2 : cells)
@@ -486,28 +548,32 @@ std::vector<Tile> grassTiles(const Spec& spec, std::span<const glm::vec2> foci, 
   return out;
 }
 
-std::vector<Tile> driftTiles(const Spec& spec, std::span<const glm::vec2> foci)
+std::vector<Tile> driftTiles(const Spec& spec, std::span<const Focus> foci)
 {
   std::vector<Tile> out;
   if(!planted(spec))
     return out;
-  const glm::vec2            origin(0.0F);
-  std::span<const glm::vec2> round = foci.empty() ? std::span<const glm::vec2>(&origin, 1) : foci;
+  const Focus            origin(0.0F);
+  std::span<const Focus> round = foci.empty() ? std::span<const Focus>(&origin, 1) : foci;
   const Drifts               in    = drifts(spec);
   const float                size  = in.covers[0].tile;
   const float                reach = in.reach;
   // their middles thick, their edges thin
   const float middle = coverLevel(in.middle), edge = coverLevel(in.ground);
   std::set<Tile> cells;
-  for(const glm::vec2& f : round)
+  for(const Focus& f : round)
   {
-    const int n  = int(std::ceil(reach / size)) + 1;
-    const int cx = int(std::floor(f.x / size)), cz = int(std::floor(f.y / size));
+    const float across = acrossGround(f, reach);
+    if(across < 0.0F)
+      continue;
+    const glm::vec2 under(f.x, f.z);
+    const int       n  = int(std::ceil(across / size)) + 1;
+    const int       cx = int(std::floor(under.x / size)), cz = int(std::floor(under.y / size));
     for(int z = cz - n; z <= cz + n; z++)
       for(int x = cx - n; x <= cx + n; x++)
       {
         const glm::vec2 c = cellCentre(size, x, z);
-        if(glm::distance(c, f) >= reach)
+        if(glm::distance(c, under) >= across)
           continue;
         const float noise = fbm(c.x / in.across, c.y / in.across, uint32_t(spec.seed), kChannelDrift);
         if(noise > edge)
@@ -521,10 +587,10 @@ std::vector<Tile> driftTiles(const Spec& spec, std::span<const glm::vec2> foci)
 Place tilePlace(const Spec& spec, float size, int32_t x, int32_t z, float sink)
 {
   const glm::vec2 c = cellCentre(size, x, z);
-  // the ground's lean across the tile, by its height either side
+  // the ground's lean across the tile, by its height either side: the ground as drawn (groundAt)
   const float     e  = 0.5F * size;
-  const float     dx = (height(spec, c.x + e, c.y) - height(spec, c.x - e, c.y)) / (2.0F * e);
-  const float     dz = (height(spec, c.x, c.y + e) - height(spec, c.x, c.y - e)) / (2.0F * e);
+  const float     dx = (groundAt(spec, c.x + e, c.y) - groundAt(spec, c.x - e, c.y)) / (2.0F * e);
+  const float     dz = (groundAt(spec, c.x, c.y + e) - groundAt(spec, c.x, c.y - e)) / (2.0F * e);
   const glm::vec3 up = glm::normalize(glm::vec3(-dx, 1.0F, -dz));
   // a turn about the vertical by the cell, then the lean: the shortest turn that takes +y to the ground's normal
   const uint32_t  h    = hash(uint32_t(spec.seed), 7000U + uint32_t(size * 16.0F), uint32_t(x), uint32_t(z));
@@ -532,7 +598,7 @@ Place tilePlace(const Spec& spec, float size, int32_t x, int32_t z, float sink)
   const glm::vec3 axis = glm::cross(glm::vec3(0.0F, 1.0F, 0.0F), up);
   const float     s    = glm::length(axis);
   const glm::quat lean = s > 1e-6F ? glm::angleAxis(std::asin(std::min(s, 1.0F)), axis / s) : glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
-  return {.position = {c.x, height(spec, c.x, c.y) - sink * float(std::max(spec.relief, 0.25)), c.y}, .rotation = lean * turn};
+  return {.position = {c.x, groundAt(spec, c.x, c.y) - sink * float(std::max(spec.relief, 0.25)), c.y}, .rotation = lean * turn};
 }
 
 std::vector<std::string> roles(const Spec& spec)

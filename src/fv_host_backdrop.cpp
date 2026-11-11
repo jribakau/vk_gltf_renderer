@@ -425,7 +425,7 @@ void FvHost::Impl::tileBackdrop(rs::RetainedScene& scene)
     return;
   BackdropBuilt&                built = *backdropBuilt;
   const fv::backdrop::Spec&     spec  = lighting.backdrop;
-  const std::vector<glm::vec2>  foci  = backdropFociNow();
+  const std::vector<fv::backdrop::Focus> foci = backdropFociNow();
   uint64_t                      plants = built.placed;
   const auto lay = [&](BackdropBuilt::Tiles& tiles, const std::vector<fv::backdrop::Tile>& wanted, std::span<const fv::backdrop::Cover> covers) {
     const std::set<fv::backdrop::Tile> want(wanted.begin(), wanted.end());
@@ -567,13 +567,14 @@ void FvHost::Impl::applyBackdrop(bool reread)
   scopeHaze();
 }
 
-std::vector<glm::vec2> FvHost::Impl::backdropFociNow()
+std::vector<fv::backdrop::Focus> FvHost::Impl::backdropFociNow()
 {
-  std::vector<glm::vec2> foci{backdropContent};
+  std::vector<fv::backdrop::Focus> foci{{backdropContent.x, 0.0F, backdropContent.y}};
   if(const auto camera = renderer->getCameraManipulator())
   {
-    const glm::vec3 eye = camera->getEye();
-    foci.emplace_back(eye.x, eye.z);
+    const glm::vec3 eye   = camera->getEye();
+    const float     above = std::max(eye.y - fv::backdrop::groundAt(lighting.backdrop, eye.x, eye.z), 0.0F);
+    foci.emplace_back(eye.x, above, eye.z);
   }
   return foci;
 }
@@ -586,8 +587,8 @@ void FvHost::Impl::followBackdrop()
   if(!scene.entity(backdropBuilt->root))
     return;
   // once a focus has gone a metre: a tile is two across at the least
-  const std::vector<glm::vec2> foci  = backdropFociNow();
-  const std::vector<glm::vec2>& last = backdropBuilt->tiledFor;
+  const std::vector<fv::backdrop::Focus>  foci = backdropFociNow();
+  const std::vector<fv::backdrop::Focus>& last = backdropBuilt->tiledFor;
   bool                          moved = foci.size() != last.size();
   for(size_t i = 0; i < foci.size() && !moved; i++)
     moved = glm::distance(foci[i], last[i]) >= 1.0F;

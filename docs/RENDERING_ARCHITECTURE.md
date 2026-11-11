@@ -613,7 +613,11 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   no less than three rings, or the mesh would draw it as blocks (`sizedNoise`: the noise at
   doublings of its size, blended; a size that simply grew with the place's distance would leave a
   function of its direction, stripes out from the origin). All of it
-  is a pure function of the spec: the same seed is the same land on every machine.
+  is a pure function of the spec: the same seed is the same land on every machine. What stands on
+  the ground stands on the mesh (`groundAt`, the height on its triangles), not on `height`: the
+  height's bumps, some ten metres across, bulge through triangles metres wide a few tens of metres
+  out, and grass laid on `height` was buried to half its blades on their ridges, pale squares from
+  the air, and floated over their hollows.
 - **Trees, saplings, bushes, rocks and dead wood have places** (`layers`, `scatter`): a jittered
   grid thinned by patch noise, per variant of the role. They never change. The trees stand out to
   the horizon, so a camera that flies off or climbs sees wooded hills and not bare ground: a second
@@ -630,7 +634,11 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   of three kinds, thick grass in 2 m tiles where one looks from, thinner and larger in 4 m tiles
   beyond, sparse tufts in 8 m tiles out to where the trees have closed; a tile of one level is four
   of the next, so no ground is covered twice or left out. "Where one looks from" is two places, the
-  scene's content and the camera, so there is grass under any view. A move of the camera changes
+  scene's content and the camera, so there is grass under any view; each is a point with its height
+  over the ground (`Focus`), and a level reaches that far from the eye, so a camera in the air has
+  the thick grass under it only once it can see its blades, and none above the last level's reach.
+  The ground under the grass has the grass's colour as seen from above (the kit's tints), so where
+  the grass thins, from one level to the next, it doesn't turn paler. A move of the camera changes
   the few tiles at the levels' boundaries, tens of metres off, and nothing near it; a cell that
   split stays split a little further than where it splits, so a view hovering at a boundary
   changes nothing. What stands in drifts (a meadow's flowers, a forest's ferns) is tiles on the

@@ -1535,7 +1535,7 @@ struct FvHost::Impl
     };
     Tiles                           grass, drifts;
     std::vector<fv::backdrop::Tile> grassWas;      // grassTiles' `was`
-    std::vector<glm::vec2>          tiledFor;      // the foci the tiles were laid for
+    std::vector<fv::backdrop::Focus> tiledFor;     // the foci the tiles were laid for
     uint64_t                        placed = 0;    // what has a place of its own: trees, saplings, bushes, rocks
   };
   // The ground as a glTF model, so the import makes its mesh, material and textures as any model's
@@ -1556,8 +1556,9 @@ struct FvHost::Impl
   // density or relief), or taken away. `reread`: the kit's folder changed, or was filled.
   void applyBackdrop(bool reread = false);
   void standBackdrop(bool reread);  // its work; applyBackdrop then scopes the haze
-  // Where one looks from, now: the content's place and the camera's
-  std::vector<glm::vec2> backdropFociNow();
+  // Where one looks from, now: the content's place, on the ground, and the camera's, as high over
+  // the ground as it is
+  std::vector<fv::backdrop::Focus> backdropFociNow();
   // Every frame: the grass's tiles laid again once the camera has gone a metre, so there is grass
   // wherever it looks from. A few tiles change at the levels' boundaries, and nothing near
   void followBackdrop();
