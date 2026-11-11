@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <set>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -67,18 +69,16 @@ float fbm(float x, float z, uint32_t seed, uint32_t channel)
 }
 
 // The noise channels: the ground's two scales, then each layer's cover
-constexpr uint32_t kChannelHills = 1, kChannelFar = 11, kChannelShade = 21, kChannelCover = 100;
+constexpr uint32_t kChannelHills = 1, kChannelFar = 11, kChannelShade = 21, kChannelDrift = 31, kChannelCover = 100;
 
 // How much of a layer's own density stands at `d` metres, and how much its plants have grown there
 float thinning(const Layer& l, float d, float& growth)
 {
   growth = 1.0F;
-  float edge = l.fade > 0.0F ? 1.0F - smoothstep(l.to - l.fade, l.to, d) : 1.0F;
-  if(l.fadeIn > 0.0F)
-    edge *= smoothstep(l.from, l.from + l.fadeIn, d);
+  const float edge = l.fade > 0.0F ? 1.0F - smoothstep(l.to - l.fade, l.to, d) : 1.0F;
   if(l.thin <= 0.0F)
     return edge;
-  const float f = 1.0F + (l.thinsGently ? d / l.thin : (d / l.thin) * (d / l.thin));
+  const float f = 1.0F + (d / l.thin) * (d / l.thin);
   growth        = std::min(std::sqrt(f), l.grow);
   return edge / f;
 }
@@ -168,16 +168,8 @@ std::vector<Layer> layers(const Spec& spec)
   if(spec.kind != "meadow")
     return {};
   const float edge = float(spec.size) * 0.5F;
-  const float fade = 0.35F * edge;
   return {
-      // grass underfoot, thinning and growing with distance, round the scene and round the camera
-      {.role = "grass", .perSquareMetre = 150.0, .from = 0.0F, .to = edge, .thin = 8.0F, .grow = 2.0F, .fade = fade, .follows = true},
-      // and beyond it tufts, fewer and larger, fewer still with distance: seen from standing height they
-      // hide the ground between them, so the grass has no end before the trees
-      {.role = "grass", .perSquareMetre = 5.0, .from = edge - fade, .to = std::max(kTufts, edge + 40.0F), .thin = 20.0F, .grow = 1.3F,
-       .thinsGently = true, .fade = 40.0F, .fadeIn = fade, .follows = true, .scaleMin = 1.8F, .scaleMax = 2.6F},
-      // flowers in drifts
-      {.role = "flower", .perSquareMetre = 8.0, .from = 0.0F, .to = edge, .thin = 10.0F, .grow = 1.5F, .fade = fade, .follows = true, .cover = 0.4F, .patch = 9.0F},
+      // (grass and flowers are tiles: grassCovers, flowerCovers)
       // saplings here and there, clear of where the figures stand
       {.role = "sapling", .perSquareMetre = 0.03, .from = 7.0F, .to = edge + 10.0F, .cover = 0.5F, .patch = 25.0F, .scaleMin = 0.7F, .scaleMax = 1.6F},
       // trees in groves from 22 m, closing into woods toward 260 m; young ones to twice their size,
@@ -186,60 +178,26 @@ std::vector<Layer> layers(const Spec& spec)
   };
 }
 
-float focusStep(const Spec& spec)
-{
-  return std::max(4.0F, float(spec.size) / 6.0F);
-}
-
-glm::vec2 focusNear(const Spec& spec, glm::vec2 at)
-{
-  const float step = focusStep(spec);
-  return glm::round(at / step) * step;
-}
-
-std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer, uint32_t layerIndex, uint32_t variants, std::span<const glm::vec2> foci)
+std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer, uint32_t layerIndex, uint32_t variants)
 {
   std::vector<std::vector<glm::mat4>> out(variants);
   const double thickest = layer.perSquareMetre * spec.density;
   if(variants == 0 || !(thickest > 0.0) || layer.to <= layer.from)
     return out;
-  // what the layer stands round: the origin, or each focus once
-  std::vector<glm::vec2> centres;
-  if(layer.follows)
-    for(const glm::vec2& f : foci)
-      if(std::find(centres.begin(), centres.end(), f) == centres.end())
-        centres.push_back(f);
-  if(centres.empty())
-    centres.emplace_back(0.0F);
   // a jittered grid at the layer's thickest: a cell holds one plant at most, kept by the odds of the
-  // layer's density there, so plants neither pile up nor line up. The grid is the world's: a cell's
-  // plant is the same whichever centre asks for it
+  // layer's density there, so plants neither pile up nor line up
   const float    cell = float(1.0 / std::sqrt(thickest));
   const int      n    = int(std::ceil(layer.to / cell));
   const uint32_t seed = uint32_t(spec.seed);
   const uint32_t salt = 1000U + layerIndex;
-  for(size_t c = 0; c < centres.size(); c++)
-  {
-    const glm::vec2 centre = centres[c];
-    const int       cx = int(std::floor(centre.x / cell)), cz = int(std::floor(centre.y / cell));
-    for(int iz = cz - n; iz <= cz + n; iz++)
-      for(int ix = cx - n; ix <= cx + n; ix++)
-      {
+  for(int iz = -n; iz < n; iz++)
+    for(int ix = -n; ix < n; ix++)
+    {
       const uint32_t h = hash(seed, salt, uint32_t(ix), uint32_t(iz));
       const float    x = (float(ix) + unit(h)) * cell;
       const float    z = (float(iz) + unit(mix(h + 1U))) * cell;
-      const float    d = glm::distance(glm::vec2(x, z), centre);
+      const float    d = std::sqrt(x * x + z * z);
       if(d < layer.from || d > layer.to)
-        continue;
-      // a place between two centres is the nearer one's (the first of two as near), and stands by
-      // its distance to that one
-      bool others = false;
-      for(size_t o = 0; o < centres.size() && !others; o++)
-      {
-        const float od = o == c ? d : glm::distance(glm::vec2(x, z), centres[o]);
-        others         = o != c && (od < d || (od == d && o < c));
-      }
-      if(others)
         continue;
       float growth = 1.0F;
       float odds   = thinning(layer, d, growth);
@@ -259,9 +217,200 @@ std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer
       m                      = glm::rotate(m, yaw, glm::vec3(0.0F, 1.0F, 0.0F));
       m                      = glm::scale(m, glm::vec3(scale));
       out[variant].push_back(m);
+    }
+  return out;
+}
+
+// ---- tiles
+
+std::array<Cover, kGrassLevels> grassCovers(const Spec& spec)
+{
+  // thinner by about four a level and larger by the root of it and a little less: seen from standing
+  // height a plant hides a strip of the ground behind it that lengthens with distance
+  return {{
+      {.role = "grass", .tile = 2.0F, .perSquareMetre = 150.0 * spec.density, .scaleMin = 0.85F, .scaleMax = 1.35F, .sink = 0.02F, .salt = 0},
+      {.role = "grass", .tile = 4.0F, .perSquareMetre = 36.0 * spec.density, .scaleMin = 1.3F, .scaleMax = 1.9F, .sink = 0.06F, .salt = 1},
+      {.role = "grass", .tile = 8.0F, .perSquareMetre = 5.0 * spec.density, .scaleMin = 1.9F, .scaleMax = 2.6F, .sink = 0.15F, .salt = 2},
+  }};
+}
+
+std::array<float, kGrassLevels> grassReach(const Spec& spec)
+{
+  const float size = float(spec.size);
+  const float thinner = 0.8F * size;
+  return {0.24F * size, thinner, std::max(130.0F, thinner + 60.0F)};
+}
+
+std::array<Cover, 2> flowerCovers(const Spec& spec)
+{
+  return {{
+      {.role = "flower", .tile = 4.0F, .perSquareMetre = 9.0 * spec.density, .scaleMin = 0.8F, .scaleMax = 1.3F, .sink = 0.03F, .salt = 10},
+      {.role = "flower", .tile = 4.0F, .perSquareMetre = 3.0 * spec.density, .scaleMin = 0.8F, .scaleMax = 1.3F, .sink = 0.03F, .salt = 11},
+  }};
+}
+
+float flowerReach(const Spec& spec)
+{
+  return 0.5F * float(spec.size);
+}
+
+std::vector<std::vector<glm::mat4>> patch(const Spec& spec, const Cover& cover, uint32_t variants)
+{
+  std::vector<std::vector<glm::mat4>> out(variants);
+  if(variants == 0 || !(cover.perSquareMetre > 0.0) || !(cover.tile > 0.0F))
+    return out;
+  // a jittered grid: a plant a cell, as many cells a side as gives the tile its density
+  const int      n    = std::max(1, int(std::lround(double(cover.tile) * std::sqrt(cover.perSquareMetre))));
+  const float    cell = cover.tile / float(n);
+  const uint32_t seed = uint32_t(spec.seed);
+  const uint32_t salt = 5000U + cover.salt;
+  for(int iz = 0; iz < n; iz++)
+    for(int ix = 0; ix < n; ix++)
+    {
+      const uint32_t h       = hash(seed, salt, uint32_t(ix), uint32_t(iz));
+      const float    x       = (float(ix) + unit(h)) * cell - 0.5F * cover.tile;
+      const float    z       = (float(iz) + unit(mix(h + 1U))) * cell - 0.5F * cover.tile;
+      const uint32_t variant = mix(h + 3U) % variants;
+      const float    yaw     = 2.0F * kPi * unit(mix(h + 4U));
+      const float    scale   = cover.scaleMin + (cover.scaleMax - cover.scaleMin) * unit(mix(h + 5U));
+      glm::mat4      m       = glm::translate(glm::mat4(1.0F), glm::vec3(x, 0.0F, z));
+      m                      = glm::rotate(m, yaw, glm::vec3(0.0F, 1.0F, 0.0F));
+      m                      = glm::scale(m, glm::vec3(scale));
+      out[variant].push_back(m);
+    }
+  return out;
+}
+
+namespace {
+
+// A cell's centre on the grid of tiles `size` across
+glm::vec2 cellCentre(float size, int32_t x, int32_t z)
+{
+  return {(float(x) + 0.5F) * size, (float(z) + 0.5F) * size};
+}
+
+float nearest(std::span<const glm::vec2> foci, glm::vec2 at)
+{
+  float d = std::numeric_limits<float>::max();
+  for(const glm::vec2& f : foci)
+    d = std::min(d, glm::distance(f, at));
+  return d;
+}
+
+// A cell that was split stays split out to this much further than where one splits
+constexpr float kStaysSplit = 1.12F;
+
+}  // namespace
+
+std::vector<Tile> grassTiles(const Spec& spec, std::span<const glm::vec2> foci, std::span<const Tile> was)
+{
+  std::vector<Tile> out;
+  if(!planted(spec))
+    return out;
+  const glm::vec2            origin(0.0F);
+  std::span<const glm::vec2> round = foci.empty() ? std::span<const glm::vec2>(&origin, 1) : foci;
+  const auto                 covers = grassCovers(spec);
+  const auto                 reach  = grassReach(spec);
+  // the cells that were split, by their own level: a thick tile's parent and grandparent, a middle
+  // tile's parent
+  std::set<Tile> split;
+  for(const Tile& t : was)
+  {
+    if(t.level == 0)
+    {
+      split.insert({t.x >> 1, t.z >> 1, 1});
+      split.insert({t.x >> 2, t.z >> 2, 2});
+    }
+    else if(t.level == 1)
+      split.insert({t.x >> 1, t.z >> 1, 2});
+  }
+  const auto splits = [&](const Tile& cell) {
+    const float d = nearest(round, cellCentre(covers[cell.level].tile, cell.x, cell.z));
+    const float r = reach[cell.level - 1U];
+    return d < r || (d < r * kStaysSplit && split.count(cell));
+  };
+  // every coarse cell within reach of a focus, once
+  const float     coarse = covers[2].tile;
+  std::set<Tile> cells;
+  for(const glm::vec2& f : round)
+  {
+    const int n  = int(std::ceil(reach[2] / coarse)) + 1;
+    const int cx = int(std::floor(f.x / coarse)), cz = int(std::floor(f.y / coarse));
+    for(int z = cz - n; z <= cz + n; z++)
+      for(int x = cx - n; x <= cx + n; x++)
+        if(glm::distance(cellCentre(coarse, x, z), f) < reach[2])
+          cells.insert({x, z, 2});
+  }
+  for(const Tile& c2 : cells)
+  {
+    if(!splits(c2))
+    {
+      out.push_back(c2);
+      continue;
+    }
+    for(int j = 0; j < 2; j++)
+      for(int i = 0; i < 2; i++)
+      {
+        const Tile c1{c2.x * 2 + i, c2.z * 2 + j, 1};
+        if(!splits(c1))
+        {
+          out.push_back(c1);
+          continue;
+        }
+        for(int q = 0; q < 2; q++)
+          for(int p = 0; p < 2; p++)
+            out.push_back({c1.x * 2 + p, c1.z * 2 + q, 0});
       }
   }
   return out;
+}
+
+std::vector<Tile> flowerTiles(const Spec& spec, std::span<const glm::vec2> foci)
+{
+  std::vector<Tile> out;
+  if(!planted(spec))
+    return out;
+  const glm::vec2            origin(0.0F);
+  std::span<const glm::vec2> round = foci.empty() ? std::span<const glm::vec2>(&origin, 1) : foci;
+  const float                size  = flowerCovers(spec)[0].tile;
+  const float                reach = flowerReach(spec);
+  // drifts some 9 m across over two fifths of the ground: their middles thick, their edges thin
+  const float middle = coverLevel(0.22F), edge = coverLevel(0.42F);
+  std::set<Tile> cells;
+  for(const glm::vec2& f : round)
+  {
+    const int n  = int(std::ceil(reach / size)) + 1;
+    const int cx = int(std::floor(f.x / size)), cz = int(std::floor(f.y / size));
+    for(int z = cz - n; z <= cz + n; z++)
+      for(int x = cx - n; x <= cx + n; x++)
+      {
+        const glm::vec2 c = cellCentre(size, x, z);
+        if(glm::distance(c, f) >= reach)
+          continue;
+        const float noise = fbm(c.x / 9.0F, c.y / 9.0F, uint32_t(spec.seed), kChannelDrift);
+        if(noise > edge)
+          cells.insert({x, z, uint8_t(noise > middle ? 0 : 1)});
+      }
+  }
+  out.assign(cells.begin(), cells.end());
+  return out;
+}
+
+Place tilePlace(const Spec& spec, float size, int32_t x, int32_t z, float sink)
+{
+  const glm::vec2 c = cellCentre(size, x, z);
+  // the ground's lean across the tile, by its height either side
+  const float     e  = 0.5F * size;
+  const float     dx = (height(spec, c.x + e, c.y) - height(spec, c.x - e, c.y)) / (2.0F * e);
+  const float     dz = (height(spec, c.x, c.y + e) - height(spec, c.x, c.y - e)) / (2.0F * e);
+  const glm::vec3 up = glm::normalize(glm::vec3(-dx, 1.0F, -dz));
+  // a turn about the vertical by the cell, then the lean: the shortest turn that takes +y to the ground's normal
+  const uint32_t  h    = hash(uint32_t(spec.seed), 7000U + uint32_t(size * 16.0F), uint32_t(x), uint32_t(z));
+  const glm::quat turn = glm::angleAxis(0.5F * kPi * float(h & 3U), glm::vec3(0.0F, 1.0F, 0.0F));
+  const glm::vec3 axis = glm::cross(glm::vec3(0.0F, 1.0F, 0.0F), up);
+  const float     s    = glm::length(axis);
+  const glm::quat lean = s > 1e-6F ? glm::angleAxis(std::asin(std::min(s, 1.0F)), axis / s) : glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
+  return {.position = {c.x, height(spec, c.x, c.y) - sink * float(std::max(spec.relief, 0.25)), c.y}, .rotation = lean * turn};
 }
 
 uint64_t expectedCount(const Spec& spec, const Layer& layer)

@@ -58,6 +58,7 @@ void FvHost::Impl::followCloudReading()
 
 void FvHost::Impl::publishLighting()
 {
+  backdropPlantsSaid = backdropPlants;
   const Json now = lightingTopic();
   if(publishedLighting.is_null())
     protocol->events().snapshot("lighting", now);

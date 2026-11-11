@@ -4,8 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <set>
-#include <tuple>
 
 #include <gtest/gtest.h>
 
@@ -221,117 +221,228 @@ TEST(BackdropScatter, ALayerFadesOutBeforeItsEdge)
   EXPECT_NEAR(double(B::expectedCount(meadow(), soft)), double(count(soft, 0.0F, 30.0F)), 0.05 * double(count(soft, 0.0F, 30.0F)));
 }
 
-TEST(BackdropScatter, GrassStandsRoundEveryFocusAndNoPlantMoves)
-{
-  const B::Spec  spec  = meadow();
-  const B::Layer grass = B::layers(spec).front();
-  ASSERT_EQ(grass.role, "grass");
-  ASSERT_TRUE(grass.follows);
-  const auto places = [](const std::vector<std::vector<glm::mat4>>& placed, glm::vec2 round, float within) {
-    std::set<std::tuple<float, float, float>> out;
-    for(const auto& variant : placed)
-      for(const glm::mat4& m : variant)
-        if(glm::distance(glm::vec2(m[3].x, m[3].z), round) < within)
-          out.insert({m[3].x, m[3].z, glm::length(glm::vec3(m[1]))});
-    return out;
-  };
-  const glm::vec2 away(200.0F, -40.0F);
-  const auto      alone  = B::scatter(spec, grass, 0, 4);
-  const auto      both   = B::scatter(spec, grass, 0, 4, std::vector<glm::vec2>{{0.0F, 0.0F}, away});
-  const auto      there  = B::scatter(spec, grass, 0, 4, std::vector<glm::vec2>{away});
-  // with no focus given it is round the origin, and a second focus far off leaves that as it was
-  EXPECT_EQ(places(both, {0.0F, 0.0F}, 40.0F), places(alone, {0.0F, 0.0F}, 40.0F));
-  // as thick round the second as round the first, and the same plants as when it is the only one
-  EXPECT_GT(places(both, away, 4.0F).size(), 4000u);
-  EXPECT_EQ(places(both, away, 40.0F), places(there, away, 40.0F));
-  EXPECT_EQ(total(both), total(alone) + total(there));
-
-  // two foci near one another share the ground between them: no plant twice, none lost
-  const glm::vec2 beside(10.0F, 0.0F);
-  const auto      close = B::scatter(spec, grass, 0, 4, std::vector<glm::vec2>{{0.0F, 0.0F}, beside});
-  const auto      all   = places(close, {5.0F, 0.0F}, 100.0F);
-  EXPECT_EQ(all.size(), total(close));
-  EXPECT_GT(total(close), total(alone));
-  EXPECT_LT(total(close), total(alone) * 3 / 2);
-  // and what stands right at the first is what stood there alone: thinned by the nearer focus only
-  EXPECT_EQ(places(close, {0.0F, 0.0F}, 3.0F), places(alone, {0.0F, 0.0F}, 3.0F));
-  // a focus given twice is one
-  EXPECT_EQ(total(B::scatter(spec, grass, 0, 4, std::vector<glm::vec2>{away, away})), total(there));
-}
-
-TEST(BackdropScatter, TuftsCarryTheGrassOnBeyondWhereItIsPlanted)
-{
-  const B::Spec spec   = meadow();
-  const auto    layers = B::layers(spec);
-  const auto    tufts  = std::find_if(layers.begin() + 1, layers.end(), [](const B::Layer& l) { return l.role == "grass"; });
-  ASSERT_NE(tufts, layers.end());
-  const float edge = float(spec.size) * 0.5F;
-  EXPECT_LT(tufts->from, edge);  // they come in as the planted grass goes out
-  EXPECT_GE(tufts->to, B::kTufts);
-  EXPECT_GT(tufts->scaleMin, 1.5F);
-  size_t     inside = 0, nearer = 0, further = 0;
-  const auto placed = B::scatter(spec, *tufts, uint32_t(tufts - layers.begin()), 4);
-  for(const auto& variant : placed)
-    for(const glm::mat4& m : variant)
-    {
-      const float d = glm::length(glm::vec2(m[3].x, m[3].z));
-      EXPECT_LE(d, tufts->to);
-      inside += d < tufts->from ? 1 : 0;
-      nearer += d > edge && d < edge + 20.0F ? 1 : 0;
-      further += d > 70.0F && d < 90.0F ? 1 : 0;
-    }
-  EXPECT_EQ(inside, 0u);
-  EXPECT_NEAR(double(B::expectedCount(spec, *tufts)), double(total(placed)), 0.05 * double(total(placed)));
-  // about two to the square metre where the planted grass ends, and fewer with distance, gently:
-  // at 80 m still a third of that
-  const auto ring = [](double from, double to) { return 3.14159265 * (to * to - from * from); };
-  const double close = double(nearer) / ring(edge, edge + 20.0), far = double(further) / ring(70.0, 90.0);
-  EXPECT_GT(close, 1.2);
-  EXPECT_LT(close, 2.4);
-  EXPECT_LT(far, 0.7 * close);
-  EXPECT_GT(far, 0.3 * close);
-  // light: a default meadow's tufts are fewer than its planted grass
-  EXPECT_LT(B::expectedCount(spec, *tufts), B::expectedCount(spec, layers.front()));
-}
-
-TEST(BackdropFocus, IsTheNearestOfAGridSoSmallMovesReplantNothing)
-{
-  const B::Spec spec = meadow();
-  const float   step = B::focusStep(spec);
-  EXPECT_GE(step, 4.0F);
-  EXPECT_LT(step, float(spec.size) * 0.25F);
-  EXPECT_EQ(B::focusNear(spec, {0.0F, 0.0F}), glm::vec2(0.0F));
-  EXPECT_EQ(B::focusNear(spec, {0.4F * step, -0.4F * step}), glm::vec2(0.0F));
-  EXPECT_EQ(B::focusNear(spec, {3.2F * step, -1.6F * step}), glm::vec2(3.0F * step, -2.0F * step));
-}
-
-TEST(BackdropLayers, AMeadowPlantsGrassFlowersSaplingsAndTrees)
+TEST(BackdropLayers, AMeadowsTreesAndSaplingsHaveTheirPlaces)
 {
   EXPECT_TRUE(B::layers(B::Spec{}).empty());
-  const auto          l = B::layers(meadow());
+  const auto            l = B::layers(meadow());
   std::set<std::string> roles;
-  for(const B::Layer& layer : l)
-    roles.insert(layer.role);
-  EXPECT_EQ(roles, (std::set<std::string>{"grass", "flower", "sapling", "tree"}));
-  uint64_t plants = 0;
+  uint64_t              plants = 0;
   for(const B::Layer& layer : l)
   {
+    roles.insert(layer.role);
     plants += B::expectedCount(meadow(), layer);
-    // trunks and saplings stay clear of where the figures stand, and stay where they are; grass and
-    // flowers are wherever one looks from
-    if(layer.role == "tree" || layer.role == "sapling")
-    {
-      EXPECT_GT(layer.from, B::kClearing);
-      EXPECT_FALSE(layer.follows);
-    }
-    else
-      EXPECT_TRUE(layer.follows);
+    // trunks and saplings stay clear of where the figures stand
+    EXPECT_GT(layer.from, B::kClearing);
   }
-  // a default meadow is a few hundred megabytes of instances at most (about 0.8 KB each)
-  EXPECT_GT(plants, 50000u);
-  EXPECT_LT(plants, 300000u);
-  // a larger one plants further out
-  B::Spec wide = meadow();
-  wide.size    = 120.0;
-  EXPECT_GT(B::layers(wide)[0].to, l[0].to);
+  // the grass and the flowers are tiles
+  EXPECT_EQ(roles, (std::set<std::string>{"sapling", "tree"}));
+  EXPECT_GT(plants, 1000u);
+  EXPECT_LT(plants, 20000u);
 }
+
+TEST(BackdropTiles, APatchIsItsCoversPlantsWithinItsTile)
+{
+  const B::Spec spec   = meadow();
+  const auto    covers = B::grassCovers(spec);
+  for(size_t level = 0; level < covers.size(); level++)
+  {
+    const B::Cover& cover  = covers[level];
+    const auto      placed = B::patch(spec, cover, 5);
+    EXPECT_NEAR(double(total(placed)), cover.perSquareMetre * double(cover.tile) * double(cover.tile), 0.1 * double(total(placed)));
+    for(const auto& variant : placed)
+    {
+      EXPECT_FALSE(variant.empty());
+      for(const glm::mat4& m : variant)
+      {
+        EXPECT_LE(std::abs(m[3].x), 0.5F * cover.tile);
+        EXPECT_LE(std::abs(m[3].z), 0.5F * cover.tile);
+        EXPECT_EQ(m[3].y, 0.0F);
+        const float scale = glm::length(glm::vec3(m[1]));
+        EXPECT_GE(scale, cover.scaleMin - 1e-4F);
+        EXPECT_LE(scale, cover.scaleMax + 1e-4F);
+      }
+    }
+    // each level a tile twice the size with fewer, larger plants to the square metre
+    if(level > 0)
+    {
+      EXPECT_FLOAT_EQ(cover.tile, 2.0F * covers[level - 1].tile);
+      EXPECT_LT(cover.perSquareMetre, 0.4 * covers[level - 1].perSquareMetre);
+      EXPECT_GT(cover.scaleMin, covers[level - 1].scaleMin);
+    }
+    // the same patch every time, and another for another seed
+    EXPECT_EQ(B::patch(spec, cover, 5), placed);
+    EXPECT_NE(B::patch(meadow(2), cover, 5), placed);
+  }
+  // thicker with the density
+  B::Spec thick = spec;
+  thick.density = 2.0;
+  // (a whole number of plants a side: within a tenth)
+  const double one = double(total(B::patch(spec, covers[0], 3)));
+  EXPECT_NEAR(double(total(B::patch(thick, B::grassCovers(thick)[0], 3))), 2.0 * one, 0.2 * one);
+}
+
+namespace {
+
+// The square a tile covers: its corner and its size
+std::pair<glm::vec2, float> squareOf(const B::Spec& spec, const B::Tile& t)
+{
+  const float size = B::grassCovers(spec)[t.level].tile;
+  return {{float(t.x) * size, float(t.z) * size}, size};
+}
+
+// The share of the disc `radius` round `at` the tiles cover, by points on a fine grid, and whether
+// any point of it lies in two tiles
+std::pair<double, bool> covered(const B::Spec& spec, const std::vector<B::Tile>& tiles, glm::vec2 at, float radius)
+{
+  size_t in = 0, all = 0;
+  bool   twice = false;
+  for(float z = at.y - radius; z <= at.y + radius; z += 0.5F)
+    for(float x = at.x - radius; x <= at.x + radius; x += 0.5F)
+    {
+      if(glm::distance(glm::vec2(x, z), at) > radius)
+        continue;
+      all++;
+      int n = 0;
+      for(const B::Tile& t : tiles)
+      {
+        const auto [corner, size] = squareOf(spec, t);
+        n += x >= corner.x && x < corner.x + size && z >= corner.y && z < corner.y + size ? 1 : 0;
+      }
+      in += n > 0 ? 1 : 0;
+      twice = twice || n > 1;
+    }
+  return {double(in) / double(all), twice};
+}
+
+}  // namespace
+
+TEST(BackdropTiles, TheGrassCoversTheGroundOnceThickWhereOneLooksFrom)
+{
+  const B::Spec spec  = meadow();
+  const auto    reach = B::grassReach(spec);
+  EXPECT_LT(reach[0], reach[1]);
+  EXPECT_LT(reach[1], reach[2]);
+  const glm::vec2              away(210.0F, -95.0F);
+  const std::vector<glm::vec2> foci{{0.0F, 0.0F}, away};
+  const std::vector<B::Tile>   tiles = B::grassTiles(spec, foci);
+  // no tile twice, every level there
+  EXPECT_EQ(std::set<B::Tile>(tiles.begin(), tiles.end()).size(), tiles.size());
+  std::array<size_t, B::kGrassLevels> count{};
+  for(const B::Tile& t : tiles)
+  {
+    ASSERT_LT(t.level, B::kGrassLevels);
+    count[t.level]++;
+    // a tile's level is by how far its ground is from where one looks from
+    const auto [corner, size] = squareOf(spec, t);
+    const glm::vec2 centre    = corner + glm::vec2(0.5F * size);
+    const float     d         = std::min(glm::length(centre), glm::distance(centre, away));
+    if(t.level == 0)
+      EXPECT_LT(d, reach[0] + 8.0F);
+    if(t.level == 2)
+      EXPECT_GT(d, reach[1] - 8.0F);
+    EXPECT_LT(d, reach[2] + 8.0F);
+  }
+  for(size_t level = 0; level < count.size(); level++)
+    EXPECT_GT(count[level], 50u) << "level " << level;
+  // a few thousand tiles in all: what a move of the camera has to look through
+  EXPECT_LT(tiles.size(), 6000u);
+  // round each focus: all of the ground within the thick grass's reach is covered, and none twice
+  for(const glm::vec2& f : foci)
+  {
+    const auto [share, twice] = covered(spec, tiles, f, reach[1]);
+    EXPECT_DOUBLE_EQ(share, 1.0);
+    EXPECT_FALSE(twice);
+    // and right where one stands the tiles are the thick ones
+    for(const B::Tile& t : tiles)
+      if(const auto [corner, size] = squareOf(spec, t); glm::distance(corner + glm::vec2(0.5F * size), f) < 0.5F * reach[0])
+        EXPECT_EQ(t.level, 0) << t.x << "," << t.z;
+  }
+  // no focus given: round the origin
+  EXPECT_EQ(B::grassTiles(spec, {}), B::grassTiles(spec, std::vector<glm::vec2>{{0.0F, 0.0F}}));
+  EXPECT_TRUE(B::grassTiles(B::Spec{}, foci).empty());
+}
+
+TEST(BackdropTiles, ASmallMoveChangesAFewTilesAndNoneNear)
+{
+  const B::Spec spec  = meadow();
+  const auto    reach = B::grassReach(spec);
+  glm::vec2     at(3.0F, 7.0F);
+  std::vector<B::Tile> tiles = B::grassTiles(spec, std::vector<glm::vec2>{at});
+  size_t               most  = 0;
+  // a walk of 60 m, a metre a step
+  for(int step = 0; step < 60; step++)
+  {
+    at += glm::vec2(0.8F, 0.6F);
+    const std::vector<B::Tile> next = B::grassTiles(spec, std::vector<glm::vec2>{at}, tiles);
+    std::vector<B::Tile>       a = tiles, b = next, changed;
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    std::set_symmetric_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(changed));
+    most = std::max(most, changed.size());
+    // what came or went is out where the levels meet, never by the walker
+    for(const B::Tile& t : changed)
+    {
+      const auto [corner, size] = squareOf(spec, t);
+      EXPECT_GT(glm::distance(corner + glm::vec2(0.5F * size), at), 0.6F * reach[0]) << "step " << step;
+    }
+    const auto [share, twice] = covered(spec, next, at, reach[0]);
+    EXPECT_DOUBLE_EQ(share, 1.0);
+    EXPECT_FALSE(twice);
+    tiles = next;
+  }
+  EXPECT_GT(most, 0u);
+  EXPECT_LT(most, tiles.size() / 5);
+  // a step back and forth across a boundary changes nothing: a cell that split stays split a little further
+  const std::vector<B::Tile> there = B::grassTiles(spec, std::vector<glm::vec2>{at + glm::vec2(0.3F, 0.0F)}, tiles);
+  const std::vector<B::Tile> back  = B::grassTiles(spec, std::vector<glm::vec2>{at}, there);
+  EXPECT_EQ(B::grassTiles(spec, std::vector<glm::vec2>{at + glm::vec2(0.3F, 0.0F)}, back), there);
+}
+
+TEST(BackdropTiles, FlowersStandInDriftsNearWhereOneLooksFrom)
+{
+  const B::Spec spec  = meadow();
+  const auto    tiles = B::flowerTiles(spec, std::vector<glm::vec2>{{0.0F, 0.0F}});
+  const float   size  = B::flowerCovers(spec)[0].tile;
+  const float   reach = B::flowerReach(spec);
+  size_t        thick = 0;
+  for(const B::Tile& t : tiles)
+  {
+    EXPECT_LT(t.level, 2);
+    thick += t.level == 0 ? 1 : 0;
+    EXPECT_LT(glm::length(glm::vec2((float(t.x) + 0.5F) * size, (float(t.z) + 0.5F) * size)), reach);
+  }
+  // over about two fifths of the ground within reach, the middles of the drifts thick
+  const double cells = 3.14159265 * double(reach) * double(reach) / double(size * size);
+  EXPECT_NEAR(double(tiles.size()) / cells, 0.42, 0.2);
+  EXPECT_GT(thick, 0u);
+  EXPECT_LT(thick, tiles.size());
+  EXPECT_LT(B::flowerCovers(spec)[1].perSquareMetre, B::flowerCovers(spec)[0].perSquareMetre);
+}
+
+TEST(BackdropTiles, ATileLiesOnTheGroundLeaningAsItDoes)
+{
+  const B::Spec spec = meadow();
+  // in the clearing: level, at the floor
+  const B::Place flat = B::tilePlace(spec, 2.0F, 0, 0, 0.0F);
+  EXPECT_EQ(flat.position, glm::vec3(1.0F, 0.0F, 1.0F));
+  EXPECT_NEAR(glm::length(flat.rotation * glm::vec3(0.0F, 1.0F, 0.0F) - glm::vec3(0.0F, 1.0F, 0.0F)), 0.0F, 1e-5F);
+  // out on the rolling ground: at the ground's height less its sink, its up the ground's normal
+  bool turned = false;
+  for(int i = 10; i < 40; i++)
+  {
+    const B::Place p = B::tilePlace(spec, 4.0F, i, -i / 2, 0.1F);
+    EXPECT_FLOAT_EQ(p.position.x, (float(i) + 0.5F) * 4.0F);
+    EXPECT_NEAR(p.position.y, B::height(spec, p.position.x, p.position.z) - 0.1F, 1e-4F);
+    const glm::vec3 up = p.rotation * glm::vec3(0.0F, 1.0F, 0.0F);
+    const float     e  = 2.0F;
+    const float     dx = (B::height(spec, p.position.x + e, p.position.z) - B::height(spec, p.position.x - e, p.position.z)) / (2.0F * e);
+    const float     dz = (B::height(spec, p.position.x, p.position.z + e) - B::height(spec, p.position.x, p.position.z - e)) / (2.0F * e);
+    EXPECT_NEAR(glm::length(up - glm::normalize(glm::vec3(-dx, 1.0F, -dz))), 0.0F, 1e-4F);
+    EXPECT_NEAR(glm::length(p.rotation), 1.0F, 1e-5F);
+    // and tiles are turned differently about the vertical, so one patch doesn't read as a pattern
+    const glm::vec3 forward = p.rotation * glm::vec3(0.0F, 0.0F, 1.0F);
+    turned = turned || std::abs(forward.x) > 0.7F;
+  }
+  EXPECT_TRUE(turned);
+}
+

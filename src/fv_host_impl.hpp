@@ -1502,6 +1502,26 @@ struct FvHost::Impl
     int                                         groundSeed   = -1;  // the shape it was made for
     double                                      groundRelief = -1.0;
     std::map<std::string, std::vector<Variant>> variants;  // by role
+    // A tile's mesh (fv::backdrop::patch): held by an entity that is never shown, which the tiles
+    // drawn with it take their mesh from; and how many plants one tile of it is
+    struct Patch
+    {
+      rs::EntityId     holder;
+      rs::MeshInstance instance;  // the holder's, for the tiles: a copy, as making an entity moves the others
+      uint64_t         plants = 0;
+    };
+    // The tiles of one kind (grass, flowers): each drawn one's entity, and by patch the entities not
+    // in use, hidden, that the next tiles of it take
+    struct Tiles
+    {
+      std::vector<Patch>                           patches;  // by level
+      std::map<fv::backdrop::Tile, rs::EntityId>   drawn;
+      std::map<uint8_t, std::vector<rs::EntityId>> spare;
+    };
+    Tiles                           grass, flowers;
+    std::vector<fv::backdrop::Tile> grassWas;      // grassTiles' `was`
+    std::vector<glm::vec2>          tiledFor;      // the foci the tiles were laid for
+    uint64_t                        placed = 0;    // the plants that have places of their own: trees, saplings
   };
   // The ground as a glTF model, so the import makes its mesh, material and textures as any model's
   static tinygltf::Model backdropTerrainModel(const fv::backdrop::Terrain& t, const BackdropKit::Ground& g);
@@ -1512,21 +1532,24 @@ struct FvHost::Impl
   fv::backdrop::Spec                 backdropWanted;  // what is standing, or loading to stand
   std::string                        backdropState = "off";  // off | missing | loading | ready
   uint64_t                           backdropPlants  = 0;
-  // What its grass stands round (fv::backdrop::scatter's foci): where the scene's content is, as of
-  // the last composition, and where the camera stood when it was last planted; and when that was
-  glm::vec2                             backdropContent{0.0F};
-  std::vector<glm::vec2>                backdropFoci;
-  std::chrono::steady_clock::time_point backdropPlantedAt{};
+  // Where the scene's content is, as of the last composition: one of the two places its grass is
+  // thick round (the other, the camera); and the count of plants the topic last said
+  glm::vec2 backdropContent{0.0F};
+  uint64_t  backdropPlantsSaid = 0;
   uint64_t                           backdropRequest = 0;  // a kit read that ends after a newer ask is dropped
   // What the state asks for, if it isn't what stands: planted, replanted in place (another seed, size,
   // density or relief), or taken away. `reread`: the kit's folder changed, or was filled.
   void applyBackdrop(bool reread = false);
   void standBackdrop(bool reread);  // its work; applyBackdrop then scopes the haze
-  // The foci as they are now: the content's and the camera's
+  // Where one looks from, now: the content's place and the camera's
   std::vector<glm::vec2> backdropFociNow();
-  // Every frame: planted again when the camera has come to stand over other ground, so there is
-  // grass wherever it looks from
+  // Every frame: the grass's tiles laid again once the camera has gone a metre, so there is grass
+  // wherever it looks from. A few tiles change at the levels' boundaries, and nothing near
   void followBackdrop();
+  // A cover's tile as one mesh, its role's variants at their places in it, under a holder
+  BackdropBuilt::Patch makeBackdropPatch(rs::RetainedScene& scene, const fv::backdrop::Cover& cover);
+  // The tiles the foci ask for, drawn: entities of the patches shown, moved and hidden
+  void tileBackdrop(rs::RetainedScene& scene);
   // The haze round the scene's content while a backdrop stands, not round its ground (setHazeScope)
   void scopeHaze();
   // The kit's plants and ground under a new root in `scene`, planted by the state

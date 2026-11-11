@@ -14,9 +14,11 @@
 //
 // Every mesh of a plant's file is a variant of it. The kit is read on a worker (a tree's file is
 // hundreds of megabytes) and kept; what stands in the scene is one root entity of the host's own, as
-// the sun is, with the ground under it and one entity a variant, drawn at its places as instancing
-// copies. Another seed, size, density or relief replants in place: the copies, and the ground when
-// its shape changed.
+// the sun is, with the ground under it; a tree's or a sapling's variant an entity, drawn at its
+// places as instancing copies; and the grass and the flowers as tiles (fv_backdrop.hpp), an entity a
+// tile drawn, all of a level sharing one mesh. Another seed, size, density or relief plants again in
+// place: the copies, the tiles' meshes, and the ground when its shape changed. The camera's moves lay
+// the tiles again (followBackdrop) and plant nothing.
 //
 
 #include "fv_host_impl.hpp"
@@ -241,10 +243,8 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
     built.groundRelief = spec.relief;
   }
   // each layer's plants: a variant's places as its copies; a variant with none, and a role no layer
-  // plants, hidden (no copies would draw it once, where its file has it)
-  // (two layers may plant one role: the grass underfoot and the tufts beyond it)
-  backdropFoci      = backdropFociNow();
-  backdropPlantedAt = std::chrono::steady_clock::now();
+  // plants (the grass and the flowers, which are tiles), hidden: no copies would draw it once, where
+  // its file has it
   std::map<std::string, std::vector<std::vector<glm::mat4>>> byRole;
   uint64_t                                                   plants = 0;
   const auto                                                 layers = fv::backdrop::layers(spec);
@@ -253,7 +253,7 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
     const auto found = built.variants.find(layers[i].role);
     if(found == built.variants.end() || found->second.empty())
       continue;
-    std::vector<std::vector<glm::mat4>>  placed = fv::backdrop::scatter(spec, layers[i], i, uint32_t(found->second.size()), backdropFoci);
+    std::vector<std::vector<glm::mat4>>  placed = fv::backdrop::scatter(spec, layers[i], i, uint32_t(found->second.size()));
     std::vector<std::vector<glm::mat4>>& all    = byRole[layers[i].role];
     all.resize(placed.size());
     for(size_t v = 0; v < placed.size(); v++)
@@ -283,6 +283,178 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
       for(const BackdropBuilt::Variant& v : variants)
         if(scene.entity(v.entity))
           scene.setVisible(v.entity, false);
+  built.placed = plants;
+
+  // the grass and the flowers: their tiles' meshes made again for this state, and the tiles laid
+  for(BackdropBuilt::Tiles* tiles : {&built.grass, &built.flowers})
+  {
+    for(const auto& [tile, entity] : tiles->drawn)
+      if(scene.entity(entity))
+        scene.destroyEntity(entity);
+    for(const auto& [level, spare] : tiles->spare)
+      for(const rs::EntityId entity : spare)
+        if(scene.entity(entity))
+          scene.destroyEntity(entity);
+    for(const BackdropBuilt::Patch& patch : tiles->patches)
+      if(scene.entity(patch.holder))
+        scene.destroyEntity(patch.holder);
+    *tiles = {};
+  }
+  built.grassWas.clear();
+  for(const fv::backdrop::Cover& cover : fv::backdrop::grassCovers(spec))
+    built.grass.patches.push_back(makeBackdropPatch(scene, cover));
+  for(const fv::backdrop::Cover& cover : fv::backdrop::flowerCovers(spec))
+    built.flowers.patches.push_back(makeBackdropPatch(scene, cover));
+  tileBackdrop(scene);
+}
+
+FvHost::Impl::BackdropBuilt::Patch FvHost::Impl::makeBackdropPatch(rs::RetainedScene& scene, const fv::backdrop::Cover& cover)
+{
+  BackdropBuilt&       built = *backdropBuilt;
+  BackdropBuilt::Patch out;
+  const auto           found = built.variants.find(cover.role);
+  if(found == built.variants.end() || found->second.empty())
+    return out;
+  const std::vector<BackdropBuilt::Variant>&       variants = found->second;
+  const std::vector<std::vector<glm::mat4>> placed   = fv::backdrop::patch(lighting.backdrop, cover, uint32_t(variants.size()));
+  // what every variant's mesh has, the merged one has: colours when any does (white for the rest),
+  // tangents and UVs only when all do
+  bool colours = false, tangents = true, uvs = true;
+  for(const BackdropBuilt::Variant& v : variants)
+    if(const rs::Entity* e = scene.entity(v.entity); e && e->mesh)
+      for(const rs::MeshPart& part : e->mesh->parts)
+        if(const rs::MeshRecord* m = scene.mesh(part.mesh))
+        {
+          colours  = colours || m->colors.size() == m->positions.size();
+          tangents = tangents && m->tangents.size() == m->positions.size();
+          uvs      = uvs && m->uv0.size() == m->positions.size();
+        }
+  rs::MeshRecord merged;
+  merged.name  = "Backdrop " + cover.role;
+  merged.owner = {0, -1};
+  std::vector<rs::MaterialId>        materials;  // a run of the merged mesh each
+  std::vector<std::vector<uint32_t>> runs;
+  std::vector<glm::vec2>&            uv0 = merged.uv0.own();
+  for(size_t v = 0; v < variants.size(); v++)
+  {
+    const rs::Entity* e = scene.entity(variants[v].entity);
+    if(!e || !e->mesh)
+      continue;
+    for(const glm::mat4& place : placed[v])
+    {
+      const glm::mat4 to   = place * variants[v].base;
+      const glm::mat3 turn = glm::mat3(glm::transpose(glm::inverse(glm::mat3(to))));
+      for(const rs::MeshPart& part : e->mesh->parts)
+      {
+        const rs::MeshRecord* m = scene.mesh(part.mesh);
+        if(!m || m->positions.empty())
+          continue;
+        const bool normals = m->normals.size() == m->positions.size();
+        const uint32_t first = uint32_t(merged.positions.size());
+        for(size_t i = 0; i < m->positions.size(); i++)
+        {
+          merged.positions.push_back(glm::vec3(to * glm::vec4(m->positions[i], 1.0F)));
+          merged.normals.push_back(normals ? glm::normalize(turn * m->normals[i]) : glm::vec3(0.0F, 1.0F, 0.0F));
+          if(tangents)
+            merged.tangents.emplace_back(glm::normalize(glm::mat3(to) * glm::vec3(m->tangents[i])), m->tangents[i].w);
+          if(uvs)
+            uv0.push_back(m->uv0[i]);
+          if(colours)
+            merged.colors.push_back(m->colors.size() == m->positions.size() ? m->colors[i] : glm::vec4(1.0F));
+        }
+        for(uint32_t s = 0; s < m->submeshes.size(); s++)
+        {
+          const rs::Submesh&   run      = m->submeshes[s];
+          const rs::MaterialId material = run.material < part.materials.size() ? part.materials[run.material] : rs::MaterialId{};
+          size_t               slot     = size_t(std::find(materials.begin(), materials.end(), material) - materials.begin());
+          if(slot == materials.size())
+          {
+            materials.push_back(material);
+            runs.emplace_back();
+          }
+          for(uint32_t i = 0; i < run.indexCount; i++)
+            runs[slot].push_back(first + m->indices[run.firstIndex + i]);
+        }
+      }
+    }
+    out.plants += placed[v].size();
+  }
+  if(merged.positions.empty())
+    return {};
+  std::vector<uint32_t>& indices = merged.indices.own();
+  for(size_t slot = 0; slot < runs.size(); slot++)
+  {
+    merged.submeshes.push_back({.firstIndex = uint32_t(indices.size()), .indexCount = uint32_t(runs[slot].size()),
+                                .material = uint32_t(slot), .order = int32_t(slot)});
+    indices.insert(indices.end(), runs[slot].begin(), runs[slot].end());
+  }
+  const rs::MeshId mesh = scene.addMesh(std::move(merged));
+  out.holder            = scene.createEntity("Backdrop " + cover.role + " tile", {0, -1}, built.root);
+  scene.setVisible(out.holder, false);
+  out.instance.parts.push_back({.mesh = mesh, .materials = materials});
+  scene.setMeshInstance(out.holder, rs::MeshInstance(out.instance));
+  scene.release(mesh);  // the holder's now
+  return out;
+}
+
+void FvHost::Impl::tileBackdrop(rs::RetainedScene& scene)
+{
+  if(!backdropBuilt || !scene.entity(backdropBuilt->root))
+    return;
+  BackdropBuilt&                built = *backdropBuilt;
+  const fv::backdrop::Spec&     spec  = lighting.backdrop;
+  const std::vector<glm::vec2>  foci  = backdropFociNow();
+  uint64_t                      plants = built.placed;
+  const auto lay = [&](BackdropBuilt::Tiles& tiles, const std::vector<fv::backdrop::Tile>& wanted, std::span<const fv::backdrop::Cover> covers) {
+    const std::set<fv::backdrop::Tile> want(wanted.begin(), wanted.end());
+    // a tile no longer asked for: hidden, and its entity the next tile's of that patch
+    for(auto it = tiles.drawn.begin(); it != tiles.drawn.end();)
+    {
+      if(want.count(it->first))
+      {
+        ++it;
+        continue;
+      }
+      scene.setVisible(it->second, false);
+      tiles.spare[it->first.level].push_back(it->second);
+      it = tiles.drawn.erase(it);
+    }
+    for(const fv::backdrop::Tile& tile : wanted)
+    {
+      if(tile.level >= tiles.patches.size() || tile.level >= covers.size())
+        continue;
+      const BackdropBuilt::Patch& patch = tiles.patches[tile.level];
+      if(!scene.entity(patch.holder))
+        continue;
+      plants += patch.plants;
+      if(tiles.drawn.count(tile))
+        continue;
+      rs::EntityId              entity;
+      std::vector<rs::EntityId>& spare = tiles.spare[tile.level];
+      if(!spare.empty())
+      {
+        entity = spare.back();
+        spare.pop_back();
+      }
+      else
+      {
+        entity = scene.createEntity("Backdrop tile", {0, -1}, built.root);
+        scene.setMeshInstance(entity, rs::MeshInstance(patch.instance));
+      }
+      const fv::backdrop::Cover& cover = covers[tile.level];
+      const fv::backdrop::Place  place = fv::backdrop::tilePlace(spec, cover.tile, tile.x, tile.z, cover.sink);
+      scene.setLocal(entity, {.translation = place.position, .rotation = place.rotation});
+      scene.setVisible(entity, true);
+      tiles.drawn[tile] = entity;
+    }
+  };
+  std::vector<fv::backdrop::Tile> grass = fv::backdrop::grassTiles(spec, foci, built.grassWas);
+  const auto                      grassCovers  = fv::backdrop::grassCovers(spec);
+  const auto                      flowerCovers = fv::backdrop::flowerCovers(spec);
+  lay(built.grass, grass, grassCovers);
+  lay(built.flowers, fv::backdrop::flowerTiles(spec, foci), flowerCovers);
+  built.grassWas = std::move(grass);
+  built.tiledFor = foci;
   backdropPlants = plants;
 }
 
@@ -335,7 +507,7 @@ void FvHost::Impl::applyBackdrop(bool reread)
   if(renderer->feedsHostScene() && fv::backdrop::planted(lighting.backdrop))
   {
     const nvutils::Bbox content = contentBounds();
-    backdropContent = content.isEmpty() ? glm::vec2(0.0F) : fv::backdrop::focusNear(lighting.backdrop, {content.center().x, content.center().z});
+    backdropContent = content.isEmpty() ? glm::vec2(0.0F) : glm::vec2(content.center().x, content.center().z);
   }
   standBackdrop(reread);
   scopeHaze();
@@ -346,13 +518,8 @@ std::vector<glm::vec2> FvHost::Impl::backdropFociNow()
   std::vector<glm::vec2> foci{backdropContent};
   if(const auto camera = renderer->getCameraManipulator())
   {
-    // the camera's own only once it stands well away from the content's, where the grass has thinned:
-    // nearer, a focus hopping from one grid point to the next as the view orbits a figure would have
-    // the grass round it change size for nothing
     const glm::vec3 eye = camera->getEye();
-    const glm::vec2 at  = fv::backdrop::focusNear(lighting.backdrop, {eye.x, eye.z});
-    if(glm::distance(at, backdropContent) > 0.2F * float(lighting.backdrop.size))
-      foci.push_back(at);
+    foci.emplace_back(eye.x, eye.z);
   }
   return foci;
 }
@@ -362,13 +529,21 @@ void FvHost::Impl::followBackdrop()
   if(!backdropBuilt || backdropState != "ready" || !renderer->feedsHostScene())
     return;
   rs::RetainedScene& scene = renderer->hostScene();
-  if(!scene.entity(backdropBuilt->root) || backdropFociNow() == backdropFoci)
+  if(!scene.entity(backdropBuilt->root))
     return;
-  // a flight crosses ground fast: not a planting a frame
-  if(std::chrono::steady_clock::now() - backdropPlantedAt < std::chrono::milliseconds(400))
+  // once a focus has gone a metre: a tile is two across at the least
+  const std::vector<glm::vec2> foci  = backdropFociNow();
+  const std::vector<glm::vec2>& last = backdropBuilt->tiledFor;
+  bool                          moved = foci.size() != last.size();
+  for(size_t i = 0; i < foci.size() && !moved; i++)
+    moved = glm::distance(foci[i], last[i]) >= 1.0F;
+  if(!moved)
     return;
-  plantBackdrop(scene);
-  publishLighting();  // the count of plants
+  tileBackdrop(scene);
+  // the topic's count of plants, when it is off by more than a twentieth: not a topic a metre
+  const uint64_t said = backdropPlantsSaid;
+  if(backdropPlants > said + said / 20 || backdropPlants + said / 20 < said)
+    publishLighting();
 }
 
 void FvHost::Impl::scopeHaze()

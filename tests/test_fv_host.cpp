@@ -259,95 +259,155 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
   const uint64_t plants = state().value("plants", uint64_t(0));
   EXPECT_GT(plants, 20000u);
   const fv::backdrop::Spec spec{.kind = "meadow", .seed = 1, .size = 30.0};
-  uint64_t                 copies   = 0;
-  int                      variants = 0, grounds = 0;
-  bool                     doubled  = false;
-  for(const rs::EntityId e : scene.entity(root)->children)
+  // what stands under the root: the ground, the trees as copies of a variant each, and the grass as
+  // tiles, each an entity drawing one of three meshes
+  struct Stands
   {
-    const rs::Entity* entity = scene.entity(e);
-    if(!entity->mesh || !scene.shown(e))
-      continue;
-    if(entity->mesh->copies.empty())
+    uint64_t                     copies = 0;
+    int                          variants = 0, grounds = 0;
+    std::map<rs::MeshId, size_t> tiles;  // by the mesh a tile draws
+    size_t                       thickNear(rs::RetainedScene& scene, rs::MeshId thick, glm::vec2 at) const
     {
-      grounds++;
-      // the kit's two tints, mixed by the terrain's shade, as the ground's vertex colours
-      const rs::MeshRecord* ground = scene.mesh(entity->mesh->parts.at(0).mesh);
-      ASSERT_NE(ground, nullptr);
-      ASSERT_EQ(ground->colors.size(), ground->positions.size());
-      const auto [lo, hi] = std::minmax_element(ground->colors.begin(), ground->colors.end(), [](const glm::vec4& a, const glm::vec4& b) { return a.x < b.x; });
-      EXPECT_NEAR(lo->x, 0.5F, 0.05F);
-      EXPECT_NEAR(hi->x, 1.0F, 0.05F);
-      EXPECT_FLOAT_EQ(lo->z, 0.5F);
-      continue;
+      size_t n = 0;
+      for(const auto& [e, mesh] : places)
+        n += mesh == thick && glm::distance(glm::vec2(scene.world(e)[3].x, scene.world(e)[3].z), at) < 4.0F ? 1 : 0;
+      return n;
     }
-    variants++;
-    copies += entity->mesh->copies.size();
-    EXPECT_EQ(scene.world(e), glm::mat4(1.f)) << "a variant's own place in its file is dropped";
-    const glm::mat4& m = entity->mesh->copies[entity->mesh->copies.size() / 2];
-    // on the ground, or a tree's foot a little into it
-    const float ground = fv::backdrop::height(spec, m[3].x, m[3].z);
-    EXPECT_LE(m[3].y, ground + 1e-3F);
-    EXPECT_GE(m[3].y, ground - 0.3F);
-    // the variant its file has twice the size stands twice the size
-    doubled = doubled || glm::length(glm::vec3(entity->mesh->copies[0][1])) > 1.55F;
+    std::vector<std::pair<rs::EntityId, rs::MeshId>> places;
+  };
+  const auto stands = [&] {
+    Stands out;
+    for(const rs::EntityId e : scene.entity(root)->children)
+    {
+      const rs::Entity* entity = scene.entity(e);
+      if(!entity->mesh || !scene.shown(e))
+        continue;
+      if(entity->name == "Backdrop tile")
+      {
+        out.tiles[entity->mesh->parts.at(0).mesh]++;
+        out.places.emplace_back(e, entity->mesh->parts.at(0).mesh);
+        // on the ground where it lies, a little into it
+        const glm::mat4 w      = scene.world(e);
+        const float     ground = fv::backdrop::height(spec, w[3].x, w[3].z);
+        EXPECT_LE(w[3].y, ground + 1e-3F);
+        EXPECT_GE(w[3].y, ground - 0.5F);
+        continue;
+      }
+      if(entity->mesh->copies.empty())
+      {
+        out.grounds++;
+        // the kit's two tints, mixed by the terrain's shade, as the ground's vertex colours
+        const rs::MeshRecord* ground = scene.mesh(entity->mesh->parts.at(0).mesh);
+        EXPECT_NE(ground, nullptr);
+        if(!ground || ground->colors.size() != ground->positions.size())
+        {
+          ADD_FAILURE() << "the ground has no colours";
+          continue;
+        }
+        const auto [lo, hi] = std::minmax_element(ground->colors.begin(), ground->colors.end(), [](const glm::vec4& a, const glm::vec4& b) { return a.x < b.x; });
+        EXPECT_NEAR(lo->x, 0.5F, 0.05F);
+        EXPECT_NEAR(hi->x, 1.0F, 0.05F);
+        EXPECT_FLOAT_EQ(lo->z, 0.5F);
+        continue;
+      }
+      out.variants++;
+      out.copies += entity->mesh->copies.size();
+      EXPECT_EQ(scene.world(e), glm::mat4(1.f)) << "a variant's own place in its file is dropped";
+      const glm::mat4& m = entity->mesh->copies[entity->mesh->copies.size() / 2];
+      // on the ground, or a tree's foot a little into it
+      const float ground = fv::backdrop::height(spec, m[3].x, m[3].z);
+      EXPECT_LE(m[3].y, ground + 1e-3F);
+      EXPECT_GE(m[3].y, ground - 0.3F);
+    }
+    return out;
+  };
+  const Stands first = stands();
+  EXPECT_EQ(first.variants, 1) << "the tree; the giant is too heavy, and the grass is tiles";
+  EXPECT_EQ(first.grounds, 1);
+  EXPECT_GT(first.copies, 100u);
+  ASSERT_EQ(first.tiles.size(), fv::backdrop::kGrassLevels) << "three meshes draw every tile";
+  // the mesh the most tiles draw is the thick grass's? no: by its size, a tile of it the smallest
+  rs::MeshId thick;
+  float      smallest = 1e9F;
+  uint64_t   tilePlants = 0;
+  for(const auto& [mesh, count] : first.tiles)
+  {
+    const rs::MeshRecord* record = scene.mesh(mesh);
+    ASSERT_NE(record, nullptr);
+    const auto  bounds = record->bounds();
+    const float across = bounds[1].x - bounds[0].x;
+    if(across < smallest)
+    {
+      smallest = across;
+      thick    = mesh;
+    }
+    // a tile's mesh is its plants merged: the kit's grass is a triangle a plant
+    tilePlants += uint64_t(count) * (record->indices.size() / 3);
   }
-  EXPECT_EQ(copies, plants);
+  EXPECT_NEAR(smallest, 2.0F, 0.9F);  // 2 m and the plants' own reach
+  EXPECT_EQ(first.copies + tilePlants, plants);
+  // the variant its file has twice the size stands twice the size in a tile too: the tallest vertex
+  // of the thick grass is a 0.3 m triangle's top at twice its size and the cover's largest scale
+  EXPECT_GT(scene.mesh(thick)->bounds()[1].y, 0.6F);
+  EXPECT_GT(first.thickNear(scene, thick, {0.0F, 0.0F}), 8u);
   // the haze fills round what the scene is about, not round a ground that reaches the horizon
   ASSERT_TRUE(rig.renderer.hazeScope.has_value());
   EXPECT_LT(rig.renderer.hazeScope->radius(), 10.0F);
-  EXPECT_EQ(variants, 3) << "two grasses and the tree; the giant is too heavy";
-  EXPECT_EQ(grounds, 1);
-  EXPECT_TRUE(doubled);
 
-  // twice the density replants in place: the same entities, about twice the plants
+  // twice the density plants again in place: as many tiles, about twice the plants
   const size_t entities = scene.entityCount();
   ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"density", 2.0}}}}).value("ok", false));
   EXPECT_EQ(scene.entityCount(), entities);
   EXPECT_EQ(rootNamed(scene, "Backdrop"), root);
-  EXPECT_NEAR(double(state().value("plants", uint64_t(0))), 2.0 * double(plants), 0.1 * double(plants));
+  EXPECT_NEAR(double(state().value("plants", uint64_t(0))), 2.0 * double(plants), 0.15 * double(plants));
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"density", 1.0}}}}).value("ok", false));
 
-  // the camera goes to stand far off: grass is planted round it too, and what stood stays
-  const auto grassNear = [&](glm::vec2 at) {
-    size_t n = 0;
-    for(const rs::EntityId e : scene.entity(root)->children)
-      if(const rs::Entity* entity = scene.entity(e); entity && entity->mesh && scene.shown(e))
-        for(const glm::mat4& m : entity->mesh->copies)
-          n += glm::distance(glm::vec2(m[3].x, m[3].z), at) < 3.0F ? 1 : 0;
-    return n;
-  };
-  const size_t   atOrigin = grassNear({0.0F, 0.0F});
-  const uint64_t before   = state().value("plants", uint64_t(0));
-  EXPECT_GT(atOrigin, 1000u);
-  EXPECT_EQ(grassNear({300.0F, 100.0F}), 0u);
-  rig.cmd("camera.goto", {{"position", {300.0, 2.0, 100.0}}, {"target", {290.0, 1.0, 100.0}}});
-  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while(grassNear({300.0F, 100.0F}) == 0 && std::chrono::steady_clock::now() < end)
-  {
-    rig.host->onUpdate();
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
-  EXPECT_NEAR(double(grassNear({300.0F, 100.0F})), double(atOrigin), 0.25 * double(atOrigin));
-  EXPECT_EQ(grassNear({0.0F, 0.0F}), atOrigin);
-  EXPECT_GT(state().value("plants", uint64_t(0)), before);
-  // back by what the scene is about, the far grass goes; and a view that orbits there plants nothing anew
+  // the camera goes to stand far off: thick grass there too, what stood by the scene stays, and
+  // nothing is made but the few tiles that weren't there
   const auto frames = [&](int ms) {
     const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     while(std::chrono::steady_clock::now() < until)
     {
       rig.host->onUpdate();
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
   };
-  rig.cmd("camera.goto", {{"position", {1.0, 2.0, -2.0}}, {"target", {0.0, 1.0, 0.0}}});
-  frames(700);
-  EXPECT_EQ(grassNear({300.0F, 100.0F}), 0u);
-  const uint64_t home = state().value("plants", uint64_t(0));
-  const size_t   grassHome = grassNear({0.0F, 0.0F});
-  rig.cmd("camera.goto", {{"position", {-2.0, 2.0, 1.0}}, {"target", {0.0, 1.0, 0.0}}});
-  frames(700);
-  EXPECT_EQ(state().value("plants", uint64_t(0)), home);
-  EXPECT_EQ(grassNear({0.0F, 0.0F}), grassHome);
-  EXPECT_EQ(scene.entityCount(), entities);
+  const auto thickMesh = [&] {
+    // (the meshes were made again with the density)
+    rs::MeshId mesh;
+    float      across = 1e9F;
+    for(const auto& [m, count] : stands().tiles)
+      if(const auto b = scene.mesh(m)->bounds(); b[1].x - b[0].x < across)
+      {
+        across = b[1].x - b[0].x;
+        mesh   = m;
+      }
+    return mesh;
+  };
+  rig.cmd("camera.goto", {{"position", {1.0, 2.0, 2.0}}, {"target", {0.0, 1.0, 0.0}}});
+  frames(100);
+  const rs::MeshId thickNow = thickMesh();
+  const Stands     home     = stands();
+  const size_t     atHome   = home.thickNear(scene, thickNow, {0.0F, 0.0F});
+  EXPECT_EQ(home.thickNear(scene, thickNow, {300.0F, 100.0F}), 0u);
+  rig.cmd("camera.goto", {{"position", {300.0, 2.0, 100.0}}, {"target", {290.0, 1.0, 100.0}}});
+  frames(100);
+  const Stands away = stands();
+  EXPECT_NEAR(double(away.thickNear(scene, thickNow, {300.0F, 100.0F})), double(atHome), 0.25 * double(atHome) + 1.0);
+  EXPECT_EQ(away.thickNear(scene, thickNow, {0.0F, 0.0F}), atHome);
+  EXPECT_EQ(away.copies, home.copies) << "the trees stay where they are";
+  EXPECT_GT(state().value("plants", uint64_t(0)), plants);
+  // back by the scene, the far grass goes and its tiles are kept for the next: no entity is made or lost
+  const size_t withAway = scene.entityCount();
+  rig.cmd("camera.goto", {{"position", {1.0, 2.0, 2.0}}, {"target", {0.0, 1.0, 0.0}}});
+  frames(100);
+  EXPECT_EQ(stands().thickNear(scene, thickNow, {300.0F, 100.0F}), 0u);
+  EXPECT_EQ(scene.entityCount(), withAway);
+  // and a view that orbits there changes no tile: a focus has to go a metre
+  const auto drawnNow = stands().places;
+  rig.cmd("camera.goto", {{"position", {1.5, 2.0, 1.6}}, {"target", {0.0, 1.0, 0.0}}});
+  frames(100);
+  EXPECT_EQ(stands().places, drawnNow);
 
   // the scene cleared: it stands again
   ASSERT_TRUE(rig.cmd("scene.clear").value("ok", false));

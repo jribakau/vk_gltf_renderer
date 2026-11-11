@@ -6,10 +6,17 @@
 // flowers underfoot, saplings further out, and trees in groves that close the horizon.
 //
 // Everything here follows from the spec alone, so a scene file keeps only the spec: the ground's height
-// (`height`), its mesh (`terrain`), and where each plant stands (`scatter`), by a seed. The host
-// (fv_host_backdrop.cpp) draws each plant variant once with its places as instancing copies
-// (rs::MeshInstance::copies), so a plant's geometry is stored once however many stand, and nothing is an
-// entity or a node of its own.
+// (`height`), its mesh (`terrain`), and where each plant stands, by a seed. Two ways of standing:
+//
+// - Trees and saplings each have a place (`layers`, `scatter`): the host (fv_host_backdrop.cpp) draws a
+//   variant once with its places as instancing copies (rs::MeshInstance::copies). They stand round the
+//   origin and never change.
+// - Grass and flowers are tiles (`grassCovers`, `patch`, `grassTiles`): a square of ground with its
+//   few hundred plants is one mesh, made once, and drawn wherever a square of its kind lies. Which
+//   squares are thick, thinner or sparse follows where one looks from, so there is grass under any
+//   camera, and a camera's move changes a few tiles at the level boundaries, far from it, and
+//   nothing near. (Each plant an instance of its own was tried first: following the camera meant
+//   200,000 instances made again, a fifth of a second every time.)
 //
 // The plants are a kit's, in a folder the app fills (Poly Haven's CC0 models, their cutout maps put
 // back): `kit.json` names each file's role (KitPlant). Which roles a kind plants, how thickly and
@@ -18,10 +25,14 @@
 // Vulkan-free; distances in metres, the figures' floor at y = 0.
 //-------------------------------------------------------------------------------------------------------
 
+#include <array>
+#include <compare>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <vector>
+
+#include <glm/gtc/quaternion.hpp>
 
 #include <glm/glm.hpp>
 
@@ -31,7 +42,7 @@ struct Spec
 {
   std::string kind    = "none";  // none | meadow
   int         seed    = 1;       // which meadow: the hills and where everything stands
-  double      size    = 60.0;    // metres across the ground planted underfoot (grass, flowers, saplings)
+  double      size    = 60.0;    // metres across the thick grass round where one looks from; the saplings' reach
   double      density = 1.0;     // of every layer's own, 0.25 to 2
   double      relief  = 1.0;     // how hilly the ground is beyond the clearing, 0 flat to 2
   bool        operator==(const Spec&) const = default;
@@ -48,10 +59,6 @@ inline constexpr float kClearing     = 5.0F;
 inline constexpr float kClearingEdge = 25.0F;
 // Where the ground ends: far enough for its hills to be the horizon's
 inline constexpr float kHorizon = 900.0F;
-
-// How far the tufts beyond the planted grass reach from where one looks: a standing eye sees the
-// ground between them closed by then, and the trees' groves have closed too
-inline constexpr float kTufts = 140.0F;
 
 // The ground's height over the floor at (x, z)
 float height(const Spec& spec, float x, float z);
@@ -81,15 +88,7 @@ struct Layer
   // that, up to `grow` times, so distant ground keeps its cover with far fewer plants. 0: even.
   float thin = 0.0F;
   float grow = 1.0F;
-  // Thinning as 1 / (1 + d / thin) instead: the rate at which plants seen from standing height go on
-  // hiding the ground between them, since each hides a strip of it that lengthens with distance
-  bool thinsGently = false;
   float fade = 0.0F;  // metres before `to` over which it thins out to nothing, so it has no edge
-  float fadeIn = 0.0F;  // metres after `from` over which it comes in
-  // Round the nearest focus (scatter's `foci`: where the scene is, where the camera stands) and not
-  // round the origin: `from`, `to` and the thinning are by the distance to it. Grass is wherever one
-  // looks from; the trees stay where they are
-  bool follows = false;
   // In drifts and groves: the share of the ground the layer stands on at all (1 everywhere), by a noise
   // `patch` metres across; and how much nearer its far edge it fills in whatever the noise (0 none),
   // so trees close the horizon
@@ -102,21 +101,65 @@ struct Layer
 };
 std::vector<Layer> layers(const Spec& spec);
 
-// A focus for a point (x, z): the nearest on a grid of focusStep metres, so a camera's small moves
-// replant nothing, and the same view is the same meadow whichever way it was come to
-float     focusStep(const Spec& spec);
-glm::vec2 focusNear(const Spec& spec, glm::vec2 at);
+// ---- Grass and flowers: tiles
+
+// One kind of tile: a square `tile` metres across with `perSquareMetre` of its role's plants
+struct Cover
+{
+  std::string role;  // grass | flower
+  float       tile           = 2.0F;
+  double      perSquareMetre = 1.0;  // the spec's density already in it
+  float       scaleMin       = 0.8F;
+  float       scaleMax       = 1.25F;
+  float       sink           = 0.0F;  // metres into the ground: a flat tile on rolling ground would show its edge
+  uint32_t    salt           = 0;     // which arrangement: two covers alike but for this are two patches
+};
+
+// The grass's three levels, the finest first: thick grass underfoot in 2 m tiles, thinner and larger
+// in 4 m tiles, sparse tufts in 8 m tiles; each tile of one level is four of the next finer.
+inline constexpr size_t kGrassLevels = 3;
+std::array<Cover, kGrassLevels> grassCovers(const Spec& spec);
+// How far from where one looks each level reaches: the last, where the grass ends
+std::array<float, kGrassLevels> grassReach(const Spec& spec);
+// The flowers' two tiles, a drift's middle and its edge, on the grass's middle grid; and how far they reach
+std::array<Cover, 2> flowerCovers(const Spec& spec);
+float                flowerReach(const Spec& spec);
+
+// The plants of one tile of `cover`, about its centre on y = 0: per variant of the role, each
+// plant's matrix in the tile
+std::vector<std::vector<glm::mat4>> patch(const Spec& spec, const Cover& cover, uint32_t variants);
+
+// A tile's cell on the grid of its level's size: it covers [x, x + 1) x [z, z + 1) tiles of it
+struct Tile
+{
+  int32_t x     = 0;
+  int32_t z     = 0;
+  uint8_t level = 0;
+  auto    operator<=>(const Tile&) const = default;
+};
+
+// The grass's tiles for where one looks from (`foci`, (x, z) each; none: the origin): every coarse
+// cell within reach of a focus is one sparse tile, or, nearer, its four cells of the middle level,
+// each of those one tile or its four thick ones. No ground is covered twice or left out. `was`, the
+// tiles as last asked for: a cell that was split stays split until a little further than where it
+// splits, so a view that hovers at a boundary changes nothing.
+std::vector<Tile> grassTiles(const Spec& spec, std::span<const glm::vec2> foci, std::span<const Tile> was = {});
+// The flowers' tiles: `level` 0 a drift's middle, 1 its edge (flowerCovers), on the middle grid
+std::vector<Tile> flowerTiles(const Spec& spec, std::span<const glm::vec2> foci);
+
+// Where a tile `size` metres across lies: its centre on the ground, sunk by `sink`, leaning as the
+// ground does there and turned a quarter turn or more by its cell, so its neighbours don't repeat it
+struct Place
+{
+  glm::vec3 position{0.0F};
+  glm::quat rotation{1.0F, 0.0F, 0.0F, 0.0F};
+};
+Place tilePlace(const Spec& spec, float size, int32_t x, int32_t z, float sink);
 
 // Where a layer's plants stand: per variant of the role (the kit's meshes for it, `variants` of them),
 // each plant's world matrix: on the ground, turned about the vertical and scaled. `layer` is its index
-// in layers(), so two layers of one spec don't share their places. `foci`, for a layer that follows:
-// (x, z) each, none meaning the origin. A plant's place is the world's, whatever the foci: another
-// focus shows other plants of the same meadow, and moves none.
-std::vector<std::vector<glm::mat4>> scatter(const Spec&                spec,
-                                            const Layer&               layer,
-                                            uint32_t                   layerIndex,
-                                            uint32_t                   variants,
-                                            std::span<const glm::vec2> foci = {});
+// in layers(), so two layers of one spec don't share their places.
+std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer, uint32_t layerIndex, uint32_t variants);
 
 // How many plants scatter() places, about: for a notice before a heavy one is made
 uint64_t expectedCount(const Spec& spec, const Layer& layer);

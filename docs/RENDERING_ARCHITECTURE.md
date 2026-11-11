@@ -602,33 +602,39 @@ protocol 64), so undo and a scene file carry it as they carry the ground. Two ha
 
 - **The shape** (`src/fv_backdrop.hpp`, Vulkan-free): `height` is the ground, flat where the scene
   stands, rolling beyond it and rising to hills toward the horizon; `terrain` is its mesh, a disc of
-  rings that widen with distance, so the triangles are small underfoot and large far off; `layers` says
-  what grows in a kind of backdrop and how thickly, and `scatter` where each plant stands, a jittered
-  grid thinned by patch noise and by distance, per variant of its role; a layer fades out before its
-  far edge, so the planted grass has no line where it stops, and beyond it the same role is planted
-  again as tufts, fewer and larger, thinning as 1 / (1 + d / thin): from standing height each hides a
-  strip of ground that lengthens with distance, so that rate keeps the ground closed out to the trees
-  with a few tens of thousands of plants. All of it is a pure function of the spec: the same seed is
-  the same meadow on every machine.
-- **Where the grass is** (`Layer::follows`, `scatter`'s `foci`): grass and flowers stand round the
-  nearest focus, not round the origin. The host gives two (`backdropFociNow`): where the scene's
-  content is, and where the camera stands once that is well away from the content's (nearer, one
-  focus serves, so orbiting a figure replants nothing). Each is the nearest point of a grid
-  (`focusNear`), so small moves change nothing and a view is the same meadow however it was come to.
-  A plant's place is the world's: the grid is hashed by cell, so another focus shows other plants of
-  the same meadow and moves none. `followBackdrop` runs every frame and plants again when the foci
-  changed, at most every 0.4 s; trees and saplings stay round the origin.
+  rings that widen with distance, so the triangles are small underfoot and large far off. All of it
+  is a pure function of the spec: the same seed is the same meadow on every machine.
+- **Trees and saplings have places** (`layers`, `scatter`): a jittered grid thinned by patch noise,
+  per variant of the role, round the origin. They never change.
+- **Grass and flowers are tiles** (`grassCovers`, `patch`, `grassTiles`, `flowerTiles`, `tilePlace`):
+  a square of ground with its few hundred plants is one mesh, and the ground is covered by squares
+  of three kinds, thick grass in 2 m tiles where one looks from, thinner and larger in 4 m tiles
+  beyond, sparse tufts in 8 m tiles out to where the trees have closed; a tile of one level is four
+  of the next, so no ground is covered twice or left out. "Where one looks from" is two places, the
+  scene's content and the camera, so there is grass under any view. A move of the camera changes
+  the few tiles at the levels' boundaries, tens of metres off, and nothing near it; a cell that
+  split stays split a little further than where it splits, so a view hovering at a boundary
+  changes nothing. Flowers are tiles on the middle grid where a drift noise says.
 - **The planting** (`src/fv_host_backdrop.cpp`): the plants are files in a kit folder the app fills
   (`settings.apply {backdropKit}`), listed by its `kit.json` with a role each (`readBackdropKit`, read
   on a loader thread). Under one host-owned root entity each plant file is imported once and each of
-  its mesh nodes is a variant; a variant is drawn at all its places through the mesh's `copies`, the
-  instancing path, so a meadow is a few dozen entities and bottom-level structures whatever its plant
-  count. The ground is a model built in memory from `terrain` with the kit's ground maps. A tiled map
+  its mesh nodes is a variant. A tree's variant is drawn at all its places through the mesh's
+  `copies`, the instancing path. A tile's mesh is the grass's variants merged at their places in it
+  (`makeBackdropPatch`), held by an entity that is never shown; each tile drawn is an entity with
+  that mesh, so one bottom-level structure serves every tile of a level, and laying the tiles
+  (`tileBackdrop`) shows, moves and hides entities, keeping the hidden ones for the next tiles.
+  `followBackdrop` lays them again each time a focus has gone a metre.
+  The ground is a model built in memory from `terrain` with the kit's ground maps. A tiled map
   is one colour from far off, and a photographed grass ground is mostly soil: the kit gives two tints,
   mixed by the terrain's `shades` (drifts some tens of metres across) into vertex colours, which bring
-  the ground beyond the planted grass to that grass's colour as it renders.
-  A change of density or size replants in place (`plantBackdrop`: the copies set again); a change of
-  seed or relief rebuilds the ground too.
+  the ground between the plants to the grass's colour as it renders.
+  A change of the state plants again in place (`plantBackdrop`: the copies and the tiles' meshes made
+  again); a change of seed or relief rebuilds the ground too.
+- **Why tiles.** Each grass plant an instance of its own was built first, thinned by its distance
+  from the camera. Following the camera then meant some 200,000 instances made again: 50 ms to
+  place them and another 160 ms in the renderer's sync, a fifth of a second up to two and a half
+  times a second in flight, with every plant near the camera changing size as its distance did.
+  With tiles the same flight's worst gap between frames is 30 to 50 ms and none is longer.
 
 What gives way while a backdrop stands: the flat ground plane is off (`useInfinitePlane`; it comes back
 while the kit is missing or loading), and "Auto" ground, framing the scene and the fly speed measure
@@ -640,12 +646,13 @@ at the floor's height, and the ground is flat within the clearing, so the physic
 still meet it. The lighting topic says `backdrop.state` (off, missing, loading,
 ready) and `backdrop.plants`.
 
-Measured on an RTX 4080 at 1080p, the moving view: an empty floor 1.9 ms of path tracing, 400,000
-alpha-tested grass clumps 8.4 ms; about 0.8 KB of GPU memory an instance. The app's kit (Poly Haven's
-grass, two flowers, fir saplings and three young firs, 1K maps) as a default meadow: 75,000 plants,
-12.5 ms against 2.1 under the same sky, 410 MB of GPU memory, standing 0.2 s after it is asked for
-and replanted in 0.05 s. With the tufts, 121,000 plants by the origin; with the camera 70 m out
-212,000 and 490 MB, the grass round it standing 0.09 s after it gets there.
+Measured on an RTX 4080 at 1080p, the moving view, with the app's kit (Poly Haven's grass, two
+flowers, fir saplings and three young firs, 1K maps) as a default meadow: 15.1 ms of path tracing by
+the origin against 2.1 on the bare floor under the same sky, 550 MB of GPU memory, standing 0.4 s
+after it is asked for, planted again in 0.2 s. A flight of 120 m at 15 m/s: the gaps between frames
+18.5 ms at the median (17.3 over the bare floor, the stream's 60 a second), 29 at the 99th
+percentile, 32 to 49 at worst. Before the tiles, plants as instances: 400,000 alpha-tested grass
+clumps 8.4 ms, about 0.8 KB of GPU memory an instance.
 Checked: `tests/test_fv_backdrop.cpp`, `FvLighting.ABackdropIsPartOfTheLighting`,
 `FvHost.ABackdropIsPlantedFromItsKit`.
 
