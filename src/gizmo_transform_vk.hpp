@@ -28,6 +28,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include <cfloat>
+#include <optional>
 #include <vector>
 #include <functional>
 
@@ -344,6 +346,29 @@ private:
   // Ray-vs-torus picking: intersect the rotation plane, measure distance to ring radius
   float rayDistanceToTorus(const glm::vec3& rayOrigin, const glm::vec3& rayDir, GizmoComponent component) const;
 
+  // The gizmo's model matrix, at its size on screen
+  glm::mat4 gizmoModelMatrix(const glm::mat4& viewMatrix, const glm::mat4& projMatrix, const glm::vec2& viewport) const;
+  // How many viewport pixels a unit of the gizmo spans (getScreenSpaceScale's size)
+  float pixelsPerUnit(const glm::mat4& projMatrix) const;
+  // A rotation ring as drawn: how far a point is from it in pixels, and the ring's direction there on
+  // screen, the way a turn about its axis goes
+  struct RingOnScreen
+  {
+    float     distance = FLT_MAX;
+    glm::vec2 tangent{0.f};
+  };
+  RingOnScreen ringOnScreen(GizmoComponent   component,
+                            const glm::mat4& modelMatrix,
+                            const glm::mat4& viewMatrix,
+                            const glm::mat4& projMatrix,
+                            const glm::vec2& viewport,
+                            const glm::vec2& mousePos) const;
+  // a press within this many pixels of a ring takes it, of any other handle this many past its box
+  static constexpr float kRingPickPixels = 8.0f;
+  static constexpr float kPickPixels     = 5.0f;
+  // a ring whose axis is this near across the cursor's ray is turned by a drag along it
+  static constexpr float kEdgeOnCos = 0.35f;
+
   glm::vec3 getAxisFromComponent(GizmoComponent component) const;
   glm::vec3 getColorFromComponent(GizmoComponent component, bool hovered = false) const;
   bool      shouldRenderGeometry(const GizmoGeometry& geom) const;
@@ -377,6 +402,9 @@ private:
   GizmoComponent m_hoveredComponent       = GizmoComponent::eNone;
   GizmoComponent m_draggedComponent       = GizmoComponent::eNone;
   glm::vec2      m_dragStartPosMouse      = glm::vec2(0.0f);
+  bool           m_dragAlongRing          = false;  // an edge-on ring's drag (startDrag)
+  glm::vec2      m_dragRingTangent        = glm::vec2(0.0f);
+  float          m_dragRingPixels         = 1.0f;
   glm::vec3      m_dragStartPosition      = glm::vec3(0.0f);
   glm::vec3      m_dragStartWorldPosition = glm::vec3(0.0f);
   glm::vec3      m_dragStartRotation      = glm::vec3(0.0f);

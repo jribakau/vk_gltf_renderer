@@ -36,6 +36,7 @@
 #include <nvutils/primitives.hpp>
 #include <nvutils/logger.hpp>
 
+#include <glm/gtc/constants.hpp>
 #include <glm/gtx/quaternion.hpp>
 
 #include <cfloat>
@@ -574,18 +575,19 @@ TransformHelperVk::GizmoComponent TransformHelperVk::pickGizmoComponent(const gl
   glm::vec3 rayOrigin, rayDir;
   createRayFromMouse(mousePos, viewMatrix, projMatrix, viewport, rayOrigin, rayDir);
 
-  glm::mat4 gizmoTransform = getGizmoTransform();
-  glm::vec3 gizmoPosition  = getDisplayPosition();
-  float     scale          = getScreenSpaceScale(gizmoPosition, viewMatrix, projMatrix, viewport);
-  glm::mat4 scaleMatrix    = glm::scale(glm::mat4(1.0f), glm::vec3(scale));
-  glm::mat4 modelMatrix    = gizmoTransform * scaleMatrix;
+  const glm::mat4 modelMatrix = gizmoModelMatrix(viewMatrix, projMatrix, viewport);
 
   // Pre-transform ray into gizmo-local space (same for all components)
   glm::mat4 invModel       = glm::inverse(modelMatrix);
   glm::vec3 localRayOrigin = glm::vec3(invModel * glm::vec4(rayOrigin, 1.0f));
   glm::vec3 localRayDir    = glm::normalize(glm::vec3(invModel * glm::vec4(rayDir, 0.0f)));
 
-  float          closestDist      = FLT_MAX;
+  // A handle is taken within a few pixels of it: a ring by its distance on screen (seen edge-on it is
+  // a line, and its own box only a sliver), the rest by their box grown by as much. Each scores its
+  // distance over its reach; the lowest under 1 wins.
+  const float pad = kPickPixels / std::max(pixelsPerUnit(projMatrix), 1e-3f);
+
+  float          bestScore        = 1.0f;
   GizmoComponent closestComponent = GizmoComponent::eNone;
 
   for(const auto& geom : m_gizmoGeometry)
@@ -593,53 +595,88 @@ TransformHelperVk::GizmoComponent TransformHelperVk::pickGizmoComponent(const gl
     if(!shouldRenderGeometry(geom))
       continue;
 
-    if(!rayIntersectsBounds(localRayOrigin, localRayDir, geom.boundsMin, geom.boundsMax))
-      continue;
-
-    float dist          = 0.0f;
-    float pickThreshold = 0.6f;
-
+    float score = 1.0f;
     switch(geom.component)
     {
-      case GizmoComponent::eTranslateX:
-      case GizmoComponent::eTranslateY:
-      case GizmoComponent::eTranslateZ:
-      case GizmoComponent::eScaleX:
-      case GizmoComponent::eScaleY:
-      case GizmoComponent::eScaleZ:
-      case GizmoComponent::eScaleUniform:
-        dist          = rayDistanceToBounds(localRayOrigin, localRayDir, geom.boundsMin, geom.boundsMax);
-        pickThreshold = 0.6f;
-        break;
-
       case GizmoComponent::eRotateX:
       case GizmoComponent::eRotateY:
       case GizmoComponent::eRotateZ:
-        dist          = rayDistanceToTorus(localRayOrigin, localRayDir, geom.component);
-        pickThreshold = 0.2f;
+        score = ringOnScreen(geom.component, modelMatrix, viewMatrix, projMatrix, viewport, mousePos).distance / kRingPickPixels;
         break;
-
-      case GizmoComponent::eTranslateXY:
-      case GizmoComponent::eTranslateXZ:
-      case GizmoComponent::eTranslateYZ:
-        dist          = rayDistanceToBounds(localRayOrigin, localRayDir, geom.boundsMin, geom.boundsMax);
-        pickThreshold = 0.2f;
-        break;
-
       default:
-        dist          = rayDistanceToBounds(localRayOrigin, localRayDir, geom.boundsMin, geom.boundsMax);
-        pickThreshold = 0.6f;
+        if(!rayIntersectsBounds(localRayOrigin, localRayDir, geom.boundsMin - glm::vec3(pad), geom.boundsMax + glm::vec3(pad)))
+          continue;
+        // inside its own box: 0; in the pixels around it, toward 1
+        score = std::min(rayDistanceToBounds(localRayOrigin, localRayDir, geom.boundsMin, geom.boundsMax) / pad, 0.999f);
         break;
     }
 
-    if(dist < pickThreshold && dist < closestDist)
+    if(score < bestScore)
     {
-      closestDist      = dist;
+      bestScore        = score;
       closestComponent = geom.component;
     }
   }
 
   return closestComponent;
+}
+
+glm::mat4 TransformHelperVk::gizmoModelMatrix(const glm::mat4& viewMatrix, const glm::mat4& projMatrix, const glm::vec2& viewport) const
+{
+  const float scale = getScreenSpaceScale(getDisplayPosition(), viewMatrix, projMatrix, viewport);
+  return getGizmoTransform() * glm::scale(glm::mat4(1.0f), glm::vec3(scale));
+}
+
+float TransformHelperVk::pixelsPerUnit(const glm::mat4& projMatrix) const
+{
+  // getScreenSpaceScale keeps a unit of the gizmo this many pixels tall, wherever it is
+  return m_style.sizePixels * std::abs(projMatrix[1][1]) * 0.5f;
+}
+
+TransformHelperVk::RingOnScreen TransformHelperVk::ringOnScreen(GizmoComponent   component,
+                                                                const glm::mat4& modelMatrix,
+                                                                const glm::mat4& viewMatrix,
+                                                                const glm::mat4& projMatrix,
+                                                                const glm::vec2& viewport,
+                                                                const glm::vec2& mousePos) const
+{
+  // the ring's own plane: u x v is its axis, so a turn about the axis goes from u toward v
+  const glm::vec3 axis = getAxisFromComponent(component);
+  const glm::vec3 u    = axis.x != 0.f ? glm::vec3(0, 1, 0) : axis.y != 0.f ? glm::vec3(0, 0, 1) : glm::vec3(1, 0, 0);
+  const glm::vec3 v    = glm::cross(axis, u);
+  const glm::mat4 mvp  = projMatrix * viewMatrix * modelMatrix;
+  const auto      at   = [&](float a, glm::vec2& px) {
+    const glm::vec4 clip = mvp * glm::vec4(m_style.ringRadius * (u * std::cos(a) + v * std::sin(a)), 1.0f);
+    if(clip.w <= 1e-6f)
+      return false;
+    px = (glm::vec2(clip) / clip.w + 1.0f) * 0.5f * viewport;
+    return true;
+  };
+  constexpr int kSamples = 96;
+  RingOnScreen  out;
+  glm::vec2     prev{};
+  bool          prevOk = at(0.f, prev);
+  for(int i = 1; i <= kSamples; i++)
+  {
+    const float a = glm::two_pi<float>() * float(i) / float(kSamples);
+    glm::vec2   cur{};
+    const bool  ok = at(a, cur);
+    if(ok && prevOk)
+    {
+      const glm::vec2 seg = cur - prev;
+      const float     len = glm::dot(seg, seg);
+      const float     t   = len > 0.f ? glm::clamp(glm::dot(mousePos - prev, seg) / len, 0.f, 1.f) : 0.f;
+      const float     d   = glm::length(mousePos - (prev + t * seg));
+      if(d < out.distance)
+      {
+        out.distance = d;
+        out.tangent  = len > 0.f ? seg / std::sqrt(len) : glm::vec2(0.f);
+      }
+    }
+    prev   = cur;
+    prevOk = ok;
+  }
+  return out;
 }
 
 void TransformHelperVk::startDrag(GizmoComponent   component,
@@ -651,6 +688,7 @@ void TransformHelperVk::startDrag(GizmoComponent   component,
   m_isDragging        = true;
   m_draggedComponent  = component;
   m_dragStartPosMouse = mousePos;
+  m_dragAlongRing     = false;
 
   if(isAttached())
   {
@@ -663,6 +701,21 @@ void TransformHelperVk::startDrag(GizmoComponent   component,
   // Compute initial hit point for relative dragging (world space)
   glm::vec3 rayOrigin, rayDir;
   createRayFromMouse(mousePos, viewMatrix, projMatrix, viewport, rayOrigin, rayDir);
+
+  // A ring seen near edge-on turns by the drag along it on screen: the cursor's ray meets its plane
+  // at a grazing angle there, where the angle from it jumps. Face-on, the point grabbed follows the
+  // cursor round.
+  if(component == GizmoComponent::eRotateX || component == GizmoComponent::eRotateY || component == GizmoComponent::eRotateZ)
+  {
+    const glm::vec3 worldAxis = localAxisToWorld(getAxisFromComponent(component));
+    if(std::abs(glm::dot(rayDir, worldAxis)) < kEdgeOnCos)
+    {
+      const RingOnScreen ring = ringOnScreen(component, gizmoModelMatrix(viewMatrix, projMatrix, viewport), viewMatrix, projMatrix, viewport, mousePos);
+      m_dragAlongRing         = glm::dot(ring.tangent, ring.tangent) > 0.f;
+      m_dragRingTangent       = ring.tangent;
+      m_dragRingPixels        = std::max(m_style.ringRadius * pixelsPerUnit(projMatrix), 1.0f);
+    }
+  }
 
   switch(component)
   {
@@ -777,8 +830,28 @@ void TransformHelperVk::updateDrag(const glm::vec2& mousePos,
       glm::vec3 worldAxis = localAxisToWorld(localAxis);
       glm::vec3 worldPos  = m_dragStartWorldPosition;
 
+      // an edge-on ring: a ring's radius dragged along it is a radian
+      std::optional<float> alongDeg;
+      if(m_dragAlongRing)
+        alongDeg = glm::degrees(glm::dot(mousePos - m_dragStartPosMouse, m_dragRingTangent) / m_dragRingPixels);
+
       float t = 0.f;
-      if(rayIntersectPlane(rayOrigin, rayDir, worldPos, worldAxis, t))
+      if(alongDeg)
+      {
+        float angleDeg = *alongDeg;
+        if(m_enableSnapping && m_snapRotate > 0.0f)
+          angleDeg = snapValue(angleDeg, m_snapRotate);
+        if(m_space == TransformSpace::eLocal)
+        {
+          const glm::quat start = glm::quat(glm::radians(m_dragStartRotation));
+          *m_attachedRotation   = glm::degrees(glm::eulerAngles(start * glm::angleAxis(glm::radians(angleDeg), localAxis)));
+        }
+        else
+          *m_attachedRotation = m_dragStartRotation + localAxis * angleDeg;
+        if(m_onTransformChange)
+          m_onTransformChange();
+      }
+      else if(rayIntersectPlane(rayOrigin, rayDir, worldPos, worldAxis, t))
       {
         glm::vec3 hitPoint = rayOrigin + rayDir * t;
         glm::vec3 toHit    = hitPoint - worldPos;
@@ -888,20 +961,16 @@ void TransformHelperVk::createRayFromMouse(const glm::vec2& mousePos,
   glm::mat4 invView = glm::inverse(viewMatrix);
   glm::mat4 invProj = glm::inverse(projMatrix);
 
-  glm::vec4 rayStartNDC(ndcX, ndcY, 0.0f, 1.0f);
-  glm::vec4 rayEndNDC(ndcX, ndcY, 1.0f, 1.0f);
-
-  glm::vec4 rayStartView = invProj * rayStartNDC;
-  glm::vec4 rayEndView   = invProj * rayEndNDC;
-
+  // From the near plane, away from the eye. Not toward the far plane's point: the renderer's
+  // projection may have its far plane at infinity, where that point has w = 0 and the ray came out
+  // NaN, so that no press ever took a handle.
+  glm::vec4 rayStartView = invProj * glm::vec4(ndcX, ndcY, 0.0f, 1.0f);
   rayStartView /= rayStartView.w;
-  rayEndView /= rayEndView.w;
+  const bool      orthographic = projMatrix[3][3] != 0.0f;
+  const glm::vec3 dirView      = orthographic ? glm::vec3(0.0f, 0.0f, -1.0f) : glm::normalize(glm::vec3(rayStartView));
 
-  glm::vec4 rayStartWorld = invView * rayStartView;
-  glm::vec4 rayEndWorld   = invView * rayEndView;
-
-  rayOrigin = glm::vec3(rayStartWorld);
-  rayDir    = glm::normalize(glm::vec3(rayEndWorld - rayStartWorld));
+  rayOrigin = glm::vec3(invView * rayStartView);
+  rayDir    = glm::normalize(glm::vec3(invView * glm::vec4(dirView, 0.0f)));
 }
 
 bool TransformHelperVk::rayIntersectsBounds(const glm::vec3& rayOrigin,
