@@ -1516,6 +1516,9 @@ struct FvHost::Impl
   // What the state asks for, if it isn't what stands: planted, replanted in place (another seed, size,
   // density or relief), or taken away. `reread`: the kit's folder changed, or was filled.
   void applyBackdrop(bool reread = false);
+  void standBackdrop(bool reread);  // its work; applyBackdrop then scopes the haze
+  // The haze round the scene's content while a backdrop stands, not round its ground (setHazeScope)
+  void scopeHaze();
   // The kit's plants and ground under a new root in `scene`, planted by the state
   void feedBackdrop(rs::RetainedScene& scene);
   // What stands, planted again by the state: the ground's shape and every plant's places

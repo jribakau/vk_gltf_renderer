@@ -92,6 +92,9 @@ public:
     return b[0].x > b[1].x ? nvutils::Bbox() : nvutils::Bbox(b[0], b[1]);
   }
 
+  void setHazeScope(const nvutils::Bbox* bounds) override { hazeScope = bounds ? std::optional<nvutils::Bbox>(*bounds) : std::nullopt; }
+  std::optional<nvutils::Bbox> hazeScope;
+
   void         selectEntity(rs::EntityId entity) override { m_selected = entity; }
   rs::EntityId selectedEntity() const override { return m_selected; }
   void         pickAt(glm::vec2 uv, bool center) override { picks.push_back({uv, center}); }

@@ -480,6 +480,7 @@ public:
   /// What is shown, where it is now: the union of the visible render nodes' boxes through their
   /// current node transforms (getSceneBounds is the scene as it loaded).
   nvutils::Bbox visibleSceneBounds() override;
+  void          setHazeScope(const nvutils::Bbox* bounds) override;
 
   /// Lets a stream host own what the transform gizmo edits, on its scene's entities. `attach` gives
   /// the handles the selected entity shows (TransformHelperVk::ShowRotation, ShowTranslation, ...),
@@ -588,6 +589,7 @@ private:
   // setStillPaused, and the frames drawn since the view or the scene last changed: a paused still stops
   // after kPausedStillFrames of them (enough for DLSS to settle on the view)
   bool                      m_stillPaused{false};
+  std::optional<nvutils::Bbox> m_hazeScope;  // setHazeScope: what fillHaze's sphere is round, when set
   int                       m_framesSinceChange{0};
   static constexpr int      kPausedStillFrames = 8;
   bool                      m_streamHost{false};  // see setStreamHost()

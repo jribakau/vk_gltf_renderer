@@ -322,6 +322,23 @@ void FvHost::Impl::feedBackdrop(rs::RetainedScene& scene)
 
 void FvHost::Impl::applyBackdrop(bool reread)
 {
+  standBackdrop(reread);
+  scopeHaze();
+}
+
+void FvHost::Impl::scopeHaze()
+{
+  if(backdropRoot().isNone() || !renderer->feedsHostScene() || !renderer->hostScene().entity(backdropRoot()))
+  {
+    renderer->setHazeScope(nullptr);
+    return;
+  }
+  const nvutils::Bbox content = contentBounds();
+  renderer->setHazeScope(&content);
+}
+
+void FvHost::Impl::standBackdrop(bool reread)
+{
   if(!renderer->feedsHostScene())
     return;
   rs::RetainedScene&        scene = renderer->hostScene();

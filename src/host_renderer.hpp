@@ -125,6 +125,10 @@ public:
   virtual void setStillPaused(bool paused) = 0;
   // what is shown, where it is now (world space)
   virtual nvutils::Bbox visibleSceneBounds() = 0;
+  // What the haze fills round, with the lights and the eye, in place of all that is shown: a host
+  // whose scene stands on a ground out to the horizon gives what the scene is about, or the sky would
+  // be seen through a kilometre of haze. Null: all that is shown.
+  virtual void setHazeScope(const nvutils::Bbox* bounds) = 0;
 
   // ---- Selection, picking and the gizmo
   virtual void         selectEntity(rs::EntityId entity) = 0;

@@ -292,6 +292,9 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
     doubled = doubled || glm::length(glm::vec3(entity->mesh->copies[0][1])) > 1.55F;
   }
   EXPECT_EQ(copies, plants);
+  // the haze fills round what the scene is about, not round a ground that reaches the horizon
+  ASSERT_TRUE(rig.renderer.hazeScope.has_value());
+  EXPECT_LT(rig.renderer.hazeScope->radius(), 10.0F);
   EXPECT_EQ(variants, 3) << "two grasses and the tree; the giant is too heavy";
   EXPECT_EQ(grounds, 1);
   EXPECT_TRUE(doubled);
@@ -314,6 +317,7 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
   EXPECT_EQ(state().value("state", ""), "off");
   EXPECT_EQ(state().value("plants", uint64_t(1)), 0u);
   EXPECT_TRUE(rootNamed(scene, "Backdrop").isNone());
+  EXPECT_FALSE(rig.renderer.hazeScope.has_value());
   fs::remove_all(kit);
 }
 

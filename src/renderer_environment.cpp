@@ -709,7 +709,8 @@ void GltfRenderer::fillHaze(shaderio::SceneFrameInfo& finfo) const
   float               lowest = eye.y;
   if(view.hasContent())
   {
-    const nvutils::Bbox bounds = view.bounds();
+    // the host's scope when it gave one (a backdrop's ground reaches the horizon, setHazeScope)
+    const nvutils::Bbox bounds = m_hazeScope ? *m_hazeScope : view.bounds();
     if(!bounds.isEmpty())
     {
       center = bounds.center();
@@ -733,6 +734,18 @@ void GltfRenderer::fillHaze(shaderio::SceneFrameInfo& finfo) const
   finfo.hazePatches   = std::clamp(settings.hazePatches, 0.0F, 1.0F);
   const float patch   = settings.hazePatchSize > 0.0F ? settings.hazePatchSize : std::clamp(0.25F * radius, 0.5F, 8.0F);
   finfo.hazeInvPatchSize = 1.0F / patch;
+}
+
+void GltfRenderer::setHazeScope(const nvutils::Bbox* bounds)
+{
+  const std::optional<nvutils::Bbox> scope = bounds ? std::optional<nvutils::Bbox>(*bounds) : std::nullopt;
+  const bool same = scope.has_value() == m_hazeScope.has_value()
+                    && (!scope || (scope->min() == m_hazeScope->min() && scope->max() == m_hazeScope->max()));
+  if(same)
+    return;
+  m_hazeScope = scope;
+  if(m_resources.settings.hazeVisibility > 0.0F)
+    resetFrame();  // the haze a still gathered is of the old sphere
 }
 
 //--------------------------------------------------------------------------------------------------

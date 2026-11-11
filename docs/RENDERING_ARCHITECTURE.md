@@ -622,8 +622,11 @@ protocol 64), so undo and a scene file carry it as they carry the ground. Two ha
 What gives way while a backdrop stands: the flat ground plane is off (`useInfinitePlane`; it comes back
 while the kit is missing or loading), and "Auto" ground, framing the scene and the fly speed measure
 the scene without it (`RetainedScene::bounds(except)`, `contentBounds`), since its ground reaches the
-horizon. The root sits at the floor's height, and the ground is flat within the clearing, so the
-physics floor and Drop still meet it. The lighting topic says `backdrop.state` (off, missing, loading,
+horizon. The haze is scoped the same way (`setHazeScope`, `scopeHaze`): its sphere is round the
+scene's bounds, and round a 900 m ground the sky was seen through a kilometre of haze that only the
+scene's lights light, which left a midday sky dark grey; so the distance is not hazed. The root sits
+at the floor's height, and the ground is flat within the clearing, so the physics floor and Drop
+still meet it. The lighting topic says `backdrop.state` (off, missing, loading,
 ready) and `backdrop.plants`.
 
 Measured on an RTX 4080 at 1080p, the moving view: an empty floor 1.9 ms of path tracing, 400,000
