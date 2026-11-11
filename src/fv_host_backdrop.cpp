@@ -5,7 +5,8 @@
 // textures and a kit.json that says what each is:
 //
 //   {"version": 1,
-//    "plants": [{"role": "grass" | "flower" | "sapling" | "tree", "file": "<glTF, relative>",
+//    "plants": [{"role": "grass" | "flower" | "fern" | "sapling" | "tree" | "shrub" | "rock" | "stump" | "log",
+//                "file": "<glTF, relative>",
 //                "heaviest"?: <triangles: a variant of the file with more is left out>}, ...],
 //    "ground": {"<kind>": {"diffuse"?, "normal"?, "arm"?: "<image, relative>", "tile"?: <metres>,
 //                          "color"?: [r, g, b] linear, without a diffuse map,
@@ -13,11 +14,13 @@
 //                          the second in the terrain's drier drifts (tint's when not given)}}}
 //
 // Every mesh of a plant's file is a variant of it. The kit is read on a worker (a tree's file is
-// hundreds of megabytes) and kept; what stands in the scene is one root entity of the host's own, as
-// the sun is, with the ground under it; a tree's or a sapling's variant an entity, drawn at its
-// places as instancing copies; and the grass and the flowers as tiles (fv_backdrop.hpp), an entity a
-// tile drawn, all of a level sharing one mesh. Another seed, size, density or relief plants again in
-// place: the copies, the tiles' meshes, and the ground when its shape changed. The camera's moves lay
+// hundreds of megabytes) and kept; of its plants the scene holds those the kind plants
+// (holdBackdropPlants). What stands in the scene is one root entity of the host's own, as
+// the sun is, with the ground under it; a variant of what has a place (a tree, a sapling, a bush, a
+// rock, dead wood) an entity, drawn at its places as instancing copies; and the grass and its drifts
+// (flowers, ferns) as tiles (fv_backdrop.hpp), an entity a tile drawn, all of a level sharing one
+// mesh. Another kind, seed, size, density or relief plants again in place: the copies, the tiles'
+// meshes, and the ground when its kind or its shape changed. The camera's moves lay
 // the tiles again (followBackdrop) and plant nothing.
 //
 
@@ -229,8 +232,24 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
   fv::timing::Scope             time("backdrop: planting", 20);
   BackdropBuilt&                built = *backdropBuilt;
   const fv::backdrop::Spec&     spec  = lighting.backdrop;
+  // the tiles go first, their meshes being made of the plants' own: made again below
+  for(BackdropBuilt::Tiles* tiles : {&built.grass, &built.drifts})
+  {
+    for(const auto& [tile, entity] : tiles->drawn)
+      if(scene.entity(entity))
+        scene.destroyEntity(entity);
+    for(const auto& [level, spare] : tiles->spare)
+      for(const rs::EntityId entity : spare)
+        if(scene.entity(entity))
+          scene.destroyEntity(entity);
+    for(const BackdropBuilt::Patch& patch : tiles->patches)
+      if(scene.entity(patch.holder))
+        scene.destroyEntity(patch.holder);
+    *tiles = {};
+  }
+  holdBackdropPlants(scene);
   // the ground, when its shape is another: made again, as its mesh may no longer hold its vertices to move
-  if(built.groundSeed != spec.seed || built.groundRelief != spec.relief || !scene.entity(built.ground))
+  if(built.groundKind != spec.kind || built.groundSeed != spec.seed || built.groundRelief != spec.relief || !scene.entity(built.ground))
   {
     if(scene.entity(built.ground))
       scene.destroyEntity(built.ground);
@@ -239,12 +258,13 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
     const tinygltf::Model     m = backdropTerrainModel(fv::backdrop::terrain(spec, g.tile), g);
     const rs::ImportResult    r = rs::importGltf(scene, m, {.prop = 0, .parent = built.root, .imageSearchPaths = {backdropKit->dir}});
     built.ground       = r.roots.empty() ? rs::EntityId{} : r.roots.front();
+    built.groundKind   = spec.kind;
     built.groundSeed   = spec.seed;
     built.groundRelief = spec.relief;
   }
   // each layer's plants: a variant's places as its copies; a variant with none, and a role no layer
-  // plants (the grass and the flowers, which are tiles), hidden: no copies would draw it once, where
-  // its file has it
+  // plants (what stands in tiles, and what this kind has none of), hidden: no copies would draw it
+  // once, where its file has it
   std::map<std::string, std::vector<std::vector<glm::mat4>>> byRole;
   uint64_t                                                   plants = 0;
   const auto                                                 layers = fv::backdrop::layers(spec);
@@ -285,26 +305,12 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
           scene.setVisible(v.entity, false);
   built.placed = plants;
 
-  // the grass and the flowers: their tiles' meshes made again for this state, and the tiles laid
-  for(BackdropBuilt::Tiles* tiles : {&built.grass, &built.flowers})
-  {
-    for(const auto& [tile, entity] : tiles->drawn)
-      if(scene.entity(entity))
-        scene.destroyEntity(entity);
-    for(const auto& [level, spare] : tiles->spare)
-      for(const rs::EntityId entity : spare)
-        if(scene.entity(entity))
-          scene.destroyEntity(entity);
-    for(const BackdropBuilt::Patch& patch : tiles->patches)
-      if(scene.entity(patch.holder))
-        scene.destroyEntity(patch.holder);
-    *tiles = {};
-  }
+  // the grass and its drifts: their tiles' meshes for this state, and the tiles laid
   built.grassWas.clear();
   for(const fv::backdrop::Cover& cover : fv::backdrop::grassCovers(spec))
     built.grass.patches.push_back(makeBackdropPatch(scene, cover));
-  for(const fv::backdrop::Cover& cover : fv::backdrop::flowerCovers(spec))
-    built.flowers.patches.push_back(makeBackdropPatch(scene, cover));
+  for(const fv::backdrop::Cover& cover : fv::backdrop::drifts(spec).covers)
+    built.drifts.patches.push_back(makeBackdropPatch(scene, cover));
   tileBackdrop(scene);
 }
 
@@ -450,26 +456,36 @@ void FvHost::Impl::tileBackdrop(rs::RetainedScene& scene)
   };
   std::vector<fv::backdrop::Tile> grass = fv::backdrop::grassTiles(spec, foci, built.grassWas);
   const auto                      grassCovers  = fv::backdrop::grassCovers(spec);
-  const auto                      flowerCovers = fv::backdrop::flowerCovers(spec);
+  const auto                      driftCovers  = fv::backdrop::drifts(spec).covers;
   lay(built.grass, grass, grassCovers);
-  lay(built.flowers, fv::backdrop::flowerTiles(spec, foci), flowerCovers);
+  lay(built.drifts, fv::backdrop::driftTiles(spec, foci), driftCovers);
   built.grassWas = std::move(grass);
   built.tiledFor = foci;
   backdropPlants = plants;
 }
 
-void FvHost::Impl::feedBackdrop(rs::RetainedScene& scene)
+void FvHost::Impl::holdBackdropPlants(rs::RetainedScene& scene)
 {
-  if(!backdropKit)
-    return;
-  fv::timing::Scope time("backdrop: feeding", 20);
-  if(backdropBuilt && scene.entity(backdropBuilt->root))
-    scene.destroyEntity(backdropBuilt->root);
-  backdropBuilt       = std::make_unique<BackdropBuilt>();
-  BackdropBuilt& built = *backdropBuilt;
-  built.root           = scene.createEntity("Backdrop", {0, -1});
-  for(const BackdropKit::Plant& plant : backdropKit->plants)
+  BackdropBuilt&                 built  = *backdropBuilt;
+  const std::vector<std::string> wanted = fv::backdrop::roles(lighting.backdrop);
+  for(size_t i = 0; i < backdropKit->plants.size(); i++)
   {
+    const BackdropKit::Plant& plant = backdropKit->plants[i];
+    const bool                want  = std::binary_search(wanted.begin(), wanted.end(), plant.role);
+    const auto                found = built.held.find(i);
+    if(!want)
+    {
+      if(found != built.held.end())
+      {
+        for(const rs::EntityId e : found->second.entities)
+          if(scene.entity(e))
+            scene.destroyEntity(e);
+        built.held.erase(found);
+      }
+      continue;
+    }
+    if(found != built.held.end())
+      continue;
     rs::ImportResult r;
     try
     {
@@ -483,6 +499,8 @@ void FvHost::Impl::feedBackdrop(rs::RetainedScene& scene)
     for(const rs::ClipId clip : r.clips)
       if(!clip.isNone())
         scene.release(clip);
+    BackdropBuilt::Held& held = built.held[i];
+    held.entities             = r.roots;
     // every node that draws is a variant: straight under the root, its own turn and scale kept for
     // its copies and its place in its file (a row for show) dropped
     for(const rs::EntityId e : r.entities)
@@ -494,9 +512,29 @@ void FvHost::Impl::feedBackdrop(rs::RetainedScene& scene)
       base[3]        = glm::vec4(0.0F, 0.0F, 0.0F, 1.0F);
       scene.setParent(e, built.root);
       scene.setLocal(e, {});
-      built.variants[plant.role].push_back({.entity = e, .base = base});
+      held.variants.push_back({.entity = e, .base = base});
+      held.entities.push_back(e);
     }
   }
+  // a role's variants, in the kit's order whatever the order they came in
+  built.variants.clear();
+  for(const auto& [i, held] : built.held)
+  {
+    std::vector<BackdropBuilt::Variant>& of = built.variants[backdropKit->plants[i].role];
+    of.insert(of.end(), held.variants.begin(), held.variants.end());
+  }
+}
+
+void FvHost::Impl::feedBackdrop(rs::RetainedScene& scene)
+{
+  if(!backdropKit)
+    return;
+  fv::timing::Scope time("backdrop: feeding", 20);
+  if(backdropBuilt && scene.entity(backdropBuilt->root))
+    scene.destroyEntity(backdropBuilt->root);
+  backdropBuilt       = std::make_unique<BackdropBuilt>();
+  BackdropBuilt& built = *backdropBuilt;
+  built.root           = scene.createEntity("Backdrop", {0, -1});
   plantBackdrop(scene);
   placeBackdrop();
 }

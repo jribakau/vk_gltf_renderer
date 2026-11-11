@@ -584,6 +584,7 @@ TEST(FvLighting, ABackdropIsPartOfTheLighting)
   EXPECT_DOUBLE_EQ(L::applyPatch(L::State{}, {{"backdrop", {{"size", 5000}}}}).backdrop.size, 200.0);
   EXPECT_DOUBLE_EQ(L::applyPatch(L::State{}, {{"backdrop", {{"density", 0}}}}).backdrop.density, 0.25);
   EXPECT_EQ(L::applyPatch(s, {{"backdrop", nullptr}}).backdrop.kind, "none");
+  EXPECT_EQ(L::applyPatch(s, {{"backdrop", {{"kind", "forest"}}}}).backdrop.kind, "forest");
   EXPECT_THROW(L::applyPatch(L::State{}, {{"backdrop", {{"kind", "jungle"}}}}), std::invalid_argument);
   EXPECT_THROW(L::applyPatch(L::State{}, {{"backdrop", {{"trees", 3}}}}), std::invalid_argument);
 }

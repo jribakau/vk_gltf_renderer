@@ -227,11 +227,13 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
   writeTriangles(kit / "grass.gltf", 2);
   writeTriangles(kit / "tree.gltf", 1);
   writeTriangles(kit / "giant.gltf", 1, 40);
+  writeTriangles(kit / "fern.gltf", 1);
   std::ofstream(kit / "kit.json") << Json{{"version", 1},
                                           {"plants",
                                            {{{"role", "grass"}, {"file", "grass.gltf"}},
                                             {{"role", "tree"}, {"file", "tree.gltf"}},
-                                            {{"role", "tree"}, {"file", "giant.gltf"}, {"heaviest", 10}}}},
+                                            {{"role", "tree"}, {"file", "giant.gltf"}, {"heaviest", 10}},
+                                            {{"role", "fern"}, {"file", "fern.gltf"}}}},
                                           {"ground", {{"meadow", {{"color", {0.1, 0.2, 0.05}}, {"tile", 3.0}, {"tint", {0.5, 1.0, 0.5}}, {"tintDry", {1.0, 1.0, 0.5}}}}}}}
                                          .dump();
   HostRig            rig;
@@ -314,10 +316,10 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
       out.copies += entity->mesh->copies.size();
       EXPECT_EQ(scene.world(e), glm::mat4(1.f)) << "a variant's own place in its file is dropped";
       const glm::mat4& m = entity->mesh->copies[entity->mesh->copies.size() / 2];
-      // on the ground, or a tree's foot a little into it
+      // on the ground, or a tree's foot a little into it (the far, grown ones the most)
       const float ground = fv::backdrop::height(spec, m[3].x, m[3].z);
       EXPECT_LE(m[3].y, ground + 1e-3F);
-      EXPECT_GE(m[3].y, ground - 0.3F);
+      EXPECT_GE(m[3].y, ground - 1.5F);
     }
     return out;
   };
@@ -408,6 +410,48 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
   rig.cmd("camera.goto", {{"position", {1.5, 2.0, 1.6}}, {"target", {0.0, 1.0, 0.0}}});
   frames(100);
   EXPECT_EQ(stands().places, drawnNow);
+
+  // another kind plants again in place, the ground too: a forest has more trees and thinner grass
+  const Stands       asMeadow     = stands();
+  const uint64_t     meadowPlants = state().value("plants", uint64_t(0));
+  const auto         groundOf     = [&] {
+    for(const rs::EntityId e : scene.entity(root)->children)
+      if(const rs::Entity* entity = scene.entity(e); entity->mesh && scene.shown(e) && entity->name != "Backdrop tile" && entity->mesh->copies.empty())
+        return e;
+    return rs::EntityId{};
+  };
+  const rs::EntityId meadowGround = groundOf();
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"kind", "forest"}}}}).value("ok", false));
+  EXPECT_EQ(state().value("state", ""), "ready");
+  EXPECT_EQ(rootNamed(scene, "Backdrop"), root);
+  {
+    // (the kit has no forest ground: the meadow's check of the tints doesn't hold for it)
+    uint64_t copies = 0;
+    size_t   tiles  = 0;
+    for(const rs::EntityId e : scene.entity(root)->children)
+      if(const rs::Entity* entity = scene.entity(e); entity->mesh && scene.shown(e))
+      {
+        copies += entity->mesh->copies.size();
+        tiles += entity->name == "Backdrop tile" ? 1 : 0;
+      }
+    EXPECT_GT(copies, asMeadow.copies * 6 / 5);
+    EXPECT_GT(tiles, 0u);
+    EXPECT_LT(state().value("plants", uint64_t(0)), meadowPlants);
+    EXPECT_NE(groundOf(), meadowGround) << "the ground is made again for the kind";
+    EXPECT_FALSE(groundOf().isNone());
+  }
+  // a kind holds the plants it uses: the fern's file is in the scene under a forest only
+  const auto meshEntities = [&] {
+    size_t n = 0;
+    for(const rs::EntityId e : scene.entity(root)->children)
+      n += scene.entity(e)->mesh && scene.entity(e)->name != "Backdrop tile" ? 1 : 0;
+    return n;
+  };
+  const size_t inForest = meshEntities();
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"kind", "meadow"}}}}).value("ok", false));
+  EXPECT_EQ(stands().copies, asMeadow.copies);
+  // (the fern's variant, and the ferns' two tile holders)
+  EXPECT_EQ(meshEntities() + 3, inForest);
 
   // the scene cleared: it stands again
   ASSERT_TRUE(rig.cmd("scene.clear").value("ok", false));

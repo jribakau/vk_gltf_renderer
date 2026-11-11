@@ -597,16 +597,26 @@ saved). `src/white_balance.hpp` holds the rest, Vulkan-free:
 
 ## The procedural backdrop
 
-A meadow around the scene, out to the horizon: the lighting's `backdrop` (`fv::backdrop::Spec`,
-protocol 64), so undo and a scene file carry it as they carry the ground. Two halves:
+Land around the scene, out to the horizon: the lighting's `backdrop` (`fv::backdrop::Spec`,
+protocol 64), so undo and a scene file carry it as they carry the ground. Two kinds, the same
+machinery with other numbers: a meadow (grass and flowers, bushes, a few rocks, firs in groves that
+close into a wood round it, wooded hills beyond) and a forest (a glade in a fir wood that runs to
+the horizon, on a floor of needles with ferns, tufts of grass, bushes, mossy rocks, stumps and dead
+wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halves:
 
 - **The shape** (`src/fv_backdrop.hpp`, Vulkan-free): `height` is the ground, flat where the scene
   stands, rolling beyond it and rising to hills toward the horizon; `terrain` is its mesh, a disc of
   rings that widen with distance, so the triangles are small underfoot and large far off. All of it
-  is a pure function of the spec: the same seed is the same meadow on every machine.
-- **Trees and saplings have places** (`layers`, `scatter`): a jittered grid thinned by patch noise,
-  per variant of the role, round the origin. They never change.
-- **Grass and flowers are tiles** (`grassCovers`, `patch`, `grassTiles`, `flowerTiles`, `tilePlace`):
+  is a pure function of the spec: the same seed is the same land on every machine.
+- **Trees, saplings, bushes, rocks and dead wood have places** (`layers`, `scatter`): a jittered
+  grid thinned by patch noise, per variant of the role. They never change. The trees stand out to
+  the horizon, so a camera that flies off or climbs sees wooded hills and not bare ground: a second
+  tree layer carries the first on from where it ends, thinning with the distance past that
+  (`Layer::thinFrom`) while each tree grows by the root of it, so the far hills keep their cover
+  with a few thousand trees, grown as old firs are. A meadow's far layer starts as closed as its
+  near one ends (`closeNear`) and opens into woods and pasture: from the air the wood round the
+  meadow has no outer rim.
+- **Grass and its drifts are tiles** (`grassCovers`, `drifts`, `patch`, `grassTiles`, `driftTiles`, `tilePlace`):
   a square of ground with its few hundred plants is one mesh, and the ground is covered by squares
   of three kinds, thick grass in 2 m tiles where one looks from, thinner and larger in 4 m tiles
   beyond, sparse tufts in 8 m tiles out to where the trees have closed; a tile of one level is four
@@ -614,11 +624,16 @@ protocol 64), so undo and a scene file carry it as they carry the ground. Two ha
   scene's content and the camera, so there is grass under any view. A move of the camera changes
   the few tiles at the levels' boundaries, tens of metres off, and nothing near it; a cell that
   split stays split a little further than where it splits, so a view hovering at a boundary
-  changes nothing. Flowers are tiles on the middle grid where a drift noise says.
+  changes nothing. What stands in drifts (a meadow's flowers, a forest's ferns) is tiles on the
+  middle grid where a drift noise says. A forest's grass is a seventh as thick and in clumps
+  (`Cover::clumps`): plants that sparse, spread evenly, show the grid they stand on.
 - **The planting** (`src/fv_host_backdrop.cpp`): the plants are files in a kit folder the app fills
   (`settings.apply {backdropKit}`), listed by its `kit.json` with a role each (`readBackdropKit`, read
   on a loader thread). Under one host-owned root entity each plant file is imported once and each of
-  its mesh nodes is a variant. A tree's variant is drawn at all its places through the mesh's
+  its mesh nodes is a variant. Only the files of the roles the kind plants are in the scene
+  (`fv::backdrop::roles`, `holdBackdropPlants`): a model's maps are held uncompressed, some 17 MB
+  a file, so a meadow doesn't hold the ferns and stumps nor a forest the flowers. A tree's variant
+  is drawn at all its places through the mesh's
   `copies`, the instancing path. A tile's mesh is the grass's variants merged at their places in it
   (`makeBackdropPatch`), held by an entity that is never shown; each tile drawn is an entity with
   that mesh, so one bottom-level structure serves every tile of a level, and laying the tiles
@@ -629,7 +644,8 @@ protocol 64), so undo and a scene file carry it as they carry the ground. Two ha
   mixed by the terrain's `shades` (drifts some tens of metres across) into vertex colours, which bring
   the ground between the plants to the grass's colour as it renders.
   A change of the state plants again in place (`plantBackdrop`: the copies and the tiles' meshes made
-  again); a change of seed or relief rebuilds the ground too.
+  again); a change of kind, seed or relief rebuilds the ground too, and another kind lets go of the
+  plants only the last one used.
 - **Why tiles.** Each grass plant an instance of its own was built first, thinned by its distance
   from the camera. Following the camera then meant some 200,000 instances made again: 50 ms to
   place them and another 160 ms in the renderer's sync, a fifth of a second up to two and a half
@@ -647,12 +663,26 @@ still meet it. The lighting topic says `backdrop.state` (off, missing, loading,
 ready) and `backdrop.plants`.
 
 Measured on an RTX 4080 at 1080p, the moving view, with the app's kit (Poly Haven's grass, two
-flowers, fir saplings and three young firs, 1K maps) as a default meadow: 15.1 ms of path tracing by
-the origin against 2.1 on the bare floor under the same sky, 550 MB of GPU memory, standing 0.4 s
-after it is asked for, planted again in 0.2 s. A flight of 120 m at 15 m/s: the gaps between frames
-18.5 ms at the median (17.3 over the bare floor, the stream's 60 a second), 29 at the 99th
-percentile, 32 to 49 at worst. Before the tiles, plants as instances: 400,000 alpha-tested grass
-clumps 8.4 ms, about 0.8 KB of GPU memory an instance.
+flowers, a fern, a bush, fir saplings, three young firs, two sets of mossy rocks, two stumps, a
+trunk and dry branches, 1K maps), by the origin, against 2.4 ms of path tracing on the bare floor
+under the same sky:
+
+| | Path tracing | From 250 m up | GPU memory | Stands after |
+|---|---|---|---|---|
+| Meadow | 14.3 to 15.2 ms | 13.9 to 15.9 ms | 635 MB | 0.4 s |
+| Forest | 16.3 to 17.8 ms | 19.2 ms | 540 MB | 0.3 s |
+
+A forest's cost is its trees: without them the same view is 6.5 ms, without the undergrowth 0.4 ms
+less, without the grass and ferns 1.7 ms less. The firs are 0.4 to 0.7 million triangles each with
+alpha-tested twigs, and a view in a wood is all firs; half as many of everything still costs
+15.7 ms, so the count is not what it turns on. The trees out to the horizon cost a meadow's ground
+view nothing measurable (15.2 ms with them, 15.1 before). The meadow's bushes and rocks are 85 MB
+of its memory, their maps mostly.
+
+A flight of 120 m at 15 m/s over the meadow (measured before the far trees, which a flight does
+not touch): the gaps between frames 18.5 ms at the median (17.3 over the bare floor, the stream's
+60 a second), 29 at the 99th percentile, 32 to 49 at worst. Before the tiles, plants as instances:
+400,000 alpha-tested grass clumps 8.4 ms, about 0.8 KB of GPU memory an instance.
 Checked: `tests/test_fv_backdrop.cpp`, `FvLighting.ABackdropIsPartOfTheLighting`,
 `FvHost.ABackdropIsPlantedFromItsKit`.
 

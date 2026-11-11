@@ -393,7 +393,7 @@ void patchBackdrop(fv::backdrop::Spec& b, const Json& p)
     const Json&        v   = it.value();
     const std::string  key = "backdrop." + k;
     if(k == "kind")
-      field(b.kind, d.kind, v, [&](const Json& x) { return oneOf(x, key, {"none", "meadow"}); });
+      field(b.kind, d.kind, v, [&](const Json& x) { return oneOf(x, key, {"none", "meadow", "forest"}); });
     else if(k == "seed")
       field(b.seed, d.seed, v, [&](const Json& x) { return int(std::lround(number(x, key, 0.0, double(1 << 20)))); });
     else if(k == "size")

@@ -1499,9 +1499,18 @@ struct FvHost::Impl
     };
     rs::EntityId                                root;
     rs::EntityId                                ground;  // the terrain's entity
-    int                                         groundSeed   = -1;  // the shape it was made for
+    std::string                                 groundKind;         // the kind and the shape it was made for
+    int                                         groundSeed   = -1;
     double                                      groundRelief = -1.0;
-    std::map<std::string, std::vector<Variant>> variants;  // by role
+    std::map<std::string, std::vector<Variant>> variants;  // by role, of the plants held
+    // The kit's plants held, by their place in its list: a plant's variants, and all its file made
+    // under the root. Those of the roles the kind plants (fv::backdrop::roles)
+    struct Held
+    {
+      std::vector<Variant>      variants;
+      std::vector<rs::EntityId> entities;
+    };
+    std::map<size_t, Held> held;
     // A tile's mesh (fv::backdrop::patch): held by an entity that is never shown, which the tiles
     // drawn with it take their mesh from; and how many plants one tile of it is
     struct Patch
@@ -1510,7 +1519,7 @@ struct FvHost::Impl
       rs::MeshInstance instance;  // the holder's, for the tiles: a copy, as making an entity moves the others
       uint64_t         plants = 0;
     };
-    // The tiles of one kind (grass, flowers): each drawn one's entity, and by patch the entities not
+    // The tiles of one sort (the grass, its drifts): each drawn one's entity, and by patch the entities not
     // in use, hidden, that the next tiles of it take
     struct Tiles
     {
@@ -1518,10 +1527,10 @@ struct FvHost::Impl
       std::map<fv::backdrop::Tile, rs::EntityId>   drawn;
       std::map<uint8_t, std::vector<rs::EntityId>> spare;
     };
-    Tiles                           grass, flowers;
+    Tiles                           grass, drifts;
     std::vector<fv::backdrop::Tile> grassWas;      // grassTiles' `was`
     std::vector<glm::vec2>          tiledFor;      // the foci the tiles were laid for
-    uint64_t                        placed = 0;    // the plants that have places of their own: trees, saplings
+    uint64_t                        placed = 0;    // what has a place of its own: trees, saplings, bushes, rocks
   };
   // The ground as a glTF model, so the import makes its mesh, material and textures as any model's
   static tinygltf::Model backdropTerrainModel(const fv::backdrop::Terrain& t, const BackdropKit::Ground& g);
@@ -1556,6 +1565,8 @@ struct FvHost::Impl
   void feedBackdrop(rs::RetainedScene& scene);
   // What stands, planted again by the state: the ground's shape and every plant's places
   void plantBackdrop(rs::RetainedScene& scene);
+  // Brings in the kit's plants the kind plants and lets go of those it doesn't
+  void holdBackdropPlants(rs::RetainedScene& scene);
   // Its root entity (none when none stands), and the floor's height it stands at
   rs::EntityId backdropRoot() const;
   void         placeBackdrop();

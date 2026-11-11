@@ -2,16 +2,22 @@
 
 //-------------------------------------------------------------------------------------------------------
 // The backdrop (the lighting's `backdrop` section, protocol 64; the app's Light tab › Backdrop): ground
-// that rolls away from where the figures stand, planted with a kit's plants. A meadow: grass and
-// flowers underfoot, saplings further out, and trees in groves that close the horizon.
+// that rolls away from where the figures stand, planted with a kit's plants. Two kinds:
+//
+// - A meadow: grass and flowers underfoot, saplings, bushes and a few rocks further out, trees in
+//   groves that close into a wood round it, and wooded hills beyond.
+// - A forest: a glade a few metres across in a fir wood that runs to the horizon, with ferns in
+//   drifts, sparse grass, bushes, mossy rocks, stumps and dead wood on a floor of needles.
 //
 // Everything here follows from the spec alone, so a scene file keeps only the spec: the ground's height
 // (`height`), its mesh (`terrain`), and where each plant stands, by a seed. Two ways of standing:
 //
-// - Trees and saplings each have a place (`layers`, `scatter`): the host (fv_host_backdrop.cpp) draws a
-//   variant once with its places as instancing copies (rs::MeshInstance::copies). They stand round the
-//   origin and never change.
-// - Grass and flowers are tiles (`grassCovers`, `patch`, `grassTiles`): a square of ground with its
+// - Trees, saplings, bushes, rocks and dead wood each have a place (`layers`, `scatter`): the host
+//   (fv_host_backdrop.cpp) draws a variant once with its places as instancing copies
+//   (rs::MeshInstance::copies). They stand where the seed puts them, the trees out to the horizon,
+//   and never change.
+// - Grass, and what stands in drifts in it (a meadow's flowers, a forest's ferns), are tiles
+//   (`grassCovers`, `drifts`, `patch`, `grassTiles`, `driftTiles`): a square of ground with its
 //   few hundred plants is one mesh, made once, and drawn wherever a square of its kind lies. Which
 //   squares are thick, thinner or sparse follows where one looks from, so there is grass under any
 //   camera, and a camera's move changes a few tiles at the level boundaries, far from it, and
@@ -40,9 +46,9 @@ namespace fv::backdrop {
 
 struct Spec
 {
-  std::string kind    = "none";  // none | meadow
-  int         seed    = 1;       // which meadow: the hills and where everything stands
-  double      size    = 60.0;    // metres across the thick grass round where one looks from; the saplings' reach
+  std::string kind    = "none";  // none | meadow | forest
+  int         seed    = 1;       // which one: the hills and where everything stands
+  double      size    = 60.0;    // metres across the thick grass round where one looks from; a meadow's saplings' reach
   double      density = 1.0;     // of every layer's own, 0.25 to 2
   double      relief  = 1.0;     // how hilly the ground is beyond the clearing, 0 flat to 2
   bool        operator==(const Spec&) const = default;
@@ -59,6 +65,8 @@ inline constexpr float kClearing     = 5.0F;
 inline constexpr float kClearingEdge = 25.0F;
 // Where the ground ends: far enough for its hills to be the horizon's
 inline constexpr float kHorizon = 900.0F;
+// Where a meadow's groves have closed into the wood round it
+inline constexpr float kWoods = 260.0F;
 
 // The ground's height over the floor at (x, z)
 float height(const Spec& spec, float x, float z);
@@ -80,38 +88,46 @@ Terrain terrain(const Spec& spec, float tile);
 // A layer of one role's plants
 struct Layer
 {
-  std::string role;                  // the kit's role it plants: grass, flower, sapling, tree
+  std::string role;                  // the kit's role it plants: sapling, tree, shrub, rock, stump, log
   double      perSquareMetre = 1.0;  // where it stands thickest, before the spec's density
   float       from           = 0.0F; // none nearer the origin than this
   float       to             = 30.0F; // nor further
   // Past `thin` metres the layer thins as 1 / (1 + (d / thin)^2) and each plant grows by the root of
   // that, up to `grow` times, so distant ground keeps its cover with far fewer plants. 0: even.
-  float thin = 0.0F;
-  float grow = 1.0F;
+  // `thinFrom`: the distance that counts from, so a layer that carries another on thins from where
+  // that one ended.
+  float thin     = 0.0F;
+  float grow     = 1.0F;
+  float thinFrom = 0.0F;
   float fade = 0.0F;  // metres before `to` over which it thins out to nothing, so it has no edge
   // In drifts and groves: the share of the ground the layer stands on at all (1 everywhere), by a noise
   // `patch` metres across; and how much nearer its far edge it fills in whatever the noise (0 none),
-  // so trees close the horizon
-  float cover    = 1.0F;
-  float patch    = 20.0F;
-  float closeFar = 0.0F;
+  // so trees close the horizon, or nearer its near edge, so a layer that carries a closed one on
+  // opens out of it
+  float cover     = 1.0F;
+  float patch     = 20.0F;
+  float closeFar  = 0.0F;
+  float closeNear = 0.0F;
   float scaleMin = 0.8F;
   float scaleMax = 1.25F;
   float sink     = 0.0F;  // metres into the ground, times its scale: a trunk's foot on a slope
 };
 std::vector<Layer> layers(const Spec& spec);
 
-// ---- Grass and flowers: tiles
+// ---- Grass and its drifts: tiles
 
 // One kind of tile: a square `tile` metres across with `perSquareMetre` of its role's plants
 struct Cover
 {
-  std::string role;  // grass | flower
+  std::string role;  // grass | flower | fern
   float       tile           = 2.0F;
   double      perSquareMetre = 1.0;  // the spec's density already in it
   float       scaleMin       = 0.8F;
   float       scaleMax       = 1.25F;
   float       sink           = 0.0F;  // metres into the ground: a flat tile on rolling ground would show its edge
+  // The share of the tile its plants stand on, in clumps a little under half the tile across, as
+  // thick in them as keeps the tile's count: 1 evenly over it
+  float clumps = 1.0F;
   uint32_t    salt           = 0;     // which arrangement: two covers alike but for this are two patches
 };
 
@@ -121,9 +137,17 @@ inline constexpr size_t kGrassLevels = 3;
 std::array<Cover, kGrassLevels> grassCovers(const Spec& spec);
 // How far from where one looks each level reaches: the last, where the grass ends
 std::array<float, kGrassLevels> grassReach(const Spec& spec);
-// The flowers' two tiles, a drift's middle and its edge, on the grass's middle grid; and how far they reach
-std::array<Cover, 2> flowerCovers(const Spec& spec);
-float                flowerReach(const Spec& spec);
+// What stands in drifts in the grass, a meadow's flowers and a forest's ferns: two tiles, a drift's
+// middle and its edge, on the grass's middle grid
+struct Drifts
+{
+  std::array<Cover, 2> covers;         // the middle's, the edge's
+  float                reach  = 0.0F;  // how far from where one looks they are laid
+  float                across = 9.0F;  // metres across a drift, about
+  float                middle = 0.2F;  // the share of the ground that is a drift's middle
+  float                ground = 0.4F;  // and that is drift at all
+};
+Drifts drifts(const Spec& spec);
 
 // The plants of one tile of `cover`, about its centre on y = 0: per variant of the role, each
 // plant's matrix in the tile
@@ -144,8 +168,8 @@ struct Tile
 // tiles as last asked for: a cell that was split stays split until a little further than where it
 // splits, so a view that hovers at a boundary changes nothing.
 std::vector<Tile> grassTiles(const Spec& spec, std::span<const glm::vec2> foci, std::span<const Tile> was = {});
-// The flowers' tiles: `level` 0 a drift's middle, 1 its edge (flowerCovers), on the middle grid
-std::vector<Tile> flowerTiles(const Spec& spec, std::span<const glm::vec2> foci);
+// The drifts' tiles: `level` 0 a drift's middle, 1 its edge (Drifts::covers), on the middle grid
+std::vector<Tile> driftTiles(const Spec& spec, std::span<const glm::vec2> foci);
 
 // Where a tile `size` metres across lies: its centre on the ground, sunk by `sink`, leaning as the
 // ground does there and turned a quarter turn or more by its cell, so its neighbours don't repeat it
@@ -155,6 +179,10 @@ struct Place
   glm::quat rotation{1.0F, 0.0F, 0.0F, 0.0F};
 };
 Place tilePlace(const Spec& spec, float size, int32_t x, int32_t z, float sink);
+
+// The kit's roles a spec plants, sorted: its layers', its grass's and its drifts'. What a kind doesn't
+// plant needn't be held (a model's maps are a few megabytes each)
+std::vector<std::string> roles(const Spec& spec);
 
 // Where a layer's plants stand: per variant of the role (the kit's meshes for it, `variants` of them),
 // each plant's world matrix: on the ground, turned about the vertical and scaled. `layer` is its index

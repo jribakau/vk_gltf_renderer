@@ -143,7 +143,8 @@ src/
 ├── fv_prop_feed.cpp/hpp        # The Figure Viewer's props fed into the retained scene as deltas
 ├── fv_scene_map.cpp/hpp        # Entities and materials back to the host's props, topic nodes and surfaces
 ├── fv_backdrop.cpp/hpp         # The procedural backdrop's shape, Vulkan-free: the ground's height and mesh, and
-│                               #   where each plant stands, from a seed; fv_host_backdrop.cpp plants it from a kit
+│                               #   where each plant of a meadow or a forest stands, from a seed;
+│                               #   fv_host_backdrop.cpp plants it from a kit
 │
 ├── sky_sun.cpp/hpp             # SkySun: who the sun is (renderer state, or a scene light marked
 │                               #   as the sky's) and every path that aims it

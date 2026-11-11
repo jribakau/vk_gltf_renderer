@@ -20,6 +20,26 @@ B::Spec meadow(int seed = 1)
   return {.kind = "meadow", .seed = seed};
 }
 
+B::Spec forest(int seed = 1)
+{
+  return {.kind = "forest", .seed = seed};
+}
+
+// How many of a layer's plants stand between two distances of the origin, and their mean scale
+std::pair<size_t, float> ring(const B::Spec& spec, const B::Layer& layer, uint32_t index, float from, float to)
+{
+  size_t n     = 0;
+  float  scale = 0.0F;
+  for(const auto& variant : B::scatter(spec, layer, index, 2))
+    for(const glm::mat4& m : variant)
+      if(const float d = glm::length(glm::vec2(m[3].x, m[3].z)); d >= from && d < to)
+      {
+        n++;
+        scale += glm::length(glm::vec3(m[1]));
+      }
+  return {n, n ? scale / float(n) : 0.0F};
+}
+
 size_t total(const std::vector<std::vector<glm::mat4>>& placed)
 {
   size_t n = 0;
@@ -172,6 +192,16 @@ TEST(BackdropScatter, ALayersCoverIsItsShareOfTheGround)
       }
   const double nearArea = 3.14159265 * (100.0 * 100.0 - 20.0 * 20.0), farArea = 3.14159265 * (260.0 * 260.0 - 220.0 * 220.0);
   EXPECT_GT(double(far) / farArea, 1.8 * double(near) / nearArea);
+  // or toward the near edge, where a layer carries a closed wood on and opens out of it
+  const B::Layer beyond{.role = "tree", .perSquareMetre = 0.05, .from = 260.0F, .to = 900.0F, .cover = 0.3F, .patch = 70.0F, .closeNear = 0.8F};
+  size_t         by = 0, out = 0;
+  for(int seed = 1; seed <= 4; seed++)
+  {
+    by += ring(meadow(seed), beyond, 3, 260.0F, 300.0F).first;
+    out += ring(meadow(seed), beyond, 3, 600.0F, 800.0F).first;
+  }
+  const double byArea = 3.14159265 * (300.0 * 300.0 - 260.0 * 260.0), outArea = 3.14159265 * (800.0 * 800.0 - 600.0 * 600.0);
+  EXPECT_GT(double(by) / byArea, 1.8 * double(out) / outArea);
 }
 
 TEST(BackdropScatter, ALayerThinsAndGrowsWithDistance)
@@ -197,6 +227,16 @@ TEST(BackdropScatter, ALayerThinsAndGrowsWithDistance)
   EXPECT_LT(farDensity, nearDensity / 10.0);
   EXPECT_NEAR(nearScale / float(near), 1.06F, 0.05F);
   EXPECT_FLOAT_EQ(farScale / float(far), 2.0F);  // grown to its cap
+
+  // a layer that carries another on thins from where that one ended: as thick and as small there
+  const B::Layer on{.role = "tree", .perSquareMetre = 0.05, .from = 200.0F, .to = 800.0F, .thin = 200.0F, .grow = 2.0F, .thinFrom = 200.0F, .scaleMin = 1.0F, .scaleMax = 1.0F};
+  const auto [first, firstScale] = ring(meadow(), on, 0, 200.0F, 240.0F);
+  const auto [last, lastScale]   = ring(meadow(), on, 0, 700.0F, 800.0F);
+  EXPECT_NEAR(double(first) / (3.14159265 * (240.0 * 240.0 - 200.0 * 200.0)), 0.05, 0.006);
+  EXPECT_NEAR(firstScale, 1.0F, 0.02F);
+  EXPECT_LT(double(last) / (3.14159265 * (800.0 * 800.0 - 700.0 * 700.0)), 0.05 / 6.0);
+  EXPECT_FLOAT_EQ(lastScale, 2.0F);
+  EXPECT_NEAR(double(B::expectedCount(meadow(), on)), double(ring(meadow(), on, 0, 0.0F, 1e9F).first), 0.05 * double(B::expectedCount(meadow(), on)));
 }
 
 TEST(BackdropScatter, ALayerFadesOutBeforeItsEdge)
@@ -226,18 +266,82 @@ TEST(BackdropLayers, AMeadowsTreesAndSaplingsHaveTheirPlaces)
   EXPECT_TRUE(B::layers(B::Spec{}).empty());
   const auto            l = B::layers(meadow());
   std::set<std::string> roles;
-  uint64_t              plants = 0;
+  uint64_t              plants = 0, trees = 0;
   for(const B::Layer& layer : l)
   {
     roles.insert(layer.role);
     plants += B::expectedCount(meadow(), layer);
+    trees += layer.role == "tree" ? B::expectedCount(meadow(), layer) : 0;
     // trunks and saplings stay clear of where the figures stand
     EXPECT_GT(layer.from, B::kClearing);
   }
   // the grass and the flowers are tiles
-  EXPECT_EQ(roles, (std::set<std::string>{"sapling", "tree"}));
+  EXPECT_EQ(roles, (std::set<std::string>{"sapling", "tree", "shrub", "rock"}));
   EXPECT_GT(plants, 1000u);
   EXPECT_LT(plants, 20000u);
+  // mostly trees, and they stand out to the horizon: the wood round the meadow, then the hills'
+  EXPECT_GT(trees, plants / 2);
+  ASSERT_GE(l.size(), 3u);
+  EXPECT_FLOAT_EQ(l[1].to, B::kWoods);
+  EXPECT_FLOAT_EQ(l[2].from, B::kWoods);
+  EXPECT_FLOAT_EQ(l[2].to, B::kHorizon);
+  // as closed where the one ends as where the other begins: no ring shows from the air
+  size_t inside = 0, outside = 0;
+  for(int seed = 1; seed <= 4; seed++)
+  {
+    inside += ring(meadow(seed), l[1], 1, B::kWoods - 40.0F, B::kWoods).first;
+    outside += ring(meadow(seed), l[2], 2, B::kWoods, B::kWoods + 40.0F).first;
+  }
+  const double in = double(inside) / (B::kWoods * B::kWoods - (B::kWoods - 40.0) * (B::kWoods - 40.0));
+  const double out = double(outside) / ((B::kWoods + 40.0) * (B::kWoods + 40.0) - B::kWoods * B::kWoods);
+  EXPECT_NEAR(out / in, 1.0, 0.25);
+}
+
+TEST(BackdropLayers, AForestIsAGladeInAWoodThatRunsToTheHorizon)
+{
+  const auto            l = B::layers(forest());
+  std::set<std::string> roles;
+  uint64_t              plants = 0;
+  for(const B::Layer& layer : l)
+  {
+    roles.insert(layer.role);
+    plants += B::expectedCount(forest(), layer);
+    EXPECT_GT(layer.from, B::kClearing);
+  }
+  EXPECT_EQ(roles, (std::set<std::string>{"tree", "sapling", "shrub", "rock", "stump", "log"}));
+  // what the instancing path carries without a thought: tens of thousands
+  EXPECT_GT(plants, 20000u);
+  EXPECT_LT(plants, 120000u);
+  // the trees: close by the glade, a trunk every few metres, and still there at the horizon, fewer
+  // and larger
+  ASSERT_GE(l.size(), 2u);
+  ASSERT_EQ(l[0].role, "tree");
+  ASSERT_EQ(l[1].role, "tree");
+  EXPECT_FLOAT_EQ(l[1].from, l[0].to);
+  EXPECT_FLOAT_EQ(l[1].to, B::kHorizon);
+  const auto [near, nearScale] = ring(forest(), l[0], 0, 10.0F, 60.0F);
+  const auto [far, farScale]   = ring(forest(), l[1], 1, 700.0F, 900.0F);
+  EXPECT_GT(double(near) / (3.14159265 * (60.0 * 60.0 - 10.0 * 10.0)), 0.015);
+  EXPECT_GT(far, 500u);
+  EXPECT_GT(farScale, 1.8F * nearScale);
+  // more of them than a meadow's, whose trees are groves
+  uint64_t meadows = 0, forests = 0;
+  for(const B::Layer& layer : B::layers(meadow()))
+    meadows += layer.role == "tree" ? B::expectedCount(meadow(), layer) : 0;
+  for(const B::Layer& layer : l)
+    forests += layer.role == "tree" ? B::expectedCount(forest(), layer) : 0;
+  EXPECT_GT(forests, meadows * 6 / 5);
+  // its grass is tufts, its drifts are ferns and reach further than a meadow's flowers
+  EXPECT_LT(B::grassCovers(forest())[0].perSquareMetre, 0.25 * B::grassCovers(meadow())[0].perSquareMetre);
+  EXPECT_EQ(B::drifts(forest()).covers[0].role, "fern");
+  EXPECT_EQ(B::drifts(meadow()).covers[0].role, "flower");
+  EXPECT_GT(B::drifts(forest()).reach, B::drifts(meadow()).reach);
+  // the same ground under either
+  EXPECT_EQ(B::height(forest(), 40.0F, -25.0F), B::height(meadow(), 40.0F, -25.0F));
+  // what each asks of the kit
+  EXPECT_EQ(B::roles(forest()), (std::vector<std::string>{"fern", "grass", "log", "rock", "sapling", "shrub", "stump", "tree"}));
+  EXPECT_EQ(B::roles(meadow()), (std::vector<std::string>{"flower", "grass", "rock", "sapling", "shrub", "tree"}));
+  EXPECT_TRUE(B::roles(B::Spec{}).empty());
 }
 
 TEST(BackdropTiles, APatchIsItsCoversPlantsWithinItsTile)
@@ -272,6 +376,25 @@ TEST(BackdropTiles, APatchIsItsCoversPlantsWithinItsTile)
     // the same patch every time, and another for another seed
     EXPECT_EQ(B::patch(spec, cover, 5), placed);
     EXPECT_NE(B::patch(meadow(2), cover, 5), placed);
+  }
+  // a forest's grass stands in clumps: the same count to the tile, on about a third of it
+  {
+    const B::Cover tufts = B::grassCovers(forest())[1];
+    B::Cover       even  = tufts;
+    even.clumps          = 1.0F;
+    ASSERT_LT(tufts.clumps, 0.5F);
+    const auto in = B::patch(forest(), tufts, 1), over = B::patch(forest(), even, 1);
+    EXPECT_NEAR(double(total(in)), double(total(over)), 0.1 * double(total(over)));
+    // by the cells of a grid a sixth of the tile across that hold a plant
+    const auto cells = [&](const std::vector<std::vector<glm::mat4>>& placed) {
+      std::set<std::pair<int, int>> held;
+      for(const glm::mat4& m : placed[0])
+        held.insert({int(std::floor(m[3].x / tufts.tile * 6.0F)), int(std::floor(m[3].z / tufts.tile * 6.0F))});
+      return held.size();
+    };
+    EXPECT_GT(cells(over), 28u);
+    EXPECT_LT(cells(in), cells(over) * 7 / 10);
+    EXPECT_EQ(B::patch(forest(), tufts, 1), in);
   }
   // thicker with the density
   B::Spec thick = spec;
@@ -398,25 +521,28 @@ TEST(BackdropTiles, ASmallMoveChangesAFewTilesAndNoneNear)
   EXPECT_EQ(B::grassTiles(spec, std::vector<glm::vec2>{at + glm::vec2(0.3F, 0.0F)}, back), there);
 }
 
-TEST(BackdropTiles, FlowersStandInDriftsNearWhereOneLooksFrom)
+TEST(BackdropTiles, FlowersAndFernsStandInDriftsNearWhereOneLooksFrom)
 {
-  const B::Spec spec  = meadow();
-  const auto    tiles = B::flowerTiles(spec, std::vector<glm::vec2>{{0.0F, 0.0F}});
-  const float   size  = B::flowerCovers(spec)[0].tile;
-  const float   reach = B::flowerReach(spec);
-  size_t        thick = 0;
-  for(const B::Tile& t : tiles)
+  for(const B::Spec& spec : {meadow(), forest()})
   {
-    EXPECT_LT(t.level, 2);
-    thick += t.level == 0 ? 1 : 0;
-    EXPECT_LT(glm::length(glm::vec2((float(t.x) + 0.5F) * size, (float(t.z) + 0.5F) * size)), reach);
+    const auto      tiles = B::driftTiles(spec, std::vector<glm::vec2>{{0.0F, 0.0F}});
+    const B::Drifts in    = B::drifts(spec);
+    const float     size  = in.covers[0].tile;
+    size_t          thick = 0;
+    for(const B::Tile& t : tiles)
+    {
+      EXPECT_LT(t.level, 2);
+      thick += t.level == 0 ? 1 : 0;
+      EXPECT_LT(glm::length(glm::vec2((float(t.x) + 0.5F) * size, (float(t.z) + 0.5F) * size)), in.reach);
+    }
+    // over the drifts' share of the ground within reach, the middles of the drifts thick
+    const double cells = 3.14159265 * double(in.reach) * double(in.reach) / double(size * size);
+    EXPECT_NEAR(double(tiles.size()) / cells, in.ground, 0.2) << spec.kind;
+    EXPECT_GT(thick, 0u);
+    EXPECT_LT(thick, tiles.size());
+    EXPECT_LT(in.covers[1].perSquareMetre, in.covers[0].perSquareMetre);
+    EXPECT_LT(in.middle, in.ground);
   }
-  // over about two fifths of the ground within reach, the middles of the drifts thick
-  const double cells = 3.14159265 * double(reach) * double(reach) / double(size * size);
-  EXPECT_NEAR(double(tiles.size()) / cells, 0.42, 0.2);
-  EXPECT_GT(thick, 0u);
-  EXPECT_LT(thick, tiles.size());
-  EXPECT_LT(B::flowerCovers(spec)[1].perSquareMetre, B::flowerCovers(spec)[0].perSquareMetre);
 }
 
 TEST(BackdropTiles, ATileLiesOnTheGroundLeaningAsItDoes)

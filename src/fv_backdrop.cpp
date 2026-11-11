@@ -69,7 +69,7 @@ float fbm(float x, float z, uint32_t seed, uint32_t channel)
 }
 
 // The noise channels: the ground's two scales, then each layer's cover
-constexpr uint32_t kChannelHills = 1, kChannelFar = 11, kChannelShade = 21, kChannelDrift = 31, kChannelCover = 100;
+constexpr uint32_t kChannelHills = 1, kChannelFar = 11, kChannelShade = 21, kChannelDrift = 31, kChannelClump = 41, kChannelCover = 100;
 
 // How much of a layer's own density stands at `d` metres, and how much its plants have grown there
 float thinning(const Layer& l, float d, float& growth)
@@ -78,18 +78,21 @@ float thinning(const Layer& l, float d, float& growth)
   const float edge = l.fade > 0.0F ? 1.0F - smoothstep(l.to - l.fade, l.to, d) : 1.0F;
   if(l.thin <= 0.0F)
     return edge;
-  const float f = 1.0F + (d / l.thin) * (d / l.thin);
+  const float past = std::max(d - l.thinFrom, 0.0F) / l.thin;
+  const float f    = 1.0F + past * past;
   growth        = std::min(std::sqrt(f), l.grow);
   return edge / f;
 }
 
-// The share of the ground a layer stands on at `d`: its cover, filled in toward its far edge
+// The share of the ground a layer stands on at `d`: its cover, filled in toward its far edge or its
+// near one
 float coverAt(const Layer& l, float d)
 {
-  if(l.closeFar <= 0.0F || l.to <= l.from)
+  if((l.closeFar <= 0.0F && l.closeNear <= 0.0F) || l.to <= l.from)
     return l.cover;
-  const float t = (d - l.from) / (l.to - l.from);
-  return l.cover + (1.0F - l.cover) * l.closeFar * smoothstep(0.35F, 1.0F, t);
+  const float t      = (d - l.from) / (l.to - l.from);
+  const float closed = std::max(l.closeFar * smoothstep(0.35F, 1.0F, t), l.closeNear * (1.0F - smoothstep(0.0F, 0.3F, t)));
+  return l.cover + (1.0F - l.cover) * closed;
 }
 
 // The noise level above which a share `cover` of the ground lies. fbm() is near a normal distribution
@@ -165,17 +168,45 @@ Terrain terrain(const Spec& spec, float tile)
 
 std::vector<Layer> layers(const Spec& spec)
 {
-  if(spec.kind != "meadow")
-    return {};
-  const float edge = float(spec.size) * 0.5F;
-  return {
-      // (grass and flowers are tiles: grassCovers, flowerCovers)
-      // saplings here and there, clear of where the figures stand
-      {.role = "sapling", .perSquareMetre = 0.03, .from = 7.0F, .to = edge + 10.0F, .cover = 0.5F, .patch = 25.0F, .scaleMin = 0.7F, .scaleMax = 1.6F},
-      // trees in groves from 22 m, closing into woods toward 260 m; young ones to twice their size,
-      // since a kit's trees are the ones light enough to stand in thousands
-      {.role = "tree", .perSquareMetre = 0.02, .from = 22.0F, .to = 260.0F, .cover = 0.35F, .patch = 70.0F, .closeFar = 0.8F, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F},
-  };
+  if(spec.kind == "meadow")
+  {
+    const float edge = float(spec.size) * 0.5F;
+    return {
+        // (grass and flowers are tiles: grassCovers, drifts)
+        // saplings here and there, clear of where the figures stand
+        {.role = "sapling", .perSquareMetre = 0.03, .from = 7.0F, .to = edge + 10.0F, .cover = 0.5F, .patch = 25.0F, .scaleMin = 0.7F, .scaleMax = 1.6F},
+        // trees in groves from 22 m, closing into woods toward kWoods; young ones to twice their size,
+        // since a kit's trees are the ones light enough to stand in thousands
+        {.role = "tree", .perSquareMetre = 0.02, .from = 22.0F, .to = kWoods, .cover = 0.35F, .patch = 70.0F, .closeFar = 0.8F, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F},
+        // (new layers go after these two: a layer's places follow from its index)
+        // the wood carried on over the hills to the horizon, opening into woods and pasture: fewer
+        // and larger with distance, as grown firs are, so the far hills cost a few thousand trees
+        {.role = "tree", .perSquareMetre = 0.02, .from = kWoods, .to = kHorizon, .thin = 250.0F, .grow = 2.5F, .thinFrom = kWoods,
+         .cover = 0.5F, .patch = 160.0F, .closeNear = 0.75F, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F},
+        // bushes in thickets; a few rocks, half in the ground
+        {.role = "shrub", .perSquareMetre = 0.012, .from = 9.0F, .to = kWoods, .fade = 40.0F, .cover = 0.3F, .patch = 35.0F, .scaleMin = 0.6F, .scaleMax = 1.3F, .sink = 0.03F},
+        {.role = "rock", .perSquareMetre = 0.004, .from = 8.0F, .to = 400.0F, .fade = 80.0F, .cover = 0.3F, .patch = 60.0F, .scaleMin = 0.2F, .scaleMax = 0.8F, .sink = 0.1F},
+    };
+  }
+  if(spec.kind == "forest")
+  {
+    const float near = 160.0F;
+    return {
+        // firs from the glade's edge, close enough to shut the view within some tens of metres, grown
+        // to between one and two and a half times the kit's young ones
+        {.role = "tree", .perSquareMetre = 0.026, .from = 7.5F, .to = near, .cover = 0.9F, .patch = 40.0F, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F},
+        // and on to the horizon, fewer and larger with distance
+        {.role = "tree", .perSquareMetre = 0.026, .from = near, .to = kHorizon, .thin = 200.0F, .grow = 2.5F, .thinFrom = near,
+         .cover = 0.9F, .patch = 120.0F, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F},
+        // the undergrowth, out to where a camera on the ground no longer tells it from the floor
+        {.role = "sapling", .perSquareMetre = 0.03, .from = 5.5F, .to = 300.0F, .fade = 60.0F, .cover = 0.55F, .patch = 18.0F, .scaleMin = 0.6F, .scaleMax = 1.7F},
+        {.role = "shrub", .perSquareMetre = 0.05, .from = 5.5F, .to = 300.0F, .fade = 60.0F, .cover = 0.45F, .patch = 22.0F, .scaleMin = 0.5F, .scaleMax = 1.2F, .sink = 0.03F},
+        {.role = "rock", .perSquareMetre = 0.025, .from = 5.5F, .to = 400.0F, .fade = 80.0F, .cover = 0.5F, .patch = 30.0F, .scaleMin = 0.15F, .scaleMax = 0.7F, .sink = 0.08F},
+        {.role = "stump", .perSquareMetre = 0.008, .from = 6.0F, .to = 300.0F, .fade = 60.0F, .scaleMin = 0.6F, .scaleMax = 1.2F, .sink = 0.03F},
+        {.role = "log", .perSquareMetre = 0.015, .from = 5.5F, .to = 300.0F, .fade = 60.0F, .scaleMin = 0.7F, .scaleMax = 1.5F},
+    };
+  }
+  return {};
 }
 
 std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer, uint32_t layerIndex, uint32_t variants)
@@ -226,11 +257,17 @@ std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer
 std::array<Cover, kGrassLevels> grassCovers(const Spec& spec)
 {
   // thinner by about four a level and larger by the root of it and a little less: seen from standing
-  // height a plant hides a strip of the ground behind it that lengthens with distance
+  // height a plant hides a strip of the ground behind it that lengthens with distance. Under firs
+  // the grass is tufts on the needles, a seventh as thick
+  // the grass is tufts on the needles, a seventh as thick and in clumps: spread evenly, plants that
+  // sparse show the grid they stand on
+  const bool   forest = spec.kind == "forest";
+  const double thick  = (forest ? 1.0 / 7.0 : 1.0) * spec.density;
+  const float  clumps = forest ? 0.35F : 1.0F;
   return {{
-      {.role = "grass", .tile = 2.0F, .perSquareMetre = 150.0 * spec.density, .scaleMin = 0.85F, .scaleMax = 1.35F, .sink = 0.02F, .salt = 0},
-      {.role = "grass", .tile = 4.0F, .perSquareMetre = 36.0 * spec.density, .scaleMin = 1.3F, .scaleMax = 1.9F, .sink = 0.06F, .salt = 1},
-      {.role = "grass", .tile = 8.0F, .perSquareMetre = 5.0 * spec.density, .scaleMin = 1.9F, .scaleMax = 2.6F, .sink = 0.15F, .salt = 2},
+      {.role = "grass", .tile = 2.0F, .perSquareMetre = 150.0 * thick, .scaleMin = 0.85F, .scaleMax = 1.35F, .sink = 0.02F, .clumps = clumps, .salt = 0},
+      {.role = "grass", .tile = 4.0F, .perSquareMetre = 36.0 * thick, .scaleMin = 1.3F, .scaleMax = 1.9F, .sink = 0.06F, .clumps = clumps, .salt = 1},
+      {.role = "grass", .tile = 8.0F, .perSquareMetre = 5.0 * thick, .scaleMin = 1.9F, .scaleMax = 2.6F, .sink = 0.15F, .clumps = clumps, .salt = 2},
   }};
 }
 
@@ -241,17 +278,27 @@ std::array<float, kGrassLevels> grassReach(const Spec& spec)
   return {0.24F * size, thinner, std::max(130.0F, thinner + 60.0F)};
 }
 
-std::array<Cover, 2> flowerCovers(const Spec& spec)
+Drifts drifts(const Spec& spec)
 {
-  return {{
-      {.role = "flower", .tile = 4.0F, .perSquareMetre = 9.0 * spec.density, .scaleMin = 0.8F, .scaleMax = 1.3F, .sink = 0.03F, .salt = 10},
-      {.role = "flower", .tile = 4.0F, .perSquareMetre = 3.0 * spec.density, .scaleMin = 0.8F, .scaleMax = 1.3F, .sink = 0.03F, .salt = 11},
-  }};
-}
-
-float flowerReach(const Spec& spec)
-{
-  return 0.5F * float(spec.size);
+  if(spec.kind == "forest")
+    // ferns, a pace apart in a drift's middle: over half the floor, and seen further than a flower is
+    return {.covers = {{
+                {.role = "fern", .tile = 4.0F, .perSquareMetre = 1.6 * spec.density, .scaleMin = 0.8F, .scaleMax = 1.5F, .sink = 0.03F, .salt = 10},
+                {.role = "fern", .tile = 4.0F, .perSquareMetre = 0.5 * spec.density, .scaleMin = 0.7F, .scaleMax = 1.3F, .sink = 0.03F, .salt = 11},
+            }},
+            .reach  = 0.9F * float(spec.size),
+            .across = 14.0F,
+            .middle = 0.3F,
+            .ground = 0.55F};
+  // flowers in drifts some 9 m across over two fifths of the ground
+  return {.covers = {{
+              {.role = "flower", .tile = 4.0F, .perSquareMetre = 9.0 * spec.density, .scaleMin = 0.8F, .scaleMax = 1.3F, .sink = 0.03F, .salt = 10},
+              {.role = "flower", .tile = 4.0F, .perSquareMetre = 3.0 * spec.density, .scaleMin = 0.8F, .scaleMax = 1.3F, .sink = 0.03F, .salt = 11},
+          }},
+          .reach  = 0.5F * float(spec.size),
+          .across = 9.0F,
+          .middle = 0.22F,
+          .ground = 0.42F};
 }
 
 std::vector<std::vector<glm::mat4>> patch(const Spec& spec, const Cover& cover, uint32_t variants)
@@ -259,14 +306,35 @@ std::vector<std::vector<glm::mat4>> patch(const Spec& spec, const Cover& cover, 
   std::vector<std::vector<glm::mat4>> out(variants);
   if(variants == 0 || !(cover.perSquareMetre > 0.0) || !(cover.tile > 0.0F))
     return out;
-  // a jittered grid: a plant a cell, as many cells a side as gives the tile its density
-  const int      n    = std::max(1, int(std::lround(double(cover.tile) * std::sqrt(cover.perSquareMetre))));
-  const float    cell = cover.tile / float(n);
-  const uint32_t seed = uint32_t(spec.seed);
-  const uint32_t salt = 5000U + cover.salt;
+  // a jittered grid: a plant a cell, as many cells a side as gives the tile its density; in clumps,
+  // that many more cells, of which the share where a noise is highest keep their plant (the share
+  // of this tile's own cells, so a tile has its count whatever its noise)
+  const float    share = std::clamp(cover.clumps, 0.05F, 1.0F);
+  const int      n     = std::max(1, int(std::lround(double(cover.tile) * std::sqrt(cover.perSquareMetre / double(share)))));
+  const float    cell  = cover.tile / float(n);
+  const uint32_t seed  = uint32_t(spec.seed);
+  const uint32_t salt  = 5000U + cover.salt;
+  const float    clump = 0.45F * cover.tile;
+  const auto     noise = [&](int ix, int iz) {
+    return fbm((float(ix) + 0.5F) * cell / clump, (float(iz) + 0.5F) * cell / clump, seed, kChannelClump + cover.salt);
+  };
+  float level = -1.0F;
+  if(share < 1.0F)
+  {
+    std::vector<float> all;
+    all.reserve(size_t(n) * size_t(n));
+    for(int iz = 0; iz < n; iz++)
+      for(int ix = 0; ix < n; ix++)
+        all.push_back(noise(ix, iz));
+    const size_t drop = std::min(all.size() - 1, size_t(std::lround(double(all.size()) * double(1.0F - share))));
+    std::nth_element(all.begin(), all.begin() + ptrdiff_t(drop), all.end());
+    level = all[drop];
+  }
   for(int iz = 0; iz < n; iz++)
     for(int ix = 0; ix < n; ix++)
     {
+      if(share < 1.0F && noise(ix, iz) < level)
+        continue;
       const uint32_t h       = hash(seed, salt, uint32_t(ix), uint32_t(iz));
       const float    x       = (float(ix) + unit(h)) * cell - 0.5F * cover.tile;
       const float    z       = (float(iz) + unit(mix(h + 1U))) * cell - 0.5F * cover.tile;
@@ -365,17 +433,18 @@ std::vector<Tile> grassTiles(const Spec& spec, std::span<const glm::vec2> foci, 
   return out;
 }
 
-std::vector<Tile> flowerTiles(const Spec& spec, std::span<const glm::vec2> foci)
+std::vector<Tile> driftTiles(const Spec& spec, std::span<const glm::vec2> foci)
 {
   std::vector<Tile> out;
   if(!planted(spec))
     return out;
   const glm::vec2            origin(0.0F);
   std::span<const glm::vec2> round = foci.empty() ? std::span<const glm::vec2>(&origin, 1) : foci;
-  const float                size  = flowerCovers(spec)[0].tile;
-  const float                reach = flowerReach(spec);
-  // drifts some 9 m across over two fifths of the ground: their middles thick, their edges thin
-  const float middle = coverLevel(0.22F), edge = coverLevel(0.42F);
+  const Drifts               in    = drifts(spec);
+  const float                size  = in.covers[0].tile;
+  const float                reach = in.reach;
+  // their middles thick, their edges thin
+  const float middle = coverLevel(in.middle), edge = coverLevel(in.ground);
   std::set<Tile> cells;
   for(const glm::vec2& f : round)
   {
@@ -387,7 +456,7 @@ std::vector<Tile> flowerTiles(const Spec& spec, std::span<const glm::vec2> foci)
         const glm::vec2 c = cellCentre(size, x, z);
         if(glm::distance(c, f) >= reach)
           continue;
-        const float noise = fbm(c.x / 9.0F, c.y / 9.0F, uint32_t(spec.seed), kChannelDrift);
+        const float noise = fbm(c.x / in.across, c.y / in.across, uint32_t(spec.seed), kChannelDrift);
         if(noise > edge)
           cells.insert({x, z, uint8_t(noise > middle ? 0 : 1)});
       }
@@ -411,6 +480,21 @@ Place tilePlace(const Spec& spec, float size, int32_t x, int32_t z, float sink)
   const float     s    = glm::length(axis);
   const glm::quat lean = s > 1e-6F ? glm::angleAxis(std::asin(std::min(s, 1.0F)), axis / s) : glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
   return {.position = {c.x, height(spec, c.x, c.y) - sink * float(std::max(spec.relief, 0.25)), c.y}, .rotation = lean * turn};
+}
+
+std::vector<std::string> roles(const Spec& spec)
+{
+  std::set<std::string> out;
+  if(planted(spec))
+  {
+    for(const Layer& layer : layers(spec))
+      out.insert(layer.role);
+    for(const Cover& cover : grassCovers(spec))
+      out.insert(cover.role);
+    for(const Cover& cover : drifts(spec).covers)
+      out.insert(cover.role);
+  }
+  return {out.begin(), out.end()};
 }
 
 uint64_t expectedCount(const Spec& spec, const Layer& layer)
