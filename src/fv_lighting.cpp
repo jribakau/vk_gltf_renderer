@@ -384,6 +384,32 @@ Json lookJson(const std::optional<Look>& look)
   };
 }
 
+void patchBackdrop(fv::backdrop::Spec& b, const Json& p)
+{
+  const fv::backdrop::Spec d;
+  for(auto it = p.begin(); it != p.end(); ++it)
+  {
+    const std::string& k   = it.key();
+    const Json&        v   = it.value();
+    const std::string  key = "backdrop." + k;
+    if(k == "kind")
+      field(b.kind, d.kind, v, [&](const Json& x) { return oneOf(x, key, {"none", "meadow"}); });
+    else if(k == "seed")
+      field(b.seed, d.seed, v, [&](const Json& x) { return int(std::lround(number(x, key, 0.0, double(1 << 20)))); });
+    else if(k == "size")
+      // a clearing's worth of grass to a field's: every metre across costs its plants
+      field(b.size, d.size, v, [&](const Json& x) { return number(x, key, 20.0, 200.0); });
+    else if(k == "density")
+      field(b.density, d.density, v, [&](const Json& x) { return number(x, key, 0.25, 2.0); });
+    else if(k == "relief")
+      field(b.relief, d.relief, v, [&](const Json& x) { return number(x, key, 0.0, 2.0); });
+    else if(k == "state" || k == "plants")
+      continue;  // read-only, the host's
+    else
+      reject("unknown key " + key);
+  }
+}
+
 void patchTonemap(Tonemap& t, const Json& p)
 {
   const Tonemap d;
@@ -571,6 +597,8 @@ Json toJson(const State& s)
         {"toe", t.toe},
         {"shoulder", t.shoulder},
         {"highlightsToWhite", t.highlightsToWhite}}},
+      {"backdrop",
+       {{"kind", s.backdrop.kind}, {"seed", s.backdrop.seed}, {"size", s.backdrop.size}, {"density", s.backdrop.density}, {"relief", s.backdrop.relief}}},
   };
 }
 
@@ -599,6 +627,8 @@ State applyPatch(const State& s, const Json& patch)
       reset ? void(out.ground = Ground{}) : patchGround(out.ground, section(patch, "ground"));
     else if(k == "tonemap")
       reset ? void(out.tonemap = Tonemap{}) : patchTonemap(out.tonemap, section(patch, "tonemap"));
+    else if(k == "backdrop")
+      reset ? void(out.backdrop = fv::backdrop::Spec{}) : patchBackdrop(out.backdrop, section(patch, "backdrop"));
     else
       reject("unknown key " + k);
   }
@@ -966,7 +996,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       // after a load or an environment change and sends it again
       {"ptFireflyClamp", kFireflyClamp / exposure},
       {"ptFireflyClampStill", kFireflyClampStill / exposure},
-      {"useInfinitePlane", g.mode != "off"},
+      // a backdrop's ground is the ground: the plane under it isn't drawn
+      {"useInfinitePlane", g.mode != "off" && !fv::backdrop::planted(s.backdrop)},
       {"isShadowCatcher", g.mode == "catcher"},
       {"infinitePlaneBaseColor", vec3(linearColor(g.color))},
       {"infinitePlaneRoughness", g.roughness},

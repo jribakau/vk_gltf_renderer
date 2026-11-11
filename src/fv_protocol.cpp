@@ -119,7 +119,10 @@ namespace {
 // 63: tonemap.highlightsToWhite (how fast Neutral's and Shaped's compressed colours go white; an older
 // renderer refuses the lighting that has it), and render.whiteBalance (the white balance that makes the
 // frame's light grey, for the app's Auto).
-constexpr int kProtocolVersion = 63;
+// 64: the backdrop: the lighting's `backdrop` section (kind, seed, size, density, relief; read-only
+// state and plants), ground and plants from a kit the app fills (settings.apply's backdropKit and
+// backdropKitChanged). An older renderer refuses the lighting that has the section.
+constexpr int kProtocolVersion = 64;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

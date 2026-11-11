@@ -914,13 +914,26 @@ std::vector<LightItem> RetainedScene::lightItems()
   return out;
 }
 
-std::array<glm::vec3, 2> RetainedScene::bounds()
+std::array<glm::vec3, 2> RetainedScene::bounds(EntityId except)
 {
   std::array<glm::vec3, 2> b{glm::vec3(std::numeric_limits<float>::max()), glm::vec3(std::numeric_limits<float>::lowest())};
+  // an entity's copies come one after another: whether it is left out is asked once for all of them
+  EntityId asked;
+  bool     left = false;
   for(const DrawItem& item : drawItems())
   {
     if(!item.shown)
       continue;
+    if(!except.isNone())
+    {
+      if(item.entity != asked)
+      {
+        asked = item.entity;
+        left  = isWithin(item.entity, except);
+      }
+      if(left)
+        continue;
+    }
     const std::array<glm::vec3, 2> mb = mesh(item.mesh)->bounds();
     if(mb[0].x > mb[1].x)
       continue;

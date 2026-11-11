@@ -682,7 +682,8 @@ public:
   std::vector<DrawItem>  drawItems();
   std::vector<LightItem> lightItems();
   // the drawn positions' world-space bounds; empty (min > max) when nothing is drawn
-  std::array<glm::vec3, 2> bounds();
+  // (of everything shown; with `except`, but for that entity and what is under it)
+  std::array<glm::vec3, 2> bounds(EntityId except = {});
 
   // ---- shader features
   // The KHR_materials_* and KHR_texture_transform features the scene's materials use: what

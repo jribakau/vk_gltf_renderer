@@ -383,7 +383,7 @@ void FvHost::Impl::frameCamera()
   auto manip = renderer->getCameraManipulator();
   if(!renderer->feedsHostScene() || !manip)
     return;
-  const nvutils::Bbox box  = renderer->visibleSceneBounds();
+  const nvutils::Bbox box  = contentBounds();
   const VkExtent2D    size = renderer->renderSize();
   if(box.isEmpty())
     return;  // nothing drawn to frame: the view stays
@@ -701,7 +701,7 @@ void FvHost::Impl::applyFly()
   if(!fly.flying)
   {
     // a flight starts: its speed from the scene's size, and its time from this frame
-    const nvutils::Bbox box = renderer->visibleSceneBounds();
+    const nvutils::Bbox box = contentBounds();
     fly.speed               = std::max(box.isEmpty() ? 0.0 : 2.0 * box.radius(), kMinFlySize) / kFlySecondsAcross;
     fly.last                = now;
     fly.flying              = true;

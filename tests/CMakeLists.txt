@@ -220,6 +220,7 @@ set(TEST_SOURCES
     test_fv_host_morph_list.cpp
     common/fake_host_renderer.hpp
     ${CMAKE_SOURCE_DIR}/src/fv_host.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_backdrop.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_figure.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_journal.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_journal.cpp

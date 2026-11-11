@@ -41,6 +41,7 @@
 #include <httplib.h>
 
 #include "common/fake_host_renderer.hpp"
+#include "fv_backdrop.hpp"
 #include "fv_host.hpp"
 #include "fv_journal.hpp"
 #include "fv_protocol.hpp"
@@ -147,6 +148,165 @@ TEST(FvHost, RenderStatusCountsTheStillsSamples)
   const Json status        = rig.cmd("render.status", Json::object()).value("result", Json::object());
   EXPECT_EQ(status.value("samples", -1), 37) << status.dump();
   EXPECT_EQ(status.value("maxSamples", -1), 256) << status.dump();
+}
+
+namespace {
+
+// A glTF of `meshes` meshes of `trianglesEach` triangles, a node each (the second a metre aside and twice
+// the size, as a file lays its variants out in a row), its buffer inside it
+void writeTriangles(const fs::path& file, int meshes, int trianglesEach = 1)
+{
+  std::vector<float>    positions;
+  std::vector<uint16_t> indices;
+  for(int t = 0; t < trianglesEach; t++)
+  {
+    const float y = 0.1F * float(t);
+    positions.insert(positions.end(), {0.0F, y, 0.0F, 0.1F, y, 0.0F, 0.0F, y + 0.3F, 0.0F});
+    for(int i = 0; i < 3; i++)
+      indices.push_back(uint16_t(3 * t + i));
+  }
+  std::string  bytes(reinterpret_cast<const char*>(positions.data()), positions.size() * sizeof(float));
+  const size_t indexOffset = bytes.size();
+  bytes.append(reinterpret_cast<const char*>(indices.data()), indices.size() * sizeof(uint16_t));
+  static const char* kDigits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string        b64;
+  for(size_t i = 0; i < bytes.size(); i += 3)
+  {
+    const uint32_t a = uint8_t(bytes[i]), b = i + 1 < bytes.size() ? uint8_t(bytes[i + 1]) : 0, c = i + 2 < bytes.size() ? uint8_t(bytes[i + 2]) : 0;
+    const uint32_t v = a * 65536U + b * 256U + c;
+    b64 += kDigits[v / 262144U];
+    b64 += kDigits[(v / 4096U) % 64U];
+    b64 += i + 1 < bytes.size() ? kDigits[(v / 64U) % 64U] : char(61);
+    b64 += i + 2 < bytes.size() ? kDigits[v % 64U] : char(61);
+  }
+  Json j = {{"asset", {{"version", "2.0"}}},
+            {"buffers", {{{"byteLength", bytes.size()}, {"uri", "data:application/octet-stream;base64," + b64}}}},
+            {"bufferViews", {{{"buffer", 0}, {"byteOffset", 0}, {"byteLength", indexOffset}}, {{"buffer", 0}, {"byteOffset", indexOffset}, {"byteLength", bytes.size() - indexOffset}}}},
+            {"accessors",
+             {{{"bufferView", 0}, {"componentType", 5126}, {"count", positions.size() / 3}, {"type", "VEC3"}, {"min", {0.0, 0.0, 0.0}}, {"max", {0.1, 0.3 + 0.1 * trianglesEach, 0.0}}},
+              {{"bufferView", 1}, {"componentType", 5123}, {"count", indices.size()}, {"type", "SCALAR"}}}},
+            {"materials", {{{"name", "leaf"}}}},
+            {"meshes", Json::array()},
+            {"nodes", Json::array()},
+            {"scenes", {{{"nodes", Json::array()}}}},
+            {"scene", 0}};
+  for(int m = 0; m < meshes; m++)
+  {
+    j["meshes"].push_back({{"name", "variant"}, {"primitives", {{{"attributes", {{"POSITION", 0}}}, {"indices", 1}, {"material", 0}}}}});
+    Json node = {{"mesh", m}};
+    if(m == 1)
+    {
+      node["translation"] = {1.0, 0.0, 0.0};
+      node["scale"]       = {2.0, 2.0, 2.0};
+    }
+    j["nodes"].push_back(node);
+    j["scenes"][0]["nodes"].push_back(m);
+  }
+  std::ofstream(file) << j.dump();
+}
+
+// The host scene's root entity called `name`, or none
+rs::EntityId rootNamed(rs::RetainedScene& scene, const std::string& name)
+{
+  for(const rs::EntityId e : scene.roots())
+    if(scene.entity(e)->name == name)
+      return e;
+  return {};
+}
+
+}  // namespace
+
+// The backdrop (the lighting's `backdrop`, fv_host_backdrop.cpp): nothing stands until its kit is where
+// the settings say; then ground and plants under one root of the host's own, each variant drawn at its
+// places as copies; replanted in place by another density; back after the scene is cleared; gone with
+// `none`; and a variant too heavy for it left out
+TEST(FvHost, ABackdropIsPlantedFromItsKit)
+{
+  const fs::path kit = fs::temp_directory_path() / ("fv-backdrop-kit-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fs::create_directories(kit);
+  writeTriangles(kit / "grass.gltf", 2);
+  writeTriangles(kit / "tree.gltf", 1);
+  writeTriangles(kit / "giant.gltf", 1, 40);
+  std::ofstream(kit / "kit.json") << Json{{"version", 1},
+                                          {"plants",
+                                           {{{"role", "grass"}, {"file", "grass.gltf"}},
+                                            {{"role", "tree"}, {"file", "tree.gltf"}},
+                                            {{"role", "tree"}, {"file", "giant.gltf"}, {"heaviest", 10}}}},
+                                          {"ground", {{"meadow", {{"color", {0.1, 0.2, 0.05}}, {"tile", 3.0}}}}}}
+                                         .dump();
+  HostRig            rig;
+  rs::RetainedScene& scene = rig.renderer.hostScene();
+  const auto         state = [&] { return rig.topic("lighting").value("backdrop", Json::object()); };
+  const auto         until = [&](const std::string& wanted) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while(state().value("state", "") != wanted && std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return state().value("state", "") == wanted;
+  };
+  // asked for with no kit: missing, and nothing of it in the scene
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"kind", "meadow"}, {"size", 30}}}}).value("ok", false));
+  EXPECT_EQ(state().value("state", ""), "missing");
+  EXPECT_TRUE(rootNamed(scene, "Backdrop").isNone());
+
+  // the kit comes: read on a worker, then planted
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"backdropKit", kit.generic_string()}}).value("ok", false));
+  ASSERT_TRUE(until("ready")) << state().dump();
+  const rs::EntityId root = rootNamed(scene, "Backdrop");
+  ASSERT_FALSE(root.isNone());
+  const uint64_t plants = state().value("plants", uint64_t(0));
+  EXPECT_GT(plants, 20000u);
+  const fv::backdrop::Spec spec{.kind = "meadow", .seed = 1, .size = 30.0};
+  uint64_t                 copies   = 0;
+  int                      variants = 0, grounds = 0;
+  bool                     doubled  = false;
+  for(const rs::EntityId e : scene.entity(root)->children)
+  {
+    const rs::Entity* entity = scene.entity(e);
+    if(!entity->mesh || !scene.shown(e))
+      continue;
+    if(entity->mesh->copies.empty())
+    {
+      grounds++;
+      continue;
+    }
+    variants++;
+    copies += entity->mesh->copies.size();
+    EXPECT_EQ(scene.world(e), glm::mat4(1.f)) << "a variant's own place in its file is dropped";
+    const glm::mat4& m = entity->mesh->copies[entity->mesh->copies.size() / 2];
+    // on the ground, or a tree's foot a little into it
+    const float ground = fv::backdrop::height(spec, m[3].x, m[3].z);
+    EXPECT_LE(m[3].y, ground + 1e-3F);
+    EXPECT_GE(m[3].y, ground - 0.2F);
+    // the variant its file has twice the size stands twice the size
+    doubled = doubled || glm::length(glm::vec3(entity->mesh->copies[0][1])) > 1.55F;
+  }
+  EXPECT_EQ(copies, plants);
+  EXPECT_EQ(variants, 3) << "two grasses and the tree; the giant is too heavy";
+  EXPECT_EQ(grounds, 1);
+  EXPECT_TRUE(doubled);
+
+  // twice the density replants in place: the same entities, about twice the plants
+  const size_t entities = scene.entityCount();
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"density", 2.0}}}}).value("ok", false));
+  EXPECT_EQ(scene.entityCount(), entities);
+  EXPECT_EQ(rootNamed(scene, "Backdrop"), root);
+  EXPECT_NEAR(double(state().value("plants", uint64_t(0))), 2.0 * double(plants), 0.1 * double(plants));
+
+  // the scene cleared: it stands again
+  ASSERT_TRUE(rig.cmd("scene.clear").value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  ASSERT_TRUE(until("ready"));
+  EXPECT_FALSE(rootNamed(scene, "Backdrop").isNone());
+
+  // none: gone
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"kind", "none"}}}}).value("ok", false));
+  EXPECT_EQ(state().value("state", ""), "off");
+  EXPECT_EQ(state().value("plants", uint64_t(1)), 0u);
+  EXPECT_TRUE(rootNamed(scene, "Backdrop").isNone());
+  fs::remove_all(kit);
 }
 
 // Auto white balance: the frame's light as the renderer read it, answered as the white balance that makes

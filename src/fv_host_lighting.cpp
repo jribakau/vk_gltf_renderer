@@ -40,6 +40,9 @@ Json FvHost::Impl::lightingTopic() const
   // what the clouds leave of the light, for the camera's meter to show; rounded, so a re-bake that
   // measures what it did doesn't send a patch
   t["tonemap"]["cloudLight"] = std::round(fv::lighting::cloudLight(lighting, cloudReading) * 1000.0) / 1000.0;
+  // whether the backdrop stands, and how many plants (fv_host_backdrop.cpp)
+  t["backdrop"]["state"]  = backdropState;
+  t["backdrop"]["plants"] = backdropPlants;
   return t;
 }
 
@@ -100,6 +103,7 @@ void FvHost::Impl::applyLighting(bool everything)
     fv::timing::Scope t("requestEnvironment", 20);
     requestEnvironment();
   }
+  applyBackdrop();
 
   // the look being previewed graded in place of the state's
   fv::lighting::State shown = lighting;
@@ -110,6 +114,9 @@ void FvHost::Impl::applyLighting(bool everything)
   }
   Json params                     = fv::lighting::rendererParams(shown, envSize, cloudReading);
   params["infinitePlaneDistance"] = lighting.ground.autoHeight ? double(autoGround) : lighting.ground.height;
+  // a backdrop that doesn't stand (its kit missing, or being read) leaves the ground's plane drawn
+  if(fv::backdrop::planted(lighting.backdrop) && backdropState != "ready")
+    params["useInfinitePlane"] = lighting.ground.mode != "off";
   if(const auto still = appliedParams.find("ptFireflyClampStill"); still != appliedParams.end() && still->is_number())
     params["ptFireflyClampStill"] = fv::lighting::stillFireflyClamp(params["ptFireflyClampStill"].get<double>(), still->get<double>());
   Json changed                    = Json::object();

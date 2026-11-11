@@ -142,6 +142,8 @@ src/
 │                               #   against what it fed, with narrow syncs for poses, dials and edits
 ├── fv_prop_feed.cpp/hpp        # The Figure Viewer's props fed into the retained scene as deltas
 ├── fv_scene_map.cpp/hpp        # Entities and materials back to the host's props, topic nodes and surfaces
+├── fv_backdrop.cpp/hpp         # The procedural backdrop's shape, Vulkan-free: the ground's height and mesh, and
+│                               #   where each plant stands, from a seed; fv_host_backdrop.cpp plants it from a kit
 │
 ├── sky_sun.cpp/hpp             # SkySun: who the sun is (renderer state, or a scene light marked
 │                               #   as the sky's) and every path that aims it
@@ -1199,13 +1201,15 @@ out said once, D23), or a camera or a light as a record; one that went is destro
 retiring at their frame; a figure whose wardrobe changed is fed again, keeping the handles of what it
 still has; the rest are set in place (parent, transform, visibility, a light's or a camera's record)
 and keep theirs, so the selection, the clip that plays and the camera stay. The sun (owner
-`{0, -1}`) is a light record marked as the sky's sun. Each frame's sync takes the changes, with no
+`{0, -1}`) is a light record marked as the sky's sun. The backdrop (the same owner, one root
+entity named "Backdrop") is the host's too: see "The procedural backdrop" in
+[RENDERING_ARCHITECTURE.md](RENDERING_ARCHITECTURE.md#the-procedural-backdrop). Each frame's sync takes the changes, with no
 device wait. Only the first composition is a scene replace: `replaceHostScene` waits for the
 device, cleans up as a load does (the store and the selection stay) and makes the store resident,
 waited for; with `[fv-time]` on, the `GPU BLAS build` and `GPU TLAS build` lines time its builds
 (`VulkanGpuBackend::timeBuilds`); the `Scene (retained, host):` line counts
 images decoded (and of those, taken from the host's prefetches) and reused. "Auto" ground is the
-store's lowest drawn point after each composition (D6).
+store's lowest drawn point after each composition (D6), the backdrop left out.
 
 Between compositions the host writes the store directly: a pose step, a dial, a rebind and an item
 shown or hidden through the feed's narrow syncs (`syncTransforms`, `syncVertices` with the tangents

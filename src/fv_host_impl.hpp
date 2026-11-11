@@ -125,6 +125,8 @@ struct HostSettings
   int                                maxTextureSize = 4096;
   int                                subdivision    = 0;
   bool originalTextures = false;  // the source images, not the BC7 cache: only what the renderer cannot read is cooked
+  // the folder of the backdrop's plants (its kit.json, fv_host_backdrop.cpp), which the app fills; empty: none
+  std::filesystem::path backdropKit;
 };
 
 // A shown dial as the morph topic lists it (publishMorphs): what the panel is told of it, as last sent.
@@ -1462,6 +1464,64 @@ struct FvHost::Impl
   void            feedSun(rs::RetainedScene& scene);
   void setParams(const Json& values);
   void publishLighting();
+
+  // ---- the backdrop (fv_backdrop.hpp, fv_host_backdrop.cpp): the lighting's `backdrop`, as ground and
+  // plants under one entity of the host's own in the scene, as the sun is. Application thread only.
+  // The kit as read: each plant's file with its role, and the ground's maps by the backdrop's kind
+  struct BackdropKit
+  {
+    struct Plant
+    {
+      std::string                            role;
+      std::filesystem::path                  file;
+      std::shared_ptr<const tinygltf::Model> model;
+    };
+    struct Ground
+    {
+      std::string diffuse, normal, arm;  // relative to the kit's folder; "" none
+      float       tile = 2.5F;
+      glm::vec3   color{0.10F, 0.16F, 0.05F};  // a meadow's green, linear, when no map says
+    };
+    std::filesystem::path         dir;
+    std::vector<Plant>            plants;
+    std::map<std::string, Ground> ground;
+  };
+  // What stands in the scene: the root, the ground under it, and each role's variants
+  struct BackdropBuilt
+  {
+    struct Variant
+    {
+      rs::EntityId entity;
+      glm::mat4    base{1.0F};  // its node's own turn and scale in its file, under each place
+    };
+    rs::EntityId                                root;
+    rs::EntityId                                ground;  // the terrain's entity
+    int                                         groundSeed   = -1;  // the shape it was made for
+    double                                      groundRelief = -1.0;
+    std::map<std::string, std::vector<Variant>> variants;  // by role
+  };
+  // The ground as a glTF model, so the import makes its mesh, material and textures as any model's
+  static tinygltf::Model backdropTerrainModel(const fv::backdrop::Terrain& t, const BackdropKit::Ground& g);
+  // The kit in `dir`, its plants' files read. Throws std::runtime_error saying what is wrong with it. Any thread.
+  static std::shared_ptr<const BackdropKit> readBackdropKit(const std::filesystem::path& dir);
+  std::shared_ptr<const BackdropKit> backdropKit;     // read from the settings' folder; none until asked for
+  std::unique_ptr<BackdropBuilt>     backdropBuilt;   // what stands in the scene
+  fv::backdrop::Spec                 backdropWanted;  // what is standing, or loading to stand
+  std::string                        backdropState = "off";  // off | missing | loading | ready
+  uint64_t                           backdropPlants  = 0;
+  uint64_t                           backdropRequest = 0;  // a kit read that ends after a newer ask is dropped
+  // What the state asks for, if it isn't what stands: planted, replanted in place (another seed, size,
+  // density or relief), or taken away. `reread`: the kit's folder changed, or was filled.
+  void applyBackdrop(bool reread = false);
+  // The kit's plants and ground under a new root in `scene`, planted by the state
+  void feedBackdrop(rs::RetainedScene& scene);
+  // What stands, planted again by the state: the ground's shape and every plant's places
+  void plantBackdrop(rs::RetainedScene& scene);
+  // Its root entity (none when none stands), and the floor's height it stands at
+  rs::EntityId backdropRoot() const;
+  void         placeBackdrop();
+  // The scene's shown bounds without the backdrop: what a view frames, and what a flight's speed is by
+  nvutils::Bbox contentBounds();
 
   // ---- the edit history (fv_journal.hpp, fv_host_journal.cpp), application thread only
   fv::Journal journal;

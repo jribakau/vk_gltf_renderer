@@ -772,6 +772,10 @@ void FvHost::Impl::releaseFed()
   sunLight  = {};
   if(renderer->feedsHostScene() && renderer->hostScene().entity(flashEntity))
     renderer->hostScene().destroyEntity(flashEntity);
+  if(renderer->feedsHostScene() && renderer->hostScene().entity(backdropRoot()))
+    renderer->hostScene().destroyEntity(backdropRoot());
+  backdropBuilt.reset();
+  backdropPlants = 0;
   flashEntity  = {};
   flashLight   = {};
   flashApplied = {};
@@ -883,6 +887,9 @@ void FvHost::Impl::compose()
     if(!scene.entity(sunEntity))
       feedSun(scene);
   }
+  // the backdrop, when the scene it stood in was replaced
+  const std::string backdropBefore = backdropState;
+  applyBackdrop();
   for(const auto& [id, text] : fed.notices)
     if(const auto p = findProp(id))
       notice(p->name + ": " + text, "warning");
@@ -921,7 +928,8 @@ void FvHost::Impl::compose()
   // "auto" ground: the scene's lowest drawn point, again at each structural change (D6), from the
   // positions as fed (morphed, unskinned: D7)
   {
-    const std::array<glm::vec3, 2> bounds = scene.bounds();
+    // (without the backdrop, which stands at this height: its ground dips below it)
+    const std::array<glm::vec3, 2> bounds = scene.bounds(backdropRoot());
     const float                    ground = bounds[0].y <= bounds[1].y ? bounds[0].y : 0.f;
     if(ground != autoGround)
     {
@@ -929,6 +937,8 @@ void FvHost::Impl::compose()
       appliedParams.erase("infinitePlaneDistance");
       applyLighting(false);
     }
+    else if(backdropState != backdropBefore)
+      applyLighting(false);  // the ground's plane gives way to a backdrop that now stands, or comes back
   }
 
   // what the host keeps of each prop's place in the scene, and the topics of the props that changed

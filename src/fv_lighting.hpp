@@ -56,6 +56,11 @@
 //            how early and gently its highlights roll off; nvshaders tonemapShaped), protocol 43;
 //            highlightsToWhite (0 to 1, 0.5 Khronos's own: how fast Neutral's and Shaped's compressed
 //            colours go white; nvshaders highlightDesaturation), protocol 63
+//   backdrop: kind none|meadow (ground that rolls away from where the figures stand, planted with the
+//            kit's plants; with one the ground section's plane isn't drawn), seed (which one), size
+//            (metres across what is planted underfoot), density (of every layer's own) and relief (how
+//            hilly, 0 flat): fv_backdrop.hpp, protocol 64. Read-only in the topic: state (off, missing:
+//            no kit where settings.apply's backdropKit says; loading; ready) and plants (how many stand)
 //
 // Colours are "#rrggbb" in sRGB, as the panel shows them. A patch from before protocol 17 (a kept
 // scene's) may also carry sun.shadows and a shadow section, the raster view's shadow map: they are
@@ -70,6 +75,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "fv_backdrop.hpp"
 #include "fv_events.hpp"
 
 namespace fv::lighting {
@@ -258,6 +264,7 @@ struct State
   Haze    haze;
   Ground  ground;
   Tonemap tonemap;
+  fv::backdrop::Spec backdrop;  // protocol 64
 };
 
 Json toJson(const State& s);

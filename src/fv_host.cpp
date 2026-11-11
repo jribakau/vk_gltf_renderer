@@ -82,6 +82,18 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     impl->renderer->setMaxTextureExtent(uint32_t(std::max(st.maxTextureSize, 0)));
     st.subdivision    = args.value("subdivision", st.subdivision);
     st.originalTextures = args.value("originalTextures", st.originalTextures);
+    // the backdrop's kit: another folder, or the same one filled since (backdropKitChanged), is read again
+    if(args.contains("backdropKit") || args.value("backdropKitChanged", false))
+    {
+      const std::filesystem::path kit = args.contains("backdropKit") && args["backdropKit"].is_string() ? pathOf(args["backdropKit"].get<std::string>()) : st.backdropKit;
+      const bool                  reread = kit != st.backdropKit || args.value("backdropKitChanged", false);
+      st.backdropKit                     = kit;
+      if(reread)
+        impl->post([impl] {
+          impl->applyBackdrop(true);
+          impl->applyLighting(false);
+        });
+    }
     return Json{{"ok", true}};
   });
   // load works out on a worker what the file is, and comes to the application thread for the rest

@@ -562,6 +562,32 @@ TEST(FvLighting, TheShapedCurveAndItsHandlesGoToTheRenderer)
   EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"shoulder", "soft"}}}}), std::invalid_argument);
 }
 
+// The backdrop's section (protocol 64): none by default, its values checked and clamped, the host's
+// read-only keys taken and dropped, and the ground's plane not drawn under one
+TEST(FvLighting, ABackdropIsPartOfTheLighting)
+{
+  const L::State none;
+  EXPECT_EQ(L::toJson(none)["backdrop"]["kind"], "none");
+  EXPECT_EQ(L::rendererParams(none, {})["useInfinitePlane"], true);
+  const L::State s = L::applyPatch(L::State{}, {{"backdrop", {{"kind", "meadow"}, {"seed", 7}, {"size", 80}, {"density", 1.5}, {"relief", 0.5}, {"state", "ready"}, {"plants", 1234}}}});
+  EXPECT_EQ(s.backdrop.kind, "meadow");
+  EXPECT_EQ(s.backdrop.seed, 7);
+  EXPECT_DOUBLE_EQ(s.backdrop.size, 80.0);
+  EXPECT_DOUBLE_EQ(s.backdrop.density, 1.5);
+  EXPECT_DOUBLE_EQ(s.backdrop.relief, 0.5);
+  const Json topic = L::toJson(s);
+  EXPECT_EQ(topic["backdrop"]["seed"], 7);
+  EXPECT_FALSE(topic["backdrop"].contains("state"));
+  EXPECT_EQ(L::toJson(L::applyPatch(L::State{}, topic)), topic);
+  EXPECT_EQ(L::rendererParams(s, {})["useInfinitePlane"], false);
+  // clamped, reset by null, and refused when it makes no sense
+  EXPECT_DOUBLE_EQ(L::applyPatch(L::State{}, {{"backdrop", {{"size", 5000}}}}).backdrop.size, 200.0);
+  EXPECT_DOUBLE_EQ(L::applyPatch(L::State{}, {{"backdrop", {{"density", 0}}}}).backdrop.density, 0.25);
+  EXPECT_EQ(L::applyPatch(s, {{"backdrop", nullptr}}).backdrop.kind, "none");
+  EXPECT_THROW(L::applyPatch(L::State{}, {{"backdrop", {{"kind", "jungle"}}}}), std::invalid_argument);
+  EXPECT_THROW(L::applyPatch(L::State{}, {{"backdrop", {{"trees", 3}}}}), std::invalid_argument);
+}
+
 // Highlights to white goes to the renderer (protocol 63), Khronos's own rate by default, whatever the curve
 TEST(FvLighting, HighlightsToWhiteGoesToTheRenderer)
 {

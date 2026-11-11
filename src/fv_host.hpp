@@ -37,7 +37,9 @@
 // for the selected prop, and a figure command then for the only figure, if there is one.
 //
 // Commands (args):
-//   settings.apply  {libraryRoots: [dir], rootId, texServer, maxTextureSize, subdivision, originalTextures}
+//   settings.apply  {libraryRoots: [dir], rootId, texServer, maxTextureSize, subdivision, originalTextures,
+//                    backdropKit?: dir, backdropKitChanged?}   (the backdrop's plants, fv_host_backdrop.cpp:
+//                    another folder, or the same one filled since, is read again)
 //   load            {path} or {rel}, prop?, as?, kind?   -> {job}; a DAZ object or a model becomes a new prop
 //                                                (the job's end state has its {prop}). A DAZ object's kind
 //                                                (FvHost::Impl::classifyDaz): a character (its bones name a

@@ -1,0 +1,396 @@
+//
+// FvHost: the backdrop (fv_backdrop.hpp), the lighting's `backdrop` section drawn.
+//
+// The kit is a folder the app fills (settings.apply's backdropKit) with plant models and ground
+// textures and a kit.json that says what each is:
+//
+//   {"version": 1,
+//    "plants": [{"role": "grass" | "flower" | "sapling" | "tree", "file": "<glTF, relative>",
+//                "heaviest"?: <triangles: a variant of the file with more is left out>}, ...],
+//    "ground": {"<kind>": {"diffuse"?, "normal"?, "arm"?: "<image, relative>", "tile"?: <metres>,
+//                          "color"?: [r, g, b] linear, without a diffuse map}}}
+//
+// Every mesh of a plant's file is a variant of it. The kit is read on a worker (a tree's file is
+// hundreds of megabytes) and kept; what stands in the scene is one root entity of the host's own, as
+// the sun is, with the ground under it and one entity a variant, drawn at its places as instancing
+// copies. Another seed, size, density or relief replants in place: the copies, and the ground when
+// its shape changed.
+//
+
+#include "fv_host_impl.hpp"
+
+#include <fstream>
+
+#include "fv_compose.hpp"
+#include "scene_import_gltf.hpp"
+
+namespace {
+
+uint64_t trianglesOf(const tinygltf::Model& model, const tinygltf::Mesh& mesh)
+{
+  uint64_t n = 0;
+  for(const tinygltf::Primitive& p : mesh.primitives)
+  {
+    const int a = p.indices >= 0 ? p.indices : (p.attributes.count("POSITION") ? p.attributes.at("POSITION") : -1);
+    if(a >= 0 && a < int(model.accessors.size()))
+      n += model.accessors[size_t(a)].count / 3;
+  }
+  return n;
+}
+
+}  // namespace
+
+tinygltf::Model FvHost::Impl::backdropTerrainModel(const fv::backdrop::Terrain& t, const BackdropKit::Ground& g)
+{
+  tinygltf::Model  m;
+  tinygltf::Buffer buffer;
+  const auto       put = [&](const void* data, size_t bytes, int target, int componentType, size_t count, int type) {
+    tinygltf::BufferView view;
+    view.buffer     = 0;
+    view.byteOffset = buffer.data.size();
+    view.byteLength = bytes;
+    view.target     = target;
+    const auto* b   = static_cast<const unsigned char*>(data);
+    buffer.data.insert(buffer.data.end(), b, b + bytes);
+    m.bufferViews.push_back(view);
+    tinygltf::Accessor a;
+    a.bufferView    = int(m.bufferViews.size()) - 1;
+    a.componentType = componentType;
+    a.count         = count;
+    a.type          = type;
+    m.accessors.push_back(a);
+    return int(m.accessors.size()) - 1;
+  };
+  tinygltf::Primitive prim;
+  prim.mode                      = TINYGLTF_MODE_TRIANGLES;
+  prim.attributes["POSITION"]    = put(t.positions.data(), t.positions.size() * sizeof(glm::vec3), TINYGLTF_TARGET_ARRAY_BUFFER,
+                                       TINYGLTF_COMPONENT_TYPE_FLOAT, t.positions.size(), TINYGLTF_TYPE_VEC3);
+  prim.attributes["NORMAL"]      = put(t.normals.data(), t.normals.size() * sizeof(glm::vec3), TINYGLTF_TARGET_ARRAY_BUFFER,
+                                       TINYGLTF_COMPONENT_TYPE_FLOAT, t.normals.size(), TINYGLTF_TYPE_VEC3);
+  prim.attributes["TEXCOORD_0"]  = put(t.uvs.data(), t.uvs.size() * sizeof(glm::vec2), TINYGLTF_TARGET_ARRAY_BUFFER,
+                                       TINYGLTF_COMPONENT_TYPE_FLOAT, t.uvs.size(), TINYGLTF_TYPE_VEC2);
+  prim.indices                   = put(t.indices.data(), t.indices.size() * sizeof(uint32_t), TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER,
+                                       TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT, t.indices.size(), TINYGLTF_TYPE_SCALAR);
+  glm::vec3 lo(std::numeric_limits<float>::max()), hi(std::numeric_limits<float>::lowest());
+  for(const glm::vec3& p : t.positions)
+  {
+    lo = glm::min(lo, p);
+    hi = glm::max(hi, p);
+  }
+  m.accessors[size_t(prim.attributes["POSITION"])].minValues = {lo.x, lo.y, lo.z};
+  m.accessors[size_t(prim.attributes["POSITION"])].maxValues = {hi.x, hi.y, hi.z};
+  m.buffers.push_back(std::move(buffer));
+
+  tinygltf::Material material;
+  material.name = "Backdrop ground";
+  const auto texture = [&](const std::string& uri) {
+    tinygltf::Image image;
+    image.uri = uri;
+    m.images.push_back(image);
+    tinygltf::Texture tex;
+    tex.source = int(m.images.size()) - 1;
+    m.textures.push_back(tex);
+    return int(m.textures.size()) - 1;
+  };
+  material.pbrMetallicRoughness.roughnessFactor = 1.0;
+  material.pbrMetallicRoughness.metallicFactor  = 0.0;
+  if(!g.diffuse.empty())
+    material.pbrMetallicRoughness.baseColorTexture.index = texture(g.diffuse);
+  else
+    material.pbrMetallicRoughness.baseColorFactor = {g.color.x, g.color.y, g.color.z, 1.0};
+  if(!g.normal.empty())
+    material.normalTexture.index = texture(g.normal);
+  if(!g.arm.empty())
+  {
+    // occlusion, roughness and metal in one image, as glTF packs them
+    material.pbrMetallicRoughness.metallicRoughnessTexture.index = texture(g.arm);
+    material.pbrMetallicRoughness.metallicFactor                 = 1.0;
+  }
+  m.materials.push_back(material);
+  prim.material = 0;
+
+  tinygltf::Mesh mesh;
+  mesh.name = "Backdrop ground";
+  mesh.primitives.push_back(prim);
+  m.meshes.push_back(mesh);
+  tinygltf::Node node;
+  node.name = "Backdrop ground";
+  node.mesh = 0;
+  m.nodes.push_back(node);
+  tinygltf::Scene scene;
+  scene.nodes = {0};
+  m.scenes.push_back(scene);
+  m.defaultScene = 0;
+  return m;
+}
+
+std::shared_ptr<const FvHost::Impl::BackdropKit> FvHost::Impl::readBackdropKit(const std::filesystem::path& dir)
+{
+  using Kit = BackdropKit;
+  std::ifstream in(dir / "kit.json", std::ios::binary);
+  if(!in)
+    throw std::runtime_error("no kit.json in " + utf8Of(dir));
+  const Json j = Json::parse(in, nullptr, false);
+  if(!j.is_object() || !j.contains("plants") || !j["plants"].is_array())
+    throw std::runtime_error("kit.json lists no plants");
+  auto kit = std::make_shared<Kit>();
+  kit->dir = dir;
+  for(const Json& p : j["plants"])
+  {
+    if(!p.is_object() || !p.contains("role") || !p["role"].is_string() || !p.contains("file") || !p["file"].is_string())
+      throw std::runtime_error("kit.json: a plant needs a role and a file");
+    Kit::Plant plant{.role = p["role"].get<std::string>(), .file = dir / pathOf(p["file"].get<std::string>())};
+    auto        model = std::make_shared<tinygltf::Model>();
+    std::string error;
+    if(!fv::composer::readModelFile(plant.file, *model, error))
+      throw std::runtime_error(utf8Of(plant.file.filename()) + ": " + error);
+    // a variant too heavy for a backdrop draws nothing: with no primitives the import makes no mesh of it
+    if(const uint64_t heaviest = p.value("heaviest", uint64_t(0)); heaviest > 0)
+      for(tinygltf::Mesh& mesh : model->meshes)
+        if(trianglesOf(*model, mesh) > heaviest)
+          mesh.primitives.clear();
+    plant.model = std::move(model);
+    kit->plants.push_back(std::move(plant));
+  }
+  if(j.contains("ground") && j["ground"].is_object())
+    for(auto it = j["ground"].begin(); it != j["ground"].end(); ++it)
+    {
+      const Json& g = it.value();
+      if(!g.is_object())
+        continue;
+      Kit::Ground ground;
+      ground.diffuse = g.value("diffuse", std::string());
+      ground.normal  = g.value("normal", std::string());
+      ground.arm     = g.value("arm", std::string());
+      ground.tile    = std::max(g.value("tile", ground.tile), 0.1F);
+      if(g.contains("color") && g["color"].is_array() && g["color"].size() == 3)
+        ground.color = {g["color"][0].get<float>(), g["color"][1].get<float>(), g["color"][2].get<float>()};
+      kit->ground[it.key()] = ground;
+    }
+  return kit;
+}
+
+rs::EntityId FvHost::Impl::backdropRoot() const
+{
+  return backdropBuilt ? backdropBuilt->root : rs::EntityId{};
+}
+
+// The root at the floor's height: the ground is flat there, where the figures stand
+void FvHost::Impl::placeBackdrop()
+{
+  if(!backdropBuilt || !renderer->feedsHostScene())
+    return;
+  rs::RetainedScene& scene = renderer->hostScene();
+  const rs::Entity*  root  = scene.entity(backdropBuilt->root);
+  if(!root)
+    return;
+  const float floor = lighting.ground.autoHeight ? autoGround : float(lighting.ground.height);
+  if(root->local.translation.y != floor)
+    scene.setLocal(backdropBuilt->root, {.translation = {0.0F, floor, 0.0F}});
+}
+
+nvutils::Bbox FvHost::Impl::contentBounds()
+{
+  const rs::EntityId root = backdropRoot();
+  if(root.isNone() || !renderer->feedsHostScene() || !renderer->hostScene().entity(root))
+    return renderer->visibleSceneBounds();
+  // the scene as fed, without the ground that reaches the horizon: what a view frames
+  const std::array<glm::vec3, 2> b = renderer->hostScene().bounds(root);
+  if(b[0].x <= b[1].x)
+    return nvutils::Bbox(b[0], b[1]);
+  // only the backdrop: where a figure would stand
+  const float floor = lighting.ground.autoHeight ? autoGround : float(lighting.ground.height);
+  return nvutils::Bbox(glm::vec3(-1.0F, floor, -1.0F), glm::vec3(1.0F, floor + 2.0F, 1.0F));
+}
+
+void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
+{
+  if(!backdropBuilt || !backdropKit || !scene.entity(backdropBuilt->root))
+    return;
+  fv::timing::Scope             time("backdrop: planting", 20);
+  BackdropBuilt&                built = *backdropBuilt;
+  const fv::backdrop::Spec&     spec  = lighting.backdrop;
+  // the ground, when its shape is another: made again, as its mesh may no longer hold its vertices to move
+  if(built.groundSeed != spec.seed || built.groundRelief != spec.relief || !scene.entity(built.ground))
+  {
+    if(scene.entity(built.ground))
+      scene.destroyEntity(built.ground);
+    const auto found = backdropKit->ground.find(spec.kind);
+    const BackdropKit::Ground g = found != backdropKit->ground.end() ? found->second : BackdropKit::Ground{};
+    const tinygltf::Model     m = backdropTerrainModel(fv::backdrop::terrain(spec, g.tile), g);
+    const rs::ImportResult    r = rs::importGltf(scene, m, {.prop = 0, .parent = built.root, .imageSearchPaths = {backdropKit->dir}});
+    built.ground       = r.roots.empty() ? rs::EntityId{} : r.roots.front();
+    built.groundSeed   = spec.seed;
+    built.groundRelief = spec.relief;
+  }
+  // each layer's plants: a variant's places as its copies; a variant with none, and a role no layer
+  // plants, hidden (no copies would draw it once, where its file has it)
+  std::set<std::string> plantedRoles;
+  uint64_t              plants = 0;
+  const auto            layers = fv::backdrop::layers(spec);
+  for(uint32_t i = 0; i < layers.size(); i++)
+  {
+    const auto found = built.variants.find(layers[i].role);
+    if(found == built.variants.end() || found->second.empty())
+      continue;
+    plantedRoles.insert(layers[i].role);
+    const std::vector<BackdropBuilt::Variant>& variants = found->second;
+    std::vector<std::vector<glm::mat4>>         placed   = fv::backdrop::scatter(spec, layers[i], i, uint32_t(variants.size()));
+    for(size_t v = 0; v < variants.size(); v++)
+    {
+      const rs::Entity* e = scene.entity(variants[v].entity);
+      if(!e || !e->mesh)
+        continue;
+      scene.setVisible(variants[v].entity, !placed[v].empty());
+      if(placed[v].empty())
+        continue;
+      for(glm::mat4& m : placed[v])
+        m = m * variants[v].base;
+      plants += placed[v].size();
+      rs::MeshInstance instance = *e->mesh;
+      instance.copies           = std::move(placed[v]);
+      scene.setMeshInstance(variants[v].entity, std::move(instance));
+    }
+  }
+  for(const auto& [role, variants] : built.variants)
+    if(!plantedRoles.count(role))
+      for(const BackdropBuilt::Variant& v : variants)
+        if(scene.entity(v.entity))
+          scene.setVisible(v.entity, false);
+  backdropPlants = plants;
+}
+
+void FvHost::Impl::feedBackdrop(rs::RetainedScene& scene)
+{
+  if(!backdropKit)
+    return;
+  fv::timing::Scope time("backdrop: feeding", 20);
+  if(backdropBuilt && scene.entity(backdropBuilt->root))
+    scene.destroyEntity(backdropBuilt->root);
+  backdropBuilt       = std::make_unique<BackdropBuilt>();
+  BackdropBuilt& built = *backdropBuilt;
+  built.root           = scene.createEntity("Backdrop", {0, -1});
+  for(const BackdropKit::Plant& plant : backdropKit->plants)
+  {
+    rs::ImportResult r;
+    try
+    {
+      r = rs::importGltf(scene, *plant.model, {.prop = 0, .parent = built.root, .imageSearchPaths = {plant.file.parent_path()}});
+    }
+    catch(const std::exception& e)
+    {
+      notice("The backdrop's " + utf8Of(plant.file.filename()) + " could not be planted: " + problemOf(e));
+      continue;
+    }
+    for(const rs::ClipId clip : r.clips)
+      if(!clip.isNone())
+        scene.release(clip);
+    // every node that draws is a variant: straight under the root, its own turn and scale kept for
+    // its copies and its place in its file (a row for show) dropped
+    for(const rs::EntityId e : r.entities)
+    {
+      const rs::Entity* entity = e.isNone() ? nullptr : scene.entity(e);
+      if(!entity || !entity->mesh)
+        continue;
+      glm::mat4 base = scene.world(e);
+      base[3]        = glm::vec4(0.0F, 0.0F, 0.0F, 1.0F);
+      scene.setParent(e, built.root);
+      scene.setLocal(e, {});
+      built.variants[plant.role].push_back({.entity = e, .base = base});
+    }
+  }
+  plantBackdrop(scene);
+  placeBackdrop();
+}
+
+void FvHost::Impl::applyBackdrop(bool reread)
+{
+  if(!renderer->feedsHostScene())
+    return;
+  rs::RetainedScene&        scene = renderer->hostScene();
+  const fv::backdrop::Spec& spec  = lighting.backdrop;
+  const auto                drop  = [&] {
+    if(backdropBuilt && scene.entity(backdropBuilt->root))
+      scene.destroyEntity(backdropBuilt->root);
+    backdropBuilt.reset();
+    backdropPlants = 0;
+  };
+  std::filesystem::path dir;
+  {
+    std::lock_guard lock(settingsMutex);
+    dir = settings.backdropKit;
+  }
+  if(reread || (backdropKit && backdropKit->dir != dir))
+  {
+    drop();
+    backdropKit.reset();
+    backdropRequest++;  // a read under way is of the folder as it was
+    if(backdropState == "loading")
+      backdropState = "off";
+  }
+  if(!fv::backdrop::planted(spec))
+  {
+    drop();
+    backdropState  = "off";
+    backdropWanted = spec;
+    return;
+  }
+  // what stands, planted again when the state is another
+  if(backdropBuilt && scene.entity(backdropBuilt->root))
+  {
+    if(!(spec == backdropWanted))
+    {
+      backdropWanted = spec;
+      plantBackdrop(scene);
+    }
+    placeBackdrop();
+    backdropState = "ready";
+    return;
+  }
+  backdropBuilt.reset();  // its entities went with a scene replaced
+  backdropWanted = spec;
+  if(backdropKit)
+  {
+    feedBackdrop(scene);
+    backdropState = "ready";
+    return;
+  }
+  if(dir.empty())
+  {
+    backdropState = "missing";
+    return;
+  }
+  if(backdropState == "loading")
+    return;  // its kit is being read
+  backdropState          = "loading";
+  const uint64_t request = ++backdropRequest;
+  loaders.spawn([this, dir, request] {
+    std::shared_ptr<const BackdropKit> kit;
+    std::string                        error;
+    try
+    {
+      kit = readBackdropKit(dir);
+    }
+    catch(const std::exception& e)
+    {
+      error = e.what();
+    }
+    post([this, kit, error, request] {
+      if(request != backdropRequest)
+        return;
+      if(!kit)
+      {
+        // a folder not filled yet is the app's to say (the topic's state); a kit that is there and
+        // cannot be read is a fault
+        backdropState = "missing";
+        if(error.rfind("no kit.json", 0) != 0)
+          notice("The backdrop's plants could not be read: " + error, "error");
+        publishLighting();
+        return;
+      }
+      backdropKit   = kit;
+      backdropState = "off";
+      applyLighting(false);  // plants it, and the ground's plane gives way to it
+    });
+  });
+}

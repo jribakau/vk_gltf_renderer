@@ -595,6 +595,38 @@ saved). `src/white_balance.hpp` holds the rest, Vulkan-free:
   answer makes off-locus lights grey; a frame two-fifths red curtain with a bright blue sign gives its
   3000 K light within about 140 K, where the plain average is far off), `FvHost.WhiteBalanceAnswersTheFramesLight`.
 
+## The procedural backdrop
+
+A meadow around the scene, out to the horizon: the lighting's `backdrop` (`fv::backdrop::Spec`,
+protocol 64), so undo and a scene file carry it as they carry the ground. Two halves:
+
+- **The shape** (`src/fv_backdrop.hpp`, Vulkan-free): `height` is the ground, flat where the scene
+  stands, rolling beyond it and rising to hills toward the horizon; `terrain` is its mesh, a disc of
+  rings that widen with distance, so the triangles are small underfoot and large far off; `layers` says
+  what grows in a kind of backdrop and how thickly, and `scatter` where each plant stands, a jittered
+  grid thinned by patch noise and by distance, per variant of its role. All of it is a pure function of
+  the spec: the same seed is the same meadow on every machine.
+- **The planting** (`src/fv_host_backdrop.cpp`): the plants are files in a kit folder the app fills
+  (`settings.apply {backdropKit}`), listed by its `kit.json` with a role each (`readBackdropKit`, read
+  on a loader thread). Under one host-owned root entity each plant file is imported once and each of
+  its mesh nodes is a variant; a variant is drawn at all its places through the mesh's `copies`, the
+  instancing path, so a meadow is a few dozen entities and bottom-level structures whatever its plant
+  count. The ground is a model built in memory from `terrain` with the kit's ground maps.
+  A change of density or size replants in place (`plantBackdrop`: the copies set again); a change of
+  seed or relief rebuilds the ground too.
+
+What gives way while a backdrop stands: the flat ground plane is off (`useInfinitePlane`; it comes back
+while the kit is missing or loading), and "Auto" ground, framing the scene and the fly speed measure
+the scene without it (`RetainedScene::bounds(except)`, `contentBounds`), since its ground reaches the
+horizon. The root sits at the floor's height, and the ground is flat within the clearing, so the
+physics floor and Drop still meet it. The lighting topic says `backdrop.state` (off, missing, loading,
+ready) and `backdrop.plants`.
+
+Measured on an RTX 4080 at 1080p, the moving view: an empty floor 1.9 ms of path tracing, 400,000
+alpha-tested grass clumps 8.4 ms; about 0.8 KB of GPU memory an instance.
+Checked: `tests/test_fv_backdrop.cpp`, `FvLighting.ABackdropIsPartOfTheLighting`,
+`FvHost.ABackdropIsPlantedFromItsKit`.
+
 ## The pixel readout
 
 What is at a pixel and how bright it is (`view.inspect {x, y, w, h}`, the `inspect` topic, protocol 44;
