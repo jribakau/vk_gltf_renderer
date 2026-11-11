@@ -612,18 +612,37 @@ coverage, the density, the lighting and the march. Not ported is the way takram 
 -- a sixteenth of the pixels, reprojected over time, with a shadow map rendered from the sun --
 because here the clouds are baked, which neither needs.
 
-### One number for the sun
+### Their shadow on the land
 
-A scene is metres across and the clouds are kilometres up, so the whole scene is in one cloud's
-shadow or in none. The sun's transmittance through the layers, from the observer toward the sun, is
-a single value the bake publishes with the disk (`SkySunDisk::cloudShadow`) and multiplies into the
-disk's radiance, so the sun light NEE samples, the disk the camera sees and the sun in a mirror all
-dim together. The air in the scene is in the same shadow: aerial perspective scales its sun share by
-it (`evalAerialPerspective`). Nothing is evaluated per pixel for it.
+A cumulus is some hundreds of metres across, and so is its shadow. A figure's own scene, metres
+across, is in one shadow or in none; a meadow out to its hills is in several, with the sun on the
+land between them. One number for the sun, which is what this had until 2026-11-11, puts the
+whole land in the shade whenever the scene's origin is, and it is much of why the clouds read as a
+picture behind the scene and not as something over it.
+
+- **The shadow image** (`shadowMain` in `sky_clouds_bake.slang`, `CLOUD_SHADOW_SIZE` square): the
+  sun's transmittance through the layers from each point of the ground in a square
+  `CLOUD_SHADOW_EXTENT` wide round the scene's origin, a march of the clouds alone. Baked with the
+  clouds, a drag's preview too, so the light on the scene follows the clouds as they are dragged.
+- **Where it is read** (`cloudShadowUv` in `sky_clouds.h.slang`, `cloudSunShare` in
+  `gltf_pathtrace.slang`): at the ground point the sun's ray through a place comes up from, so a
+  treetop is in the shadow of the same cloud as the ground along that ray. Past the image's edge
+  the land's mean share stands in (`SkySunDisk::sunlitGround`).
+- **Who reads it.** The disk's published radiance is the clear sun's. A light sample of the sun
+  takes the share where it lands (`getPunctualLightAt`), and its pick is weighed by it; a BSDF ray
+  that reaches the disk takes it where the ray set out, so the two stay each other's MIS partners.
+  The air's sun term (aerial perspective) takes it at the point its shadow ray leaves from, which
+  lights the air under a gap and leaves the rest in shade. The disk the camera or a mirror sees is
+  dimmed pixel by pixel by the clouds drawn in front of it, so a cloud's edge crosses the disk.
 
 The shadow does not soften by any rule of its own. Behind a thin cloud the light that is left comes
 from the bright patch of cloud round the sun, which is in the lighting field like the rest of the sky,
 so it lights the scene from a wider source than the disk.
+
+`SkySunDisk::cloudShadow` is still published: the sun's share at the scene's origin, as the cloud
+image has it toward the sun, which is what the meter reads (below).
+
+Measured on an RTX 4080: the shadow image adds about 1 ms to a commit of 80 to 100 ms (cumulus 0.4 with cirrus 0.2, the sun 40 degrees up; 22 commits with it and 22 without, their difference within the commits' own spread), and nothing a frame but one read of it per light sample of the sun.
 
 ### What the camera's meter reads
 
@@ -910,8 +929,7 @@ share here, not marched; and the sky's share of the ground's own light under the
 
 - Moving clouds: the image is baked per sun and setting, and a wind would mean a bake, an alias
   table and an accumulation restart every frame.
-- Shadows that move across the scene: one shadow for the whole scene, as above. A terrain kilometres
-  wide is the case that would want more.
+- Shadows that move across the scene: the clouds stand still, and their shadows with them.
 - Light shafts (the air under the clouds is shaded by a share, above), takram's haze, and rain.
 - An observer above the clouds: the images cover what is above their observer's horizon, and the
   march drops a ray that meets the ground.
@@ -944,7 +962,7 @@ one march each, at the low preset, so a drag's cloud pass is under a millisecond
 measured on its own). Per frame the clouds cost one texture read in
 `evalPhysicalSkyBackground` and nothing in the lighting field, which is baked.
 
-Memory: the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the raw image the
+Memory: the shadow image half a megabyte, the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the raw image the
 filter reads 32 MB, the view image 32 MB, the preview 2 MB, the two follow images 32 MB each, the
 march's depth 8 MB and the three depth images 128 KB each.
 

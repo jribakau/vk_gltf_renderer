@@ -180,7 +180,7 @@ enum SceneFrameInfoFlags
 // learns it. See publishSunDisk() in shaders/env_bake.slang.
 struct SkySunDisk
 {
-  float3 radiance;          // already in the baked image's units
+  float3 radiance;          // in the baked image's units, under a clear sky: the clouds' share is taken where its light lands
   float  cosAngularRadius;  // cos of the sun's angular radius; the disk test is a dot product
   float  angularRadius;     // radians. Stored rather than derived so no one pays an acos per ray
   // Cosine of the zenith angle at which the ground starts, for the observer the sky was baked
@@ -190,8 +190,9 @@ struct SkySunDisk
   // to stand exactly where the bake stood -- see sky_bruneton_radiance.h.slang.
   float observerRadius;
   // The clouds' (sky_clouds.h.slang), 1 and 1 without them. `cloudShadow` is the sun's transmittance
-  // through the layer from the observer: the scene's shadow, already in `radiance`, and what the air
-  // in the scene is lit by (aerial perspective). `sunlitGround` is the share of the distant land and
+  // through the layer from the observer, the scene's origin: what the meter reads. It is not in
+  // `radiance`: a light sample of the sun takes the clouds' shadow where it lands, from the shadow
+  // image (cloudSunShare in gltf_pathtrace.slang). `sunlitGround` is the share of the distant land and
   // haze under the layer the sun still reaches, as the cloud bake measures it toward this sun (airMain
   // in sky_clouds_bake.slang): the cover's complement overhead, all but none through a broken deck at
   // a low sun's slant.

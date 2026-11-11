@@ -178,15 +178,15 @@ void publishSunDisk()
   // set behind the horizon instead of sitting on top of it.
   const float horizonMu = brunetonHorizonMu(g_atmosphere, r);
 
-  // The clouds between the observer and the sun: the whole scene's shadow, one number, since the
-  // scene is metres across and the clouds kilometres up (sky_clouds.h.slang). It is the cloud
-  // image's own transmittance toward the sun, so the disk dims exactly as the clouds drawn over it
-  // say, and the light NEE samples with it.
+  // The clouds between the observer and the sun, as the cloud image has them toward it: the share
+  // of the sun's light that reaches the scene's origin, for the meter. The disk's radiance is the
+  // sun's under a clear sky: what the clouds take of it depends on where its light lands, and is
+  // taken there (cloudSunShare in gltf_pathtrace.slang, from the shadow image).
   float cloudShadow = 1.0F;
   if(pc.clouds != 0 && pc.sunDirection.y > horizonMu)
     cloudShadow = sampleClouds(cloudImageUv(pc.sunDirection, asin(horizonMu))).w;
 
-  out->radiance         = solarRadiance * toSun * SUN_RADIANCE_TO_LUMINANCE * cloudShadow;
+  out->radiance         = solarRadiance * toSun * SUN_RADIANCE_TO_LUMINANCE;
   out->cosAngularRadius = cos(g_atmosphere.sunAngularRadius);
   out->angularRadius    = g_atmosphere.sunAngularRadius;
   out->horizonMu        = horizonMu;

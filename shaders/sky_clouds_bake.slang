@@ -57,6 +57,7 @@
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeAir, 0)]]        RWStructuredBuffer<float>          g_air;
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeDepthRaw, 0)]]   [[vk::image_format("r16f")]] RWTexture2D<float> g_depthRaw;
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeDepth, 0)]]      [[vk::image_format("r16f")]] RWTexture2D<float> g_depth;
+[[vk::binding(SkyCloudsBakeBindings::eCloudBakeShadow, 0)]]     [[vk::image_format("r16f")]] RWTexture2D<float> g_shadow;
 
 // Set 1 is SkyBruneton's runtime set, as in the environment bake.
 [[vk::binding(0, 1)]] Sampler2D<float3>                       g_transmittance;
@@ -502,7 +503,7 @@ void airShadeMain(uint3 group: SV_DispatchThreadID)
 // The transmittance toward the sun from a point at the observer's height, through the layers: a
 // march of the clouds alone, without their light. The sun below the point's horizon is the planet's
 // shadow, which the atmosphere already has, so the clouds pass it.
-float sunTransmittanceFrom(float3 origin, float jitter)
+float sunTransmittanceFrom(float3 origin, float jitter, int kSteps)
 {
   const float R  = g_atmosphere.bottomRadius;
   const float r  = length(origin);
@@ -512,8 +513,7 @@ float sunTransmittanceFrom(float3 origin, float jitter)
   const float2 segment = cloudLayerSegment(r, mu, R + g_params.minHeight, R + g_params.maxHeight);
   if(segment.y <= segment.x)
     return 1.0F;
-  // 96 steps over at most 100 km of it: a low sun's slant through a thick layer is that long
-  const int   kSteps = 96;
+  // `kSteps` steps over at most 100 km of it: a low sun's slant through a thick layer is that long
   const float span   = min(segment.y - segment.x, 100.0F);
   const float step   = span / float(kSteps);
   float       depth  = 0.0F;
@@ -561,7 +561,7 @@ void airMain(uint3 id: SV_DispatchThreadID)
   // The sun's: a point of a 60 km square around the observer, on the sphere at its height
   const float2 offset = (u - 0.5F) * 60.0F;
   const float3 origin = normalize(float3(offset.x, r0, offset.y)) * r0;
-  s_sunSum[i]         = sunTransmittanceFrom(origin, jitter);
+  s_sunSum[i]         = sunTransmittanceFrom(origin, jitter, 96);
 
   // The sky's: a direction over the upper hemisphere, cosine-weighted
   const float  sinTheta = sqrt(u.x);
@@ -683,4 +683,23 @@ void depthMain(uint3 id: SV_DispatchThreadID)
   const float  base  = g_params.minHeight + 0.25F * (g_params.shadowTopHeight - g_params.minHeight);
   const float  shell = min(cloudShellDistance(r0, dir.y, R + base), g_params.maxRayDistance);
   g_depth[id.xy]     = (sum + kDepthShellShare * norm * shell) / (cover + kDepthShellShare * norm);
+}
+
+// The clouds' shadow on the land (the shadow image, cloudShadowUv in sky_clouds.h.slang): for each
+// point of the ground round the scene, the sun's transmittance through the layers. The march of
+// airMain's ground points, on a grid. No jitter: each texel's steps are where its neighbour's are,
+// a little along, so the image is as smooth as the clouds are and needs no filter; 64 steps, since
+// what is asked of it is where a shadow's edge falls on a meadow, which the shape's billows of some
+// hundreds of metres decide.
+[shader("compute")]
+[numthreads(CLOUD_WORKGROUP_SIZE, CLOUD_WORKGROUP_SIZE, 1)]
+void shadowMain(uint3 id: SV_DispatchThreadID)
+{
+  if(any(id.xy >= uint2(CLOUD_SHADOW_SIZE, CLOUD_SHADOW_SIZE)))
+    return;
+  s_air               = float2(pc.sunlitAir, 1.0F);
+  const float  r0     = g_atmosphere.bottomRadius + pc.observerAltitude;
+  const float2 ground = cloudShadowGround((float2(id.xy) + 0.5F) / float(CLOUD_SHADOW_SIZE));
+  const float3 origin = normalize(float3(ground.x, r0, ground.y)) * r0;
+  g_shadow[id.xy]     = sunTransmittanceFrom(origin, 0.5F, 64);
 }

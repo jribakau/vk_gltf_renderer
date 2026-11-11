@@ -691,6 +691,17 @@ int skySunPunctualIndex()
   return pushConst.frameInfo->sunLightIndex;
 }
 
+// A light of that set as it lights `pos`: the sky's sun past the clouds over where its light lands
+// (cloudSunShare), every other light as it is. What a light sample at `pos` takes, and what its
+// pick is weighed by.
+GltfLight getPunctualLightAt(int index, float3 pos)
+{
+  GltfLight light = getPunctualLight(index);
+  if(index == skySunPunctualIndex())
+    light.color *= cloudSunShare(pos, pushConst.frameInfo);
+  return light;
+}
+
 // The environment's pick estimate (light_pick.h.slang), 0 where there is none to sample.
 float environmentPickEstimate()
 {
@@ -1084,7 +1095,7 @@ LightDraw lightDrawOf(LightPickSet set, float3 pos, float3 normal, bool bothSide
     const int numPunctual = punctualLightCount();
     for(; walk.light < numPunctual; walk.light++)
     {
-      const float p = punctualPickShare(set, set.uniform ? 1.0f : punctualPickEstimate(getPunctualLight(walk.light), pos, normal, !bothSides));
+      const float p = punctualPickShare(set, set.uniform ? 1.0f : punctualPickEstimate(getPunctualLightAt(walk.light, pos), pos, normal, !bothSides));
       if(p <= 0.0f)
         continue;
       walk.lastLight = walk.light;
@@ -1162,7 +1173,7 @@ LightPickSet lightPickScore(float3 pos, float3 normal, bool cull, bool draw, ino
   {
     for(int i = 0; i < numPunctual; i++)
     {
-      const float e = punctualPickEstimate(getPunctualLight(i), pos, normal, cull);
+      const float e = punctualPickEstimate(getPunctualLightAt(i, pos), pos, normal, cull);
       if(e > 0.0F)
       {
         s.total += e;
@@ -1342,7 +1353,7 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
   if(draw.kind != LIGHT_DRAW_PUNCTUAL)
     return;
   const int       lightIndex   = draw.index;
-  const GltfLight light        = getPunctualLight(lightIndex);
+  const GltfLight light        = getPunctualLightAt(lightIndex, pos);
   const float     selectionPdf = set.restShare * draw.share;
 
   // singleLightContribution() drops any punctual light below the hemisphere of the normal it
@@ -3095,7 +3106,7 @@ bool tryPrimaryMissBackplate(RayDesc ray, SceneFrameInfo* frameInfo, inout PathT
     // The physical sky's disk is not in its baked image, so it is added here as on the unblurred
     // path; a no-op for every other environment.
     const float3 blurred = smoothHDRBlur(texturesHdr[HDR_IMAGE_INDEX], uv, frameInfo->envBlur).xyz;
-    pt.radiance          = (blurred + evalSunDiskBackground(dir, frameInfo)) * frameInfo->envIntensity;
+    pt.radiance = (blurred + evalSunDiskBackground(dir, frameInfo) * cloudSunShare(ray.Origin, frameInfo)) * frameInfo->envIntensity;
     return true;
   }
 

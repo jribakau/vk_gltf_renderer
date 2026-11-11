@@ -51,6 +51,7 @@ enum SkyCloudsBakeBindings
   eCloudBakeAir        = 7,  // RWStructuredBuffer<float>: the shares of the air's light the clouds leave (airMain)
   eCloudBakeDepthRaw   = 8,  // RWTexture2D<float>: how far the clouds are along each texel of the march, km (0: none)
   eCloudBakeDepth      = 9,  // RWTexture2D<float>: the image's depth image, what depthMain makes of that
+  eCloudBakeShadow     = 10,  // RWTexture2D<float>: the shadow image (shadowMain)
 };
 
 // The ground points, and the directions over the sky, the bake measures the air's shares at (airMain):
@@ -87,6 +88,11 @@ enum SkyCloudsNoiseBindings
 #define CLOUD_DEPTH_BINDING 4   // Sampler2D<float>[3], km
 #define CLOUD_DEPTH_WIDTH 512
 #define CLOUD_DEPTH_HEIGHT 128
+// ... and the clouds' shadow on the land: the sun's transmittance through the layers from each point
+// of the ground round the scene (cloudShadowUv in sky_clouds.h.slang), a square of
+// CLOUD_SHADOW_SIZE texels a side. Sampler2D<float>, clamped.
+#define CLOUD_SHADOW_BINDING 5
+#define CLOUD_SHADOW_SIZE 512
 // The settled bake's raw march is an image of the sky image's size (SkyClouds::m_rawImage); a view
 // bake's, as many texels or fewer, runs through it row after row (rawTexel in sky_clouds_bake.slang).
 #define CLOUD_RAW_WIDTH 4096

@@ -405,6 +405,44 @@ TEST(SkyClouds, AClearDirectionIsAsFarAsAShellAtTheBasesHeight)
   EXPECT_EQ(cloudShellDistance(kEarth + 2.0F, 0.5F, shell), CLOUD_NO_DEPTH);
 }
 
+// The clouds' shadow on the land: where the shadow image is read for a place in the scene.
+TEST(SkyClouds, AShadowIsReadWhereTheSunsRayComesUpFromTheGround)
+{
+  const float3 overhead(0.0F, 1.0F, 0.0F);
+  // the scene's origin is the image's middle, and the image's corners the corners of its square
+  EXPECT_EQ(cloudShadowUv(float3(0.0F), overhead), float2(0.5F));
+  EXPECT_EQ(cloudShadowGround(float2(0.5F)), float2(0.0F));
+  EXPECT_EQ(cloudShadowGround(float2(1.0F, 0.0F)), float2(0.5F * CLOUD_SHADOW_EXTENT, -0.5F * CLOUD_SHADOW_EXTENT));
+  // a point of the ground reads the texel baked from it
+  const float2 ground(1.3F, -2.1F);
+  const float2 uv = cloudShadowUv(float3(ground.x, 0.0F, ground.y), normalize(float3(0.4F, 0.6F, -0.2F)));
+  EXPECT_NEAR(length(cloudShadowGround(uv) - ground), 0.0F, 1e-5F);
+
+  // A treetop 30 m up with the sun 45 degrees up in the east is in the shadow of the cloud that
+  // shades the ground 30 m west of it: the sun's ray through it comes up from there
+  const float3 east = normalize(float3(1.0F, 1.0F, 0.0F));
+  const float2 top  = cloudShadowGround(cloudShadowUv(float3(0.2F, 0.03F, 0.1F), east));
+  EXPECT_NEAR(top.x, 0.17F, 1e-5F);
+  EXPECT_NEAR(top.y, 0.1F, 1e-5F);
+  // under an overhead sun, the ground under it
+  EXPECT_NEAR(length(cloudShadowGround(cloudShadowUv(float3(0.2F, 0.03F, 0.1F), overhead)) - float2(0.2F, 0.1F)), 0.0F, 1e-5F);
+  // a sun on the horizon would carry a hill's height out of the image: it counts as no lower than
+  // CLOUD_SHADOW_MIN_SUN, three degrees
+  const float2 low = cloudShadowGround(cloudShadowUv(float3(0.0F, 0.1F, 0.0F), normalize(float3(1.0F, 0.001F, 0.0F))));
+  EXPECT_NEAR(low.x, -0.1F / CLOUD_SHADOW_MIN_SUN, 1e-3F);
+  EXPECT_GT(low.x, -0.5F * CLOUD_SHADOW_EXTENT);
+
+  // The image counts whole inside, fades over the outer tenth of its half-width, and past its edge
+  // the land's mean share stands in
+  EXPECT_EQ(cloudShadowWeight(float2(0.5F)), 1.0F);
+  EXPECT_EQ(cloudShadowWeight(float2(0.94F, 0.5F)), 1.0F);
+  EXPECT_NEAR(cloudShadowWeight(float2(0.975F, 0.5F)), 0.5F, 1e-4F);
+  EXPECT_EQ(cloudShadowWeight(float2(1.0F, 0.5F)), 0.0F);
+  EXPECT_EQ(cloudShadowWeight(float2(0.3F, -0.2F)), 0.0F);
+  // a 900 m ground with its hills is well inside
+  EXPECT_EQ(cloudShadowWeight(cloudShadowUv(float3(0.9F, 0.06F, -0.9F), normalize(float3(0.5F, 0.5F, 0.0F)))), 1.0F);
+}
+
 // The sky image that follows the camera (cloudFollowStep), a 1024-row image baked in bands of 8.
 TEST(SkyClouds, TheSkyImageFollowsACameraInFlight)
 {

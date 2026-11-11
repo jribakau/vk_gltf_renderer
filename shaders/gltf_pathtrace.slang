@@ -133,14 +133,31 @@ static bool doDebug = false;
 [[vk::binding(CLOUD_VIEW_BINDING, 4)]]    Sampler2D<float4>     g_cloudView;
 [[vk::binding(CLOUD_FOLLOW_BINDING, 4)]]  Sampler2D<float4>     g_cloudFollow[2];
 [[vk::binding(CLOUD_DEPTH_BINDING, 4)]]   Sampler2D<float>      g_cloudDepth[3];
+[[vk::binding(CLOUD_SHADOW_BINDING, 4)]]  Sampler2D<float>      g_cloudShadow;
+
+// The share of the sun's light the clouds let through to a place in the scene: their shadow on the
+// land (the shadow image, baked with the clouds), read where the sun's ray through the place comes
+// up from the ground. 1 under a clear sky and for every sky but the physical one. Past the image's
+// edge, kilometres out, the land's mean share.
+float cloudSunShare(float3 worldPos, SceneFrameInfo* frameInfo)
+{
+  if(frameInfo->sunDisk == nullptr || !(frameInfo->sunDisk->cloudTop > 0.0F))
+    return 1.0F;
+  const float3 p      = quatRotateInverse(frameInfo->envRotation, worldPos) * 0.001F;
+  const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
+  const float2 uv     = cloudShadowUv(p, sunDir);
+  return lerp(frameInfo->sunDisk->sunlitGround, g_cloudShadow.SampleLevel(uv, 0.0F), cloudShadowWeight(uv));
+}
 
 // The physical sky along a ray, without the solar disk: its radiance, evaluated per ray through the
 // same function the bake uses, the clouds over it. Per ray rather than read from the baked image so
 // what the camera, a mirror or still water sees does not depend on the bake resolution -- the
 // horizon, where sky meets ground in a hard edge, is what a lat-long would otherwise smear, and the
 // clouds' edges what its 0.35 degrees would.
-float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo)
+// `cloudsLeave` is what the clouds along the ray leave of what is behind them, 1 with none.
+float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo, out float cloudsLeave)
 {
+  cloudsLeave         = 1.0F;
   const float3 dir    = quatRotateInverse(frameInfo->envRotation, worldDir);
   const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
   // observerRadius is the bake's: selecting the physical sky commits a bake at the top of the frame,
@@ -148,8 +165,8 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo)
   const SkySunDisk disk = *frameInfo->sunDisk;
   float3           sky  = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance,
                                                   disk.observerRadius, dir, sunDir, disk.sunlitGround);
-  // The clouds over it, as the bake composes them, above the horizon. The disk goes on top, already
-  // dimmed by the clouds in front of it (SkySunDisk::cloudShadow).
+  // The clouds over it, as the bake composes them, above the horizon. The disk goes on top, dimmed by
+  // the clouds in front of it (evalPhysicalSkyBackground).
   if(dir.y > disk.horizonMu)
   {
     float4 clouds;
@@ -197,7 +214,8 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo)
         clouds              = lerp(clouds, g_cloudView.SampleLevel(viewUv, 0.0F), share);
       }
     }
-    sky = composeClouds(sky, clouds);
+    sky         = composeClouds(sky, clouds);
+    cloudsLeave = clamp(clouds.w, 0.0F, 1.0F);
   }
   else if(disk.cloudTop > 0.0F)
   {
@@ -210,10 +228,19 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo)
   return sky;
 }
 
-// What a camera ray or a mirror bounce sees of the physical sky: the sky per ray, plus the solar disk.
+float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo)
+{
+  float unused;
+  return evalPhysicalSky(worldDir, frameInfo, unused);
+}
+
+// What a camera ray or a mirror bounce sees of the physical sky: the sky per ray, plus the solar disk
+// through the clouds drawn in front of it, pixel by pixel, so a cloud's edge crosses the disk.
 float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
 {
-  return evalPhysicalSky(worldDir, frameInfo) + evalSunDiskBackground(quatRotateInverse(frameInfo->envRotation, worldDir), frameInfo);
+  float        cloudsLeave;
+  const float3 sky = evalPhysicalSky(worldDir, frameInfo, cloudsLeave);
+  return sky + evalSunDiskBackground(quatRotateInverse(frameInfo->envRotation, worldDir), frameInfo) * cloudsLeave;
 }
 
 // A lobe whose pdf at the sampled direction is above this, per steradian, is narrower than about a
@@ -702,7 +729,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         if(!delta)
         {
           const float3 bgDir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
-          const float3 disk  = evalSkySunDisk(bgDir, frameInfo);
+          // through the clouds over where the ray set out, as the light sample it is weighed against
+          const float3 disk  = evalSkySunDisk(bgDir, frameInfo) * cloudSunShare(ray.Origin, frameInfo);
           if(any(disk > 0.0F))
             addRadiance(pt, pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf, pt.lightPick) * disk * frameInfo->envIntensity, indirect);
         }
@@ -2308,17 +2336,20 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     if(any(march.sunEstimate > 0.0F))
     {
       inScatter -= march.sunInScatter;
-      const float chance = contributionTraceChance(luminance(march.sunEstimate), luminance(pt.radiance * march.transmittance + inScatter),
-                                                   pushConst.frameInfo->aerialSunShare);
-      if(chance >= 1.0F || rand(seed) < chance)
+      // the clouds' shadow where the picked point stands: the air under a gap is lit, the rest not
+      const float3 sunPoint    = lerp(eye, pt.firstHitPos, march.sunPoint);
+      const float3 sunEstimate = march.sunEstimate * cloudSunShare(sunPoint, pushConst.frameInfo);
+      const float  chance      = contributionTraceChance(luminance(sunEstimate), luminance(pt.radiance * march.transmittance + inScatter),
+                                                         pushConst.frameInfo->aerialSunShare);
+      if(any(sunEstimate > 0.0F) && (chance >= 1.0F || rand(seed) < chance))
       {
         RayDesc shadowRay;
-        shadowRay.Origin        = lerp(eye, pt.firstHitPos, march.sunPoint);
+        shadowRay.Origin        = sunPoint;
         shadowRay.Direction     = pushConst.frameInfo->sunDirection;
         shadowRay.TMin          = 0.0F;
         shadowRay.TMax          = INFINITE;
         const float3 visibility = raytracer.TraceShadow(shadowRay, seed);
-        inScatter += visibility * march.sunEstimate / chance;
+        inScatter += visibility * sunEstimate / chance;
       }
     }
     pt.radiance = pt.radiance * march.transmittance + inScatter;

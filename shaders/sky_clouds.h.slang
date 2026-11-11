@@ -30,9 +30,11 @@
 //
 // The observer is on the +Y axis of a planet centred at the origin (sky_bruneton_radiance.h.slang).
 //
-// **Why one value for the sun.** A scene is metres across and the clouds are kilometres up, so the
-// whole scene is in one cloud's shadow or none: the sun's transmittance through the layers, toward
-// the sun from the observer, is a single number, published with the solar disk. Nothing per pixel.
+// **Their shadow is on the land.** A cumulus is some hundreds of metres across and so is its
+// shadow: a figure's own scene is in one or in none, but a meadow out to its hills is in several,
+// lit between them. The sun's transmittance through the layers is baked over the land round the
+// scene into the shadow image (cloudShadowUv), which every light sample of the sun reads where it
+// lands. The same number at the scene's origin is published with the solar disk, for the meter.
 //
 // **What the image holds.** For each direction the observer can see above its horizon:
 //
@@ -121,6 +123,38 @@ inline float3 cloudDirFromAnchor(float3 dir, float3 eye, float depth)
 inline float cloudDepthAlong(float3 dir, float3 eye, float3 look, float anchorDepth)
 {
   return max(dot(look * anchorDepth - eye, dir), 0.01F);
+}
+
+// ---- their shadow on the land ---------------------------------------------------------------------
+
+// The shadow image covers a square of the land this wide, km, centred on the scene's origin: the
+// sun's transmittance through the layers from each point of the ground there.
+static const float CLOUD_SHADOW_EXTENT = 8.0F;
+// The lowest the sun counts as standing, as the sine of its elevation, in carrying a point above the
+// ground to where its shadow is read: under it a hill's height would send the read out of the image.
+static const float CLOUD_SHADOW_MIN_SUN = 0.05F;
+
+// The ground point of a place in the image, km from the scene's origin along x and z.
+inline float2 cloudShadowGround(float2 uv)
+{
+  return (uv - float2(0.5F)) * CLOUD_SHADOW_EXTENT;
+}
+
+// Where the image is read for a point `p`, km from the scene's origin in the environment's frame, y
+// its height over the origin's ground: the ground point the sun's ray through `p` comes up from.
+// Under the cloud bases the clouds are all above both, so they are in the same shadow.
+inline float2 cloudShadowUv(float3 p, float3 sunDir)
+{
+  const float2 ground = float2(p.x, p.z) - float2(sunDir.x, sunDir.z) * (p.y / max(sunDir.y, CLOUD_SHADOW_MIN_SUN));
+  return ground / CLOUD_SHADOW_EXTENT + float2(0.5F);
+}
+
+// How much the image counts where it is read, against the land's mean share (SkySunDisk::
+// sunlitGround): all of it inside, none past its edge, over the outer tenth of its half-width.
+inline float cloudShadowWeight(float2 uv)
+{
+  const float2 e = abs(uv - float2(0.5F)) * 2.0F;
+  return clamp((1.0F - max(e.x, e.y)) * 10.0F, 0.0F, 1.0F);
 }
 
 // Whether a height falls in one of the gaps between layers, which the march steps over.

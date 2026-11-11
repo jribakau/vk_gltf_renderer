@@ -155,7 +155,7 @@ public:
   const SkyCloudView& view() const { return m_view; }
 
   // The images, as combined image samplers at CLOUD_IMAGE_BINDING, CLOUD_PREVIEW_BINDING,
-  // CLOUD_VIEW_BINDING, CLOUD_FOLLOW_BINDING and CLOUD_DEPTH_BINDING.
+  // CLOUD_VIEW_BINDING, CLOUD_FOLLOW_BINDING, CLOUD_DEPTH_BINDING and CLOUD_SHADOW_BINDING.
   VkDescriptorSetLayout getDescriptorSetLayout() const { return m_runtimePack.getLayout(); }
   VkDescriptorSet       getDescriptorSet() const { return m_runtimePack.getSet(0); }
 
@@ -198,7 +198,8 @@ private:
   nvvk::Image m_viewImage;        // the clouds in view (recordView): CLOUD_VIEW_CAPACITY square, one level, clamped
   nvvk::Image m_followImages[2];  // the sky image from where the camera is (follow): the sky image's size, one level
   nvvk::Image m_rawDepth;         // how far the clouds are in each texel of a march, km: the sky image's size, R16F
-  nvvk::Image m_depthImages[3];   // each sky image's depth image (depthMain): the sky image's, then the follow images' 
+  nvvk::Image m_depthImages[3];   // each sky image's depth image (depthMain): the sky image's, then the follow images'
+  nvvk::Image m_shadowImage;      // the clouds' shadow on the land (shadowMain): CLOUD_SHADOW_SIZE square, R16F, clamped
   // Storage writes need a view of one level; the images' own views span their chains for sampling.
   VkImageView m_shapeStorageView{VK_NULL_HANDLE};
   VkImageView m_detailStorageView{VK_NULL_HANDLE};
@@ -224,5 +225,6 @@ private:
   VkPipeline       m_airPipeline{VK_NULL_HANDLE};
   VkPipeline       m_airShadePipeline{VK_NULL_HANDLE};
   VkPipeline       m_depthPipeline{VK_NULL_HANDLE};
+  VkPipeline       m_shadowPipeline{VK_NULL_HANDLE};
   VkCommandPool    m_transientCmdPool{VK_NULL_HANDLE};
 };
