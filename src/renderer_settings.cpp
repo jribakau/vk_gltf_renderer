@@ -378,6 +378,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   .help            = "Physical sky: aerosol single-scattering albedo; 1 scatters all it removes",
                   .callbackSuccess = invalidateAtmosphere},
                  &m_resources.settings.atmoMieAlbedo, Persist::eYes, 0.05F, 1.0F);
+  m_settings.add({.name            = "atmoVisibility",
+                  .help            = "Physical sky: how far one sees through the air at the ground (km); the aerosol is "
+                                     "scaled to it. 0 leaves the atmosphere's own",
+                  .callbackSuccess = invalidateAtmosphere},
+                 &m_resources.settings.atmoVisibility, Persist::eYes, 0.0F, 1000.0F);
 
   // Ozone -- an absorbing layer well above the ground, and what keeps a clear zenith blue rather
   // than grey at low sun.

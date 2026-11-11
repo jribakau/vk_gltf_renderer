@@ -122,7 +122,10 @@ namespace {
 // 64: the backdrop: the lighting's `backdrop` section (kind, seed, size, density, relief; read-only
 // state and plants), ground and plants from a kit the app fills (settings.apply's backdropKit and
 // backdropKitChanged). An older renderer refuses the lighting that has the section.
-constexpr int kProtocolVersion = 64;
+// 65: backdrop.air (how many metres of air a metre of the backdrop's land counts for: the haze of its
+// distance) and env.skyVisibility (km one sees through the physical sky's air; 0 the atmosphere's
+// own). An older renderer refuses the lighting that has either.
+constexpr int kProtocolVersion = 65;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

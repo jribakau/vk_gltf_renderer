@@ -630,11 +630,9 @@ void FvHost::Impl::standBackdrop(bool reread)
   // what stands, planted again when the state is another
   if(backdropBuilt && scene.entity(backdropBuilt->root))
   {
-    if(!(spec == backdropWanted))
-    {
-      backdropWanted = spec;
+    if(!fv::backdrop::samePlanting(spec, backdropWanted))
       plantBackdrop(scene);
-    }
+    backdropWanted = spec;
     placeBackdrop();
     backdropState = "ready";
     return;

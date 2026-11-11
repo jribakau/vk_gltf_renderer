@@ -411,6 +411,10 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
   frames(100);
   EXPECT_EQ(stands().places, drawnNow);
 
+  // more air over the land plants nothing: every tile's entity is the one it was
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"air", 12}}}}).value("ok", false));
+  EXPECT_EQ(stands().places, drawnNow);
+
   // another kind plants again in place, the ground too: a forest has more trees and thinner grass
   const Stands       asMeadow     = stands();
   const uint64_t     meadowPlants = state().value("plants", uint64_t(0));

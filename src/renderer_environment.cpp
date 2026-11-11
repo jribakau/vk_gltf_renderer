@@ -38,6 +38,7 @@
 #include <nvvk/formats.hpp>
 #include <nvvk/mipmaps.hpp>
 
+#include "sky_visibility.hpp"
 #include "renderer.hpp"
 
 #include <figure/io/timing.hpp>
@@ -816,6 +817,10 @@ shaderio::SkyAtmosphereParameters GltfRenderer::buildAtmosphereParameters() cons
   // the ratio, and it is what the setting exposes -- OMI has no absorption field, so a scene that
   // sets mieScattering keeps the ratio rather than inheriting an unrelated extinction.
   p.mieExtinction = s.atmoMieScattering / std::max(s.atmoMieAlbedo, 1e-3F);
+  // A visibility asked for is the aerosol scaled to it: more or less of the same haze
+  const float haze = sky_visibility::aerosolScale(s.atmoVisibility, s.atmoRayleighScattering.y, p.mieExtinction.y);
+  p.mieScattering *= haze;
+  p.mieExtinction *= haze;
 
   p.absorptionExtinction = s.atmoOzoneExtinction;
   p.bottomRadius         = s.atmoBottomRadius;

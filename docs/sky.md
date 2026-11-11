@@ -120,6 +120,25 @@ environment's frame, like the bake, so a tilted sky tilts its haze.
 The bake answers the one case it can on its own — an observer looking at its own planet — with the
 ground term in `evalSkyBruneton()` in `shaders/env_bake.slang`.
 
+#### How much air
+
+Two settings say how much of it there is, and they are not the same thing:
+
+- **`atmoVisibility`** (the lighting's `env.skyVisibility`; `src/sky_visibility.hpp`) is the air
+  itself: the aerosol scaled until a dark object at that many kilometres keeps 2% of its contrast.
+  The sky and the air before a surface are one model, so a hazier air whitens the horizon, widens
+  the glow round the sun, dims the sun and veils the distance together. It rebuilds the tables.
+  Earth's own air is about 49 km by this measure.
+- **`atmoAerialPerspectiveScale`** is how many metres of air a scene unit counts for between the
+  eye and a surface, and it leaves the sky alone. A procedural backdrop sets it (`Spec::air`,
+  `fv_backdrop.hpp`): its land is some hundreds of metres to its horizon, and through that much
+  air of any clearness a far wood is as sharp and dark as a near one. Measured on the meadow: at 8
+  km of visibility, which is a milky white sky, the tree line 260 m off has only begun to fade;
+  with the land's air counted eight times over under a clear sky it is blue-grey, the hills
+  behind it paler still, and the clouds' shadows show in the air as they do on the land. Neither
+  costs a frame anything that could be measured (15.2 to 15.9 ms of path tracing on the meadow
+  across both settings' ranges).
+
 ## Units, and why there is a calibration constant
 
 **Only ratios in an atmosphere model are physical.** The absolute scale is a convention, and every

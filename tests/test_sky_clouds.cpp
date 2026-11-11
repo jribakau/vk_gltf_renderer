@@ -25,6 +25,7 @@ using namespace shaderio;
 #include "../shaders/sky_clouds.h.slang"
 #include "../shaders/sky_clouds_noise.h.slang"
 #include "../src/sky_cloud_view.hpp"
+#include "../src/sky_visibility.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -946,4 +947,30 @@ TEST(SkyClouds, DISABLED_CoverageCurve)
       std::printf("cirrus at full cover shades %.4f of what it covers (CLOUD_CIRRUS_SHADE)\n", full.shaded / std::max(full.veiled, 1e-9));
     }
   }
+}
+
+// The air's visibility as a setting: the aerosol scaled until the air at the ground has it
+TEST(SkyVisibility, TheAerosolIsScaledToTheVisibilityAskedFor)
+{
+  namespace V = sky_visibility;
+  // Earth's own air as the preset has it: a clear day
+  const float rayleigh = 0.0135578F, aerosol = 0.06F / 0.9F;
+  EXPECT_NEAR(V::of(rayleigh, aerosol), 48.8F, 0.5F);
+  // none asked for, or no aerosol to scale: as it is
+  EXPECT_FLOAT_EQ(V::aerosolScale(0.0F, rayleigh, aerosol), 1.0F);
+  EXPECT_FLOAT_EQ(V::aerosolScale(-3.0F, rayleigh, aerosol), 1.0F);
+  EXPECT_FLOAT_EQ(V::aerosolScale(10.0F, rayleigh, 0.0F), 1.0F);
+  // asked for what it has: unchanged; and the air scaled has the visibility asked for
+  EXPECT_NEAR(V::aerosolScale(V::of(rayleigh, aerosol), rayleigh, aerosol), 1.0F, 1e-4F);
+  for(const float km : {3.0F, 10.0F, 20.0F, 100.0F})
+  {
+    const float scale = V::aerosolScale(km, rayleigh, aerosol);
+    EXPECT_NEAR(V::of(rayleigh, aerosol * scale), km, 1e-3F * km) << km;
+  }
+  // a summer haze of 10 km is some six times the clear day's aerosol
+  EXPECT_NEAR(V::aerosolScale(10.0F, rayleigh, aerosol), 5.66F, 0.1F);
+  // past what Rayleigh alone allows (about 290 km) there is still a little aerosol; and a fog is not
+  // this model's to make
+  EXPECT_FLOAT_EQ(V::aerosolScale(1000.0F, rayleigh, aerosol), V::kLeast);
+  EXPECT_FLOAT_EQ(V::aerosolScale(0.01F, rayleigh, aerosol), V::kMost);
 }

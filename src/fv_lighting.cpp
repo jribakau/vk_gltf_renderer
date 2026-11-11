@@ -135,6 +135,12 @@ void patchEnv(Env& e, const Json& p)
       field(e.plainColor, d.plainColor, v, [&](const Json& x) { return color(x, key); });
     else if(k == "skyPreset")
       field(e.skyPreset, d.skyPreset, v, [&](const Json& x) { return int(std::lround(number(x, key, 0.0, 2.0))); });
+    else if(k == "skyVisibility")
+      // 0 the atmosphere's own; else from a mist to air clearer than any on Earth
+      field(e.skyVisibility, d.skyVisibility, v, [&](const Json& x) {
+        const double km = number(x, key, 0.0, 500.0);
+        return km > 0.0 ? std::max(km, 1.0) : 0.0;
+      });
     else if(k == "name" || k == "size" || k == "loading")
       continue;  // read-only, the host's
     else
@@ -403,6 +409,8 @@ void patchBackdrop(fv::backdrop::Spec& b, const Json& p)
       field(b.density, d.density, v, [&](const Json& x) { return number(x, key, 0.25, 2.0); });
     else if(k == "relief")
       field(b.relief, d.relief, v, [&](const Json& x) { return number(x, key, 0.0, 2.0); });
+    else if(k == "air")
+      field(b.air, d.air, v, [&](const Json& x) { return number(x, key, 1.0, 20.0); });
     else if(k == "state" || k == "plants")
       continue;  // read-only, the host's
     else
@@ -556,7 +564,8 @@ Json toJson(const State& s)
         {"blur", e.blur},
         {"color", e.color},
         {"plainColor", e.plainColor},
-        {"skyPreset", e.skyPreset}}},
+        {"skyPreset", e.skyPreset},
+        {"skyVisibility", e.skyVisibility}}},
       {"sun",
        {{"enabled", u.enabled},
         {"intensity", u.intensity},
@@ -598,7 +607,7 @@ Json toJson(const State& s)
         {"shoulder", t.shoulder},
         {"highlightsToWhite", t.highlightsToWhite}}},
       {"backdrop",
-       {{"kind", s.backdrop.kind}, {"seed", s.backdrop.seed}, {"size", s.backdrop.size}, {"density", s.backdrop.density}, {"relief", s.backdrop.relief}}},
+       {{"kind", s.backdrop.kind}, {"seed", s.backdrop.seed}, {"size", s.backdrop.size}, {"density", s.backdrop.density}, {"relief", s.backdrop.relief}, {"air", s.backdrop.air}}},
   };
 }
 
@@ -939,6 +948,7 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"solidBackgroundColor", vec3(linearColor(e.color))},
       {"plainColor", vec3(linearColor(e.plainColor))},
       {"atmoPreset", e.skyPreset},
+      {"atmoVisibility", e.skyVisibility},
       // the physical sky's; every other environment leaves them be
       {"cloudCoverage", s.clouds.coverage},
       {"cloudThickness", s.clouds.thickness},
@@ -998,6 +1008,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"ptFireflyClampStill", kFireflyClampStill / exposure},
       // a backdrop's ground is the ground: the plane under it isn't drawn
       {"useInfinitePlane", g.mode != "off" && !fv::backdrop::planted(s.backdrop)},
+      // the air over a backdrop's land counts several times over (Spec::air); a scene's own, once
+      {"atmoAerialPerspectiveScale", fv::backdrop::planted(s.backdrop) ? s.backdrop.air : 1.0},
       {"isShadowCatcher", g.mode == "catcher"},
       {"infinitePlaneBaseColor", vec3(linearColor(g.color))},
       {"infinitePlaneRoughness", g.roughness},

@@ -51,8 +51,20 @@ struct Spec
   double      size    = 60.0;    // metres across the thick grass round where one looks from; a meadow's saplings' reach
   double      density = 1.0;     // of every layer's own, 0.25 to 2
   double      relief  = 1.0;     // how hilly the ground is beyond the clearing, 0 flat to 2
-  bool        operator==(const Spec&) const = default;
+  // How many metres of air a metre of the land counts for between the eye and what it sees (the
+  // physical sky's aerial perspective): 1 as it is. The land is some hundreds of metres to its
+  // horizon, and through that much clear air a far wood is as sharp and dark as a near one; a
+  // landscape reads as one by the air over kilometres. Nothing is planted by it.
+  double air = 6.0;
+  bool   operator==(const Spec&) const = default;
 };
+
+// Whether two specs plant the same: alike in all but what only the air reads
+inline bool samePlanting(Spec a, const Spec& b)
+{
+  a.air = b.air;
+  return a == b;
+}
 
 inline bool planted(const Spec& s)
 {

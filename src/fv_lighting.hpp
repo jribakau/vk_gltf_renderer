@@ -25,7 +25,9 @@
 // the renderer's. Pure, so it is tested without a device (tests/test_fv_lighting.cpp).
 //
 //   env:     source studio|hdr|sky|plain|none, path, intensity, rotation (degrees about +Y),
-//            background environment|blurred|color, blur (three's blurriness), color, plainColor, skyPreset
+//            background environment|blurred|color, blur (three's blurriness), color, plainColor, skyPreset,
+//            skyVisibility (km one sees through the physical sky's air, which veils the distance and
+//            whitens the horizon alike: sky_visibility.hpp; 0 the atmosphere's own), protocol 65
 //   sun:     enabled, intensity, azimuth, elevation (degrees), color, softness
 //   clouds:  coverage (0 clear to 1 overcast: the share of the land they shade), thickness (km from
 //            the base to the highest tops), seed (which arrangement), type cumulus|stratocumulus|
@@ -59,7 +61,8 @@
 //   backdrop: kind none|meadow|forest (ground that rolls away from where the figures stand, planted with the
 //            kit's plants; with one the ground section's plane isn't drawn), seed (which one), size
 //            (metres across what is planted underfoot), density (of every layer's own) and relief (how
-//            hilly, 0 flat): fv_backdrop.hpp, protocol 64. Read-only in the topic: state (off, missing:
+//            hilly, 0 flat): fv_backdrop.hpp, protocol 64; air (1 to 20: how many metres of air a metre
+//            of its land counts for, the distance's haze under the physical sky), protocol 65. Read-only in the topic: state (off, missing:
 //            no kit where settings.apply's backdropKit says; loading; ready) and plants (how many stand)
 //
 // Colours are "#rrggbb" in sRGB, as the panel shows them. A patch from before protocol 17 (a kept
@@ -91,6 +94,7 @@ struct Env
   std::string color      = "#2a2d33";
   std::string plainColor = "#808080";
   int         skyPreset  = 0;  // the physical sky's atmosphere: Earth, Mars, Alien
+  double      skyVisibility = 0.0;  // km through its air; 0 the atmosphere's own
 };
 
 struct Sun

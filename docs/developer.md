@@ -153,6 +153,8 @@ src/
 │                               #   the pass that bakes it ahead of the environment bake (docs/sky.md)
 ├── sky_cloud_view.hpp          # Where the clouds are seen from: the sky image that follows the camera
 │                               #   (cloudFollowStep) and the view image where it looks (unit-tested)
+├── sky_visibility.hpp          # The air's visibility as a setting: the aerosol scaled to a distance one sees
+│                               #   through it (unit-tested)
 ├── sun_position.cpp/hpp        # NOAA solar position: (place, UTC instant) -> bearing + altitude.
 │                               #   Pure, self-contained, nothing else links against it
 ├── frame_stream.cpp/hpp        # --stream: the headless run's rendered frames as MJPEG over HTTP, for a

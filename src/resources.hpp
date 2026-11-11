@@ -228,6 +228,10 @@ struct Settings
   // than absorbs. Extinction is derived from it, because that is the ratio people reason about --
   // "how sooty is the haze" -- and because OMI carries no absorption field at all.
   float     atmoMieAlbedo       = 0.9f;
+  // How far one sees through the air at the ground, km: the aerosol above scaled to it
+  // (sky_visibility.hpp, applied in buildAtmosphereParameters, so the values above stay the
+  // atmosphere's own). 0: as the atmosphere has it, which for Earth's is about 49 km.
+  float atmoVisibility = 0.0f;
   glm::vec3 atmoOzoneExtinction = {0.000649717f, 0.0018809f, 8.50167e-05f};  // 1/km
   float     atmoOzoneCenter     = 25.0f;                                     // km; peak of the ozone tent
   float     atmoOzoneWidth      = 30.0f;                                     // km; full width of the tent, zero to zero

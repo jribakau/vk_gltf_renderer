@@ -585,8 +585,38 @@ TEST(FvLighting, ABackdropIsPartOfTheLighting)
   EXPECT_DOUBLE_EQ(L::applyPatch(L::State{}, {{"backdrop", {{"density", 0}}}}).backdrop.density, 0.25);
   EXPECT_EQ(L::applyPatch(s, {{"backdrop", nullptr}}).backdrop.kind, "none");
   EXPECT_EQ(L::applyPatch(s, {{"backdrop", {{"kind", "forest"}}}}).backdrop.kind, "forest");
+  // its air (protocol 65): the land's distance counts several times over for the sky's haze, a
+  // scene without a backdrop's once
+  EXPECT_EQ(L::rendererParams(none, {})["atmoAerialPerspectiveScale"], 1.0);
+  EXPECT_EQ(L::rendererParams(s, {})["atmoAerialPerspectiveScale"], fv::backdrop::Spec{}.air);
+  const L::State hazy = L::applyPatch(s, {{"backdrop", {{"air", 12}}}});
+  EXPECT_EQ(L::rendererParams(hazy, {})["atmoAerialPerspectiveScale"], 12.0);
+  EXPECT_EQ(L::toJson(hazy)["backdrop"]["air"], 12.0);
+  EXPECT_DOUBLE_EQ(L::applyPatch(s, {{"backdrop", {{"air", 0}}}}).backdrop.air, 1.0);
+  EXPECT_DOUBLE_EQ(L::applyPatch(s, {{"backdrop", {{"air", 99}}}}).backdrop.air, 20.0);
+  EXPECT_EQ(L::rendererParams(L::applyPatch(hazy, {{"backdrop", {{"kind", "none"}}}}), {})["atmoAerialPerspectiveScale"], 1.0);
+  // and it plants nothing
+  EXPECT_TRUE(fv::backdrop::samePlanting(hazy.backdrop, s.backdrop));
+  EXPECT_FALSE(hazy.backdrop == s.backdrop);
+  EXPECT_FALSE(fv::backdrop::samePlanting(L::applyPatch(s, {{"backdrop", {{"seed", 8}}}}).backdrop, s.backdrop));
   EXPECT_THROW(L::applyPatch(L::State{}, {{"backdrop", {{"kind", "jungle"}}}}), std::invalid_argument);
   EXPECT_THROW(L::applyPatch(L::State{}, {{"backdrop", {{"trees", 3}}}}), std::invalid_argument);
+}
+
+// The sky's visibility (protocol 65): the atmosphere's own by default, sent as the renderer's
+// atmoVisibility, a mist at the least
+TEST(FvLighting, TheSkysVisibilityGoesToTheAtmosphere)
+{
+  const L::State none;
+  EXPECT_EQ(L::toJson(none)["env"]["skyVisibility"], 0.0);
+  EXPECT_EQ(L::rendererParams(none, {})["atmoVisibility"], 0.0);
+  const L::State s = L::applyPatch(L::State{}, {{"env", {{"skyVisibility", 12.5}}}});
+  EXPECT_DOUBLE_EQ(s.env.skyVisibility, 12.5);
+  EXPECT_EQ(L::rendererParams(s, {})["atmoVisibility"], 12.5);
+  EXPECT_EQ(L::toJson(L::applyPatch(L::State{}, L::toJson(s))), L::toJson(s));
+  EXPECT_DOUBLE_EQ(L::applyPatch(L::State{}, {{"env", {{"skyVisibility", 0.2}}}}).env.skyVisibility, 1.0);
+  EXPECT_DOUBLE_EQ(L::applyPatch(L::State{}, {{"env", {{"skyVisibility", 9000}}}}).env.skyVisibility, 500.0);
+  EXPECT_DOUBLE_EQ(L::applyPatch(s, {{"env", {{"skyVisibility", nullptr}}}}).env.skyVisibility, 0.0);
 }
 
 // Highlights to white goes to the renderer (protocol 63), Khronos's own rate by default, whatever the curve

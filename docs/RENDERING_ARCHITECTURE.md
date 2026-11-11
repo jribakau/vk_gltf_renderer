@@ -652,6 +652,21 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   times a second in flight, with every plant near the camera changing size as its distance did.
   With tiles the same flight's worst gap between frames is 30 to 50 ms and none is longer.
 
+**The air over it** (`Spec::air`, the lighting's `backdrop.air`): how many metres of air each metre
+of the land counts for under the physical sky, sent as `atmoAerialPerspectiveScale` while a backdrop
+stands and 1 without one (see [sky.md](sky.md#how-much-air)). It is what gives the land its
+distance, and it plants nothing (`samePlanting`).
+
+**How bright the plants are** is the kit's doing, in the app (`backdrop_kit.rs`, `Leaf`): Poly
+Haven's leaf cards are matte and pass no light on. Against an 18% grey ball in the same sun (linear
+stills), the meadow's grass as it came reflected 3.4%, 2.4 stops under the ball and as red as
+green, where a real meadow is about a stop under. Its colour map is a real leaf's brightness (9%),
+so brightening the colour alone could not make that up without blades lighter than any leaf (2.8
+times it gave 6.3%); a real leaf passes on about as much as it reflects. With the leaf materials
+given that (`KHR_materials_diffuse_transmission`) and a greener colour the grass is 7.4% seen
+steeply and 8.6% along the ground, at the same cost a frame (8.0 against 8.1 ms looking down into
+it). The firs were where real conifers are, under 5%, and only lose some red.
+
 What gives way while a backdrop stands: the flat ground plane is off (`useInfinitePlane`; it comes back
 while the kit is missing or loading), and "Auto" ground, framing the scene and the fly speed measure
 the scene without it (`RetainedScene::bounds(except)`, `contentBounds`), since its ground reaches the
