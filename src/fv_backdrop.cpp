@@ -67,17 +67,18 @@ float fbm(float x, float z, uint32_t seed, uint32_t channel)
 }
 
 // The noise channels: the ground's two scales, then each layer's cover
-constexpr uint32_t kChannelHills = 1, kChannelFar = 11, kChannelCover = 100;
+constexpr uint32_t kChannelHills = 1, kChannelFar = 11, kChannelShade = 21, kChannelCover = 100;
 
 // How much of a layer's own density stands at `d` metres, and how much its plants have grown there
 float thinning(const Layer& l, float d, float& growth)
 {
   growth = 1.0F;
+  const float edge = l.fade > 0.0F ? 1.0F - smoothstep(l.to - l.fade, l.to, d) : 1.0F;
   if(l.thin <= 0.0F)
-    return 1.0F;
+    return edge;
   const float f = 1.0F + (d / l.thin) * (d / l.thin);
   growth        = std::min(std::sqrt(f), l.grow);
-  return 1.0F / f;
+  return edge / f;
 }
 
 // The share of the ground a layer stands on at `d`: its cover, filled in toward its far edge
@@ -138,6 +139,7 @@ Terrain terrain(const Spec& spec, float tile)
     t.positions.emplace_back(x, h, z);
     t.normals.push_back(glm::normalize(glm::vec3(-dx, 1.0F, -dz)));
     t.uvs.emplace_back(x * scale, z * scale);
+    t.shades.push_back(smoothstep(0.38F, 0.62F, fbm(x / 40.0F, z / 40.0F, uint32_t(spec.seed), kChannelShade)));
   };
   vertex(0.0F, 0.0F);
   for(const float r : radii)
@@ -166,13 +168,14 @@ std::vector<Layer> layers(const Spec& spec)
   const float edge = float(spec.size) * 0.5F;
   return {
       // grass everywhere underfoot, thinning and growing with distance; the ground's own grass carries on
-      {.role = "grass", .perSquareMetre = 150.0, .from = 0.0F, .to = edge, .thin = 8.0F, .grow = 2.0F},
+      {.role = "grass", .perSquareMetre = 150.0, .from = 0.0F, .to = edge, .thin = 8.0F, .grow = 2.0F, .fade = 0.35F * edge},
       // flowers in drifts
-      {.role = "flower", .perSquareMetre = 8.0, .from = 0.0F, .to = edge, .thin = 10.0F, .grow = 1.5F, .cover = 0.4F, .patch = 9.0F},
+      {.role = "flower", .perSquareMetre = 8.0, .from = 0.0F, .to = edge, .thin = 10.0F, .grow = 1.5F, .fade = 0.35F * edge, .cover = 0.4F, .patch = 9.0F},
       // saplings here and there, clear of where the figures stand
       {.role = "sapling", .perSquareMetre = 0.03, .from = 7.0F, .to = edge + 10.0F, .cover = 0.5F, .patch = 25.0F, .scaleMin = 0.7F, .scaleMax = 1.6F},
-      // trees in groves from 22 m, closing into woods toward 260 m
-      {.role = "tree", .perSquareMetre = 0.02, .from = 22.0F, .to = 260.0F, .cover = 0.35F, .patch = 70.0F, .closeFar = 0.8F, .scaleMin = 0.8F, .scaleMax = 1.3F, .sink = 0.15F},
+      // trees in groves from 22 m, closing into woods toward 260 m; young ones to twice their size,
+      // since a kit's trees are the ones light enough to stand in thousands
+      {.role = "tree", .perSquareMetre = 0.02, .from = 22.0F, .to = 260.0F, .cover = 0.35F, .patch = 70.0F, .closeFar = 0.8F, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F},
   };
 }
 

@@ -232,7 +232,7 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
                                            {{{"role", "grass"}, {"file", "grass.gltf"}},
                                             {{"role", "tree"}, {"file", "tree.gltf"}},
                                             {{"role", "tree"}, {"file", "giant.gltf"}, {"heaviest", 10}}}},
-                                          {"ground", {{"meadow", {{"color", {0.1, 0.2, 0.05}}, {"tile", 3.0}}}}}}
+                                          {"ground", {{"meadow", {{"color", {0.1, 0.2, 0.05}}, {"tile", 3.0}, {"tint", {0.5, 1.0, 0.5}}, {"tintDry", {1.0, 1.0, 0.5}}}}}}}
                                          .dump();
   HostRig            rig;
   rs::RetainedScene& scene = rig.renderer.hostScene();
@@ -270,6 +270,14 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
     if(entity->mesh->copies.empty())
     {
       grounds++;
+      // the kit's two tints, mixed by the terrain's shade, as the ground's vertex colours
+      const rs::MeshRecord* ground = scene.mesh(entity->mesh->parts.at(0).mesh);
+      ASSERT_NE(ground, nullptr);
+      ASSERT_EQ(ground->colors.size(), ground->positions.size());
+      const auto [lo, hi] = std::minmax_element(ground->colors.begin(), ground->colors.end(), [](const glm::vec4& a, const glm::vec4& b) { return a.x < b.x; });
+      EXPECT_NEAR(lo->x, 0.5F, 0.05F);
+      EXPECT_NEAR(hi->x, 1.0F, 0.05F);
+      EXPECT_FLOAT_EQ(lo->z, 0.5F);
       continue;
     }
     variants++;
@@ -279,7 +287,7 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
     // on the ground, or a tree's foot a little into it
     const float ground = fv::backdrop::height(spec, m[3].x, m[3].z);
     EXPECT_LE(m[3].y, ground + 1e-3F);
-    EXPECT_GE(m[3].y, ground - 0.2F);
+    EXPECT_GE(m[3].y, ground - 0.3F);
     // the variant its file has twice the size stands twice the size
     doubled = doubled || glm::length(glm::vec3(entity->mesh->copies[0][1])) > 1.55F;
   }

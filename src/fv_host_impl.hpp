@@ -1481,6 +1481,9 @@ struct FvHost::Impl
       std::string diffuse, normal, arm;  // relative to the kit's folder; "" none
       float       tile = 2.5F;
       glm::vec3   color{0.10F, 0.16F, 0.05F};  // a meadow's green, linear, when no map says
+      // what the ground's colour is multiplied by, linear: `tint`, and `tintDry` where the terrain's
+      // shade says the ground is drier, so a tiled map isn't one colour to the horizon
+      glm::vec3 tint{1.0F}, tintDry{1.0F};
     };
     std::filesystem::path         dir;
     std::vector<Plant>            plants;

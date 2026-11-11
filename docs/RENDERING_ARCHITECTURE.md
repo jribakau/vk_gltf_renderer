@@ -604,14 +604,18 @@ protocol 64), so undo and a scene file carry it as they carry the ground. Two ha
   stands, rolling beyond it and rising to hills toward the horizon; `terrain` is its mesh, a disc of
   rings that widen with distance, so the triangles are small underfoot and large far off; `layers` says
   what grows in a kind of backdrop and how thickly, and `scatter` where each plant stands, a jittered
-  grid thinned by patch noise and by distance, per variant of its role. All of it is a pure function of
-  the spec: the same seed is the same meadow on every machine.
+  grid thinned by patch noise and by distance, per variant of its role; a layer fades out before its
+  far edge, so the planted grass has no line where it stops. All of it is a pure function of the
+  spec: the same seed is the same meadow on every machine.
 - **The planting** (`src/fv_host_backdrop.cpp`): the plants are files in a kit folder the app fills
   (`settings.apply {backdropKit}`), listed by its `kit.json` with a role each (`readBackdropKit`, read
   on a loader thread). Under one host-owned root entity each plant file is imported once and each of
   its mesh nodes is a variant; a variant is drawn at all its places through the mesh's `copies`, the
   instancing path, so a meadow is a few dozen entities and bottom-level structures whatever its plant
-  count. The ground is a model built in memory from `terrain` with the kit's ground maps.
+  count. The ground is a model built in memory from `terrain` with the kit's ground maps. A tiled map
+  is one colour from far off, and a photographed grass ground is mostly soil: the kit gives two tints,
+  mixed by the terrain's `shades` (drifts some tens of metres across) into vertex colours, which bring
+  the ground beyond the planted grass to that grass's colour as it renders.
   A change of density or size replants in place (`plantBackdrop`: the copies set again); a change of
   seed or relief rebuilds the ground too.
 
@@ -623,7 +627,10 @@ physics floor and Drop still meet it. The lighting topic says `backdrop.state` (
 ready) and `backdrop.plants`.
 
 Measured on an RTX 4080 at 1080p, the moving view: an empty floor 1.9 ms of path tracing, 400,000
-alpha-tested grass clumps 8.4 ms; about 0.8 KB of GPU memory an instance.
+alpha-tested grass clumps 8.4 ms; about 0.8 KB of GPU memory an instance. The app's kit (Poly Haven's
+grass, two flowers, fir saplings and three young firs, 1K maps) as a default meadow: 75,000 plants,
+12.5 ms against 2.1 under the same sky, 410 MB of GPU memory, standing 0.2 s after it is asked for
+and replanted in 0.05 s.
 Checked: `tests/test_fv_backdrop.cpp`, `FvLighting.ABackdropIsPartOfTheLighting`,
 `FvHost.ABackdropIsPlantedFromItsKit`.
 

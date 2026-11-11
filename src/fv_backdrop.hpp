@@ -58,7 +58,10 @@ struct Terrain
   std::vector<glm::vec3> positions;
   std::vector<glm::vec3> normals;
   std::vector<glm::vec2> uvs;
-  std::vector<uint32_t>  indices;
+  // 0..1 a vertex, in drifts some 40 m across: where the ground is drier. A tiled texture is one
+  // colour from far off; the kit's two tints mixed by this give the distance its patches
+  std::vector<float>    shades;
+  std::vector<uint32_t> indices;
 };
 Terrain terrain(const Spec& spec, float tile);
 
@@ -73,6 +76,7 @@ struct Layer
   // that, up to `grow` times, so distant ground keeps its cover with far fewer plants. 0: even.
   float thin = 0.0F;
   float grow = 1.0F;
+  float fade = 0.0F;  // metres before `to` over which it thins out to nothing, so it has no edge
   // In drifts and groves: the share of the ground the layer stands on at all (1 everywhere), by a noise
   // `patch` metres across; and how much nearer its far edge it fills in whatever the noise (0 none),
   // so trees close the horizon

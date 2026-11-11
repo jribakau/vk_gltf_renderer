@@ -8,7 +8,9 @@
 //    "plants": [{"role": "grass" | "flower" | "sapling" | "tree", "file": "<glTF, relative>",
 //                "heaviest"?: <triangles: a variant of the file with more is left out>}, ...],
 //    "ground": {"<kind>": {"diffuse"?, "normal"?, "arm"?: "<image, relative>", "tile"?: <metres>,
-//                          "color"?: [r, g, b] linear, without a diffuse map}}}
+//                          "color"?: [r, g, b] linear, without a diffuse map,
+//                          "tint"?, "tintDry"?: [r, g, b] linear, what the colour is multiplied by,
+//                          the second in the terrain's drier drifts (tint's when not given)}}}
 //
 // Every mesh of a plant's file is a variant of it. The kit is read on a worker (a tree's file is
 // hundreds of megabytes) and kept; what stands in the scene is one root entity of the host's own, as
@@ -69,6 +71,13 @@ tinygltf::Model FvHost::Impl::backdropTerrainModel(const fv::backdrop::Terrain& 
                                        TINYGLTF_COMPONENT_TYPE_FLOAT, t.normals.size(), TINYGLTF_TYPE_VEC3);
   prim.attributes["TEXCOORD_0"]  = put(t.uvs.data(), t.uvs.size() * sizeof(glm::vec2), TINYGLTF_TARGET_ARRAY_BUFFER,
                                        TINYGLTF_COMPONENT_TYPE_FLOAT, t.uvs.size(), TINYGLTF_TYPE_VEC2);
+  // the two tints by the terrain's shade, as vertex colours: they multiply the map
+  std::vector<glm::vec3> colors(t.shades.size());
+  for(size_t i = 0; i < colors.size(); i++)
+    colors[i] = glm::mix(g.tint, g.tintDry, t.shades[i]);
+  if(colors.size() == t.positions.size() && (g.tint != glm::vec3(1.0F) || g.tintDry != glm::vec3(1.0F)))
+    prim.attributes["COLOR_0"] = put(colors.data(), colors.size() * sizeof(glm::vec3), TINYGLTF_TARGET_ARRAY_BUFFER,
+                                     TINYGLTF_COMPONENT_TYPE_FLOAT, colors.size(), TINYGLTF_TYPE_VEC3);
   prim.indices                   = put(t.indices.data(), t.indices.size() * sizeof(uint32_t), TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER,
                                        TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT, t.indices.size(), TINYGLTF_TYPE_SCALAR);
   glm::vec3 lo(std::numeric_limits<float>::max()), hi(std::numeric_limits<float>::lowest());
@@ -163,8 +172,16 @@ std::shared_ptr<const FvHost::Impl::BackdropKit> FvHost::Impl::readBackdropKit(c
       ground.normal  = g.value("normal", std::string());
       ground.arm     = g.value("arm", std::string());
       ground.tile    = std::max(g.value("tile", ground.tile), 0.1F);
-      if(g.contains("color") && g["color"].is_array() && g["color"].size() == 3)
-        ground.color = {g["color"][0].get<float>(), g["color"][1].get<float>(), g["color"][2].get<float>()};
+      const auto rgb = [&](const char* key, glm::vec3& out) {
+        if(!g.contains(key) || !g[key].is_array() || g[key].size() != 3 || !g[key][0].is_number() || !g[key][1].is_number() || !g[key][2].is_number())
+          return false;
+        out = {g[key][0].get<float>(), g[key][1].get<float>(), g[key][2].get<float>()};
+        return true;
+      };
+      rgb("color", ground.color);
+      rgb("tint", ground.tint);
+      if(!rgb("tintDry", ground.tintDry))
+        ground.tintDry = ground.tint;
       kit->ground[it.key()] = ground;
     }
   return kit;

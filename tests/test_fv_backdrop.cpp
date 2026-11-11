@@ -2,6 +2,7 @@
 // a seed every time, a mesh that is the height function's, and plants that stand on it where their
 // layer says, as thickly as it says.
 
+#include <algorithm>
 #include <cmath>
 #include <set>
 
@@ -71,7 +72,14 @@ TEST(BackdropGround, TheMeshIsTheHeightFunctions)
   ASSERT_FALSE(t.positions.empty());
   ASSERT_EQ(t.normals.size(), t.positions.size());
   ASSERT_EQ(t.uvs.size(), t.positions.size());
+  ASSERT_EQ(t.shades.size(), t.positions.size());
   ASSERT_EQ(t.indices.size() % 3, 0u);
+  // drier drifts and greener ground both, so the distance isn't one colour
+  const auto [driest, greenest] = std::minmax_element(t.shades.begin(), t.shades.end());
+  EXPECT_GE(*driest, 0.0F);
+  EXPECT_LE(*greenest, 1.0F);
+  EXPECT_LT(*driest, 0.1F);
+  EXPECT_GT(*greenest, 0.9F);
   float reach = 0.0F;
   for(size_t i = 0; i < t.positions.size(); i++)
   {
@@ -188,6 +196,28 @@ TEST(BackdropScatter, ALayerThinsAndGrowsWithDistance)
   EXPECT_LT(farDensity, nearDensity / 10.0);
   EXPECT_NEAR(nearScale / float(near), 1.06F, 0.05F);
   EXPECT_FLOAT_EQ(farScale / float(far), 2.0F);  // grown to its cap
+}
+
+TEST(BackdropScatter, ALayerFadesOutBeforeItsEdge)
+{
+  const B::Layer hard{.role = "grass", .perSquareMetre = 20.0, .from = 0.0F, .to = 30.0F, .scaleMin = 1.0F, .scaleMax = 1.0F};
+  B::Layer       soft = hard;
+  soft.fade           = 10.0F;
+  const auto count = [](const B::Layer& layer, float from, float to) {
+    size_t n = 0;
+    for(const auto& variant : B::scatter(meadow(), layer, 0, 2))
+      for(const glm::mat4& m : variant)
+      {
+        const float d = glm::length(glm::vec2(m[3].x, m[3].z));
+        n += d >= from && d < to ? 1 : 0;
+      }
+    return n;
+  };
+  // the same plants up to where the fade starts, half of them through it, next to none at the edge
+  EXPECT_EQ(count(soft, 0.0F, 20.0F), count(hard, 0.0F, 20.0F));
+  EXPECT_NEAR(double(count(soft, 20.0F, 30.0F)), 0.5 * double(count(hard, 20.0F, 30.0F)), 0.06 * double(count(hard, 20.0F, 30.0F)));
+  EXPECT_LT(count(soft, 29.0F, 30.0F) * 20, count(hard, 29.0F, 30.0F));
+  EXPECT_NEAR(double(B::expectedCount(meadow(), soft)), double(count(soft, 0.0F, 30.0F)), 0.05 * double(count(soft, 0.0F, 30.0F)));
 }
 
 TEST(BackdropLayers, AMeadowPlantsGrassFlowersSaplingsAndTrees)
