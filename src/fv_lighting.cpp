@@ -1010,6 +1010,9 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"useInfinitePlane", g.mode != "off" && !fv::backdrop::planted(s.backdrop)},
       // the air over a backdrop's land counts several times over (Spec::air); a scene's own, once
       {"atmoAerialPerspectiveScale", fv::backdrop::planted(s.backdrop) ? s.backdrop.air : 1.0},
+      // and its land gives way to the sky's own ground before it ends
+      {"landFadeFrom", fv::backdrop::planted(s.backdrop) ? double(fv::backdrop::kLandFadeFrom) : 0.0},
+      {"landFadeTo", fv::backdrop::planted(s.backdrop) ? double(fv::backdrop::kLandFadeTo) : 0.0},
       {"isShadowCatcher", g.mode == "catcher"},
       {"infinitePlaneBaseColor", vec3(linearColor(g.color))},
       {"infinitePlaneRoughness", g.roughness},

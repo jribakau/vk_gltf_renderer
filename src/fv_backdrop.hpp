@@ -75,16 +75,36 @@ inline bool planted(const Spec& s)
 // rises into its hills over kClearingEdge more
 inline constexpr float kClearing     = 5.0F;
 inline constexpr float kClearingEdge = 25.0F;
-// Where the ground ends: far enough for its hills to be the horizon's
+// Where the planted land's hills have risen: the horizon of a camera on the ground
 inline constexpr float kHorizon = 900.0F;
+// Where the trees have thinned out to nothing: beyond, woods are a colour of the ground (`woods`)
+inline constexpr float kTreesEnd = 2200.0F;
+// Where the ground ends: ridges some hundreds of metres high by then, kilometres off, so a camera
+// in the air has land to the haze and not a disc's edge
+inline constexpr float kLandsEnd = 8000.0F;
+// Over these distances from the origin what the camera sees of the land gives way to the planet the
+// physical sky draws under its horizon (the renderer's landFadeFrom, landFadeTo), so the land has
+// no rim: the two are lit by different sums of the same air, and meet at a line otherwise
+inline constexpr float kLandFadeFrom = 0.6F * kLandsEnd;
+inline constexpr float kLandFadeTo   = 0.96F * kLandsEnd;
+// The ground's mesh: each ring this much further out than the last. A colour that changes over
+// less than three rings is drawn as blocks, so the far ground's patches grow by three times this
+inline constexpr float kMeshGrowth = 0.06F;
 // Where a meadow's groves have closed into the wood round it
 inline constexpr float kWoods = 260.0F;
 
 // The ground's height over the floor at (x, z)
 float height(const Spec& spec, float x, float z);
 
-// The ground as a mesh: a disc, its rings fine underfoot and coarser with distance out to kHorizon, with
-// smooth normals and UVs that tile every `tile` metres
+// How much of a place is wood that no tree stands for, 0 to 1: beyond where the far trees keep
+// their cover (they thin, and each grows, until its growth is spent), where their layer's groves
+// are. The ground is that much the colour of a wood seen from afar, so the few trees that still
+// stand out there read as the edge of one.
+float woods(const Spec& spec, float x, float z);
+
+// The ground as a mesh: a disc, its rings fine underfoot and coarser with distance out to kLandsEnd, with
+// smooth normals (the slope over a ring's width, so far ground is lit as its mesh is) and UVs that
+// tile every `tile` metres
 struct Terrain
 {
   std::vector<glm::vec3> positions;
@@ -93,6 +113,7 @@ struct Terrain
   // 0..1 a vertex, in drifts some 40 m across: where the ground is drier. A tiled texture is one
   // colour from far off; the kit's two tints mixed by this give the distance its patches
   std::vector<float>    shades;
+  std::vector<float>    woods;  // `woods` a vertex
   std::vector<uint32_t> indices;
 };
 Terrain terrain(const Spec& spec, float tile);
@@ -116,10 +137,15 @@ struct Layer
   // `patch` metres across; and how much nearer its far edge it fills in whatever the noise (0 none),
   // so trees close the horizon, or nearer its near edge, so a layer that carries a closed one on
   // opens out of it
-  float cover     = 1.0F;
-  float patch     = 20.0F;
-  float closeFar  = 0.0F;
-  float closeNear = 0.0F;
+  // `patchGrows`: past where it is `patch` already, the groves are this share of the distance across
+  // (by the noise's octaves, a doubling at a time), so far groves are as large as the far ground's
+  // mesh can draw (`woods`, kMeshGrowth).
+  float cover      = 1.0F;
+  float patch      = 20.0F;
+  float closeFar   = 0.0F;
+  float closeNear  = 0.0F;
+  float closeSpan  = 0.0F;  // metres from the near edge over which closeNear opens; 0: three tenths of the layer
+  float patchGrows = 0.0F;
   float scaleMin = 0.8F;
   float scaleMax = 1.25F;
   float sink     = 0.0F;  // metres into the ground, times its scale: a trunk's foot on a slope

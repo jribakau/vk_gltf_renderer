@@ -234,7 +234,7 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
                                             {{"role", "tree"}, {"file", "tree.gltf"}},
                                             {{"role", "tree"}, {"file", "giant.gltf"}, {"heaviest", 10}},
                                             {{"role", "fern"}, {"file", "fern.gltf"}}}},
-                                          {"ground", {{"meadow", {{"color", {0.1, 0.2, 0.05}}, {"tile", 3.0}, {"tint", {0.5, 1.0, 0.5}}, {"tintDry", {1.0, 1.0, 0.5}}}}}}}
+                                          {"ground", {{"meadow", {{"color", {0.1, 0.2, 0.05}}, {"tile", 3.0}, {"tint", {0.5, 1.0, 0.5}}, {"tintDry", {1.0, 1.0, 0.5}}, {"tintWoods", {0.75, 0.2, 0.5}}, {"albedo", {0.06, 0.08, 0.03}}}}}}}
                                          .dump();
   HostRig            rig;
   rs::RetainedScene& scene = rig.renderer.hostScene();
@@ -310,6 +310,10 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
         EXPECT_NEAR(lo->x, 0.5F, 0.05F);
         EXPECT_NEAR(hi->x, 1.0F, 0.05F);
         EXPECT_FLOAT_EQ(lo->z, 0.5F);
+        // and the woods' tint where the far ground is one: no other has so little green
+        const auto darkest = std::min_element(ground->colors.begin(), ground->colors.end(), [](const glm::vec4& a, const glm::vec4& b) { return a.y < b.y; });
+        EXPECT_NEAR(darkest->y, 0.2F, 0.05F);
+        EXPECT_NEAR(darkest->x, 0.75F, 0.05F);
         continue;
       }
       out.variants++;

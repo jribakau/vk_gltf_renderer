@@ -808,7 +808,7 @@ shaderio::SkyAtmosphereParameters GltfRenderer::buildAtmosphereParameters() cons
 
   p.solarIrradiance    = s.atmoSolarIrradiance;
   p.sunAngularRadius   = s.atmoSunAngularRadius;
-  p.groundAlbedo       = s.atmoGroundAlbedo;
+  p.groundAlbedo       = glm::any(glm::greaterThan(s.atmoLandAlbedo, glm::vec3(0.0F))) ? s.atmoLandAlbedo : s.atmoGroundAlbedo;
   p.rayleighScattering = s.atmoRayleighScattering;
   p.mieScattering      = s.atmoMieScattering;
   p.miePhaseFunctionG  = s.atmoMieAnisotropy;

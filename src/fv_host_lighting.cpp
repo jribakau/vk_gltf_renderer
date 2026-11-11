@@ -118,6 +118,9 @@ void FvHost::Impl::applyLighting(bool everything)
   // a backdrop that doesn't stand (its kit missing, or being read) leaves the ground's plane drawn
   if(fv::backdrop::planted(lighting.backdrop) && backdropState != "ready")
     params["useInfinitePlane"] = lighting.ground.mode != "off";
+  // past a backdrop's land the planet under the physical sky is the land's colour, not average ground
+  const glm::vec3 land   = backdropLandAlbedo();
+  params["atmoLandAlbedo"] = Json::array({land.x, land.y, land.z});
   if(const auto still = appliedParams.find("ptFireflyClampStill"); still != appliedParams.end() && still->is_number())
     params["ptFireflyClampStill"] = fv::lighting::stillFireflyClamp(params["ptFireflyClampStill"].get<double>(), still->get<double>());
   Json changed                    = Json::object();

@@ -24,11 +24,12 @@
 // (evalPhysicalSkyBackground in gltf_pathtrace.slang). Sharing it is what keeps the lit scene and
 // the visible sky the same sky; a second copy would drift silently.
 //
-// The observer is fixed: a point on the +Y axis, `observerRadius` km from the planet's centre,
-// wherever the scene camera is. That is what lets the sky be baked at all -- an observer that moved
-// with the camera would invalidate the image every frame -- and a per-ray caller has to stand where
-// the bake stood, or its horizon would not meet the baked one. The bake publishes the radius it
-// used in SkySunDisk::observerRadius for exactly that. Up is +Y because the rest of the renderer is
+// The observer is a point on the +Y axis, `observerRadius` km from the planet's centre. The bake's
+// is fixed wherever the scene camera is, which is what lets the sky be baked at all -- an observer
+// that moved with the camera would invalidate the image every frame -- and it publishes the radius
+// it used in SkySunDisk::observerRadius. The path tracer's per-ray caller stands at the camera's own
+// height (skyEyeRadius), which by the ground is the bake's and in the air is not: there the sky
+// the camera sees has its horizon lower than the lighting field's, by a degree or two. Up is +Y because the rest of the renderer is
 // Y-up; the model only ever uses the observer through dot products, so the axis is ours to pick.
 //
 
@@ -46,6 +47,20 @@ float brunetonHorizonMu(SkyAtmosphereParameters atmosphere, float r)
 {
   const float sinHorizon = atmosphere.bottomRadius / r;
   return -sqrt(max(1.0F - sinHorizon * sinHorizon, 0.0F));
+}
+
+// Where the camera's eye is for the sky it sees: at its own height over the scene's floor, which is
+// where the bake's observer stands. `eyeAltitudeKm` is the eye aerial perspective stands
+// (SceneFrameInfo::observerAltitudeKm), whose height over that floor is multiplied by `airScale`
+// (aerialPerspectiveScale: a backdrop counts its land's air several times over); the sky is seen
+// from the height itself, as the cloud images are baked, whose air is summed against this sky.
+// Never under the bake's observer, and inside the atmosphere with room to its top.
+float skyEyeRadius(SkyAtmosphereParameters atmosphere, float bakeObserverRadius, float eyeAltitudeKm, float airScale)
+{
+  const float top   = atmosphere.topRadius - 0.05F * (atmosphere.topRadius - atmosphere.bottomRadius);
+  const float floor = bakeObserverRadius - atmosphere.bottomRadius;
+  const float above = airScale > 0.0F ? max(eyeAltitudeKm - floor, 0.0F) / airScale : 0.0F;
+  return clamp(bakeObserverRadius + above, min(bakeObserverRadius, top), top);
 }
 
 // The light the air scatters toward the observer along `dir`, to the ground or out of the atmosphere:

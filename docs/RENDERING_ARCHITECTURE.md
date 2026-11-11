@@ -605,8 +605,14 @@ the horizon, on a floor of needles with ferns, tufts of grass, bushes, mossy roc
 wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halves:
 
 - **The shape** (`src/fv_backdrop.hpp`, Vulkan-free): `height` is the ground, flat where the scene
-  stands, rolling beyond it and rising to hills toward the horizon; `terrain` is its mesh, a disc of
-  rings that widen with distance, so the triangles are small underfoot and large far off. All of it
+  stands, rolling beyond it, rising to hills toward the horizon of a camera on the ground
+  (`kHorizon`) and, past those, to ridges some hundreds of metres high by the land's end
+  (`kLandsEnd`), kilometres off: a camera in the air looks out over land to the haze and not at a
+  disc's edge. `terrain` is its mesh, a disc of rings that widen with distance, so the triangles are
+  small underfoot and large far off; what colours it (the drier drifts, the far woods) changes over
+  no less than three rings, or the mesh would draw it as blocks (`sizedNoise`: the noise at
+  doublings of its size, blended; a size that simply grew with the place's distance would leave a
+  function of its direction, stripes out from the origin). All of it
   is a pure function of the spec: the same seed is the same land on every machine.
 - **Trees, saplings, bushes, rocks and dead wood have places** (`layers`, `scatter`): a jittered
   grid thinned by patch noise, per variant of the role. They never change. The trees stand out to
@@ -615,7 +621,10 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   (`Layer::thinFrom`) while each tree grows by the root of it, so the far hills keep their cover
   with a few thousand trees, grown as old firs are. A meadow's far layer starts as closed as its
   near one ends (`closeNear`) and opens into woods and pasture: from the air the wood round the
-  meadow has no outer rim.
+  meadow has no outer rim. Where growth is spent the trees thin out to nothing (`kTreesEnd`), and
+  the wood carries on as a colour of the ground (`woods`, the kit's `tintWoods`) in the same
+  groves, which grow with distance as the mesh does (`Layer::patchGrows`): the last sparse trees
+  stand on ground already dark and read as a wood's edge.
 - **Grass and its drifts are tiles** (`grassCovers`, `drifts`, `patch`, `grassTiles`, `driftTiles`, `tilePlace`):
   a square of ground with its few hundred plants is one mesh, and the ground is covered by squares
   of three kinds, thick grass in 2 m tiles where one looks from, thinner and larger in 4 m tiles
@@ -651,6 +660,13 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   place them and another 160 ms in the renderer's sync, a fifth of a second up to two and a half
   times a second in flight, with every plant near the camera changing size as its distance did.
   With tiles the same flight's worst gap between frames is 30 to 50 ms and none is longer.
+
+**Where it ends.** The ground stops at `kLandsEnd`, and past it is only what the physical sky
+draws under its horizon: the planet, given the land's own colour (the kit's `albedo`, sent as
+`atmoLandAlbedo`). Between `kLandFadeFrom` and `kLandFadeTo` what the camera hit gives way to that
+(`landFadeFrom`, `landFadeTo`), so the land has no rim; see [sky.md](sky.md#fixed-observer) for
+why the two do not simply meet. Under another environment than the physical sky the land ends at
+its edge.
 
 **The air over it** (`Spec::air`, the lighting's `backdrop.air`): how many metres of air each metre
 of the land counts for under the physical sky, sent as `atmoAerialPerspectiveScale` while a backdrop
@@ -693,6 +709,11 @@ alpha-tested twigs, and a view in a wood is all firs; half as many of everything
 15.7 ms, so the count is not what it turns on. The trees out to the horizon cost a meadow's ground
 view nothing measurable (15.2 ms with them, 15.1 before). The meadow's bushes and rocks are 85 MB
 of its memory, their maps mostly.
+
+The land past its hills, the far trees and the sky from the camera's height cost a frame nothing
+that could be measured (meadow 14.4 to 14.7 ms by the origin, forest 16.7; from 250 m up 15.4 and
+21.0), and 46 MB (681 for the meadow). From 700 m up, looking out, a frame is 5 to 7 ms of path
+tracing; from 2 km, 4.4.
 
 A flight of 120 m at 15 m/s over the meadow (measured before the far trees, which a flight does
 not touch): the gaps between frames 18.5 ms at the median (17.3 over the bare floor, the stream's

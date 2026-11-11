@@ -332,6 +332,20 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.atmoSunAngularRadius, Persist::eYes, 0.0F, 0.2F);
   m_settings.addVector({.name = "atmoGroundAlbedo", .help = "Physical sky: ground reflectance, linear RGB", .callbackSuccess = invalidateAtmosphere},
                        &m_resources.settings.atmoGroundAlbedo, Persist::eYes);
+  m_settings.addVector({.name            = "atmoLandAlbedo",
+                        .help            = "Physical sky: what the land round the scene reflects, linear RGB; it takes the "
+                                           "ground reflectance's place. 0 0 0 for none",
+                        .callbackSuccess = invalidateAtmosphere},
+                       &m_resources.settings.atmoLandAlbedo, Persist::eNo);
+  m_settings.add({.name            = "landFadeFrom",
+                  .help            = "Physical sky: the distance from the origin past which what the camera hit gives way "
+                                     "to the sky's own ground (scene units; 0: none)",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.landFadeFrom, Persist::eNo, 0.0F, 1e9F);
+  m_settings.add({.name            = "landFadeTo",
+                  .help            = "Physical sky: the distance from the origin by which it has given way wholly",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.landFadeTo, Persist::eNo, 0.0F, 1e9F);
   // Altitude changes no LUT -- it is a bake input only -- so it is the cheap one of the three.
   m_settings.add({.name            = "atmoObserverAltitude",
                   .help            = "Physical sky: observer height above the ground (metres)",

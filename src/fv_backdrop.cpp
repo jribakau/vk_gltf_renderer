@@ -69,7 +69,7 @@ float fbm(float x, float z, uint32_t seed, uint32_t channel)
 }
 
 // The noise channels: the ground's two scales, then each layer's cover
-constexpr uint32_t kChannelHills = 1, kChannelFar = 11, kChannelShade = 21, kChannelDrift = 31, kChannelClump = 41, kChannelCover = 100;
+constexpr uint32_t kChannelHills = 1, kChannelFar = 11, kChannelShade = 21, kChannelDrift = 31, kChannelClump = 41, kChannelRidge = 51, kChannelCover = 100;
 
 // How much of a layer's own density stands at `d` metres, and how much its plants have grown there
 float thinning(const Layer& l, float d, float& growth)
@@ -91,8 +91,30 @@ float coverAt(const Layer& l, float d)
   if((l.closeFar <= 0.0F && l.closeNear <= 0.0F) || l.to <= l.from)
     return l.cover;
   const float t      = (d - l.from) / (l.to - l.from);
-  const float closed = std::max(l.closeFar * smoothstep(0.35F, 1.0F, t), l.closeNear * (1.0F - smoothstep(0.0F, 0.3F, t)));
+  const float span   = l.closeSpan > 0.0F ? l.closeSpan / (l.to - l.from) : 0.3F;
+  const float closed = std::max(l.closeFar * smoothstep(0.35F, 1.0F, t), l.closeNear * (1.0F - smoothstep(0.0F, span, t)));
   return l.cover + (1.0F - l.cover) * closed;
+}
+
+// How far across a layer's groves are at `d`
+float patchAt(const Layer& l, float d)
+{
+  return std::max(l.patch, l.patchGrows * d);
+}
+
+// fbm() with features `across` metres wide, `base` at the least: the noise at the doublings of
+// `base` either side of `across`, blended. (Dividing a place by a size that grows with its distance
+// leaves a function of its direction alone, which is stripes out from the origin.)
+float sizedNoise(float x, float z, float base, float across, uint32_t seed, uint32_t channel)
+{
+  const float level = std::max(std::log2(across / base), 0.0F);
+  const float whole = std::floor(level);
+  const float size  = base * std::exp2(whole);
+  const float near  = fbm(x / size, z / size, seed, channel);
+  const float share = smoothstep(0.0F, 1.0F, level - whole);
+  if(share <= 0.0F)
+    return near;
+  return near + (fbm(x / (2.0F * size), z / (2.0F * size), seed, channel) - near) * share;
 }
 
 // The noise level above which a share `cover` of the ground lies. fbm() is near a normal distribution
@@ -121,7 +143,10 @@ float height(const Spec& spec, float x, float z)
   const float rolling = 1.5F * (2.0F * fbm(x / 45.0F, z / 45.0F, seed, kChannelHills) - 1.0F);
   const float far     = std::min(d / kHorizon, 1.0F);
   const float hills   = 70.0F * far * std::sqrt(far) * fbm(x / 400.0F, z / 400.0F, seed, kChannelFar);
-  return float(spec.relief) * rise * (rolling + hills);
+  // and past those, ridges a couple of kilometres across that climb to some hundreds of metres by
+  // the land's end: the skyline from a rise, and the land a camera in the air looks out over
+  const float ridges = d > kHorizon ? 320.0F * smoothstep(kHorizon, 5500.0F, d) * fbm(x / 2200.0F, z / 2200.0F, seed, kChannelRidge) : 0.0F;
+  return float(spec.relief) * rise * (rolling + hills + ridges);
 }
 
 Terrain terrain(const Spec& spec, float tile)
@@ -130,13 +155,13 @@ Terrain terrain(const Spec& spec, float tile)
   // rings half a metre apart underfoot, then 6% further each, so the ground's detail follows what a
   // camera near the origin sees of it
   std::vector<float> radii;
-  for(float r = 0.5F; r < kHorizon; r += std::max(0.5F, 0.06F * r))
+  for(float r = 0.5F; r < kLandsEnd; r += std::max(0.5F, kMeshGrowth * r))
     radii.push_back(r);
-  radii.push_back(kHorizon);
+  radii.push_back(kLandsEnd);
   constexpr uint32_t kSegments = 192;
   const float        scale     = tile > 0.0F ? 1.0F / tile : 1.0F;
-  const auto         vertex    = [&](float x, float z) {
-    const float e = 0.25F;
+  // `e`: half the distance the slope is taken over, a ring's width where the rings are wide
+  const auto         vertex    = [&](float x, float z, float e) {
     const float h = height(spec, x, z);
     // the height's gradient by central differences: the normal of the surface y = h(x, z)
     const float dx = (height(spec, x + e, z) - height(spec, x - e, z)) / (2.0F * e);
@@ -144,14 +169,17 @@ Terrain terrain(const Spec& spec, float tile)
     t.positions.emplace_back(x, h, z);
     t.normals.push_back(glm::normalize(glm::vec3(-dx, 1.0F, -dz)));
     t.uvs.emplace_back(x * scale, z * scale);
-    t.shades.push_back(smoothstep(0.38F, 0.62F, fbm(x / 40.0F, z / 40.0F, uint32_t(spec.seed), kChannelShade)));
+    // drifts some 40 m across, larger where the mesh is too coarse to draw those
+    const float drift = std::max(40.0F, 3.0F * kMeshGrowth * std::sqrt(x * x + z * z));
+    t.shades.push_back(smoothstep(0.38F, 0.62F, sizedNoise(x, z, 40.0F, drift, uint32_t(spec.seed), kChannelShade)));
+    t.woods.push_back(woods(spec, x, z));
   };
-  vertex(0.0F, 0.0F);
+  vertex(0.0F, 0.0F, 0.25F);
   for(const float r : radii)
     for(uint32_t s = 0; s < kSegments; s++)
     {
       const float a = 2.0F * kPi * float(s) / float(kSegments);
-      vertex(r * std::cos(a), r * std::sin(a));
+      vertex(r * std::cos(a), r * std::sin(a), std::max(0.25F, 0.5F * kMeshGrowth * r));
     }
   // counter-clockwise seen from above: the fan round the centre, then a quad a segment between rings
   const auto at = [&](size_t ring, uint32_t s) { return uint32_t(1 + ring * kSegments + s % kSegments); };
@@ -181,8 +209,8 @@ std::vector<Layer> layers(const Spec& spec)
         // (new layers go after these two: a layer's places follow from its index)
         // the wood carried on over the hills to the horizon, opening into woods and pasture: fewer
         // and larger with distance, as grown firs are, so the far hills cost a few thousand trees
-        {.role = "tree", .perSquareMetre = 0.02, .from = kWoods, .to = kHorizon, .thin = 250.0F, .grow = 2.5F, .thinFrom = kWoods,
-         .cover = 0.5F, .patch = 160.0F, .closeNear = 0.75F, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F},
+        {.role = "tree", .perSquareMetre = 0.02, .from = kWoods, .to = kTreesEnd, .thin = 250.0F, .grow = 2.5F, .thinFrom = kWoods,
+         .fade = 700.0F, .cover = 0.5F, .patch = 160.0F, .closeNear = 0.75F, .closeSpan = 190.0F, .patchGrows = 3.0F * kMeshGrowth, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F},
         // bushes in thickets; a few rocks, half in the ground
         {.role = "shrub", .perSquareMetre = 0.012, .from = 9.0F, .to = kWoods, .fade = 40.0F, .cover = 0.3F, .patch = 35.0F, .scaleMin = 0.6F, .scaleMax = 1.3F, .sink = 0.03F},
         {.role = "rock", .perSquareMetre = 0.004, .from = 8.0F, .to = 400.0F, .fade = 80.0F, .cover = 0.3F, .patch = 60.0F, .scaleMin = 0.2F, .scaleMax = 0.8F, .sink = 0.1F},
@@ -196,8 +224,8 @@ std::vector<Layer> layers(const Spec& spec)
         // to between one and two and a half times the kit's young ones
         {.role = "tree", .perSquareMetre = 0.026, .from = 7.5F, .to = near, .cover = 0.9F, .patch = 40.0F, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F},
         // and on to the horizon, fewer and larger with distance
-        {.role = "tree", .perSquareMetre = 0.026, .from = near, .to = kHorizon, .thin = 200.0F, .grow = 2.5F, .thinFrom = near,
-         .cover = 0.9F, .patch = 120.0F, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F},
+        {.role = "tree", .perSquareMetre = 0.026, .from = near, .to = kTreesEnd, .thin = 200.0F, .grow = 2.5F, .thinFrom = near,
+         .fade = 700.0F, .cover = 0.9F, .patch = 120.0F, .patchGrows = 3.0F * kMeshGrowth, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F},
         // the undergrowth, out to where a camera on the ground no longer tells it from the floor
         {.role = "sapling", .perSquareMetre = 0.03, .from = 5.5F, .to = 300.0F, .fade = 60.0F, .cover = 0.55F, .patch = 18.0F, .scaleMin = 0.6F, .scaleMax = 1.7F},
         {.role = "shrub", .perSquareMetre = 0.05, .from = 5.5F, .to = 300.0F, .fade = 60.0F, .cover = 0.45F, .patch = 22.0F, .scaleMin = 0.5F, .scaleMax = 1.2F, .sink = 0.03F},
@@ -207,6 +235,31 @@ std::vector<Layer> layers(const Spec& spec)
     };
   }
   return {};
+}
+
+float woods(const Spec& spec, float x, float z)
+{
+  // the layer that carries the trees on with distance: the last that thins
+  const std::vector<Layer> all = layers(spec);
+  int                      far = -1;
+  for(size_t i = 0; i < all.size(); i++)
+    if(all[i].role == "tree" && all[i].thin > 0.0F && all[i].grow > 1.0F)
+      far = int(i);
+  if(far < 0)
+    return 0.0F;
+  const Layer& l = all[size_t(far)];
+  const float  d = std::sqrt(x * x + z * z);
+  // its trees keep their cover until their growth is spent
+  const float spent = l.thinFrom + l.thin * std::sqrt(l.grow * l.grow - 1.0F);
+  const float paint = smoothstep(0.8F * spent, 1.3F * spent, d);
+  if(paint <= 0.0F)
+    return 0.0F;
+  const float cover = coverAt(l, std::min(d, l.to));
+  if(cover >= 1.0F)
+    return paint;
+  const float noise = sizedNoise(x, z, l.patch, patchAt(l, d), uint32_t(spec.seed), kChannelCover + 10U * uint32_t(far));
+  const float level = coverLevel(cover);
+  return paint * smoothstep(level - 0.02F, level + 0.02F, noise);
 }
 
 std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer, uint32_t layerIndex, uint32_t variants)
@@ -235,7 +288,7 @@ std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer
       if(const float cover = coverAt(layer, d); cover < 1.0F)
       {
         // where the noise is in its top `cover`, with a soft edge
-        const float noise = fbm(x / layer.patch, z / layer.patch, seed, kChannelCover + 10U * layerIndex);
+        const float noise = sizedNoise(x, z, layer.patch, patchAt(layer, d), seed, kChannelCover + 10U * layerIndex);
         const float level = coverLevel(cover);
         odds *= smoothstep(level - 0.02F, level + 0.02F, noise);
       }

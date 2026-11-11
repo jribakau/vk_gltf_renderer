@@ -192,6 +192,14 @@ struct Settings
   // data -- it describes how big the model is meant to be, which no extension has a field for.
   float     atmoAerialPerspectiveScale = 1.0f;
   glm::vec3 atmoGroundAlbedo           = {0.2f, 0.2f, 0.2f};  // linear; what the ground reflects, as the floor does
+  // What the land round the scene reflects, when the scene says (a procedural backdrop's): it
+  // takes the ground albedo's place in buildAtmosphereParameters, so the atmosphere's own value
+  // stays what a preset or a file made it. Zero: none.
+  glm::vec3 atmoLandAlbedo = {0.0f, 0.0f, 0.0f};
+  // Where the land round the scene ends, scene units from the world's origin: between the two what
+  // the camera hit gives way to the physical sky's own ground (SceneFrameInfo::landFadeFrom). 0: none.
+  float landFadeFrom = 0.0f;
+  float landFadeTo   = 0.0f;
 
   // The rest of the atmosphere: what the planet is made of, and how big it is.
   //

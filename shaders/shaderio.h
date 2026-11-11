@@ -395,6 +395,11 @@ struct SceneFrameInfo
   int    cloudFront   = 0;
   float4 cloudEye     = {0.0F, 0.0F, 0.0F, 0.0F};
   float4 cloudViewEye = {0.0F, 0.0F, 0.0F, 0.0F};
+  // Where the land round the scene ends (a procedural backdrop's): between these distances from
+  // the world's origin, scene units, what a camera ray hit gives way to what the physical sky
+  // draws there, the planet under its horizon. Both 0: no such end. (Appended.)
+  float landFadeFrom = 0.0F;
+  float landFadeTo   = 0.0F;
 };
 
 enum PathtracerFlags

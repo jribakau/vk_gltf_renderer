@@ -11,7 +11,11 @@
 //    "ground": {"<kind>": {"diffuse"?, "normal"?, "arm"?: "<image, relative>", "tile"?: <metres>,
 //                          "color"?: [r, g, b] linear, without a diffuse map,
 //                          "tint"?, "tintDry"?: [r, g, b] linear, what the colour is multiplied by,
-//                          the second in the terrain's drier drifts (tint's when not given)}}}
+//                          the second in the terrain's drier drifts (tint's when not given),
+//                          "tintWoods"?: that where the far ground is a wood (the tint darkened
+//                          when not given),
+//                          "albedo"?: [r, g, b] linear, what the land reflects seen from afar: the
+//                          colour of the ground past the land's end under the physical sky}}}
 //
 // Every mesh of a plant's file is a variant of it. The kit is read on a worker (a tree's file is
 // hundreds of megabytes) and kept; of its plants the scene holds those the kind plants
@@ -76,11 +80,13 @@ tinygltf::Model FvHost::Impl::backdropTerrainModel(const fv::backdrop::Terrain& 
                                        TINYGLTF_COMPONENT_TYPE_FLOAT, t.normals.size(), TINYGLTF_TYPE_VEC3);
   prim.attributes["TEXCOORD_0"]  = put(t.uvs.data(), t.uvs.size() * sizeof(glm::vec2), TINYGLTF_TARGET_ARRAY_BUFFER,
                                        TINYGLTF_COMPONENT_TYPE_FLOAT, t.uvs.size(), TINYGLTF_TYPE_VEC2);
-  // the two tints by the terrain's shade, as vertex colours: they multiply the map
+  // the two tints by the terrain's shade, and the woods' where the far ground is one, as vertex
+  // colours: they multiply the map
+  const glm::vec3        woods = g.tintWoods.x >= 0.0F ? g.tintWoods : g.tint * glm::vec3(0.45F, 0.5F, 0.45F);
   std::vector<glm::vec3> colors(t.shades.size());
   for(size_t i = 0; i < colors.size(); i++)
-    colors[i] = glm::mix(g.tint, g.tintDry, t.shades[i]);
-  if(colors.size() == t.positions.size() && (g.tint != glm::vec3(1.0F) || g.tintDry != glm::vec3(1.0F)))
+    colors[i] = glm::mix(glm::mix(g.tint, g.tintDry, t.shades[i]), woods, i < t.woods.size() ? t.woods[i] : 0.0F);
+  if(colors.size() == t.positions.size())
     prim.attributes["COLOR_0"] = put(colors.data(), colors.size() * sizeof(glm::vec3), TINYGLTF_TARGET_ARRAY_BUFFER,
                                      TINYGLTF_COMPONENT_TYPE_FLOAT, colors.size(), TINYGLTF_TYPE_VEC3);
   prim.indices                   = put(t.indices.data(), t.indices.size() * sizeof(uint32_t), TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER,
@@ -187,6 +193,8 @@ std::shared_ptr<const FvHost::Impl::BackdropKit> FvHost::Impl::readBackdropKit(c
       rgb("tint", ground.tint);
       if(!rgb("tintDry", ground.tintDry))
         ground.tintDry = ground.tint;
+      rgb("tintWoods", ground.tintWoods);
+      rgb("albedo", ground.albedo);
       kit->ground[it.key()] = ground;
     }
   return kit;
@@ -209,6 +217,14 @@ void FvHost::Impl::placeBackdrop()
   const float floor = lighting.ground.autoHeight ? autoGround : float(lighting.ground.height);
   if(root->local.translation.y != floor)
     scene.setLocal(backdropBuilt->root, {.translation = {0.0F, floor, 0.0F}});
+}
+
+glm::vec3 FvHost::Impl::backdropLandAlbedo() const
+{
+  if(!backdropKit || backdropState != "ready" || !fv::backdrop::planted(lighting.backdrop))
+    return glm::vec3(0.0F);
+  const auto found = backdropKit->ground.find(lighting.backdrop.kind);
+  return found != backdropKit->ground.end() && found->second.albedo.x >= 0.0F ? found->second.albedo : glm::vec3(0.0F);
 }
 
 nvutils::Bbox FvHost::Impl::contentBounds()

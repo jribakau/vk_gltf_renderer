@@ -82,8 +82,27 @@ invalidate the image every frame, and with it the alias table. Altitude
 is a settable parameter, and raising it visibly thins the horizon haze — the horizon moves farther
 away, so there is more air between it and you.
 
-The clouds are the exception, for what the camera sees of them: they are near enough for a camera's
-own place to show, and are drawn from it. See [From where the camera is](#from-where-the-camera-is).
+Two things the camera sees are not the fixed observer's:
+
+- **The clouds**: they are near enough for a camera's own place to show, and are drawn from it. See
+  [From where the camera is](#from-where-the-camera-is).
+- **The sky itself, per ray** (`evalPhysicalSky`, `skyEyeRadius`): the path tracer's observer is the
+  camera at its own height over the scene's floor, where the bake's observer stands. By the ground
+  that is the bake's height and nothing changes; a camera that climbs sees the horizon sink and
+  the haze gather into a band under it. It is the height itself, not the eye aerial perspective
+  stands, which a backdrop multiplies (`atmoAerialPerspectiveScale`): the cloud images are baked
+  from the real height and carry the air in front of the clouds as a difference from this sky, and
+  against a sky from several times that height the difference went below nothing, which drew
+  black between the clouds. The lighting field keeps the bake's observer, so from the air the
+  sky a rough surface reflects has its horizon a little above the one the camera sees.
+
+What the sky draws under its horizon is the planet's ground: a matte surface of
+`atmoGroundAlbedo`, average ground, or of **`atmoLandAlbedo`** when the scene says what its land
+reflects (a procedural backdrop's, from its kit). A hit's shading gives way to that toward the
+land's end (`SceneFrameInfo::landFadeFrom`, `landFadeTo`; `fv_backdrop.hpp`'s `kLandFadeFrom`): the
+land's air is a march to the surface, counted several times over under a backdrop and with an
+isotropic stand-in for the higher orders of scattering, and the planet's is the tables' whole ray
+from the camera's real height. They are not the same sum, and would meet at a line.
 
 ### Aerial perspective, and the one function deliberately not ported
 
@@ -950,7 +969,11 @@ share here, not marched; and the sky's share of the ground's own light under the
   table and an accumulation restart every frame.
 - Shadows that move across the scene: the clouds stand still, and their shadows with them.
 - Light shafts (the air under the clouds is shaded by a share, above), takram's haze, and rain.
-- An observer above the clouds: the images cover what is above their observer's horizon, and the
+- An observer above the clouds' bases, which a camera in flight reaches at a few hundred metres:
+  in the band between the cloud images' horizon and the camera's own lower one there is sky and no
+  cloud, and the clouds below the camera are not drawn. (From inside the layer the sky between the
+  clouds was black until 2026-11-11: a clear ray came out of `marchClouds` as a cloud no distance
+  off, whose air has no direction.) The images cover what is above their observer's horizon, and the
   march drops a ray that meets the ground.
 - Saving: the clouds are viewer settings (`cloud*` in `Settings`), not yet in `OMI_environment_sky`
   or a `.sky.json`. The Figure Viewer keeps them in its own scene files.

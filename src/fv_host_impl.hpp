@@ -1484,6 +1484,12 @@ struct FvHost::Impl
       // what the ground's colour is multiplied by, linear: `tint`, and `tintDry` where the terrain's
       // shade says the ground is drier, so a tiled map isn't one colour to the horizon
       glm::vec3 tint{1.0F}, tintDry{1.0F};
+      // and where the far ground is a wood no tree stands for (fv::backdrop::woods); none given,
+      // the tint darkened
+      glm::vec3 tintWoods{-1.0F};
+      // what the land reflects seen from afar, linear: the planet's ground under the physical sky
+      // beyond the land's end (atmoLandAlbedo). Not given (negative): the atmosphere's own
+      glm::vec3 albedo{-1.0F};
     };
     std::filesystem::path         dir;
     std::vector<Plant>            plants;
@@ -1565,6 +1571,8 @@ struct FvHost::Impl
   void feedBackdrop(rs::RetainedScene& scene);
   // What stands, planted again by the state: the ground's shape and every plant's places
   void plantBackdrop(rs::RetainedScene& scene);
+  // What the standing backdrop's land reflects from afar (its kit's `albedo`); zero with none
+  glm::vec3 backdropLandAlbedo() const;
   // Brings in the kit's plants the kind plants and lets go of those it doesn't
   void holdBackdropPlants(rs::RetainedScene& scene);
   // Its root entity (none when none stands), and the floor's height it stands at

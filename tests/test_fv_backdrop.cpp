@@ -84,6 +84,64 @@ TEST(BackdropGround, IsFlatWhereTheFiguresStandAndRollsBeyond)
   for(float a = 0.0F; a < 6.28F; a += 0.1F)
     far += B::height(spec, 800.0F * std::cos(a), 800.0F * std::sin(a));
   EXPECT_GT(far / 63.0F, 10.0F);
+  // and past them ridges climb to the land's end, some hundreds of metres by then
+  float ridge = 0.0F, highest = 0.0F;
+  for(float a = 0.0F; a < 6.28F; a += 0.1F)
+  {
+    const float h = B::height(spec, 6000.0F * std::cos(a), 6000.0F * std::sin(a));
+    ridge += h;
+    highest = std::max(highest, h);
+  }
+  EXPECT_GT(ridge / 63.0F, 4.0F * far / 63.0F);
+  EXPECT_GT(highest, 200.0F);
+  EXPECT_LT(highest, 450.0F);
+  // the planted land is as it was: no ridge under it
+  EXPECT_LT(B::height(spec, 600.0F, 300.0F), 80.0F);
+}
+
+TEST(BackdropGround, FarWoodsAreAColourOfTheGround)
+{
+  for(const B::Spec& spec : {meadow(), forest()})
+  {
+    // none where the trees themselves keep the wood's cover
+    for(float a = 0.0F; a < 6.28F; a += 0.4F)
+      for(const float r : {0.0F, 100.0F, 400.0F})
+        EXPECT_EQ(B::woods(spec, r * std::cos(a), r * std::sin(a)), 0.0F) << spec.kind << " " << r;
+    // far out: in the groves of the layer that carried the trees there, a forest's most of the land
+    size_t in = 0, all = 0;
+    for(float x = -6000.0F; x <= 6000.0F; x += 150.0F)
+      for(float z = -6000.0F; z <= 6000.0F; z += 150.0F)
+        if(const float d = std::sqrt(x * x + z * z); d > 2500.0F && d < 6000.0F)
+        {
+          const float w = B::woods(spec, x, z);
+          EXPECT_GE(w, 0.0F);
+          EXPECT_LE(w, 1.0F);
+          in += w > 0.5F ? 1 : 0;
+          all++;
+        }
+    const double share = double(in) / double(all);
+    if(spec.kind == "forest")
+      EXPECT_GT(share, 0.75);
+    else
+      EXPECT_NEAR(share, 0.5, 0.15);
+  }
+  // the far groves are places, not directions: along a line out from the origin the ground is wood
+  // here and open there (a patch sized by its own distance would be a stripe to the land's end)
+  size_t differ = 0, lines = 0;
+  for(float a = 0.0F; a < 6.28F; a += 0.05F, lines++)
+  {
+    const float c = std::cos(a), s = std::sin(a);
+    float       lo = 1.0F, hi = 0.0F;
+    for(float r = 2500.0F; r <= 7000.0F; r += 250.0F)
+    {
+      const float w = B::woods(meadow(), r * c, r * s);
+      lo            = std::min(lo, w);
+      hi            = std::max(hi, w);
+    }
+    differ += hi - lo > 0.8F ? 1 : 0;
+  }
+  EXPECT_GT(differ, lines * 2 / 3);
+  EXPECT_EQ(B::woods(B::Spec{}, 3000.0F, 0.0F), 0.0F);
 }
 
 TEST(BackdropGround, TheMeshIsTheHeightFunctions)
@@ -94,6 +152,7 @@ TEST(BackdropGround, TheMeshIsTheHeightFunctions)
   ASSERT_EQ(t.normals.size(), t.positions.size());
   ASSERT_EQ(t.uvs.size(), t.positions.size());
   ASSERT_EQ(t.shades.size(), t.positions.size());
+  ASSERT_EQ(t.woods.size(), t.positions.size());
   ASSERT_EQ(t.indices.size() % 3, 0u);
   // drier drifts and greener ground both, so the distance isn't one colour
   const auto [driest, greenest] = std::minmax_element(t.shades.begin(), t.shades.end());
@@ -109,9 +168,12 @@ TEST(BackdropGround, TheMeshIsTheHeightFunctions)
     EXPECT_NEAR(glm::length(t.normals[i]), 1.0F, 1e-4F);
     EXPECT_GT(t.normals[i].y, 0.3F);
     EXPECT_FLOAT_EQ(t.uvs[i].x, p.x / 2.0F);
+    EXPECT_FLOAT_EQ(t.woods[i], B::woods(spec, p.x, p.z));
     reach = std::max(reach, glm::length(glm::vec2(p.x, p.z)));
   }
-  EXPECT_NEAR(reach, B::kHorizon, 1.0F);
+  // out past the hills to the land's end, some of it wood
+  EXPECT_NEAR(reach, B::kLandsEnd, 1.0F);
+  EXPECT_GT(*std::max_element(t.woods.begin(), t.woods.end()), 0.9F);
   // every triangle faces up, and none is degenerate
   for(size_t i = 0; i < t.indices.size(); i += 3)
   {
@@ -278,13 +340,13 @@ TEST(BackdropLayers, AMeadowsTreesAndSaplingsHaveTheirPlaces)
   // the grass and the flowers are tiles
   EXPECT_EQ(roles, (std::set<std::string>{"sapling", "tree", "shrub", "rock"}));
   EXPECT_GT(plants, 1000u);
-  EXPECT_LT(plants, 20000u);
-  // mostly trees, and they stand out to the horizon: the wood round the meadow, then the hills'
+  EXPECT_LT(plants, 30000u);
+  // mostly trees, and they stand out past the horizon: the wood round the meadow, then the hills'
   EXPECT_GT(trees, plants / 2);
   ASSERT_GE(l.size(), 3u);
   EXPECT_FLOAT_EQ(l[1].to, B::kWoods);
   EXPECT_FLOAT_EQ(l[2].from, B::kWoods);
-  EXPECT_FLOAT_EQ(l[2].to, B::kHorizon);
+  EXPECT_FLOAT_EQ(l[2].to, B::kTreesEnd);
   // as closed where the one ends as where the other begins: no ring shows from the air
   size_t inside = 0, outside = 0;
   for(int seed = 1; seed <= 4; seed++)
@@ -318,7 +380,7 @@ TEST(BackdropLayers, AForestIsAGladeInAWoodThatRunsToTheHorizon)
   ASSERT_EQ(l[0].role, "tree");
   ASSERT_EQ(l[1].role, "tree");
   EXPECT_FLOAT_EQ(l[1].from, l[0].to);
-  EXPECT_FLOAT_EQ(l[1].to, B::kHorizon);
+  EXPECT_FLOAT_EQ(l[1].to, B::kTreesEnd);
   const auto [near, nearScale] = ring(forest(), l[0], 0, 10.0F, 60.0F);
   const auto [far, farScale]   = ring(forest(), l[1], 1, 700.0F, 900.0F);
   EXPECT_GT(double(near) / (3.14159265 * (60.0 * 60.0 - 10.0 * 10.0)), 0.015);

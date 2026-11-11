@@ -160,14 +160,20 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo, out float clo
   cloudsLeave         = 1.0F;
   const float3 dir    = quatRotateInverse(frameInfo->envRotation, worldDir);
   const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
-  // observerRadius is the bake's: selecting the physical sky commits a bake at the top of the frame,
-  // before any frame that draws it is recorded (GltfRenderer::applyPendingEnvironmentRefresh).
-  const SkySunDisk disk = *frameInfo->sunDisk;
-  float3           sky  = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance,
-                                                  disk.observerRadius, dir, sunDir, disk.sunlitGround);
-  // The clouds over it, as the bake composes them, above the horizon. The disk goes on top, dimmed by
-  // the clouds in front of it (evalPhysicalSkyBackground).
-  if(dir.y > disk.horizonMu)
+  // The observer is the camera at its own height, not the bake's fixed one: a camera that climbs
+  // sees the horizon sink and the haze gather under it. By the ground the two are the same height.
+  // The lighting field keeps the bake's.
+  const SkySunDisk disk      = *frameInfo->sunDisk;
+  const float      eyeRadius = skyEyeRadius(g_atmosphere, disk.observerRadius, frameInfo->observerAltitudeKm, frameInfo->aerialPerspectiveScale);
+  const float      horizonMu = brunetonHorizonMu(g_atmosphere, eyeRadius);
+  float3           sky = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, eyeRadius, dir,
+                                                 sunDir, disk.sunlitGround);
+  // The clouds over it, as the bake composes them, above the horizon: the eye's, and that of the
+  // place the cloud images were baked from, where their rows begin. A camera up in the air has its
+  // own horizon under theirs, and in the band between is the sky alone: the images hold nothing
+  // there to draw. The disk goes on top, dimmed by the clouds in front of it (evalPhysicalSkyBackground).
+  const float imageHorizonMu = disk.cloudPreview != 0 ? disk.horizonMu : brunetonHorizonMu(g_atmosphere, g_atmosphere.bottomRadius + frameInfo->cloudEye.w);
+  if(dir.y > max(horizonMu, imageHorizonMu))
   {
     float4 clouds;
     float  depth = CLOUD_NO_DEPTH;  // how far the clouds are along the ray, km
@@ -184,7 +190,7 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo, out float clo
       // of it is where the camera looks, the second where that put the cloud in the image.
       const int    front        = clamp(frameInfo->cloudFront, 0, 2);
       const float3 eye          = frameInfo->cloudEye.xyz;
-      const float  minElevation = asin(brunetonHorizonMu(g_atmosphere, g_atmosphere.bottomRadius + frameInfo->cloudEye.w));
+      const float  minElevation = asin(imageHorizonMu);
       float3       look         = dir;
       depth                     = g_cloudDepth[front].SampleLevel(cloudImageUv(dir, minElevation), 0.0F);
       if(any(eye != 0.0F))
@@ -217,12 +223,12 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo, out float clo
     sky         = composeClouds(sky, clouds);
     cloudsLeave = clamp(clouds.w, 0.0F, 1.0F);
   }
-  else if(disk.cloudTop > 0.0F)
+  else if(dir.y <= horizonMu && disk.cloudTop > 0.0F)
   {
     // Below the horizon the image does not reach: the air in front of the ground, all of it under the
     // clouds, under their shade (sky_clouds_air.h.slang). The ground's own light is the sunlit share's.
-    const float3 air = evalBrunetonSkyInScatter(g_atmosphere, g_transmittance, g_scattering, g_singleMie, disk.observerRadius, dir, sunDir);
-    sky -= cloudShadeOfClearSky(g_atmosphere, g_transmittance, g_irradiance, disk.observerRadius, dir, sunDir, disk.cloudTop,
+    const float3 air = evalBrunetonSkyInScatter(g_atmosphere, g_transmittance, g_scattering, g_singleMie, eyeRadius, dir, sunDir);
+    sky -= cloudShadeOfClearSky(g_atmosphere, g_transmittance, g_irradiance, eyeRadius, dir, sunDir, disk.cloudTop,
                                 disk.sunlitGround, disk.cloudSkyShare, air);
   }
   return sky;
@@ -2353,6 +2359,17 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       }
     }
     pt.radiance = pt.radiance * march.transmittance + inScatter;
+
+    // The land's end (SceneFrameInfo::landFadeFrom): toward it what was hit gives way to what the
+    // sky draws in that direction, the planet under its horizon with all its air in front, so the
+    // land has no rim. The two are the same air summed differently (a march to the surface here,
+    // the tables' whole ray there), and they would meet at a line.
+    if(pushConst.frameInfo->landFadeTo > 0.0F)
+    {
+      const float fade = smoothstep(pushConst.frameInfo->landFadeFrom, pushConst.frameInfo->landFadeTo, length(pt.firstHitPos.xz));
+      if(fade > 0.0F)
+        pt.radiance = lerp(pt.radiance, evalPhysicalSky(normalize(pt.firstHitPos - eye), pushConst.frameInfo) * pushConst.frameInfo->envIntensity, fade);
+    }
   }
 
   // Haze in the air (haze.h.slang), on the same segment, taken as in front of the atmosphere's air:

@@ -595,6 +595,11 @@ TEST(FvLighting, ABackdropIsPartOfTheLighting)
   EXPECT_DOUBLE_EQ(L::applyPatch(s, {{"backdrop", {{"air", 0}}}}).backdrop.air, 1.0);
   EXPECT_DOUBLE_EQ(L::applyPatch(s, {{"backdrop", {{"air", 99}}}}).backdrop.air, 20.0);
   EXPECT_EQ(L::rendererParams(L::applyPatch(hazy, {{"backdrop", {{"kind", "none"}}}}), {})["atmoAerialPerspectiveScale"], 1.0);
+  // the land gives way to the sky's ground before its end; without a backdrop there is no such end
+  EXPECT_EQ(L::rendererParams(none, {})["landFadeTo"], 0.0);
+  EXPECT_GT(L::rendererParams(s, {})["landFadeFrom"].get<double>(), 0.5 * double(fv::backdrop::kLandsEnd));
+  EXPECT_GT(L::rendererParams(s, {})["landFadeTo"].get<double>(), L::rendererParams(s, {})["landFadeFrom"].get<double>());
+  EXPECT_LT(L::rendererParams(s, {})["landFadeTo"].get<double>(), double(fv::backdrop::kLandsEnd));
   // and it plants nothing
   EXPECT_TRUE(fv::backdrop::samePlanting(hazy.backdrop, s.backdrop));
   EXPECT_FALSE(hazy.backdrop == s.backdrop);
