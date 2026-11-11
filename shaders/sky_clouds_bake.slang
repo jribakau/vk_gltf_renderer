@@ -408,15 +408,20 @@ float4 marchClouds(float r0, float3 dir, float jitter, out float depth)
 
   // takram reports what is left as opacity rescaled to reach 1 at minTransmittance; the image keeps
   // its complement.
+  // Nothing met is a clear texel, by the integral itself: the rescaled value of an untouched 1 need
+  // not come out as 1 (the division may be a multiplication by a reciprocal), and such a ray went on
+  // to the air below with no cloud to place it by.
+  if(transmittanceIntegral >= 1.0F)
+    return float4(0.0F, 0.0F, 0.0F, 1.0F);
   const float transmittance =
       clamp((transmittanceIntegral - g_params.minTransmittance) / (1.0F - g_params.minTransmittance), 0.0F, 1.0F);
-  if(transmittance >= 1.0F)
-    return float4(0.0F, 0.0F, 0.0F, 1.0F);
 
   // The air between the observer and the clouds, to where they are on average, lit by what the
   // clouds leave of the sun and the sky (s_air, airMain): under a deck the haze is grey, not the blue
   // of the clear sky's, and toward a low sun dim, not its glow.
-  const float frontDepth = transmittanceSum > 0.0F ? weightedDistanceSum / transmittanceSum : rayNear;
+  // (An observer inside the layer can be in the cloud itself, which is then no distance off: the
+  // air's march needs some, or it has no direction.)
+  const float frontDepth = max(transmittanceSum > 0.0F ? weightedDistanceSum / transmittanceSum : rayNear, 1e-3F);
   depth                  = frontDepth;
   const AerialMarch air =
       marchAerialPerspective(g_atmosphere, g_transmittance, g_irradiance, observer, dir * frontDepth, sunDir, float2(0.5F));
