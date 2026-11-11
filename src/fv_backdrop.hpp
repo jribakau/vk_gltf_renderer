@@ -87,9 +87,14 @@ inline constexpr float kLandsEnd = 8000.0F;
 // no rim: the two are lit by different sums of the same air, and meet at a line otherwise
 inline constexpr float kLandFadeFrom = 0.6F * kLandsEnd;
 inline constexpr float kLandFadeTo   = 0.96F * kLandsEnd;
-// The ground's mesh: each ring this much further out than the last. A colour that changes over
-// less than three rings is drawn as blocks, so the far ground's patches grow by three times this
-inline constexpr float kMeshGrowth = 0.06F;
+// The ground's mesh: each ring this much further out than the last. Fine enough that the creases
+// between its triangles stay under the grass's blades (at twice this, the grass from straight above
+// showed arcs along the rings)
+inline constexpr float kMeshGrowth = 0.03F;
+// How fast the far ground's colour patches grow with their distance, as a share of it: a colour that
+// changes over less than a few rings is drawn as blocks, and these were fitted to rings twice as far
+// apart as kMeshGrowth's (`woods`, the drier drifts, Layer::patchGrows)
+inline constexpr float kPatchGrowth = 0.18F;
 // Where a meadow's groves have closed into the wood round it
 inline constexpr float kWoods = 260.0F;
 
@@ -147,7 +152,7 @@ struct Layer
   // opens out of it
   // `patchGrows`: past where it is `patch` already, the groves are this share of the distance across
   // (by the noise's octaves, a doubling at a time), so far groves are as large as the far ground's
-  // mesh can draw (`woods`, kMeshGrowth).
+  // mesh can draw (`woods`, kPatchGrowth).
   float cover      = 1.0F;
   float patch      = 20.0F;
   float closeFar   = 0.0F;

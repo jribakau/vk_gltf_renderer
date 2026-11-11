@@ -151,9 +151,9 @@ float height(const Spec& spec, float x, float z)
 
 namespace {
 
-// The ground mesh's rings: half a metre apart underfoot, then 6% further each, so the ground's detail
+// The ground mesh's rings: half a metre apart underfoot, then kMeshGrowth further each, so the ground's detail
 // follows what a camera near the origin sees of it; each of kSegments vertices round
-constexpr uint32_t kSegments = 192;
+constexpr uint32_t kSegments = 384;
 const std::vector<float>& meshRadii()
 {
   static const std::vector<float> radii = [] {
@@ -221,7 +221,7 @@ Terrain terrain(const Spec& spec, float tile)
     t.normals.push_back(glm::normalize(glm::vec3(-dx, 1.0F, -dz)));
     t.uvs.emplace_back(x * scale, z * scale);
     // drifts some 40 m across, larger where the mesh is too coarse to draw those
-    const float drift = std::max(40.0F, 3.0F * kMeshGrowth * std::sqrt(x * x + z * z));
+    const float drift = std::max(40.0F, kPatchGrowth * std::sqrt(x * x + z * z));
     t.shades.push_back(smoothstep(0.38F, 0.62F, sizedNoise(x, z, 40.0F, drift, uint32_t(spec.seed), kChannelShade)));
     t.woods.push_back(woods(spec, x, z));
   };
@@ -261,7 +261,7 @@ std::vector<Layer> layers(const Spec& spec)
         // the wood carried on over the hills to the horizon, opening into woods and pasture: fewer
         // and larger with distance, as grown firs are, so the far hills cost a few thousand trees
         {.role = "tree", .perSquareMetre = 0.02, .from = kWoods, .to = kTreesEnd, .thin = 250.0F, .grow = 2.5F, .thinFrom = kWoods,
-         .fade = 700.0F, .cover = 0.5F, .patch = 160.0F, .closeNear = 0.75F, .closeSpan = 190.0F, .patchGrows = 3.0F * kMeshGrowth, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F},
+         .fade = 700.0F, .cover = 0.5F, .patch = 160.0F, .closeNear = 0.75F, .closeSpan = 190.0F, .patchGrows = kPatchGrowth, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F},
         // bushes in thickets; a few rocks, half in the ground
         {.role = "shrub", .perSquareMetre = 0.012, .from = 9.0F, .to = kWoods, .fade = 40.0F, .cover = 0.3F, .patch = 35.0F, .scaleMin = 0.6F, .scaleMax = 1.3F, .sink = 0.03F},
         {.role = "rock", .perSquareMetre = 0.004, .from = 8.0F, .to = 400.0F, .fade = 80.0F, .cover = 0.3F, .patch = 60.0F, .scaleMin = 0.2F, .scaleMax = 0.8F, .sink = 0.1F},
@@ -276,7 +276,7 @@ std::vector<Layer> layers(const Spec& spec)
         {.role = "tree", .perSquareMetre = 0.026, .from = 7.5F, .to = near, .cover = 0.9F, .patch = 40.0F, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F},
         // and on to the horizon, fewer and larger with distance
         {.role = "tree", .perSquareMetre = 0.026, .from = near, .to = kTreesEnd, .thin = 200.0F, .grow = 2.5F, .thinFrom = near,
-         .fade = 700.0F, .cover = 0.9F, .patch = 120.0F, .patchGrows = 3.0F * kMeshGrowth, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F},
+         .fade = 700.0F, .cover = 0.9F, .patch = 120.0F, .patchGrows = kPatchGrowth, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F},
         // the undergrowth, out to where a camera on the ground no longer tells it from the floor
         {.role = "sapling", .perSquareMetre = 0.03, .from = 5.5F, .to = 300.0F, .fade = 60.0F, .cover = 0.55F, .patch = 18.0F, .scaleMin = 0.6F, .scaleMax = 1.7F},
         {.role = "shrub", .perSquareMetre = 0.05, .from = 5.5F, .to = 300.0F, .fade = 60.0F, .cover = 0.45F, .patch = 22.0F, .scaleMin = 0.5F, .scaleMax = 1.2F, .sink = 0.03F},

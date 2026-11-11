@@ -183,8 +183,8 @@ TEST(BackdropGround, TheMeshIsTheHeightFunctions)
     const glm::vec3 n = glm::cross(b - a, c - a);
     ASSERT_GT(n.y, 0.0F) << "triangle " << i / 3;
   }
-  // light enough to make on a click
-  EXPECT_LT(t.indices.size() / 3, 100000u);
+  // light enough to make on a click: some hundreds of thousands of triangles, a few megabytes
+  EXPECT_LT(t.indices.size() / 3, 250000u);
 }
 
 // What stands on the ground stands on the ground as drawn: the mesh's triangles, not the height

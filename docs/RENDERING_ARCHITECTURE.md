@@ -609,8 +609,9 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   (`kHorizon`) and, past those, to ridges some hundreds of metres high by the land's end
   (`kLandsEnd`), kilometres off: a camera in the air looks out over land to the haze and not at a
   disc's edge. `terrain` is its mesh, a disc of rings that widen with distance, so the triangles are
-  small underfoot and large far off; what colours it (the drier drifts, the far woods) changes over
-  no less than three rings, or the mesh would draw it as blocks (`sizedNoise`: the noise at
+  small underfoot and large far off, and fine enough that the creases between its triangles stay
+  under the grass's blades; what colours it (the drier drifts, the far woods) changes over no less
+  than a few rings (`kPatchGrowth`), or the mesh would draw it as blocks (`sizedNoise`: the noise at
   doublings of its size, blended; a size that simply grew with the place's distance would leave a
   function of its direction, stripes out from the origin). All of it
   is a pure function of the spec: the same seed is the same land on every machine. What stands on
