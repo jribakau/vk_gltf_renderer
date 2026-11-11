@@ -250,7 +250,7 @@ HostStruct sceneFrameInfo()
     F(hazeAnisotropy), F(hazeCenter), F(hazeRadius), F(hazeCandidates), F(hazeFloor), F(hazeInvHeight), F(hazePatches),
     F(hazeInvPatchSize), F(estimator), F(pixelTimeScale), F(pixelTimeSlots), F(pixelTime), F(aerialSunShare), F(pixelTimeCount), F(skinSlab), F(skinSpread), F(skinView),
     F(radianceCacheSlots), F(radianceCache), F(radianceCacheCell), F(radianceCacheFrame), F(radianceCacheStill),
-    F(shadowRayShare), F(cloudFront), F(cloudEye), F(cloudViewEye), F(landFadeFrom), F(landFadeTo)
+    F(shadowRayShare), F(cloudFront), F(cloudEye), F(cloudViewEye), F(landFadeFrom), F(landFadeTo), F(cloudImageBase)
   }};
 }
 

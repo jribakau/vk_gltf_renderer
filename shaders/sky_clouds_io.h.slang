@@ -188,6 +188,9 @@ struct SkyCloudsPushConstant
   uint firstRow;
   // 1 when the march writes how far its clouds are (eCloudBakeDepthRaw), for the depth image.
   int writeDepth;
+  // 1 when the image's rows are a whole image's (cloudImageUv): a follow image baked from above the
+  // clouds' bases. Not a view bake's, whose map is the camera's.
+  int whole;
 };
 
 NAMESPACE_SHADERIO_END()

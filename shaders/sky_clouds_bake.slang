@@ -445,12 +445,15 @@ void main(uint3 group: SV_DispatchThreadID)
   // The samples spread over the texel's footprint (Roberts' R2 sequence) as well as over the jitter,
   // so the texel is the clouds averaged over it: edges smooth, not stepped, and the far clouds,
   // smaller than a texel, are not one point of them. The texel composes linearly (composeClouds),
-  // so averaging texels averages what they draw. A sample below the horizon sees no cloud.
+  // so averaging texels averages what they draw. A sample below the horizon sees no cloud from under
+  // the clouds' bases; from above them it sees those beside and below the observer, down to the
+  // bases, where cloudLayerSegment ends its ray (the ground is under those).
   // A view bake maps the texel through the camera's view instead (cloudViewDir).
   const float horizonElevation = asin(horizonMu);
   const int   samples          = max(1, g_params.samples);
   const bool  anyTier          = any(g_params.densityScales > float4(0.0F));
   const bool  view             = pc.viewForward.w != 0.0F;
+  const bool  overBases        = pc.observerAltitude > g_params.minHeight;
   float4      texel            = float4(0.0F);
   float       depthSum         = 0.0F;  // the marches' depths, each by how much of the sky it hides
   float       coverSum         = 0.0F;
@@ -458,8 +461,9 @@ void main(uint3 group: SV_DispatchThreadID)
   {
     const float2 offset = samples == 1 ? float2(0.5F) : frac(float2(0.5F) + float(s) * float2(0.754877666F, 0.569840291F));
     const float2 uv     = (float2(id) + offset) / float2(pc.imageSize);
-    const float3 dir = view ? cloudViewDir(uv, pc.viewRight.xyz, pc.viewRight.w, pc.viewUp.xyz, pc.viewUp.w, pc.viewForward.xyz) : cloudImageDir(uv, horizonElevation);
-    if(anyTier && !RayIntersectsGround(g_atmosphere, r0, dir.y))
+    const float3 dir = view ? cloudViewDir(uv, pc.viewRight.xyz, pc.viewRight.w, pc.viewUp.xyz, pc.viewUp.w, pc.viewForward.xyz) :
+                              cloudImageDir(uv, horizonElevation, pc.whole != 0);
+    if(anyTier && (overBases || !RayIntersectsGround(g_atmosphere, r0, dir.y)))
     {
       float        depth;
       const float4 march = marchClouds(r0, dir, stepJitter(id, s), depth);
@@ -495,7 +499,8 @@ void airShadeMain(uint3 group: SV_DispatchThreadID)
   const float  horizonElevation = asin(brunetonHorizonMu(g_atmosphere, r0));
   const float2 uv               = (float2(id.xy) + 0.5F) / float2(pc.imageSize);
   const float3 dir = pc.viewForward.w != 0.0F ? cloudViewDir(uv, pc.viewRight.xyz, pc.viewRight.w, pc.viewUp.xyz, pc.viewUp.w, pc.viewForward.xyz) :
-                                                cloudImageDir(uv, horizonElevation);
+                                                cloudImageDir(uv, horizonElevation, pc.whole != 0);
+  // toward the ground the reader shades the air itself (evalPhysicalSky), before it lays the texel over
   if(RayIntersectsGround(g_atmosphere, r0, dir.y))
     return;
   const float3 clear = evalBrunetonSkyInScatter(g_atmosphere, g_transmittance, g_scattering, g_singleMie, r0, dir, pc.sunDirection);
@@ -595,6 +600,8 @@ void airMain(uint3 id: SV_DispatchThreadID)
 
 // How sharply the filter keeps neighbours of another transparency out: one 0.15 apart counts a third.
 static const float kFilterAlphaSharpness = 50.0F;
+// ... and in a whole image (SkyCloudsPushConstant::whole): one 0.5 apart counts a third.
+static const float kFilterAlphaSharpnessWhole = 4.0F;
 
 // The settled bake's march (main) into the raw image, then this into the cloud image: each texel
 // averaged with its eight neighbours, a tent's weights, around the horizon and clamped at its ends.
@@ -616,7 +623,11 @@ void filterMain(uint3 id: SV_DispatchThreadID)
   const int2   size   = int2(pc.imageSize);
   const bool   view   = pc.viewForward.w != 0.0F;
   const float4 centre = g_out[rawTexel(id.xy)];
-  float4       sum    = float4(0.0F);
+  // A whole image's thin cloud is seen from above against the dark land, where the marches' noise is
+  // in how much they let through, texel by texel: the sharpness that keeps an edge would keep that
+  // too, and it drew as a grid of dots over the land. Its neighbours count nearly whatever they hold.
+  const float sharpness = pc.whole != 0 ? kFilterAlphaSharpnessWhole : kFilterAlphaSharpness;
+  float4      sum       = float4(0.0F);
   float        weight = 0.0F;
   for(int dy = -1; dy <= 1; ++dy)
   {
@@ -626,7 +637,7 @@ void filterMain(uint3 id: SV_DispatchThreadID)
       const int2   q  = int2(view ? clamp(x, 0, size.x - 1) : (x + size.x) % size.x, clamp(int(id.y) + dy, 0, size.y - 1));
       const float4 v  = g_out[rawTexel(uint2(q))];
       const float  da = v.w - centre.w;
-      const float  w  = float((2 - abs(dx)) * (2 - abs(dy))) * exp(-da * da * kFilterAlphaSharpness);
+      const float  w  = float((2 - abs(dx)) * (2 - abs(dy))) * exp(-da * da * sharpness);
       sum += v * w;
       weight += w;
     }
@@ -637,6 +648,8 @@ void filterMain(uint3 id: SV_DispatchThreadID)
 // How much the shell's distance counts in a direction of the depth image, against the clouds': of a
 // window with a fiftieth of it cloud, half.
 static const float kDepthShellShare = 0.02F;
+// ... and the share of the window that is cloud past which the shell counts for nothing.
+static const float kDepthShellFull = 0.25F;
 
 // The depth image of a sky image (CLOUD_DEPTH_WIDTH x CLOUD_DEPTH_HEIGHT): how far the clouds are in
 // each direction, km, from the march's texels (g_depthRaw, each by how much of the sky it hides). A
@@ -684,10 +697,16 @@ void depthMain(uint3 id: SV_DispatchThreadID)
   }
   const float  R     = g_atmosphere.bottomRadius;
   const float  r0    = R + pc.observerAltitude;
-  const float3 dir   = cloudImageDir((float2(id.xy) + 0.5F) / float2(size), asin(brunetonHorizonMu(g_atmosphere, r0)));
+  const float3 dir   = cloudImageDir((float2(id.xy) + 0.5F) / float2(size), asin(brunetonHorizonMu(g_atmosphere, r0)), pc.whole != 0);
   const float  base  = g_params.minHeight + 0.25F * (g_params.shadowTopHeight - g_params.minHeight);
   const float  shell = min(cloudShellDistance(r0, dir.y, R + base), g_params.maxRayDistance);
-  g_depth[id.xy]     = (sum + kDepthShellShare * norm * shell) / (cover + kDepthShellShare * norm);
+  // The shell counts while the window holds little cloud, and not at all once a quarter of it is: an
+  // observer among the clouds has a shell a hundred times further off than the cloud beside it, and
+  // a fiftieth of that put the cloud kilometres behind where it is (a ridge past a near cloud was
+  // then drawn in front of it, cloudShareInFront).
+  const float little      = clamp(1.0F - cover / (kDepthShellFull * max(norm, 1e-6F)), 0.0F, 1.0F);
+  const float shellWeight = kDepthShellShare * norm * little * little;
+  g_depth[id.xy]          = (sum + shellWeight * shell) / max(cover + shellWeight, 1e-6F);
 }
 
 // The clouds' shadow on the land (the shadow image, cloudShadowUv in sky_clouds.h.slang): for each

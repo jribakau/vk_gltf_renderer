@@ -489,6 +489,7 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
     m_bakedSun      = sunDirection;
     m_bakedAltitude = observerAltitudeKm;
     m_bakedClouds   = hasClouds();
+    m_bakedBaseKm   = m_bakedClouds ? cloudBakeParameters(m_settings, false).minHeight : 0.0F;
     // the readers take the sky image again, from the scene's origin, whatever followed the camera
     m_follow.reset({.land = glm::vec2(0.0F), .altitude = observerAltitudeKm});
   }
@@ -579,14 +580,28 @@ void SkyClouds::recordDepth(VkCommandBuffer cmd)
 bool SkyClouds::followBakes(const SkyCloudAnchor& eye) const
 {
   SkyCloudFollow probe = m_follow;
-  return cloudFollowStep(probe, eye, kCloudImageSize.height, CLOUD_WORKGROUP_SIZE).bake;
+  return cloudFollowStep(probe, eye, kCloudImageSize.height, CLOUD_WORKGROUP_SIZE, amongClouds(eye)).bake;
+}
+
+// Image 0 is never a whole one: it is the sky bake's, which the environment bake reads as well.
+float SkyClouds::followedWholeBaseKm() const
+{
+  if(m_follow.front == 0 || !m_bakedClouds)
+    return 0.0F;
+  return shaderio::cloudImageWhole(m_follow.anchor.altitude, m_bakedBaseKm) ? m_bakedBaseKm : 0.0F;
+}
+
+// Above the baked clouds' bases: where an image baked from there would be a whole one.
+bool SkyClouds::amongClouds(const SkyCloudAnchor& eye) const
+{
+  return m_bakedClouds && shaderio::cloudImageWhole(eye.altitude, m_bakedBaseKm);
 }
 
 bool SkyClouds::follow(VkCommandBuffer cmd, const SkyCloudAnchor& eye)
 {
   assert(m_initialized && "init must be called first");
   assert(viewable() && "a follow image repeats a full bake's clouds");
-  const SkyCloudFollowStep step = cloudFollowStep(m_follow, eye, kCloudImageSize.height, CLOUD_WORKGROUP_SIZE);
+  const SkyCloudFollowStep step = cloudFollowStep(m_follow, eye, kCloudImageSize.height, CLOUD_WORKGROUP_SIZE, amongClouds(eye));
   if(step.bake)
     recordFollow(cmd, step);
   return step.frontChanged;
@@ -614,6 +629,7 @@ void SkyClouds::recordFollow(VkCommandBuffer cmd, const SkyCloudFollowStep& step
       .land             = step.from.land,
       .firstRow         = step.firstRow,
       .writeDepth       = 1,
+      .whole            = shaderio::cloudImageWhole(step.from.altitude, params.minHeight) ? 1 : 0,
   };
   const std::array<VkDescriptorSet, 2> sets{m_bakePack.getSet(kFollowSet + uint32_t(step.target - 1)), m_brunetonSet};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bakeLayout, 0, uint32_t(sets.size()), sets.data(), 0, nullptr);

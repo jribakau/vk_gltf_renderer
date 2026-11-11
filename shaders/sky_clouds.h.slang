@@ -118,6 +118,17 @@ inline float3 cloudDirFromAnchor(float3 dir, float3 eye, float depth)
   return normalize(eye + dir * depth);
 }
 
+// The depth an image is shifted by for a camera `eye` from its anchor: the clouds', and no less than
+// a few times the camera's own distance from the anchor. A cloud nearer than that turns through tens
+// of degrees for the camera's few metres, which one depth a texel, smoothed over several, is no
+// picture of: the image came apart in smears. Such a cloud stays where the image has it until the
+// next bake, which among the clouds comes sooner (kCloudFollowDistanceAmong).
+static const float CLOUD_SHIFT_NEAREST = 6.0F;
+inline float cloudShiftDepth(float depth, float3 eye)
+{
+  return max(depth, CLOUD_SHIFT_NEAREST * length(eye));
+}
+
 // How far along the camera's ray `dir` the cloud is that the anchor saw `anchorDepth` km away in the
 // direction `look`: the point's place along the ray, never behind the camera.
 inline float cloudDepthAlong(float3 dir, float3 eye, float3 look, float anchorDepth)
@@ -752,22 +763,55 @@ inline float cloudSunlitAirOfTiers(float lowCover, float midCover, float highCov
 // lat-long's (latlongToDir), elevation up the rows from the horizon (row 0) to the zenith, on a
 // square root so the rows crowd at the horizon where the clouds do. `minElevation` is the
 // horizon's, in radians: asin(SkySunDisk::horizonMu).
-inline float2 cloudImageUv(float3 dir, float minElevation)
+//
+// An observer above the clouds' bases has clouds under its horizon as well: beside it, and below. Its
+// image is `whole` (cloudImageWhole): the rows run from straight down to the zenith, the horizon at
+// the middle one and the rows crowding toward it from both sides, on the same square root.
+inline float2 cloudImageUv(float3 dir, float minElevation, bool whole = false)
 {
   const float kPi = 3.14159265F;
   const float u   = atan2(dir.z, dir.x) * (0.5F / kPi) + 0.5F;
   const float e   = asin(clamp(dir.y, -1.0F, 1.0F));
-  const float v   = sqrt(clamp((e - minElevation) / (0.5F * kPi - minElevation), 0.0F, 1.0F));
+  if(whole)
+  {
+    const float x = e >= minElevation ? (e - minElevation) / (0.5F * kPi - minElevation) : (e - minElevation) / (0.5F * kPi + minElevation);
+    const float s = sqrt(clamp(abs(x), 0.0F, 1.0F));
+    return float2(u, 0.5F + (x >= 0.0F ? 0.5F : -0.5F) * s);
+  }
+  const float v = sqrt(clamp((e - minElevation) / (0.5F * kPi - minElevation), 0.0F, 1.0F));
   return float2(u, v);
 }
 
-inline float3 cloudImageDir(float2 uv, float minElevation)
+inline float3 cloudImageDir(float2 uv, float minElevation, bool whole = false)
 {
   const float kPi = 3.14159265F;
   const float phi = 2.0F * kPi * uv.x - kPi;
-  const float e   = minElevation + uv.y * uv.y * (0.5F * kPi - minElevation);
-  const float c   = cos(e);
+  float       e   = minElevation + uv.y * uv.y * (0.5F * kPi - minElevation);
+  if(whole)
+  {
+    const float s = 2.0F * uv.y - 1.0F;
+    e             = minElevation + s * abs(s) * (s >= 0.0F ? 0.5F * kPi - minElevation : 0.5F * kPi + minElevation);
+  }
+  const float c = cos(e);
   return float3(cos(phi) * c, sin(e), sin(phi) * c);
+}
+
+// Whether a sky image baked from `altitudeKm` above the planet's surface is a whole one: from above
+// the lowest of the clouds' bases, `baseKm`. Under them every cloud is above the horizon.
+inline bool cloudImageWhole(float altitudeKm, float baseKm)
+{
+  return baseKm > 0.0F && altitudeKm > baseKm;
+}
+
+// What the clouds along a camera's ray hide of a point it sees `distanceKm` along it, as a share of
+// the image's texel there, whose clouds are `depthKm` off: all of it for a point under the bases
+// (`pointAltitudeKm`, `baseKm`), which a camera above them sees through every cloud of the ray; for
+// a point up among the clouds, by whether it is past where they are.
+inline float cloudShareInFront(float distanceKm, float depthKm, float pointAltitudeKm, float baseKm)
+{
+  if(pointAltitudeKm <= baseKm)
+    return 1.0F;
+  return clamp((distanceKm - 0.75F * depthKm) / max(0.5F * depthKm, 1e-4F), 0.0F, 1.0F);
 }
 
 // The view image (SkyClouds::recordView) holds the clouds where the camera looks, at the screen's

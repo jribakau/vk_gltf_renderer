@@ -149,6 +149,75 @@ float cloudSunShare(float3 worldPos, SceneFrameInfo* frameInfo)
   return lerp(frameInfo->sunDisk->sunlitGround, g_cloudShadow.SampleLevel(uv, 0.0F), cloudShadowWeight(uv));
 }
 
+// The horizon of the place the cloud images the frame takes were baked from, where their rows begin
+// (a whole image's: where they crowd, cloudImageUv), as the sine of its elevation.
+float cloudImageHorizonMu(SceneFrameInfo* frameInfo)
+{
+  const SkySunDisk disk = *frameInfo->sunDisk;
+  return disk.cloudPreview != 0 ? disk.horizonMu : brunetonHorizonMu(g_atmosphere, g_atmosphere.bottomRadius + frameInfo->cloudEye.w);
+}
+
+// Whether the sky image the frame takes is a whole one (SceneFrameInfo::cloudImageBase): baked from
+// above the clouds' bases, with the clouds beside and under the camera in it. Never a drag's preview.
+bool cloudImageIsWhole(SceneFrameInfo* frameInfo)
+{
+  return frameInfo->cloudImageBase > 0.0F && frameInfo->sunDisk->cloudPreview == 0;
+}
+
+// The clouds along `dir` (the environment's frame) as the cloud images hold them for the camera: the
+// texel composeClouds lays over what is behind them, and `depth`, how far they are along the ray, km.
+float4 cloudsAlong(float3 dir, SceneFrameInfo* frameInfo, out float depth)
+{
+  const SkySunDisk disk = *frameInfo->sunDisk;
+  float4           clouds;
+  depth = CLOUD_NO_DEPTH;
+  if(disk.cloudPreview != 0)
+  {
+    // a drag's preview, as the scene's origin sees it
+    clouds = g_cloudsPreview.SampleLevel(cloudImageUv(dir, asin(disk.horizonMu)), 0.0F);
+  }
+  else
+  {
+    // The sky image the frame takes was baked from one place (its anchor), and the clouds are a
+    // place too, kilometres up: a camera that stands off the anchor sees each cloud where the
+    // anchor saw the same point of it. The depth image says how far the clouds are; the first read
+    // of it is where the camera looks, the second where that put the cloud in the image.
+    const int    front        = clamp(frameInfo->cloudFront, 0, 2);
+    const float3 eye          = frameInfo->cloudEye.xyz;
+    const float  minElevation = asin(cloudImageHorizonMu(frameInfo));
+    const bool   whole        = cloudImageIsWhole(frameInfo);
+    float3       look         = dir;
+    depth                     = g_cloudDepth[front].SampleLevel(cloudImageUv(dir, minElevation, whole), 0.0F);
+    if(any(eye != 0.0F))
+    {
+      look  = cloudDirFromAnchor(dir, eye, cloudShiftDepth(depth, eye));
+      depth = cloudDepthAlong(dir, eye, look, g_cloudDepth[front].SampleLevel(cloudImageUv(look, minElevation, whole), 0.0F));
+      look  = cloudDirFromAnchor(dir, eye, cloudShiftDepth(depth, eye));
+    }
+    const float2 uv = cloudImageUv(look, minElevation, whole);
+    if(front == 0)
+      clouds = g_clouds.SampleLevel(uv, 0.0F);
+    else
+      clouds = g_cloudFollow[front - 1].SampleLevel(uv, 0.0F);
+  }
+  // ... and where the camera looks, the view image, at the screen's resolution, shifted likewise
+  // from where it was baked. The two hold the same clouds, the view's sharper; the texel composes
+  // linearly, so a blend of them is too.
+  if(frameInfo->cloudViewForward.w != 0.0F)
+  {
+    const float3 seen  = cloudDirFromAnchor(dir, frameInfo->cloudViewEye.xyz, cloudShiftDepth(depth, frameInfo->cloudViewEye.xyz));
+    const float3 view  = cloudViewUv(seen, frameInfo->cloudViewRight.xyz, frameInfo->cloudViewRight.w, frameInfo->cloudViewUp.xyz,
+                                     frameInfo->cloudViewUp.w, frameInfo->cloudViewForward.xyz);
+    const float  share = cloudViewShare(view.z);
+    if(share > 0.0F)
+    {
+      const float2 viewUv = float2(view.x * frameInfo->cloudViewUvScaleX, view.y * frameInfo->cloudViewUvScaleY);
+      clouds              = lerp(clouds, g_cloudView.SampleLevel(viewUv, 0.0F), share);
+    }
+  }
+  return clouds;
+}
+
 // The physical sky along a ray, without the solar disk: its radiance, evaluated per ray through the
 // same function the bake uses, the clouds over it. Per ray rather than read from the baked image so
 // what the camera, a mirror or still water sees does not depend on the bake resolution -- the
@@ -168,68 +237,26 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo, out float clo
   const float      horizonMu = brunetonHorizonMu(g_atmosphere, eyeRadius);
   float3           sky = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, eyeRadius, dir,
                                                  sunDir, disk.sunlitGround);
-  // The clouds over it, as the bake composes them, above the horizon: the eye's, and that of the
-  // place the cloud images were baked from, where their rows begin. A camera up in the air has its
-  // own horizon under theirs, and in the band between is the sky alone: the images hold nothing
-  // there to draw. The disk goes on top, dimmed by the clouds in front of it (evalPhysicalSkyBackground).
-  const float imageHorizonMu = disk.cloudPreview != 0 ? disk.horizonMu : brunetonHorizonMu(g_atmosphere, g_atmosphere.bottomRadius + frameInfo->cloudEye.w);
-  if(dir.y > max(horizonMu, imageHorizonMu))
+  // Below the horizon is the planet's ground with its air in front, all of it under the clouds, under
+  // their shade (sky_clouds_air.h.slang; above the horizon the cloud images carry that shade). The
+  // ground's own light is the sunlit share's.
+  if(dir.y <= horizonMu && disk.cloudTop > 0.0F)
   {
-    float4 clouds;
-    float  depth = CLOUD_NO_DEPTH;  // how far the clouds are along the ray, km
-    if(disk.cloudPreview != 0)
-    {
-      // a drag's preview, as the scene's origin sees it
-      clouds = g_cloudsPreview.SampleLevel(cloudImageUv(dir, asin(disk.horizonMu)), 0.0F);
-    }
-    else
-    {
-      // The sky image the frame takes was baked from one place (its anchor), and the clouds are a
-      // place too, kilometres up: a camera that stands off the anchor sees each cloud where the
-      // anchor saw the same point of it. The depth image says how far the clouds are; the first read
-      // of it is where the camera looks, the second where that put the cloud in the image.
-      const int    front        = clamp(frameInfo->cloudFront, 0, 2);
-      const float3 eye          = frameInfo->cloudEye.xyz;
-      const float  minElevation = asin(imageHorizonMu);
-      float3       look         = dir;
-      depth                     = g_cloudDepth[front].SampleLevel(cloudImageUv(dir, minElevation), 0.0F);
-      if(any(eye != 0.0F))
-      {
-        look  = cloudDirFromAnchor(dir, eye, depth);
-        depth = cloudDepthAlong(dir, eye, look, g_cloudDepth[front].SampleLevel(cloudImageUv(look, minElevation), 0.0F));
-        look  = cloudDirFromAnchor(dir, eye, depth);
-      }
-      const float2 uv = cloudImageUv(look, minElevation);
-      if(front == 0)
-        clouds = g_clouds.SampleLevel(uv, 0.0F);
-      else
-        clouds = g_cloudFollow[front - 1].SampleLevel(uv, 0.0F);
-    }
-    // ... and where the camera looks, the view image, at the screen's resolution, shifted likewise
-    // from where it was baked. The two hold the same clouds, the view's sharper; the texel composes
-    // linearly, so a blend of them is too.
-    if(frameInfo->cloudViewForward.w != 0.0F)
-    {
-      const float3 seen  = cloudDirFromAnchor(dir, frameInfo->cloudViewEye.xyz, depth);
-      const float3 view  = cloudViewUv(seen, frameInfo->cloudViewRight.xyz, frameInfo->cloudViewRight.w, frameInfo->cloudViewUp.xyz,
-                                       frameInfo->cloudViewUp.w, frameInfo->cloudViewForward.xyz);
-      const float  share = cloudViewShare(view.z);
-      if(share > 0.0F)
-      {
-        const float2 viewUv = float2(view.x * frameInfo->cloudViewUvScaleX, view.y * frameInfo->cloudViewUvScaleY);
-        clouds              = lerp(clouds, g_cloudView.SampleLevel(viewUv, 0.0F), share);
-      }
-    }
-    sky         = composeClouds(sky, clouds);
-    cloudsLeave = clamp(clouds.w, 0.0F, 1.0F);
-  }
-  else if(dir.y <= horizonMu && disk.cloudTop > 0.0F)
-  {
-    // Below the horizon the image does not reach: the air in front of the ground, all of it under the
-    // clouds, under their shade (sky_clouds_air.h.slang). The ground's own light is the sunlit share's.
     const float3 air = evalBrunetonSkyInScatter(g_atmosphere, g_transmittance, g_scattering, g_singleMie, eyeRadius, dir, sunDir);
     sky -= cloudShadeOfClearSky(g_atmosphere, g_transmittance, g_irradiance, eyeRadius, dir, sunDir, disk.cloudTop,
                                 disk.sunlitGround, disk.cloudSkyShare, air);
+  }
+  // The clouds over it, as the bake composes them. Under the clouds' bases they are all above the
+  // horizon: the eye's, and that of the place the cloud images were baked from, where their rows
+  // begin. A camera above the bases has clouds beside it and under it, and its image is a whole one
+  // (cloudImageIsWhole): they are laid over the planet's ground as over the sky. The disk goes on
+  // top, dimmed by the clouds in front of it (evalPhysicalSkyBackground).
+  if(cloudImageIsWhole(frameInfo) || dir.y > max(horizonMu, cloudImageHorizonMu(frameInfo)))
+  {
+    float        depth;
+    const float4 clouds = cloudsAlong(dir, frameInfo, depth);
+    sky                 = composeClouds(sky, clouds);
+    cloudsLeave         = clamp(clouds.w, 0.0F, 1.0F);
   }
   return sky;
 }
@@ -238,6 +265,36 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo)
 {
   float unused;
   return evalPhysicalSky(worldDir, frameInfo, unused);
+}
+
+// The clouds between the camera and a point it sees, `toPoint` from it in the world (scene units,
+// metres): the texel to lay over the point's light. Only with a whole image (cloudImageIsWhole);
+// under the bases no cloud is in front of anything the land holds.
+float4 cloudsInFrontOf(float3 toPoint, SceneFrameInfo* frameInfo)
+{
+  const float4 none = float4(0.0F, 0.0F, 0.0F, 1.0F);
+  if(frameInfo->sunDisk == nullptr || !(frameInfo->sunDisk->cloudTop > 0.0F))
+    return none;
+  const float distanceKm = length(toPoint) * 0.001F;
+  if(!(distanceKm > 0.0F))
+    return none;
+  const float3 dir = quatRotateInverse(frameInfo->envRotation, toPoint) * (0.001F / distanceKm);
+  float  depth;
+  float4 clouds = cloudsAlong(dir, frameInfo, depth);
+  // Above its horizon an image's texel takes the clouds' shade off the clear sky seen through it
+  // (airShadeMain in sky_clouds_bake.slang), from where it was baked. A point is not that sky, and a
+  // ridge above the horizon went black for it: the texel gets it back.
+  if(dir.y > cloudImageHorizonMu(frameInfo))
+  {
+    const SkySunDisk disk   = *frameInfo->sunDisk;
+    const float3     sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
+    const float      radius = g_atmosphere.bottomRadius + frameInfo->cloudEye.w;
+    const float3     air    = evalBrunetonSkyInScatter(g_atmosphere, g_transmittance, g_scattering, g_singleMie, radius, dir, sunDir);
+    clouds.xyz += clouds.w * cloudShadeOfClearSky(g_atmosphere, g_transmittance, g_irradiance, radius, dir, sunDir, disk.cloudTop,
+                                                  disk.sunlitGround, disk.cloudSkyShare, air);
+  }
+  const float altitude = frameInfo->cloudEye.w + frameInfo->cloudEye.y + dir.y * distanceKm;
+  return lerp(none, clouds, cloudShareInFront(distanceKm, depth, altitude, frameInfo->cloudImageBase));
 }
 
 // What a camera ray or a mirror bounce sees of the physical sky: the sky per ray, plus the solar disk
@@ -2359,6 +2416,15 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       }
     }
     pt.radiance = pt.radiance * march.transmittance + inScatter;
+
+    // A camera above the clouds' bases sees what it hit through the clouds between: those beside it,
+    // those under it, and the one it is in, which is fog over everything. The sky image is then a
+    // whole one and holds them (cloudsInFrontOf), their own air in front of them in the texel.
+    if(cloudImageIsWhole(pushConst.frameInfo))
+    {
+      const float4 clouds = cloudsInFrontOf(pt.firstHitPos - eye, pushConst.frameInfo);
+      pt.radiance         = max(pt.radiance * clouds.w + clouds.xyz * pushConst.frameInfo->envIntensity, float3(0.0F));
+    }
 
     // The land's end (SceneFrameInfo::landFadeFrom): toward it what was hit gives way to what the
     // sky draws in that direction, the planet under its horizon with all its air in front, so the

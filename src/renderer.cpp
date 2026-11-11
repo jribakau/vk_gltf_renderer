@@ -1221,6 +1221,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
       const SkyCloudFollow& followed = m_skyClouds.followed();
       finfo.cloudEye                 = glm::vec4(cloudEyeFrom(followed.anchor, eye), followed.anchor.altitude);
       finfo.cloudFront               = followed.front;
+      finfo.cloudImageBase           = m_skyClouds.followedWholeBaseKm();
       if(m_skyClouds.viewCurrent() && cloudAnchorDistance(m_skyClouds.view().eye, eye) <= kCloudFollowDistance)
       {
         const SkyCloudView& view = m_skyClouds.view();

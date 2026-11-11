@@ -758,9 +758,14 @@ lighting field keeps the cloud image: the light of a sky kilometres up is the sa
   texel, averaged over a window some degrees wide by how much of the sky each texel hides. It has
   to hold round a cloud as well as in it: the reader looks the depth up where the camera looks,
   which is where the cloud *will be*, and with no depth there a cloud could not move into sky that
-  was clear. Where there is no cloud near, it goes over to the distance of a shell at the lowest
-  bases' height. `evalPhysicalSky` reads the depth twice, where the camera looks and where that
-  put the cloud, then the image.
+  was clear. Where there is little cloud near, it goes over to the distance of a shell at the lowest
+  bases' height, and where a quarter of the window is cloud the shell counts for nothing
+  (`kDepthShellFull`): among the clouds the shell is a hundred times further off than the cloud
+  beside the camera. `cloudsAlong` (`gltf_pathtrace.slang`) reads the depth twice, where the camera
+  looks and where that put the cloud, then the image. The shift takes a cloud as no nearer than a
+  few times the camera's distance from the anchor (`cloudShiftDepth`): a nearer one turns through
+  tens of degrees for the camera's few metres, and an image with one smoothed depth a texel came
+  apart in smears.
 - **The follow.** The shift is right for a camera near the anchor. Once the camera has gone
   `kCloudFollowDistance` from where the image it is taking was baked, the sky image is baked again
   from where the camera is (`SkyCloudFollow` and `cloudFollowStep` in `src/sky_cloud_view.hpp`,
@@ -771,6 +776,23 @@ lighting field keeps the cloud image: the light of a sky kilometres up is the sa
   again. A camera put down `kCloudFollowJump` away (a saved view, a jump to a selection) gets its
   image whole in that frame. The march is the cloud image's at 2 marches a texel, its observer
   moved (`SkyCloudsPushConstant::land`, `landXz`): the weather and the noise are read that far on.
+  A camera above the clouds' bases has them tens of metres off, and its follow is sooner and over
+  fewer frames (`kCloudFollowDistanceAmong`, `kCloudFollowFramesAmong`, `SkyClouds::amongClouds`).
+- **Among the clouds and over them.** Under the bases every cloud is above the horizon, and an
+  image's rows run from there to the zenith. A follow image baked from above the bases is a
+  **whole** one (`cloudImageWhole`, `SkyCloudsPushConstant::whole`, `cloudImageUv`'s `whole`): its
+  rows run from straight down to the zenith, crowding at the horizon from both sides, and its march
+  takes the rays that go down as well, to the bases, where `cloudLayerSegment` ends them. The frame
+  is told by `SceneFrameInfo::cloudImageBase`, and then draws the clouds under the horizon too,
+  over the planet's ground, and over whatever the camera's ray hit (`cloudsInFrontOf`, in the
+  aerial-perspective step of the finished path): a point under the bases has every cloud of its
+  ray in front of it, one up among them by the texel's depth (`cloudShareInFront`). So from inside a
+  cloud the land is in the same fog as the sky, and from above the layer the clouds lie over the
+  land that carries their shadows. A texel above the image's horizon holds the shade the clouds
+  take from the clear sky behind it (below); over a point that is given back. A whole image's
+  filter averages its neighbours nearly whatever their transparency
+  (`kFilterAlphaSharpnessWhole`): thin cloud seen against dark land showed the marches' noise as a
+  grid of dots. The cloud image itself, the origin's, is never whole: the environment bake reads it.
 - **The view image** (below) is baked from where the camera stands, and shifted the same way
   while the camera is within `kCloudFollowDistance` of that.
 
@@ -778,6 +800,7 @@ So round a figure at the origin nothing is baked: the cloud image, shifted. In f
 baked every frame.
 
 Measured (RTX 4080, 1920 x 1080, cumulus 0.4 with cirrus 0.2, the sun 40 degrees up): a flight at 15 m/s bakes a band nearly every frame, 1.2 ms a frame on average, beside 1.1 ms of path tracing for the empty scene under it; the gaps between delivered frames are 17.4 ms at the median, 19.7 at the 99th percentile and 24 at worst, as under a clear sky (17.3, 19.7, 20).
+Among the clouds and over them (2026-11-11, the same card and size, cumulus 0.27 under a sun 8 degrees up, over a meadow backdrop): the follow is 2.1 ms a frame at 15 m/s inside the layer and 2.7 ms above it, against 1.0 ms under the bases, in frames of 10.0, 9.7 and 14.3 ms.
 Nine metres from where an image was baked, through a 10 mm lens, the shifted image differs from one
 baked on the spot by 0.63 of 255 on average (99th percentile 7), where the image unshifted differs
 by 1.43 (18).
@@ -969,12 +992,15 @@ share here, not marched; and the sky's share of the ground's own light under the
   table and an accumulation restart every frame.
 - Shadows that move across the scene: the clouds stand still, and their shadows with them.
 - Light shafts (the air under the clouds is shaded by a share, above), takram's haze, and rain.
-- An observer above the clouds' bases, which a camera in flight reaches at a few hundred metres:
-  in the band between the cloud images' horizon and the camera's own lower one there is sky and no
-  cloud, and the clouds below the camera are not drawn. (From inside the layer the sky between the
-  clouds was black until 2026-11-11: a clear ray came out of `marchClouds` as a cloud no distance
-  off, whose air has no direction.) The images cover what is above their observer's horizon, and the
-  march drops a ray that meets the ground.
+- A fast flight through a cloud: the image is some metres old while the cloud is some tens of
+  metres off, so near cloud holds its place for a few frames and then steps (`cloudShiftDepth`),
+  and at speed it smears. At rest it is the view image, baked where the camera stands.
+- A thing up among the clouds with a cloud both in front of it and behind: the texel holds the
+  whole ray's clouds and one depth, and the thing gets all of them or none (`cloudShareInFront`).
+  The land is under the bases, where this cannot happen; a ridge raised into the layer can show it.
+- The lighting of a scene that is itself above the bases: the lighting field is the origin's.
+  (From inside the layer the sky between the clouds was black until 2026-11-11: a clear ray came
+  out of `marchClouds` as a cloud no distance off, whose air has no direction.)
 - Saving: the clouds are viewer settings (`cloud*` in `Settings`), not yet in `OMI_environment_sky`
   or a `.sky.json`. The Figure Viewer keeps them in its own scene files.
 

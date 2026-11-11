@@ -400,6 +400,11 @@ struct SceneFrameInfo
   // draws there, the planet under its horizon. Both 0: no such end. (Appended.)
   float landFadeFrom = 0.0F;
   float landFadeTo   = 0.0F;
+  // The lowest of the clouds' bases, km above the planet's surface, when the sky image the frame
+  // takes was baked from above them and is a whole one (cloudImageWhole in sky_clouds.h.slang): it
+  // holds the clouds beside and under the camera too, which are drawn below the horizon and over
+  // what the camera sees past them. 0 when the image holds only what is above its horizon. (Appended.)
+  float cloudImageBase = 0.0F;
 };
 
 enum PathtracerFlags

@@ -237,6 +237,68 @@ TEST(SkyClouds, TheImageMappingInvertsAndSharesTheLatLongsAzimuth)
   EXPECT_NEAR(cloudImageDir(float2(0.5F, 1.0F), minElevation).y, 1.0F, 1e-6F);
 }
 
+// From above the clouds' bases an image holds what is under its horizon too: the clouds beside the
+// camera and below it, which it had no rows for (the sky cut off in a line at the horizon, and the
+// land crisp from inside a cloud).
+TEST(SkyClouds, AWholeImageRunsFromStraightDownToTheZenith)
+{
+  const float minElevation = horizonElevation(kEarth + 1.2F);
+  for(float u = 0.03F; u < 1.0F; u += 0.11F)
+    for(float v = 0.01F; v < 1.0F; v += 0.045F)
+    {
+      const float3 dir = cloudImageDir(float2(u, v), minElevation, true);
+      EXPECT_NEAR(length(dir), 1.0F, 1e-5F);
+      const float2 back = cloudImageUv(dir, minElevation, true);
+      EXPECT_NEAR(back.x, u, 1e-4F);
+      EXPECT_NEAR(back.y, v, 2e-4F);
+      EXPECT_NEAR(std::atan2(dir.z, dir.x), 2.0F * kPi * u - kPi, 1e-4F);
+    }
+  // straight down, the horizon at the middle row, the zenith
+  EXPECT_NEAR(cloudImageDir(float2(0.5F, 0.0F), minElevation, true).y, -1.0F, 1e-6F);
+  EXPECT_NEAR(std::asin(cloudImageDir(float2(0.5F, 0.5F), minElevation, true).y), minElevation, 1e-5F);
+  EXPECT_NEAR(cloudImageDir(float2(0.5F, 1.0F), minElevation, true).y, 1.0F, 1e-6F);
+  // the rows crowd at the horizon from both sides: a degree there is more of them than one halfway up or down
+  const auto rowsPerDegree = [&](float elevationDegrees) {
+    const float e  = elevationDegrees * kPi / 180.0F;
+    const float de = 0.5F * kPi / 180.0F;
+    return std::abs(cloudImageUv(float3(std::cos(e + de), std::sin(e + de), 0.0F), minElevation, true).y
+                    - cloudImageUv(float3(std::cos(e - de), std::sin(e - de), 0.0F), minElevation, true).y);
+  };
+  EXPECT_GT(rowsPerDegree(minElevation * 180.0F / kPi + 2.0F), 3.0F * rowsPerDegree(45.0F));
+  EXPECT_GT(rowsPerDegree(minElevation * 180.0F / kPi - 2.0F), 3.0F * rowsPerDegree(-45.0F));
+
+  // which images are whole: those baked from above the lowest base, when there is one
+  EXPECT_FALSE(cloudImageWhole(0.6F, 0.75F));
+  EXPECT_TRUE(cloudImageWhole(0.76F, 0.75F));
+  EXPECT_FALSE(cloudImageWhole(5.0F, 0.0F));
+}
+
+// What a whole image's clouds hide of what the camera sees past them.
+TEST(SkyClouds, CloudsAreInFrontOfTheLandUnderThemAndOfWhatIsPastThemAmongThem)
+{
+  const float base = 0.75F;
+  // land under the bases, seen from above them: every cloud of the ray is in front of it, whatever
+  // depth the image's coarse depth gives the texel
+  EXPECT_EQ(cloudShareInFront(1.5F, 0.4F, 0.31F, base), 1.0F);
+  EXPECT_EQ(cloudShareInFront(1.5F, 40.0F, 0.31F, base), 1.0F);
+  // up among the clouds: a thing nearer than they are is clear of them, one past them behind them
+  EXPECT_EQ(cloudShareInFront(0.2F, 2.0F, 1.0F, base), 0.0F);
+  EXPECT_EQ(cloudShareInFront(5.0F, 2.0F, 1.0F, base), 1.0F);
+  EXPECT_GT(cloudShareInFront(2.0F, 2.0F, 1.0F, base), 0.0F);
+  EXPECT_LT(cloudShareInFront(2.0F, 2.0F, 1.0F, base), 1.0F);
+  // the camera in the cloud itself, which is no distance off: fog over everything
+  EXPECT_EQ(cloudShareInFront(0.05F, 1e-3F, 1.0F, base), 1.0F);
+
+  // a ray down from above the bases ends at them: the march never looks for cloud in the ground
+  const float  top   = kEarth + 1.6F;
+  const float2 above = cloudLayerSegment(kEarth + 2.0F, -0.8F, kEarth + base, top);
+  EXPECT_NEAR(above.x, 0.4F / 0.8F, 0.01F);
+  EXPECT_NEAR(above.y, 1.25F / 0.8F, 0.01F);
+  const float2 inside = cloudLayerSegment(kEarth + 1.0F, -0.8F, kEarth + base, top);
+  EXPECT_EQ(inside.x, 0.0F);
+  EXPECT_NEAR(inside.y, 0.25F / 0.8F, 0.01F);
+}
+
 TEST(SkyClouds, TheViewImageMappingInverts)
 {
   const float3 forward = normalize(float3(0.3F, 0.4F, -0.8F));
@@ -442,6 +504,46 @@ TEST(SkyClouds, AShadowIsReadWhereTheSunsRayComesUpFromTheGround)
   EXPECT_EQ(cloudShadowWeight(float2(0.3F, -0.2F)), 0.0F);
   // a 900 m ground with its hills is well inside
   EXPECT_EQ(cloudShadowWeight(cloudShadowUv(float3(0.9F, 0.06F, -0.9F), normalize(float3(0.5F, 0.5F, 0.0F)))), 1.0F);
+}
+
+// Among the clouds they are tens of metres from the camera: the image is baked again after fewer
+// metres and over fewer frames, and what the camera has gone meanwhile never turns a near cloud
+// through more than a few degrees (it smeared across the frame).
+TEST(SkyClouds, AmongTheCloudsTheFollowIsSoonerAndTheShiftBounded)
+{
+  const SkyCloudAnchor origin{.land = {0.0F, 0.0F}, .altitude = 0.3F};
+  SkyCloudFollow       f;
+  f.reset(origin);
+  const auto at = [&](float metres) { return SkyCloudAnchor{.land = {metres * 0.001F, 0.0F}, .altitude = 1.1F}; };
+  // put down up there: the jump's bake, whole at once
+  EXPECT_TRUE(cloudFollowStep(f, at(0.0F), 1024, 8, true).completes);
+  // 5 m on is not yet far for a camera under the clouds, and is for one among them
+  SkyCloudFollow under = f;
+  EXPECT_FALSE(cloudFollowStep(under, at(5.0F), 1024, 8).bake);
+  float x      = 5.0F;
+  int   frames = 0;
+  for(bool whole = false; !whole; ++frames)
+  {
+    const SkyCloudFollowStep step = cloudFollowStep(f, at(x), 1024, 8, true);
+    ASSERT_TRUE(step.bake);
+    EXPECT_EQ(step.rows % 8U, 0U);
+    whole = step.completes;
+    x += 0.25F;
+    ASSERT_LE(frames, 64);
+  }
+  EXPECT_EQ(frames, int(kCloudFollowFramesAmong));
+  EXPECT_LT(kCloudFollowDistanceAmong, kCloudFollowDistance);
+
+  // A cloud 30 m off, the camera 8 m from where the image was baked: shifted by its own depth it
+  // would turn through 15 degrees; the shift takes it as no nearer than CLOUD_SHIFT_NEAREST times
+  // the camera's distance
+  const float3 eye(0.008F, 0.0F, 0.0F);
+  const float3 dir(0.0F, 0.0F, 1.0F);
+  EXPECT_GT(degrees(acos(dot(cloudDirFromAnchor(dir, eye, 0.03F), dir))), 14.0F);
+  EXPECT_LT(degrees(acos(dot(cloudDirFromAnchor(dir, eye, cloudShiftDepth(0.03F, eye)), dir))), 9.6F);
+  // a cloud at its usual distance is shifted by that, as before
+  EXPECT_EQ(cloudShiftDepth(0.75F, eye), 0.75F);
+  EXPECT_EQ(cloudShiftDepth(0.75F, float3(0.0F)), 0.75F);
 }
 
 // The sky image that follows the camera (cloudFollowStep), a 1024-row image baked in bands of 8.

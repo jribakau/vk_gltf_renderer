@@ -86,6 +86,11 @@ constexpr uint32_t kCloudFollowFrames = 32;
 // ... unless the camera is this far from the image it has, km: put down somewhere else, not flown
 // there. The shift is no picture of the sky from that far, so the image is baked whole, at once.
 constexpr float kCloudFollowJump = 0.1F;
+// A camera among the clouds (above their bases) has them tens of metres off, not hundreds: the image
+// is baked again sooner and over fewer frames, each a longer band. Shifted as far as under the
+// clouds, a cloud beside the camera smeared across the frame.
+constexpr float    kCloudFollowDistanceAmong = 0.004F;
+constexpr uint32_t kCloudFollowFramesAmong   = 12;
 
 // The sky image that follows the camera. Image 0 is the sky bake's, from the scene's origin (`home`),
 // which also lights the scene and is never baked over; 1 and 2 are the follow images, baked in turn
@@ -130,8 +135,13 @@ struct SkyCloudFollowStep
 //    it was owed all the same: whether it is at rest is not asked, since a frame in which a flight's
 //    camera did not move looks the same as one at rest.
 //  - Past kCloudFollowJump from the front image's anchor the rest of the bake goes in this frame.
-inline SkyCloudFollowStep cloudFollowStep(SkyCloudFollow& f, const SkyCloudAnchor& eye, uint32_t imageRows, uint32_t band)
+//
+// `among`: the camera is among the clouds, and the follow keeps the shorter distance and count
+// (kCloudFollowDistanceAmong, kCloudFollowFramesAmong).
+inline SkyCloudFollowStep cloudFollowStep(SkyCloudFollow& f, const SkyCloudAnchor& eye, uint32_t imageRows, uint32_t band, bool among = false)
 {
+  const float        distance = among ? kCloudFollowDistanceAmong : kCloudFollowDistance;
+  const uint32_t     frames   = among ? kCloudFollowFramesAmong : kCloudFollowFrames;
   SkyCloudFollowStep step;
   if(cloudAnchorDistance(f.home, eye) <= kCloudFollowDistance)
   {
@@ -144,19 +154,19 @@ inline SkyCloudFollowStep cloudFollowStep(SkyCloudFollow& f, const SkyCloudAncho
   const float gone = cloudAnchorDistance(f.anchor, eye);
   if(!f.baking)
   {
-    if(gone <= kCloudFollowDistance)
+    if(gone <= distance)
       return step;
     f.baking     = true;
     f.bakingFrom = eye;
     f.nextRow    = 0;
   }
-  else if(gone > kCloudFollowJump && cloudAnchorDistance(f.bakingFrom, eye) > kCloudFollowDistance)
+  else if(gone > kCloudFollowJump && cloudAnchorDistance(f.bakingFrom, eye) > distance)
   {
     // put down elsewhere mid-bake: what was under way is of the wrong place
     f.bakingFrom = eye;
     f.nextRow    = 0;
   }
-  const uint32_t each = std::max((imageRows + kCloudFollowFrames - 1) / kCloudFollowFrames, 1U);
+  const uint32_t each = std::max((imageRows + frames - 1) / frames, 1U);
   step.bake           = true;
   step.target         = f.front == 1 ? 2 : 1;
   step.from           = f.bakingFrom;

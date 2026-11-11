@@ -126,6 +126,13 @@ public:
   bool followBakes(const SkyCloudAnchor& eye) const;
   // Which image the readers take, and where it was baked from.
   const SkyCloudFollow& followed() const { return m_follow; }
+  // The lowest of the baked clouds' bases, km above the surface, when the image the readers take is a
+  // whole one (cloudImageWhole in sky_clouds.h.slang: a follow image baked from above those bases,
+  // with the clouds under its horizon too); 0 when it holds what is above its horizon.
+  float followedWholeBaseKm() const;
+  // Whether a camera at `eye` is among the baked clouds, above their bases: its follow is the faster
+  // one (cloudFollowStep's `among`).
+  bool amongClouds(const SkyCloudAnchor& eye) const;
 
   // Whether the preview image holds the clouds of the moment (the last record was a preview).
   bool showingPreview() const { return m_showingPreview; }
@@ -178,6 +185,7 @@ private:
   SkyCloudsSettings m_bakedSettings{};
   glm::vec3         m_bakedSun{0.0F, 1.0F, 0.0F};
   float             m_bakedAltitude{0.0F};
+  float             m_bakedBaseKm{0.0F};  // the lowest of the baked clouds' bases, km above the surface; 0 with none
   bool              m_bakedClouds{false};
   uint64_t          m_generation{0};
   uint64_t          m_viewGeneration{~uint64_t(0)};
