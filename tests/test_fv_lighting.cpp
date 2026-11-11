@@ -602,6 +602,12 @@ TEST(FvLighting, ABackdropIsPartOfTheLighting)
   EXPECT_LT(L::rendererParams(s, {})["landFadeTo"].get<double>(), double(fv::backdrop::kLandsEnd));
   // and it plants nothing
   EXPECT_TRUE(fv::backdrop::samePlanting(hazy.backdrop, s.backdrop));
+  // mature woods (protocol 67): off unless asked, kept in the topic, and a planting of its own
+  EXPECT_FALSE(s.backdrop.mature);
+  const L::State mature = L::applyPatch(s, {{"backdrop", {{"mature", true}}}});
+  EXPECT_TRUE(mature.backdrop.mature);
+  EXPECT_EQ(L::toJson(mature)["backdrop"]["mature"], true);
+  EXPECT_FALSE(fv::backdrop::samePlanting(mature.backdrop, s.backdrop));
   EXPECT_FALSE(hazy.backdrop == s.backdrop);
   EXPECT_FALSE(fv::backdrop::samePlanting(L::applyPatch(s, {{"backdrop", {{"seed", 8}}}}).backdrop, s.backdrop));
   EXPECT_THROW(L::applyPatch(L::State{}, {{"backdrop", {{"kind", "jungle"}}}}), std::invalid_argument);

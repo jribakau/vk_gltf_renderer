@@ -411,6 +411,8 @@ void patchBackdrop(fv::backdrop::Spec& b, const Json& p)
       field(b.relief, d.relief, v, [&](const Json& x) { return number(x, key, 0.0, 2.0); });
     else if(k == "air")
       field(b.air, d.air, v, [&](const Json& x) { return number(x, key, 1.0, 20.0); });
+    else if(k == "mature")
+      field(b.mature, d.mature, v, [&](const Json& x) { return boolean(x, key); });
     else if(k == "state" || k == "plants")
       continue;  // read-only, the host's
     else
@@ -607,7 +609,8 @@ Json toJson(const State& s)
         {"shoulder", t.shoulder},
         {"highlightsToWhite", t.highlightsToWhite}}},
       {"backdrop",
-       {{"kind", s.backdrop.kind}, {"seed", s.backdrop.seed}, {"size", s.backdrop.size}, {"density", s.backdrop.density}, {"relief", s.backdrop.relief}, {"air", s.backdrop.air}}},
+       {{"kind", s.backdrop.kind}, {"seed", s.backdrop.seed}, {"size", s.backdrop.size}, {"density", s.backdrop.density}, {"relief", s.backdrop.relief}, {"air", s.backdrop.air},
+        {"mature", s.backdrop.mature}}},
   };
 }
 

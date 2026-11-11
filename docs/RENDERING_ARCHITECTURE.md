@@ -629,7 +629,12 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   meadow has no outer rim. Where growth is spent the trees thin out to nothing (`kTreesEnd`), and
   the wood carries on as a colour of the ground (`woods`, the kit's `tintWoods`) in the same
   groves, which grow with distance as the mesh does (`Layer::patchGrows`): the last sparse trees
-  stand on ground already dark and read as a wood's edge.
+  stand on ground already dark and read as a wood's edge. **Mature woods** (`Spec::mature`, the
+  lighting's `backdrop.mature`) add one layer after a kind's own, so none of theirs moves: grown firs
+  (the kit's `grown` role, one 14 m tree of 2.3M triangles the app fetches only for it) at 1 to 1.5
+  times, a few hundred among the near woods' young ones. The far woods stay young firs grown with
+  distance. All the trees, every one a grown fir, had cost about half again a frame (2026-11-11);
+  near only, they add some 160 to 190 MB and the frame a little, most over the canopy.
 - **Grass and its drifts are tiles** (`grassCovers`, `drifts`, `patch`, `grassTiles`, `driftTiles`, `tilePlace`):
   a square of ground with its few hundred plants is one mesh, and the ground is covered by squares
   of three kinds, thick grass in 2 m tiles where one looks from, thinner and larger in 4 m tiles

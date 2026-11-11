@@ -126,7 +126,9 @@ namespace {
 // distance) and env.skyVisibility (km one sees through the physical sky's air; 0 the atmosphere's
 // own). An older renderer refuses the lighting that has either.
 // 66: view.set's display 'samples' (the Samples view: each pixel of a still by the samples it took).
-constexpr int kProtocolVersion = 66;
+// 67: backdrop.mature (grown firs among the near woods' young ones, from the kit's `grown` role). An
+// older renderer refuses the lighting that has it.
+constexpr int kProtocolVersion = 67;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -245,7 +245,43 @@ Terrain terrain(const Spec& spec, float tile)
   return t;
 }
 
+namespace {
+
+// Where a forest's near firs give way to its far ones, fewer and larger with distance
+constexpr float kForestNear = 160.0F;
+
+// A kind's own layers
+std::vector<Layer> kindLayers(const Spec& spec);
+
+// Mature woods (Spec::mature): grown firs among the near woods' young ones, after a kind's own layers
+// so none of theirs moves. The kit's grown firs are 14 m (Poly Haven's fir_tree_01 as the app keeps
+// it); at 1 to 1.5 times that they are the old trees of a wood, over the young ones' 6 to 20 m.
+// A forest's stand among its near firs as one in five or so of the canopy's; a meadow's in its groves
+// and at its wood's edge, and a few alone in the grass, as old trees are left standing in pasture.
+Layer grownForest(float near)
+{
+  return {.role = "grown", .perSquareMetre = 0.005, .from = 12.0F, .to = near, .fade = 30.0F, .cover = 0.7F, .patch = 50.0F,
+          .scaleMin = 1.0F, .scaleMax = 1.5F, .sink = 0.3F};
+}
+Layer grownMeadow()
+{
+  return {.role = "grown", .perSquareMetre = 0.003, .from = 30.0F, .to = kWoods, .fade = 40.0F, .cover = 0.4F, .patch = 70.0F,
+          .closeFar = 0.6F, .scaleMin = 1.0F, .scaleMax = 1.5F, .sink = 0.3F};
+}
+
+}  // namespace
+
 std::vector<Layer> layers(const Spec& spec)
+{
+  std::vector<Layer> all = kindLayers(spec);
+  if(spec.mature && !all.empty())
+    all.push_back(spec.kind == "forest" ? grownForest(kForestNear) : grownMeadow());
+  return all;
+}
+
+namespace {
+
+std::vector<Layer> kindLayers(const Spec& spec)
 {
   if(spec.kind == "meadow")
   {
@@ -269,7 +305,7 @@ std::vector<Layer> layers(const Spec& spec)
   }
   if(spec.kind == "forest")
   {
-    const float near = 160.0F;
+    const float near = kForestNear;
     return {
         // firs from the glade's edge, close enough to shut the view within some tens of metres, grown
         // to between one and two and a half times the kit's young ones
@@ -287,6 +323,8 @@ std::vector<Layer> layers(const Spec& spec)
   }
   return {};
 }
+
+}  // namespace
 
 float woods(const Spec& spec, float x, float z)
 {

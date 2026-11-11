@@ -56,7 +56,11 @@ struct Spec
   // horizon, and through that much clear air a far wood is as sharp and dark as a near one; a
   // landscape reads as one by the air over kilometres. Nothing is planted by it.
   double air = 6.0;
-  bool   operator==(const Spec&) const = default;
+  // Mature woods: grown firs, some 14 to 21 m, among the young ones of the near woods (the kit's
+  // `grown` role, which the app fetches only for this: millions of triangles a tree). The far woods
+  // stay young firs grown with distance, which reads the same from there.
+  bool mature = false;
+  bool operator==(const Spec&) const = default;
 };
 
 // Whether two specs plant the same: alike in all but what only the air reads
@@ -134,7 +138,7 @@ Terrain terrain(const Spec& spec, float tile);
 // A layer of one role's plants
 struct Layer
 {
-  std::string role;                  // the kit's role it plants: sapling, tree, shrub, rock, stump, log
+  std::string role;                  // the kit's role it plants: sapling, tree, grown, shrub, rock, stump, log
   double      perSquareMetre = 1.0;  // where it stands thickest, before the spec's density
   float       from           = 0.0F; // none nearer the origin than this
   float       to             = 30.0F; // nor further

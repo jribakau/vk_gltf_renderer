@@ -451,6 +451,45 @@ TEST(BackdropLayers, AForestIsAGladeInAWoodThatRunsToTheHorizon)
   EXPECT_TRUE(B::roles(B::Spec{}).empty());
 }
 
+// Mature woods: grown firs among the near woods' young ones, the kind's own layers left as they were
+TEST(BackdropLayers, MatureWoodsAddGrownFirsNearAndMoveNothingElse)
+{
+  for(B::Spec young : {meadow(), forest()})
+  {
+    B::Spec mature = young;
+    mature.mature  = true;
+    const auto was = B::layers(young);
+    const auto now = B::layers(mature);
+    ASSERT_EQ(now.size(), was.size() + 1);
+    // the kind's layers first and unchanged, so every plant of theirs stands where it stood
+    for(size_t i = 0; i < was.size(); i++)
+    {
+      EXPECT_EQ(now[i].role, was[i].role);
+      EXPECT_EQ(B::scatter(mature, now[i], uint32_t(i), 3), B::scatter(young, was[i], uint32_t(i), 3));
+    }
+    const B::Layer& grown = now.back();
+    EXPECT_EQ(grown.role, "grown");
+    // near only: clear of the figures, and no further than the near woods
+    EXPECT_GT(grown.from, B::kClearing);
+    EXPECT_LE(grown.to, B::kWoods);
+    // old trees, 14 m in the kit: taller than the young ones' tallest at their scale
+    EXPECT_GE(grown.scaleMin, 1.0F);
+    // a few hundred at most: each is millions of triangles, held once, but traced through
+    const uint64_t count = B::expectedCount(mature, grown);
+    EXPECT_GT(count, 30u) << young.kind;
+    EXPECT_LT(count, 600u) << young.kind;
+    // asked of the kit only when on
+    const auto roles = B::roles(mature);
+    EXPECT_NE(std::find(roles.begin(), roles.end(), "grown"), roles.end());
+    const auto without = B::roles(young);
+    EXPECT_EQ(std::find(without.begin(), without.end(), "grown"), without.end());
+  }
+  // nothing of it without a backdrop
+  B::Spec none;
+  none.mature = true;
+  EXPECT_TRUE(B::layers(none).empty());
+}
+
 TEST(BackdropTiles, APatchIsItsCoversPlantsWithinItsTile)
 {
   const B::Spec spec   = meadow();
