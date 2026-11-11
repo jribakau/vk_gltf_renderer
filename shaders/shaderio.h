@@ -384,6 +384,16 @@ struct SceneFrameInfo
   // noise it adds under this share of the pixel's mean so far (contribution_roulette.h.slang); 0 traces
   // every one. (Appended, per the note above.)
   float shadowRayShare = 0.0F;
+  // The physical sky's clouds are a place, and the images that hold them were baked from one
+  // (SkyCloudFollow, SkyCloudView in src/sky_cloud_view.hpp). Which sky image the frame takes
+  // (cloudFront: 0 the sky bake's, 1 and 2 the follow images at CLOUD_FOLLOW_BINDING); where the
+  // camera stands from where that image was baked, km in the environment's frame, with that place's
+  // altitude in .w, km above the planet's surface (cloudEye); and where it stands from where the view
+  // image was baked (cloudViewEye). A reader shifts each image by the clouds' distance
+  // (cloudDirFromAnchor). (Appended, per the note above.)
+  int    cloudFront   = 0;
+  float4 cloudEye     = {0.0F, 0.0F, 0.0F, 0.0F};
+  float4 cloudViewEye = {0.0F, 0.0F, 0.0F, 0.0F};
 };
 
 enum PathtracerFlags

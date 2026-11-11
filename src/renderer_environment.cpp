@@ -878,24 +878,75 @@ void GltfRenderer::updateBakerParameters()
 }
 
 //--------------------------------------------------------------------------------------------------
-// The physical sky's clouds where the camera looks, at the screen's resolution. The sky image's
-// texels are 7 pixels each through an 85 mm lens on a 1400-pixel-high view, so their edges smear.
-// Baked once the camera has held still a frame, and again whenever a bake of the sky leaves the view
-// image behind: 16 ms for a fair-weather cumulus in a 2160 x 1395 view, 49 ms for a sunset under
-// three tiers, against the sky bake's 145 (RTX 4080, 2026-11-06). While the camera moves, the view
-// image keeps serving the directions it covers, and the sky image the rest (cloudViewShare).
+// The physical sky's clouds as the camera sees them from where it is. The sky bake holds them as the
+// scene's origin sees them, which alone makes them a picture at no distance: a camera that crosses a
+// field or climbs a hill would see the same picture. The clouds are a place, kilometres up and over
+// a particular stretch of land (the scene's origin is the bake's observer, a scene unit a metre), so
+// each frame:
+//
+//  - the sky image follows the camera (SkyClouds::follow, cloudFollowStep): once the camera has gone
+//    kCloudFollowDistance from where the image the frames take was baked, the image is baked again
+//    from where the camera is, a band of rows a frame, and the frames shift what they have by the
+//    clouds' distance meanwhile (evalPhysicalSky);
+//  - once the camera has been at rest a tenth of a second, the view image is baked where it looks,
+//    from where it stands, at the screen's resolution (the sky image's texels are 7 pixels each through an 85 mm
+//    lens on a 1400-pixel-high view), and again whenever a bake of the sky leaves it behind: 16 ms
+//    for a fair-weather cumulus in a 2160 x 1395 view, 49 ms for a sunset under three tiers, against
+//    the sky bake's 145 (RTX 4080, 2026-11-06).
+//
+// Marching the view image every moving frame instead was measured first: 10.4 ms a frame at half the
+// frame's pixels each way and one march a texel, looking up into cumulus, where the path tracing of
+// an empty scene is 0.7.
+//
+// The lighting field keeps the sky bake's image: the light of a sky kilometres up is the same across
+// a scene. True when a still's sky changed under it, and the still restarts.
 //
 bool GltfRenderer::updateCloudView(VkCommandBuffer cmd)
 {
-  std::optional<SkyCloudView> wanted;
-  if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && !m_resources.settings.useSolidBackground && m_skyClouds.viewable())
-    wanted = cloudViewFor(m_cameraManip->getViewMatrix(), m_cameraManip->getPerspectiveMatrix(),
-                          m_resources.settings.envRotationQuat(),
-                          glm::uvec2(m_resources.gBuffers.getSize().width, m_resources.gBuffers.getSize().height));
-  const bool settled    = wanted.has_value() && wanted == m_lastWantedCloudView;
-  m_lastWantedCloudView = wanted;
-  if(!settled || m_skyClouds.viewHolds(*wanted))
+  constexpr std::chrono::milliseconds kCloudRest{100};
+  if(m_resources.settings.envSystem != shaderio::EnvSystem::eSky || m_resources.settings.useSolidBackground || !m_skyClouds.viewable())
+  {
+    m_lastCloudCamera.reset();
     return false;
+  }
+  const glm::mat4      view           = m_cameraManip->getViewMatrix();
+  const glm::mat4      projection     = m_cameraManip->getPerspectiveMatrix();
+  const glm::quat      envRotation    = m_resources.settings.envRotationQuat();
+  const float          originAltitude = m_resources.settings.atmoObserverAltitude * 0.001F;
+  const glm::uvec2     frameSize(m_resources.gBuffers.getSize().width, m_resources.gBuffers.getSize().height);
+  const CloudCamera    camera{view, projection, envRotation, originAltitude, frameSize};
+  // At rest: the camera as it was for kCloudRest. One frame alike is not rest: a camera driven by
+  // input that comes slower than the frames (a slow drag, a script) has such frames all through its
+  // motion, and the view bake is a hitch of tens of milliseconds each time.
+  const auto now = std::chrono::steady_clock::now();
+  if(!m_lastCloudCamera.has_value() || !(camera == *m_lastCloudCamera))
+    m_cloudCameraSince = now;
+  m_lastCloudCamera  = camera;
+  const bool settled = now - m_cloudCameraSince >= kCloudRest;
+  const SkyCloudAnchor eye     = cloudEyeOf(view, envRotation, originAltitude);
+
+  const std::optional<SkyCloudView> wanted = cloudViewFor(view, projection, envRotation, frameSize, originAltitude);
+  if(!wanted.has_value())
+    m_skyClouds.dropView();  // a camera the view image does not serve
+  const bool viewDue = wanted.has_value() && settled && !m_skyClouds.viewHolds(*wanted);
+
+  // What the frame bakes goes behind one wait for the frames in flight, in a section of its own (a
+  // profiler section starts at the top of the pipe). The sections are recorded every frame, bake or
+  // none: the profiler's averages are of a frame's set of sections.
+  {
+    auto section = m_profilerGpuTimer.cmdFrameSection(cmd, "Cloud wait");
+    if(viewDue || m_skyClouds.followBakes(eye))
+      m_skyClouds.recordWait(cmd);
+  }
+  bool changed = false;
+  {
+    auto section = m_profilerGpuTimer.cmdFrameSection(cmd, "Cloud follow");
+    // a camera in motion restarts its frame by moving: only a still's sky changing restarts it
+    changed = m_skyClouds.follow(cmd, eye) && settled;
+  }
+  if(!viewDue)
+    return changed;
+  auto section = m_profilerGpuTimer.cmdFrameSection(cmd, "Cloud view");
   m_skyClouds.recordView(cmd, *wanted);
   return true;
 }

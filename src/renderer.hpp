@@ -526,10 +526,23 @@ private:
   void onUIRender() override;
 
   bool updateFrameCounter();
-  // The physical sky's clouds where the camera looks, baked at the screen's resolution once the
-  // camera has held still a frame (SkyClouds::recordView). True when it baked: the still restarts.
+  // The physical sky's clouds as the camera sees them from where it is: the sky image follows it
+  // (SkyClouds::follow), and the view image is baked where it looks once it has been at rest a
+  // moment (SkyClouds::recordView). True when a still's sky changed under it: the still restarts.
   bool updateCloudView(VkCommandBuffer cmd);
-  std::optional<SkyCloudView> m_lastWantedCloudView;  // the view the last frame's camera asked for
+  // What the clouds' images depend on of the camera and the frame; the last frame's, to tell a camera
+  // at rest from one in motion.
+  struct CloudCamera
+  {
+    glm::mat4  view;
+    glm::mat4  projection;
+    glm::quat  envRotation;
+    float      originAltitude;
+    glm::uvec2 frameSize;
+    bool       operator==(const CloudCamera&) const = default;
+  };
+  std::optional<CloudCamera>            m_lastCloudCamera;
+  std::chrono::steady_clock::time_point m_cloudCameraSince{};  // when the camera last moved
 
   void clearGbuffer(VkCommandBuffer cmd);
   // Drops the current scene. keepImagesForReuse retains file-backed GPU images (scenefile replace)

@@ -93,6 +93,36 @@ inline float2 cloudLayerSegment(float r0, float mu, float rBottom, float rTop)
   return float2(enter, down >= 0.0F ? down : cloudSphereExit(r0, mu, rTop));
 }
 
+// The distance the depth image gives a direction with no cloud in or near it: far enough that a
+// camera's few metres do not shift it.
+static const float CLOUD_NO_DEPTH = 1000.0F;
+
+// How far along a ray the sphere of radius rShell is, from inside it or from above: where the clouds
+// would be in a direction that has none, were they a thin shell at their bases' height.
+inline float cloudShellDistance(float r0, float mu, float rShell)
+{
+  if(r0 < rShell)
+    return cloudSphereExit(r0, mu, rShell);
+  const float t = cloudSphereEntry(r0, mu, rShell);
+  return t >= 0.0F ? t : CLOUD_NO_DEPTH;
+}
+
+// An image of the clouds is baked from one place, its anchor. A camera that stands `eye` from the
+// anchor (km, the environment's frame) and looks along `dir` at a cloud `depth` km along that ray
+// sees what the anchor saw in this direction: the cloud is a point in the world, and the image holds
+// it where the anchor saw it. With the camera at the anchor it is `dir`.
+inline float3 cloudDirFromAnchor(float3 dir, float3 eye, float depth)
+{
+  return normalize(eye + dir * depth);
+}
+
+// How far along the camera's ray `dir` the cloud is that the anchor saw `anchorDepth` km away in the
+// direction `look`: the point's place along the ray, never behind the camera.
+inline float cloudDepthAlong(float3 dir, float3 eye, float3 look, float anchorDepth)
+{
+  return max(dot(look * anchorDepth - eye, dir), 0.01F);
+}
+
 // Whether a height falls in one of the gaps between layers, which the march steps over.
 inline bool cloudInsideIntervals(SkyCloudsParameters p, float height)
 {

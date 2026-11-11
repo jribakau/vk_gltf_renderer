@@ -1208,16 +1208,27 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.radianceCacheCell                  = radianceCache.cell;
     finfo.radianceCacheFrame                 = radianceCache.frame;
     finfo.radianceCacheStill                 = radianceCache.still ? 1 : 0;
-    // The clouds where the camera looks, while the view image holds the clouds of the moment: it
-    // looks where it was baked, which the camera may since have turned from (updateCloudView).
-    if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.viewCurrent())
+    // The clouds from where the camera is (updateCloudView): which sky image the frame takes and
+    // where the camera stands from where it was baked, and the view image while it holds the clouds
+    // of the moment from near enough. It looks where it was baked, which the camera may since have
+    // turned from.
+    finfo.cloudEye = glm::vec4(0.0F, 0.0F, 0.0F, m_resources.settings.atmoObserverAltitude * 0.001F);
+    if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.viewable())
     {
-      const SkyCloudView& view = m_skyClouds.view();
-      finfo.cloudViewRight     = view.right;
-      finfo.cloudViewUp        = view.up;
-      finfo.cloudViewForward   = glm::vec4(view.forward, 1.0F);
-      finfo.cloudViewUvScaleX  = float(view.size.x) / float(CLOUD_VIEW_CAPACITY);
-      finfo.cloudViewUvScaleY  = float(view.size.y) / float(CLOUD_VIEW_CAPACITY);
+      const SkyCloudAnchor eye = cloudEyeOf(m_cameraManip->getViewMatrix(), envRot, m_resources.settings.atmoObserverAltitude * 0.001F);
+      const SkyCloudFollow& followed = m_skyClouds.followed();
+      finfo.cloudEye                 = glm::vec4(cloudEyeFrom(followed.anchor, eye), followed.anchor.altitude);
+      finfo.cloudFront               = followed.front;
+      if(m_skyClouds.viewCurrent() && cloudAnchorDistance(m_skyClouds.view().eye, eye) <= kCloudFollowDistance)
+      {
+        const SkyCloudView& view = m_skyClouds.view();
+        finfo.cloudViewRight     = view.right;
+        finfo.cloudViewUp        = view.up;
+        finfo.cloudViewForward   = glm::vec4(view.forward, 1.0F);
+        finfo.cloudViewUvScaleX  = float(view.size.x) / float(CLOUD_VIEW_CAPACITY);
+        finfo.cloudViewUvScaleY  = float(view.size.y) / float(CLOUD_VIEW_CAPACITY);
+        finfo.cloudViewEye       = glm::vec4(cloudEyeFrom(view.eye, eye), 0.0F);
+      }
     }
     // Update the camera information
     m_prevMVP = finfo.viewProjMatrix;

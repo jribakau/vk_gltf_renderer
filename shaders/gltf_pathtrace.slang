@@ -125,10 +125,14 @@ static bool doDebug = false;
 
 // Set 4 is SkyClouds' runtime set: the cloud image the physical sky's bake composed into the
 // lighting environment, composed here over what the camera and mirrors see. Clear, it is (0, 0, 0, 1)
-// everywhere, which gives the sky back unchanged.
+// everywhere, which gives the sky back unchanged. With it the images that hold the clouds as the
+// camera sees them from where it is: the sky images that follow it, each one's depth image, and the
+// view image.
 [[vk::binding(CLOUD_IMAGE_BINDING, 4)]]   Sampler2D<float4>     g_clouds;
 [[vk::binding(CLOUD_PREVIEW_BINDING, 4)]] Sampler2D<float4>     g_cloudsPreview;
 [[vk::binding(CLOUD_VIEW_BINDING, 4)]]    Sampler2D<float4>     g_cloudView;
+[[vk::binding(CLOUD_FOLLOW_BINDING, 4)]]  Sampler2D<float4>     g_cloudFollow[2];
+[[vk::binding(CLOUD_DEPTH_BINDING, 4)]]   Sampler2D<float>      g_cloudDepth[3];
 
 // The physical sky along a ray, without the solar disk: its radiance, evaluated per ray through the
 // same function the bake uses, the clouds over it. Per ray rather than read from the baked image so
@@ -144,18 +148,47 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo)
   const SkySunDisk disk = *frameInfo->sunDisk;
   float3           sky  = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance,
                                                   disk.observerRadius, dir, sunDir, disk.sunlitGround);
-  // The clouds over it, as the bake composes them: above the horizon, from the same image. The disk
-  // goes on top, already dimmed by the clouds in front of it (SkySunDisk::cloudShadow).
+  // The clouds over it, as the bake composes them, above the horizon. The disk goes on top, already
+  // dimmed by the clouds in front of it (SkySunDisk::cloudShadow).
   if(dir.y > disk.horizonMu)
   {
-    // whichever image holds the clouds of the moment: the full one, or a drag's preview
-    const float2 uv     = cloudImageUv(dir, asin(disk.horizonMu));
-    float4       clouds = disk.cloudPreview != 0 ? g_cloudsPreview.SampleLevel(uv, 0.0F) : g_clouds.SampleLevel(uv, 0.0F);
-    // ... and where the camera looks, the view image, at the screen's resolution. The two hold the
-    // same clouds, the view's sharper; the texel composes linearly, so a blend of them is too.
+    float4 clouds;
+    float  depth = CLOUD_NO_DEPTH;  // how far the clouds are along the ray, km
+    if(disk.cloudPreview != 0)
+    {
+      // a drag's preview, as the scene's origin sees it
+      clouds = g_cloudsPreview.SampleLevel(cloudImageUv(dir, asin(disk.horizonMu)), 0.0F);
+    }
+    else
+    {
+      // The sky image the frame takes was baked from one place (its anchor), and the clouds are a
+      // place too, kilometres up: a camera that stands off the anchor sees each cloud where the
+      // anchor saw the same point of it. The depth image says how far the clouds are; the first read
+      // of it is where the camera looks, the second where that put the cloud in the image.
+      const int    front        = clamp(frameInfo->cloudFront, 0, 2);
+      const float3 eye          = frameInfo->cloudEye.xyz;
+      const float  minElevation = asin(brunetonHorizonMu(g_atmosphere, g_atmosphere.bottomRadius + frameInfo->cloudEye.w));
+      float3       look         = dir;
+      depth                     = g_cloudDepth[front].SampleLevel(cloudImageUv(dir, minElevation), 0.0F);
+      if(any(eye != 0.0F))
+      {
+        look  = cloudDirFromAnchor(dir, eye, depth);
+        depth = cloudDepthAlong(dir, eye, look, g_cloudDepth[front].SampleLevel(cloudImageUv(look, minElevation), 0.0F));
+        look  = cloudDirFromAnchor(dir, eye, depth);
+      }
+      const float2 uv = cloudImageUv(look, minElevation);
+      if(front == 0)
+        clouds = g_clouds.SampleLevel(uv, 0.0F);
+      else
+        clouds = g_cloudFollow[front - 1].SampleLevel(uv, 0.0F);
+    }
+    // ... and where the camera looks, the view image, at the screen's resolution, shifted likewise
+    // from where it was baked. The two hold the same clouds, the view's sharper; the texel composes
+    // linearly, so a blend of them is too.
     if(frameInfo->cloudViewForward.w != 0.0F)
     {
-      const float3 view  = cloudViewUv(dir, frameInfo->cloudViewRight.xyz, frameInfo->cloudViewRight.w, frameInfo->cloudViewUp.xyz,
+      const float3 seen  = cloudDirFromAnchor(dir, frameInfo->cloudViewEye.xyz, depth);
+      const float3 view  = cloudViewUv(seen, frameInfo->cloudViewRight.xyz, frameInfo->cloudViewRight.w, frameInfo->cloudViewUp.xyz,
                                        frameInfo->cloudViewUp.w, frameInfo->cloudViewForward.xyz);
       const float  share = cloudViewShare(view.z);
       if(share > 0.0F)

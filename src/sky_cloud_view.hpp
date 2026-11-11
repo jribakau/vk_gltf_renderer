@@ -19,9 +19,18 @@
 
 #pragma once
 
-// Where the physical sky's view image looks (SkyClouds::recordView): the clouds where the camera
-// looks, at the screen's resolution, beside the sky image that holds them all round. Header-only
-// arithmetic, so the tests read it without the renderer.
+// Where the physical sky's clouds are seen from. The clouds are a place in the world, kilometres up
+// and over a particular stretch of land, so what a camera sees of them depends on where it stands:
+// they pass overhead as it crosses the land and come nearer as it climbs. Two images hold them for
+// the camera, each baked from a place (an anchor):
+//
+//  - the sky image, all round, from the scene's origin or, once the camera has gone some way from
+//    where it was last baked, from where the camera then was (SkyCloudFollow, cloudFollowStep);
+//  - the view image, where the camera looks, at the screen's resolution, from where it stands
+//    (SkyCloudView, cloudViewFor).
+//
+// Between bakes a reader shifts an image by the clouds' distance (cloudDirFromAnchor in
+// sky_clouds.h.slang). Header-only arithmetic, so the tests read it without the renderer.
 
 #include <algorithm>
 #include <cmath>
@@ -33,17 +42,150 @@
 
 #include "../shaders/sky_clouds_io.h.slang"  // CLOUD_VIEW_CAPACITY
 
+// A place the clouds are seen from: where it is on the land from the scene's origin, km along the
+// environment's x and z, and how high above the planet's surface, km.
+struct SkyCloudAnchor
+{
+  glm::vec2 land{0.0F};
+  float     altitude{0.0F};
+
+  bool operator==(const SkyCloudAnchor& o) const { return land == o.land && altitude == o.altitude; }
+};
+
+// `eye` from `anchor`, km in the environment's frame (y up).
+inline glm::vec3 cloudEyeFrom(const SkyCloudAnchor& anchor, const SkyCloudAnchor& eye)
+{
+  return {eye.land.x - anchor.land.x, eye.altitude - anchor.altitude, eye.land.y - anchor.land.y};
+}
+
+inline float cloudAnchorDistance(const SkyCloudAnchor& a, const SkyCloudAnchor& b)
+{
+  return glm::length(cloudEyeFrom(a, b));
+}
+
+// The lowest a camera stands above the planet's surface, km: one under the floor of its scene still
+// looks at the clouds from above ground.
+constexpr float kCloudViewMinAltitude = 0.001F;
+
+// Where a camera stands: its view matrix, the environment's orientation (environment frame to world),
+// a scene unit a metre, the scene's origin `originAltitudeKm` above the planet's surface (the sky
+// bake's observer).
+inline SkyCloudAnchor cloudEyeOf(const glm::mat4& view, const glm::quat& envRotation, float originAltitudeKm)
+{
+  const glm::vec3 eyeKm = glm::conjugate(glm::normalize(envRotation)) * glm::vec3(glm::inverse(view)[3]) * 0.001F;
+  return {.land = glm::vec2(eyeKm.x, eyeKm.z), .altitude = std::max(originAltitudeKm + eyeKm.y, kCloudViewMinAltitude)};
+}
+
+// How far the camera goes from where an image was baked before the image is baked again from where
+// the camera is, km. Within it the image is shifted by the clouds' distance, which is right to well
+// under a degree: at 10 m under a cloud base 750 m up the shift is 0.76 degrees.
+constexpr float kCloudFollowDistance = 0.010F;
+// The frames a bake of the sky image for the camera is spread over, a band of rows each: all at once
+// it is a hitch of some 25 ms, a few times a second in flight.
+constexpr uint32_t kCloudFollowFrames = 32;
+// ... unless the camera is this far from the image it has, km: put down somewhere else, not flown
+// there. The shift is no picture of the sky from that far, so the image is baked whole, at once.
+constexpr float kCloudFollowJump = 0.1F;
+
+// The sky image that follows the camera. Image 0 is the sky bake's, from the scene's origin (`home`),
+// which also lights the scene and is never baked over; 1 and 2 are the follow images, baked in turn
+// from where the camera is, the one the readers are not taking. `front` is the one they take, baked
+// from `anchor`.
+struct SkyCloudFollow
+{
+  int            front{0};
+  SkyCloudAnchor anchor{};
+  SkyCloudAnchor home{};
+  bool           baking{false};  // a bake of the other follow image is under way, a band a frame
+  SkyCloudAnchor bakingFrom{};
+  uint32_t       nextRow{0};
+
+  // After a sky bake from `origin`: image 0, and nothing under way.
+  void reset(const SkyCloudAnchor& origin) { *this = SkyCloudFollow{.anchor = origin, .home = origin}; }
+};
+
+// What a frame bakes of it: rows [firstRow, firstRow + rows) of image `target` as seen from `from`;
+// `completes` when they are its last, and the readers take it from this frame on (`frontChanged`,
+// which is also set when they go back to image 0).
+struct SkyCloudFollowStep
+{
+  bool           bake{false};
+  int            target{0};
+  SkyCloudAnchor from{};
+  uint32_t       firstRow{0};
+  uint32_t       rows{0};
+  bool           completes{false};
+  bool           frontChanged{false};
+};
+
+// One frame of the follow, for a camera at `eye`; `imageRows` the sky image's height, `band` what its
+// bands of rows are a multiple of (the bake's workgroup).
+//
+//  - Within kCloudFollowDistance of the origin the readers take image 0 again: the sky bake's, at its
+//    full quality.
+//  - A camera that has gone kCloudFollowDistance from the front image's anchor starts a bake from
+//    where it is, and each frame after bakes the next band, until the image is whole and the readers
+//    take it. The camera has moved on by then, by what it flies in kCloudFollowFrames frames, and the
+//    next bake starts when that is too far in its turn. A camera that stops meanwhile gets the image
+//    it was owed all the same: whether it is at rest is not asked, since a frame in which a flight's
+//    camera did not move looks the same as one at rest.
+//  - Past kCloudFollowJump from the front image's anchor the rest of the bake goes in this frame.
+inline SkyCloudFollowStep cloudFollowStep(SkyCloudFollow& f, const SkyCloudAnchor& eye, uint32_t imageRows, uint32_t band)
+{
+  SkyCloudFollowStep step;
+  if(cloudAnchorDistance(f.home, eye) <= kCloudFollowDistance)
+  {
+    step.frontChanged = f.front != 0;
+    f.front           = 0;
+    f.anchor          = f.home;
+    f.baking          = false;
+    return step;
+  }
+  const float gone = cloudAnchorDistance(f.anchor, eye);
+  if(!f.baking)
+  {
+    if(gone <= kCloudFollowDistance)
+      return step;
+    f.baking     = true;
+    f.bakingFrom = eye;
+    f.nextRow    = 0;
+  }
+  else if(gone > kCloudFollowJump && cloudAnchorDistance(f.bakingFrom, eye) > kCloudFollowDistance)
+  {
+    // put down elsewhere mid-bake: what was under way is of the wrong place
+    f.bakingFrom = eye;
+    f.nextRow    = 0;
+  }
+  const uint32_t each = std::max((imageRows + kCloudFollowFrames - 1) / kCloudFollowFrames, 1U);
+  step.bake           = true;
+  step.target         = f.front == 1 ? 2 : 1;
+  step.from           = f.bakingFrom;
+  step.firstRow       = f.nextRow;
+  step.rows = gone > kCloudFollowJump ? imageRows - f.nextRow : std::min(((each + band - 1) / band) * band, imageRows - f.nextRow);
+  f.nextRow += step.rows;
+  if(f.nextRow >= imageRows)
+  {
+    step.completes    = true;
+    step.frontChanged = true;
+    f.front           = step.target;
+    f.anchor          = f.bakingFrom;
+    f.baking          = false;
+  }
+  return step;
+}
+
 // A perspective map about `forward`, in the environment's frame, out to the tangents of its
 // half-width and half-height in right's and up's .w (cloudViewDir in sky_clouds.h.slang), filling
-// `size` texels of the view image.
+// `size` texels of the view image, as seen from `eye`, where the camera stands.
 struct SkyCloudView
 {
-  glm::vec4  right{0.0F};
-  glm::vec4  up{0.0F};
-  glm::vec3  forward{0.0F};
-  glm::uvec2 size{0, 0};
+  glm::vec4      right{0.0F};
+  glm::vec4      up{0.0F};
+  glm::vec3      forward{0.0F};
+  glm::uvec2     size{0, 0};
+  SkyCloudAnchor eye{};
 
-  bool operator==(const SkyCloudView& o) const { return right == o.right && up == o.up && forward == o.forward && size == o.size; }
+  bool operator==(const SkyCloudView& o) const { return right == o.right && up == o.up && forward == o.forward && size == o.size && eye == o.eye; }
 };
 
 // How much wider than the camera's view the view image reaches, as a share of its half-extent's
@@ -57,9 +199,13 @@ constexpr float kCloudViewMaxTangent = 1.5F;
 // The view image for a camera: its view and projection matrices as the path tracer's camera rays take
 // them (getRay in camera_ray.h.slang), the environment's orientation (environment frame to world), and
 // the frame's size in pixels. A little wider than the camera's view (kCloudViewMargin), a texel a
-// pixel up to the image's capacity. None for a camera the sky image serves as well: orthographic, or
-// wider than about 110 degrees.
-inline std::optional<SkyCloudView> cloudViewFor(const glm::mat4& view, const glm::mat4& projection, const glm::quat& envRotation, glm::uvec2 frameSize)
+// pixel up to the image's capacity, seen from where the camera stands (cloudEyeOf). None for a camera
+// the sky image serves as well: orthographic, or wider than about 110 degrees.
+inline std::optional<SkyCloudView> cloudViewFor(const glm::mat4& view,
+                                                const glm::mat4& projection,
+                                                const glm::quat& envRotation,
+                                                glm::uvec2       frameSize,
+                                                float            originAltitudeKm = 0.0F)
 {
   if(frameSize.x == 0 || frameSize.y == 0 || projection[2][3] == 0.0F)
     return std::nullopt;  // no frame, or orthographic: its rays are parallel, one direction a frame
@@ -97,5 +243,9 @@ inline std::optional<SkyCloudView> cloudViewFor(const glm::mat4& view, const glm
   const float      scale    = std::min({1.0F, capacity / wide, capacity / high});
   const glm::uvec2 size{std::clamp(uint32_t(std::ceil(wide * scale)), 1U, uint32_t(CLOUD_VIEW_CAPACITY)),
                         std::clamp(uint32_t(std::ceil(high * scale)), 1U, uint32_t(CLOUD_VIEW_CAPACITY))};
-  return SkyCloudView{.right = glm::vec4(right, tanRight), .up = glm::vec4(up, tanUp), .forward = forward, .size = size};
+  return SkyCloudView{.right   = glm::vec4(right, tanRight),
+                      .up      = glm::vec4(up, tanUp),
+                      .forward = forward,
+                      .size    = size,
+                      .eye     = cloudEyeOf(view, envRotation, originAltitudeKm)};
 }

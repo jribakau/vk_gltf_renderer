@@ -69,14 +69,15 @@ shaderio::SkyCloudsParameters cloudBakeParameters(const SkyCloudsSettings& setti
 // SkyClouds -- the physical sky's cloud layers.
 //
 // Owns the noise the clouds are cut from (generated once, at init), the cloud image (one bake of the
-// layers as the fixed observer sees them, for this sun), a quarter-size preview image for drags, the
-// view image (the same clouds where the camera looks, at the screen's resolution: recordView), and
-// the pass that bakes them. EnvBaker records that pass ahead of its own, which composes the image
-// over the sky into the lighting environment; the path tracer composes it, or the view image where
-// it covers, over what the camera sees. Both read them through this class's runtime set;
-// SkySunDisk::cloudPreview says which of the first two holds the clouds of the moment, and
-// SceneFrameInfo::cloudViewForward whether the view image does. The model is takram's
-// (shaders/sky_clouds*.slang).
+// layers as the scene's origin sees them, for this sun), a quarter-size preview image for drags, the
+// images the camera sees them in from where it is -- the sky image that follows it (follow) and the
+// view image, where it looks, at the screen's resolution (recordView) -- and the pass that bakes
+// them. EnvBaker records that pass ahead of its own, which composes the cloud image over the sky into
+// the lighting environment; the path tracer composes over what the camera sees the sky image that
+// follows it, or the view image where it covers. Both read them through this class's runtime set;
+// SkySunDisk::cloudPreview says whether the preview holds the clouds of the moment,
+// SceneFrameInfo::cloudFront which sky image the camera takes, and cloudViewForward whether the
+// view image serves. The model is takram's (shaders/sky_clouds*.slang).
 //
 // With no clouds the pass is not run: the full image is cleared once to (0, 0, 0, 1), which composes
 // to the sky exactly.
@@ -112,7 +113,19 @@ public:
   // Bake the clouds for this sun (toward it, the environment's frame) and observer, into the
   // caller's command buffer, behind a barrier for frames still reading the last bake and ahead of
   // one for the passes that read this one. `preview` bakes the quarter-size image at low quality.
+  // A full bake is from the scene's origin, and the readers take it: the follow starts over.
   void record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float observerAltitudeKm, bool preview);
+
+  // The sky image as the camera at `eye` sees it: one frame of its follow (cloudFollowStep in
+  // sky_cloud_view.hpp), which bakes a band of a follow image when the camera has gone too far from
+  // where the image the readers take was baked. Into the caller's command buffer, behind recordWait
+  // when followBakes says a band is due. True when the readers take another image from this frame
+  // on. Only once the full image holds clouds (viewable).
+  bool follow(VkCommandBuffer cmd, const SkyCloudAnchor& eye);
+  // Whether follow would bake in this frame for a camera at `eye`.
+  bool followBakes(const SkyCloudAnchor& eye) const;
+  // Which image the readers take, and where it was baked from.
+  const SkyCloudFollow& followed() const { return m_follow; }
 
   // Whether the preview image holds the clouds of the moment (the last record was a preview).
   bool showingPreview() const { return m_showingPreview; }
@@ -121,11 +134,19 @@ public:
   // sky's (a float2, airMain in sky_clouds_bake.slang), for the environment bake recorded after it.
   VkDeviceAddress airAddress() const { return m_airBuf.address; }
 
-  // The clouds where the camera looks, at the screen's resolution, into the view image: the last
-  // full bake's clouds, sun and observer, marched again for the view's directions only. Into the
-  // caller's command buffer, behind a barrier for frames still reading the view image and ahead of
-  // one for those that read this one. Only once the full image holds clouds (viewable).
+  // The clouds where the camera looks, from where it is, into the view image: the last full bake's
+  // clouds and sun, marched again for the view's directions only, from where the camera stands
+  // (SkyCloudView::eye). Into the caller's command buffer, behind a barrier for frames still reading
+  // the view image (recordWait) and ahead of one for those that read this one. Only once the full
+  // image holds clouds (viewable).
   void recordView(VkCommandBuffer cmd, const SkyCloudView& view);
+  // The barrier a view bake or a follow's goes behind, which the caller records ahead of it: a
+  // profiler section starts at the top of the pipe, so one round both would count the frames this
+  // waits for.
+  void recordWait(VkCommandBuffer cmd);
+  // The view image no longer holds what the camera sees (a camera it does not serve): the sky image
+  // alone draws the clouds until the next view bake.
+  void dropView() { m_viewGeneration = ~uint64_t(0); }
   // Whether a view bake would show anything: the full image holds clouds, not the preview.
   bool viewable() const { return m_bakedClouds && !m_showingPreview; }
   // The view image holds the clouds of the moment, looking where `view()` says.
@@ -133,14 +154,16 @@ public:
   bool viewHolds(const SkyCloudView& view) const { return viewCurrent() && m_view == view; }
   const SkyCloudView& view() const { return m_view; }
 
-  // The images, as combined image samplers at CLOUD_IMAGE_BINDING, CLOUD_PREVIEW_BINDING and
-  // CLOUD_VIEW_BINDING.
+  // The images, as combined image samplers at CLOUD_IMAGE_BINDING, CLOUD_PREVIEW_BINDING,
+  // CLOUD_VIEW_BINDING, CLOUD_FOLLOW_BINDING and CLOUD_DEPTH_BINDING.
   VkDescriptorSetLayout getDescriptorSetLayout() const { return m_runtimePack.getLayout(); }
   VkDescriptorSet       getDescriptorSet() const { return m_runtimePack.getSet(0); }
 
 private:
   void createImages(Resources& res);
   void recordAirShade(VkCommandBuffer cmd, uint32_t width, uint32_t height);
+  void recordDepth(VkCommandBuffer cmd);
+  void recordFollow(VkCommandBuffer cmd, const SkyCloudFollowStep& step);
   void createPipelines(const Shaders& shaders, VkDescriptorSetLayout brunetonSetLayout);
   void generateNoise(Resources& res);
 
@@ -159,6 +182,7 @@ private:
   uint64_t          m_generation{0};
   uint64_t          m_viewGeneration{~uint64_t(0)};
   SkyCloudView      m_view{};
+  SkyCloudFollow    m_follow{};  // the sky image the readers take, and the bake of the next one
   uint32_t          m_imageMips{1};
   uint32_t          m_weatherMips{1};
   uint32_t          m_shapeMips{1};
@@ -172,6 +196,9 @@ private:
   nvvk::Image m_previewImage;     // the same, a quarter the size, one level
   nvvk::Image m_rawImage;         // the settled march before the filter (filterMain): full size, one level
   nvvk::Image m_viewImage;        // the clouds in view (recordView): CLOUD_VIEW_CAPACITY square, one level, clamped
+  nvvk::Image m_followImages[2];  // the sky image from where the camera is (follow): the sky image's size, one level
+  nvvk::Image m_rawDepth;         // how far the clouds are in each texel of a march, km: the sky image's size, R16F
+  nvvk::Image m_depthImages[3];   // each sky image's depth image (depthMain): the sky image's, then the follow images' 
   // Storage writes need a view of one level; the images' own views span their chains for sampling.
   VkImageView m_shapeStorageView{VK_NULL_HANDLE};
   VkImageView m_detailStorageView{VK_NULL_HANDLE};
@@ -183,7 +210,7 @@ private:
 
   VkDescriptorSet      m_brunetonSet{VK_NULL_HANDLE};  // SkyBruneton's, borrowed
   nvvk::DescriptorPack m_noisePack;                    // the noise textures, as storage, for their one write
-  nvvk::DescriptorPack m_bakePack;                     // three sets: set 0 writes the full image, set 1 the preview, set 2 the view image
+  nvvk::DescriptorPack m_bakePack;                     // five sets: set 0 writes the full image, 1 the preview, 2 the view image, 3 and 4 the follow images
   nvvk::DescriptorPack m_runtimePack;                  // the images, for their readers
 
   VkPipelineLayout m_noiseLayout{VK_NULL_HANDLE};
@@ -196,5 +223,6 @@ private:
   VkPipeline       m_filterPipeline{VK_NULL_HANDLE};
   VkPipeline       m_airPipeline{VK_NULL_HANDLE};
   VkPipeline       m_airShadePipeline{VK_NULL_HANDLE};
+  VkPipeline       m_depthPipeline{VK_NULL_HANDLE};
   VkCommandPool    m_transientCmdPool{VK_NULL_HANDLE};
 };

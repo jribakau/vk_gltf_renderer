@@ -317,6 +317,205 @@ TEST(SkyClouds, TheViewImageCoversTheCamerasFrameATexelAPixel)
   EXPECT_FALSE(cloudViewFor(turned, projection, env, frame) == image);
 }
 
+TEST(SkyClouds, TheViewImageIsSeenFromWhereTheCameraStands)
+{
+  const glm::uvec2 frame(1920, 1080);
+  const glm::mat4  projection = glm::perspective(glm::radians(40.0F), float(frame.x) / float(frame.y), 0.1F, 1000.0F);
+  const auto       viewFrom   = [](glm::vec3 eye) { return glm::lookAt(eye, eye + glm::vec3(0.0F, 0.2F, -1.0F), glm::vec3(0.0F, 1.0F, 0.0F)); };
+  const glm::quat  none(1.0F, 0.0F, 0.0F, 0.0F);
+
+  // At the scene's origin the camera is the sky bake's observer, a head's height above it
+  const std::optional<SkyCloudView> home = cloudViewFor(viewFrom({0.0F, 1.6F, 0.0F}), projection, none, frame, 0.3F);
+  ASSERT_TRUE(home.has_value());
+  EXPECT_NEAR(home->eye.land.x, 0.0F, 1e-6F);
+  EXPECT_NEAR(home->eye.land.y, 0.0F, 1e-6F);
+  EXPECT_NEAR(home->eye.altitude, 0.3016F, 1e-5F);
+
+  // 300 m east, 400 m south and 50 m up: that far on over the land, in kilometres, and as much higher
+  const std::optional<SkyCloudView> away = cloudViewFor(viewFrom({300.0F, 51.6F, 400.0F}), projection, none, frame, 0.3F);
+  ASSERT_TRUE(away.has_value());
+  EXPECT_NEAR(away->eye.land.x, 0.3F, 1e-5F);
+  EXPECT_NEAR(away->eye.land.y, 0.4F, 1e-5F);
+  EXPECT_NEAR(away->eye.altitude, 0.3516F, 1e-5F);
+  EXPECT_TRUE(away->eye == cloudEyeOf(viewFrom({300.0F, 51.6F, 400.0F}), none, 0.3F));
+  // it looks the same way, and is another image
+  EXPECT_NEAR(glm::length(away->forward - home->forward), 0.0F, 1e-5F);
+  EXPECT_FALSE(away == home);
+  EXPECT_NEAR(cloudAnchorDistance(home->eye, away->eye), std::sqrt(0.3F * 0.3F + 0.4F * 0.4F + 0.05F * 0.05F), 1e-5F);
+  const glm::vec3 from = cloudEyeFrom(home->eye, away->eye);
+  EXPECT_NEAR(from.x, 0.3F, 1e-5F);
+  EXPECT_NEAR(from.y, 0.05F, 1e-5F);
+  EXPECT_NEAR(from.z, 0.4F, 1e-5F);
+
+  // The land is the environment's: under a sky turned a quarter round, the world's x is its z
+  const glm::quat      quarter = glm::angleAxis(glm::radians(90.0F), glm::vec3(0.0F, 1.0F, 0.0F));
+  const SkyCloudAnchor turned  = cloudEyeOf(viewFrom({300.0F, 1.6F, 0.0F}), quarter, 0.3F);
+  EXPECT_NEAR(turned.land.x, 0.0F, 1e-5F);
+  EXPECT_NEAR(std::abs(turned.land.y), 0.3F, 1e-5F);
+
+  // A step to the side is another image: the clouds are marched again from there
+  EXPECT_FALSE(cloudViewFor(viewFrom({0.05F, 1.6F, 0.0F}), projection, none, frame, 0.3F) == home);
+  // A camera under its scene's floor, on a planet's surface, still looks from above ground
+  EXPECT_EQ(cloudEyeOf(viewFrom({0.0F, -40.0F, 0.0F}), none, 0.0F).altitude, kCloudViewMinAltitude);
+}
+
+// A cloud is a point in the world. An image baked from one place holds it in the direction that
+// place saw it; a camera elsewhere finds it there by how far along its own ray the cloud is.
+TEST(SkyClouds, AnImageBakedElsewhereIsReadWhereItsAnchorSawTheCloud)
+{
+  // a cloud base 750 m over a spot 400 m north of the anchor
+  const float3 cloud(0.0F, 0.75F, -0.4F);
+  // the camera 10 m east of the anchor and 2 m up, looking at it
+  const float3 eye(0.010F, 0.002F, 0.0F);
+  const float  depth = length(cloud - eye);
+  const float3 dir   = (cloud - eye) / depth;
+  // the image holds it where the anchor saw it
+  const float3 look = cloudDirFromAnchor(dir, eye, depth);
+  EXPECT_NEAR(length(look - normalize(cloud)), 0.0F, 1e-6F);
+  // which is not where the camera looks: 0.67 degrees off, eight of the sky image's columns
+  const float off = degrees(acos(dot(look, dir)));
+  EXPECT_NEAR(off, 0.67F, 0.02F);
+  EXPECT_GT(off, 7.0F * 360.0F / 4096.0F);
+  // from the anchor itself the image is read where the camera looks
+  EXPECT_NEAR(length(cloudDirFromAnchor(dir, float3(0.0F), depth) - dir), 0.0F, 1e-6F);
+
+  // The depth image is read first where the camera looks, which gives the anchor's distance to what
+  // it saw there; the cloud's own distance along the camera's ray comes from the second read.
+  EXPECT_NEAR(cloudDepthAlong(dir, eye, look, length(cloud)), depth, 1e-5F);
+  // never behind the camera, whatever the image says
+  EXPECT_GT(cloudDepthAlong(dir, eye, -dir, 5.0F), 0.0F);
+
+  // A cloud ten times as far is ten times less off, and a direction with no cloud not at all
+  const float3 far     = cloud * 10.0F;
+  const float  farAway = length(far - eye);
+  const float3 farDir  = (far - eye) / farAway;
+  EXPECT_NEAR(degrees(acos(dot(cloudDirFromAnchor(farDir, eye, farAway), farDir))), 0.067F, 0.01F);
+  EXPECT_LT(length(cloudDirFromAnchor(dir, eye, CLOUD_NO_DEPTH) - dir), 2e-5F);
+}
+
+TEST(SkyClouds, AClearDirectionIsAsFarAsAShellAtTheBasesHeight)
+{
+  const float shell = kEarth + 0.75F;
+  // from below it: straight up the height left, and further toward the horizon
+  EXPECT_NEAR(cloudShellDistance(kObserver, 1.0F, shell), 0.45F, 1e-3F);
+  EXPECT_GT(cloudShellDistance(kObserver, 0.1F, shell), 4.0F);
+  EXPECT_LT(cloudShellDistance(kObserver, 0.1F, shell), 4.6F);
+  // from above it: down to it, and nothing at all looking up
+  EXPECT_NEAR(cloudShellDistance(kEarth + 2.0F, -1.0F, shell), 1.25F, 1e-3F);
+  EXPECT_EQ(cloudShellDistance(kEarth + 2.0F, 0.5F, shell), CLOUD_NO_DEPTH);
+}
+
+// The sky image that follows the camera (cloudFollowStep), a 1024-row image baked in bands of 8.
+TEST(SkyClouds, TheSkyImageFollowsACameraInFlight)
+{
+  const SkyCloudAnchor origin{.land = {0.0F, 0.0F}, .altitude = 0.3F};
+  SkyCloudFollow       f;
+  f.reset(origin);
+  const auto at = [&](float metres) { return SkyCloudAnchor{.land = {metres * 0.001F, 0.0F}, .altitude = 0.3016F}; };
+
+  // Round a figure at the origin nothing is baked: the sky bake's image, shifted
+  for(float x : {0.0F, 3.0F, -6.0F, 9.0F})
+  {
+    const SkyCloudFollowStep step = cloudFollowStep(f, at(x), 1024, 8);
+    EXPECT_FALSE(step.bake) << x;
+    EXPECT_FALSE(step.frontChanged) << x;
+  }
+  EXPECT_EQ(f.front, 0);
+
+  // A flight at 15 m/s, 60 frames a second: past 10 m a bake starts from where the camera then is,
+  // a band of rows each frame, and the frames keep the image they had until it is whole
+  float    x      = 10.0F;
+  uint32_t baked  = 0;
+  int      frames = 0;
+  bool     whole  = false;
+  while(!whole)
+  {
+    x += 0.25F;
+    const SkyCloudFollowStep step = cloudFollowStep(f, at(x), 1024, 8);
+    ASSERT_TRUE(step.bake);
+    EXPECT_EQ(step.target, 1);
+    EXPECT_EQ(step.firstRow, baked);
+    EXPECT_EQ(step.rows % 8U, 0U);
+    EXPECT_NEAR(step.from.land.x, 0.01025F, 1e-6F);  // where the bake began, every band of it
+    baked += step.rows;
+    ++frames;
+    whole = step.completes;
+    EXPECT_EQ(step.frontChanged, whole);
+    EXPECT_EQ(f.front, whole ? 1 : 0);
+    ASSERT_LE(frames, 64);
+  }
+  EXPECT_EQ(baked, 1024U);
+  EXPECT_EQ(frames, int(kCloudFollowFrames));
+  EXPECT_NEAR(f.anchor.land.x, 0.01025F, 1e-6F);
+  // the camera is then what it flew meanwhile from the image's anchor: under 10 m, so no bake yet
+  EXPECT_LT(cloudAnchorDistance(f.anchor, at(x)), kCloudFollowDistance);
+  EXPECT_FALSE(cloudFollowStep(f, at(x + 0.25F), 1024, 8).bake);
+
+  // ... and the next one goes into the other follow image, never the one the frames are taking
+  x = 30.0F;
+  const SkyCloudFollowStep next = cloudFollowStep(f, at(x), 1024, 8);
+  EXPECT_TRUE(next.bake);
+  EXPECT_EQ(next.target, 2);
+  EXPECT_EQ(next.firstRow, 0U);
+  EXPECT_EQ(f.front, 1);
+
+  // The camera stops mid-bake. A frame in which a flight's camera did not move looks no different,
+  // so the bake goes on as it was, a band a frame, and the camera at rest gets the image it was owed
+  int bands = 1;
+  for(SkyCloudFollowStep step = next; !step.completes; ++bands)
+  {
+    step = cloudFollowStep(f, at(x), 1024, 8);
+    ASSERT_TRUE(step.bake);
+    EXPECT_EQ(step.target, 2);
+    EXPECT_NEAR(step.from.land.x, 0.030F, 1e-6F);
+    ASSERT_LE(bands, 64);
+  }
+  EXPECT_EQ(bands, int(kCloudFollowFrames));
+  EXPECT_EQ(f.front, 2);
+  EXPECT_FALSE(f.baking);
+  EXPECT_TRUE(f.anchor == at(x));
+  // at rest under it, nothing more; nor a few metres on, within reach of the shift
+  EXPECT_FALSE(cloudFollowStep(f, at(x), 1024, 8).bake);
+  EXPECT_FALSE(cloudFollowStep(f, at(x + 4.0F), 1024, 8).bake);
+
+  // Put down 400 m off (a saved view, a jump to a selection): the shift is no picture of the sky
+  // from that far, so the image is baked whole in that frame
+  const SkyCloudFollowStep jump = cloudFollowStep(f, at(430.0F), 1024, 8);
+  EXPECT_TRUE(jump.bake);
+  EXPECT_TRUE(jump.completes);
+  EXPECT_TRUE(jump.frontChanged);
+  EXPECT_EQ(jump.target, 1);
+  EXPECT_EQ(jump.firstRow, 0U);
+  EXPECT_EQ(jump.rows, 1024U);
+  EXPECT_TRUE(f.anchor == at(430.0F));
+  // ... and a jump while a bake is under way bakes the new place, not the rest of the old one
+  EXPECT_FALSE(cloudFollowStep(f, at(445.0F), 1024, 8).completes);
+  const SkyCloudFollowStep again = cloudFollowStep(f, at(900.0F), 1024, 8);
+  EXPECT_TRUE(again.completes);
+  EXPECT_EQ(again.firstRow, 0U);
+  EXPECT_EQ(again.rows, 1024U);
+  EXPECT_TRUE(f.anchor == at(900.0F));
+
+  // Back at the origin the frames take the sky bake's own image again, with nothing baked
+  const SkyCloudFollowStep back = cloudFollowStep(f, at(5.0F), 1024, 8);
+  EXPECT_FALSE(back.bake);
+  EXPECT_TRUE(back.frontChanged);
+  EXPECT_EQ(f.front, 0);
+  EXPECT_TRUE(f.anchor == origin);
+  EXPECT_FALSE(cloudFollowStep(f, at(5.0F), 1024, 8).frontChanged);
+
+  // A climb counts as a flight does: 40 m up over the origin is 40 m from it
+  SkyCloudFollow g;
+  g.reset(origin);
+  EXPECT_TRUE(cloudFollowStep(g, SkyCloudAnchor{.land = {0.0F, 0.0F}, .altitude = 0.34F}, 1024, 8).bake);
+  EXPECT_NEAR(g.bakingFrom.altitude, 0.34F, 1e-6F);
+  // ... and a sky bake puts the frames back on its image from wherever they were
+  g.reset(origin);
+  EXPECT_EQ(g.front, 0);
+  EXPECT_FALSE(g.baking);
+  EXPECT_TRUE(g.anchor == origin);
+}
+
 TEST(SkyClouds, AnOrthographicOrVeryWideCameraKeepsTheSkyImage)
 {
   const glm::mat4 view = glm::lookAt(glm::vec3(0.0F, 1.5F, 3.0F), glm::vec3(0.0F, 1.5F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F));

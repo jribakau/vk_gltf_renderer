@@ -49,6 +49,8 @@ enum SkyCloudsBakeBindings
   eCloudBakeParams     = 5,  // ConstantBuffer<SkyCloudsParameters>
   eCloudBakeFiltered   = 6,  // RWTexture2D<float4>: mip 0 of the cloud image, the raw one filtered (filterMain)
   eCloudBakeAir        = 7,  // RWStructuredBuffer<float>: the shares of the air's light the clouds leave (airMain)
+  eCloudBakeDepthRaw   = 8,  // RWTexture2D<float>: how far the clouds are along each texel of the march, km (0: none)
+  eCloudBakeDepth      = 9,  // RWTexture2D<float>: the image's depth image, what depthMain makes of that
 };
 
 // The ground points, and the directions over the sky, the bake measures the air's shares at (airMain):
@@ -76,6 +78,15 @@ enum SkyCloudsNoiseBindings
 // holds the clouds of the moment.
 #define CLOUD_VIEW_BINDING 2
 #define CLOUD_VIEW_CAPACITY 2048
+// ... and the sky image as it follows the camera (SkyCloudFollow in src/sky_cloud_view.hpp): two more
+// images of the sky image's size, baked in turn from where the camera is, and for each of the three
+// its depth image, how far the clouds are in each direction, by which a reader shifts the image for a
+// camera that has moved on from where it was baked (cloudDirFromAnchor). SceneFrameInfo::cloudFront
+// says which the readers take (0 the sky image, 1 and 2 these), cloudEye where the camera is from it.
+#define CLOUD_FOLLOW_BINDING 3  // Sampler2D<float4>[2]
+#define CLOUD_DEPTH_BINDING 4   // Sampler2D<float>[3], km
+#define CLOUD_DEPTH_WIDTH 512
+#define CLOUD_DEPTH_HEIGHT 128
 // The settled bake's raw march is an image of the sky image's size (SkyClouds::m_rawImage); a view
 // bake's, as many texels or fewer, runs through it row after row (rawTexel in sky_clouds_bake.slang).
 #define CLOUD_RAW_WIDTH 4096
@@ -152,7 +163,7 @@ struct SkyCloudsParameters
 struct SkyCloudsPushConstant
 {
   uint2  imageSize;         // the image written: the full one, or the preview
-  float  observerAltitude;  // km above the surface, the bake's fixed observer
+  float  observerAltitude;  // km above the surface: the sky bake's observer, or the camera a bake follows
   float  sunlitAir;         // the land's share the sun reaches overhead (cloudSunlitAir): airMain's first guess
   float3 sunDirection;      // unit, the environment's frame, toward the sun
   float  texelAngle;        // radians a column of the image spans: its footprint at a distance
@@ -162,6 +173,15 @@ struct SkyCloudsPushConstant
   float4 viewRight;
   float4 viewUp;
   float4 viewForward;
+  // Where the march's observer stands on the land from the scene's origin, km along x and z
+  // (SkyCloudAnchor::land; 0 for the sky bake's own): the weather and the noise are read that far on.
+  // Its height is observerAltitude.
+  float2 land;
+  // The first of the image's rows this dispatch marches (main, airShadeMain): a bake of the sky image
+  // that follows the camera goes a band of rows a frame.
+  uint firstRow;
+  // 1 when the march writes how far its clouds are (eCloudBakeDepthRaw), for the depth image.
+  int writeDepth;
 };
 
 NAMESPACE_SHADERIO_END()

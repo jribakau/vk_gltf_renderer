@@ -82,6 +82,9 @@ invalidate the image every frame, and with it the alias table. Altitude
 is a settable parameter, and raising it visibly thins the horizon haze — the horizon moves farther
 away, so there is more air between it and you.
 
+The clouds are the exception, for what the camera sees of them: they are near enough for a camera's
+own place to show, and are drawn from it. See [From where the camera is](#from-where-the-camera-is).
+
 ### Aerial perspective, and the one function deliberately not ported
 
 The air between the camera and a surface is the one thing a baked lat-long can never supply: it
@@ -650,7 +653,7 @@ the **lighting field** two mips down, at its own resolution, so an overcast sky 
 and the alias table follows; and by the path tracer's `evalPhysicalSkyBackground`, for what the
 camera and mirrors see. Its columns run round the horizon as the lat-long's do, its rows from the
 horizon to the zenith on a square root, so they crowd where the clouds do. What the camera sees of
-the clouds outside the view image (below) is this image, at its sharpness.
+the clouds outside the view image (below) is this image, at its sharpness, or the copy of it that follows the camera.
 
 Each texel averages several marches (`SkyCloudsParameters::samples`, 8). The march is jittered --
 where it starts within its step, how far the short marches toward the sun go, whether the detail
@@ -680,6 +683,58 @@ drag's preview bakes a quarter-size **preview image** instead (`kCloudPreviewSiz
 quality preset with one march a texel (`cloudWithQuality`), and `SkySunDisk::cloudPreview` tells
 the readers which image holds the clouds of the moment; the settle that follows bakes the full one.
 
+### From where the camera is
+
+The cloud image is the clouds as the scene's origin sees them. Drawn like that for every camera they
+are a picture at no distance, which is what a skybox is: a camera that crosses a field or climbs a
+hill sees the same picture. But the clouds are a place, a base 750 m up over a particular stretch of
+land, so a camera 120 m on should see the cloud that was overhead 9 degrees down the sky, and one
+that climbs should see the bases come nearer. For what the camera and mirrors see they are drawn
+from where the camera is (a scene unit a metre, the scene's origin the bake's observer). The
+lighting field keeps the cloud image: the light of a sky kilometres up is the same across a scene.
+
+- **The shift.** An image baked from one place (its anchor) holds each cloud in the direction that
+  place saw it. A camera `eye` from the anchor that looks along `dir` at a cloud `depth` km off
+  finds it in the image at `normalize(eye + dir * depth)` (`cloudDirFromAnchor`,
+  `sky_clouds.h.slang`). The depth comes from each sky image's **depth image** (`depthMain`,
+  `CLOUD_DEPTH_WIDTH` x `CLOUD_DEPTH_HEIGHT`): the march's own distance to its clouds, texel by
+  texel, averaged over a window some degrees wide by how much of the sky each texel hides. It has
+  to hold round a cloud as well as in it: the reader looks the depth up where the camera looks,
+  which is where the cloud *will be*, and with no depth there a cloud could not move into sky that
+  was clear. Where there is no cloud near, it goes over to the distance of a shell at the lowest
+  bases' height. `evalPhysicalSky` reads the depth twice, where the camera looks and where that
+  put the cloud, then the image.
+- **The follow.** The shift is right for a camera near the anchor. Once the camera has gone
+  `kCloudFollowDistance` from where the image it is taking was baked, the sky image is baked again
+  from where the camera is (`SkyCloudFollow` and `cloudFollowStep` in `src/sky_cloud_view.hpp`,
+  `SkyClouds::follow`), a band of rows a frame over `kCloudFollowFrames` frames, into one of two
+  **follow images**, the one the frames are not taking; when it is whole the frames take it
+  (`SceneFrameInfo::cloudFront`, with `cloudEye`, the camera from its anchor). The cloud image
+  itself is never baked over, and within `kCloudFollowDistance` of the origin the frames take it
+  again. A camera put down `kCloudFollowJump` away (a saved view, a jump to a selection) gets its
+  image whole in that frame. The march is the cloud image's at 2 marches a texel, its observer
+  moved (`SkyCloudsPushConstant::land`, `landXz`): the weather and the noise are read that far on.
+- **The view image** (below) is baked from where the camera stands, and shifted the same way
+  while the camera is within `kCloudFollowDistance` of that.
+
+So round a figure at the origin nothing is baked: the cloud image, shifted. In flight a band is
+baked every frame.
+
+Measured (RTX 4080, 1920 x 1080, cumulus 0.4 with cirrus 0.2, the sun 40 degrees up): a flight at 15 m/s bakes a band nearly every frame, 1.2 ms a frame on average, beside 1.1 ms of path tracing for the empty scene under it; the gaps between delivered frames are 17.4 ms at the median, 19.7 at the 99th percentile and 24 at worst, as under a clear sky (17.3, 19.7, 20).
+Nine metres from where an image was baked, through a 10 mm lens, the shifted image differs from one
+baked on the spot by 0.63 of 255 on average (99th percentile 7), where the image unshifted differs
+by 1.43 (18).
+
+Marching the view image every moving frame was built first and measured: 10.4 ms a frame at half
+the frame's pixels each way and one march a texel, looking up into cumulus, where path tracing an
+empty scene is 0.7 ms.
+
+What this leaves as it was: the atmosphere (the sky's own gradient and its horizon are the fixed
+observer's, a few hundred metres of climb being little to them); a drag's preview, which is the
+origin's; two tiers in one direction, which get one depth between them, the denser cloud's mostly,
+so cirrus seen past a cumulus's edge is carried along with it until the next bake; and a camera
+above the clouds, since the march drops a ray that meets the ground.
+
 ### The view image
 
 The cloud image's columns are 0.088 degrees. Through an 85 mm lens on a view 1395 pixels high, a
@@ -695,17 +750,20 @@ part of the sky the camera looks at is baked a second time at the screen's resol
   and projection as `getRay` aims its rays, so every pixel of the frame lands inside it, which a
   test holds. An orthographic camera, or one wider than about 110 degrees, keeps the cloud image.
 - **What it holds.** The same march, filter and clouds as the cloud image's last full bake, for the
-  view's directions: the noise's level follows a texel's angle (`noiseLod`), so the eddies the
+  view's directions, as seen from where the camera stands (`SkyCloudView::eye`): the noise's level follows a texel's angle (`noiseLod`), so the eddies the
   cloud image averages away are marched here. 4 marches a texel rather than 8, since a texel is a
   pixel. The raw march runs row after row through the cloud image's raw image (`rawTexel`), which
   holds as many texels.
-- **When.** `GltfRenderer::updateCloudView`, once the camera has held still a frame, and again
-  whenever a bake of the sky moves `SkyClouds`' generation on; the still restarts. A drag's preview
-  turns it off. While the camera moves the view image keeps serving the directions it covers, and
-  `evalPhysicalSkyBackground` blends to the cloud image over the outer 6% of its half-extent
-  (`cloudViewShare`), outside the frame until the camera has turned; the two hold the same clouds,
-  so a blend of them is too. `SceneFrameInfo::cloudView*` say where it looks and whether it holds
-  the clouds of the moment.
+- **When.** `GltfRenderer::updateCloudView`, once the camera has been at rest a tenth of a second
+  (a single frame alike is not rest: input that comes slower than the frames leaves such frames all
+  through a motion, and each would be a hitch of this bake's length), and again whenever a bake of
+  the sky moves `SkyClouds`' generation on; the still restarts. A drag's preview
+  turns it off. While the camera moves the view image keeps serving the directions it covers,
+  shifted by the clouds' distance from where it was baked, until the camera is
+  `kCloudFollowDistance` from there; `evalPhysicalSkyBackground` blends to the sky image over the
+  outer 6% of its half-extent (`cloudViewShare`), outside the frame until the camera has turned;
+  the two hold the same clouds, so a blend of them is too. `SceneFrameInfo::cloudView*` say where
+  it looks, from where (`cloudViewEye`), and whether it holds the clouds of the moment.
 - **What it changes.** The clouds' edges sharpen by what resolution gave, which on a fair-weather
   cumulus is modest: a cloud's edge is as soft as its density's rise from clear air, which is the
   noise's, 50-100 m. Steepening that rise (`max(d, min(k d, t))` on the eroded density) crisps the
@@ -855,7 +913,8 @@ share here, not marched; and the sky's share of the ground's own light under the
 - Shadows that move across the scene: one shadow for the whole scene, as above. A terrain kilometres
   wide is the case that would want more.
 - Light shafts (the air under the clouds is shaded by a share, above), takram's haze, and rain.
-- An observer above the clouds: the image covers what is above the observer's horizon.
+- An observer above the clouds: the images cover what is above their observer's horizon, and the
+  march drops a ray that meets the ground.
 - Saving: the clouds are viewer settings (`cloud*` in `Settings`), not yet in `OMI_environment_sky`
   or a `.sky.json`. The Figure Viewer keeps them in its own scene files.
 
@@ -879,12 +938,15 @@ waits, so these are wall-clock):
 Overcast is the cheapest cover because every ray ends at the deck's near side, once transmittance
 falls below `minTransmittance`; scattered cloud marches the furthest. The cost is the marches a
 texel times the single march's, so `samples` is the dial: 4 would halve it and leave some grain.
-The settle pays it once, as a hitch of that length, and the view image when the camera stops; the preview image has a sixteenth of the texels,
+The settle pays it once, as a hitch of that length, and the view image when the camera stops; a
+follow image is a quarter of it by its marches, spread over `kCloudFollowFrames` frames; the preview image has a sixteenth of the texels,
 one march each, at the low preset, so a drag's cloud pass is under a millisecond by that count (not
 measured on its own). Per frame the clouds cost one texture read in
 `evalPhysicalSkyBackground` and nothing in the lighting field, which is baked.
 
-Memory: the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the raw image the filter reads 32 MB, the view image 32 MB, the preview 2 MB.
+Memory: the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the raw image the
+filter reads 32 MB, the view image 32 MB, the preview 2 MB, the two follow images 32 MB each, the
+march's depth 8 MB and the three depth images 128 KB each.
 
 ## References
 

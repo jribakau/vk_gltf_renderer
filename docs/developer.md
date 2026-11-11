@@ -150,6 +150,8 @@ src/
 ├── sky_bruneton.cpp/hpp        # SkyBruneton: the physical sky's scattering LUTs and the passes that build them
 ├── sky_clouds.cpp/hpp          # SkyClouds: the physical sky's cloud layers -- their noise, the cloud images and
 │                               #   the pass that bakes it ahead of the environment bake (docs/sky.md)
+├── sky_cloud_view.hpp          # Where the clouds are seen from: the sky image that follows the camera
+│                               #   (cloudFollowStep) and the view image where it looks (unit-tested)
 ├── sun_position.cpp/hpp        # NOAA solar position: (place, UTC instant) -> bearing + altitude.
 │                               #   Pure, self-contained, nothing else links against it
 ├── frame_stream.cpp/hpp        # --stream: the headless run's rendered frames as MJPEG over HTTP, for a
@@ -229,7 +231,8 @@ shaders/
 │                               #   mapping and composition (unit-tested as C++)
 ├── sky_clouds_noise.h.slang    # The tiling noise they are cut from, takram's generators (unit-tested as C++)
 ├── sky_clouds_noise.slang      # Writes that noise into its textures, once
-├── sky_clouds_bake.slang       # Marches the layers into the cloud image for the fixed observer (takram's march)
+├── sky_clouds_bake.slang       # Marches the layers into the cloud image for the fixed observer (takram's march),
+│                               #   and into the images the camera sees them in from where it is
 ├── sky_clouds_io.h.slang       # Their bindings, parameter block and push constant
 │
 │   # Local material fork (see "Material System" below)

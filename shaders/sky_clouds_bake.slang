@@ -19,7 +19,10 @@
 
 //
 // Bakes the cloud image: for every direction the fixed observer sees above its horizon, a march
-// through the cloud layers, then the air between the observer and the clouds. Recorded by
+// through the cloud layers, then the air between the observer and the clouds. The same march bakes
+// the images the camera sees them in from where it is (pc.land, landXz): the view image, for the
+// directions it looks in, and the sky image that follows it, a band of rows a frame (pc.firstRow),
+// with how far the clouds are in each direction (depthMain), by which a reader shifts the image. Recorded by
 // SkyClouds::record() just before the environment bake, which composes it over the sky
 // (env_bake.slang), as the path tracer does for what the camera sees (gltf_pathtrace.slang). What a
 // texel holds, and why, is sky_clouds.h.slang.
@@ -52,6 +55,8 @@
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeParams, 0)]]     ConstantBuffer<SkyCloudsParameters> g_params;
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeFiltered, 0)]]   [[vk::image_format("rgba16f")]] RWTexture2D<float4> g_filtered;
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeAir, 0)]]        RWStructuredBuffer<float>          g_air;
+[[vk::binding(SkyCloudsBakeBindings::eCloudBakeDepthRaw, 0)]]   [[vk::image_format("r16f")]] RWTexture2D<float> g_depthRaw;
+[[vk::binding(SkyCloudsBakeBindings::eCloudBakeDepth, 0)]]      [[vk::image_format("r16f")]] RWTexture2D<float> g_depth;
 
 // Set 1 is SkyBruneton's runtime set, as in the environment bake.
 [[vk::binding(0, 1)]] Sampler2D<float3>                       g_transmittance;
@@ -89,15 +94,23 @@ float noiseLod(float distance, float texelKm)
 static const float kShapeTexelKm  = CLOUD_SHAPE_PERIOD / float(CLOUD_SHAPE_NOISE_SIZE);
 static const float kDetailTexelKm = CLOUD_DETAIL_PERIOD / float(CLOUD_DETAIL_NOISE_SIZE);
 
+// Where a point of a march is on the land, km: the march's observer is on the +Y axis, and stands
+// pc.land from the scene's origin (the camera a bake follows). Everything the clouds are cut from is read
+// here, so the same cloud is over the same ground whoever looks at it.
+float2 landXz(float3 position)
+{
+  return float2(position.x, position.z) + pc.land;
+}
+
 float2 weatherUv(float3 position)
 {
-  return (float2(position.x, position.z) + g_params.weatherOffset) / CLOUD_WEATHER_PERIOD;
+  return (landXz(position) + g_params.weatherOffset) / CLOUD_WEATHER_PERIOD;
 }
 
 // The land's variety at a point (cloudVariety): the turbulence map read at the three coarse tilings.
 CloudVariety varietyAt(float3 position)
 {
-  const float2 xz = float2(position.x, position.z) + g_params.weatherOffset;
+  const float2 xz = landXz(position) + g_params.weatherOffset;
   return cloudVariety(g_turbulence.SampleLevel(cloudSystemUv(xz), 0.0F), g_turbulence.SampleLevel(cloudRegionUv(xz), 0.0F),
                       g_turbulence.SampleLevel(cloudLocalUv(xz), 0.0F));
 }
@@ -127,7 +140,8 @@ float2 noiseAt(float3 q, float scale, float stretch, float distance, bool withDe
 CloudMedia mediaAt(float3 position, float height, CloudWeather weather, float mipLevel, float distance, float jitter, bool far)
 {
   // the billows read where the land's variety bends them to (cloudVariety)
-  float3 q = float3(position.x + weather.variety.z, height, position.z + weather.variety.w);
+  const float2 land = landXz(position);
+  float3       q    = float3(land.x + weather.variety.z, height, land.y + weather.variety.w);
   if(g_params.turbulence != 0 && !far)
   {
     const float2 uv = weatherUv(position) * (CLOUD_WEATHER_PERIOD / CLOUD_TURBULENCE_PERIOD);
@@ -290,8 +304,11 @@ float stepJitter(uint2 pixel, int sampleIndex)
   return frac(ign + 0.618033989F * float(sampleIndex));
 }
 
-float4 marchClouds(float r0, float3 dir, float jitter)
+// `depth` is how far the clouds are along the ray, km: where they are on average, as the air in
+// front of them is taken; 0 with none.
+float4 marchClouds(float r0, float3 dir, float jitter, out float depth)
 {
+  depth                = 0.0F;
   const float  R       = g_atmosphere.bottomRadius;
   const float2 segment = cloudLayerSegment(r0, dir.y, R + g_params.minHeight, R + g_params.maxHeight);
   const float  rayNear = segment.x;
@@ -399,6 +416,7 @@ float4 marchClouds(float r0, float3 dir, float jitter)
   // clouds leave of the sun and the sky (s_air, airMain): under a deck the haze is grey, not the blue
   // of the clear sky's, and toward a low sun dim, not its glow.
   const float frontDepth = transmittanceSum > 0.0F ? weightedDistanceSum / transmittanceSum : rayNear;
+  depth                  = frontDepth;
   const AerialMarch air =
       marchAerialPerspective(g_atmosphere, g_transmittance, g_irradiance, observer, dir * frontDepth, sunDir, float2(0.5F));
   const float3 airInFront = (air.sunInScatter * s_air.x + (air.inScatter - air.sunInScatter) * s_air.y) * SKY_RADIANCE_TO_LUMINANCE;
@@ -407,9 +425,10 @@ float4 marchClouds(float r0, float3 dir, float jitter)
 
 [shader("compute")]
 [numthreads(CLOUD_WORKGROUP_SIZE, CLOUD_WORKGROUP_SIZE, 1)]
-void main(uint3 id: SV_DispatchThreadID)
+void main(uint3 group: SV_DispatchThreadID)
 {
-  if(any(id.xy >= pc.imageSize))
+  const uint2 id = group.xy + uint2(0u, pc.firstRow);
+  if(any(id >= pc.imageSize))
     return;
 
   s_air = float2(g_air[0], g_air[1]);
@@ -427,17 +446,27 @@ void main(uint3 id: SV_DispatchThreadID)
   const bool  anyTier          = any(g_params.densityScales > float4(0.0F));
   const bool  view             = pc.viewForward.w != 0.0F;
   float4      texel            = float4(0.0F);
+  float       depthSum         = 0.0F;  // the marches' depths, each by how much of the sky it hides
+  float       coverSum         = 0.0F;
   for(int s = 0; s < samples; ++s)
   {
     const float2 offset = samples == 1 ? float2(0.5F) : frac(float2(0.5F) + float(s) * float2(0.754877666F, 0.569840291F));
-    const float2 uv     = (float2(id.xy) + offset) / float2(pc.imageSize);
+    const float2 uv     = (float2(id) + offset) / float2(pc.imageSize);
     const float3 dir = view ? cloudViewDir(uv, pc.viewRight.xyz, pc.viewRight.w, pc.viewUp.xyz, pc.viewUp.w, pc.viewForward.xyz) : cloudImageDir(uv, horizonElevation);
     if(anyTier && !RayIntersectsGround(g_atmosphere, r0, dir.y))
-      texel += marchClouds(r0, dir, stepJitter(id.xy, s));
+    {
+      float        depth;
+      const float4 march = marchClouds(r0, dir, stepJitter(id, s), depth);
+      texel += march;
+      depthSum += (1.0F - march.w) * depth;
+      coverSum += 1.0F - march.w;
+    }
     else
       texel += float4(0.0F, 0.0F, 0.0F, 1.0F);
   }
-  g_out[rawTexel(id.xy)] = texel / float(samples);
+  g_out[rawTexel(id)] = texel / float(samples);
+  if(pc.writeDepth != 0)
+    g_depthRaw[id] = coverSum > 0.0F ? depthSum / coverSum : 0.0F;
 }
 
 // After the march, over what it wrote: the sky seen through the clouds is the clear one, its air
@@ -447,8 +476,9 @@ void main(uint3 id: SV_DispatchThreadID)
 // half again (the registers it holds).
 [shader("compute")]
 [numthreads(CLOUD_WORKGROUP_SIZE, CLOUD_WORKGROUP_SIZE, 1)]
-void airShadeMain(uint3 id: SV_DispatchThreadID)
+void airShadeMain(uint3 group: SV_DispatchThreadID)
 {
+  const uint3 id = uint3(group.xy + uint2(0u, pc.firstRow), 0u);
   if(any(id.xy >= pc.imageSize))
     return;
   const uint2  at    = rawTexel(id.xy);
@@ -539,7 +569,8 @@ void airMain(uint3 id: SV_DispatchThreadID)
   const float3 dir      = float3(cos(phi) * sinTheta, sqrt(max(0.0F, 1.0F - u.x)), sin(phi) * sinTheta);
   const float3 clear = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r0, dir,
                                                pc.sunDirection, 1.0F);
-  const float3 clouded = RayIntersectsGround(g_atmosphere, r0, dir.y) ? clear : composeClouds(clear, marchClouds(r0, dir, jitter));
+  float        unusedDepth;
+  const float3 clouded = RayIntersectsGround(g_atmosphere, r0, dir.y) ? clear : composeClouds(clear, marchClouds(r0, dir, jitter, unusedDepth));
   s_skySum[i]          = float2(luminance(clear), luminance(clouded));
 
   GroupMemoryBarrierWithGroupSync();
@@ -596,4 +627,60 @@ void filterMain(uint3 id: SV_DispatchThreadID)
     }
   }
   g_filtered[id.xy] = sum / weight;
+}
+
+// How much the shell's distance counts in a direction of the depth image, against the clouds': of a
+// window with a fiftieth of it cloud, half.
+static const float kDepthShellShare = 0.02F;
+
+// The depth image of a sky image (CLOUD_DEPTH_WIDTH x CLOUD_DEPTH_HEIGHT): how far the clouds are in
+// each direction, km, from the march's texels (g_depthRaw, each by how much of the sky it hides). A
+// reader shifts the image by it for a camera that has moved on from where the image was baked
+// (cloudDirFromAnchor), looking the depth up where the camera looks -- which, by the shift, is not
+// where the cloud is in the image. So the depth must hold round a cloud as well as in it, or a cloud
+// could not move into sky that was clear, and its edge on the side it moves toward would stay where it
+// was. Each texel is therefore the clouds' depth over a window five of its cells wide, a tent's
+// weights: it carries a cloud's depth some degrees past its edge, and is smooth, so the shift bends
+// the image and does not tear it. Where there is little cloud or none it goes over to the distance of
+// a shell at the height of the lowest bases, which a clear sky is as well shifted by as by any other.
+// Two tiers in one direction, cirrus seen past a cumulus's edge, get one depth between them, the
+// denser cloud's mostly: the image cannot hold both.
+[shader("compute")]
+[numthreads(CLOUD_WORKGROUP_SIZE, CLOUD_WORKGROUP_SIZE, 1)]
+void depthMain(uint3 id: SV_DispatchThreadID)
+{
+  const int2 size = int2(CLOUD_DEPTH_WIDTH, CLOUD_DEPTH_HEIGHT);
+  if(any(int2(id.xy) >= size))
+    return;
+  const int2 full   = int2(pc.imageSize);
+  const int2 cell   = full / size;
+  const int2 centre = int2(id.xy) * cell + cell / 2;
+  float      sum    = 0.0F;
+  float      cover  = 0.0F;
+  float      norm   = 0.0F;
+  for(int cy = -2; cy <= 2; ++cy)
+  {
+    for(int cx = -2; cx <= 2; ++cx)
+    {
+      const float w = float((3 - abs(cx)) * (3 - abs(cy)));
+      // four of the cell's texels, one to a quarter of it
+      for(int k = 0; k < 4; ++k)
+      {
+        int2 q = centre + int2(cx, cy) * cell + int2((k & 1) * 2 - 1, (k >> 1) * 2 - 1) * (cell / 4);
+        if(q.y < 0 || q.y >= full.y)
+          continue;
+        q.x           = (q.x + full.x) % full.x;
+        const float c = clamp(1.0F - g_out[q].w, 0.0F, 1.0F);
+        sum += w * c * g_depthRaw[q];
+        cover += w * c;
+        norm += w;
+      }
+    }
+  }
+  const float  R     = g_atmosphere.bottomRadius;
+  const float  r0    = R + pc.observerAltitude;
+  const float3 dir   = cloudImageDir((float2(id.xy) + 0.5F) / float2(size), asin(brunetonHorizonMu(g_atmosphere, r0)));
+  const float  base  = g_params.minHeight + 0.25F * (g_params.shadowTopHeight - g_params.minHeight);
+  const float  shell = min(cloudShellDistance(r0, dir.y, R + base), g_params.maxRayDistance);
+  g_depth[id.xy]     = (sum + kDepthShellShare * norm * shell) / (cover + kDepthShellShare * norm);
 }
