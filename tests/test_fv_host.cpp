@@ -306,6 +306,49 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
   EXPECT_EQ(rootNamed(scene, "Backdrop"), root);
   EXPECT_NEAR(double(state().value("plants", uint64_t(0))), 2.0 * double(plants), 0.1 * double(plants));
 
+  // the camera goes to stand far off: grass is planted round it too, and what stood stays
+  const auto grassNear = [&](glm::vec2 at) {
+    size_t n = 0;
+    for(const rs::EntityId e : scene.entity(root)->children)
+      if(const rs::Entity* entity = scene.entity(e); entity && entity->mesh && scene.shown(e))
+        for(const glm::mat4& m : entity->mesh->copies)
+          n += glm::distance(glm::vec2(m[3].x, m[3].z), at) < 3.0F ? 1 : 0;
+    return n;
+  };
+  const size_t   atOrigin = grassNear({0.0F, 0.0F});
+  const uint64_t before   = state().value("plants", uint64_t(0));
+  EXPECT_GT(atOrigin, 1000u);
+  EXPECT_EQ(grassNear({300.0F, 100.0F}), 0u);
+  rig.cmd("camera.goto", {{"position", {300.0, 2.0, 100.0}}, {"target", {290.0, 1.0, 100.0}}});
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while(grassNear({300.0F, 100.0F}) == 0 && std::chrono::steady_clock::now() < end)
+  {
+    rig.host->onUpdate();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  EXPECT_NEAR(double(grassNear({300.0F, 100.0F})), double(atOrigin), 0.25 * double(atOrigin));
+  EXPECT_EQ(grassNear({0.0F, 0.0F}), atOrigin);
+  EXPECT_GT(state().value("plants", uint64_t(0)), before);
+  // back by what the scene is about, the far grass goes; and a view that orbits there plants nothing anew
+  const auto frames = [&](int ms) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while(std::chrono::steady_clock::now() < until)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  };
+  rig.cmd("camera.goto", {{"position", {1.0, 2.0, -2.0}}, {"target", {0.0, 1.0, 0.0}}});
+  frames(700);
+  EXPECT_EQ(grassNear({300.0F, 100.0F}), 0u);
+  const uint64_t home = state().value("plants", uint64_t(0));
+  const size_t   grassHome = grassNear({0.0F, 0.0F});
+  rig.cmd("camera.goto", {{"position", {-2.0, 2.0, 1.0}}, {"target", {0.0, 1.0, 0.0}}});
+  frames(700);
+  EXPECT_EQ(state().value("plants", uint64_t(0)), home);
+  EXPECT_EQ(grassNear({0.0F, 0.0F}), grassHome);
+  EXPECT_EQ(scene.entityCount(), entities);
+
   // the scene cleared: it stands again
   ASSERT_TRUE(rig.cmd("scene.clear").value("ok", false));
   ASSERT_TRUE(rig.settle());

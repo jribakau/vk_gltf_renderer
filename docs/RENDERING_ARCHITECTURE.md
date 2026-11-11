@@ -605,8 +605,19 @@ protocol 64), so undo and a scene file carry it as they carry the ground. Two ha
   rings that widen with distance, so the triangles are small underfoot and large far off; `layers` says
   what grows in a kind of backdrop and how thickly, and `scatter` where each plant stands, a jittered
   grid thinned by patch noise and by distance, per variant of its role; a layer fades out before its
-  far edge, so the planted grass has no line where it stops. All of it is a pure function of the
-  spec: the same seed is the same meadow on every machine.
+  far edge, so the planted grass has no line where it stops, and beyond it the same role is planted
+  again as tufts, fewer and larger, thinning as 1 / (1 + d / thin): from standing height each hides a
+  strip of ground that lengthens with distance, so that rate keeps the ground closed out to the trees
+  with a few tens of thousands of plants. All of it is a pure function of the spec: the same seed is
+  the same meadow on every machine.
+- **Where the grass is** (`Layer::follows`, `scatter`'s `foci`): grass and flowers stand round the
+  nearest focus, not round the origin. The host gives two (`backdropFociNow`): where the scene's
+  content is, and where the camera stands once that is well away from the content's (nearer, one
+  focus serves, so orbiting a figure replants nothing). Each is the nearest point of a grid
+  (`focusNear`), so small moves change nothing and a view is the same meadow however it was come to.
+  A plant's place is the world's: the grid is hashed by cell, so another focus shows other plants of
+  the same meadow and moves none. `followBackdrop` runs every frame and plants again when the foci
+  changed, at most every 0.4 s; trees and saplings stay round the origin.
 - **The planting** (`src/fv_host_backdrop.cpp`): the plants are files in a kit folder the app fills
   (`settings.apply {backdropKit}`), listed by its `kit.json` with a role each (`readBackdropKit`, read
   on a loader thread). Under one host-owned root entity each plant file is imported once and each of
@@ -633,7 +644,8 @@ Measured on an RTX 4080 at 1080p, the moving view: an empty floor 1.9 ms of path
 alpha-tested grass clumps 8.4 ms; about 0.8 KB of GPU memory an instance. The app's kit (Poly Haven's
 grass, two flowers, fir saplings and three young firs, 1K maps) as a default meadow: 75,000 plants,
 12.5 ms against 2.1 under the same sky, 410 MB of GPU memory, standing 0.2 s after it is asked for
-and replanted in 0.05 s.
+and replanted in 0.05 s. With the tufts, 121,000 plants by the origin; with the camera 70 m out
+212,000 and 490 MB, the grass round it standing 0.09 s after it gets there.
 Checked: `tests/test_fv_backdrop.cpp`, `FvLighting.ABackdropIsPartOfTheLighting`,
 `FvHost.ABackdropIsPlantedFromItsKit`.
 

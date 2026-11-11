@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <tuple>
 
 #include <gtest/gtest.h>
 
@@ -220,6 +221,90 @@ TEST(BackdropScatter, ALayerFadesOutBeforeItsEdge)
   EXPECT_NEAR(double(B::expectedCount(meadow(), soft)), double(count(soft, 0.0F, 30.0F)), 0.05 * double(count(soft, 0.0F, 30.0F)));
 }
 
+TEST(BackdropScatter, GrassStandsRoundEveryFocusAndNoPlantMoves)
+{
+  const B::Spec  spec  = meadow();
+  const B::Layer grass = B::layers(spec).front();
+  ASSERT_EQ(grass.role, "grass");
+  ASSERT_TRUE(grass.follows);
+  const auto places = [](const std::vector<std::vector<glm::mat4>>& placed, glm::vec2 round, float within) {
+    std::set<std::tuple<float, float, float>> out;
+    for(const auto& variant : placed)
+      for(const glm::mat4& m : variant)
+        if(glm::distance(glm::vec2(m[3].x, m[3].z), round) < within)
+          out.insert({m[3].x, m[3].z, glm::length(glm::vec3(m[1]))});
+    return out;
+  };
+  const glm::vec2 away(200.0F, -40.0F);
+  const auto      alone  = B::scatter(spec, grass, 0, 4);
+  const auto      both   = B::scatter(spec, grass, 0, 4, std::vector<glm::vec2>{{0.0F, 0.0F}, away});
+  const auto      there  = B::scatter(spec, grass, 0, 4, std::vector<glm::vec2>{away});
+  // with no focus given it is round the origin, and a second focus far off leaves that as it was
+  EXPECT_EQ(places(both, {0.0F, 0.0F}, 40.0F), places(alone, {0.0F, 0.0F}, 40.0F));
+  // as thick round the second as round the first, and the same plants as when it is the only one
+  EXPECT_GT(places(both, away, 4.0F).size(), 4000u);
+  EXPECT_EQ(places(both, away, 40.0F), places(there, away, 40.0F));
+  EXPECT_EQ(total(both), total(alone) + total(there));
+
+  // two foci near one another share the ground between them: no plant twice, none lost
+  const glm::vec2 beside(10.0F, 0.0F);
+  const auto      close = B::scatter(spec, grass, 0, 4, std::vector<glm::vec2>{{0.0F, 0.0F}, beside});
+  const auto      all   = places(close, {5.0F, 0.0F}, 100.0F);
+  EXPECT_EQ(all.size(), total(close));
+  EXPECT_GT(total(close), total(alone));
+  EXPECT_LT(total(close), total(alone) * 3 / 2);
+  // and what stands right at the first is what stood there alone: thinned by the nearer focus only
+  EXPECT_EQ(places(close, {0.0F, 0.0F}, 3.0F), places(alone, {0.0F, 0.0F}, 3.0F));
+  // a focus given twice is one
+  EXPECT_EQ(total(B::scatter(spec, grass, 0, 4, std::vector<glm::vec2>{away, away})), total(there));
+}
+
+TEST(BackdropScatter, TuftsCarryTheGrassOnBeyondWhereItIsPlanted)
+{
+  const B::Spec spec   = meadow();
+  const auto    layers = B::layers(spec);
+  const auto    tufts  = std::find_if(layers.begin() + 1, layers.end(), [](const B::Layer& l) { return l.role == "grass"; });
+  ASSERT_NE(tufts, layers.end());
+  const float edge = float(spec.size) * 0.5F;
+  EXPECT_LT(tufts->from, edge);  // they come in as the planted grass goes out
+  EXPECT_GE(tufts->to, B::kTufts);
+  EXPECT_GT(tufts->scaleMin, 1.5F);
+  size_t     inside = 0, nearer = 0, further = 0;
+  const auto placed = B::scatter(spec, *tufts, uint32_t(tufts - layers.begin()), 4);
+  for(const auto& variant : placed)
+    for(const glm::mat4& m : variant)
+    {
+      const float d = glm::length(glm::vec2(m[3].x, m[3].z));
+      EXPECT_LE(d, tufts->to);
+      inside += d < tufts->from ? 1 : 0;
+      nearer += d > edge && d < edge + 20.0F ? 1 : 0;
+      further += d > 70.0F && d < 90.0F ? 1 : 0;
+    }
+  EXPECT_EQ(inside, 0u);
+  EXPECT_NEAR(double(B::expectedCount(spec, *tufts)), double(total(placed)), 0.05 * double(total(placed)));
+  // about two to the square metre where the planted grass ends, and fewer with distance, gently:
+  // at 80 m still a third of that
+  const auto ring = [](double from, double to) { return 3.14159265 * (to * to - from * from); };
+  const double close = double(nearer) / ring(edge, edge + 20.0), far = double(further) / ring(70.0, 90.0);
+  EXPECT_GT(close, 1.2);
+  EXPECT_LT(close, 2.4);
+  EXPECT_LT(far, 0.7 * close);
+  EXPECT_GT(far, 0.3 * close);
+  // light: a default meadow's tufts are fewer than its planted grass
+  EXPECT_LT(B::expectedCount(spec, *tufts), B::expectedCount(spec, layers.front()));
+}
+
+TEST(BackdropFocus, IsTheNearestOfAGridSoSmallMovesReplantNothing)
+{
+  const B::Spec spec = meadow();
+  const float   step = B::focusStep(spec);
+  EXPECT_GE(step, 4.0F);
+  EXPECT_LT(step, float(spec.size) * 0.25F);
+  EXPECT_EQ(B::focusNear(spec, {0.0F, 0.0F}), glm::vec2(0.0F));
+  EXPECT_EQ(B::focusNear(spec, {0.4F * step, -0.4F * step}), glm::vec2(0.0F));
+  EXPECT_EQ(B::focusNear(spec, {3.2F * step, -1.6F * step}), glm::vec2(3.0F * step, -2.0F * step));
+}
+
 TEST(BackdropLayers, AMeadowPlantsGrassFlowersSaplingsAndTrees)
 {
   EXPECT_TRUE(B::layers(B::Spec{}).empty());
@@ -232,11 +317,15 @@ TEST(BackdropLayers, AMeadowPlantsGrassFlowersSaplingsAndTrees)
   for(const B::Layer& layer : l)
   {
     plants += B::expectedCount(meadow(), layer);
-    // trunks and saplings stay clear of where the figures stand
+    // trunks and saplings stay clear of where the figures stand, and stay where they are; grass and
+    // flowers are wherever one looks from
     if(layer.role == "tree" || layer.role == "sapling")
+    {
       EXPECT_GT(layer.from, B::kClearing);
+      EXPECT_FALSE(layer.follows);
+    }
     else
-      EXPECT_EQ(layer.from, 0.0F);
+      EXPECT_TRUE(layer.follows);
   }
   // a default meadow is a few hundred megabytes of instances at most (about 0.8 KB each)
   EXPECT_GT(plants, 50000u);

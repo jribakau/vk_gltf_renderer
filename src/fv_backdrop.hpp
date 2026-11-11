@@ -19,6 +19,7 @@
 //-------------------------------------------------------------------------------------------------------
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,10 @@ inline constexpr float kClearingEdge = 25.0F;
 // Where the ground ends: far enough for its hills to be the horizon's
 inline constexpr float kHorizon = 900.0F;
 
+// How far the tufts beyond the planted grass reach from where one looks: a standing eye sees the
+// ground between them closed by then, and the trees' groves have closed too
+inline constexpr float kTufts = 140.0F;
+
 // The ground's height over the floor at (x, z)
 float height(const Spec& spec, float x, float z);
 
@@ -76,7 +81,15 @@ struct Layer
   // that, up to `grow` times, so distant ground keeps its cover with far fewer plants. 0: even.
   float thin = 0.0F;
   float grow = 1.0F;
+  // Thinning as 1 / (1 + d / thin) instead: the rate at which plants seen from standing height go on
+  // hiding the ground between them, since each hides a strip of it that lengthens with distance
+  bool thinsGently = false;
   float fade = 0.0F;  // metres before `to` over which it thins out to nothing, so it has no edge
+  float fadeIn = 0.0F;  // metres after `from` over which it comes in
+  // Round the nearest focus (scatter's `foci`: where the scene is, where the camera stands) and not
+  // round the origin: `from`, `to` and the thinning are by the distance to it. Grass is wherever one
+  // looks from; the trees stay where they are
+  bool follows = false;
   // In drifts and groves: the share of the ground the layer stands on at all (1 everywhere), by a noise
   // `patch` metres across; and how much nearer its far edge it fills in whatever the noise (0 none),
   // so trees close the horizon
@@ -89,10 +102,21 @@ struct Layer
 };
 std::vector<Layer> layers(const Spec& spec);
 
+// A focus for a point (x, z): the nearest on a grid of focusStep metres, so a camera's small moves
+// replant nothing, and the same view is the same meadow whichever way it was come to
+float     focusStep(const Spec& spec);
+glm::vec2 focusNear(const Spec& spec, glm::vec2 at);
+
 // Where a layer's plants stand: per variant of the role (the kit's meshes for it, `variants` of them),
 // each plant's world matrix: on the ground, turned about the vertical and scaled. `layer` is its index
-// in layers(), so two layers of one spec don't share their places.
-std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer, uint32_t layerIndex, uint32_t variants);
+// in layers(), so two layers of one spec don't share their places. `foci`, for a layer that follows:
+// (x, z) each, none meaning the origin. A plant's place is the world's, whatever the foci: another
+// focus shows other plants of the same meadow, and moves none.
+std::vector<std::vector<glm::mat4>> scatter(const Spec&                spec,
+                                            const Layer&               layer,
+                                            uint32_t                   layerIndex,
+                                            uint32_t                   variants,
+                                            std::span<const glm::vec2> foci = {});
 
 // How many plants scatter() places, about: for a notice before a heavy one is made
 uint64_t expectedCount(const Spec& spec, const Layer& layer);

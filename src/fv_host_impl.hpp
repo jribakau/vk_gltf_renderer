@@ -1512,11 +1512,21 @@ struct FvHost::Impl
   fv::backdrop::Spec                 backdropWanted;  // what is standing, or loading to stand
   std::string                        backdropState = "off";  // off | missing | loading | ready
   uint64_t                           backdropPlants  = 0;
+  // What its grass stands round (fv::backdrop::scatter's foci): where the scene's content is, as of
+  // the last composition, and where the camera stood when it was last planted; and when that was
+  glm::vec2                             backdropContent{0.0F};
+  std::vector<glm::vec2>                backdropFoci;
+  std::chrono::steady_clock::time_point backdropPlantedAt{};
   uint64_t                           backdropRequest = 0;  // a kit read that ends after a newer ask is dropped
   // What the state asks for, if it isn't what stands: planted, replanted in place (another seed, size,
   // density or relief), or taken away. `reread`: the kit's folder changed, or was filled.
   void applyBackdrop(bool reread = false);
   void standBackdrop(bool reread);  // its work; applyBackdrop then scopes the haze
+  // The foci as they are now: the content's and the camera's
+  std::vector<glm::vec2> backdropFociNow();
+  // Every frame: planted again when the camera has come to stand over other ground, so there is
+  // grass wherever it looks from
+  void followBackdrop();
   // The haze round the scene's content while a backdrop stands, not round its ground (setHazeScope)
   void scopeHaze();
   // The kit's plants and ground under a new root in `scene`, planted by the state

@@ -73,10 +73,12 @@ constexpr uint32_t kChannelHills = 1, kChannelFar = 11, kChannelShade = 21, kCha
 float thinning(const Layer& l, float d, float& growth)
 {
   growth = 1.0F;
-  const float edge = l.fade > 0.0F ? 1.0F - smoothstep(l.to - l.fade, l.to, d) : 1.0F;
+  float edge = l.fade > 0.0F ? 1.0F - smoothstep(l.to - l.fade, l.to, d) : 1.0F;
+  if(l.fadeIn > 0.0F)
+    edge *= smoothstep(l.from, l.from + l.fadeIn, d);
   if(l.thin <= 0.0F)
     return edge;
-  const float f = 1.0F + (d / l.thin) * (d / l.thin);
+  const float f = 1.0F + (l.thinsGently ? d / l.thin : (d / l.thin) * (d / l.thin));
   growth        = std::min(std::sqrt(f), l.grow);
   return edge / f;
 }
@@ -166,11 +168,16 @@ std::vector<Layer> layers(const Spec& spec)
   if(spec.kind != "meadow")
     return {};
   const float edge = float(spec.size) * 0.5F;
+  const float fade = 0.35F * edge;
   return {
-      // grass everywhere underfoot, thinning and growing with distance; the ground's own grass carries on
-      {.role = "grass", .perSquareMetre = 150.0, .from = 0.0F, .to = edge, .thin = 8.0F, .grow = 2.0F, .fade = 0.35F * edge},
+      // grass underfoot, thinning and growing with distance, round the scene and round the camera
+      {.role = "grass", .perSquareMetre = 150.0, .from = 0.0F, .to = edge, .thin = 8.0F, .grow = 2.0F, .fade = fade, .follows = true},
+      // and beyond it tufts, fewer and larger, fewer still with distance: seen from standing height they
+      // hide the ground between them, so the grass has no end before the trees
+      {.role = "grass", .perSquareMetre = 5.0, .from = edge - fade, .to = std::max(kTufts, edge + 40.0F), .thin = 20.0F, .grow = 1.3F,
+       .thinsGently = true, .fade = 40.0F, .fadeIn = fade, .follows = true, .scaleMin = 1.8F, .scaleMax = 2.6F},
       // flowers in drifts
-      {.role = "flower", .perSquareMetre = 8.0, .from = 0.0F, .to = edge, .thin = 10.0F, .grow = 1.5F, .fade = 0.35F * edge, .cover = 0.4F, .patch = 9.0F},
+      {.role = "flower", .perSquareMetre = 8.0, .from = 0.0F, .to = edge, .thin = 10.0F, .grow = 1.5F, .fade = fade, .follows = true, .cover = 0.4F, .patch = 9.0F},
       // saplings here and there, clear of where the figures stand
       {.role = "sapling", .perSquareMetre = 0.03, .from = 7.0F, .to = edge + 10.0F, .cover = 0.5F, .patch = 25.0F, .scaleMin = 0.7F, .scaleMax = 1.6F},
       // trees in groves from 22 m, closing into woods toward 260 m; young ones to twice their size,
@@ -179,26 +186,60 @@ std::vector<Layer> layers(const Spec& spec)
   };
 }
 
-std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer, uint32_t layerIndex, uint32_t variants)
+float focusStep(const Spec& spec)
+{
+  return std::max(4.0F, float(spec.size) / 6.0F);
+}
+
+glm::vec2 focusNear(const Spec& spec, glm::vec2 at)
+{
+  const float step = focusStep(spec);
+  return glm::round(at / step) * step;
+}
+
+std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer, uint32_t layerIndex, uint32_t variants, std::span<const glm::vec2> foci)
 {
   std::vector<std::vector<glm::mat4>> out(variants);
   const double thickest = layer.perSquareMetre * spec.density;
   if(variants == 0 || !(thickest > 0.0) || layer.to <= layer.from)
     return out;
+  // what the layer stands round: the origin, or each focus once
+  std::vector<glm::vec2> centres;
+  if(layer.follows)
+    for(const glm::vec2& f : foci)
+      if(std::find(centres.begin(), centres.end(), f) == centres.end())
+        centres.push_back(f);
+  if(centres.empty())
+    centres.emplace_back(0.0F);
   // a jittered grid at the layer's thickest: a cell holds one plant at most, kept by the odds of the
-  // layer's density there, so plants neither pile up nor line up
+  // layer's density there, so plants neither pile up nor line up. The grid is the world's: a cell's
+  // plant is the same whichever centre asks for it
   const float    cell = float(1.0 / std::sqrt(thickest));
   const int      n    = int(std::ceil(layer.to / cell));
   const uint32_t seed = uint32_t(spec.seed);
   const uint32_t salt = 1000U + layerIndex;
-  for(int iz = -n; iz < n; iz++)
-    for(int ix = -n; ix < n; ix++)
-    {
+  for(size_t c = 0; c < centres.size(); c++)
+  {
+    const glm::vec2 centre = centres[c];
+    const int       cx = int(std::floor(centre.x / cell)), cz = int(std::floor(centre.y / cell));
+    for(int iz = cz - n; iz <= cz + n; iz++)
+      for(int ix = cx - n; ix <= cx + n; ix++)
+      {
       const uint32_t h = hash(seed, salt, uint32_t(ix), uint32_t(iz));
       const float    x = (float(ix) + unit(h)) * cell;
       const float    z = (float(iz) + unit(mix(h + 1U))) * cell;
-      const float    d = std::sqrt(x * x + z * z);
+      const float    d = glm::distance(glm::vec2(x, z), centre);
       if(d < layer.from || d > layer.to)
+        continue;
+      // a place between two centres is the nearer one's (the first of two as near), and stands by
+      // its distance to that one
+      bool others = false;
+      for(size_t o = 0; o < centres.size() && !others; o++)
+      {
+        const float od = o == c ? d : glm::distance(glm::vec2(x, z), centres[o]);
+        others         = o != c && (od < d || (od == d && o < c));
+      }
+      if(others)
         continue;
       float growth = 1.0F;
       float odds   = thinning(layer, d, growth);
@@ -218,7 +259,8 @@ std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer
       m                      = glm::rotate(m, yaw, glm::vec3(0.0F, 1.0F, 0.0F));
       m                      = glm::scale(m, glm::vec3(scale));
       out[variant].push_back(m);
-    }
+      }
+  }
   return out;
 }
 

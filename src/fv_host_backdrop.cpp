@@ -242,17 +242,26 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
   }
   // each layer's plants: a variant's places as its copies; a variant with none, and a role no layer
   // plants, hidden (no copies would draw it once, where its file has it)
-  std::set<std::string> plantedRoles;
-  uint64_t              plants = 0;
-  const auto            layers = fv::backdrop::layers(spec);
+  // (two layers may plant one role: the grass underfoot and the tufts beyond it)
+  backdropFoci      = backdropFociNow();
+  backdropPlantedAt = std::chrono::steady_clock::now();
+  std::map<std::string, std::vector<std::vector<glm::mat4>>> byRole;
+  uint64_t                                                   plants = 0;
+  const auto                                                 layers = fv::backdrop::layers(spec);
   for(uint32_t i = 0; i < layers.size(); i++)
   {
     const auto found = built.variants.find(layers[i].role);
     if(found == built.variants.end() || found->second.empty())
       continue;
-    plantedRoles.insert(layers[i].role);
-    const std::vector<BackdropBuilt::Variant>& variants = found->second;
-    std::vector<std::vector<glm::mat4>>         placed   = fv::backdrop::scatter(spec, layers[i], i, uint32_t(variants.size()));
+    std::vector<std::vector<glm::mat4>>  placed = fv::backdrop::scatter(spec, layers[i], i, uint32_t(found->second.size()), backdropFoci);
+    std::vector<std::vector<glm::mat4>>& all    = byRole[layers[i].role];
+    all.resize(placed.size());
+    for(size_t v = 0; v < placed.size(); v++)
+      all[v].insert(all[v].end(), placed[v].begin(), placed[v].end());
+  }
+  for(auto& [role, placed] : byRole)
+  {
+    const std::vector<BackdropBuilt::Variant>& variants = built.variants.at(role);
     for(size_t v = 0; v < variants.size(); v++)
     {
       const rs::Entity* e = scene.entity(variants[v].entity);
@@ -270,7 +279,7 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
     }
   }
   for(const auto& [role, variants] : built.variants)
-    if(!plantedRoles.count(role))
+    if(!byRole.count(role))
       for(const BackdropBuilt::Variant& v : variants)
         if(scene.entity(v.entity))
           scene.setVisible(v.entity, false);
@@ -322,8 +331,44 @@ void FvHost::Impl::feedBackdrop(rs::RetainedScene& scene)
 
 void FvHost::Impl::applyBackdrop(bool reread)
 {
+  // where the scene's content is, before anything is planted round it
+  if(renderer->feedsHostScene() && fv::backdrop::planted(lighting.backdrop))
+  {
+    const nvutils::Bbox content = contentBounds();
+    backdropContent = content.isEmpty() ? glm::vec2(0.0F) : fv::backdrop::focusNear(lighting.backdrop, {content.center().x, content.center().z});
+  }
   standBackdrop(reread);
   scopeHaze();
+}
+
+std::vector<glm::vec2> FvHost::Impl::backdropFociNow()
+{
+  std::vector<glm::vec2> foci{backdropContent};
+  if(const auto camera = renderer->getCameraManipulator())
+  {
+    // the camera's own only once it stands well away from the content's, where the grass has thinned:
+    // nearer, a focus hopping from one grid point to the next as the view orbits a figure would have
+    // the grass round it change size for nothing
+    const glm::vec3 eye = camera->getEye();
+    const glm::vec2 at  = fv::backdrop::focusNear(lighting.backdrop, {eye.x, eye.z});
+    if(glm::distance(at, backdropContent) > 0.2F * float(lighting.backdrop.size))
+      foci.push_back(at);
+  }
+  return foci;
+}
+
+void FvHost::Impl::followBackdrop()
+{
+  if(!backdropBuilt || backdropState != "ready" || !renderer->feedsHostScene())
+    return;
+  rs::RetainedScene& scene = renderer->hostScene();
+  if(!scene.entity(backdropBuilt->root) || backdropFociNow() == backdropFoci)
+    return;
+  // a flight crosses ground fast: not a planting a frame
+  if(std::chrono::steady_clock::now() - backdropPlantedAt < std::chrono::milliseconds(400))
+    return;
+  plantBackdrop(scene);
+  publishLighting();  // the count of plants
 }
 
 void FvHost::Impl::scopeHaze()
