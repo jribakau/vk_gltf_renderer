@@ -112,6 +112,8 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.tonemapperData.shapedToe, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({"tmShapedShoulder", "Tonemapper: the Shaped curve's shoulder, 0 highlights rolling off late to 1 early and gently"},
                  &m_resources.tonemapperData.shapedShoulder, Persist::eYes, 0.0F, 1.0F);
+  m_settings.add({"tmHighlightsToWhite", "Tonemapper: how fast Neutral's and Shaped's compressed colours go white, 0 never to 1 fast (0.5 Khronos's)"},
+                 &m_resources.tonemapperData.highlightsToWhite, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({"tmActive", "Tonemapper: Enable tone mapping [Off:0, On:1]"}, &m_resources.tonemapperData.isActive,
                  Persist::eYes, 0, 1);
   // Floor below 0.1, which is not enough headroom for a bright environment with

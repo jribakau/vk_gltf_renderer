@@ -549,8 +549,9 @@ shoulder handles on a filmic curve, worked out here.
   wide) by up to 1.5 stops a stop more: Toe 0 leaves the shadows open, 0.5 about as Neutral's, 1
   crushed. Each handle moves only its own side of mid grey.
 - **Colour:** the brightest channel goes through the curve and the colour is scaled with it, keeping
-  its hue, then eased to white by how much that channel was compressed (Neutral's way, its 0.15), so
-  a bright red pales toward white instead of turning orange as a curve on each channel would.
+  its hue, then eased to white by how much that channel was compressed (Neutral's way, at Neutral's
+  rate by default; see below), so a bright red pales toward white instead of turning orange as a
+  curve on each channel would.
 - **HDR:** its result is opened toward the display's peak above half of SDR white, as for ACES and
   AgX (`hdrOpenShoulder`).
 - **Checked:** `tests/test_hdr_output.cpp` (ShapedCurve.*): mid grey and white where they belong for
@@ -560,6 +561,39 @@ shoulder handles on a filmic curve, worked out here.
   it by its method with its handles. Prototyped in numpy first (scratchpad shaped2.py): a curve of
   Lottes' form (x^a over b x^ad + c) was tried and dropped, as its shoulder handle moved the shadows
   too (at -4 stops 0.019 to 0.078) and without it the shoulder barely moved anything.
+
+## Highlights to white
+
+How fast a colour Khronos PBR Neutral or Shaped compresses goes white (nvshaders
+`highlightDesaturation`, `tmHighlightsToWhite`; the lighting's `tonemap.highlightsToWhite`, protocol
+63): the View tab's Image › Highlights to white, under either curve. Both curves ease a compressed
+colour toward white by how much its brightest channel was compressed, at a fixed rate (Khronos's
+`desaturation`); the handle sets that rate, cubic in the handle so its middle is Khronos's own exactly
+and a picture made before it is unchanged. At 0 a neon tube or a lit red curtain keeps its hue to the
+top; toward 1 bright lights burn out white with a coloured edge, as a sensor's do. Under the knee
+nothing moves. The HDR display's Neutral (`hdrNeutral`) takes the same rate, so the HDR image is the
+SDR one opened toward the peak at every setting. ACES, AgX and Cineon have their own and ignore it.
+Checked: `HighlightsToWhite.*` in `tests/test_hdr_output.cpp`, `FvLighting.HighlightsToWhiteGoesToTheRenderer`.
+
+## Auto white balance
+
+`render.whiteBalance` (protocol 63; the app's Image › Auto white) answers the white balance that makes
+the light the next frame was lit by grey; the app sets the sliders to it. The frame's tonemapper input
+is read back through the EXR export's pass with the tone mapper off, so before exposure and white
+balance (`GltfRenderer::readTonemapInput`, `updateLightRead` in `onPostRender`, as a screenshot is
+saved). `src/white_balance.hpp` holds the rest, Vulkan-free:
+
+- **The light** (`estimateLight`): an iterative grey-pixel average over about 512² pixels spread over
+  the frame, the brightest 2% (lamps, the sun, neon, clipped highlights) and the near-black left out.
+  Each round weighs a pixel by how grey it looks with the light found so far taken out, so a surface
+  only the light colours counts fully once the light is known and one coloured of itself (a red curtain,
+  a blue sofa) stays discounted.
+- **The setting** (`forLight`): Gauss-Newton on mireds and Duv against nvshaders'
+  `getColorCorrectionMatrix` itself, the matrix the tone mapper applies, so the answer makes the light
+  grey whatever that matrix's colour science; clamped to the renderer's range, and said so.
+- **Checked:** `tests/test_white_balance.cpp` (a light made from a setting gives that setting back; the
+  answer makes off-locus lights grey; a frame two-fifths red curtain with a bright blue sign gives its
+  3000 K light within about 140 K, where the plain average is far off), `FvHost.WhiteBalanceAnswersTheFramesLight`.
 
 ## The pixel readout
 

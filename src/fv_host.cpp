@@ -23,6 +23,7 @@
 //
 
 #include "fv_host_impl.hpp"
+#include "white_balance.hpp"
 
 #include <figure/dson/listing.hpp>
 #include <figure/dson/store.hpp>
@@ -356,6 +357,26 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     if(missing || (had && after == before))
       throw std::runtime_error("could not write " + utf8Of(path) + " (is the folder writable, and the disk not full?)");
     return Json{{"path", utf8Of(path)}};
+  });
+  // The white balance that makes the frame's light grey (the app's White balance › Auto): read from the
+  // next frame drawn, answered once read; the app sets it
+  cmds.add("render.whiteBalance", [impl](const Json&) {
+    impl->onApp([impl] {
+      impl->renderer->readLight();
+      return Json{};
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while(impl->onApp([impl] { return impl->renderer->lightReadPending(); }))
+    {
+      if(std::chrono::steady_clock::now() > deadline)
+        throw std::runtime_error("render.whiteBalance: no frame drew in a minute");
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    const std::optional<glm::dvec3> light = impl->onApp([impl] { return impl->renderer->lightRead(); });
+    const std::optional<white_balance::Setting> s = light ? white_balance::forLight(*light) : std::nullopt;
+    if(!s)
+      return Json{{"found", false}};
+    return Json{{"found", true}, {"temperature", s->temperature}, {"tint", s->tint}, {"clamped", s->clamped}};
   });
   // The frame as a linear .hdr, answered once it is on disk: the path tracer's own image, before tone
   // mapping and any denoiser, for numbers to compare (scripts/fv.py's capture waits for the still first)

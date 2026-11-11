@@ -159,6 +159,7 @@ src/
 ├── frame_present_win32.cpp     # Its D3D11 side: the swapchain, the shared textures and fence (Windows)
 ├── present_hdr.hpp             # An HDR display's SDR white and peak, as the HDR output takes them (unit-tested)
 ├── hdr_output.cpp/hpp          # The frame an HDR display is shown (scRGB), and EXR exports' linear image
+├── white_balance.cpp/hpp       # Auto white balance: the frame's light, and the white balance that makes it grey
 ├── lens.cpp/hpp                # A cheap wide lens on the tone mapper's input: barrel distortion and colour fringing
 ├── present_pacing.hpp          # Where native presentation waits for the swapchain: before the input or the present (unit-tested)
 ├── present_policy.hpp          # Who watches a --stream run, and what FrameStream copies for them (unit-tested)

@@ -62,9 +62,9 @@ float3 sdrCurve(TonemapperData tm, float3 c)
       c = tonemapAgX(c);
       break;
     case TONEMAP_METHOD(eKhronosPBR):
-      return hdrNeutral(c, 1.0F);
+      return hdrNeutral(c, 1.0F, highlightDesaturation(tm.highlightsToWhite));
     case TONEMAP_METHOD(eShaped):
-      return tonemapShapedLinear(c, tm.shapedToe, tm.shapedShoulder);
+      return tonemapShapedLinear(c, tm.shapedToe, tm.shapedShoulder, highlightDesaturation(tm.highlightsToWhite));
   }
   return toLinear(saturate(c));
 }
@@ -91,7 +91,8 @@ void tonemapHdr(uint3 dispatchThreadID: SV_DispatchThreadID)
     const float3 seen = mul(tm.inputMatrix, color.xyz);  // what the curve takes, as in applyTonemap
     // the exposure view's colours stay at SDR white: they mark the SDR curve's clipping, not the display's;
     // and a sensor that clipped has no highlights to raise (tm.sensorClip), as the Clip method has none
-    const float gain = lerp(hdrGain(tm.method, seen, sdrCurve(tm, seen), pc.peak), 1.0F, tm.sensorClip);
+    const float gain = lerp(hdrGain(tm.method, seen, sdrCurve(tm, seen), pc.peak, highlightDesaturation(tm.highlightsToWhite)), 1.0F,
+                            tm.sensorClip);
     hdr              = tm.falseColor != 0 ? sdr : sdr * gain;
   }
   else

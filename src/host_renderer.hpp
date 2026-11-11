@@ -258,6 +258,12 @@ public:
   // saves the frame once the next one is drawn (a .hdr: the linear render), and whether that is still to come
   virtual void          saveImage(const std::filesystem::path& path) = 0;
   virtual bool          imageSavePending() const           = 0;
+  // reads the colour of the light the frame was lit by once the next one is drawn (white_balance.hpp
+  // estimateLight, on the image the tone mapper takes before its white balance), and whether that is still
+  // to come; the reading, or nothing for a frame with no usable pixels
+  virtual void                      readLight()               = 0;
+  virtual bool                      lightReadPending() const  = 0;
+  virtual std::optional<glm::dvec3> lightRead() const         = 0;
   // a pipeline built on an earlier run compiled again: the driver's shader cache is full
   virtual bool          driverCacheFull() const            = 0;
   // the VRAM budget (VK_EXT_memory_budget); `known` false without the extension. Any thread.

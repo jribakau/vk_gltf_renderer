@@ -118,6 +118,10 @@
 //                                                the screen shows it, .hdr the path tracer's raw image, .exr the exposed
 //                                                linear image before tone mapping (GltfRenderer::saveExr)
 //   render.capture  {path}  -> {samples, converged}   the frame as a linear .hdr (path tracer), answered once saved
+//   render.whiteBalance {}  -> {found, temperature?, tint?, clamped?}   the white balance (tonemap.temperature
+//                                                and tint) that makes the light the next frame was lit by grey
+//                                                (white_balance.hpp); found false for a frame with no usable
+//                                                pixels. Changes nothing: the app sets what it answers. Protocol 63
 //   render.ledger   {}  -> {hits, total, idleImages, retiring, spilled, meshes}   what the scene holds on the GPU, by who reads it, and what first hits last wanted of it
 //   wardrobe.keepFull {prop, item, on}            short of GPU memory, its textures come down only when nothing else can
 //   render.budget   {}  -> {known, budgetBytes, usageBytes, allocatorBlockBytes, allocatorAllocationBytes, headroomBytes?, bytesPerPixel, width, height}   GPU

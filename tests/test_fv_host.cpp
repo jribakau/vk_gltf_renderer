@@ -149,6 +149,21 @@ TEST(FvHost, RenderStatusCountsTheStillsSamples)
   EXPECT_EQ(status.value("maxSamples", -1), 256) << status.dump();
 }
 
+// Auto white balance: the frame's light as the renderer read it, answered as the white balance that makes
+// it grey; a frame with nothing to read answers found false
+TEST(FvHost, WhiteBalanceAnswersTheFramesLight)
+{
+  HostRig rig;
+  EXPECT_FALSE(rig.cmd("render.whiteBalance").value("result", Json::object()).value("found", true));
+  // a warm light (about 4500 K): under daylight's 6500 K
+  rig.renderer.light = glm::dvec3(1.0, 0.8, 0.45);
+  const Json wb      = rig.cmd("render.whiteBalance").value("result", Json::object());
+  ASSERT_TRUE(wb.value("found", false)) << wb.dump();
+  EXPECT_GT(wb.value("temperature", 0.0), 3500.0) << wb.dump();
+  EXPECT_LT(wb.value("temperature", 0.0), 5500.0) << wb.dump();
+  EXPECT_FALSE(wb.value("clamped", true)) << wb.dump();
+}
+
 // An export holds the textures where they are, and what is lowered reaches the app as a topic
 TEST(FvHost, TexturesFollowingMemoryReachTheApp)
 {

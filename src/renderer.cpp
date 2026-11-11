@@ -87,6 +87,7 @@
 #include "tinygltf_utils.hpp"
 #include "utils.hpp"
 #include "animation_control.hpp"
+#include "white_balance.hpp"
 
 extern nvutils::ProfilerManager g_profilerManager;  // #PROFILER
 
@@ -551,6 +552,7 @@ void GltfRenderer::onPostRender()
     saveViewportImage(m_screenshotPending);
     m_screenshotPending.clear();
   }
+  updateLightRead();
   if(m_sampleCapture.pending.empty())
     return;
   saveViewportImage(m_sampleCapture.pending);
@@ -581,23 +583,20 @@ void GltfRenderer::saveViewportImage(const std::filesystem::path& filename)
 // tonemapper took, with its exposure and white balance, linear Rec. 709 half floats, unclamped, before the
 // tone curve and the grading. From the last frame drawn, its images as it left them: after a frame's
 // submit (onPostRender) or at a headless run's end (--output).
-void GltfRenderer::saveExr(const std::filesystem::path& filename)
+std::vector<float> GltfRenderer::readTonemapInput(const shaderio::TonemapperData& tm, VkExtent2D& size)
 {
   const TonemapInput& in = m_tonemapInput;
-  if(in.size.width == 0 || in.size.height == 0)
-  {
-    LOGE("Saving %s: no frame was drawn to export\n", nvutils::utf8FromPath(filename).c_str());
-    return;
-  }
-#ifdef NVP_SUPPORTS_BASISU
+  size                   = {};
+  if(in.size.width == 0 || in.size.height == 0 || !m_app)
+    return {};
   // The frame's images still hold what it drew: the export pass from them, then its read back
   VkImage         linear{};
   VkDeviceMemory  linearMemory{};
   VkCommandBuffer cmd = m_app->createTempCmdBuffer();
-  m_hdrOutput.cmdExportLinear(cmd, m_resources, in.size, in.data, in.image);
-  const VkExtent2D size   = m_hdrOutput.exportSize();
-  VkResult         result = nvvk::imageToLinear(cmd, m_device, m_app->getPhysicalDevice(), m_hdrOutput.exportImage(), size,
-                                                linear, linearMemory, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_GENERAL);
+  m_hdrOutput.cmdExportLinear(cmd, m_resources, in.size, tm, in.image);
+  const VkExtent2D exported = m_hdrOutput.exportSize();
+  VkResult result = nvvk::imageToLinear(cmd, m_device, m_app->getPhysicalDevice(), m_hdrOutput.exportImage(), exported,
+                                        linear, linearMemory, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_GENERAL);
   m_app->submitAndWaitTempCmdBuffer(cmd);
   std::vector<float> pixels;
   if(result == VK_SUCCESS)
@@ -609,10 +608,10 @@ void GltfRenderer::saveExr(const std::filesystem::path& filename)
     result           = vkMapMemory(m_device, linearMemory, 0, VK_WHOLE_SIZE, 0, (void**)&data);
     if(result == VK_SUCCESS)
     {
-      pixels.resize(size_t(size.width) * size.height * 4);
+      pixels.resize(size_t(exported.width) * exported.height * 4);
       data += layout.offset;
-      for(uint32_t y = 0; y < size.height; y++, data += layout.rowPitch)
-        std::memcpy(pixels.data() + size_t(y) * size.width * 4, data, size_t(size.width) * 4 * sizeof(float));
+      for(uint32_t y = 0; y < exported.height; y++, data += layout.rowPitch)
+        std::memcpy(pixels.data() + size_t(y) * exported.width * 4, data, size_t(exported.width) * 4 * sizeof(float));
       vkUnmapMemory(m_device, linearMemory);
     }
   }
@@ -622,7 +621,44 @@ void GltfRenderer::saveExr(const std::filesystem::path& filename)
   m_hdrOutput.releaseExport();
   if(result != VK_SUCCESS)
   {
-    LOGE("Saving %s: reading the image back failed (VkResult %d)\n", nvutils::utf8FromPath(filename).c_str(), int(result));
+    LOGE("Reading the tone mapper's input back failed (VkResult %d)\n", int(result));
+    return {};
+  }
+  size = exported;
+  return pixels;
+}
+
+// The light's colour in the last frame (readLight): the tonemapper's input with no exposure or white
+// balance (the export pass passes an inactive tone mapper's input through as it is)
+void GltfRenderer::updateLightRead()
+{
+  if(!m_lightReadPending)
+    return;
+  m_lightReadPending = false;
+  shaderio::TonemapperData raw = m_tonemapInput.data;
+  raw.isActive                 = 0;
+  VkExtent2D               size{};
+  const std::vector<float> pixels = readTonemapInput(raw, size);
+  m_lightRead = pixels.empty() ? std::nullopt : white_balance::estimateLight(pixels.data(), size.width, size.height);
+  if(m_lightRead)
+    LOGI("The frame's light: %.4f %.4f %.4f (%ux%u)\n", m_lightRead->x, m_lightRead->y, m_lightRead->z, size.width, size.height);
+  else
+    LOGW("The frame's light: no usable pixels\n");
+}
+
+void GltfRenderer::saveExr(const std::filesystem::path& filename)
+{
+  if(m_tonemapInput.size.width == 0 || m_tonemapInput.size.height == 0)
+  {
+    LOGE("Saving %s: no frame was drawn to export\n", nvutils::utf8FromPath(filename).c_str());
+    return;
+  }
+#ifdef NVP_SUPPORTS_BASISU
+  VkExtent2D               size{};
+  const std::vector<float> pixels = readTonemapInput(m_tonemapInput.data, size);
+  if(pixels.empty())
+  {
+    LOGE("Saving %s: reading the image back failed\n", nvutils::utf8FromPath(filename).c_str());
     return;
   }
   const char* err = nullptr;

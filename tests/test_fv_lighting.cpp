@@ -562,6 +562,22 @@ TEST(FvLighting, TheShapedCurveAndItsHandlesGoToTheRenderer)
   EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"shoulder", "soft"}}}}), std::invalid_argument);
 }
 
+// Highlights to white goes to the renderer (protocol 63), Khronos's own rate by default, whatever the curve
+TEST(FvLighting, HighlightsToWhiteGoesToTheRenderer)
+{
+  const L::State none;
+  EXPECT_EQ(L::toJson(none)["tonemap"]["highlightsToWhite"], 0.5);
+  EXPECT_EQ(L::rendererParams(none, {})["tmHighlightsToWhite"], 0.5);
+  const L::State s = L::applyPatch(L::State{}, {{"tonemap", {{"highlightsToWhite", 0.85}}}});
+  EXPECT_DOUBLE_EQ(s.tonemap.highlightsToWhite, 0.85);
+  const Json topic = L::toJson(s);
+  EXPECT_EQ(topic["tonemap"]["highlightsToWhite"], 0.85);
+  EXPECT_EQ(L::toJson(L::applyPatch(L::State{}, topic)), topic);
+  EXPECT_DOUBLE_EQ(L::rendererParams(s, {})["tmHighlightsToWhite"].get<double>(), 0.85);
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"highlightsToWhite", 3.0}}}}).tonemap.highlightsToWhite, 1.0);
+  EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"highlightsToWhite", "lots"}}}}), std::invalid_argument);
+}
+
 // Local exposure's two amounts go to the renderer, off by default (protocol 41)
 TEST(FvLighting, LocalExposureGoesToTheRenderer)
 {

@@ -53,7 +53,9 @@
 //            localShadows and localHighlights (0 to 1 each, 0 none: how far dark regions are lifted and
 //            bright ones held toward mid grey, region by region; src/local_exposure.hpp), protocol 41;
 //            toe and shoulder (0 to 1 each, the Shaped curve's handles: how deep its shadows go, and
-//            how early and gently its highlights roll off; nvshaders tonemapShaped), protocol 43
+//            how early and gently its highlights roll off; nvshaders tonemapShaped), protocol 43;
+//            highlightsToWhite (0 to 1, 0.5 Khronos's own: how fast Neutral's and Shaped's compressed
+//            colours go white; nvshaders highlightDesaturation), protocol 63
 //
 // Colours are "#rrggbb" in sRGB, as the panel shows them. A patch from before protocol 17 (a kept
 // scene's) may also carry sun.shadows and a shadow section, the raster view's shadow map: they are
@@ -184,6 +186,7 @@ struct Tonemap
   double              localHighlights = 0.0;  // bright regions held toward it
   double              toe             = 0.5;  // the Shaped curve's handles (protocol 43; tonemapShaped)
   double              shoulder        = 0.5;
+  double              highlightsToWhite = 0.5;  // Neutral's and Shaped's (protocol 63; highlightDesaturation)
 };
 
 // What the tone mapper grades with: the panel's sliders with the look over them at its strength, each

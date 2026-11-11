@@ -574,3 +574,61 @@ TEST(ShapedCurve, KeepsHueThenGoesToWhite)
   for(int c = 0; c < 3; c++)
     EXPECT_NEAR(graded[c], curve[c], 1e-5F);
 }
+
+// Highlights to white (highlightDesaturation): at its middle Khronos's own 0.15, so a picture made before
+// the handle is unchanged; at 0 a bright colour keeps its hue to the top, toward 1 it goes white sooner;
+// the same for Neutral and Shaped, in SDR and HDR alike; and below the knee nothing moves.
+TEST(HighlightsToWhite, MovesOnlyHowFastACompressedColourGoesWhite)
+{
+  EXPECT_EQ(highlightDesaturation(0.5F), 0.15F);
+  EXPECT_EQ(highlightDesaturation(0.0F), 0.0F);
+  EXPECT_EQ(highlightDesaturation(-1.0F), 0.0F);
+  EXPECT_EQ(highlightDesaturation(2.0F), highlightDesaturation(1.0F));
+  for(float h = 0.05F; h <= 1.0F; h += 0.05F)
+    EXPECT_GT(highlightDesaturation(h), highlightDesaturation(h - 0.05F));
+
+  // a bright neon red, its brightest channel past both curves' knees
+  const float3 neon(8.0F, 0.6F, 0.3F);
+  const auto   ratio = [](const float3& c) { return c.y / c.x; };  // how far toward white: 1 is white
+  // Neutral: the default is the one-argument curve, bit for bit
+  const float d = highlightDesaturation(0.5F);
+  EXPECT_EQ(tonemapKhronosPBR(neon, d), tonemapKhronosPBR(neon));
+  const float3 keep  = toLinear(tonemapKhronosPBR(neon, highlightDesaturation(0.0F)));
+  const float3 mid   = toLinear(tonemapKhronosPBR(neon, d));
+  const float3 burnt = toLinear(tonemapKhronosPBR(neon, highlightDesaturation(1.0F)));
+  EXPECT_LT(ratio(keep), ratio(mid));
+  EXPECT_LT(ratio(mid), ratio(burnt));
+  EXPECT_GT(ratio(burnt), 0.8F) << "a neon tube burnt nearly white";
+  // the brightest channel stays about the curve's (Khronos takes a small offset off first, which the
+  // easing to white gives back in part)
+  EXPECT_NEAR(keep.x, mid.x, 0.01F);
+  // Shaped alike, and its default unchanged
+  EXPECT_EQ(tonemapShapedLinear(neon, 0.5F, 0.5F, d), tonemapShapedLinear(neon, 0.5F, 0.5F));
+  EXPECT_LT(ratio(tonemapShapedLinear(neon, 0.5F, 0.5F, 0.0F)), ratio(tonemapShapedLinear(neon, 0.5F, 0.5F, d)));
+  EXPECT_LT(ratio(tonemapShapedLinear(neon, 0.5F, 0.5F, d)), ratio(tonemapShapedLinear(neon, 0.5F, 0.5F, highlightDesaturation(1.0F))));
+  // HDR's Neutral at SDR white is the SDR curve at every setting
+  for(float h : {0.0F, 0.25F, 0.5F, 0.75F, 1.0F})
+  {
+    const float3 sdr = toLinear(tonemapKhronosPBR(neon, highlightDesaturation(h)));
+    const float3 hdr = hdrNeutral(neon, 1.0F, highlightDesaturation(h));
+    for(int c = 0; c < 3; c++)
+      EXPECT_NEAR(hdr[c], sdr[c], 1e-5F) << h;
+  }
+  // a dim colour, under the knee: no setting moves it
+  const float3 dim(0.4F, 0.1F, 0.05F);
+  EXPECT_EQ(tonemapKhronosPBR(dim, 0.0F), tonemapKhronosPBR(dim, highlightDesaturation(1.0F)));
+  // and the tone mapper takes the handle for both curves
+  TonemapperData tm;
+  tm.inputMatrix       = float3x3(1.0F);
+  tm.dither            = 0;
+  tm.highlightsToWhite = 1.0F;
+  for(const int method : {int(ToneMapMethod::eKhronosPBR), int(ToneMapMethod::eShaped)})
+  {
+    tm.method          = method;
+    const float3 white = applyTonemap(tm, neon, float2(0.0F), float2(1.0F));
+    tm.highlightsToWhite = 0.0F;
+    const float3 hue   = applyTonemap(tm, neon, float2(0.0F), float2(1.0F));
+    tm.highlightsToWhite = 1.0F;
+    EXPECT_GT(ratio(white), ratio(hue)) << method;
+  }
+}

@@ -400,6 +400,13 @@ public:
       m_screenshotPending = path;
   }
   bool imageSavePending() const override { return !m_screenshotPending.empty(); }
+  void readLight() override
+  {
+    if(m_app)
+      m_lightReadPending = true;
+  }
+  bool                      lightReadPending() const override { return m_lightReadPending; }
+  std::optional<glm::dvec3> lightRead() const override { return m_lightRead; }
   // The sample cap is reached, whatever renders (a DLSS view counts its frames too)
   bool accumulationComplete() const override { return m_resources.accumulationComplete(); }
   int  accumulatedSamples() const override { return m_resources.accumulatedSamples; }
@@ -562,6 +569,10 @@ private:
   bool tonemap(VkCommandBuffer cmd);
   bool runTonemapPass(VkCommandBuffer cmd);
   void saveExr(const std::filesystem::path& filename);  // saveViewportImage's .exr
+  // The last frame's tonemapper input through the export pass with `tm` (its exposure and white balance),
+  // read back as RGBA floats, rows packed; empty when no frame was drawn or the read back failed
+  std::vector<float> readTonemapInput(const shaderio::TonemapperData& tm, VkExtent2D& size);
+  void               updateLightRead();  // readLight's, in onPostRender
   void renderVisualHelpers(VkCommandBuffer cmd);
 #if defined(USE_DLSS)
   Dlss*       activeDlss();
@@ -684,6 +695,9 @@ private:
     VkExtent2D               size{};
     shaderio::TonemapperData data{};
   } m_tonemapInput;
+  // readLight: read in onPostRender, from the frame just submitted
+  bool                      m_lightReadPending = false;
+  std::optional<glm::dvec3> m_lightRead;
   bool m_falseColor = false;  // setFalseColor
   // The wipe (setWipe): the kept tone-mapped frame, at the size it was kept at, shown left of
   // m_wipeAt (a share of the width; below 0, none). cmdWipe keeps and shows it.

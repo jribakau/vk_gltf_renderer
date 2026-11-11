@@ -153,6 +153,9 @@ set(TEST_SOURCES
     # Native P4a: the Light tab's state and unit conversions
     test_fv_lighting.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_lighting.cpp
+    # Auto white balance: the light in a frame, and the white balance that makes it grey
+    test_white_balance.cpp
+    ${CMAKE_SOURCE_DIR}/src/white_balance.cpp
     # The still denoiser's auto-denoise schedule: interval multiples and the final image (header only)
     test_denoiser_schedule.cpp
     # Path tracer samples per frame: ending on stops, the Auto SPP controller (header only)

@@ -145,6 +145,11 @@ public:
     std::ofstream{path};
   }
   bool imageSavePending() const override { return false; }
+  // read as soon as asked: `light`, a test's
+  void                      readLight() override {}
+  bool                      lightReadPending() const override { return false; }
+  std::optional<glm::dvec3> lightRead() const override { return light; }
+  std::optional<glm::dvec3> light;
   MemoryBudget  deviceMemoryBudget() const override { return {}; }
   uint32_t      frameBytesPerPixel() const override { return 4; }
   nvvk::ResourceAllocator* deviceAllocator() override { return nullptr; }

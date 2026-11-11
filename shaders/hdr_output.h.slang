@@ -66,11 +66,11 @@ inline float hdrOpenShoulder(float s, float knee, float peak)
 }
 
 // Khronos PBR Neutral (nvshaders' tonemapKhronosPBR, before its sRGB encoding) compressing towards
-// `peak` instead of SDR white: the identity up to its start of compression, as in SDR
-inline float3 hdrNeutral(float3 color, float peak)
+// `peak` instead of SDR white: the identity up to its start of compression, as in SDR. `desaturation`
+// is how fast a compressed colour goes white (nvshaders' highlightDesaturation; Khronos's 0.15)
+inline float3 hdrNeutral(float3 color, float peak, float desaturation = 0.15F)
 {
   const float startCompression = 0.8F - 0.04F;
-  const float desaturation     = 0.15F;
   const float x                = min(color.x, min(color.y, color.z));
   const float top              = max(color.x, max(color.y, color.z));
   const float offset           = x < 0.08F ? x * (-6.25F * x + 1.F) : 0.04F;
@@ -90,7 +90,8 @@ inline float3 hdrNeutral(float3 color, float peak)
 // with the display's headroom over its SDR value. `curveInput` is the colour the curve takes (exposure
 // and white balance applied), `sdrCurve` the curve's SDR result for it, linear and before any grading.
 // 1 where the SDR curve doesn't compress, so the SDR look stays there; hue and saturation stay everywhere.
-inline float hdrGain(int method, float3 curveInput, float3 sdrCurve, float peak)
+// `desaturation` is Neutral's, as the SDR curve took it.
+inline float hdrGain(int method, float3 curveInput, float3 sdrCurve, float peak, float desaturation = 0.15F)
 {
   const float sdr = max(sdrCurve.x, max(sdrCurve.y, sdrCurve.z));
   if(!(sdr > 0.0F) || peak <= 1.0F)
@@ -98,7 +99,7 @@ inline float hdrGain(int method, float3 curveInput, float3 sdrCurve, float peak)
   float hdr;
   if(method == HDR_METHOD_NEUTRAL)
   {
-    const float3 c = hdrNeutral(curveInput, peak);
+    const float3 c = hdrNeutral(curveInput, peak, desaturation);
     hdr            = max(c.x, max(c.y, c.z));
   }
   else

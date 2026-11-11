@@ -442,6 +442,8 @@ void patchTonemap(Tonemap& t, const Json& p)
       field(t.toe, d.toe, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else if(k == "shoulder")
       field(t.shoulder, d.shoulder, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "highlightsToWhite")
+      field(t.highlightsToWhite, d.highlightsToWhite, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else
       reject("unknown key " + key);
   }
@@ -567,7 +569,8 @@ Json toJson(const State& s)
         {"localShadows", t.localShadows},
         {"localHighlights", t.localHighlights},
         {"toe", t.toe},
-        {"shoulder", t.shoulder}}},
+        {"shoulder", t.shoulder},
+        {"highlightsToWhite", t.highlightsToWhite}}},
   };
 }
 
@@ -925,6 +928,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       // the Shaped curve's handles, sent whatever the curve (the others don't read them)
       {"tmShapedToe", t.toe},
       {"tmShapedShoulder", t.shoulder},
+      // Neutral's and Shaped's highlights to white, likewise sent whatever the curve
+      {"tmHighlightsToWhite", t.highlightsToWhite},
       // the Image sliders with the look over them (grade)
       {"tmContrast", g2.contrast},
       {"tmSaturation", g2.saturation},

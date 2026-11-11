@@ -116,7 +116,10 @@ namespace {
 // the selection's middle, else the point under the pointer as it starts, a double-click's point until
 // the selection changes. A Ctrl+click puts a prop in the selection or takes it out (it was
 // Ctrl+Shift), an Alt+click picks nothing.
-constexpr int kProtocolVersion = 62;
+// 63: tonemap.highlightsToWhite (how fast Neutral's and Shaped's compressed colours go white; an older
+// renderer refuses the lighting that has it), and render.whiteBalance (the white balance that makes the
+// frame's light grey, for the app's Auto).
+constexpr int kProtocolVersion = 63;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace
