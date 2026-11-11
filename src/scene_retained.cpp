@@ -456,7 +456,11 @@ void RetainedScene::destroyEntity(EntityId id)
   Entity* e = m_entities.get(id);
   if(!e)
     return;
-  for(EntityId child : std::vector<EntityId>(e->children))
+  // its children's list taken first: each child unlinks itself from it, and erasing them one by one
+  // from a list of n was n squared (a model of 400,000 nodes took 33 s to clear)
+  const std::vector<EntityId> children = std::move(e->children);
+  e->children.clear();
+  for(EntityId child : children)
     destroyEntity(child);
   e = m_entities.get(id);
   if(e->mesh)

@@ -88,6 +88,34 @@ TEST(RetainedScene, WhatIsGoneIsWithinNothing)
   EXPECT_FALSE(scene.isWithin(rs::EntityId{}, root));
 }
 
+// An entity goes with everything under it, however many children it has (taking them one by one out
+// of its list was quadratic: 400,000 took 33 s), and a sibling's subtree stays
+TEST(RetainedScene, AnEntityGoesWithAllItsChildren)
+{
+  rs::RetainedScene  scene;
+  const rs::EntityId root  = scene.createEntity("root", {1, 0});
+  const rs::EntityId other = scene.createEntity("other", {2, 0});
+  const rs::EntityId kept  = scene.createEntity("kept", {2, 1}, other);
+  std::vector<rs::EntityId> children;
+  for(int i = 0; i < 100000; i++)
+    children.push_back(scene.createEntity("c", {1, 1}, root));
+  const rs::EntityId grandchild = scene.createEntity("g", {1, 2}, children[500]);
+  ASSERT_EQ(scene.entityCount(), 100004u);
+  scene.destroyEntity(root);
+  EXPECT_EQ(scene.entityCount(), 2u);
+  EXPECT_EQ(scene.entity(root), nullptr);
+  EXPECT_EQ(scene.entity(children.front()), nullptr);
+  EXPECT_EQ(scene.entity(children.back()), nullptr);
+  EXPECT_EQ(scene.entity(grandchild), nullptr);
+  EXPECT_EQ(scene.roots(), (std::vector<rs::EntityId>{other}));
+  EXPECT_EQ(scene.entity(other)->children, (std::vector<rs::EntityId>{kept}));
+  // one child alone still leaves its siblings in their order
+  const rs::EntityId a = scene.createEntity("a", {2, 2}, other);
+  const rs::EntityId b = scene.createEntity("b", {2, 3}, other);
+  scene.destroyEntity(a);
+  EXPECT_EQ(scene.entity(other)->children, (std::vector<rs::EntityId>{kept, b}));
+}
+
 TEST(RetainedScene, WorldMatricesFollowTheHierarchy)
 {
   rs::RetainedScene scene;
