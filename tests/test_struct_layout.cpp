@@ -229,7 +229,7 @@ HostStruct pathtracePushConstant()
     F(guideSamples), F(mouseCoord), F(renderSize), F(bladeCount), F(bladeRotation), F(hairRouletteDlss),
     F(hairRouletteFrom), F(hairCutDlss), F(hairCutTail), F(adaptiveThreshold), F(adaptiveMin), F(hairResponsivity),
     F(glassBudget), F(adaptiveRelax), F(adaptiveRelaxBase), F(hitSignalSlots), F(lightCandidates),
-    F(lightCandidatesDepth), F(lightReuseCap), F(lightReusePad), F(hitSignal), F(adaptiveActive), F(frameInfo),
+    F(lightCandidatesDepth), F(lightReuseCap), F(cutoutRouletteFromDlss), F(hitSignal), F(adaptiveActive), F(frameInfo),
     F(gltfScene), F(prevRenderNodeObjectToWorld), F(prevVertexPositions), F(cameraMedium), F(lightReservoirs),
     F(pixelInspect)
   }};

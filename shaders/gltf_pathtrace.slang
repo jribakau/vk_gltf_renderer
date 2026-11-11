@@ -74,6 +74,7 @@ static bool doDebug = false;
 #include "common.h.slang"
 #include "aerial_perspective.h.slang"
 #include "contribution_roulette.h.slang"
+#include "path_roulette.h.slang"
 #include "radiance_cache.h.slang"
 #include "skin_slab.h.slang"
 #include "skin_spread.h.slang"
@@ -1589,6 +1590,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     bounce.hairEvent = hairOn && pt.hairBounces < pushConst.hairBudget;
     bounce.fibre     = hairOn;
 #endif
+    bounce.cutout = !hairOn && materialIndex >= 0 && materials[materialIndex].alphaMode == AlphaMode::eAlphaModeMask;
     // So does an event on clear glass, the glass's (glassBudget): the surface shadow rays pass straight
     // through, so what is behind a pane is lit, and the path goes on to see it
 #if GLTF_USE_TRANSMISSION
@@ -2307,7 +2309,8 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     //-----------------------------------------------------------------------
     // Not at the last vertex: the loop ends there whatever the roulette says. No cap below 1: a path
     // that keeps its energy (a white wall, blond hair) is cut by the bounce limit, not culled at
-    // random and weighted up, which only made its survivors brighter and noisier.
+    // random and weighted up, which only made its survivors brighter and noisier. Where it starts:
+    // path_roulette.h.slang.
     int  depth         = pt.surfaceDepth;
     bool fibreRoulette = false;
 #if GLTF_USE_HAIR
@@ -2318,7 +2321,8 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     fibreRoulette = bounce.fibre && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss)
                     && pushConst.hairRouletteDlss < 1.0F && pt.hairBounces >= pushConst.hairRouletteFrom;
 #endif
-    if((depth >= RR_MIN_DEPTH || fibreRoulette) && (bounce.hairEvent || bounce.glassEvent || bounce.waterEvent || pt.surfaceDepth + 1 < pushConst.maxDepth))
+    const int rrFrom = hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) && bounce.cutout ? pushConst.cutoutRouletteFromDlss : PATH_ROULETTE_FROM_STILL;
+    if((depth >= rrFrom || fibreRoulette) && (bounce.hairEvent || bounce.glassEvent || bounce.waterEvent || pt.surfaceDepth + 1 < pushConst.maxDepth))
     {
       float rrCap = 1.0F;
 #if GLTF_USE_HAIR
@@ -2327,7 +2331,7 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       if(fibreRoulette)
         rrCap = min(rrCap, pushConst.hairRouletteDlss);
 #endif
-      const float rrPcont = min(max(pt.throughput.x, max(pt.throughput.y, pt.throughput.z)) + RR_PCONT_FLOOR, rrCap);
+      const float rrPcont = pathContinueChance(max(pt.throughput.x, max(pt.throughput.y, pt.throughput.z)), rrCap);
       if(rrPcont < 1.0F)  // (rand() can return 1, which would end a path that has to survive)
       {
         if(rand(seed) >= rrPcont)

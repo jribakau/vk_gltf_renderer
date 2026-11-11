@@ -512,7 +512,7 @@ struct PathtracePushConstant
   int             lightCandidates      = 1;     // Light samples a surface vertex draws to keep one of (light_ris.h.slang; 1: the one it traces)...
   int             lightCandidatesDepth = 0;     // ...at its first this many surface vertices (0: at all of them); two fields keep the pointers aligned
   float           lightReuseCap        = 1.0F;  // ePtLightReuse: a record stands for at most this many times the frame's own candidates...
-  int             lightReusePad        = 0;     // ...(and keeps the pointers 8-byte aligned)
+  int             cutoutRouletteFromDlss = 1;   // DLSS frames: the surface event the roulette starts at on a cut-out surface (path_roulette.h.slang); keeps the pointers 8-byte aligned
   uint*           hitSignal;                    // first hits counted per material slot and bin (hit_signal.h.slang; null: not counting)
   uint*           adaptiveActive;               // ePtAdaptiveStop: the frame counts the pixels still sampling here (null: not counted)
   SceneFrameInfo* frameInfo;                    // Camera info (incl. SceneFrameInfo::jitter when DLSS is active)

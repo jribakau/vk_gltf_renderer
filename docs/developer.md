@@ -207,6 +207,7 @@ shaders/
 ├── animation_io.h.slang        # Skinning/morph shader I/O
 ├── shaderio.h                  # Host/device shared structures
 ├── pathtrace_functions.h.slang # Path-tracer hit/shading helpers (getShadowTransmission, etc.)
+├── path_roulette.h.slang       # Where the surface roulette starts (still, a DLSS frame's cut-outs) and its chance (unit-tested)
 ├── sobol.h.slang               # Owen-scrambled Sobol points for the accumulation's sampling decisions (ptSampler)
 ├── common.h.slang              # Shared shader utilities
 ├── get_hit.h.slang             # Hit state interpolation
@@ -372,7 +373,11 @@ Some things about the transport are worth knowing before touching it:
   caps DLSS frames below it (`sample_schedule::frameMaxDepth`). Fibres, clear glass and water have
   their own budgets. The app sends 32 and 8. At 8 a closed room of albedo 0.9 keeps 6.1 of its 10
   parts of light; at 32 it keeps 9.7. The roulette ends most paths long before either limit, so
-  the limit costs time only where the throughput stays high. In a real office lit by daylight
+  the limit costs time only where the throughput stays high. The surface roulette starts at the
+  third surface event, and on a DLSS frame's cut-out surfaces (leaves, twigs, grass) at the first
+  (`path_roulette.h.slang`, `ptCutoutRouletteFromDlss`): unbiased either way, and on a moving frame
+  the paths through dark foliage end early instead of making two more bounces each. On every
+  surface it darkened a lamp-lit interior's moving shadows by 5 to 12% (Ray Reconstruction). In a real office lit by daylight
   (2026-11-09), a still frame took the same time from 8 to 64 bounces. At 8 it kept all but 0.23%
   of the light.
 - Surfaces with a diffuse transmission lobe are lit from **both** hemispheres, so `sampleLights()`

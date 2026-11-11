@@ -719,6 +719,25 @@ alpha-tested twigs, and a view in a wood is all firs; half as many of everything
 view nothing measurable (15.2 ms with them, 15.1 before). The meadow's bushes and rocks are 85 MB
 of its memory, their maps mostly.
 
+**What the trees cost, and why** (2026-11-11, the moving view as the app sends it, 8 bounces, flown
+at 15 m/s; a walk through the forest's glade, a flight over its canopy, and from 250 m up): 14.2,
+15.0 and 15.0 ms, of which the trees were 9 to 10 (5.2, 7.4 and 5.1 without them). Not their
+cut-outs (twigs made opaque: 14.3, 14.9, 14.8), nor their triangles (a quarter of the twig cards,
+each grown to cover as much: 12.9, 15.1, 11.9), nor the bounces past the fourth (4 or 8 the same),
+nor the camera rays (one bounce: 3.8, 5.7, 4.1 against 3.2, 3.4, 3.0 without trees). It was the
+second and third bounces: a ray off a needle, which reflects a sixth of the light, went on through
+the canopy, and the next one too, since the roulette started at the third bounce. A DLSS frame now
+starts it at the first on a cut-out surface (`path_roulette.h.slang`, `ptCutoutRouletteFromDlss`):
+the forest 8.8, 12.4 and 9.4 ms, the meadow 7.0, 10.1 and 8.6 (from 10.2, 14.4 and 12.6), the moving
+image's brightness within 4% in every band from its shadows to its highlights, on a figure in the
+glade too, and its flicker within the run-to-run spread. From the camera ray's own hit on a leaf
+(0) it was cheaper again (5.7 ms in the glade) but darkened the glade's shade by 6-7%. Stills keep
+the third. The near trees (to 160 m) are where the cost was from the glade, the far ones
+from the air. On every surface it was cheaper still (7.9, 12.7 and 8.5 ms here, and a third off a
+night club's and a night street's moving frames), but the night club's shadows came out 5 to 12%
+darker than the still's: Ray Reconstruction holds back the few survivors that carry a lamp's
+bounced light.
+
 The land past its hills, the far trees and the sky from the camera's height cost a frame nothing
 that could be measured (meadow 14.4 to 14.7 ms by the origin, forest 16.7; from 250 m up 15.4 and
 21.0), and 46 MB (681 for the meadow). From 700 m up, looking out, a frame is 5 to 7 ms of path

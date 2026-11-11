@@ -418,6 +418,12 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
                  .help            = "PathTracer: the fibre events a DLSS path takes before ptHairRouletteDlss applies",
                  .callbackSuccess = reset},
                 &m_hairRouletteFrom, Persist::eNo, 0, 64);
+  settings->add({.name            = "ptCutoutRouletteFromDlss",
+                 .help            = "PathTracer: DLSS frames: at a cut-out surface (a leaf, a twig, grass; not hair), the surface event "
+                                    "Russian roulette starts at, 0 the camera ray's hit (elsewhere, and on stills: 3). Unbiased: a path "
+                                    "goes on with the chance of the light it carries, the survivors carrying the rest (path_roulette.h.slang)",
+                 .callbackSuccess = reset},
+                &m_cutoutRouletteFromDlss, Persist::eNo, 0, 64);
   settings->add({.name            = "ptHairCutDlss",
                  .help            = "PathTracer: DLSS frames: a path through hair ends at this fibre event, whose light sample "
                                     "is its last (0: off; negative: the still's paths too, to measure). Biased: the lock's "
@@ -1692,6 +1698,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   updateLightReuse(resources, renderingSize, useDlss);
   m_pushConst.hairRouletteDlss = m_hairRouletteDlss;
   m_pushConst.hairRouletteFrom = m_hairRouletteFrom;
+  m_pushConst.cutoutRouletteFromDlss = m_cutoutRouletteFromDlss;
   m_pushConst.hairCutDlss      = m_hairCutDlss;
   m_pushConst.hairCutTail      = m_hairCutTail;
   m_pushConst.hairResponsivity = useDlss ? m_hairResponsivity : 0.0F;

@@ -80,7 +80,6 @@ struct DirectLight
 
 static const float MIN_TRANSMISSION = 0.01f;  // Minimum shadow transmission factor for transparent materials
 static const float ANTIALIASING_STANDARD_DEVIATION = 0.4246609f;  // Standard deviation for antialiasing
-static const int   RR_MIN_DEPTH                    = 3;           // Minimum depth for Russian Roulette
 static const float VOLUME_RAND_FLOOR               = 1.0e-10f;    // Minimum random floor for volume rendering
 static const float VOLUME_RAND_CEIL = 1.0f - 1.0e-7f;  // rand() can return exactly 1.0; keep u in the half-open [0,1) the bucket remap assumes
 static const float RR_PCONT_FLOOR = 0.001f;  // Minimum probability for Russian Roulette
@@ -2825,6 +2824,7 @@ struct BounceScratch
   bool   fibre               = false;         // This vertex was a fibre's, within the budget or past it
   bool   glassEvent          = false;         // This vertex was clear glass and spent the glass budget, not a surface bounce
   bool   waterEvent          = false;         // This vertex was the water's surface and spent its budget, not a surface bounce
+  bool   cutout              = false;         // This vertex was an alpha-masked surface, not a fibre's: a leaf, a twig, a blade of grass
 #if USE_LIGHT_RIS
   bool lightReuseWritten = false;  // This vertex wrote the pixel's record: its W goes to 0 if the shadow ray is blocked
 #endif

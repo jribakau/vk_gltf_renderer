@@ -20,6 +20,7 @@
 #pragma once
 
 #include "settings_registry.hpp"
+#include "shaders/path_roulette.h.slang"  // PATH_ROULETTE_FROM_CUTOUT_DLSS
 
 #include <algorithm>
 #include <array>
@@ -288,6 +289,7 @@ public:
   // DLSS frames: past ptHairRouletteFrom fibre events a path continues at most with ptHairRouletteDlss
   float m_hairRouletteDlss{1.0F};
   int   m_hairRouletteFrom{1};
+  int   m_cutoutRouletteFromDlss{PATH_ROULETTE_FROM_CUTOUT_DLSS};
   // DLSS frames: hair paths end at their fourth fibre event, whose light sample carries the rest of the
   // lock's light (ptHairCutDlss, ptHairCutTail). Measured 2026-11-09 at 1080p against the converged
   // still: a sunlit figure's shadowed hair 12% dark cut at the third event, 6% at the fourth, 3% uncut,
