@@ -58,6 +58,7 @@
 #include "gpu_memory_tracker.hpp"
 #include "resources.hpp"
 #include "rr_presets.hpp"
+#include "still_keep.hpp"
 
 class RrStillDenoiser
 {
@@ -80,6 +81,10 @@ public:
     int   passes   = 1;     // Evaluations of an image, the first with the history reset
     int   autoDenoiseSpp = 0;  // Samples per pixel between the refine's evaluations (0 = the final image only)
     uint32_t preset = rr_presets::kStillDefault;  // rrStillPreset, numbered as dlssPreset (rr_presets.hpp)
+    // rrStillKeepNoise: the noise a converged pixel keeps its raw value at, in displayed brightness
+    // (StillKeep, still_keep.h.slang); 0 = off
+    float keepNoise = 0.02f;
+    bool  keepView  = false;  // rrStillKeepView: show the share kept as grey, for tuning (not saved)
   };
 
   void init(Resources& resources);
@@ -88,6 +93,9 @@ public:
 
   // The NGX context with DLSS-RR available, null without
   void setContext(NgxContext* ngx) { m_ngx = ngx; }
+  // The accumulation's luminance moments (OutputImage::eConvergence), which the path tracer keeps while
+  // this is on: the per-pixel Keep detail reads them
+  void setMoments(const VkDescriptorImageInfo& moments) { m_moments = moments; }
 
   // The setting, whether NGX is up or not
   bool isWanted() const { return m_settings.enable; }
@@ -162,6 +170,8 @@ private:
   nvvkgltf::GpuMemoryTracker* m_appMemoryTracker = nullptr;
   nvvk::RenderTarget          m_target;  // See GBufferIndex
   ImageBlend                  m_blend;   // Keep detail
+  StillKeep                   m_keep;    // Keep detail per pixel
+  VkDescriptorImageInfo       m_moments{};
 };
 
 #endif  // USE_DLSS

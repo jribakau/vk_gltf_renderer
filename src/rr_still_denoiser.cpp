@@ -26,6 +26,7 @@
 #if defined(USE_DLSS)
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include <nvutils/logger.hpp>
@@ -34,6 +35,7 @@
 #include <nvvk/debug_util.hpp>
 
 #include "sample_schedule.hpp"
+#include "../shaders/adaptive_stop.h.slang"  // adaptiveSceneThreshold
 
 // Name of the GPU timer section around the evaluation (Profiler window)
 static constexpr const char* kProfilerSection = "DLSS-RR still";
@@ -45,12 +47,14 @@ void RrStillDenoiser::init(Resources& resources)
   m_allocator        = &resources.allocator;
   m_appMemoryTracker = &resources.appMemoryTracker;
   m_blend.init(m_device);
+  m_keep.init(m_device);
 }
 
 void RrStillDenoiser::deinit(Resources& resources)
 {
   release(resources);
   m_blend.deinit(m_device);
+  m_keep.deinit(m_device);
   m_ngx = nullptr;
 }
 
@@ -71,6 +75,12 @@ void RrStillDenoiser::registerParameters(SettingsRegistry* settings)
                  "DLSS-RR still: its network preset, numbered as dlssPreset: 0=Default (NGX chooses), 1=D (transformer), "
                  "2=E (latest transformer), 3=F (RR2). E by default: F smooths away detail the still has resolved"},
                 &m_settings.preset, Persist::eYes, 0u, rr_presets::kCount - 1);
+  settings->add({"rrStillKeepNoise",
+                 "DLSS-RR still: Keep detail per pixel, the noise in displayed brightness below which a pixel of the "
+                 "accumulation is shown as it is, over the denoised image (the adaptive stop's measure; 0 = off)"},
+                &m_settings.keepNoise, Persist::eYes, 0.0f, 1.0f);
+  settings->add({"rrStillKeepView", "DLSS-RR still: show the share of each pixel Keep detail per pixel keeps, as grey"},
+                &m_settings.keepView, Persist::eNo);
 }
 
 VkDescriptorImageInfo RrStillDenoiser::getDescriptorImageInfo(GBufferIndex index) const
@@ -245,6 +255,22 @@ void RrStillDenoiser::evaluate(VkCommandBuffer         cmd,
       nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                              VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
     ok = NVSDK_NGX_SUCCEED(m_feature.cmdEvaluate(cmd, *m_ngx, {glm::vec2(0.0f), view, proj, /*reset=*/pass == 0, /*responsivity=*/false}));
+  }
+  if(ok && m_settings.keepNoise > 0.0f && m_moments.imageView != VK_NULL_HANDLE)
+  {
+    // Keep detail per pixel: the converged pixels of the accumulation over RR's image. The threshold in
+    // the scene's units for the exposure the host sets, as the adaptive stop's (auto exposure: none)
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    const shaderio::StillKeepPushConstant keep{
+        .threshold = resources.tonemapperData.autoExposure ?
+                         m_settings.keepNoise :
+                         adaptiveSceneThreshold(m_settings.keepNoise, resources.tonemapperData.exposure),
+        .samples   = samples,
+        .view      = m_settings.keepView ? 1 : 0,
+    };
+    m_keep.cmdKeep(cmd, m_target.getColorStorageImageInfo(eGBufferDenoised),
+                   resources.gBuffers.getColorStorageImageInfo(Resources::eImgRendered), m_moments, m_target.getSize(), keep);
   }
   if(ok)
   {

@@ -5,9 +5,9 @@
 // (NVSDK_NGX_RayReconstruction_Hint_Render_Preset); dlss.cpp checks these values against NGX's enum, so
 // this header needs no NGX include and the tests can read it.
 //
-// The still's default is E, not F: on a refined still F (RR2, NGX's own default) smooths away detail the
-// accumulation has already resolved (a fir's needles, grass blades), where D and E keep most of it
-// (docs/denoising.md, the still's model).
+// The still's default is E, not F: on a refined still F (RR2, NGX's own default) smooths away detail a
+// 2048-sample reference has (a fir's needles, grass blades), where E keeps it (docs/denoising.md, the
+// still's model).
 
 #include <cstdint>
 

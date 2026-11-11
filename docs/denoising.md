@@ -23,6 +23,17 @@ linearly with the samples from 0 to that share at the cap (`sample_schedule::den
 `--rrStillBlendMax`), by a pass over the denoised image (`ImageBlend` in `src/denoiser_handoff.hpp`,
 the hand-off's weighted sum, written over the RGBA32F output without the hand-off's half-float clamp).
 
+**Keep detail per pixel** (`--rrStillKeepNoise`, on by default) does it pixel by pixel, before that
+blend: a pixel whose accumulation has converged takes back its raw value, and the denoised image stays
+where the samples are still noisy (`StillKeep`, `src/still_keep.hpp`, `shaders/still_keep.slang`).
+A pixel's noise is the adaptive stop's measure, its mean's standard error over the root of its
+brightness, from the luminance moments the path tracer keeps in the convergence image on the still's
+frames (with the adaptive stop off too), averaged over the pixel and its eight neighbours so the share
+changes smoothly; the threshold is in displayed brightness, as the stop's (`adaptiveSceneThreshold`).
+The share falls from all to none across the threshold (`shaders/still_keep.h.slang`); with too few
+samples to tell, a firefly in the neighbourhood, or the setting at 0, the denoised image alone.
+`--rrStillKeepView` shows the share as grey.
+
 ### The denoisers before it
 
 Until 2026-11-09 the still could also be denoised by OptiX (on CUDA, through copies to shared
@@ -141,13 +152,21 @@ still. NGX bakes the preset into a feature per quality mode, and the DLAA mode's
 others' are (`DlssFeature::cmdInit`): before 2026-11-11 it was not, and the still ran NGX's own
 default, F, whatever `dlssPreset` said.
 
-F smooths away detail a refined still has already resolved. A sunlit meadow at a low sun, 64 samples
-at 2160x1395, measured as the mean absolute Laplacian of the displayed luminance over a fir and the
-grass: raw 0.066, F 0.028, D 0.048, E 0.054, a 1024-sample reference 0.067; F at 256 samples was no
-sharper. On a face E kept more of the skin's relief than D or F (0.028 against 0.019; raw 0.034),
-though all three smooth it: there the raw 64-sample image was closer to the 1024-sample reference
-(mean error 0.015) than any denoised one (0.027). E's images keep a fine grain in haze, which F
-irons out.
+F smooths away detail a refined still has resolved. Measured on 2026-11-11 against 2048-sample
+accumulations with DLSS off (a still's frames are DLSS's own while DLSS is on and the still's denoiser
+off, so with DLSS on such a "raw" still is the moving view's output, its preview skin and bounces
+included, and no reference). 64 samples, detail as the mean absolute Laplacian of the displayed
+luminance over a crop, error as the displayed image's mean absolute difference:
+
+| 64 samples | detail F | detail E | reference | error F | error E | E + per pixel |
+| --- | --- | --- | --- | --- | --- | --- |
+| Meadow from 30 m, a fir and grass | 0.028 | 0.054 | 0.056 | 0.0054 | 0.0054 | 0.0052 |
+| Meadow at eye height, needles | 0.040 | 0.056 | 0.072 | 0.0217 | 0.0169 | 0.0170 |
+| A face in daylight | 0.020 | 0.028 | 0.041 | 0.0117 | 0.0124 | 0.0113 |
+| The figure whole | | | | 0.0026 | 0.0026 | 0.0012 |
+
+The 64-sample accumulation itself was off by 0.0085, 0.0227, 0.0281 and 0.0029. A threshold of 0.01
+to 0.02 did best on all four; from 0.04 the meadow's grain came back.
 
 ## DLSS hand-off
 

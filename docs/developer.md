@@ -179,6 +179,7 @@ src/
 ├── dlss_wrapper.cpp/hpp        # NGX / DLSS SDK wrapper (project-independent)
 ├── rr_still_denoiser.cpp/hpp   # DLSS-RR as the still's denoiser (its own NGX feature and preset, averaged guides)
 ├── rr_presets.hpp              # DLSS-RR's presets as dlssPreset and rrStillPreset number them; the still's default
+├── still_keep.cpp/hpp          # The still's Keep detail per pixel: converged pixels of the accumulation over RR's image
 ├── denoiser_schedule.hpp       # The still denoiser's auto-denoise interval, DLSS hand-off weight
 ├── denoiser_handoff.cpp/hpp    # DLSS hand-off: blend from DLSS-RR's moving image to the denoised still
 ├── radiance_cache.cpp/hpp      # The moving view's bounce cache: its table on the device and the pass after each frame

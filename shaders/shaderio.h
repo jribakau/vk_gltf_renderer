@@ -111,6 +111,14 @@ enum DenoiserHandoffBindings
   eHandoffOut,       // Out: the image shown (RGBA16F)
 };
 
+// The still's per-pixel Keep detail (still_keep.slang): storage images, in VK_IMAGE_LAYOUT_GENERAL
+enum StillKeepBindings
+{
+  eKeepDenoised,  // In and out: the still's denoised image, the raw pixels kept written over it (RGBA32F)
+  eKeepRaw,       // In: the accumulation (RGBA32F)
+  eKeepMoments,   // In: the accumulation's luminance moments (RG32F, OutputImage::eConvergence)
+};
+
 // Binding points for descriptors
 enum SilhouetteBindings
 {
@@ -528,6 +536,15 @@ struct DenoiserHandoffPushConstant
 {
   float weight = 0.0F;      // Share of the second image (the hand-off: the denoised one, handoffWeight)
   float limit  = 65504.0F;  // Largest magnitude written: a half float's for an RGBA16F output
+};
+
+// The still's per-pixel Keep detail (still_keep.slang, still_keep.h.slang)
+struct StillKeepPushConstant
+{
+  float threshold = 0.0F;  // The noise a pixel may keep, in the scene's units (adaptiveSceneThreshold); 0: off
+  int   samples   = 0;     // The accumulation's samples per pixel, where the moments hold no count of their own
+  int   view      = 0;     // 1: show the share kept as grey (rrStillKeepView), for tuning
+  int   pad       = 0;
 };
 
 // The bounce cache's pass after a frame (radiance_cache_resolve.slang): each cell's sums of the frame

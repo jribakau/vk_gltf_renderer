@@ -2889,6 +2889,19 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     if(pushConst.adaptiveActive != nullptr && active > 0 && WaveIsFirstLane())
       InterlockedAdd(*pushConst.adaptiveActive, active);
   }
+#if !USE_PIXEL_TIME
+  // DLSS-RR's still without the stop: the moments alone, for its per-pixel Keep detail (still_keep.slang),
+  // the second channel 0 (no count of the stop's: the still's own)
+  else if(hasFlag(pushConst.flags, PathtracerFlags::ePtRrStillGuides))
+  {
+    const int2 pixel  = int2(samplePos);
+    float      second = lumSquared;
+    if(accumulating)
+      second = (outImages[int(OutputImage::eConvergence)][pixel].x * pushConst.totalSamples + lumSquared)
+               / float(pushConst.totalSamples + 1);
+    outImages[int(OutputImage::eConvergence)][pixel] = float4(second, 0.0F, 0.0F, 0.0F);
+  }
+#endif
 
 #if USE_DLSS_SHADER
   // #DLSS - Storing the GBuffer for the DLSS denoiser (DLSS-only variant; the specular guide targets

@@ -728,6 +728,9 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   updateDepthStaging(cmd, resources);  // first frame: onResize may not have run yet
   updateConvergence(cmd, resources);
 #if defined(USE_DLSS)
+  m_rrStill->setMoments(m_convergence.getColorStorageImageInfo(0));  // its per-pixel Keep detail reads them
+#endif
+#if defined(USE_DLSS)
   // When DLSS is effectively enabled, use DLSS render size
   if(getEffectiveDlssEnabled(resources))
   {
@@ -1196,9 +1199,11 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
 #endif
 
 
-  // An accumulation's per-pixel convergence (ePtAdaptiveStop), or in the Time view the mean of its
+  // An accumulation's per-pixel convergence (ePtAdaptiveStop), its luminance moments for DLSS-RR's
+  // still (ePtRrStillGuides: its per-pixel Keep detail reads them), or in the Time view the mean of its
   // frames' times (pixel_time.h.slang); DLSS frames never read it
-  if((m_pushConst.flags & shaderio::ePtAdaptiveStop) || (pixelTimeOn(resources) && !(m_pushConst.flags & shaderio::ePtUseDlss)))
+  if((m_pushConst.flags & (shaderio::ePtAdaptiveStop | shaderio::ePtRrStillGuides))
+     || (pixelTimeOn(resources) && !(m_pushConst.flags & shaderio::ePtUseDlss)))
   {
     outputCount                          = std::max<uint32_t>(outputCount, shaderio::eConvergence + 1);
     outputImages[shaderio::eConvergence] = m_convergence.getColorStorageImageInfo(0);
