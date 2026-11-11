@@ -93,6 +93,7 @@ src/
 ├── sample_schedule.hpp         # Samples per frame: ending on stops (cap, --outputSamples), the Auto SPP controller
 ├── renderer_silhouette.cpp/hpp # Selection and hover outlines (compute shader)
 ├── env_image_loader.cpp/hpp    # Decodes .hdr / .exr lat-longs to float RGBA for HdrIbl
+├── env_texels.hpp              # An EXR's NaN, infinite and negative texels made fit to light by
 ├── env_baker.cpp/hpp           # Bakes an analytic sky into the lat-long image + importance buffer
 │                               #   that HdrIbl consumes (preview vs. commit)
 ├── gltf_environment_sky.cpp/hpp# OMI_environment_sky parse/write/strip, raw-value passthrough
@@ -168,6 +169,8 @@ src/
 ├── hdr_output.cpp/hpp          # The frame an HDR display is shown (scRGB), and EXR exports' linear image
 ├── white_balance.cpp/hpp       # Auto white balance: the frame's light, and the white balance that makes it grey
 ├── lens.cpp/hpp                # A cheap wide lens on the tone mapper's input: barrel distortion and colour fringing
+├── sample_map.cpp/hpp          # Display › Samples: each pixel of a still by the samples it took, in place of the tone mapper
+├── invalid_samples.hpp         # What the path tracer threw away as not finite, tallied per accumulation and logged
 ├── present_pacing.hpp          # Where native presentation waits for the swapchain: before the input or the present (unit-tested)
 ├── present_policy.hpp          # Who watches a --stream run, and what FrameStream copies for them (unit-tested)
 ├── present_slots.hpp           # The shared images' hand-off between Vulkan and D3D (unit-tested)
@@ -223,6 +226,9 @@ shaders/
 ├── lens.slang                  # The lens pass: the rendered image bent and its colours split toward the corners
 ├── lens.h.slang                # Its mapping, picture to rendered image (unit-tested as C++)
 ├── lens_io.h.slang             # Its bindings and push constant
+├── sample_map.slang            # The Samples view: viridis by a still pixel's samples (adaptiveSamplesRamp)
+├── sample_map_io.h.slang       # Its bindings and push constant
+├── invalid_samples.h.slang     # A frame's block of non-finite samples and guides: counts and the first pixels
 ├── gltf_light_ies.h.slang      # EXT_lights_ies: photometric-profile falloff lookup
 ├── sky_background.h.slang      # Background (sun-bearing) field for authored skies
 ├── sky_omi_shaderio.h.slang    # SkyType + the per-type OMI_environment_sky parameter blocks

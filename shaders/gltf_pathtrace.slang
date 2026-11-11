@@ -64,6 +64,7 @@ static bool doDebug = false;
 #include "hair_bsdf.h.slang"
 #endif
 #include "adaptive_stop.h.slang"
+#include "invalid_samples.h.slang"
 #include "hit_signal.h.slang"
 #include "pixel_time.h.slang"
 #include "gltf_vertex_access.h.slang"
@@ -2463,6 +2464,41 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
 // This function samples a pixel (trace a path of rays through the scene)
 // and returns the result
 //-----------------------------------------------------------------------
+// A value thrown away as not finite, counted for the host (invalid_samples.h.slang, prepareInvalidSamples):
+// one count per kind, and the first records of the frame by pixel. Only bad values come here.
+void countInvalidSample(float2 samplePos, uint kind)
+{
+  uint* block = pushConst.frameInfo->invalidSamples;
+  if(block == nullptr)
+    return;
+  InterlockedAdd(block[kind], 1u);
+  uint at = 0u;
+  InterlockedAdd(block[INVALID_SAMPLES_OFFERED], 1u, at);
+  if(at < INVALID_SAMPLES_KEPT)
+    block[INVALID_SAMPLES_FIRST + at] = invalidSampleRecord(uint(samplePos.x), uint(samplePos.y), kind);
+}
+
+// A guide's value with what isn't finite in it as 0; `finite` cleared if anything was
+float finiteGuide(float v, inout bool finite)
+{
+  if(isfinite(v))
+    return v;
+  finite = false;
+  return 0.0F;
+}
+float2 finiteGuide(float2 v, inout bool finite)
+{
+  return float2(finiteGuide(v.x, finite), finiteGuide(v.y, finite));
+}
+float3 finiteGuide(float3 v, inout bool finite)
+{
+  return float3(finiteGuide(v.x, finite), finiteGuide(v.y, finite), finiteGuide(v.z, finite));
+}
+float4 finiteGuide(float4 v, inout bool finite)
+{
+  return float4(finiteGuide(v.x, finite), finiteGuide(v.y, finite), finiteGuide(v.z, finite), finiteGuide(v.w, finite));
+}
+
 SampleResult samplePixel(IRaytracer raytracer,
                          inout uint seed,
                          float2     samplePos,
@@ -2511,7 +2547,10 @@ SampleResult samplePixel(IRaytracer raytracer,
   // A non-finite sample would stick in the accumulation for the rest of the still and reach the
   // denoiser: it is dropped (the clamp below passes NaN, and Inf times 0 is NaN in the mean)
   if(any(isnan(sampleResult.radiance.xyz)) || any(isinf(sampleResult.radiance.xyz)))
+  {
     sampleResult.radiance.xyz = float3(0.0F);
+    countInvalidSample(samplePos, INVALID_SAMPLE_COLOR);
+  }
 
   // Removing fireflies. With ePtClampIndirect each indirect contribution was clamped as it was added
   // (addRadiance), and what is left here is a cap that keeps a sample within half float, which the
@@ -2647,7 +2686,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   // as they are; eConvergence is written by the accumulation's first frame below.
   const bool adaptiveStop = hasFlag(pushConst.flags, PathtracerFlags::ePtAdaptiveStop);
   const bool accumulating = !hasFlag(pushConst.flags, PathtracerFlags::ePtFirstFrame) && pushConst.totalSamples > 0;
-  if(adaptiveStop && accumulating && WaveActiveAllTrue(outImages[int(OutputImage::eConvergence)][int2(samplePos)].y > 0.0F))
+  if(adaptiveStop && accumulating && WaveActiveAllTrue(adaptiveStateConverged(outImages[int(OutputImage::eConvergence)][int2(samplePos)].y)))
     return;
 
   // A pass traces one sample a pixel, and the host runs a pass for each sample of the frame
@@ -2839,7 +2878,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
       relax         = lerp(pushConst.adaptiveRelax[i >> 2][i & 3], pushConst.adaptiveRelax[j >> 2][j & 3], position - float(i));
     }
     const bool stop = adaptiveConverged(second, mean, samples, pushConst.adaptiveThreshold, pushConst.adaptiveMin, relax);
-    outImages[int(OutputImage::eConvergence)][pixel] = float4(second, stop ? 1.0F : 0.0F, 0.0F, 0.0F);
+    outImages[int(OutputImage::eConvergence)][pixel] = float4(second, adaptiveStateValue(stop, samples), 0.0F, 0.0F);
     // the pixels still sampling, a warp's at a time, for the host's stop of the whole still
     // (ptAdaptiveDone); a warp that skipped the frame above has none
     const uint active = WaveActiveCountBits(!stop);
@@ -2893,17 +2932,23 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
                                                pushConst.frameInfo->prevMVP, pushConst.frameInfo->viewProjMatrix, imageSize);
       }
     }
-    outImages[int(OutputImage::eDlssDepth)][int2(samplePos)]           = float4(guideDepth);
-    outImages[int(OutputImage::eDlssMotion)][int2(samplePos)]          = float4(motionVec, 0, 0);
-    outImages[int(OutputImage::eDlssSpecularMotion)][int2(samplePos)]  = float4(specularMotion, 0, 0);
-    outImages[int(OutputImage::eDlssNormalRoughness)][int2(samplePos)] = sampleResult.guideOutput.normalRoughness;
     // the sky's albedo is 0.5, as NVIDIA's RR guide asks: 0 makes it boil at the silhouette
     float4 guideAlbedo = sampleResult.guideOutput.albedo;
     if(!hasSolidHit)
       guideAlbedo = float4(0.5f);
-    outImages[int(OutputImage::eDlssAlbedo)][int2(samplePos)] = guideAlbedo;
-    outImages[int(OutputImage::eDlssSpecAlbedo)][int2(samplePos)] = float4(sampleResult.guideOutput.specularAlbedo.xyz, 1.0f);
-    outImages[int(OutputImage::eDlssSpecularHitDist)][int2(samplePos)] = float4(sampleResult.guideOutput.specularHitDist);
+    // a guide that isn't finite would stay in RR's history: 0 in its place, counted
+    bool guidesFinite = true;
+    outImages[int(OutputImage::eDlssDepth)][int2(samplePos)]           = float4(finiteGuide(guideDepth, guidesFinite));
+    outImages[int(OutputImage::eDlssMotion)][int2(samplePos)]          = float4(finiteGuide(motionVec, guidesFinite), 0, 0);
+    outImages[int(OutputImage::eDlssSpecularMotion)][int2(samplePos)]  = float4(finiteGuide(specularMotion, guidesFinite), 0, 0);
+    outImages[int(OutputImage::eDlssNormalRoughness)][int2(samplePos)] = finiteGuide(sampleResult.guideOutput.normalRoughness, guidesFinite);
+    outImages[int(OutputImage::eDlssAlbedo)][int2(samplePos)]          = finiteGuide(guideAlbedo, guidesFinite);
+    outImages[int(OutputImage::eDlssSpecAlbedo)][int2(samplePos)] =
+        float4(finiteGuide(float3(sampleResult.guideOutput.specularAlbedo.xyz), guidesFinite), 1.0f);
+    outImages[int(OutputImage::eDlssSpecularHitDist)][int2(samplePos)] =
+        float4(finiteGuide(float(sampleResult.guideOutput.specularHitDist), guidesFinite));
+    if(!guidesFinite)
+      countInvalidSample(samplePos, INVALID_SAMPLE_DLSS_GUIDE);
     if(hasFlag(pushConst.flags, PathtracerFlags::ePtWriteNrMask))
       outImages[int(OutputImage::eNrMask)][int2(samplePos)] = float4(sampleResult.guideOutput.nrMask);
     if(pushConst.hairResponsivity != 0.0f)
@@ -2918,16 +2963,20 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     // so their edges are anti-aliased (and blurred by depth of field) the same way. They have their
     // own sample count: they restart when the denoiser is turned on, while the color goes on. Each
     // denoiser converts them to what it reads.
-    const float3 albedo  = albedoSum / float(guideCount);
-    const float3 normal  = normalSum / float(guideCount);
-    const int2   pixel   = int2(samplePos);
-    float        normalW = 1.0f;
+    // averaged into the still's guides for the rest of it, so what isn't finite is 0 instead, counted
+    bool         stillFinite = true;
+    const float3 albedo      = finiteGuide(albedoSum / float(guideCount), stillFinite);
+    const float3 normal      = finiteGuide(normalSum / float(guideCount), stillFinite);
+    const int2   pixel       = int2(samplePos);
+    float        normalW     = 1.0f;
 #if USE_DLSS_SHADER
     // DLSS-RR's still reads the roughness packed in the normal's w (RrStillDenoiser)
-    const float4 specular = specularSum / float(guideCount);
+    const float4 specular = rrStillGuides ? finiteGuide(specularSum / float(guideCount), stillFinite) : float4(0.0f);
     if(rrStillGuides)
       normalW = specular.w;
 #endif
+    if(!stillFinite)
+      countInvalidSample(samplePos, INVALID_SAMPLE_STILL_GUIDE);
     const bool restart = firstFrame || pushConst.guideSamples == 0;
     if(restart)
     {

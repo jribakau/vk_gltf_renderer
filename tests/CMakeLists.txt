@@ -48,6 +48,8 @@ set(TEST_SOURCES
     test_image_loader.cpp
     # Phase 1 (env pipeline): CPU-only unit test for nvvk::buildEnvAliasmap (Vose)
     test_alias_table.cpp
+    # An EXR dome's NaN, infinite and negative texels made fit to light by (header only)
+    test_env_texels.cpp
     # --stream frame pacing: paced, except a still being refined
     test_frame_pacing.cpp
     test_present_hdr.cpp
@@ -169,6 +171,8 @@ set(TEST_SOURCES
     test_selection_write.cpp
     # A still's per-pixel stop: the convergence rule and its exposure (shader header compiled as C++)
     test_adaptive_stop.cpp
+    # What the path tracer throws away as not finite: a frame's block and the tally (header only)
+    test_invalid_samples.cpp
     test_hit_signal.cpp
     # A shader variant built off the application thread, with a fake compiler (header only)
     test_variant_compile_job.cpp

@@ -138,3 +138,34 @@ TEST(AdaptiveRelax, NoTableWithAutoExposure)
   tm.autoExposure = 1;
   EXPECT_EQ(adaptive_relax::build(tm).base, 0.0f);
 }
+
+// The convergence image's second channel: a pixel's samples, positive once it converged, which the
+// warp's vote reads as converged above 0 and the Samples view reads as a count
+TEST(AdaptiveStop, TheStateKeepsTheSamplesAndWhetherItConverged)
+{
+  EXPECT_TRUE(adaptiveStateConverged(adaptiveStateValue(true, 32)));
+  EXPECT_FALSE(adaptiveStateConverged(adaptiveStateValue(false, 32)));
+  EXPECT_EQ(adaptiveStateSamples(adaptiveStateValue(true, 37)), 37);
+  EXPECT_EQ(adaptiveStateSamples(adaptiveStateValue(false, 128)), 128);
+  // the first pass's pixel has one sample and has not converged: still not read as converged
+  EXPECT_FALSE(adaptiveStateConverged(adaptiveStateValue(false, 1)));
+  // an image the stop never wrote reads as no samples, and not converged
+  EXPECT_FALSE(adaptiveStateConverged(0.0f));
+  EXPECT_EQ(adaptiveStateSamples(0.0f), 0);
+  // a count far past any cap stays exact in the channel's float
+  EXPECT_EQ(adaptiveStateSamples(adaptiveStateValue(true, 1000000)), 1000000);
+}
+
+TEST(AdaptiveStop, TheSamplesViewRunsFromTheMinimumToTheCap)
+{
+  EXPECT_FLOAT_EQ(adaptiveSamplesRamp(32, 32, 128), 0.0f);
+  EXPECT_FLOAT_EQ(adaptiveSamplesRamp(64, 32, 128), 0.5f);  // a log scale: halfway in stops
+  EXPECT_FLOAT_EQ(adaptiveSamplesRamp(128, 32, 128), 1.0f);
+  // a still beginning, below the minimum, and a cap raised past it after: clamped
+  EXPECT_FLOAT_EQ(adaptiveSamplesRamp(4, 32, 128), 0.0f);
+  EXPECT_FLOAT_EQ(adaptiveSamplesRamp(512, 32, 128), 1.0f);
+  // a cap at or below the minimum: a scale a stop wide above the minimum, never a division by 0
+  EXPECT_FLOAT_EQ(adaptiveSamplesRamp(16, 16, 16), 0.0f);
+  EXPECT_FLOAT_EQ(adaptiveSamplesRamp(64, 32, 8), 1.0f);
+  EXPECT_FLOAT_EQ(adaptiveSamplesRamp(0, 0, 0), 0.0f);
+}

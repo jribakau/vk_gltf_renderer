@@ -223,6 +223,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_lens.init(m_resources);
   m_bloom.init(m_resources);
   m_localExposure.init(m_resources);
+  m_sampleMap.init(m_resources);
 
 
   // Producer for analytic skies. Its lat-long image feeds the same HdrIbl the HDR file path uses,
@@ -1202,6 +1203,8 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.pixelTime                            = pixelTime.sums;
     finfo.pixelTimeSlots                       = pixelTime.slots;
     finfo.pixelTimeScale                       = pixelTime.scale;
+    // where the frame counts what it throws away as not finite
+    finfo.invalidSamples = m_pathTracer.prepareInvalidSamples(m_resources);
     finfo.pixelTimeCount = std::clamp(m_resources.settings.pixelTimeCount, shaderio::kPixelTimeCountClock, shaderio::kPixelTimeCountShadowRays);
     // the moving view's bounce cache: where its table is (null without one), for the frames DLSS draws
     const RadianceCache::Frame radianceCache = m_pathTracer.prepareRadianceCache(m_resources);
@@ -1473,6 +1476,10 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   if(bypassTonemapper)
     tonemapperData.isActive = 0;
   tonemapperData.falseColor = m_falseColor ? 1 : 0;
+  // The Samples view in place of the picture, on a still whose pixels count their samples (sampleCounts):
+  // no lens, bloom or HDR image for it, which an HDR display then shows as the SDR image whole
+  const std::optional<PathTracer::SampleCounts> sampleCounts =
+      m_sampleMapOn && vizNormal && !usingGuideBuffer && !bypassTonemapper ? m_pathTracer.sampleCounts() : std::nullopt;
   // the grain moves with each frame drawn, as film's does, and holds on a finished still
   tonemapperData.grainSeed = uint32_t(m_resources.drawnFrameCount);
 
@@ -1480,7 +1487,7 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   // highlights held (local exposure), on what the tone mapper and the HDR output take, not on a debug
   // or guide view; an .exr keeps the image without them (m_tonemapInput below)
   const VkDescriptorImageInfo unbloomed = inputBuffer;
-  const bool  picture  = vizNormal && !usingGuideBuffer && !bypassTonemapper && tonemapperData.isActive;
+  const bool  picture  = vizNormal && !usingGuideBuffer && !bypassTonemapper && tonemapperData.isActive && !sampleCounts;
   const float exposure = tonemapperData.autoExposure ? 1.0F : tonemapperData.exposure;
   if(picture && m_lens.active())
   {
@@ -1502,11 +1509,14 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
 
   m_resources.tonemapper.runCompute(cmd, gbufSize, tonemapperData, inputBuffer,
                                     m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgTonemapped));
+  if(sampleCounts)
+    m_sampleMap.cmdDraw(cmd, sampleCounts->image, m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgTonemapped),
+                        gbufSize, sampleCounts->minSamples, m_resources.settings.maxSamples);
 
   // The HDR image from the same input and settings, while frames are HDR. Not for a DLSS guide view,
   // drawn into a corner of the SDR image, nor with auto exposure, which only the SDR tonemapper
   // measures: those frames show the SDR image whole (HdrOutput::cmdFinish).
-  if(!usingGuideBuffer && !bypassTonemapper && !tonemapperData.autoExposure)
+  if(!usingGuideBuffer && !bypassTonemapper && !tonemapperData.autoExposure && !sampleCounts)
     m_hdrOutput.cmdTonemap(cmd, m_resources, gbufSize, tonemapperData, inputBuffer);
   // What an .exr saved from this frame is made from (saveExr)
   m_tonemapInput = {.image = unbloomed, .size = gbufSize, .data = tonemapperData};
@@ -1517,7 +1527,7 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
 
   // NR post-process is only valid on the main rendered path (not guide buffers, viz modes, or bypassed tonemapper).
-  return vizNormal && !usingGuideBuffer && !bypassTonemapper;
+  return vizNormal && !usingGuideBuffer && !bypassTonemapper && !sampleCounts;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1949,6 +1959,7 @@ void GltfRenderer::destroyResources()
   m_lens.deinit(m_resources);
   m_bloom.deinit(m_resources);
   m_localExposure.deinit(m_resources);
+  m_sampleMap.deinit(m_resources);
   if(m_wipeFrame.image)
     m_resources.allocator.destroyImage(m_wipeFrame);
   m_wipeFrame = {};

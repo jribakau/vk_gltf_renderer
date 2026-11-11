@@ -125,7 +125,8 @@ namespace {
 // 65: backdrop.air (how many metres of air a metre of the backdrop's land counts for: the haze of its
 // distance) and env.skyVisibility (km one sees through the physical sky's air; 0 the atmosphere's
 // own). An older renderer refuses the lighting that has either.
-constexpr int kProtocolVersion = 65;
+// 66: view.set's display 'samples' (the Samples view: each pixel of a still by the samples it took).
+constexpr int kProtocolVersion = 66;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -119,7 +119,9 @@ public:
   void setVisualization(shaderio::Visualization) override {}
   void setWireframe(bool) override {}
   void setFalseColor(bool on) override { falseColor = on; }
+  void setSampleMap(bool on) override { sampleMap = on; }
   bool falseColor = false;
+  bool sampleMap  = false;
   bool pixelTimeAvailable() const override { return clockAvailable; }
   void setPixelTime(bool on) override { pixelTime = on; }
   void setPixelTimeObserver(std::function<void(const PixelTimes&)> observer) override { pixelTimeObserver = std::move(observer); }

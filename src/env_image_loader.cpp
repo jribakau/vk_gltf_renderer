@@ -49,6 +49,7 @@
 #include <nvutils/timers.hpp>
 
 #include "env_image_loader.hpp"
+#include "env_texels.hpp"
 
 const char* envImageExtensions()
 {
@@ -101,6 +102,13 @@ EnvImage loadEnvImage(const std::filesystem::path& file)
     out.size = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
     out.pixels.assign(rgba, rgba + size_t(width) * size_t(height) * 4);
     free(rgba);  // tinyexr allocates with malloc
+    // An EXR can hold NaN, infinite and negative values, any one of which would stop the dome lighting
+    const EnvTexelRepairs repairs = repairEnvTexels(out.pixels);
+    if(repairs.total() > 0)
+      LOGW("Environment image %s: %llu NaN, %llu infinite and %llu negative channel values replaced (NaN and negative by 0, infinite by %g)\n",
+           nvutils::utf8FromPath(file).c_str(), static_cast<unsigned long long>(repairs.nan),
+           static_cast<unsigned long long>(repairs.infinite), static_cast<unsigned long long>(repairs.negative),
+           double(kEnvTexelBrightest));
     return out;
   }
 #endif

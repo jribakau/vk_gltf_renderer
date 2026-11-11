@@ -43,6 +43,7 @@
 #include <nvvk/sbt_generator.hpp>
 #include <nvutils/profiler.hpp>
 #include "denoiser_handoff.hpp"
+#include "invalid_samples.hpp"
 #include "radiance_cache.hpp"
 #include "renderer_base.hpp"
 #include "pipeline_build_record.hpp"
@@ -121,6 +122,10 @@ public:
     float     scale = 0.0F;
   };
   PixelTimeFrame preparePixelTime(Resources& resources);
+  // Where this frame counts what it throws away as not finite (shaders/invalid_samples.h.slang), for the
+  // frame info. Before the frame info is written; adds what an earlier frame counted into this frame's
+  // slot to the accumulation's tally, and logs a tally that has any once its accumulation is over.
+  uint32_t* prepareInvalidSamples(Resources& resources);
   // The moving view's bounce cache (RadianceCache): where this frame finds its table, null without one.
   // Before the frame info is written.
   RadianceCache::Frame prepareRadianceCache(Resources& resources) { return m_radianceCache.prepare(resources, isDlssEnabled()); }
@@ -130,6 +135,20 @@ public:
   static bool pixelTimeOn(const Resources& resources)
   {
     return resources.settings.pixelTime && resources.settings.shaderClockAvailable;
+  }
+  // The Samples view (SampleMap): the convergence image, while the last frame traced was a still's with
+  // the adaptive stop on, so each pixel holds the samples it took (adaptiveStateValue); none otherwise
+  // (a DLSS frame binds its responsivity there, an exact still or the Time view write no counts)
+  struct SampleCounts
+  {
+    VkDescriptorImageInfo image{};
+    int                   minSamples = 0;  // ptAdaptiveMin
+  };
+  std::optional<SampleCounts> sampleCounts() const
+  {
+    if(!m_sampleCountsLive)
+      return std::nullopt;
+    return SampleCounts{.image = m_convergence.getColorStorageImageInfo(0), .minSamples = m_adaptiveMin};
   }
   std::optional<nvvkgltf::SceneFeatureSet> liveShaderFeatures();
   // A pipeline built before compiled again this run: the driver's shader cache is full (PipelineBuildRecord)
@@ -285,6 +304,7 @@ public:
   // pores as the full still's; at 0.11 (7.5 s) and 0.13 (6.5 s) the denoiser of the time (OptiX) smoothed
   // them away (2026-10-29)
   bool  m_adaptiveStop{true};
+  bool  m_sampleCountsLive{false};  // the last frame traced wrote its pixels' sample counts (sampleCounts)
   float m_adaptiveThreshold{0.09F};
   int   m_adaptiveMin{32};
   // Highlights the tone mapper flattens keep more noise (ptAdaptiveRelax, adaptive_relax.hpp): the
@@ -315,6 +335,12 @@ public:
     bool     counted{false};
   };
   std::vector<AdaptiveCount> m_adaptiveCounts;  // per frame in flight: what the slot holds
+  // What frames threw away as not finite (prepareInvalidSamples): a block per frame in flight,
+  // host-visible, the slots' state as the adaptive count's, and the accumulation's tally
+  nvvk::Buffer               m_invalidBuffer;
+  std::vector<AdaptiveCount> m_invalidSlots;
+  invalid_samples::Tally     m_invalidTally;
+  uint64_t                   m_invalidTallyOf{0};  // the accumulation m_invalidTally sums
   uint64_t                   m_accumulationId{0};
   SelectionWrite m_selectionWrite;  // when a frame traces the selection image's object IDs
   // Whether the selection image's object IDs are not the picture's (no frame since the view last
@@ -675,6 +701,9 @@ private:
   // (that frame is done), may end the still (Resources::adaptiveDone), and clears it for this frame.
   // Returns the counter for the push constant.
   uint32_t* countAdaptivePixels(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderingSize);
+  // This frame's invalid-sample block zeroed before it traces, and the slot marked as counted (prepareInvalidSamples)
+  void armInvalidSamples(VkCommandBuffer cmd, Resources& resources);
+  void logInvalidSamples();
   // The hit signal: where this frame counts what first hits want (hit_signal.h.slang), null when it doesn't.
   // A few frames of each rest, from when memory is near full (setCountHits): the frame that counts nothing
   // pays one branch a pixel, and a scene that fits never counts.

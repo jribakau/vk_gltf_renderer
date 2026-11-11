@@ -318,7 +318,7 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
           m_renderer->setVisualization(shaderio::Visualization::eRendered);
           m_renderer->setWireframe(true);
         }
-        else if(display == "shaded" || display == "exposure")
+        else if(display == "shaded" || display == "exposure" || display == "samples")
         {
           m_renderer->setVisualization(shaderio::Visualization::eRendered);
           m_renderer->setWireframe(false);
@@ -341,8 +341,9 @@ FvView::FvView(HostRenderer* renderer, fv::EventHub& events, fv::CommandRegistry
           m_renderer->setWireframe(false);
         }
         else
-          throw std::runtime_error("display is shaded, clay, wireframe, normals, exposure, material, object, density, facing or time");
+          throw std::runtime_error("display is shaded, clay, wireframe, normals, exposure, samples, material, object, density, facing or time");
         m_renderer->setFalseColor(display == "exposure");
+        m_renderer->setSampleMap(display == "samples");
         m_renderer->setPixelTime(display == "time");
         // the last breakdown goes with the view, so the next one starts empty
         if(m_pixelTime && display != "time")

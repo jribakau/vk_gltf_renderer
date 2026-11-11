@@ -32,6 +32,36 @@ inline float adaptiveRelaxPosition(float mean, float base)
   return p < float(ADAPTIVE_RELAX_STOPS - 1) ? p : float(ADAPTIVE_RELAX_STOPS - 1);
 }
 
+// What a pixel's convergence image keeps beside its moments (OutputImage::eConvergence's second channel)
+// while the stop is on: the samples it has taken, positive once it has converged and negative while it
+// samples on. The warp's vote before a pass reads it as converged above 0; the Samples view
+// (shaders/sample_map.slang) reads the count. 0: nothing written by the stop (an exact still, the Time
+// view's mean). A converged pixel in a warp that samples on takes those samples too, so the count is
+// what the pixel took, not when it first converged.
+inline float adaptiveStateValue(bool converged, int samples)
+{
+  return converged ? float(samples) : -float(samples);
+}
+inline bool adaptiveStateConverged(float state)
+{
+  return state > 0.0f;
+}
+inline int adaptiveStateSamples(float state)
+{
+  return int((state < 0.0f ? -state : state) + 0.5f);
+}
+
+// The Samples view's scale, 0 to 1, by the log of the samples a pixel took: 0 at the minimum the stop
+// keeps (or fewer, while a still begins), 1 at the cap. A cap at or below the minimum has a scale a
+// stop wide above it.
+inline float adaptiveSamplesRamp(int samples, int minSamples, int cap)
+{
+  const float lo = log2(float(minSamples > 1 ? minSamples : 1));
+  const float hi = log2(float(cap > minSamples ? cap : (minSamples > 1 ? minSamples : 1) * 2));
+  const float t  = (log2(float(samples > 1 ? samples : 1)) - lo) / (hi - lo);
+  return t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+}
+
 // The threshold in the scene's units for one in displayed brightness: the tone mapper multiplies by the
 // exposure first, so a dark scene brought up by it converges to the same visible noise
 inline float adaptiveSceneThreshold(float threshold, float exposure)

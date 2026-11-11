@@ -84,7 +84,7 @@ enum OutputImage
                          // Both alias DLSS slots: the still's images are bound there, never on DLSS's frames
   eRrStillSpecAlbedo = 4,  // DLSS-RR's still (ePtRrStillGuides): accumulated specular albedo (RGBA32)
   eRrStillDepth      = 6,  // DLSS-RR's still: the nearest guide depth of its samples (R32), the surface behind clear glass's
-  eConvergence = 9,      // Per pixel of an accumulation (RG32): the mean of its samples' luminance squared, and 1 while it has converged (ePtAdaptiveStop)
+  eConvergence = 9,      // Per pixel of an accumulation (RG32): the mean of its samples' luminance squared, and the samples it took, negative until it converged (ePtAdaptiveStop, adaptiveStateValue)
   eDlssResponsivity = 9, // DLSS-RR responsivity mask (R16F): ptHairResponsivity where the first hit is hair, 0 elsewhere.
                          // DLSS frames only, so it shares the still's eConvergence slot
   eDlssSpecularMotion = 10,  // DLSS-RR's motion of reflections (RG16F, pixels, as eDlssMotion): of a reflection's
@@ -405,6 +405,9 @@ struct SceneFrameInfo
   // holds the clouds beside and under the camera too, which are drawn below the horizon and over
   // what the camera sees past them. 0 when the image holds only what is above its horizon. (Appended.)
   float cloudImageBase = 0.0F;
+  // Where the frame counts what it throws away as not finite (shaders/invalid_samples.h.slang,
+  // PathTracer::prepareInvalidSamples); null: not counted. (Appended.)
+  uint* invalidSamples;
 };
 
 enum PathtracerFlags

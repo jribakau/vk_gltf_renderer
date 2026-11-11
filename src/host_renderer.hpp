@@ -213,6 +213,9 @@ public:
   // The false-colour exposure view in place of the image (TonemapperData::falseColor): the tone
   // mapper's alone, so a still keeps its samples
   virtual void setFalseColor(bool on) = 0;
+  // The Samples view in place of the image (SampleMap): each pixel of a still by the samples it took
+  // before the adaptive stop let it go; the moving view and an exact still show the image
+  virtual void setSampleMap(bool on) = 0;
   // The Time view (shaders/pixel_time.h.slang): each pixel coloured by how long its thread ran against
   // the frame's average, the paths as the shaded image traces them. Only on a device with
   // VK_KHR_shader_clock's device clock (pixelTimeAvailable).

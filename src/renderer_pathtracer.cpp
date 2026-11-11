@@ -524,6 +524,8 @@ void PathTracer::onDetach(Resources& resources)
   resources.allocator.destroyBuffer(m_lightReservoirs);
   resources.allocator.destroyBuffer(m_adaptiveActiveBuffer);
   m_adaptiveCounts.clear();
+  resources.allocator.destroyBuffer(m_invalidBuffer);
+  m_invalidSlots.clear();
   resources.allocator.destroyBuffer(m_hitCounts);
   resources.allocator.destroyBuffer(m_timeSums);
   for(nvvk::Buffer& b : m_timeReadback)
@@ -777,8 +779,9 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   if(m_timeSlots > 0)
     copyPixelTimes(cmd, resources);
 
-  // The adaptive stop's count, for the host once the frame is done (countAdaptivePixels)
-  if(pushConst.adaptiveActive != nullptr)
+  // The adaptive stop's count and what the frame threw away (prepareInvalidSamples), for the host once
+  // the frame is done
+  if(pushConst.adaptiveActive != nullptr || !m_invalidSlots.empty())
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                            VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_HOST_READ_BIT);
 
@@ -894,6 +897,60 @@ uint32_t* PathTracer::countAdaptivePixels(VkCommandBuffer cmd, Resources& resour
   // the barrier after setupPushConstant orders the clear before the trace
   vkCmdFillBuffer(cmd, m_adaptiveActiveBuffer.buffer, slot * sizeof(uint32_t), sizeof(uint32_t), 0);
   return reinterpret_cast<uint32_t*>(m_adaptiveActiveBuffer.address + slot * sizeof(uint32_t));
+}
+
+uint32_t* PathTracer::prepareInvalidSamples(Resources& resources)
+{
+  if(!resources.app)
+    return nullptr;
+  // A slot per frame in flight: the application waited for the frame that last used this one
+  const uint32_t     slots = std::max(resources.app->getFrameCycleSize(), 1u);
+  const VkDeviceSize block = INVALID_SAMPLES_WORDS * sizeof(uint32_t);
+  if(m_invalidSlots.size() != slots)
+  {
+    resources.allocator.destroyBuffer(m_invalidBuffer);
+    NVVK_CHECK(resources.allocator.createBuffer(m_invalidBuffer, slots * block,
+                                                VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT
+                                                    | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
+                                                VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT));
+    NVVK_DBG_NAME(m_invalidBuffer.buffer);
+    m_invalidSlots.assign(slots, {});
+  }
+  const uint32_t slot = resources.app->getFrameCycleIndex() % slots;
+
+  // What that frame counted, into its accumulation's tally; a new accumulation logs the last one's
+  AdaptiveCount& last = m_invalidSlots[slot];
+  if(last.counted)
+  {
+    if(last.accumulation != m_invalidTallyOf)
+    {
+      logInvalidSamples();
+      m_invalidTally   = {};
+      m_invalidTallyOf = last.accumulation;
+    }
+    std::array<uint32_t, INVALID_SAMPLES_WORDS> words{};
+    std::memcpy(words.data(), m_invalidBuffer.mapping + slot * block, block);
+    m_invalidTally.add(words.data());
+    last.counted = false;
+  }
+  return reinterpret_cast<uint32_t*>(m_invalidBuffer.address + slot * block);
+}
+
+void PathTracer::armInvalidSamples(VkCommandBuffer cmd, Resources& resources)
+{
+  if(!resources.app || m_invalidSlots.empty())
+    return;
+  const uint32_t     slot  = resources.app->getFrameCycleIndex() % uint32_t(m_invalidSlots.size());
+  const VkDeviceSize block = INVALID_SAMPLES_WORDS * sizeof(uint32_t);
+  // the barrier after setupPushConstant orders the clear before the trace
+  vkCmdFillBuffer(cmd, m_invalidBuffer.buffer, slot * block, block, 0);
+  m_invalidSlots[slot] = {m_accumulationId, true};
+}
+
+void PathTracer::logInvalidSamples()
+{
+  if(!m_invalidTally.empty())
+    LOGW("%s\n", invalid_samples::describe(m_invalidTally).c_str());
 }
 
 uint32_t* PathTracer::countHits(VkCommandBuffer cmd, Resources& resources)
@@ -1640,6 +1697,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.hairResponsivity = useDlss ? m_hairResponsivity : 0.0F;
   // not in the Time view: a stopped pixel's time would read as nothing
   m_pushConst.flags |= (m_adaptiveStop && !useDlss && !pixelTimeOn(resources)) ? shaderio::ePtAdaptiveStop : 0;
+  m_sampleCountsLive = (m_pushConst.flags & shaderio::ePtAdaptiveStop) != 0;
   // in displayed brightness, with the exposure the host sets (auto exposure, which it never uses, has none)
   m_pushConst.adaptiveThreshold = resources.tonemapperData.autoExposure ?
                                       m_adaptiveThreshold :
@@ -1653,6 +1711,7 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
                                    nullptr;
   m_pushConst.hitSignalSlots = 0;
   m_pushConst.hitSignal      = countHits(cmd, resources);
+  armInvalidSamples(cmd, resources);
   // the Time view's sums start at nothing each frame (preparePixelTime gave the frame info their address)
   if(m_timeSlots > 0)
   {

@@ -59,6 +59,7 @@
 #include "renderer_silhouette.hpp"
 #include "bloom.hpp"
 #include "lens.hpp"
+#include "sample_map.hpp"
 #include "local_exposure.hpp"
 #include "hdr_output.hpp"
 #include "env_baker.hpp"
@@ -466,6 +467,7 @@ public:
   void setVisualization(shaderio::Visualization mode) override;
   void setWireframe(bool on) override;
   void setFalseColor(bool on) override { m_falseColor = on; }
+  void setSampleMap(bool on) override { m_sampleMapOn = on; }
   bool pixelTimeAvailable() const override { return m_resources.settings.shaderClockAvailable; }
   void setPixelTime(bool on) override;
   void setPixelTimeObserver(std::function<void(const PixelTimes& times)> observer) override { m_pixelTimeObserver = std::move(observer); }
@@ -703,6 +705,7 @@ private:
   Lens          m_lens;           // A cheap wide lens's distortion and fringing on the image the tone mapper takes, before the bloom
   Bloom         m_bloom;          // The glow and the star on the image the tone mapper takes
   LocalExposure m_localExposure;  // Shadows lifted and highlights held, region by region, after the bloom
+  SampleMap     m_sampleMap;      // The Samples view, in place of the tone mapper's picture on a still
   // What the last frame's tonemapper took: an .exr export is made from it (saveExr)
   struct TonemapInput
   {
@@ -714,6 +717,7 @@ private:
   bool                      m_lightReadPending = false;
   std::optional<glm::dvec3> m_lightRead;
   bool m_falseColor = false;  // setFalseColor
+  bool m_sampleMapOn = false;  // setSampleMap
   // The wipe (setWipe): the kept tone-mapped frame, at the size it was kept at, shown left of
   // m_wipeAt (a share of the width; below 0, none). cmdWipe keeps and shows it.
   nvvk::Image m_wipeFrame{};
