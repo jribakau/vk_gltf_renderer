@@ -52,6 +52,8 @@
 // Halton sequence utility functions
 #include "shaders/dlss_util.h"
 
+#include "rr_presets.hpp"
+
 
 
 // =============================================================================================
@@ -97,6 +99,10 @@ inline constexpr PresetEntry kRrPresets[] = {
     {NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E, "E (latest transformer)"},
     {NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F, "F (RR2, default model)"},
 };
+// the settings' numbering, shared with the still's denoiser (rr_presets.hpp), is this table's
+static_assert(std::size(kRrPresets) == rr_presets::kCount);
+static_assert(kRrPresets[0].value == rr_presets::kHints[0] && kRrPresets[1].value == rr_presets::kHints[1]
+              && kRrPresets[2].value == rr_presets::kHints[2] && kRrPresets[3].value == rr_presets::kHints[3]);
 
 // SR preset table (NVSDK_NGX_DLSS_Hint_Render_Preset). Only the presets documented as functional in nvsdk_ngx_defs.h are exposed.
 inline constexpr PresetEntry kSrPresets[] = {

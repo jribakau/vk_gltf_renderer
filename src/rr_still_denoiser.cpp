@@ -67,12 +67,10 @@ void RrStillDenoiser::registerParameters(SettingsRegistry* settings)
   settings->add({"rrStillAutoDenoiseSpp",
                  "DLSS-RR still: samples per pixel between its evaluations as the still refines (0 = the final image only)"},
                 &m_settings.autoDenoiseSpp, Persist::eYes, 0, 1000);
-}
-
-void RrStillDenoiser::setContext(NgxContext* ngx, uint32_t preset)
-{
-  m_ngx    = ngx;
-  m_preset = preset;
+  settings->add({"rrStillPreset",
+                 "DLSS-RR still: its network preset, numbered as dlssPreset: 0=Default (NGX chooses), 1=D (transformer), "
+                 "2=E (latest transformer), 3=F (RR2). E by default: F smooths away detail the still has resolved"},
+                &m_settings.preset, Persist::eYes, 0u, rr_presets::kCount - 1);
 }
 
 VkDescriptorImageInfo RrStillDenoiser::getDescriptorImageInfo(GBufferIndex index) const
@@ -112,12 +110,13 @@ bool RrStillDenoiser::ensureTargets(Resources& resources)
   const VkExtent2D size = resources.gBuffers.getSize();
   if(size.width == 0 || size.height == 0)
     return false;
+  const uint32_t   preset  = rr_presets::hint(m_settings.preset);
   const VkExtent2D current = m_targetInit ? m_target.getSize() : VkExtent2D{};
   const bool       resize  = current.width != size.width || current.height != size.height;
-  const bool recreate = !m_featureCreated || m_featureSize.width != size.width || m_featureSize.height != size.height || m_featurePreset != m_preset;
+  const bool recreate = !m_featureCreated || m_featureSize.width != size.width || m_featureSize.height != size.height || m_featurePreset != preset;
   if(!resize && !recreate)
     return false;
-  if(!resize && m_failed && m_featurePreset == m_preset)
+  if(!resize && m_failed && m_featurePreset == preset)
     return false;
 
   // SYNC NOTE: rare (enabled, resized, preset changed); the old images and feature may be in flight
@@ -152,13 +151,13 @@ bool RrStillDenoiser::ensureTargets(Resources& resources)
       .packedNormalRoughness = true,
       .hardwareDepth         = true,
       .quality               = NVSDK_NGX_PerfQuality_Value_DLAA,
-      .preset                = m_preset,
+      .preset                = preset,
       .inputSize             = size,
       .outputSize            = size,
   };
   const NVSDK_NGX_Result result = m_feature.cmdInit(cmd, *m_ngx, info);
   m_featureSize                 = size;
-  m_featurePreset               = m_preset;
+  m_featurePreset               = preset;
   if(NVSDK_NGX_FAILED(result))
   {
     LOGE("DLSS-RR still: feature create failed: %d (%ux%u); the still stays undenoised until the size or preset changes\n",
@@ -168,7 +167,7 @@ bool RrStillDenoiser::ensureTargets(Resources& resources)
   else
   {
     m_featureCreated = true;
-    LOGI("DLSS-RR still: feature at %ux%u (DLAA)\n", size.width, size.height);
+    LOGI("DLSS-RR still: feature at %ux%u (DLAA, preset hint %u)\n", size.width, size.height, preset);
   }
   resources.app->submitAndWaitTempCmdBuffer(cmd);
   return true;

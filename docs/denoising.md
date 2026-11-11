@@ -133,6 +133,22 @@ scene's still otherwise ends before NGX's async start does, and saves the raw im
 Judged on a dim room lit by candles (11-07), against OIDN: the skin and the wallpaper keep their
 texture, where OIDN smooths them.
 
+### The still's model
+
+The still's feature has its own network preset, `--rrStillPreset` (numbered as `dlssPreset`, the
+table in `src/rr_presets.hpp`), E by default whatever the moving view runs; a change restarts the
+still. NGX bakes the preset into a feature per quality mode, and the DLAA mode's hint is set as the
+others' are (`DlssFeature::cmdInit`): before 2026-11-11 it was not, and the still ran NGX's own
+default, F, whatever `dlssPreset` said.
+
+F smooths away detail a refined still has already resolved. A sunlit meadow at a low sun, 64 samples
+at 2160x1395, measured as the mean absolute Laplacian of the displayed luminance over a fir and the
+grass: raw 0.066, F 0.028, D 0.048, E 0.054, a 1024-sample reference 0.067; F at 256 samples was no
+sharper. On a face E kept more of the skin's relief than D or F (0.028 against 0.019; raw 0.034),
+though all three smooth it: there the raw 64-sample image was closer to the 1024-sample reference
+(mean error 0.015) than any denoised one (0.027). E's images keep a fine grain in haze, which F
+irons out.
+
 ## DLSS hand-off
 
 With DLSS-RR and its still both on, every frame of a moving camera is a frame 0, denoised by

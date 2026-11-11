@@ -164,6 +164,8 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/white_balance.cpp
     # The still denoiser's auto-denoise schedule: interval multiples and the final image (header only)
     test_denoiser_schedule.cpp
+    # DLSS-RR's network presets as the settings number them, the still's default (header only)
+    test_rr_presets.cpp
     # Path tracer samples per frame: ending on stops, the Auto SPP controller (header only)
     test_sample_schedule.cpp
     # A pipeline built before that compiles again: the driver's shader cache is full (header only)

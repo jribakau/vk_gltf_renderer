@@ -233,8 +233,6 @@ public:
   // The NGX context, for a feature of another's (RrStillDenoiser): null until NGX is up with this
   // kind's feature available. It lives until deinit(), which the other must outlast.
   NgxContext* ngxContext() { return isAvailable() ? &m_ngx : nullptr; }
-  // The NGX preset hint the feature is created with (dlssPreset; 0 = NGX's default)
-  uint32_t presetHint() const { return m_preset; }
   // Takes the async NGX init's result once it is in, as tick() does, for frames that do not tick (an
   // idle still's); a first readiness still reaches the renderer on the next tick (needsRecreate())
   void pollInit() { consumePendingInitResult(); }

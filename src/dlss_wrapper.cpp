@@ -359,10 +359,13 @@ NVSDK_NGX_Result DlssFeature::cmdInit(VkCommandBuffer cmd, NgxContext& context, 
     // Though marked as 'optional', these are absolutely needed
     dlssdParams.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
 
-    // NGX bakes the preset hint at feature creation. Pin all four perf qualities to the same
-    // preset so the user-visible toggle between Quality/Balanced/Performance does not silently
-    // downgrade the model. Preset_Default (0) lets NGX pick the current SDK default.
+    // NGX bakes the preset hint at feature creation. Pin every perf quality to the same preset so
+    // the user-visible toggle between them does not silently change the model, DLAA too: the
+    // still's denoiser (RrStillDenoiser) is a DLAA feature, and without its own hint it ran NGX's
+    // default model whatever the moving view's was. Preset_Default (0) lets NGX pick.
     const auto rrPreset = static_cast<NVSDK_NGX_RayReconstruction_Hint_Render_Preset>(info.preset);
+    context.getNgxParams()->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA, rrPreset);
+    context.getNgxParams()->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality, rrPreset);
     context.getNgxParams()->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality, rrPreset);
     context.getNgxParams()->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced, rrPreset);
     context.getNgxParams()->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance, rrPreset);

@@ -486,7 +486,8 @@ public:
   sample_schedule::ThroughputSearch     m_throughputSearch;       // Auto SPP's Throughput target
   sample_schedule::FrameRateControl     m_frameRateControl;       // Auto SPP's frame-rate targets
   std::chrono::steady_clock::time_point m_lastAdaptiveFrameTime;  // When the previous frame was rendered
-  bool m_rrStillWasOn{false};  // DLSS-RR's still on last frame (pollStillDenoiser)
+  bool     m_rrStillWasOn{false};    // DLSS-RR's still on last frame (pollStillDenoiser)
+  uint32_t m_rrStillPresetWas{0};    // its rrStillPreset last frame (pollStillDenoiser)
   // DLSS-RR rendered frame 0 of this accumulation, and the still's denoiser takes the frames after it:
   // DLSS's image is no sample of the accumulation, and the hand-off blends from it
   bool                       m_dlssFrame0{false};

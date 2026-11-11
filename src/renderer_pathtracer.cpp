@@ -681,7 +681,7 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   // smearing it along that motion until the accumulation took over.
 #if defined(USE_DLSS)
   // DLSS-RR's still runs in an NGX context of the moving view's, once NGX is up
-  m_rrStill->setContext(m_dlss->ngxContext(), m_dlss->presetHint());
+  m_rrStill->setContext(m_dlss->ngxContext());
 #endif
   m_dlssShaderFrame = !rrStillOn() || resources.frameCount == 0 || inHandoffDelay();
   // The technique follows the variant (makeVariantKey's dlss), so a view's pipeline is the cached one
@@ -1913,10 +1913,13 @@ bool PathTracer::pollStillDenoiser()
   // only when it began with it, and the shader variant changes with it. An idle still's frames do not
   // tick DLSS, so NGX coming up there is taken here.
   m_dlss->pollInit();
-  m_rrStill->setContext(m_dlss->ngxContext(), m_dlss->presetHint());
+  m_rrStill->setContext(m_dlss->ngxContext());
   const bool rrStill = rrStillOn();
   restart |= rrStill != m_rrStillWasOn;
   m_rrStillWasOn = rrStill;
+  // another network for the still: the image denoised again from the start, so it shows
+  restart |= rrStill && m_rrStill->presetSetting() != m_rrStillPresetWas;
+  m_rrStillPresetWas = m_rrStill->presetSetting();
 #endif
   return restart;
 }

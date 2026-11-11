@@ -31,11 +31,11 @@
 // and through clear glass the surface behind it), averaged over the still's samples like the colour
 // (ePtRrStillGuides, into this class's images), so their edges are anti-aliased as the colour's are.
 // Motion is zero: nothing moved. The moving view's DLSS-RR feature is left alone: this one is its own
-// (the shared NGX context, Dlss::ngxContext()).
+// (the shared NGX context, Dlss::ngxContext()), with its own network preset (rrStillPreset).
 //
 // Usage:
 //   denoiser.init(resources);                        // once
-//   denoiser.setContext(dlss.ngxContext(), preset);  // every frame: null until NGX is up with RR
+//   denoiser.setContext(dlss.ngxContext());          // every frame: null until NGX is up with RR
 //   denoiser.ensureTargets(resources);               // every frame: images and feature follow the settings
 //   denoiser.update(cmd, resources, ...);            // every accumulation frame: a checkpoint or the final image
 //   denoiser.denoiseFinal(cmd, resources, ...);      // idle frames: the final image, if not yet
@@ -57,6 +57,7 @@
 #include "dlss_wrapper.hpp"
 #include "gpu_memory_tracker.hpp"
 #include "resources.hpp"
+#include "rr_presets.hpp"
 
 class RrStillDenoiser
 {
@@ -78,17 +79,20 @@ public:
     float blendMax = 0.0f;  // Keep detail: the raw accumulation mixed back in (sample_schedule::denoiseBlend)
     int   passes   = 1;     // Evaluations of an image, the first with the history reset
     int   autoDenoiseSpp = 0;  // Samples per pixel between the refine's evaluations (0 = the final image only)
+    uint32_t preset = rr_presets::kStillDefault;  // rrStillPreset, numbered as dlssPreset (rr_presets.hpp)
   };
 
   void init(Resources& resources);
   void deinit(Resources& resources);
   void registerParameters(SettingsRegistry* settings);
 
-  // The NGX context with DLSS-RR available, null without; `preset`: the moving view's RR preset
-  void setContext(NgxContext* ngx, uint32_t preset);
+  // The NGX context with DLSS-RR available, null without
+  void setContext(NgxContext* ngx) { m_ngx = ngx; }
 
   // The setting, whether NGX is up or not
   bool isWanted() const { return m_settings.enable; }
+  // rrStillPreset, as set: a change is a new still (the feature is made again with it)
+  uint32_t presetSetting() const { return m_settings.preset; }
   // On, and NGX can run it
   bool isEnabled() const { return m_settings.enable && m_ngx != nullptr; }
   // The final image of `samples` per pixel is still to be evaluated, and can be: the feature made, the
@@ -140,8 +144,7 @@ private:
 
   Settings          m_settings{};
   NgxContext*       m_ngx    = nullptr;
-  uint32_t          m_preset = 0;
-  DlssFeature       m_feature{DlssFeature::Kind::RR};
+  DlssFeature      m_feature{DlssFeature::Kind::RR};
   bool              m_featureCreated = false;
   VkExtent2D        m_featureSize{};
   uint32_t          m_featurePreset = 0;
