@@ -101,7 +101,7 @@ CloudAirStretch cloudAirStretch(SkyAtmosphereParameters atmosphere,
     const float  muSun            = dot(p, sunDirection) / r;
     const float3 sunTransmittance = GetTransmittanceToSun(atmosphere, transmittanceTexture, r, muSun);
     const float3 sunSource = atmosphere.solarIrradiance * sunTransmittance * (rayleighScatter * rayleighPhase + mieScatter * miePhase);
-    const float3 skySource = (rayleighScatter + mieScatter) * GetIrradiance(atmosphere, irradianceTexture, r, muSun) * (1.0F / (4.0F * M_PI));
+    const float3 skySource = (rayleighScatter + mieScatter) * aerialSkyLight(atmosphere, irradianceTexture, r, muSun, sunTransmittance);
 
     const float3 stepTransmittance = exp(-extinction * stepLength);
     const float3 stepFraction      = throughput * (float3(1.0F) - stepTransmittance) / extinction;

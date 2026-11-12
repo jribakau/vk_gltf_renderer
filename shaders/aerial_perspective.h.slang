@@ -66,8 +66,9 @@ bool hasAerialPerspective(SceneFrameInfo* frameInfo)
 //
 // Multiple scattering is the one approximation: Bruneton's tables integrate it along whole rays and
 // cannot hand back the local source term a march needs, so it comes from the irradiance table as an
-// isotropic term. Over the few kilometres this models, it is a small part of a small term -- and it
-// is smooth, which the thing it replaces was not.
+// isotropic term (aerialSkyLight): the sky above and the ground's light below. In clear air the
+// sun's single scattering is most of the light; in a mist the sun is spent within the first
+// kilometre and this is nearly all of it.
 //
 // **The sun's share, and one point on it.** Every point of the march is treated as sunlit, with only
 // the planet's shadow in it: the atmosphere knows nothing of the scene. So the sun's single
@@ -77,6 +78,23 @@ bool hasAerialPerspective(SceneFrameInfo* frameInfo)
 // traces scene visibility from that point to the sun (the path tracer) replaces `sunInScatter` by
 // `visibility * sunEstimate`, which is unbiased and converges as samples accumulate. The
 // multiple-scattering term is light from the whole sky, not from the sun, and is left as it is.
+// The light at radius `r` coming to the air from every direction but the sun's own, per unit of its
+// scattering, for an isotropic phase: (1 / 4 pi) times its integral over the sphere. The sky above
+// is taken as even, of the radiance E / pi that gives the irradiance table's E on a level surface,
+// and so is the ground below, of what it reflects of the sky's light and the sun's (the
+// atmosphere's ground albedo, a backdrop's land's colour under one): each half the sphere,
+// (E + albedo (E + E_sun)) / 2 pi. E / 4 pi had been taken, half the sky and none of the ground: a
+// clear day's air is the sun's and didn't show it (the meadow's tree line within 0.001 of 255), and
+// in 5 km of visibility the tree line 260 m off came out at 0.05 of the screen, now 0.08 (2026-11-12).
+// Even, it has no glow toward the sun, which a hazy sky's light near it is: there the land's air stays
+// darker than the sky beside it (docs/sky.md, How much air).
+float3 aerialSkyLight(SkyAtmosphereParameters atmosphere, Sampler2D<float3> irradianceTexture, float r, float muSun, float3 sunTransmittance)
+{
+  const float3 sky         = GetIrradiance(atmosphere, irradianceTexture, r, muSun);
+  const float3 sunOnGround = atmosphere.solarIrradiance * sunTransmittance * max(muSun, 0.0F);
+  return (sky + atmosphere.groundAlbedo * (sky + sunOnGround)) * (1.0F / (2.0F * M_PI));
+}
+
 struct AerialMarch
 {
   float3 inScatter;      // everything the air adds, sun included
@@ -148,8 +166,7 @@ AerialMarch marchAerialPerspective(SkyAtmosphereParameters atmosphere,
 
     const float3 sunSource =
         atmosphere.solarIrradiance * sunTransmittance * (rayleighScatter * rayleighPhase + mieScatter * miePhase);
-    const float3 skySource =
-        (rayleighScatter + mieScatter) * GetIrradiance(atmosphere, irradianceTexture, r, muSun) * (1.0F / (4.0F * M_PI));
+    const float3 skySource = (rayleighScatter + mieScatter) * aerialSkyLight(atmosphere, irradianceTexture, r, muSun, sunTransmittance);
 
     // Integrated over the step in closed form, assuming the source is constant across it: the
     // energy-conserving form, which does not lose light as the step count drops.
