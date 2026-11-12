@@ -503,7 +503,7 @@ BsdfEvaluateData evaluateSurfaceForLight(PbrMaterial pbrMat, float3 k1, float3 t
   else
     bsdfEvaluate(evalData, pbrMat);
   if(exitFresnelEta > 0.0F)
-    evalData.bsdf_diffuse *= diffuseExitFresnelWeight(dot(pbrMat.N, toLight), exitFresnelEta);
+    evalData.bsdf_diffuse *= softenedExitFresnelWeight(dot(pbrMat.N, toLight), dot(pbrMat.Ns, toLight), pbrMat.diffuseSoftening, exitFresnelEta);
   return evalData;
 }
 
@@ -1051,7 +1051,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         previewSkinAlpha    = faceOn ? faceOnSingleScatterAlbedo(A) : multiToSingleScatterAlbedo(A, 0.0F);
         if(frameInfo->skinView != 0)
         {
-          pbrMat.baseColor = skinViewAlbedo(A, previewSkinAlpha, dot(-ray.Direction, pbrMat.N), eta, faceOn);
+          pbrMat.baseColor = softenedSkinViewAlbedo(A, previewSkinAlpha, dot(-ray.Direction, pbrMat.N), dot(-ray.Direction, pbrMat.Ns),
+                                                    pbrMat.diffuseSoftening, eta, faceOn);
           if(hasFlag(pushConst.flags, PathtracerFlags::ePtExitFresnel))
             exitFresnelEta = eta;
         }
@@ -1848,7 +1849,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // bsdfEvaluateSimple(evalData, pbrMat);
 
         if(exitFresnelEta > 0.0F)
-          evalData.bsdf_diffuse *= diffuseExitFresnelWeight(dot(pbrMat.N, directLight.direction), exitFresnelEta);
+          evalData.bsdf_diffuse *= softenedExitFresnelWeight(dot(pbrMat.N, directLight.direction), dot(pbrMat.Ns, directLight.direction),
+                                                            pbrMat.diffuseSoftening, exitFresnelEta);
       }
 
       // Some lobe can scatter toward the light (in every mode): the shadow ray is worth tracing. Its
@@ -1969,7 +1971,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // diffuse lobe's alone (the sample's weight is its lobe's, under the mixture too): the preview's
       // skin keeps its specular lobes beside it.
       if(exitFresnelEta > 0.0F && sampleData.event_type != BSDF_EVENT_ABSORB && sampledLobe == LOBE_DIFFUSE_REFLECTION)
-        sampleData.bsdf_over_pdf *= diffuseExitFresnelWeight(dot(pbrMat.N, sampleData.k2), exitFresnelEta);
+        sampleData.bsdf_over_pdf *= softenedExitFresnelWeight(dot(pbrMat.N, sampleData.k2), dot(pbrMat.Ns, sampleData.k2), pbrMat.diffuseSoftening,
+                                                               exitFresnelEta);
 
       // Update the pt.throughput
       pt.throughput *= sampleData.bsdf_over_pdf;

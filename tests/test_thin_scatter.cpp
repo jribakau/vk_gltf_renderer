@@ -9,6 +9,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+
 using namespace glm;
 #include <nvshaders/slang_types.h>
 using namespace shaderio;
@@ -103,4 +105,29 @@ TEST(ThinScatter, TheExitFresnelMovesLightWithoutAddingAny)
   // Skin at 1.4: head-on 5% more (Ft 0.972 over c 0.922)
   EXPECT_NEAR(diffuseExitFresnelWeight(1.0f, 1.4f), 1.054f, 0.005f);
   EXPECT_NEAR(diffuseExitFresnelWeight(1.0f, 1.0f), 1.0f, 0.02f);
+}
+
+// The preview's softened diffuse pays the boundary's exit Fresnel per part: the part about the smooth
+// normal at its cosine, the part about the map's at the map's. Two bumps leaning toward and away from a
+// light by the same angle then differ only by their own share, and their mean isn't pulled down by the
+// steeper one's Fresnel (faceTest's cheek read 5% dark at the preview with the map's for the whole lobe).
+TEST(ThinScatter, ASoftenedLobePaysTheExitFresnelPerPart)
+{
+  const float eta = 1.4f;
+  // at s = 0 the map's weight, at s = 1 the smooth normal's
+  expectNear(softenedExitFresnelWeight(0.3f, 0.9f, float3(0.0f), eta), float3(diffuseExitFresnelWeight(0.3f, eta)));
+  expectNear(softenedExitFresnelWeight(0.3f, 0.9f, float3(1.0f), eta), float3(diffuseExitFresnelWeight(0.9f, eta)));
+  // in between, between the two, each channel by its own share
+  const float3 w = softenedExitFresnelWeight(0.3f, 0.9f, float3(0.9f, 0.6f, 0.2f), eta);
+  EXPECT_GT(w.x, w.y);
+  EXPECT_GT(w.y, w.z);
+  EXPECT_GT(w.z, diffuseExitFresnelWeight(0.3f, eta));
+  EXPECT_LT(w.x, diffuseExitFresnelWeight(0.9f, eta));
+  // light behind the map's normal: the smooth part alone
+  expectNear(softenedExitFresnelWeight(-0.2f, 0.5f, float3(0.5f), eta), float3(diffuseExitFresnelWeight(0.5f, eta)));
+  // a bump leaning away from a grazing light: softened, its weight is nearer the smooth normal's
+  const float flat    = diffuseExitFresnelWeight(0.35f, eta);
+  const float leaning = diffuseExitFresnelWeight(0.1f, eta);
+  const float soft    = softenedExitFresnelWeight(0.1f, 0.35f, float3(0.9f), eta).x;
+  EXPECT_LT(std::abs(soft - flat), 0.25f * std::abs(leaning - flat));
 }

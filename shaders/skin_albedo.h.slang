@@ -87,4 +87,13 @@ float3 skinViewAlbedo(float3 A, float3 alpha, float cosView, float eta, bool fac
   return atView;
 }
 
+// The same for the preview's softened diffuse (PbrMaterial::diffuseSoftening `s`, per channel): the
+// share s the walk's spread evens out sees the view at the smooth normal's cosine, the rest at the map's.
+// At the map's alone every bump took its own colour from the angle it leans to the camera, and the
+// relief the softening evened out came back.
+float3 softenedSkinViewAlbedo(float3 A, float3 alpha, float cosMap, float cosSmooth, float3 s, float eta, bool faceOn)
+{
+  return lerp(skinViewAlbedo(A, alpha, cosMap, eta, faceOn), skinViewAlbedo(A, alpha, cosSmooth, eta, faceOn), s);
+}
+
 #endif

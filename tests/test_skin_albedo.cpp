@@ -504,3 +504,26 @@ TEST(SkinViewAlbedo, DirectionAveragedItIsTheWalksOwn)
     EXPECT_GT(head, 0.80f * a) << a;
   }
 }
+
+// The preview's softened diffuse sees the camera at the smooth normal's angle by the share the walk's
+// spread evens out: bumps that lean either way take nearly the smooth surface's colour, not each its own
+TEST(SkinViewAlbedo, TheSoftenedShareSeesTheViewAtTheSmoothNormal)
+{
+  const float3 A(0.6f, 0.35f, 0.25f);
+  const float3 alpha = faceOnSingleScatterAlbedo(A);
+  const float  eta   = 1.4f;
+  const float3 none(0.0f), all(1.0f), skin(0.97f, 0.9f, 0.7f);
+  const float3 atMap    = skinViewAlbedo(A, alpha, 0.4f, eta, true);
+  const float3 atSmooth = skinViewAlbedo(A, alpha, 0.8f, eta, true);
+  for(int c = 0; c < 3; c++)
+  {
+    EXPECT_NEAR(softenedSkinViewAlbedo(A, alpha, 0.4f, 0.8f, none, eta, true)[c], atMap[c], 1e-6f);
+    EXPECT_NEAR(softenedSkinViewAlbedo(A, alpha, 0.4f, 0.8f, all, eta, true)[c], atSmooth[c], 1e-6f);
+  }
+  // two bumps at 0.6 and 0.95 about a smooth 0.8: their colours far closer together softened
+  const float3 a = softenedSkinViewAlbedo(A, alpha, 0.6f, 0.8f, skin, eta, true);
+  const float3 b = softenedSkinViewAlbedo(A, alpha, 0.95f, 0.8f, skin, eta, true);
+  const float3 a0 = skinViewAlbedo(A, alpha, 0.6f, eta, true), b0 = skinViewAlbedo(A, alpha, 0.95f, eta, true);
+  for(int c = 0; c < 3; c++)
+    EXPECT_LT(std::abs(a[c] - b[c]), 0.35f * std::abs(a0[c] - b0[c])) << c;
+}

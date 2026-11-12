@@ -487,7 +487,13 @@ Some things about the transport are worth knowing before touching it:
   from head-on, within 0.3% (`SkinViewAlbedo.*`). On the light's side the walk leaves through a
   Lambertian exit that pays the boundary's Fresnel, so the preview's skin takes `exitFresnelEta` too:
   on the light sample's diffuse, and on a continuation the diffuse lobe drew. Over a sky that factor
-  averages to 1; under one light it runs from 1.05 head-on to 0.44 at 85°.
+  averages to 1; under one light it runs from 1.05 head-on to 0.44 at 85°. Both follow the
+  preview's softened diffuse (`diffuseSoftening`): each channel's share s about the smooth normal
+  takes the view and the light at the smooth normal's cosine, the rest at the map's
+  (`softenedSkinViewAlbedo`, `softenedExitFresnelWeight`). Taken at the map's normal alone, every bump
+  took its own colour and exit weight again, and the relief the softening evens out came back,
+  stronger than the walk's and darker on average (faceTest's cheek close up, 2026-11-12: relief 0.037
+  against the walk's 0.031, brightness 0.953; with the split 0.028 and 0.964).
   - **Measured** on a slab under one directional light (scratch `skin_angles.py`), the walk against
     the preview. Before: 4-6% above head-on and up to 17% at a 70° view, by Ft/c̄ in the light's
     angle. After, with skin's specular: within 0-2% to a 45° view.

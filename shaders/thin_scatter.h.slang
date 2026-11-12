@@ -105,4 +105,23 @@ float diffuseExitFresnelWeight(float cosTheta, float eta)
   return (1.0F - dielectricFresnelOutside(cosTheta, eta)) / diffuseExitTransmittance(eta);
 }
 
+// The same for a diffuse lobe softened about the smooth normal (PbrMaterial::diffuseSoftening `s`, per
+// channel; bsdf_functions' brdf_diffuse_softened): of its part about the map's normal at `cosMap` and
+// its part about the smooth one at `cosSmooth`, each pays the boundary at its own cosine, so this is
+// their weights' mean by what each contributes. At s = 0 it is the map's alone. Taken at the map's
+// normal for the whole lobe, the weight put the bumps the softening evens out back in, the more the
+// steeper they lean from the light, and the skin's mean darker with them (faceTest's cheek at the
+// preview: 0.95 of the walk's, its relief stronger; docs/developer.md, the thin preview's skin).
+float3 softenedExitFresnelWeight(float cosMap, float cosSmooth, float3 s, float eta)
+{
+  const float  cm = cosMap > 0.0F ? cosMap : 0.0F;
+  const float  cs = cosSmooth > 0.0F ? cosSmooth : 0.0F;
+  const float3 a  = (float3(1.0F) - s) * cm;
+  const float3 b  = s * cs;
+  const float3 n  = a * diffuseExitFresnelWeight(cm, eta) + b * diffuseExitFresnelWeight(cs, eta);
+  const float3 d  = a + b;
+  const float  w  = diffuseExitFresnelWeight(cm, eta);
+  return float3(d.x > 0.0F ? n.x / d.x : w, d.y > 0.0F ? n.y / d.y : w, d.z > 0.0F ? n.z / d.z : w);
+}
+
 #endif  // THIN_SCATTER_H_SLANG
