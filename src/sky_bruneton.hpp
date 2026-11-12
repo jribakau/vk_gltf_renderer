@@ -188,7 +188,7 @@ private:
   void reportPassTimings(Resources& res) const;
 
   // Per-pass GPU timing, active only while the blocking precompute() is running.
-  static constexpr uint32_t               kMaxTimestamps = 48;  // 4 + 3 a bounce past the first, to kMostOrders
+  static constexpr uint32_t               kMaxTimestamps = 64;  // 4 + 3 a bounce past the first, to sky_visibility::kMostOrders
   VkQueryPool                             m_timingPool{VK_NULL_HANDLE};
   std::array<const char*, kMaxTimestamps> m_timingLabels{};
   uint32_t                                m_timingCount{0};

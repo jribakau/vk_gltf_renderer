@@ -51,11 +51,11 @@ inline float aerosolScale(float visibilityKm, float rayleighGreen, float aerosol
 // past kClearDepth, to kMostOrders. A haze scatters what it meets and absorbs next to nothing, so its
 // light is light bounced about as many times as the depths it crossed: a 2 km mist cut at four
 // bounces was dim and brown toward the sun and violet away from it, at eleven white. Earth's own air
-// is 0.19 deep and keeps four; 15 km of visibility takes 5, 8 km 6, 5 km 7, 2 km 11. A bounce costs
-// some 15 ms of the precompute.
+// is 0.19 deep and keeps four; 15 km of visibility takes 5, 8 km 6, 5 km 7, 2 km 11, a 1 km fog 18
+// (the lighting's least). A bounce costs some 10 ms of the precompute, 18 about 200 ms.
 inline constexpr float kClearDepth     = 0.25F;
 inline constexpr float kOrdersPerDepth = 3.0F;
-inline constexpr int   kMostOrders     = 12;
+inline constexpr int   kMostOrders     = 20;
 
 inline int scatteringOrders(float depth, int clearOrders)
 {

@@ -1244,6 +1244,7 @@ TEST(SkyVisibility, AHazierAirIsBouncedMoreTimes)
   EXPECT_EQ(ordersAt(8.0F), 6);
   EXPECT_EQ(ordersAt(5.0F), 7);
   EXPECT_EQ(ordersAt(2.0F), 11);
+  EXPECT_EQ(ordersAt(1.0F), 18);
   EXPECT_EQ(ordersAt(0.5F), V::kMostOrders);
   // never fewer than the clear air's, whatever it asks
   EXPECT_EQ(V::scatteringOrders(0.0F, 4), 4);

@@ -148,7 +148,7 @@ Two settings say how much of it there is, and they are not the same thing:
   The sky and the air before a surface are one model, so a hazier air whitens the horizon, widens
   the glow round the sun, dims the sun and veils the distance together. It rebuilds the tables.
   Earth's own air is about 49 km by this measure. Down to some 8 km it reads as a summer haze, and
-  under 5 as a mist (the app's Air slider stops at 2). Clearer air than Earth's is less of its
+  under 5 as a mist, at 1 a fog (the app's Air slider stops there). Clearer air than Earth's is less of its
   aerosol; hazier air is its own and the rest water haze, which scatters 99% of what it meets
   (`applyAerosolScale`, `kAddedHazeAlbedo`): Earth's aerosol scaled up was dust absorbing a tenth, through kilometres of
   which the light went brown. The air before a surface or a cloud is marched, the sky's light in it
@@ -174,7 +174,8 @@ Two settings say how much of it there is, and they are not the same thing:
   The directions' sum of each phase function is also made exactly 1. Under a 60° sun the ground's
   light at 2 km is now 1.14 times a clear day's (the most any air could give over a ground of albedo
   0.2 is 1.34), 0.75 under a 25° sun; a clear day's sky is 5% darker toward the sun, its land within
-  1%. Under 2 km twelve bounces are too few and the sky goes dim, so the app's slider stops at 2.
+  1%. A 1 km fog takes 18 bounces, a precompute of some 200 ms; the lighting goes no lower, and the
+  app's slider stops there.
 - **`atmoAerialPerspectiveScale`** is how many metres of air a scene unit counts for between the
   eye and a surface, and it leaves the sky alone. A procedural backdrop sets it (`Spec::air`,
   `fv_backdrop.hpp`): its land is some hundreds of metres to its horizon, and through that much
