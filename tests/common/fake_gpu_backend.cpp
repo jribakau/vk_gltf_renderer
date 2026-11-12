@@ -31,6 +31,10 @@
 #include "shaders/unit_vector_pack.h.slang"
 #include "skin_reference.hpp"
 
+#include <array>
+
+#include <figure/subdiv/hd_edits.hpp>
+
 #include <nvutils/offset_allocator.hpp>
 
 namespace rs {
@@ -711,7 +715,7 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
   for(const BufferRange* r : {&d.basePositions, &d.baseNormals, &d.baseTangents, &d.outPositions, &d.outNormals, &d.outTangents, &d.positionDeltas,
                               &d.normalDeltas, &d.tangentDeltas, &d.morphWeights, &d.joints, &d.weights, &d.jointMatrices, &d.normalMatrices, &d.joints1,
                               &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs, &d.frameX, &d.frameY,
-                              &d.outUnit})
+                              &d.outUnit, &d.hdStart, &d.hdFrame, &d.hdOffsets, &d.hdCage, &d.hdFrameVertices})
     if(const auto it = m_buffers.find(r->buffer.value); it != m_buffers.end() && it->second.noMemory)
       return;  // as the Vulkan backend: a pass over a buffer that found no memory does nothing
   m_deforms.push_back(d);
@@ -846,6 +850,24 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
       else
         out.set(r, v);
     };
+    // a stencil level's HD edits (all five tables, as the Vulkan backend takes them), each read as far as
+    // its entries name: the frames' vertices up to the largest frame named, the cage up to the largest vertex
+    const bool hdGiven = stencil && start && d.hdStart.buffer && d.hdFrame.buffer && d.hdOffsets.buffer && d.hdCage.buffer && d.hdFrameVertices.buffer;
+    const Span<uint32_t>  hdStart{hdGiven ? range(d.hdStart, 4, n + 1, "HD row starts", false) : nullptr, hdGiven ? n + 1 : 0};
+    const uint64_t        hdEdits = hdStart ? hdStart.get(n) : 0;
+    const Span<uint32_t>  hdFrame{hdStart ? range(d.hdFrame, 4, hdEdits, "HD edit frames", false) : nullptr, hdEdits};
+    const Span<glm::vec3> hdOffsets{hdStart ? range(d.hdOffsets, 12, hdEdits, "HD edit offsets", false) : nullptr, hdEdits};
+    uint64_t              hdFrames = 0;
+    for(uint64_t k = 0; hdFrame && k < hdEdits; k++)
+      hdFrames = std::max<uint64_t>(hdFrames, uint64_t(hdFrame.get(k)) + 1);
+    const Span<int32_t> hdVerts{hdFrames ? range(d.hdFrameVertices, 4, hdFrames * 5, "HD frame vertices", false) : nullptr, hdFrames * 5};
+    int64_t             hdCageCount = 0;
+    for(uint64_t k = 0; hdVerts && k < hdFrames * 5; k++)
+      hdCageCount = std::max<int64_t>(hdCageCount, int64_t(hdVerts.get(k)) + 1);
+    const std::byte* hdCageBytes = hdCageCount ? range(d.hdCage, 12, uint64_t(hdCageCount), "HD cage", false) : nullptr;
+    const std::span<const float> hdCage(reinterpret_cast<const float*>(hdCageBytes), hdCageBytes ? size_t(hdCageCount) * 3 : 0);
+    if(hdGiven && hdEdits && (!hdFrame || !hdOffsets || !hdVerts || hdCage.empty()))
+      ok = false;
     if(!ok || !base || !columns || !(out || units) || (!stencil && (!start || !tris)))
     {
       if(ok)
@@ -896,6 +918,15 @@ void FakeGpuBackend::dispatchDeform(const DeformDispatch& d)
           }
         }
         sum += offset;
+      }
+      for(uint32_t k = hdStart ? hdStart.get(r) : 0; hdStart && k < hdStart.get(r + 1) && k < hdEdits; k++)
+      {
+        int32_t v[5];
+        for(int i = 0; i < 5; i++)
+          v[i] = hdVerts.get(uint64_t(hdFrame.get(k)) * 5 + i);
+        const glm::vec3            o    = hdOffsets.get(k);
+        const std::array<float, 3> move = fv::subdiv::hdMove(hdCage, v, &o.x);
+        sum += glm::vec3(move[0], move[1], move[2]);
       }
       const float l = glm::length(sum);
       put(r, stencil ? sum : l > 0.f ? sum / l : glm::vec3(0.f));

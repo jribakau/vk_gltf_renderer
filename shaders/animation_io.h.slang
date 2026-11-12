@@ -86,6 +86,14 @@ struct StencilPushConstant
   // set: each row's value goes here as a unit direction (packUnitVector), not into outValues: the drawn
   // normals gathered from the refined ones
   uint*   outUnit;
+  // DAZ HD detail (figure/subdiv/hd_edits.hpp): row r's edits are hdStart[r] .. hdStart[r + 1], each an
+  // offset in the frame of the cage face corner hdFrame names, made from the five cage vertices
+  // hdFrameVertices lists for it (in hdCage, the cage the levels are refined from). Null: none.
+  uint*   hdStart;
+  uint*   hdFrame;
+  float3* hdOffsets;
+  float3* hdCage;
+  int*    hdFrameVertices;
   uint    rowCount;
   uint    sourceCount;
 };

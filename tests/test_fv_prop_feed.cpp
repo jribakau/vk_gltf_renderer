@@ -368,6 +368,96 @@ TEST(FvPropFeed, ASubdividedFigureIsRefinedFromItsCage)
 // CPU's drawn vertices left as they were; the GPU's are what the CPU makes of the dial (a second box
 // dialled the same way); the CPU's stay as they were at settled() and catch up at catchUp() (an
 // export's).
+// A refined mesh's HD detail (MorphSet::hdDetail, here made by hand) is fed with its cage and added as
+// the GPU refines it: the drawn vertices are the CPU reference's, a new weight moves them, and none
+// leaves the plain refinement
+TEST(FvPropFeed, AFiguresHdDetailIsAddedAsItsCageIsRefined)
+{
+  const auto                box = loadBox();
+  rs::RetainedScene         scene;
+  rs::FakeGpuBackend        gpu(2);
+  rs::Residency             residency(gpu);
+  fv::PropFeed              feed(scene);
+  const size_t              meshes = box->loaded.scene.meshes.size();
+  std::vector<std::unique_ptr<fv::subdiv::HdMixer>>        mixers(meshes);
+  std::vector<std::shared_ptr<const fv::subdiv::HdTables>> tables(meshes);
+  auto edits = std::make_shared<fv::subdiv::LevelEdits>(1);
+  (*edits)[0] = {{0, 0, 2, {0.05f, 0.1f, -0.02f}}, {1, 1, 0, {0.f, 0.08f, 0.f}}, {1, 2, 3, {-0.03f, 0.f, 0.04f}}};
+  const auto mix = [&](float w) {
+    for(size_t mi = 0; mi < meshes; mi++)
+    {
+      const fv::mesh::BuiltMesh& geo = *box->loaded.scene.meshes[mi].geo;
+      if(!geo.refinement || geo.cagePolyStart.size() < 3)
+        continue;
+      if(!mixers[mi])
+        mixers[mi] = std::make_unique<fv::subdiv::HdMixer>(geo.refinement, geo.cagePolyStart, geo.cagePolyVerts);
+      const fv::subdiv::HdMixer::Weighted one[] = {{edits, w}};
+      tables[mi]                               = mixers[mi]->mix(one);
+    }
+  };
+  mix(1.f);
+  std::vector<fv::PropSpec> props(1);
+  props[0] = {.id = "p:1", .number = 1, .name = "Box", .figure = &box->loaded.scene, .figureRoot = box->loaded.root};
+  props[0].figureCageOf = [&](int mesh, std::vector<float>& scratch) { return box->morphs->morphedCageView(mesh, scratch); };
+  props[0].figureHdOf   = [&](int mesh) { return tables[size_t(mesh)]; };
+  feed.sync(props);
+  residency.replace(scene);
+  fv::FigureFeed& figure = *feed.fed("p:1")->figure;
+
+  // the drawn vertices against the CPU reference with the tables as they are now
+  const auto check = [&](const char* when) {
+    for(const std::string& p : rs::checkResidency(scene, residency, gpu))
+      ADD_FAILURE() << when << ": " << p;
+    size_t checked = 0;
+    for(size_t mi = 0; mi < meshes; mi++)
+    {
+      const rs::Residency::MeshGpu* mesh = residency.meshGpu(figure.meshOf(int(mi)));
+      if(!mesh || !mesh->refine)
+        continue;
+      const fv::mesh::BuiltMesh& geo  = *box->loaded.scene.meshes[mi].geo;
+      const std::vector<float>   cage = box->morphs->morphedCage(int(mi));
+      const std::vector<float>   want = fv::subdiv::refineWithTables(*geo.refinement, cage, tables[mi].get());
+      const DrawnBuffers         drawnNow = drawnBuffers(box->loaded.scene, figure, residency, int(mi));
+      const size_t               n        = geo.renderIndex.size();
+      std::vector<glm::vec3>     positions(n);
+      std::memcpy(positions.data(), gpu.bytesAt(gpu.bufferAddress(drawnNow.positions), n * 12).data(), n * 12);
+      for(size_t v = 0; v < n; v++)
+        ASSERT_LT(glm::distance(positions[v], glm::make_vec3(&want[size_t(geo.renderIndex[v]) * 3])), 1e-4f)
+            << when << ": mesh " << mi << " vertex " << v;
+      checked++;
+    }
+    EXPECT_GT(checked, 0u) << when;
+  };
+  check("fed");
+  size_t withHd = 0;
+  for(size_t mi = 0; mi < meshes; mi++)
+    if(const rs::Residency::MeshGpu* mesh = residency.meshGpu(figure.meshOf(int(mi))); mesh && mesh->refine && mesh->refine->hdOffsets)
+      withHd++;
+  ASSERT_GT(withHd, 0u) << "no mesh took its HD detail: the check above compared plain refinements";
+  const auto refined = [&] {
+    std::vector<int> all;
+    for(size_t mi = 0; mi < meshes; mi++)
+      if(figure.refines(int(mi)))
+        all.push_back(int(mi));
+    return all;
+  };
+
+  mix(-0.5f);
+  EXPECT_TRUE(figure.syncCages(box->loaded.scene, refined()));
+  gpu.beginFrame();
+  residency.sync(scene);
+  check("weighed again");
+
+  std::fill(tables.begin(), tables.end(), nullptr);
+  EXPECT_TRUE(figure.syncCages(box->loaded.scene, refined()));
+  gpu.beginFrame();
+  residency.sync(scene);
+  check("dropped");
+  for(size_t mi = 0; mi < meshes; mi++)
+    if(const rs::Residency::MeshGpu* mesh = residency.meshGpu(figure.meshOf(int(mi))); mesh && mesh->refine)
+      EXPECT_FALSE(mesh->refine->hdOffsets) << "mesh " << mi;
+}
+
 TEST(FvPropFeed, ADialMovesARefinedFiguresCageAlone)
 {
   const auto                box = loadBox(), reference = loadBox();

@@ -113,6 +113,26 @@ std::array<float, 9> frameOf(std::span<const float> positions, const FrameVertic
   return {float(x[0]), float(x[1]), float(x[2]), float(nrm[0]), float(nrm[1]), float(nrm[2]), float(-y[0]), float(-y[1]), float(-y[2])};
 }
 
+std::array<float, 3> hdMove(std::span<const float> cage, const int32_t* v, const float* offset)
+{
+  using F3        = std::array<float, 3>;
+  const auto p    = [&](int i) { return F3{cage[size_t(v[i]) * 3], cage[size_t(v[i]) * 3 + 1], cage[size_t(v[i]) * 3 + 2]}; };
+  const auto diff = [](const F3& a, const F3& b) { return F3{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
+  const auto crs  = [](const F3& a, const F3& b) {
+    return F3{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+  };
+  const auto safe = [](const F3& a) {
+    const float l = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    return l > 0.f ? F3{a[0] / l, a[1] / l, a[2] / l} : F3{0.f, 0.f, 0.f};
+  };
+  const F3 p0 = p(0);
+  const F3 n  = safe(crs(diff(p(1), p0), diff(p(2), p0)));
+  const F3 x  = safe(diff(p(4), p(3)));
+  const F3 y  = safe(crs(n, x));
+  return {x[0] * offset[0] + n[0] * offset[1] - y[0] * offset[2], x[1] * offset[0] + n[1] * offset[1] - y[1] * offset[2],
+          x[2] * offset[0] + n[2] * offset[1] - y[2] * offset[2]};
+}
+
 std::array<float, 9> cornerFrame(std::span<const float> cagePositions, std::span<const int32_t> faceStart,
                                  std::span<const int32_t> faceVerts, std::span<const int32_t> cornerFace, uint32_t faceCorner)
 {

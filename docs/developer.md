@@ -1296,6 +1296,16 @@ buffer the size of the largest (`m_chainScratch`), let go of after 600 idle fram
 cage point, which the last stencil level reads (`frameX`, `frameY` in `stencil.comp.slang`). A catch-up
 of the CPU's drawn vertices (`MeshChange::caughtUp`) is no reason for dForce or the collider to run again.
 
+DAZ HD morphs (a morph's `.dhdm` detail, such as Genesis 9's FACS Details wrinkles) ride on the same
+chain. `figure/dson/dhdm` reads the file into the morph's target; a cage-only mesh's flush mixes its
+active targets' edits by weight (`subdiv::HdMixer`, `MorphSet::hdDetail`) into tables per level: each
+row's edits, an offset in the frame of a cage face corner. The feed hands them over with the cage
+(`RetainedScene::setMeshHd`), and each stencil level adds its rows' edits, the frames made from the
+cage the chain refines, so the detail turns with the pose as DAZ Studio's does (`hdStart` .. `hdFrameVertices`
+in `stencil.comp.slang`). Detail at levels finer than the figure's subdivision is left out. The format
+and the frame are `figure/subdiv/hd_edits.hpp`'s; `subdiv::hdMove` is the shader's arithmetic, which the
+fake backend and the oracle share.
+
 Such a mesh holds nothing the route it doesn't take would read: no positions, normals or tangents of
 its own, and no skin on its drawn vertices (`MeshGpu::hasBase`). They come, refined once then, when
 something needs them (`Residency::ensureBase`): a static draw of the mesh, or a drawer that can't pose,

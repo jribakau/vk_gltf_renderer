@@ -78,6 +78,11 @@ FrameVertices frameVertices(std::span<const int32_t> faceStart, std::span<const 
 // The frame of those five points of `positions` (three floats a vertex): cornerFrame's.
 std::array<float, 9> frameOf(std::span<const float> positions, const FrameVertices& v);
 
+// One edit's move as the GPU makes it (shaders/stencil.comp.slang), in floats in the shader's order:
+// `offset` in the frame of the five cage vertices `v` names in `cage` (three floats a vertex). The
+// test backend and the residency oracle both run this.
+std::array<float, 3> hdMove(std::span<const float> cage, const int32_t* v, const float* offset);
+
 // A mesh's HD edits as the GPU adds them (the stencil pass, shaders/stencil.comp.slang): per level,
 // each row's edits (start per row of the level, plus one), each naming a frame and an offset in it;
 // the frames by their five cage vertices.

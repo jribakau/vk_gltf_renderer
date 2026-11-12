@@ -910,6 +910,8 @@ void FigureFeed::syncMeshes(const SceneGraph& figure, const build::Drawing& draw
       }
       oldMeshes.push_back(f.id);
       f.id            = m_scene.addMesh(std::move(r));
+      if(f.refine && m_options.hdOf)
+        m_scene.setMeshHd(f.id, m_options.hdOf(int(mi)));
       f.geo           = m.geo;
       f.hidden        = m.geo->hiddenPolys;
       f.flipV         = flipV;
@@ -977,7 +979,11 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater)
   if(f.thin)
   {
     if(f.refine && m_options.cageOf)
+    {
       m_scene.setMeshCage(f.id, m_options.cageOf(int(&f - m_meshes.data()), m_cageScratch));
+      if(m_options.hdOf)
+        m_scene.setMeshHd(f.id, m_options.hdOf(int(&f - m_meshes.data())));
+    }
     return;
   }
   // the same triangles over vertices that moved
@@ -1000,7 +1006,11 @@ void FigureFeed::moveVertices(const Mesh& m, FedMesh& f, bool tangentsLater)
      && std::memcmp(had.normals.data(), normals.data(), normals.size() * sizeof(glm::vec3)) == 0 && (tangentsLater || !f.tangentsLate))
   {
     if(f.refine && m_options.cageOf)
+    {
       m_scene.setMeshCage(f.id, m_options.cageOf(int(&f - m_meshes.data()), m_cageScratch));
+      if(m_options.hdOf)
+        m_scene.setMeshHd(f.id, m_options.hdOf(int(&f - m_meshes.data())));
+    }
     return;
   }
   std::vector<glm::vec4> t;
@@ -1132,6 +1142,8 @@ bool FigureFeed::syncCages(const SceneGraph& figure, std::span<const int> meshes
     // the morphs' own cage, into the store's: no buffer made or freed on a dial's step
     if(m_options.cageOf)
       m_scene.setMeshCage(f.id, m_options.cageOf(mi, m_cageScratch));
+    if(m_options.hdOf)
+      m_scene.setMeshHd(f.id, m_options.hdOf(mi));
   }
   return all;
 }

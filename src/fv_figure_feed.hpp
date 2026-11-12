@@ -70,6 +70,9 @@ struct FigureFeedOptions
   // and normals from it, and with DAZ's order: its drawers skin the cage and refine the posed cage, so
   // its record carries the cage's influences too (daz-viewer docs/gpu-figures-plan.md F1, F4)
   std::function<std::span<const float>(int mesh, std::vector<float>& scratch)> cageOf;
+  // such a mesh's HD detail as its morphs have mixed it (MorphSet::hdDetail): fed with its cage, and the
+  // GPU adds it as it refines the cage. None: none
+  std::function<std::shared_ptr<const fv::subdiv::HdTables>(int mesh)> hdOf;
 };
 
 // What a mesh will hold once fed (scene_price.hpp), for a price before it is: the counts of the record

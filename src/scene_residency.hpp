@@ -219,6 +219,17 @@ public:
       BufferHandle       cage, drawnFrom, triangles, normalStart, normalTriangles, offsets;
       BufferHandle       tangentTriangles, tangentStart, tangentCorners;  // none: the CPU's tangents
       BufferHandle       displacement;  // MeshRecord::displacement; none: none
+      // MeshRecord::hd: its topology (the frames' five cage vertices, then each level's row starts and
+      // edit frames) and its offsets (each level's in turn), where each level's are in them, and the
+      // topology they hold (made again only when another comes). None: none
+      struct HdLevel
+      {
+        uint64_t start = 0, frame = 0, offsets = 0;  // bytes into hdTopology, hdTopology, hdOffsets
+        uint32_t edits = 0;
+      };
+      BufferHandle                                              hdTopology, hdOffsets;
+      std::vector<HdLevel>                                      hdLevels;
+      std::shared_ptr<const fv::subdiv::HdTables::Topology>    hdOf;
       std::vector<Level> levels;
       uint32_t           refinedCount = 0, triangleCount = 0, tangentTriangleCount = 0;
     };
@@ -587,6 +598,9 @@ private:
   // the refined meshes' displacements brought up to their records; returns the meshes whose
   // displacement moved, came or went (their drawers run again)
   std::set<MeshId> syncDisplacements(const RetainedScene& scene, const std::set<MeshId>& meshes);
+  // the refined meshes' HD detail brought up to their records; returns the meshes whose detail moved,
+  // came or went (their drawers run again, and an unposed base is refined again)
+  std::set<MeshId> syncHd(const RetainedScene& scene, const std::set<MeshId>& meshes);
   void             snapshotPrevPositions();
   void             syncDeforms(RetainedScene& scene, std::set<MeshId>& written, SyncResult& result);
   bool             meshInUse(MeshId id) const;
@@ -676,6 +690,9 @@ private:
   // a refined record's tables and working streams (MeshGpu::Refine), when its cage and drawn
   // vertices are the sizes its tables name
   void makeRefine(const MeshRecord& record, MeshGpu& gpu);
+  // A refined mesh's HD tables up to `record`'s: the topology made again when another came, the
+  // offsets each time; dropped when the record has none
+  void uploadHd(const MeshRecord& record, MeshGpu::Refine& r);
   // retires a refined mesh's tables and working streams
   void retireRefine(MeshGpu& gpu);
   // the refined meshes' positions and normals made from their uploaded cages: each level's stencils,

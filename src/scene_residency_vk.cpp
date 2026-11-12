@@ -398,7 +398,7 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
   for(const BufferRange* r : {&d.basePositions, &d.baseNormals, &d.baseTangents, &d.outPositions, &d.outNormals, &d.outTangents, &d.positionDeltas,
                               &d.normalDeltas, &d.tangentDeltas, &d.morphWeights, &d.joints, &d.weights, &d.jointMatrices, &d.normalMatrices, &d.joints1,
                               &d.weights1, &d.jointDualQuats, &d.dualQuatShares, &d.rowStart, &d.columns, &d.stencilWeights, &d.stencilOffsets, &d.triangles, &d.uvs, &d.frameX, &d.frameY,
-                              &d.outUnit})
+                              &d.outUnit, &d.hdStart, &d.hdFrame, &d.hdOffsets, &d.hdCage, &d.hdFrameVertices})
     if(auto it = r->buffer ? m_buffers.find(r->buffer.value) : m_buffers.end(); it != m_buffers.end() && !it->second.buffer.buffer)
       return;
   // a range's device address; null for none, as the shaders test
@@ -423,6 +423,15 @@ void VulkanGpuBackend::dispatchDeform(const DeformDispatch& d)
     pc.frameX      = reinterpret_cast<uint32_t*>(at(d.frameX));
     pc.frameY      = reinterpret_cast<uint32_t*>(at(d.frameY));
     pc.outUnit     = reinterpret_cast<uint32_t*>(at(d.outUnit));
+    // HD edits only with all their tables
+    if(d.hdStart.buffer && d.hdFrame.buffer && d.hdOffsets.buffer && d.hdCage.buffer && d.hdFrameVertices.buffer)
+    {
+      pc.hdStart         = reinterpret_cast<uint32_t*>(at(d.hdStart));
+      pc.hdFrame         = reinterpret_cast<uint32_t*>(at(d.hdFrame));
+      pc.hdOffsets       = reinterpret_cast<glm::vec3*>(at(d.hdOffsets));
+      pc.hdCage          = reinterpret_cast<glm::vec3*>(at(d.hdCage));
+      pc.hdFrameVertices = reinterpret_cast<int32_t*>(at(d.hdFrameVertices));
+    }
     pc.rowCount    = d.vertexCount;
     pc.sourceCount = d.sourceCount;
     vkCmdBindPipeline(m_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_deformPipelines.stencil);

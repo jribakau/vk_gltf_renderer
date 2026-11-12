@@ -268,6 +268,10 @@ struct DeformDispatch
   BufferRange uvs;  // float2
   // a stencil's rows as packed unit directions (the drawn normals), in place of outPositions
   BufferRange outUnit;
+  // a stencil level's HD edits (StencilPushConstant): per row starts (uint32, rows + 1), per edit its
+  // frame (uint32) and offset (float3); the cage the frames are made of (float3) and five cage
+  // vertices per frame (int32). None: none
+  BufferRange hdStart, hdFrame, hdOffsets, hdCage, hdFrameVertices;
   uint32_t    sourceCount = 0, triangleCount = 0;
 };
 // The packed normal matrices are glm::mat3 on the host and float3x3 in the shader: 36 bytes apart

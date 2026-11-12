@@ -36,6 +36,8 @@
 #include "shaders/gltf_scene_io.h.slang"
 #include "shaders/unit_vector_pack.h.slang"
 
+#include <figure/subdiv/hd_edits.hpp>
+
 namespace rs {
 
 namespace {
@@ -122,9 +124,25 @@ MeshRecord refinedBase(const MeshRecord& r, const std::vector<glm::vec4>* frameX
     out.normals.resize(r.vertexCount());
   const RefineTables&    t   = *r.refine;
   std::vector<glm::vec3> src = r.cage;
-  for(const RefineTables::Level& level : t.levels)
+  // a level's HD edits, each its offset in its frame of the cage the levels are made from, added after
+  // the row's sum and offset as stencil.comp.slang adds them (fv::subdiv::hdMove)
+  const auto addHd = [&](size_t k, std::vector<glm::vec3>& rows) {
+    const fv::subdiv::HdTables* hd = r.hd.get();
+    if(!hd || !hd->topology || k >= hd->topology->levels.size())
+      return;
+    const auto&                  level = hd->topology->levels[k];
+    const std::span<const float> cage(reinterpret_cast<const float*>(r.cage.data()), r.cage.size() * 3);
+    for(size_t row = 0; row < rows.size() && row + 1 < level.start.size(); row++)
+      for(uint32_t e = level.start[row]; e < level.start[row + 1]; e++)
+      {
+        const auto move = fv::subdiv::hdMove(cage, &hd->topology->frameVertices[size_t(level.frame[e]) * 5], &hd->offsets[k][size_t(e) * 3]);
+        rows[row] += glm::vec3(move[0], move[1], move[2]);
+      }
+  };
+  for(size_t li = 0; li < t.levels.size(); li++)
   {
-    std::vector<glm::vec3> dst(level.rows());
+    const RefineTables::Level& level = t.levels[li];
+    std::vector<glm::vec3>     dst(level.rows());
     for(uint32_t row = 0; row < level.rows(); row++)
     {
       glm::vec3 sum(0.f);
@@ -133,6 +151,8 @@ MeshRecord refinedBase(const MeshRecord& r, const std::vector<glm::vec4>* frameX
           sum += level.weights[k] * src[level.columns[k]];
       dst[row] = sum;
     }
+    if(li + 1 < t.levels.size())
+      addHd(li, dst);
     src = std::move(dst);
   }
   if(!t.offsets.empty() && t.offsets.size() == src.size())
@@ -153,6 +173,8 @@ MeshRecord refinedBase(const MeshRecord& r, const std::vector<glm::vec4>* frameX
       }
       src[v] += offset;
     }
+  if(!t.levels.empty())
+    addHd(t.levels.size() - 1, src);
   std::vector<glm::vec3> normals(src.size());
   const size_t           triangleCount = t.triangles.size() / 3;
   for(size_t v = 0; v < src.size(); v++)
@@ -524,6 +546,7 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       float pad = 0;
       for(const glm::vec3& o : t.offsets)
         pad = std::max(pad, glm::length(o));
+      pad += given->hd ? given->hd->reach : 0.f;  // as far as its HD edits can move a vertex
       for(uint32_t v : reads)
       {
         lo = glm::min(lo, given->cage[v] - pad);

@@ -5,13 +5,21 @@
 // given, is added to its sum (strand ribbons' widths and grown strands' shifts), turned as its first
 // column has turned when that is given: an offset is in the rest shape, and a posed cage is not.
 // With neither row starts nor columns, each row is its base element plus its offset (a posed cage's
-// displacement).
+// displacement). A level's HD edits, when given, are added last: DAZ HD morph detail, each offset in
+// the frame of a cage face corner made from the cage the level was refined from.
 
 #include "animation_io.h.slang"
 #include "unit_vector_pack.h.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<StencilPushConstant> pc;
+
+// the direction of v, or none for none
+float3 safeUnit(float3 v)
+{
+  float l = length(v);
+  return l > 0.0 ? v / l : float3(0);
+}
 
 // a row's value: as it is, or as a packed unit direction (the drawn normals, outUnit)
 void write(uint row, float3 value)
@@ -66,5 +74,18 @@ void main(uint3 tid: SV_DispatchThreadID)
     }
     sum += offset;
   }
+  // HD detail: each edit's offset in its cage face corner's frame (x toward the corner before, the
+  // face's normal, and their cross), as hdMove in figure/subdiv/hd_edits.hpp makes it
+  if(pc.hdStart != nullptr)
+    for(uint k = pc.hdStart[row]; k < pc.hdStart[row + 1]; ++k)
+    {
+      uint   f  = pc.hdFrame[k] * 5;
+      float3 p0 = pc.hdCage[pc.hdFrameVertices[f]];
+      float3 n  = safeUnit(cross(pc.hdCage[pc.hdFrameVertices[f + 1]] - p0, pc.hdCage[pc.hdFrameVertices[f + 2]] - p0));
+      float3 x  = safeUnit(pc.hdCage[pc.hdFrameVertices[f + 4]] - pc.hdCage[pc.hdFrameVertices[f + 3]]);
+      float3 y  = safeUnit(cross(n, x));
+      float3 o  = pc.hdOffsets[k];
+      sum += x * o.x + n * o.y - y * o.z;
+    }
   write(row, sum);
 }

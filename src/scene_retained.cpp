@@ -61,7 +61,7 @@ std::array<float, 2> ClipRecord::range() const
 
 bool SceneChanges::empty() const
 {
-  return !structure && transforms.empty() && visibility.empty() && morphWeights.empty() && meshes.empty() && displacements.empty()
+  return !structure && transforms.empty() && visibility.empty() && morphWeights.empty() && meshes.empty() && displacements.empty() && hd.empty()
          && materials.empty() && lights.empty() && skins.empty() && !features && !iesProfiles && !water;
 }
 
@@ -317,6 +317,29 @@ bool RetainedScene::setMeshDisplacement(MeshId id, std::span<const float> xyz)
     std::memcpy(d.data(), xyz.data(), bytes);
   }
   m_changes.displacements.insert(id);
+  return true;
+}
+
+bool RetainedScene::setMeshHd(MeshId id, std::shared_ptr<const fv::subdiv::HdTables> hd)
+{
+  assertOwner();
+  auto* r = m_meshes.get(id);
+  if(!r || !r->value.refine || r->value.hd == hd)
+    return false;
+  if(hd)
+  {
+    // the tables' rows are the refinement's, level for level
+    const RefineTables& t = *r->value.refine;
+    if(!hd->topology || hd->topology->levels.size() != t.levels.size() || hd->offsets.size() != t.levels.size())
+      return false;
+    for(size_t k = 0; k < t.levels.size(); k++)
+      if(hd->topology->levels[k].start.size() != size_t(t.levels[k].rows()) + 1
+         || hd->offsets[k].size() != hd->topology->levels[k].frame.size() * 3)
+        return false;
+  }
+  r->value.hd = std::move(hd);
+  m_changes.hd.insert(id);
+  m_boundsRevision++;  // the edits reach past the cage's hull
   return true;
 }
 

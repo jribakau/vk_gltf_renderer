@@ -556,7 +556,54 @@ void Residency::makeRefine(const MeshRecord& record, MeshGpu& gpu)
     r.tangentCorners       = table(t->tangentCorners, "tangent corners");
     r.tangentTriangleCount = uint32_t(t->tangentIndices.size() / 3);
   }
+  uploadHd(record, r);
   gpu.refine        = std::move(r);
+}
+
+void Residency::uploadHd(const MeshRecord& record, MeshGpu::Refine& r)
+{
+  const fv::subdiv::HdTables* hd = record.hd.get();
+  if(!hd || !hd->topology || hd->topology->levels.size() != r.levels.size())
+  {
+    retireBuffer(std::exchange(r.hdTopology, {}));
+    retireBuffer(std::exchange(r.hdOffsets, {}));
+    r.hdLevels.clear();
+    r.hdOf.reset();
+    return;
+  }
+  const fv::subdiv::HdTables::Topology& topo = *hd->topology;
+  if(r.hdOf != hd->topology)
+  {
+    // the frames' vertices, then each level's starts and frames, one block of 32-bit words
+    std::vector<uint32_t> words(topo.frameVertices.begin(), topo.frameVertices.end());
+    r.hdLevels.assign(topo.levels.size(), {});
+    for(size_t k = 0; k < topo.levels.size(); k++)
+    {
+      r.hdLevels[k].start = words.size() * sizeof(uint32_t);
+      words.insert(words.end(), topo.levels[k].start.begin(), topo.levels[k].start.end());
+      r.hdLevels[k].frame = words.size() * sizeof(uint32_t);
+      words.insert(words.end(), topo.levels[k].frame.begin(), topo.levels[k].frame.end());
+      r.hdLevels[k].edits = uint32_t(topo.levels[k].frame.size());
+    }
+    retireBuffer(r.hdTopology);
+    r.hdTopology = m_gpu.createBuffer({.size = words.size() * sizeof(uint32_t), .usage = eBufferStorage, .name = "HD edit topology", .mayFail = true});
+    m_gpu.upload(r.hdTopology, 0, bytesOf(words));
+    r.hdOf = hd->topology;
+  }
+  std::vector<float> offsets;
+  for(size_t k = 0; k < hd->offsets.size(); k++)
+  {
+    r.hdLevels[k].offsets = offsets.size() * sizeof(float);
+    offsets.insert(offsets.end(), hd->offsets[k].begin(), hd->offsets[k].end());
+  }
+  if(offsets.empty())
+    offsets.assign(3, 0.f);  // a buffer of no size is none
+  if(!r.hdOffsets || m_gpu.bufferSize(r.hdOffsets) != offsets.size() * sizeof(float))
+  {
+    retireBuffer(r.hdOffsets);
+    r.hdOffsets = m_gpu.createBuffer({.size = offsets.size() * sizeof(float), .usage = eBufferStorage, .name = "HD edit offsets", .mayFail = true});
+  }
+  m_gpu.upload(r.hdOffsets, 0, bytesOf(offsets));
 }
 
 void Residency::refineOnGpu(std::span<MeshGpu* const> meshes)
@@ -689,17 +736,24 @@ void Residency::refineChains(std::span<const RefineRun> runs)
       const MeshGpu::Refine::Level& l    = t.levels[i];
       const bool                    last = i + 1 == t.levels.size();
       const BufferRange             out  = take(uint64_t(l.rows) * sizeof(glm::vec3));
-      m_gpu.dispatchDeform({.kind           = DeformKind::eStencil,
-                            .vertexCount    = l.rows,
-                            .basePositions  = level,
-                            .outPositions   = out,
-                            .rowStart       = {l.start},
-                            .columns        = {l.columns},
-                            .stencilWeights = {l.weights},
-                            .stencilOffsets = {last ? t.offsets : BufferHandle{}},
-                            .frameX         = frameX,
-                            .frameY         = frameY,
-                            .sourceCount    = l.sourceCount});
+      // the level's HD edits, in frames of the cage it is made from (posed and displaced as it is)
+      const bool hd = t.hdTopology && t.hdOffsets && i < t.hdLevels.size() && t.hdLevels[i].edits;
+      m_gpu.dispatchDeform({.kind            = DeformKind::eStencil,
+                            .vertexCount     = l.rows,
+                            .basePositions   = level,
+                            .outPositions    = out,
+                            .rowStart        = {l.start},
+                            .columns         = {l.columns},
+                            .stencilWeights  = {l.weights},
+                            .stencilOffsets  = {last ? t.offsets : BufferHandle{}},
+                            .frameX          = frameX,
+                            .frameY          = frameY,
+                            .hdStart         = hd ? BufferRange{t.hdTopology, t.hdLevels[i].start} : BufferRange{},
+                            .hdFrame         = hd ? BufferRange{t.hdTopology, t.hdLevels[i].frame} : BufferRange{},
+                            .hdOffsets       = hd ? BufferRange{t.hdOffsets, t.hdLevels[i].offsets} : BufferRange{},
+                            .hdCage          = hd ? cage : BufferRange{},
+                            .hdFrameVertices = hd ? BufferRange{t.hdTopology} : BufferRange{},
+                            .sourceCount     = l.sourceCount});
       m_gpu.barrier(GpuBarrier::eComputeToCompute);
       level = out;
     }
@@ -873,7 +927,7 @@ void Residency::retireRefine(MeshGpu& m)
     return;
   for(BufferHandle b : {m.refine->cage, m.refine->drawnFrom, m.refine->triangles, m.refine->normalStart,
                         m.refine->normalTriangles, m.refine->offsets, m.refine->tangentTriangles, m.refine->tangentStart,
-                        m.refine->tangentCorners, m.refine->displacement})
+                        m.refine->tangentCorners, m.refine->displacement, m.refine->hdTopology, m.refine->hdOffsets})
     retireBuffer(b);
   for(const MeshGpu::Refine::Level& l : m.refine->levels)
     for(BufferHandle b : {l.start, l.columns, l.weights})
@@ -931,8 +985,10 @@ static void fitBounds(Residency::Prim& prim, const MeshRecord& record)
         lo = glm::min(lo, record.cage[v]);
         hi = glm::max(hi, record.cage[v]);
       }
-    lo -= glm::vec3(prim.cagePad);
-    hi += glm::vec3(prim.cagePad);
+    // and by as far as its HD edits can move a vertex
+    const float pad = prim.cagePad + (record.hd ? record.hd->reach : 0.f);
+    lo -= glm::vec3(pad);
+    hi += glm::vec3(pad);
   }
   else
     for(uint32_t i = run.firstIndex; i < run.firstIndex + run.indexCount; i++)
@@ -3242,6 +3298,7 @@ SyncResult Residency::sync(RetainedScene& scene)
   // what is about to change, ready first
   std::set<MeshId> reshaped = changes.meshes;
   reshaped.insert(changes.displacements.begin(), changes.displacements.end());
+  reshaped.insert(changes.hd.begin(), changes.hd.end());
   wakeWhatChanged(scene, reshaped);
   const DecodesLanded landed = decodeQueued(scene, fresh || changes.structure);
   result.imagesMoved         = landed.replaced;
@@ -3261,6 +3318,9 @@ SyncResult Residency::sync(RetainedScene& scene)
     written = syncVertices(scene, changes.meshes, result);
   if(!changes.displacements.empty())
     for(MeshId id : syncDisplacements(scene, changes.displacements))
+      written.insert(id);
+  if(!changes.hd.empty())
+    for(MeshId id : syncHd(scene, changes.hd))
       written.insert(id);
   if(m_gpu.takeAllocationFailed())
     m_failedMeshes.insert(written.begin(), written.end());
@@ -3498,6 +3558,28 @@ std::set<MeshId> Residency::syncDisplacements(const RetainedScene& scene, const 
     }
     moved.insert(id);
   }
+  return moved;
+}
+
+std::set<MeshId> Residency::syncHd(const RetainedScene& scene, const std::set<MeshId>& meshes)
+{
+  std::set<MeshId>      moved;
+  std::vector<MeshGpu*> bases;
+  for(MeshId id : meshes)
+  {
+    auto              it     = m_meshes.find(id);
+    const MeshRecord* record = scene.mesh(id);
+    if(it == m_meshes.end() || !record || !it->second.refine)
+      continue;
+    MeshGpu::Refine& r = *it->second.refine;
+    if(!record->hd && !r.hdOffsets)
+      continue;
+    uploadHd(*record, r);
+    moved.insert(id);
+    bases.push_back(&it->second);
+  }
+  // an unposed base is made from its cage here and nowhere else; a posed one's drawers run again
+  refineOnGpu(bases);
   return moved;
 }
 
@@ -4234,7 +4316,7 @@ size_t Residency::liveBuffers() const
       for(BufferHandle b : {mesh.refine->cage, mesh.refine->drawnFrom, mesh.refine->triangles,
                             mesh.refine->normalStart, mesh.refine->normalTriangles, mesh.refine->offsets,
                             mesh.refine->tangentTriangles, mesh.refine->tangentStart, mesh.refine->tangentCorners,
-                            mesh.refine->displacement})
+                            mesh.refine->displacement, mesh.refine->hdTopology, mesh.refine->hdOffsets})
         n += b ? 1 : 0;
       for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
         for(BufferHandle b : {l.start, l.columns, l.weights})
@@ -4294,7 +4376,7 @@ MemoryLedger Residency::ledger() const
       for(BufferHandle s : {mesh.refine->cage, mesh.refine->drawnFrom, mesh.refine->triangles, mesh.refine->normalStart, mesh.refine->normalTriangles,
                             mesh.refine->offsets, mesh.refine->tangentTriangles, mesh.refine->tangentStart, mesh.refine->tangentCorners})
         b.remake += bytes(s);
-      b.working += bytes(mesh.refine->displacement);
+      b.working += bytes(mesh.refine->displacement) + bytes(mesh.refine->hdTopology) + bytes(mesh.refine->hdOffsets);
       for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
         b.remake += bytes(l.start) + bytes(l.columns) + bytes(l.weights);
     }

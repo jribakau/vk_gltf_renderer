@@ -52,6 +52,7 @@
 
 #include <figure/materials/material.hpp>
 #include <figure/materials/water.hpp>
+#include <figure/subdiv/hd_edits.hpp>
 
 #include "scene_feature_detection.hpp"
 #include "scene_retained_handles.hpp"
@@ -311,6 +312,9 @@ struct MeshRecord
   // before the levels, for every drawer that poses it; one drawn as it is has one per drawn vertex,
   // added after the drawn vertices' skin. Empty: none.
   std::vector<glm::vec3> displacement;
+  // a refined mesh's DAZ HD detail: its morphs' .dhdm edits mixed by weight, added level by level as the
+  // cage is refined, in frames of the (posed) cage (figure/subdiv/hd_edits.hpp). Null: none.
+  std::shared_ptr<const fv::subdiv::HdTables> hd;
   // bumped by a vertex edit, and by one that sets tangents (a drag's steps keep them)
   uint32_t contentRev = 0;
   uint32_t tangentRev = 0;
@@ -536,6 +540,7 @@ struct SceneChanges
   std::set<EntityId>   morphWeights;       // their mesh instance's morph weights changed
   std::set<MeshId>     meshes;             // vertices edited
   std::set<MeshId>     displacements;      // a refined mesh's displacement set, moved or dropped
+  std::set<MeshId>     hd;                 // a refined mesh's HD detail set, moved or dropped
   std::set<MaterialId> materials;          // payload edited
   std::set<LightId>    lights;             // payload, shown or sun edited
   std::set<SkinId>     skins;              // joints or inverse binds edited
@@ -615,6 +620,9 @@ public:
   // per drawn vertex of one drawn as it is; empty or all zero drops it. Nothing changes, and false,
   // when it is what the mesh has or not of that size.
   bool setMeshDisplacement(MeshId id, std::span<const float> xyz);
+  // A refined mesh's HD detail (MeshRecord::hd); null drops it. Nothing changes, and false, when it is
+  // what the mesh has, or the mesh isn't refined or has other levels than the tables.
+  bool setMeshHd(MeshId id, std::shared_ptr<const fv::subdiv::HdTables> hd);
   // joints, inverse binds and skeleton replaced (a rebind)
   void setSkin(SkinId id, SkinRecord skin);
   void setMaterial(MaterialId id, fv::mat::Material payload);

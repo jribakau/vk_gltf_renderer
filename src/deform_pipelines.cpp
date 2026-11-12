@@ -105,6 +105,8 @@ void DeformPipelines::create(VkDevice device)
     NVVK_CHECK(vkCreateComputePipelines(device, nullptr, 1, &pipeInfo, nullptr, &pipe));
     NVVK_DBG_NAME(pipe);
   };
+  // Vulkan's guaranteed push constant space
+  static_assert(sizeof(shaderio::StencilPushConstant) <= 128);
   pipeline(sizeof(shaderio::StencilPushConstant), stencil_comp_slang, stencil_comp_slang_sizeInBytes, stencilLayout, stencil);
   pipeline(sizeof(shaderio::NormalsPushConstant), vertex_normals_comp_slang, vertex_normals_comp_slang_sizeInBytes,
            normalsLayout, normals);
