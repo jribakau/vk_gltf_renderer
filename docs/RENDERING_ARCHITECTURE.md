@@ -634,7 +634,9 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   (the kit's `grown` role, one 14 m tree of 2.3M triangles the app fetches only for it) at 1 to 1.5
   times, a few hundred among the near woods' young ones. The far woods stay young firs grown with
   distance. All the trees, every one a grown fir, had cost about half again a frame (2026-11-11);
-  near only, they add some 160 to 190 MB and the frame a little, most over the canopy.
+  near only, they add some 140 MB (the kit's textures compressed) and, flown in the forest at 1920 x
+  1080 on an RTX 4080 with the moving view's settings (2026-11-12), 0.4 ms to a frame's 8.1 ms of
+  path tracing walking through it, 0.3 ms from 250 m up, and 1.3 ms (16%) flying over the canopy.
 - **Grass and its drifts are tiles** (`grassCovers`, `drifts`, `patch`, `grassTiles`, `driftTiles`, `tilePlace`):
   a square of ground with its few hundred plants is one mesh, and the ground is covered by squares
   of three kinds, thick grass in 2 m tiles where one looks from, thinner and larger in 4 m tiles
