@@ -156,22 +156,25 @@ Two settings say how much of it there is, and they are not the same thing:
   many times; in a haze that air is raised to the tables' own light along the ray, per unit of its
   opacity (`hazeGlow` in `shaders/aerial_perspective.h.slang`, weighed in by the visibility, none on
   a clear day). A misted wood fades into the sky over it instead of standing dark against it: at 2
-  km of visibility, toward a sun 25° up, the tree line reads 1.6 under a sky of 2.4 (0.16 under 11.7
-  before any of this, linear). It reads only the tables' half for rays that escape, from where the
+  km of visibility, toward a sun 25° up, the tree line reads 0.68 under a sky of 0.98 (0.16 under
+  11.7 before any of this, linear). It reads only the tables' half for rays that escape, from where the
   sky the camera sees is seen from, and fades out as the view looks down (see the shader).
 
   A mist is light bounced many times, and the tables take as many bounces as the air is deep
   (`sky_visibility::scatteringOrders`, `SkyBruneton::finalQuality`): four on a clear day, eleven at 2
   km, a precompute of about 100 ms. More bounces had grown without end in thick air (2 km at ten:
   the sky 20,000 times a clear day's), and four had lit the land under a mist four times a clear
-  day's: upstream's precompute integrated each step along a ray as a trapezoid, the near end taken
-  at half a 22 km step where a mist's light comes from its first half kilometre. Each step is now
-  integrated as its transmittance falls (`IntegrateExponentialStep`), the transmittance table holds
-  optical depths (a level ray's transmittance through a mist is less than a float holds), and the
-  directions' sum of each phase function is made 1 exactly. A clear day's sky moved by 4% toward
-  the sun, its land not at all. Still open: under a high sun a 2 km mist lights the ground about
-  twice as much as a clear day, which no air can (1.34 times at most over a ground of albedo 0.2);
-  more bounces add to it, finer tables and finer direction steps do not. The app's slider stops at 2.
+  day's. Three errors of upstream's precompute, each small in a clear air: it integrated each step
+  along a ray as a trapezoid, the near end taken at half a 22 km step where a mist's light comes
+  from its first half kilometre (now `IntegrateExponentialStep`); its fifty even steps were 1.2 km on
+  a ray straight up, as deep as the haze, whose falling light a straight line between a step's ends
+  overstates once per bounce (now 64 steps close together at both ends of a ray,
+  `RaySampleDistance`); and the transmittance between two points was a ratio of two transmittances
+  that a level ray through a mist takes below a float's range (the table holds optical depths now).
+  The directions' sum of each phase function is also made exactly 1. Under a 60° sun the ground's
+  light at 2 km is now 1.14 times a clear day's (the most any air could give over a ground of albedo
+  0.2 is 1.34), 0.75 under a 25° sun; a clear day's sky is 5% darker toward the sun, its land within
+  1%. Under 2 km twelve bounces are too few and the sky goes dim, so the app's slider stops at 2.
 - **`atmoAerialPerspectiveScale`** is how many metres of air a scene unit counts for between the
   eye and a surface, and it leaves the sky alone. A procedural backdrop sets it (`Spec::air`,
   `fv_backdrop.hpp`): its land is some hundreds of metres to its horizon, and through that much

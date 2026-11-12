@@ -314,6 +314,19 @@ float2 ExponentialStepWeights(float t0, float t1)
   return float2((1.0F - e) / a - w1, w1);
 }
 
+// Where sample `i` of `count` stands along a ray `length` long: close together at both ends, where a
+// ray from the ground starts in the haze and one from above ends in it, and longest in the middle,
+// high in the thin air. Upstream's even steps were 1.2 km on a ray straight up, as deep as the haze
+// itself, whose light then falls by e across a step a straight line between its ends overstates: a
+// haze that scatters forward is light bounced many times, and the overstatement grew with each, the
+// sky's light on the ground under a 2 km mist twice what any air could give. At 64 such steps the
+// first is 36 m on a ray straight up, and that light comes within 3% of 800 even steps'.
+static const int RAY_STEP_COUNT = 64;
+float RaySampleDistance(float length, int i)
+{
+  return 0.5F * length * (1.0F - cos(M_PI * float(i) / float(RAY_STEP_COUNT)));
+}
+
 // The integral over a step of length `dx` of T(x) s(x), per channel (ExponentialStepWeights).
 float3 IntegrateExponentialStep(float3 t0, float3 t1, float3 s0, float3 s1, float dx)
 {
@@ -339,23 +352,26 @@ void ComputeSingleScattering(SkyAtmosphereParameters atmosphere,
                              out float3              rayleigh,
                              out float3              mie)
 {
-  const int   SAMPLE_COUNT = 50;
-  const float dx = DistanceToNearestAtmosphereBoundary(atmosphere, r, mu, rayRMuIntersectsGround) / float(SAMPLE_COUNT);
+  const float length = DistanceToNearestAtmosphereBoundary(atmosphere, r, mu, rayRMuIntersectsGround);
 
-  // step by step, each integrated as its transmittance falls (IntegrateExponentialStep)
+  // step by step (RaySampleDistance), each integrated as its transmittance falls
+  // (IntegrateExponentialStep)
   float3 rayleigh_sum = float3(0.0F);
   float3 mie_sum      = float3(0.0F);
   float3 toEye_0, rayleigh_0, mie_0;
   ComputeSingleScatteringIntegrand(atmosphere, transmittanceTexture, r, mu, mu_s, nu, 0.0F, rayRMuIntersectsGround, toEye_0,
                                    rayleigh_0, mie_0);
-  for(int i = 1; i <= SAMPLE_COUNT; ++i)
+  float d_0 = 0.0F;
+  for(int i = 1; i <= RAY_STEP_COUNT; ++i)
   {
-    const float d_i = float(i) * dx;
+    const float d_i = RaySampleDistance(length, i);
+    const float dx  = d_i - d_0;
     float3      toEye_i, rayleigh_i, mie_i;
     ComputeSingleScatteringIntegrand(atmosphere, transmittanceTexture, r, mu, mu_s, nu, d_i, rayRMuIntersectsGround,
                                      toEye_i, rayleigh_i, mie_i);
     rayleigh_sum += IntegrateExponentialStep(toEye_0, toEye_i, rayleigh_0, rayleigh_i, dx);
     mie_sum += IntegrateExponentialStep(toEye_0, toEye_i, mie_0, mie_i, dx);
+    d_0        = d_i;
     toEye_0    = toEye_i;
     rayleigh_0 = rayleigh_i;
     mie_0      = mie_i;
@@ -590,9 +606,9 @@ float3 ComputeScatteringDensity(SkyAtmosphereParameters atmosphere,
   // The light each particle type scatters toward -omega, and what its phase function sums to over
   // the same directions: divided by it, each sums to exactly 1, as the phase function integrates
   // to. A water haze's forward lobe is some 11 degrees wide, as wide as the steps here, and summed
-  // as it fell against them it came to a tenth or more over 1 or under it; every order of scattering
-  // took the last's light times that sum, and the light on the ground under a 2 km mist grew with
-  // each order to twice a clear day's.
+  // as it fell against them it came to a tenth or so over 1 or under it, which every order of
+  // scattering would take on. (Measured, it moved a 2 km mist's light on the ground by 5%: what had
+  // doubled it was the steps along the rays, RaySampleDistance.)
   float3 rayleighSum  = float3(0.0F);
   float3 mieSum       = float3(0.0F);
   float  rayleighNorm = 0.0F;
@@ -708,16 +724,17 @@ float3 ComputeMultipleScattering(SkyAtmosphereParameters atmosphere,
                                  float                   nu,
                                  bool                    rayRMuIntersectsGround)
 {
-  const int   SAMPLE_COUNT = 50;
-  const float dx = DistanceToNearestAtmosphereBoundary(atmosphere, r, mu, rayRMuIntersectsGround) / float(SAMPLE_COUNT);
+  const float length = DistanceToNearestAtmosphereBoundary(atmosphere, r, mu, rayRMuIntersectsGround);
 
-  // step by step, each integrated as its transmittance falls (IntegrateExponentialStep)
+  // step by step (RaySampleDistance), each integrated as its transmittance falls
+  // (IntegrateExponentialStep)
   float3 rayleighMieSum = float3(0.0F);
   float3 toEye_0        = float3(0.0F);
   float3 density_0      = float3(0.0F);
-  for(int i = 0; i <= SAMPLE_COUNT; ++i)
+  float  d_0            = 0.0F;
+  for(int i = 0; i <= RAY_STEP_COUNT; ++i)
   {
-    const float d_i = float(i) * dx;
+    const float d_i = RaySampleDistance(length, i);
 
     // The parameters at this sample point, as in the single-scattering section.
     const float r_i    = ClampRadius(atmosphere, sqrt(d_i * d_i + 2.0F * r * mu * d_i + r * r));
@@ -728,7 +745,8 @@ float3 ComputeMultipleScattering(SkyAtmosphereParameters atmosphere,
         GetScatteringTexel(atmosphere, scatteringDensityTexture, r_i, mu_i, mu_s_i, nu, rayRMuIntersectsGround).rgb;
     const float3 toEye_i = GetTransmittance(atmosphere, transmittanceTexture, r, mu, d_i, rayRMuIntersectsGround);
     if(i > 0)
-      rayleighMieSum += IntegrateExponentialStep(toEye_0, toEye_i, density_0, density_i, dx);
+      rayleighMieSum += IntegrateExponentialStep(toEye_0, toEye_i, density_0, density_i, d_i - d_0);
+    d_0       = d_i;
     toEye_0   = toEye_i;
     density_0 = density_i;
   }
