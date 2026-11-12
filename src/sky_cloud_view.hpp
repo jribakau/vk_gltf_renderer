@@ -123,6 +123,22 @@ constexpr float kCloudFollowJump = 0.1F;
 // clouds, a cloud beside the camera smeared across the frame.
 constexpr float    kCloudFollowDistanceAmong = 0.004F;
 constexpr uint32_t kCloudFollowFramesAmong   = 12;
+// A bake is from where the camera will be, not where it is. Baked from where it began, an image was a
+// bake's flight behind the camera when it was whole and two bakes' when the frames gave it up: 22 m
+// among the clouds at 60 m/s, where a near cloud stands still within six times that and smears. The
+// camera's pace is a frame's motion, smoothed by kCloudFollowPaceShare a frame (input that comes
+// slower than the frames moves it every other frame or so). A bake is from where the camera will be
+// once it is whole, and past that by half the bake's flight, or, while that flight is longer than the
+// follow's distance, by a little more than the distance (kCloudFollowPast, and two frames' motion):
+// the camera is then that far short of the new image's anchor and the next bake starts at once, so
+// the camera passes the anchor halfway through the frames that take it. A camera that flies no
+// further in a bake than the distance bakes from where it will be. Steady flights (cloudFollowStep's
+// tests): the same as before up to 15 m/s with half the frames baking; among the clouds 30 and 60 m/s
+// leave the camera 5 and 6 m from the image's anchor at most, not 11 and 22. No further ahead than
+// kCloudFollowLeadMost: a guess, not a jump.
+constexpr float kCloudFollowPaceShare = 0.25F;
+constexpr float kCloudFollowPast      = 1.05F;
+constexpr float kCloudFollowLeadMost  = 0.08F;
 
 // The sky image that follows the camera. Image 0 is the sky bake's, from the scene's origin (`home`),
 // which also lights the scene and is never baked over; 1 and 2 are the follow images, baked in turn
@@ -136,9 +152,16 @@ struct SkyCloudFollow
   bool           baking{false};  // a bake of the other follow image is under way, a band a frame
   SkyCloudAnchor bakingFrom{};
   uint32_t       nextRow{0};
+  // The camera's pace, km a frame in the environment's frame, from where it was last frame
+  glm::vec3      pace{0.0F};
+  SkyCloudAnchor lastEye{};
+  bool           paced{false};
 
   // After a sky bake from `origin`: image 0, and nothing under way.
-  void reset(const SkyCloudAnchor& origin) { *this = SkyCloudFollow{.anchor = origin, .home = origin}; }
+  void reset(const SkyCloudAnchor& origin)
+  {
+    *this = SkyCloudFollow{.anchor = origin, .home = origin, .pace = pace, .lastEye = lastEye, .paced = paced};
+  }
 };
 
 // What a frame bakes of it: rows [firstRow, firstRow + rows) of image `target` as seen from `from`;
@@ -175,6 +198,23 @@ inline SkyCloudFollowStep cloudFollowStep(SkyCloudFollow& f, const SkyCloudAncho
   const float        distance = among ? kCloudFollowDistanceAmong : kCloudFollowDistance;
   const uint32_t     frames   = among ? kCloudFollowFramesAmong : kCloudFollowFrames;
   SkyCloudFollowStep step;
+  // the pace: a camera put down elsewhere has none
+  const glm::vec3 moved = cloudEyeFrom(f.lastEye, eye);
+  f.pace                = f.paced && glm::length(moved) <= kCloudFollowJump ? glm::mix(f.pace, moved, kCloudFollowPaceShare) : glm::vec3(0.0F);
+  f.lastEye             = eye;
+  f.paced               = true;
+  const uint32_t each   = std::max((imageRows + frames - 1) / frames, 1U);
+  const uint32_t rows   = std::min(((each + band - 1) / band) * band, imageRows);
+  // where an image begun now is baked from (kCloudFollowPaceShare): it is whole in its last band's frame
+  const auto ahead = [&](const SkyCloudAnchor& from, bool atOnce) {
+    const float pace   = glm::length(f.pace);
+    const float flight = pace * (atOnce ? 0.0F : float((imageRows + rows - 1) / rows - 1));
+    if(flight <= 0.0F)
+      return from;
+    const float past  = std::max(0.5F * flight, std::min(kCloudFollowPast * distance + 2.0F * pace, flight));
+    const glm::vec3 lead = f.pace * (std::min(flight + past, kCloudFollowLeadMost) / pace);
+    return SkyCloudAnchor{.land = from.land + glm::vec2(lead.x, lead.z), .altitude = std::max(from.altitude + lead.y, kCloudViewMinAltitude)};
+  };
   if(cloudAnchorDistance(f.home, eye) <= kCloudFollowDistance)
   {
     step.frontChanged = f.front != 0;
@@ -189,7 +229,7 @@ inline SkyCloudFollowStep cloudFollowStep(SkyCloudFollow& f, const SkyCloudAncho
     if(gone <= distance)
       return step;
     f.baking     = true;
-    f.bakingFrom = eye;
+    f.bakingFrom = ahead(eye, gone > kCloudFollowJump);
     f.nextRow    = 0;
   }
   else if(gone > kCloudFollowJump && cloudAnchorDistance(f.bakingFrom, eye) > distance)
@@ -198,12 +238,11 @@ inline SkyCloudFollowStep cloudFollowStep(SkyCloudFollow& f, const SkyCloudAncho
     f.bakingFrom = eye;
     f.nextRow    = 0;
   }
-  const uint32_t each = std::max((imageRows + frames - 1) / frames, 1U);
   step.bake           = true;
   step.target         = f.front == 1 ? 2 : 1;
   step.from           = f.bakingFrom;
   step.firstRow       = f.nextRow;
-  step.rows = gone > kCloudFollowJump ? imageRows - f.nextRow : std::min(((each + band - 1) / band) * band, imageRows - f.nextRow);
+  step.rows           = gone > kCloudFollowJump ? imageRows - f.nextRow : std::min(rows, imageRows - f.nextRow);
   f.nextRow += step.rows;
   if(f.nextRow >= imageRows)
   {

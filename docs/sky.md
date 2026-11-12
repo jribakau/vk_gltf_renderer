@@ -783,6 +783,12 @@ lighting field keeps the cloud image: the light of a sky kilometres up is the sa
   moved (`SkyCloudsPushConstant::land`, `landXz`): the weather and the noise are read that far on.
   A camera above the clouds' bases has them tens of metres off, and its follow is sooner and over
   fewer frames (`kCloudFollowDistanceAmong`, `kCloudFollowFramesAmong`, `SkyClouds::amongClouds`).
+  A bake is from where the camera will be, by its pace (a frame's motion, smoothed): from where it
+  began, an image was a bake's flight behind the camera when it was whole and two bakes' when the
+  frames gave it up, and a near cloud smeared in a fast flight. It is baked from ahead of where the
+  camera will be once it is whole, so the camera passes the image's anchor while the frames take it
+  (`SkyCloudFollow::pace`, `kCloudFollowPast`, the reasoning and the numbers at `kCloudFollowPaceShare`).
+  A camera put down elsewhere has no pace.
 - **Among the clouds and over them.** Under the bases every cloud is above the horizon, and an
   image's rows run from there to the zenith. A follow image baked from above the bases is a
   **whole** one (`cloudImageWhole`, `SkyCloudsPushConstant::whole`, `cloudImageUv`'s `whole`): its

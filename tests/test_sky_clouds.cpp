@@ -607,6 +607,39 @@ TEST(SkyClouds, AmongTheCloudsTheFollowIsSoonerAndTheShiftBounded)
   EXPECT_EQ(cloudShiftDepth(0.75F, float3(0.0F)), 0.75F);
 }
 
+// In a fast flight a bake begins as the last is whole: baked from where it began, the image the frames
+// had was up to two bakes' flight behind the camera (22 m among the clouds at 1 m a frame). Baked from
+// ahead of where the camera will be, about a quarter of that; and a camera that stops gets an image of
+// where it stopped.
+TEST(SkyClouds, AFastFlightsImageIsBakedFromWhereTheCameraWillBe)
+{
+  const SkyCloudAnchor origin{.land = {0.0F, 0.0F}, .altitude = 0.3F};
+  SkyCloudFollow       f;
+  f.reset(origin);
+  const auto at = [&](float metres) { return SkyCloudAnchor{.land = {metres * 0.001F, 0.0F}, .altitude = 1.1F + metres * 0.0002F}; };
+  EXPECT_TRUE(cloudFollowStep(f, at(0.0F), 1024, 8, true).completes);  // put down up there
+  float x = 0.0F, behind = 0.0F;
+  int   whole = 0;
+  for(int frame = 0; frame < 400; frame++)
+  {
+    x += 1.0F;
+    whole += cloudFollowStep(f, at(x), 1024, 8, true).completes ? 1 : 0;
+    if(frame >= 60)
+      behind = std::max(behind, 1000.0F * cloudAnchorDistance(f.anchor, at(x)));
+  }
+  EXPECT_GT(whole, 25);  // a bake about every dozen frames, as before
+  EXPECT_LT(behind, 7.5F);
+  // stopped: within a few dozen frames the image is of where the camera is, and no more is baked
+  int bakes = 0;
+  for(int frame = 0; frame < 120; frame++)
+    bakes += cloudFollowStep(f, at(x), 1024, 8, true).bake && frame >= 40 ? 1 : 0;
+  EXPECT_EQ(bakes, 0);
+  EXPECT_LT(1000.0F * cloudAnchorDistance(f.anchor, at(x)), 1.5F);
+  // a camera put down far off has no pace: its image is of where it is
+  EXPECT_TRUE(cloudFollowStep(f, at(x + 500.0F), 1024, 8, true).completes);
+  EXPECT_LT(1000.0F * cloudAnchorDistance(f.anchor, at(x + 500.0F)), 1e-3F);
+}
+
 // The sky image that follows the camera (cloudFollowStep), a 1024-row image baked in bands of 8.
 TEST(SkyClouds, TheSkyImageFollowsACameraInFlight)
 {
@@ -624,12 +657,26 @@ TEST(SkyClouds, TheSkyImageFollowsACameraInFlight)
   }
   EXPECT_EQ(f.front, 0);
 
-  // A flight at 15 m/s, 60 frames a second: past 10 m a bake starts from where the camera then is,
-  // a band of rows each frame, and the frames keep the image they had until it is whole
-  float    x      = 10.0F;
-  uint32_t baked  = 0;
-  int      frames = 0;
-  bool     whole  = false;
+  // A flight at 15 m/s, 60 frames a second, after a moment held still: past 10 m a bake starts, a
+  // band of rows each frame, and the frames keep the image they had until it is whole. It is baked
+  // from ahead of where the camera will be when it is whole, its pace (a quarter of a metre a frame,
+  // smoothed) times the bake's 31 frames after the first on
+  for(int i = 0; i < 60; i++)
+    cloudFollowStep(f, at(9.0F), 1024, 8);
+  float              x = 9.0F;
+  SkyCloudFollowStep first;
+  for(int i = 0; !first.bake; i++)
+  {
+    x += 0.25F;
+    first = cloudFollowStep(f, at(x), 1024, 8);
+    ASSERT_LE(i, 64);
+  }
+  const float began = first.from.land.x;
+  EXPECT_GT(began, at(x).land.x + 31.0F * f.pace.x);
+  EXPECT_LT(began, at(x).land.x + kCloudFollowLeadMost);
+  uint32_t baked  = first.rows;
+  int      frames = 1;
+  bool     whole  = first.completes;
   while(!whole)
   {
     x += 0.25F;
@@ -638,7 +685,7 @@ TEST(SkyClouds, TheSkyImageFollowsACameraInFlight)
     EXPECT_EQ(step.target, 1);
     EXPECT_EQ(step.firstRow, baked);
     EXPECT_EQ(step.rows % 8U, 0U);
-    EXPECT_NEAR(step.from.land.x, 0.01025F, 1e-6F);  // where the bake began, every band of it
+    EXPECT_EQ(step.from.land.x, began);  // where the bake was from, every band of it
     baked += step.rows;
     ++frames;
     whole = step.completes;
@@ -648,34 +695,49 @@ TEST(SkyClouds, TheSkyImageFollowsACameraInFlight)
   }
   EXPECT_EQ(baked, 1024U);
   EXPECT_EQ(frames, int(kCloudFollowFrames));
-  EXPECT_NEAR(f.anchor.land.x, 0.01025F, 1e-6F);
-  // the camera is then what it flew meanwhile from the image's anchor: under 10 m, so no bake yet
+  EXPECT_EQ(f.anchor.land.x, began);
+  // the camera is then short of the image's anchor, and passes it before the next bake
   EXPECT_LT(cloudAnchorDistance(f.anchor, at(x)), kCloudFollowDistance);
+  EXPECT_LT(at(x).land.x, f.anchor.land.x);
   EXPECT_FALSE(cloudFollowStep(f, at(x + 0.25F), 1024, 8).bake);
+  x += 0.25F;
 
   // ... and the next one goes into the other follow image, never the one the frames are taking
-  x = 30.0F;
-  const SkyCloudFollowStep next = cloudFollowStep(f, at(x), 1024, 8);
-  EXPECT_TRUE(next.bake);
+  SkyCloudFollowStep next;
+  for(int i = 0; !next.bake; i++)
+  {
+    x += 0.25F;
+    next = cloudFollowStep(f, at(x), 1024, 8);
+    ASSERT_LE(i, 200);
+  }
   EXPECT_EQ(next.target, 2);
   EXPECT_EQ(next.firstRow, 0U);
   EXPECT_EQ(f.front, 1);
 
-  // The camera stops mid-bake. A frame in which a flight's camera did not move looks no different,
-  // so the bake goes on as it was, a band a frame, and the camera at rest gets the image it was owed
+  // The camera stops as it begins. A frame in which a flight's camera did not move looks no
+  // different, so the bake goes on as it was, a band a frame, from where the camera was going; the
+  // camera at rest gets that image all the same, then, having no pace now, one from where it stopped
   int bands = 1;
   for(SkyCloudFollowStep step = next; !step.completes; ++bands)
   {
     step = cloudFollowStep(f, at(x), 1024, 8);
     ASSERT_TRUE(step.bake);
     EXPECT_EQ(step.target, 2);
-    EXPECT_NEAR(step.from.land.x, 0.030F, 1e-6F);
+    EXPECT_EQ(step.from.land.x, next.from.land.x);
     ASSERT_LE(bands, 64);
   }
   EXPECT_EQ(bands, int(kCloudFollowFrames));
   EXPECT_EQ(f.front, 2);
   EXPECT_FALSE(f.baking);
-  EXPECT_TRUE(f.anchor == at(x));
+  SkyCloudFollowStep last;
+  for(int i = 0; !last.completes; i++)
+  {
+    last = cloudFollowStep(f, at(x), 1024, 8);
+    ASSERT_TRUE(last.bake);
+    ASSERT_LE(i, 64);
+  }
+  EXPECT_EQ(last.target, 1);
+  EXPECT_LT(cloudAnchorDistance(f.anchor, at(x)), 0.00001F);  // under a centimetre
   // at rest under it, nothing more; nor a few metres on, within reach of the shift
   EXPECT_FALSE(cloudFollowStep(f, at(x), 1024, 8).bake);
   EXPECT_FALSE(cloudFollowStep(f, at(x + 4.0F), 1024, 8).bake);
@@ -686,7 +748,7 @@ TEST(SkyClouds, TheSkyImageFollowsACameraInFlight)
   EXPECT_TRUE(jump.bake);
   EXPECT_TRUE(jump.completes);
   EXPECT_TRUE(jump.frontChanged);
-  EXPECT_EQ(jump.target, 1);
+  EXPECT_EQ(jump.target, 2);
   EXPECT_EQ(jump.firstRow, 0U);
   EXPECT_EQ(jump.rows, 1024U);
   EXPECT_TRUE(f.anchor == at(430.0F));
