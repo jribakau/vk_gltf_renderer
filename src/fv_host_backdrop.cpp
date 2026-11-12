@@ -306,6 +306,9 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
       scene.setVisible(variants[v].entity, !placed[v].empty());
       if(placed[v].empty())
         continue;
+      // where it stands, for the wind (swayBackdrop), which turns each place about its base
+      built.variants.at(role)[v].places = placed[v];
+      built.variants.at(role)[v].swayed = false;
       for(glm::mat4& m : placed[v])
         m = m * variants[v].base;
       plants += placed[v].size();
@@ -599,6 +602,51 @@ void FvHost::Impl::followBackdrop()
   const uint64_t said = backdropPlantsSaid;
   if(backdropPlants > said + said / 20 || backdropPlants + said / 20 < said)
     publishLighting();
+}
+
+void FvHost::Impl::swayBackdrop()
+{
+  if(!backdropBuilt || backdropState != "ready" || !renderer->feedsHostScene())
+    return;
+  rs::RetainedScene& scene = renderer->hostScene();
+  if(!scene.entity(backdropBuilt->root))
+    return;
+  const fv::backdrop::Spec& spec  = lighting.backdrop;
+  const bool                windy = spec.wind > 0.0;
+  glm::vec2                 eye(0.0F);
+  if(const auto camera = renderer->getCameraManipulator())
+    eye = glm::vec2(camera->getEye().x, camera->getEye().z);
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - backdropWindEpoch).count();
+  // the places are under the root, which stands at the floor's height and turns nothing: a place's x
+  // and z are the world's
+  for(auto& [role, variants] : backdropBuilt->variants)
+  {
+    const fv::backdrop::Sway sway = fv::backdrop::swayOf(role);
+    if(!sway.any())
+      continue;
+    for(BackdropBuilt::Variant& v : variants)
+    {
+      const rs::Entity* e = scene.entity(v.entity);
+      if(!e || !e->mesh || v.places.empty() || e->mesh->copies.size() != v.places.size())
+        continue;
+      // a variant with none near the camera is left as it stands, once it stands so
+      bool nearCamera = false;
+      if(windy)
+        for(const glm::mat4& p : v.places)
+          if(glm::distance(glm::vec2(p[3].x, p[3].z), eye) < fv::backdrop::kSwayEnd)
+          {
+            nearCamera = true;
+            break;
+          }
+      if(!nearCamera && !v.swayed)
+        continue;
+      std::vector<glm::mat4> copies(v.places.size());
+      for(size_t i = 0; i < copies.size(); i++)
+        copies[i] = (nearCamera ? fv::backdrop::swayedPlace(spec, sway, v.places[i], eye, seconds) : v.places[i]) * v.base;
+      scene.setCopies(v.entity, std::move(copies));
+      v.swayed = nearCamera;
+    }
+  }
 }
 
 void FvHost::Impl::scopeHaze()

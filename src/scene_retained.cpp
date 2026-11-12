@@ -555,6 +555,23 @@ void RetainedScene::setMeshInstance(EntityId id, std::optional<MeshInstance> ins
   m_boundsRevision++;
 }
 
+void RetainedScene::setCopies(EntityId id, std::vector<glm::mat4> copies)
+{
+  assertOwner();
+  Entity* e = m_entities.get(id);
+  if(!e || !e->mesh)
+    return;
+  if(e->mesh->copies.size() != copies.size() || copies.empty())
+  {
+    MeshInstance instance = *e->mesh;
+    instance.copies       = std::move(copies);
+    setMeshInstance(id, std::move(instance));
+    return;
+  }
+  e->mesh->copies = std::move(copies);
+  m_changes.transforms.insert(id);
+}
+
 void RetainedScene::setMorphWeights(EntityId id, std::vector<float> weights)
 {
   assertOwner();

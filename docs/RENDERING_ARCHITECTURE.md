@@ -620,7 +620,7 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   out, and grass laid on `height` was buried to half its blades on their ridges, pale squares from
   the air, and floated over their hollows.
 - **Trees, saplings, bushes, rocks and dead wood have places** (`layers`, `scatter`): a jittered
-  grid thinned by patch noise, per variant of the role. They never change. The trees stand out to
+  grid thinned by patch noise, per variant of the role. They never move, but to sway in the wind (below). The trees stand out to
   the horizon, so a camera that flies off or climbs sees wooded hills and not bare ground: a second
   tree layer carries the first on from where it ends, thinning with the distance past that
   (`Layer::thinFrom`) while each tree grows by the root of it, so the far hills keep their cover
@@ -674,6 +674,19 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   place them and another 160 ms in the renderer's sync, a fifth of a second up to two and a half
   times a second in flight, with every plant near the camera changing size as its distance did.
   With tiles the same flight's worst gap between frames is 30 to 50 ms and none is longer.
+
+**The wind** (`Spec::wind`, `windFrom`, the lighting's `backdrop.wind`, protocol 69): the trees,
+saplings and bushes sway, each turned whole about its base (`swayOf`, `swayedPlace` in
+`fv_backdrop.hpp`), its top leaning downwind and swinging at its role's rate with a phase of its own,
+harder where one of two gust waves rolling over the land at the wind's speed is passing. A plant is
+one rigid copy of a shared mesh, so its trunk bends with its crown and no branch flutters; a fir's
+lean is under a degree at 30 km/h, a bush's a few. Each frame in a wind the host turns the places
+of the variants with any within `kSwayEnd` of the camera (`swayBackdrop`, beside `followBackdrop`)
+and sets them as the entity's copies (`RetainedScene::setCopies`): as many as before, that is a
+transform change, so the residency moves their rows and keeps last frame's for DLSS motion, and no
+BLAS is touched; past `kSwayFull` the sway eases off, and past `kSwayEnd` a plant stands, its row
+unchanged. The grass, in tiles of one mesh, stands still. A scene that changes every frame is a
+moving one: while the wind blows the still waits. It plants nothing (`samePlanting`).
 
 **Where it ends.** The ground stops at `kLandsEnd`, and past it is only what the physical sky
 draws under its horizon: the planet, given the land's own colour (the kit's `albedo`, sent as

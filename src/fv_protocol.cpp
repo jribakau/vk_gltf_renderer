@@ -130,7 +130,9 @@ namespace {
 // older renderer refuses the lighting that has it.
 // 68: clouds.drift and clouds.driftFrom (the wind that carries the physical sky's clouds over the
 // land). An older renderer refuses the lighting that has either.
-constexpr int kProtocolVersion = 68;
+// 69: backdrop.wind and backdrop.windFrom (the trees, saplings and bushes sway in it). An older
+// renderer refuses the lighting that has either.
+constexpr int kProtocolVersion = 69;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -418,6 +418,11 @@ void patchBackdrop(fv::backdrop::Spec& b, const Json& p)
       field(b.air, d.air, v, [&](const Json& x) { return number(x, key, 1.0, 20.0); });
     else if(k == "mature")
       field(b.mature, d.mature, v, [&](const Json& x) { return boolean(x, key); });
+    else if(k == "wind")
+      // still air to a gale's at the treetops
+      field(b.wind, d.wind, v, [&](const Json& x) { return number(x, key, 0.0, 100.0); });
+    else if(k == "windFrom")
+      field(b.windFrom, d.windFrom, v, [&](const Json& x) { return wrapDegrees(number(x, key, -1e6, 1e6)); });
     else if(k == "state" || k == "plants")
       continue;  // read-only, the host's
     else
@@ -622,7 +627,7 @@ Json toJson(const State& s)
         {"highlightsToWhite", t.highlightsToWhite}}},
       {"backdrop",
        {{"kind", s.backdrop.kind}, {"seed", s.backdrop.seed}, {"size", s.backdrop.size}, {"density", s.backdrop.density}, {"relief", s.backdrop.relief}, {"air", s.backdrop.air},
-        {"mature", s.backdrop.mature}}},
+        {"mature", s.backdrop.mature}, {"wind", s.backdrop.wind}, {"windFrom", s.backdrop.windFrom}}},
   };
 }
 

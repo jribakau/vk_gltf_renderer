@@ -788,6 +788,7 @@ void FvHost::onUpdate()
   if(!s.viewCamera.empty() && s.frameIn == 0)
     s.cameraFromView();
   s.followBackdrop();
+  s.swayBackdrop();
   s.applyPendingMorphs();
   // a figure's animation after the panels' edits, so what it drives shows its frame
   s.applyFigureAnimation();

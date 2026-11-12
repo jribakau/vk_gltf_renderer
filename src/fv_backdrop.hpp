@@ -15,7 +15,7 @@
 // - Trees, saplings, bushes, rocks and dead wood each have a place (`layers`, `scatter`): the host
 //   (fv_host_backdrop.cpp) draws a variant once with its places as instancing copies
 //   (rs::MeshInstance::copies). They stand where the seed puts them, the trees out to the horizon,
-//   and never change.
+//   and never move from there; in a wind (`swayedPlace`) the trees, saplings and bushes sway about it.
 // - Grass, and what stands in drifts in it (a meadow's flowers, a forest's ferns), are tiles
 //   (`grassCovers`, `drifts`, `patch`, `grassTiles`, `driftTiles`): a square of ground with its
 //   few hundred plants is one mesh, made once, and drawn wherever a square of its kind lies. Which
@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
@@ -60,13 +61,20 @@ struct Spec
   // `grown` role, which the app fetches only for this: millions of triangles a tree). The far woods
   // stay young firs grown with distance, which reads the same from there.
   bool mature = false;
-  bool operator==(const Spec&) const = default;
+  // The wind at the plants' height, km/h, 0 still, and where it blows from, degrees, an azimuth as the
+  // sun's (toward +z at 0, +x at 90): the trees, saplings and bushes sway in it (`swayedPlace`).
+  // Nothing is planted by it.
+  double wind     = 0.0;
+  double windFrom = 90.0;
+  bool   operator==(const Spec&) const = default;
 };
 
-// Whether two specs plant the same: alike in all but what only the air reads
+// Whether two specs plant the same: alike in all but what only the air and the wind read
 inline bool samePlanting(Spec a, const Spec& b)
 {
-  a.air = b.air;
+  a.air      = b.air;
+  a.wind     = b.wind;
+  a.windFrom = b.windFrom;
   return a == b;
 }
 
@@ -238,6 +246,35 @@ struct Place
   glm::quat rotation{1.0F, 0.0F, 0.0F, 0.0F};
 };
 Place tilePlace(const Spec& spec, float size, int32_t x, int32_t z, float sink);
+
+// ---- the wind --------------------------------------------------------------------------------------
+//
+// What has a place sways in the wind, whole: a plant turns about its base, its top leaning downwind
+// and back in a rhythm of its own, harder where a gust is passing. The gusts are waves that roll over
+// the land at the wind's speed, so a wood bends in swathes and not all at once. A plant is one rigid
+// instance of a shared mesh (rs::MeshInstance::copies): its trunk bends with its crown, and its
+// branches don't flutter of their own; small angles, as a stiff conifer's are, keep that from showing.
+// Grass, in tiles of one mesh, stands still. Out past kSwayFull from the camera it eases off, and past
+// kSwayEnd it stands: a few centimetres there are under a pixel, and the plants left still are rows
+// the renderer need not write again.
+
+// How a role sways: how far its top leans, degrees, in a wind of kSwayWindKmh, and how often it swings,
+// a second. Zero for what doesn't (rocks, stumps, dead wood, and what stands in tiles).
+struct Sway
+{
+  float lean = 0.0F;
+  float hz   = 0.0F;
+  bool  any() const { return lean > 0.0F; }
+};
+Sway swayOf(std::string_view role);
+inline constexpr float kSwayWindKmh = 30.0F;
+inline constexpr float kSwayFull    = 200.0F;
+inline constexpr float kSwayEnd     = 300.0F;
+
+// Where a plant stands (`place`: its scatter matrix, its base at its origin) turned about its base by
+// the spec's wind at `seconds`, for a camera standing over `eye` (x, z). As it was in a calm, or past
+// kSwayEnd from the camera.
+glm::mat4 swayedPlace(const Spec& spec, Sway sway, const glm::mat4& place, glm::vec2 eye, double seconds);
 
 // The kit's roles a spec plants, sorted: its layers', its grass's and its drifts'. What a kind doesn't
 // plant needn't be held (a model's maps are a few megabytes each)

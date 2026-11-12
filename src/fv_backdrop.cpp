@@ -639,6 +639,74 @@ Place tilePlace(const Spec& spec, float size, int32_t x, int32_t z, float sink)
   return {.position = {c.x, groundAt(spec, c.x, c.y) - sink * float(std::max(spec.relief, 0.25)), c.y}, .rotation = lean * turn};
 }
 
+Sway swayOf(std::string_view role)
+{
+  // A fir's trunk is stiff and swings slowly, a grown one's slower still (a 14 m tree's first mode is
+  // some 0.2 to 0.3 a second); a sapling and a bush are supple and quick
+  if(role == "tree")
+    return {.lean = 0.8F, .hz = 0.30F};
+  if(role == "grown")
+    return {.lean = 0.6F, .hz = 0.22F};
+  if(role == "sapling")
+    return {.lean = 2.0F, .hz = 0.6F};
+  if(role == "shrub")
+    return {.lean = 2.5F, .hz = 0.9F};
+  return {};
+}
+
+namespace {
+
+// A number in [0, 1) for a place on the land, the same on every machine
+double placeHash(double x, double z, double salt)
+{
+  const double h = std::sin(x * 12.9898 + z * 78.233 + salt * 37.719) * 43758.5453;
+  return h - std::floor(h);
+}
+
+}  // namespace
+
+glm::mat4 swayedPlace(const Spec& spec, Sway sway, const glm::mat4& place, glm::vec2 eye, double seconds)
+{
+  if(!sway.any() || !(spec.wind > 0.0))
+    return place;
+  const glm::vec3 base(place[3]);
+  const glm::vec2 at(base.x, base.z);
+  const float     distance = glm::distance(at, eye);
+  if(distance >= kSwayEnd)
+    return place;
+  const double reach = distance <= kSwayFull ? 1.0 : double(kSwayEnd - distance) / double(kSwayEnd - kSwayFull);
+
+  // A wind's push goes as the square of its speed: twice the wind, four times the lean, and no more
+  // than four times kSwayWindKmh's however hard it blows
+  const double     strength = std::min(std::pow(spec.wind / double(kSwayWindKmh), 2.0), 4.0);
+  const double     from     = glm::radians(spec.windFrom);
+  const glm::dvec2 toward   = -glm::dvec2(std::sin(from), std::cos(from));
+  const double     speed    = spec.wind / 3.6;  // metres a second
+  constexpr double kTau     = 6.283185307179586;
+
+  // The gusts: two waves along the wind, at its speed and a little under, the second shorter; a
+  // plant leans between a fifth and all of its lean as they pass
+  const double along = toward.x * at.x + toward.y * at.y;
+  const double gust  = 0.6 + 0.25 * std::sin(kTau * (along - speed * seconds) / 70.0)
+                      + 0.15 * std::sin(kTau * (along - 0.8 * speed * seconds) / 23.0 + 1.3);
+  // Its own swing: a phase of its own, and a tenth either way of its role's rate
+  const double phase  = kTau * placeHash(at.x, at.y, 1.0);
+  const double rate   = sway.hz * (0.9 + 0.2 * placeHash(at.x, at.y, 2.0));
+  const double swing  = std::sin(kTau * rate * seconds + phase);
+  const double across = std::sin(kTau * 1.3 * rate * seconds + 2.0 * phase);
+  const double lean   = double(sway.lean) * strength * reach;
+  const double down   = lean * gust * (0.6 + 0.4 * swing);  // degrees, its top downwind
+  const double side   = lean * 0.15 * across;               // and a little across the wind
+
+  // A turn about the level axis across the wind (up x toward) tips the top downwind; one about the
+  // wind's own axis tips it across
+  const glm::vec3 d(float(toward.x), 0.0F, float(toward.y));
+  const glm::vec3 acrossAxis(d.z, 0.0F, -d.x);
+  const glm::mat4 turn = glm::rotate(glm::mat4(1.0F), float(glm::radians(down)), acrossAxis)
+                         * glm::rotate(glm::mat4(1.0F), float(glm::radians(side)), d);
+  return glm::translate(glm::mat4(1.0F), base) * turn * glm::translate(glm::mat4(1.0F), -base) * place;
+}
+
 std::vector<std::string> roles(const Spec& spec)
 {
   std::set<std::string> out;

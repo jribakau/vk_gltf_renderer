@@ -647,6 +647,11 @@ public:
   void setMaterialKeepFull(MaterialId id, bool on);
   // Draws `instance` (references its meshes, materials and skin); nullopt draws nothing.
   void setMeshInstance(EntityId id, std::optional<MeshInstance> instance);
+  // Its instancing copies moved, as many as it has: their instances move as an entity's transform
+  // moves them, and nothing is made again (a backdrop's plants in the wind, every frame). Another
+  // count is another instance: setMeshInstance. The bounds are not counted as changed: what this
+  // moves, it moves by little.
+  void setCopies(EntityId id, std::vector<glm::mat4> copies);
   void setMorphWeights(EntityId id, std::vector<float> weights);
   void setEntityLight(EntityId id, LightId light);    // references it
   void setEntityCamera(EntityId id, CameraId camera);  // references it

@@ -12,6 +12,8 @@
 
 #include "../src/fv_backdrop.hpp"
 
+#include <glm/gtc/matrix_transform.hpp>
+
 namespace {
 
 namespace B = fv::backdrop;
@@ -452,6 +454,75 @@ TEST(BackdropLayers, AForestIsAGladeInAWoodThatRunsToTheHorizon)
 }
 
 // Mature woods: grown firs among the near woods' young ones, the kind's own layers left as they were
+// The wind: a plant turns about its base, its top downwind on the whole and swinging, more in a
+// harder wind, less out toward kSwayEnd and not at all past it; what doesn't sway, and a calm, leave
+// it where it stands
+TEST(BackdropWind, PlantsSwayAboutTheirBaseDownwind)
+{
+  B::Spec spec  = meadow();
+  spec.wind     = 30.0;
+  spec.windFrom = 90.0;  // from +x: toward -x
+  const glm::vec3 base(12.0F, 0.4F, -7.0F);
+  const glm::mat4 place = glm::translate(glm::mat4(1.0F), base) * glm::scale(glm::mat4(1.0F), glm::vec3(1.5F));
+  const glm::vec2 eye(0.0F);
+  const B::Sway   tree = B::swayOf("tree");
+  ASSERT_TRUE(tree.any());
+  EXPECT_FALSE(B::swayOf("rock").any());
+  EXPECT_FALSE(B::swayOf("grass").any());
+  EXPECT_FALSE(B::swayOf("log").any());
+  EXPECT_GT(B::swayOf("shrub").lean, tree.lean);  // a bush is more supple than a fir
+  EXPECT_GT(B::swayOf("sapling").hz, tree.hz);
+
+  // the top of a tree 10 m tall (in the place's units, before its scale), over a minute
+  const auto topAt = [&](const B::Spec& s, const glm::mat4& p, glm::vec2 from, double t) {
+    return glm::vec3(B::swayedPlace(s, tree, p, from, t) * glm::vec4(0.0F, 10.0F, 0.0F, 1.0F));
+  };
+  const glm::vec3 still = glm::vec3(place * glm::vec4(0.0F, 10.0F, 0.0F, 1.0F));
+  double          downwind = 0.0, largest = 0.0, smallest = 1e9;
+  for(int i = 0; i < 600; i++)
+  {
+    const double    t      = 0.1 * i;
+    const glm::mat4 swayed = B::swayedPlace(spec, tree, place, eye, t);
+    EXPECT_NEAR(glm::distance(glm::vec3(swayed[3]), base), 0.0F, 1e-4F) << t;  // the base stays
+    const glm::vec3 top    = topAt(spec, place, eye, t);
+    EXPECT_NEAR(glm::length(top - base), glm::length(still - base), 1e-3F);  // a turn, not a stretch
+    const double angle = glm::degrees(std::acos(std::clamp(double(glm::dot(glm::normalize(top - base), glm::normalize(still - base))), -1.0, 1.0)));
+    largest  = std::max(largest, angle);
+    smallest = std::min(smallest, angle);
+    downwind += -(top - still).x;
+  }
+  EXPECT_GT(downwind / 600.0, 0.0);  // it leans toward -x on the whole
+  EXPECT_LT(largest, 1.2 * tree.lean);
+  EXPECT_GT(largest, 0.4 * tree.lean);
+  EXPECT_LT(smallest, largest * 0.8);  // and swings
+
+  // twice the wind, about four times the lean over a minute (its gusts pass at their own speed, so
+  // not at every moment); a calm, none; the same moment, the same turn
+  B::Spec    hard = spec;
+  hard.wind       = 60.0;
+  const auto mean = [&](const B::Spec& s) {
+    double sum = 0.0;
+    for(int i = 0; i < 600; i++)
+      sum += glm::distance(topAt(s, place, eye, 0.1 * i), still);
+    return sum / 600.0;
+  };
+  EXPECT_NEAR(mean(hard) / mean(spec), 4.0, 0.6);
+  const double soft = glm::distance(topAt(spec, place, eye, 7.3), still);
+  B::Spec calm = spec;
+  calm.wind    = 0.0;
+  EXPECT_EQ(B::swayedPlace(calm, tree, place, eye, 7.3), place);
+  EXPECT_EQ(B::swayedPlace(spec, B::swayOf("rock"), place, eye, 7.3), place);
+  EXPECT_EQ(B::swayedPlace(spec, tree, place, eye, 7.3), B::swayedPlace(spec, tree, place, eye, 7.3));
+
+  // far from the camera it eases off, and past kSwayEnd it stands
+  const glm::vec2 far(base.x + 0.5F * (B::kSwayFull + B::kSwayEnd), base.z);
+  EXPECT_LT(glm::distance(topAt(spec, place, far, 7.3), still), soft);
+  EXPECT_EQ(B::swayedPlace(spec, tree, place, glm::vec2(base.x + B::kSwayEnd + 1.0F, base.z), 7.3), place);
+
+  // and the wind plants nothing
+  EXPECT_TRUE(B::samePlanting(spec, meadow()));
+}
+
 TEST(BackdropLayers, MatureWoodsAddGrownFirsNearAndMoveNothingElse)
 {
   for(B::Spec young : {meadow(), forest()})

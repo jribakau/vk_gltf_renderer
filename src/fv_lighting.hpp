@@ -64,7 +64,10 @@
 //            kit's plants; with one the ground section's plane isn't drawn), seed (which one), size
 //            (metres across what is planted underfoot), density (of every layer's own) and relief (how
 //            hilly, 0 flat): fv_backdrop.hpp, protocol 64; air (1 to 20: how many metres of air a metre
-//            of its land counts for, the distance's haze under the physical sky), protocol 65. Read-only in the topic: state (off, missing:
+//            of its land counts for, the distance's haze under the physical sky), protocol 65; mature
+//            (grown firs among the near woods), protocol 67; wind (km/h, 0 to 100, 0 still: the trees,
+//            saplings and bushes sway in it) and windFrom (degrees, an azimuth as the sun's), protocol
+//            69. Read-only in the topic: state (off, missing:
 //            no kit where settings.apply's backdropKit says; loading; ready) and plants (how many stand)
 //
 // Colours are "#rrggbb" in sRGB, as the panel shows them. A patch from before protocol 17 (a kept

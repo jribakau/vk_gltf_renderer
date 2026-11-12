@@ -1502,6 +1502,10 @@ struct FvHost::Impl
     {
       rs::EntityId entity;
       glm::mat4    base{1.0F};  // its node's own turn and scale in its file, under each place
+      // Where it stands (its copies, each `base` under its place), for the wind to sway them
+      // (swayBackdrop); whether it last drew any swayed
+      std::vector<glm::mat4> places;
+      bool                   swayed = false;
     };
     rs::EntityId                                root;
     rs::EntityId                                ground;  // the terrain's entity
@@ -1562,6 +1566,11 @@ struct FvHost::Impl
   // Every frame: the grass's tiles laid again once the camera has gone a metre, so there is grass
   // wherever it looks from. A few tiles change at the levels' boundaries, and nothing near
   void followBackdrop();
+  // Every frame in a wind (the backdrop's `wind`): the trees, saplings and bushes near the camera
+  // swayed (fv::backdrop::swayedPlace), their copies moved and nothing made again; once more when it
+  // drops, back to where they stand
+  void swayBackdrop();
+  std::chrono::steady_clock::time_point backdropWindEpoch = std::chrono::steady_clock::now();
   // A cover's tile as one mesh, its role's variants at their places in it, under a holder
   BackdropBuilt::Patch makeBackdropPatch(rs::RetainedScene& scene, const fv::backdrop::Cover& cover);
   // The tiles the foci ask for, drawn: entities of the patches shown, moved and hidden

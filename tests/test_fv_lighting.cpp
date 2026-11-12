@@ -620,6 +620,15 @@ TEST(FvLighting, ABackdropIsPartOfTheLighting)
   EXPECT_TRUE(mature.backdrop.mature);
   EXPECT_EQ(L::toJson(mature)["backdrop"]["mature"], true);
   EXPECT_FALSE(fv::backdrop::samePlanting(mature.backdrop, s.backdrop));
+  // the wind (protocol 69): still unless asked, kept in the topic, a gale's at most, and it plants nothing
+  EXPECT_EQ(s.backdrop.wind, 0.0);
+  const L::State windy = L::applyPatch(s, {{"backdrop", {{"wind", 30}, {"windFrom", -450}}}});
+  EXPECT_EQ(windy.backdrop.wind, 30.0);
+  EXPECT_EQ(windy.backdrop.windFrom, -90.0);
+  EXPECT_EQ(L::toJson(windy)["backdrop"]["wind"], 30.0);
+  EXPECT_EQ(L::toJson(windy)["backdrop"]["windFrom"], -90.0);
+  EXPECT_EQ(L::applyPatch(s, {{"backdrop", {{"wind", 500}}}}).backdrop.wind, 100.0);
+  EXPECT_TRUE(fv::backdrop::samePlanting(windy.backdrop, s.backdrop));
   EXPECT_FALSE(hazy.backdrop == s.backdrop);
   EXPECT_FALSE(fv::backdrop::samePlanting(L::applyPatch(s, {{"backdrop", {{"seed", 8}}}}).backdrop, s.backdrop));
   EXPECT_THROW(L::applyPatch(L::State{}, {{"backdrop", {{"kind", "jungle"}}}}), std::invalid_argument);

@@ -31,6 +31,7 @@
 #include <map>
 #include <random>
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "common/fake_gpu_backend.hpp"
@@ -252,6 +253,51 @@ TEST(RetainedResidency, AMoveRewritesTheRowsOfWhatMoved)
   expectClean(scene, residency, gpu);
   EXPECT_EQ(gpu.tlas(residency.tlas())->rows[1].transform[0][3], 1.f);  // the child moved with its parent
   EXPECT_EQ(gpu.tlas(residency.tlas())->rows[2].transform[0][3], 0.f);
+}
+
+// Copies moved, as many as there were (a backdrop's trees in the wind, every frame): their rows move,
+// last frame's place is their motion, and nothing is made again. Another count is another instance.
+TEST(RetainedResidency, CopiesMovedAsManyAsBeforeMoveTheirRowsOnly)
+{
+  RetainedScene  scene;
+  const MeshId   grid = scene.addMesh(gridMesh(2, 0.f));
+  MaterialId     m    = material(scene, "m");
+  const EntityId e    = scene.createEntity("trees", {}, {});
+  MeshInstance   instance;
+  instance.parts.push_back({grid, {m}});
+  for(float x : {0.f, 10.f, 20.f})
+    instance.copies.push_back(glm::translate(glm::mat4(1.f), glm::vec3(x, 0.f, 0.f)));
+  scene.setMeshInstance(e, instance);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  ASSERT_EQ(residency.instanceHighWater(), 3u);
+  const uint32_t prims = residency.primHighWater();
+
+  std::vector<glm::mat4> swayed = instance.copies;
+  swayed[1]                     = glm::translate(glm::mat4(1.f), glm::vec3(10.f, 0.f, 0.5f));
+  scene.setCopies(e, swayed);
+  const SceneChanges changes = scene.takeChanges();
+  EXPECT_FALSE(changes.structure);
+  EXPECT_EQ(changes.transforms.count(e), 1u);
+  scene.setCopies(e, swayed);  // again, for the sync to take
+  gpu.beginFrame();
+  const SyncResult r = residency.sync(scene);
+  EXPECT_TRUE(r.changed);
+  EXPECT_FALSE(r.drawListChanged);
+  EXPECT_FALSE(r.dlssReset);  // motion vectors describe it
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(residency.instanceHighWater(), 3u);
+  EXPECT_EQ(residency.primHighWater(), prims);
+  EXPECT_EQ(gpu.tlas(residency.tlas())->rows[1].transform[2][3], 0.5f);
+  EXPECT_EQ(gpu.tlas(residency.tlas())->rows[0].transform[2][3], 0.f);
+  ASSERT_NE(residency.prevWorld(1), nullptr);
+  EXPECT_EQ((*residency.prevWorld(1))[3].z, 0.f);  // drawn last where it stood
+
+  // one fewer: the instance made again
+  swayed.pop_back();
+  scene.setCopies(e, swayed);
+  EXPECT_TRUE(scene.takeChanges().structure);
 }
 
 // A destroyed entity leaves holes; their slots come back only a frame cycle later, and the meshes and
