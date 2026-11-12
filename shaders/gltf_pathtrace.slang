@@ -686,13 +686,16 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
 #endif
 
-    // A segment under the water, outside any mesh's own medium, is charged its absorption. One that
-    // never meets the surface or the floor (past the floor's fade) is lost in it.
+    // A segment under the water, outside any mesh's own medium, takes the light the water scatters
+    // toward it (groundWaterInScatter) and is charged its extinction. One that never meets the surface
+    // or the floor (past the floor's fade: the open sea) ends in it, with that light.
     if(pt.inWater && !ptIsInside(pt))
     {
+      addRadiance(pt, pt.throughput * groundWaterInScatter(raytracer, ray.Origin, ray.Direction, payload.hitT, seed),
+                  pt.pathRoughness > DIRECT_PATH_ROUGHNESS);
       if(payload.hitT == INFINITE)
         return PathStepResult.eBreak;
-      pt.throughput *= exp(-GROUND_WATER_ABSORPTION * payload.hitT);
+      pt.throughput *= exp(-GROUND_WATER_EXTINCTION * payload.hitT);
     }
 
     // Charge the in-volume segment up to this hit, or the unbounded one of a miss, before anything

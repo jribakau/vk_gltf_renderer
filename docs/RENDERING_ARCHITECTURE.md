@@ -350,11 +350,14 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
   ripples in its normal (`waterSurfaceMaterial`), and what the ray's footprint averages of them in
   its roughness as Gaussian slopes, a Beckmann lobe (`PbrMaterial::gaussianSlopes`; sky.md § What a
   reflection sees). The path keeps its own `inWater` flag beside a
-  mesh's medium: each segment under the surface is charged pure water's absorption, and what is
-  under it sees water, not air, outside its surfaces. Crossing the surface is a clear crossing for MIS
+  mesh's medium: each segment under the surface is charged pure seawater's extinction (its
+  absorption and its scattering), takes the light the water scatters toward it
+  (`groundWaterInScatter`: one point drawn along the segment, one light sample and shadow ray there,
+  single scattering, so the open sea past the floor's fade glows blue and the clouds' shadow on the
+  sun reaches it), and what is under it sees water, not air, outside its surfaces. Crossing the surface is a clear crossing for MIS
   and spends a budget of its own, the glass's size. A shadow ray crosses the surface straight
   (`groundWaterShadowTransmittance`), keeping its Fresnel share and what the water does not
-  absorb. From under the water to a light above it also takes the caustic there
+  take. From under the water to a light above it also takes the caustic there
   (`groundWaterCaustic`): it finds where the surface lets in the light that lands at its origin and
   brightens it by how much the surface focuses that light on the way down, the inverse of the
   landing's Jacobian. Ripple and swell octaves that focus before that depth are left out of the

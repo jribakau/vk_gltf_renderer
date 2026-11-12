@@ -2063,6 +2063,42 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
 #endif  // GLTF_USE_SCATTER
 
 
+// The light the ground's water scatters toward a ray along its segment under the surface, from
+// `origin` along `dir` (unit), `length` long (INFINITE: no floor under it, past the floor's fade): its
+// single scattering (GROUND_WATER_SCATTERING, groundWaterPhase), from one point drawn along the segment
+// by its least extinction and one light sample there with its shadow ray. The shadow ray crosses the
+// surface as every one does (groundWaterShadowTransmittance: its Fresnel share, what the water takes on
+// the way down, the caustic), so the sun reaching the point is under the clouds' shadow
+// (getPunctualLightAt) and the scene's, the sky through the surface. Per unit of the path's throughput,
+// which the segment's extinction is charged to apart from this.
+float3 groundWaterInScatter(IRaytracer raytracer, float3 origin, float3 dir, float length, inout uint seed)
+{
+  const float3 sigmaT  = GROUND_WATER_EXTINCTION;
+  const float  sigmaLo = min(sigmaT.x, min(sigmaT.y, sigmaT.z));
+  // the point, drawn as exp(-sigmaLo t) over [0, length): every channel's weight then at most its
+  // scattering over sigmaLo
+  const float span = length < INFINITE ? 1.0F - exp(-sigmaLo * length) : 1.0F;
+  if(!(span > 0.0F))
+    return float3(0.0F);
+  const float t   = -log(max(1.0F - rand(seed) * span, 1e-30F)) / sigmaLo;
+  const float pdf = sigmaLo * exp(-sigmaLo * t) / span;
+  if(!(pdf > 0.0F))
+    return float3(0.0F);
+  const float3 pos = origin + dir * t;
+
+  DirectLight light;
+  sampleLights(pos, /*normal=*/dir, dir, seed, light, /*isVolumeSample=*/true);
+  if(light.pdf == 0.0F || all(light.radianceOverPdf == 0.0F))
+    return float3(0.0F);
+  RayDesc shadowRay;
+  shadowRay.Origin    = pos;
+  shadowRay.Direction = light.direction;
+  shadowRay.TMin      = 0.0F;
+  shadowRay.TMax      = light.distance;
+  const float3 shadow = raytracer.TraceShadow(shadowRay, seed);
+  return GROUND_WATER_SCATTERING * exp(-sigmaT * t) / pdf * groundWaterPhase(dot(dir, light.direction)) * light.radianceOverPdf * shadow;
+}
+
 // The haze on the camera's segment (haze.h.slang), from the eye along `dir` (unit) to `tEnd`: what
 // gets through of the light behind it, and the light it scatters toward the eye. One scatter point,
 // lit by one light sample drawn there, and one shadow ray; one more light sample places the guide

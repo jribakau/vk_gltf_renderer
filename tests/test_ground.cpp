@@ -341,6 +341,28 @@ TEST(GroundWaves, TheSurfaceReflectsWhatWaterDoes)
 
 // A shadow ray keeps what the surface lets through and the water does not absorb, along the part of
 // it under the water
+// Seawater's phase function takes in all the light it scatters (over the sphere, 1), and deep water
+// lit and seen straight down sends back, once scattered, what ground.h.slang says: about 4.6% of the
+// blue, 0.6% of the green, 0.07% of the red -- the open sea's blue. Its single scattering over an
+// unbounded depth: sigma_s p(180) / (2 sigma_t) per unit of the sun's irradiance, times pi.
+TEST(GroundWater, DeepWaterSendsBackBlue)
+{
+  double total = 0.0;
+  const int n  = 2000;
+  for(int i = 0; i < n; ++i)
+  {
+    const float c = -1.0f + 2.0f * (float(i) + 0.5f) / float(n);
+    total += groundWaterPhase(c) * 2.0 * 3.14159265 * (2.0 / n);
+  }
+  EXPECT_NEAR(total, 1.0, 1e-3);
+
+  const float3 sent = float(3.14159265) * GROUND_WATER_SCATTERING * groundWaterPhase(-1.0f) / (2.0f * GROUND_WATER_EXTINCTION);
+  EXPECT_NEAR(sent.z, 0.046f, 0.002f);
+  EXPECT_NEAR(sent.y, 0.006f, 0.0005f);
+  EXPECT_NEAR(sent.x, 0.0007f, 0.0001f);
+  EXPECT_GT(sent.z, 5.0f * sent.y);
+}
+
 TEST(GroundWaves, AShadowRayThroughTheWater)
 {
   SceneFrameInfo lake    = lakeAt(0.0f, 1.0f, 0.4f);
@@ -354,14 +376,14 @@ TEST(GroundWaves, AShadowRayThroughTheWater)
   const float crest = groundWavesAt(float2(0.0f, 0.0f), 0.0f, 0.4f).height;
   // up out of half a metre of water (and the wave there), to the sun, with the caustic there
   const float focus = groundWaterCaustic(float3(0, 0.5f, 0), float3(0, 1, 0), 1.0f, 0.4f, 0.0f);
-  near3(groundWaterShadowTransmittance(float3(0, 0.5f, 0), float3(0, 1, 0), 1e32f, &lake), through * focus * exp(-(0.5f + crest) * GROUND_WATER_ABSORPTION));
+  near3(groundWaterShadowTransmittance(float3(0, 0.5f, 0), float3(0, 1, 0), 1e32f, &lake), through * focus * exp(-(0.5f + crest) * GROUND_WATER_EXTINCTION));
   // down into it, to a light at the same point
-  near3(groundWaterShadowTransmittance(float3(0, 2, 0), float3(0, -1, 0), 1.5f, &lake), through * exp(-(0.5f + crest) * GROUND_WATER_ABSORPTION));
+  near3(groundWaterShadowTransmittance(float3(0, 2, 0), float3(0, -1, 0), 1.5f, &lake), through * exp(-(0.5f + crest) * GROUND_WATER_EXTINCTION));
   // in the air, and to a light still above the water
   near3(groundWaterShadowTransmittance(float3(0, 2, 0), float3(0, 1, 0), 1e32f, &lake), float3(1.0f));
   near3(groundWaterShadowTransmittance(float3(0, 2, 0), float3(0, -1, 0), 0.5f, &lake), float3(1.0f));
   // all of it under water: absorbed only
-  near3(groundWaterShadowTransmittance(float3(0, 0.5f, 0), float3(0, -1, 0), 0.25f, &lake), exp(-0.25f * GROUND_WATER_ABSORPTION));
+  near3(groundWaterShadowTransmittance(float3(0, 0.5f, 0), float3(0, -1, 0), 0.25f, &lake), exp(-0.25f * GROUND_WATER_EXTINCTION));
   // red goes first
   const float3 deep = groundWaterShadowTransmittance(float3(0, 0.01f, 0), float3(0, 1, 0), 1e32f, &lake);
   EXPECT_LT(deep.x, deep.y);
@@ -401,7 +423,7 @@ TEST(GroundWaves, UnderACrestIsInTheWater)
   const float focus = groundWaterCaustic(under, float3(0, 1, 0), 1.0f, 1.0f, 0.0f);
   EXPECT_NEAR(focus, 1.0f, 0.01f);
   EXPECT_LT(t.x, 1.0f - groundWaterFresnel(1.0f));
-  EXPECT_NEAR(t.z, (1.0f - groundWaterFresnel(1.0f)) * focus * std::exp(-0.5f * h * GROUND_WATER_ABSORPTION.z), 1e-5f);
+  EXPECT_NEAR(t.z, (1.0f - groundWaterFresnel(1.0f)) * focus * std::exp(-0.5f * h * GROUND_WATER_EXTINCTION.z), 1e-5f);
 }
 
 namespace {

@@ -240,12 +240,26 @@ float3 groundWetAlbedo(float3 dry)
 // The ground's water mode: a surface `waterDepth` above the floor, its gentle waves a heightfield
 // the rays meet (groundWaterCrossing), the ripples on them in its normal only. Under it light is
 // absorbed as by pure water, the red first, so depth turns the floor and what stands in it cyan and
-// then blue. A path's ray refracts at the surface; a shadow ray crosses it straight, losing its
+// then blue, and scattered as by pure seawater, so deep water past the floor glows blue in the sun
+// and the clouds' shadows darken it (groundWaterInScatter). A path's ray refracts at the surface; a shadow ray crosses it straight, losing its
 // Fresnel share, as through clear glass, and from under it takes the caustic the surface focuses
 // there (groundWaterShadowTransmittance, groundWaterCaustic).
 
-// Pure water's absorption, per metre, over the bands of the sRGB primaries (Pope and Fry 1997)
+// Pure water's absorption, per metre, over the bands of the sRGB primaries (Pope and Fry 1997: about
+// 630, 550 and 470 nm)
 static const float3 GROUND_WATER_ABSORPTION = float3(0.29F, 0.055F, 0.011F);
+// Pure seawater's scattering, per metre, over the same bands: Morel's 0.00288 at 500 nm, as the
+// wavelength to the -4.32. Deep water is blue by it: of light straight down it sends back about 4.6% of
+// the blue, 0.6% of the green and 0.07% of the red (once scattered; groundWaterInScatter), the open
+// sea's colour. Its phase function is the molecules' (groundWaterPhase).
+static const float3 GROUND_WATER_SCATTERING = float3(0.00106F, 0.00191F, 0.00376F);
+static const float3 GROUND_WATER_EXTINCTION = GROUND_WATER_ABSORPTION + GROUND_WATER_SCATTERING;
+
+// Seawater's phase function, per steradian: the molecules', (1 + 0.835 cos^2) normalised (Morel 1974)
+float groundWaterPhase(float cosTheta)
+{
+  return 0.06225F * (1.0F + 0.835F * cosTheta * cosTheta);
+}
 static const float  GROUND_TWO_PI           = 6.28318531F;
 // The swell at Waves 1: four trains of one steepness (their slope's amplitude) from a wind
 // GROUND_SWELL_WIND radians round from +x, each with its wavelength (metres), heading off the wind
@@ -542,7 +556,7 @@ float3 groundWaterShadowTransmittance(float3 origin, float3 direction, float tMa
   const float focus   = under && crossing.t >= 0.0F && direction.y > 0.0F
                             ? groundWaterCaustic(origin, direction, level, waves, frameInfo->groundRipples)
                             : 1.0F;
-  return through * focus * exp(-GROUND_WATER_ABSORPTION * wet);
+  return through * focus * exp(-GROUND_WATER_EXTINCTION * wet);
 }
 
 #endif  // GROUND_H_SLANG
