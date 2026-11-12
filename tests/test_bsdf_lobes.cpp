@@ -440,6 +440,58 @@ TEST(BsdfLobes, TheTerminatorTermFadesOnlyABumpedLobe)
   EXPECT_EQ(shadowTerminatorTerm(-N, N, Ns), 0.0f);
 }
 
+// A relief's own shadow (bumpShadowing) over facets of Gaussian slopes, a normal map's texels as a pixel's
+// samples meet them: Lambert's cosine at each facet's normal times the term takes in what the smooth
+// surface's projected area does, at every angle of the light (as a real relief does: every ray of the
+// light lands somewhere), and so never comes out brighter than the smooth surface, where the cosine with
+// the shadow-terminator term takes in a third more at 85 degrees. Without a known variance the term is
+// the terminator term; with none it is 1; a light under the smooth surface or behind the facet is shut out.
+TEST(BsdfLobes, ABumpsOwnShadowTakesInWhatTheSmoothSurfaceDoes)
+{
+  const vec3 Ns(0.0f, 0.0f, 1.0f);
+  for(float slope : {0.1f, 0.2f, 0.3f})
+  {
+    std::mt19937                    rng(11);
+    std::normal_distribution<float> gauss(0.0f, slope);
+    std::vector<vec3>               facets(100000);
+    for(vec3& n : facets)
+      n = normalize(vec3(-gauss(rng), -gauss(rng), 1.0f));
+    for(float degrees : {0.0f, 45.0f, 70.0f, 80.0f, 85.0f, 88.0f})
+    {
+      const float t = glm::radians(degrees), c = std::cos(t);
+      const vec3  L(std::sin(t), 0.0f, c);
+      double      taken = 0.0, seen = 0.0, terminator = 0.0;
+      for(const vec3& n : facets)
+      {
+        const float cosN = std::max(dot(n, L), 0.0f), g = bumpShadowing(L, n, Ns, slope * slope);
+        taken += cosN / n.z * g;  // per unit of the smooth surface: a facet's area is 1 / n.z of its share
+        seen += cosN * g;         // as a pixel's samples weigh it, by its share of the smooth surface
+        terminator += cosN * shadowTerminatorTerm(L, n, Ns);
+      }
+      const double n = double(facets.size());
+      EXPECT_NEAR(taken / n / c, 1.0, 0.01) << slope << " at " << degrees;
+      EXPECT_LT(seen / n / c, 1.0) << slope << " at " << degrees;
+      EXPECT_GT(seen / n / c, 0.88) << slope << " at " << degrees;
+      if(slope >= 0.2f && degrees == 85.0f)
+        EXPECT_GT(terminator / n / c, 1.3) << slope;
+    }
+  }
+
+  const vec3 N = caseNamed("normal map").N;
+  for(float cosI : {0.05f, 0.3f, 0.7f, 1.0f})
+  {
+    const vec3 L = normalize(cosI * N + std::sqrt(1.0f - cosI * cosI) * normalize(vec3(1.0f, 0.0f, -0.7f)));
+    EXPECT_FLOAT_EQ(bumpShadowing(L, N, Ns, -1.0f), shadowTerminatorTerm(L, N, Ns)) << cosI;
+    if(dot(L, Ns) > 0.0f)
+      EXPECT_FLOAT_EQ(bumpShadowing(L, N, Ns, 0.0f), 1.0f) << cosI;
+  }
+  const vec3 under = normalize(vec3(1.0f, 0.0f, -0.05f));  // under the smooth surface, above a facet turned to it
+  EXPECT_GT(dot(normalize(vec3(0.5f, 0.0f, 1.0f)), under), 0.0f);
+  EXPECT_EQ(bumpShadowing(under, normalize(vec3(0.5f, 0.0f, 1.0f)), Ns, 0.04f), 0.0f);
+  EXPECT_EQ(bumpShadowing(-N, N, Ns, 0.04f), 0.0f);
+  EXPECT_FLOAT_EQ(bumpShadowing(Ns, N, Ns, 0.04f), 1.0f);
+}
+
 // The softened diffuse lobe is, per channel, its share of a Lambert lobe about the smooth normal and
 // the rest about the map's: all of it about Ns at softening 1, and the plain lobe at softening 0.
 TEST(BsdfLobes, ASoftenedDiffuseLobeTurnsTowardTheSmoothNormal)

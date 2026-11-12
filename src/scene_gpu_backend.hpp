@@ -121,6 +121,7 @@ struct ImageInfo
   uint32_t width = 0, height = 0;
   bool     twoChannel    = false;  // exactly two colour channels (BC5, R8G8, ...): a normal map's X and Y
   float    meanLuminance = -1.f;   // linear, Rec. 709, of its texels; negative where unknown
+  float    slopeVariance = -1.f;   // a normal map's slopes' variance (imageSlopeVariance); negative where unknown
   uint64_t bytes         = 0;      // the GPU memory it holds (the residency's grace budget)
   bool     outOfMemory   = false;  // no image, for want of GPU memory
   bool     storedLevels  = false;  // its mips came from its source, so it can be decoded again smaller

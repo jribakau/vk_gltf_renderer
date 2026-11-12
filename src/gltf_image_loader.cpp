@@ -641,6 +641,151 @@ float imageMeanLuminance(const LoadedImageData& image)
   return 0.2126f * lin(read(m.r, 0)) + 0.7152f * lin(read(m.g, 1)) + 0.0722f * lin(read(m.b, 2));
 }
 
+void bc4Decode(const uint8_t block[8], bool snorm, float out[16])
+{
+  float e[8];
+  if(snorm)
+  {
+    e[0] = std::max(float(int8_t(block[0])) / 127.0f, -1.0f);
+    e[1] = std::max(float(int8_t(block[1])) / 127.0f, -1.0f);
+  }
+  else
+  {
+    e[0] = block[0] / 255.0f;
+    e[1] = block[1] / 255.0f;
+  }
+  const bool eight = snorm ? int8_t(block[0]) > int8_t(block[1]) : block[0] > block[1];
+  if(eight)
+    for(int i = 1; i < 7; i++)
+      e[i + 1] = ((7 - i) * e[0] + i * e[1]) / 7.0f;
+  else
+  {
+    for(int i = 1; i < 5; i++)
+      e[i + 1] = ((5 - i) * e[0] + i * e[1]) / 5.0f;
+    e[6] = snorm ? -1.0f : 0.0f;
+    e[7] = 1.0f;
+  }
+  uint64_t bits = 0;
+  for(int i = 0; i < 6; i++)
+    bits |= uint64_t(block[2 + i]) << (8 * i);
+  for(int t = 0; t < 16; t++)
+    out[t] = e[(bits >> (3 * t)) & 7u];
+}
+
+float imageSlopeVariance(const LoadedImageData& image)
+{
+  if(image.mipData.empty() || image.size.width == 0 || image.size.height == 0)
+    return -1.0f;
+  // what the format holds: two channels (z rebuilt from x and y, as the shader does) or three (z
+  // stored), compressed or 8-bit; an sRGB format is never a normal map's
+  enum class Kind
+  {
+    eNone,
+    eBc5,
+    eBc7,
+    eRg8,
+    eRgb8,
+    eRgba8,
+    eBgra8
+  };
+  Kind kind  = Kind::eNone;
+  bool snorm = false;
+  switch(image.format)
+  {
+    case VK_FORMAT_BC5_SNORM_BLOCK: snorm = true; [[fallthrough]];
+    case VK_FORMAT_BC5_UNORM_BLOCK: kind = Kind::eBc5; break;
+    case VK_FORMAT_BC7_UNORM_BLOCK: kind = Kind::eBc7; break;
+    case VK_FORMAT_R8G8_SNORM: snorm = true; [[fallthrough]];
+    case VK_FORMAT_R8G8_UNORM: kind = Kind::eRg8; break;
+    case VK_FORMAT_R8G8B8_UNORM: kind = Kind::eRgb8; break;
+    case VK_FORMAT_R8G8B8A8_UNORM: kind = Kind::eRgba8; break;
+    case VK_FORMAT_B8G8R8A8_UNORM: kind = Kind::eBgra8; break;
+    default: return -1.0f;
+  }
+  const std::vector<char>& level = image.mipData[0];
+  double                   sum[2] = {}, square[2] = {};
+  uint64_t                 count  = 0;
+  // a texel's channels as the shader reads them, -1..1; z < 0 where it is to be rebuilt. Its slope at
+  // most 4 (76 degrees): a texel past the unit circle, or a stored z near 0, is an encoding's error,
+  // not a cliff.
+  const auto add = [&](float x, float y, float z) {
+    const float z2       = z < 0.0f ? std::max(1.0f - x * x - y * y, 1.0f / 17.0f) : std::max(z * z, (x * x + y * y) / 16.0f);
+    const float slope[2] = {x / std::sqrt(std::max(z2, 1e-8f)), y / std::sqrt(std::max(z2, 1e-8f))};
+    for(int c = 0; c < 2; c++)
+    {
+      sum[c] += slope[c];
+      square[c] += double(slope[c]) * slope[c];
+    }
+    count++;
+  };
+  const auto unit = [snorm](float v) { return snorm ? v : v * 2.0f - 1.0f; };
+  // a grid of at most 64 x 64 blocks or texels over the first level at its full resolution, so its
+  // finest relief counts as the pixels' samples meet it (about 2% of the variance in its estimate)
+  const auto grid = [](uint32_t n) { return std::min(n, 64u); };
+  if(kind == Kind::eBc5 || kind == Kind::eBc7)
+  {
+    const uint32_t blockBytes = 16;  // BC5 and BC7 alike
+    const uint32_t bw = image.constant ? 1u : (image.size.width + 3) / 4, bh = image.constant ? 1u : (image.size.height + 3) / 4;
+    if(level.size() < size_t(bw) * bh * blockBytes)
+      return -1.0f;
+    const uint32_t nx = grid(bw), ny = grid(bh);
+    for(uint32_t j = 0; j < ny; ++j)
+      for(uint32_t i = 0; i < nx; ++i)
+      {
+        const size_t   bx = size_t(i) * bw / nx, by = size_t(j) * bh / ny;
+        const uint8_t* block = reinterpret_cast<const uint8_t*>(level.data()) + (by * bw + bx) * blockBytes;
+        if(kind == Kind::eBc5)
+        {
+          float x[16], y[16];
+          bc4Decode(block, snorm, x);
+          bc4Decode(block + 8, snorm, y);
+          for(int t = 0; t < 16; t++)
+            add(unit(x[t]), unit(y[t]), -1.0f);
+        }
+        else
+        {
+          // its first texel, one in sixteen of the level's: unbiased for the variance all the same
+          const std::array<uint8_t, 4> t = bc7FirstTexel(block);
+          add(t[0] / 127.5f - 1.0f, t[1] / 127.5f - 1.0f, t[2] / 127.5f - 1.0f);
+        }
+      }
+  }
+  else
+  {
+    const uint32_t channels = kind == Kind::eRg8 ? 2u : kind == Kind::eRgb8 ? 3u : 4u;
+    if(level.size() < size_t(image.size.width) * image.size.height * channels)
+      return -1.0f;
+    const uint32_t nx = grid(image.size.width), ny = grid(image.size.height);
+    for(uint32_t j = 0; j < ny; ++j)
+      for(uint32_t i = 0; i < nx; ++i)
+      {
+        const size_t   x = (size_t(i) * 2 + 1) * image.size.width / (2 * nx), y = (size_t(j) * 2 + 1) * image.size.height / (2 * ny);
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(level.data()) + (y * image.size.width + x) * channels;
+        if(kind == Kind::eRg8)
+        {
+          if(snorm)
+            add(std::max(float(int8_t(p[0])) / 127.0f, -1.0f), std::max(float(int8_t(p[1])) / 127.0f, -1.0f), -1.0f);
+          else
+            add(p[0] / 127.5f - 1.0f, p[1] / 127.5f - 1.0f, -1.0f);
+        }
+        else
+        {
+          const uint8_t r = kind == Kind::eBgra8 ? p[2] : p[0], b = kind == Kind::eBgra8 ? p[0] : p[2];
+          add(r / 127.5f - 1.0f, p[1] / 127.5f - 1.0f, b / 127.5f - 1.0f);
+        }
+      }
+  }
+  if(count == 0)
+    return -1.0f;
+  double variance = 0.0;
+  for(int c = 0; c < 2; c++)
+  {
+    const double mean = sum[c] / double(count);
+    variance += std::max(square[c] / double(count) - mean * mean, 0.0);
+  }
+  return float(0.5 * variance);
+}
+
 uint32_t formatColorComponentCount(VkFormat format)
 {
   switch(format)

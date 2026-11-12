@@ -72,6 +72,19 @@ float imageMeanLuminance(VkFormat format, VkExtent2D size, const std::vector<cha
 // the image's swizzle. Negative where unknown (other formats, a chain that stops short of 1 x 1).
 float imageMeanLuminance(const LoadedImageData& image);
 
+// How steep a normal map's relief is: the variance of its texels' slopes along each axis (the mean of
+// the two), about their mean, of the normal the shader reads (z rebuilt from x and y in a two-channel
+// format, stored in a three-channel one). From a grid of at most 64 x 64 over its first level at full
+// resolution: a BC5 one's blocks (every texel of each), a BC7 one's blocks (the first texel of each),
+// an 8-bit one's texels. Any unorm image of those formats gets a number, which only a normal map's
+// slot reads (its texture's use isn't known here; the grid costs well under a millisecond). Negative
+// for other formats and sRGB ones, which are no normal map's (bumpShadowing then takes the
+// shadow-terminator term).
+float imageSlopeVariance(const LoadedImageData& image);
+
+// A BC4 block's 16 texels, row by row, 0..1 (-1..1 snorm)
+void bc4Decode(const uint8_t block[8], bool snorm, float out[16]);
+
 // The top-left texel of a BC7 block, RGBA: a 1 x 1 level's only one. Texel 0 is subset 0's anchor
 // under every partition, so this needs the mode table and the weights only, not the partitions.
 std::array<uint8_t, 4> bc7FirstTexel(const uint8_t block[16]);

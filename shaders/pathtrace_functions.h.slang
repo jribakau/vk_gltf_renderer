@@ -1816,6 +1816,7 @@ PbrMaterial groundMaterial(float3 pos, float footprint, SceneFrameInfo* frameInf
   {
     mat.N = normalize(float3(-water.slope.x, 1.0F, -water.slope.y));
     orthonormalBasis(mat.N, mat.T, mat.B);
+    mat.bumpSlopeVariance = -1.0F;  // the ripples' tilt on the ground's diffuse: the terminator term, as before
   }
   return mat;
 }

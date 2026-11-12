@@ -2438,6 +2438,7 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
   table.twoChannelSource.assign(n, 0);
   table.cookedMips.assign(n, 0);
   table.meanLuminance.assign(n, -1.f);
+  table.slopeVariance.assign(n, -1.f);
   table.gpuIndex.assign(n, -1);
   for(size_t i = 0; i < n; i++)
   {
@@ -2450,6 +2451,7 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
     table.twoChannelSource[i]      = image.info.twoChannel ? 1 : 0;
     table.cookedMips[i]            = image.info.storedLevels ? 1 : 0;
     table.meanLuminance[i]         = image.info.meanLuminance;
+    table.slopeVariance[i]         = image.info.slopeVariance;
   }
   const nvvkgltf::MaterialBits before = state->bits;
   state->bits                         = nvvkgltf::materialBits(state->payload);

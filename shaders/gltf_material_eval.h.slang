@@ -347,6 +347,9 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
     pbrMat.N           = normalize(mul(normal_vector, tbn));
     needsTangentUpdate = true;  // Mark that we need to update T and B due to normal perturbation
   }
+  // how steep the relief bending N is, the whole map's (0 without one, negative where unknown): its
+  // own shadow on the diffuse lobe (bumpShadowing)
+  pbrMat.bumpSlopeVariance = material.normalSlopeVariance;
 
 #if GLTF_USE_DETAIL
   // FV_materials_detail (Figure Viewer, for DAZ PBRSkin): a detail normal map, tiled through its
@@ -392,6 +395,9 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
         detailNormal.y *= slopeScale;
         pbrMat.N           = applyDetailNormal(pbrMat.N, state.T, state.B, detailNormal);
         needsTangentUpdate = true;
+        // its slopes add to the normal map's, as independent reliefs' do
+        if(pbrMat.bumpSlopeVariance >= 0.0F)
+          pbrMat.bumpSlopeVariance = material.detailSlopeVariance < 0.0F ? -1.0F : pbrMat.bumpSlopeVariance + material.detailSlopeVariance * slopeScale * slopeScale;
       }
     }
     float roughnessMul = material.detailRoughnessFactor;

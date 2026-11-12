@@ -71,6 +71,9 @@ struct TextureSlotTable
   // The source image's mean luminance (linear, Rec. 709), from a grid of its texels; negative where
   // unknown (a compressed or float format). An emissive texture's weight as a light.
   std::vector<float> meanLuminance;
+  // A normal map's slopes' variance along each axis (nvvkgltf::imageSlopeVariance); negative where
+  // unknown. The relief's own shadow on the diffuse lobe (GltfShadeMaterial::normalSlopeVariance).
+  std::vector<float> slopeVariance;
   // The GPU texture each texture index names (GltfTextureInfo::index); empty: the index itself. The
   // retained scene's materials index their own texture tables, which this maps to texture slots.
   std::vector<int> gpuIndex;
@@ -99,6 +102,14 @@ struct TextureSlotTable
     return mean >= 0.0f ? mean : 1.0f;
   }
 
+  // A normal map's slopes' variance at unit scale, negative where unknown; 0 for no map
+  float slopeVarianceOf(int texIndex) const
+  {
+    if(texIndex < 0)
+      return 0.0f;
+    return texIndex < static_cast<int>(slopeVariance.size()) ? slopeVariance[texIndex] : -1.0f;
+  }
+
   int gpuTexture(int texIndex) const
   {
     if(gpuIndex.empty() || texIndex < 0)
@@ -111,6 +122,7 @@ struct TextureSlotTable
     twoChannelSource.clear();
     cookedMips.clear();
     meanLuminance.clear();
+    slopeVariance.clear();
     gpuIndex.clear();
   }
 };

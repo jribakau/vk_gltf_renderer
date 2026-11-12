@@ -583,6 +583,117 @@ TEST(MaterialCache, ACookedImagesMeanLuminanceIsItsSmallestLevel)
   EXPECT_NEAR(nvvkgltf::imageMeanLuminance(rgba), 0.2126f, 1e-5f);
 }
 
+// A normal map's slopes' variance is its texels': the mean of the two axes' variances of the slope of the
+// normal the shader reads (z rebuilt from x and y in two channels, stored in three), the same from 8-bit
+// texels and from BC5 and BC7 blocks of them; a flat map has none; an sRGB image is no normal map.
+TEST(MaterialCache, ANormalMapsSlopeVarianceIsItsTexels)
+{
+  // x at 0.6 and -0.6 (bytes 204 and 51), y at 128: z^2 = 0.64 - y^2, the slopes +-0.6 / z along x
+  const float y = 128.0f / 255.0f * 2.0f - 1.0f, expected = 0.5f * 0.36f / (0.64f - y * y);
+  nvvkgltf::LoadedImageData rg;
+  rg.format  = VK_FORMAT_R8G8_UNORM;
+  rg.size    = {2, 2};
+  rg.mipData = {std::vector<char>{char(204), char(128), char(51), char(128), char(51), char(128), char(204), char(128)}};
+  EXPECT_NEAR(nvvkgltf::imageSlopeVariance(rg), expected, 1e-4f);
+  rg.mipData = {std::vector<char>(8, char(128))};
+  EXPECT_NEAR(nvvkgltf::imageSlopeVariance(rg), 0.0f, 1e-6f);
+
+  // one BC5 block: x's endpoints 204 and 51, its texels alternating between them; y's one value, 128
+  uint8_t  block[16] = {204, 51, 0, 0, 0, 0, 0, 0, 128, 128, 0, 0, 0, 0, 0, 0};
+  uint64_t bits      = 0;
+  for(int t = 0; t < 16; t++)
+    bits |= uint64_t(t % 2) << (3 * t);
+  for(int i = 0; i < 6; i++)
+    block[2 + i] = uint8_t(bits >> (8 * i));
+  float x[16];
+  nvvkgltf::bc4Decode(block, false, x);
+  EXPECT_FLOAT_EQ(x[0], 0.8f);
+  EXPECT_FLOAT_EQ(x[1], 0.2f);
+  nvvkgltf::LoadedImageData bc5;
+  bc5.format  = VK_FORMAT_BC5_UNORM_BLOCK;
+  bc5.size    = {4, 4};
+  bc5.mipData = {std::vector<char>(reinterpret_cast<const char*>(block), reinterpret_cast<const char*>(block) + 16)};
+  EXPECT_NEAR(nvvkgltf::imageSlopeVariance(bc5), expected, 1e-4f);
+  // a map of one block kept for its whole size (LoadedImageData::constant)
+  bc5.size     = {4096, 4096};
+  bc5.constant = true;
+  EXPECT_NEAR(nvvkgltf::imageSlopeVariance(bc5), expected, 1e-4f);
+
+  // three channels store z: x at +-0.6 over z = 230 / 127.5 - 1
+  const float               z = 230.0f / 127.5f - 1.0f, stored = 0.5f * 0.36f / (z * z);
+  nvvkgltf::LoadedImageData rgba;
+  rgba.format  = VK_FORMAT_R8G8B8A8_UNORM;
+  rgba.size    = {2, 1};
+  rgba.mipData = {std::vector<char>{char(204), char(128), char(230), char(255), char(51), char(128), char(230), char(255)}};
+  EXPECT_NEAR(nvvkgltf::imageSlopeVariance(rgba), stored, 2e-3f);
+  rgba.format = VK_FORMAT_R8G8B8A8_SRGB;  // a colour, no normal map
+  EXPECT_LT(nvvkgltf::imageSlopeVariance(rgba), 0.0f);
+
+  // BC7, mode 6 (both endpoints one RGBA, so every texel it): its first texel of each block; two blocks,
+  // x at 204 and 51
+  const auto mode6 = [](uint8_t r, uint8_t g, uint8_t b) {
+    std::array<uint8_t, 16> out{};
+    uint32_t                pos = 0;
+    const auto put = [&](uint32_t v, uint32_t n) {
+      for(uint32_t i = 0; i < n; i++, pos++)
+        out[pos >> 3] |= uint8_t(((v >> i) & 1u) << (pos & 7));
+    };
+    put(1u << 6, 7);  // mode 6
+    for(uint8_t c : {r, g, b, uint8_t(255)})
+    {
+      put(c >> 1, 7);
+      put(c >> 1, 7);
+    }
+    put(r & 1u, 1);  // the p-bits: the low bit of every channel at once (the channels here share it)
+    put(r & 1u, 1);
+    return out;
+  };
+  const std::array<uint8_t, 16> right = mode6(204, 128, 230), left = mode6(51 + 1, 128, 230);
+  EXPECT_EQ(int(nvvkgltf::bc7FirstTexel(right.data())[0]), 204);
+  nvvkgltf::LoadedImageData bc7;
+  bc7.format = VK_FORMAT_BC7_UNORM_BLOCK;
+  bc7.size   = {8, 4};
+  bc7.mipData = {std::vector<char>(reinterpret_cast<const char*>(right.data()), reinterpret_cast<const char*>(right.data()) + 16)};
+  bc7.mipData[0].insert(bc7.mipData[0].end(), reinterpret_cast<const char*>(left.data()), reinterpret_cast<const char*>(left.data()) + 16);
+  const float x52 = 52.0f / 127.5f - 1.0f, x204 = 204.0f / 127.5f - 1.0f, mean = 0.5f * (x204 + x52) / z;
+  const float bc7Expected = 0.5f * (0.5f * ((x204 / z - mean) * (x204 / z - mean) + (x52 / z - mean) * (x52 / z - mean)));
+  EXPECT_NEAR(nvvkgltf::imageSlopeVariance(bc7), bc7Expected, 2e-3f);
+  bc7.format = VK_FORMAT_BC7_SRGB_BLOCK;
+  EXPECT_LT(nvvkgltf::imageSlopeVariance(bc7), 0.0f);
+}
+
+// The row carries its normal map's slopes' variance times its strength squared (0 without a map,
+// negative where the image's is unknown), and its detail map's at unit strength; an update keeps them
+TEST(MaterialCache, ARowCarriesItsReliefsSlopeVariance)
+{
+  nvvkgltf::TextureSlotTable slots;
+  slots.slopeVariance = {0.04f, -1.0f, 0.01f};
+
+  tinygltf::Material known, unknown, none;
+  known.normalTexture.index   = 0;
+  known.normalTexture.scale   = 2.0;
+  unknown.normalTexture.index = 1;
+
+  nvvkgltf::MaterialCache cache;
+  cache.buildFromMaterials({known, unknown, none}, slots);
+  const auto& shade = cache.getShadeMaterials();
+  ASSERT_EQ(shade.size(), 3u);
+  EXPECT_FLOAT_EQ(shade[0].normalSlopeVariance, 0.16f);
+  EXPECT_LT(shade[1].normalSlopeVariance, 0.0f);
+  EXPECT_FLOAT_EQ(shade[2].normalSlopeVariance, 0.0f);
+  EXPECT_FLOAT_EQ(shade[2].detailSlopeVariance, 0.0f);
+
+  known.normalTexture.scale = 0.5;
+  EXPECT_FALSE(cache.updateMaterial(0, known, slots).topologyChanged);
+  EXPECT_FLOAT_EQ(cache.getShadeMaterials()[0].normalSlopeVariance, 0.01f);
+
+  fv::mat::Material detailed;
+  detailed.detail.emplace();
+  detailed.detail->normalMap.index = 2;
+  std::vector<shaderio::GltfTextureInfo> infos;
+  EXPECT_FLOAT_EQ(nvvkgltf::MaterialCache::convertOne(detailed, slots, 0, infos).detailSlopeVariance, 0.01f);
+}
+
 #if MAT_EXT_TEXTURE_TRANSFORM
 // KHR_texture_transform as the shader applies it (mul(float3(uv, 1), M): rows 0 and 1 by u and v,
 // plus row 2) is the spec's offset + R * scale * uv. Its example samples the lower-left quadrant of

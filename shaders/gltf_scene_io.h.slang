@@ -248,6 +248,12 @@ struct GltfShadeMaterial
   // cloth; not strands): on the frames DLSS draws a hit of it is kept, and the path goes on through it
   // by its open share (opacityFilmKept)
   int opacityFilm = 0;
+  // How steep the normal map's relief is: the variance of its slopes along each axis, times
+  // normalTextureScale squared, from the decoded image (imageSlopeVariance); 0 without a map, negative
+  // where unknown. The detail map's at its unit scale; the shader scales it by the detail's strength and
+  // weight. The relief's own shadow on the diffuse lobe (PbrMaterial::bumpSlopeVariance, bumpShadowing).
+  float normalSlopeVariance = 0;
+  float detailSlopeVariance = 0;
 
 #if MAT_EXT_VOLUME
   float3 attenuationColor = float3(1);

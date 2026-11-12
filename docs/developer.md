@@ -445,6 +445,12 @@ Some things about the transport are worth knowing before touching it:
   The sampler drops the rest, and the pdf leaves those directions out; a light sample there keeps
   its value at MIS weight 1, so gate light samples on `bsdfEvaluated`, not on the pdf. The ground
   plane and water opt out (`PbrMaterial::faceSided`): their waves are the surface.
+- A **bumped diffuse lobe** takes the relief's own shadow (`bumpShadowing`): Smith's G1 of the light's
+  angle to the smooth normal, for the slopes the normal and detail maps hold over their whole image
+  (measured from the decoded image, `imageSlopeVariance`, carried in the material row). Over a map's
+  texels, Lambert's cosine at the bent normal times it takes in what the smooth surface does, so a low
+  light no longer brightens a bumped surface, and each texel keeps its own cosine, so the relief still
+  shows. Where the slopes are unknown (a map that isn't two-channel) it is the shadow-terminator term.
 - The **diffuse exit** (`ePtVolumeDiffuseExit`) is Lambertian times the boundary's Fresnel
   transmittance toward the light, over its cosine-weighted mean (`diffuseExitFresnelWeight`,
   `ePtExitFresnel`): the entry paid (1 − F) on the camera's side, so the exit pays it on the

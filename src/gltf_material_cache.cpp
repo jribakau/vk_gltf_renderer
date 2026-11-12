@@ -357,6 +357,17 @@ void MaterialCache::append(const fv::mat::Material& srcMat, const TextureSlotTab
   m_shadeMaterials.emplace_back(convertOne(srcMat, textureSlots, 0, m_textureInfos));
 }
 
+// What the row takes from its textures' decoded images: an emissive map's mean (its weight as a light)
+// and its normal and detail maps' slopes' variance (their relief's own shadow)
+static void applyTextureStats(shaderio::GltfShadeMaterial& dstMat, const fv::mat::Material& srcMat, const TextureSlotTable& textureSlots)
+{
+  dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveMap.index);
+  const float normal         = textureSlots.slopeVarianceOf(srcMat.normalMap.index);
+  const float scale          = srcMat.normalMap.scale.value_or(1.0f);
+  dstMat.normalSlopeVariance = normal < 0.0f ? -1.0f : normal * scale * scale;
+  dstMat.detailSlopeVariance = srcMat.detail ? textureSlots.slopeVarianceOf(srcMat.detail->normalMap.index) : 0.0f;
+}
+
 shaderio::GltfShadeMaterial MaterialCache::convertOne(const fv::mat::Material&                srcMat,
                                                       const TextureSlotTable&                 textureSlots,
                                                       uint32_t                                base,
@@ -372,7 +383,7 @@ shaderio::GltfShadeMaterial MaterialCache::convertOne(const fv::mat::Material&  
       infos.push_back(ti);
     }
   });
-  dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveMap.index);
+  applyTextureStats(dstMat, srcMat, textureSlots);
   return dstMat;
 }
 
@@ -414,7 +425,7 @@ MaterialUpdateResult MaterialCache::updateMaterial(int index, const tinygltf::Ma
     result.span.maxIdx = std::max(result.span.maxIdx, texIndex);
     result.span.count++;
   });
-  dstMat.emissiveLightScale = textureSlots.emissiveLightScale(srcMat.emissiveMap.index);
+  applyTextureStats(dstMat, srcMat, textureSlots);
   return result;
 }
 

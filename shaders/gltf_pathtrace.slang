@@ -1083,12 +1083,14 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         const float3 T          = pbrMat.T;
         const float3 B          = pbrMat.B;
         const float3 Ns         = pbrMat.Ns;
+        const float  bumpSlopes = pbrMat.bumpSlopeVariance;
         pbrMat                  = defaultPbrMaterial(exitAlbedo, 0.0F, 1.0F, N, Ng);
         pbrMat.specular         = 0.0F;
         pbrMat.ior2             = 1.0F;
         pbrMat.T                = T;
         pbrMat.B                = B;
         pbrMat.Ns               = Ns;
+        pbrMat.bumpSlopeVariance = bumpSlopes;  // the relief's own shadow on the exit's light (bumpShadowing)
         // The boundary the light crosses on its way in, which the camera's side paid at the entry
         // (diffuseExitFresnelWeight): on the light sample and on the continuation alike
         if(hasFlag(pushConst.flags, PathtracerFlags::ePtExitFresnel))

@@ -729,6 +729,7 @@ ImageHandle VulkanGpuBackend::createFromDecoded(const ImageSource& source, nvvkg
   info.height        = loaded.size.height;
   info.twoChannel    = nvvkgltf::formatColorComponentCount(loaded.format) == 2;
   info.meanLuminance = nvvkgltf::imageMeanLuminance(loaded);
+  info.slopeVariance = nvvkgltf::imageSlopeVariance(loaded);
   VmaAllocationInfo allocation{};
   vmaGetAllocationInfo(*m_info.alloc, image.allocation, &allocation);
   info.bytes        = allocation.size;

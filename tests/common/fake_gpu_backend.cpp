@@ -280,6 +280,9 @@ ImageHandle FakeGpuBackend::createImage(const ImageSource& source, ImageInfo& in
   // "mean=<v>" anywhere in its name: its texels' mean luminance, as a decode measures it (unknown otherwise)
   if(const size_t at = source.uri.find("mean="); at != std::string::npos)
     info.meanLuminance = std::stof(source.uri.substr(at + 5));
+  // "slope=<v>": a normal map's slopes' variance, as a decode measures it (unknown otherwise)
+  if(const size_t at = source.uri.find("slope="); at != std::string::npos)
+    info.slopeVariance = std::stof(source.uri.substr(at + 6));
   info.bytes      = uint64_t(info.width) * info.height * 4;
   info.storedLevels = source.uri.rfind("chain", 0) == 0;
   if(info.storedLevels || made)
