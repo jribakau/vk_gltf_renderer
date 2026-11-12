@@ -2390,7 +2390,8 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     const float3 eye = pushConst.frameInfo->viewInv[3].xyz;
     const float2 u   = float2(rand(seed), rand(seed));
     AerialMarch  march =
-        evalAerialPerspective(pt.firstHitPos, eye, pushConst.frameInfo, g_atmosphere, g_transmittance, g_irradiance, u);
+        evalAerialPerspective(pt.firstHitPos, eye, pushConst.frameInfo, g_atmosphere, g_transmittance, g_scattering,
+                              g_singleMie, g_irradiance, u);
 
     // The atmosphere lights every point of the segment with the sun; the scene may not. One
     // shadow ray from a point picked in proportion to the sun's share turns that share into an

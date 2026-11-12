@@ -38,6 +38,7 @@
 #include "nvshaders/functions.h.slang"  // luminance, quatRotateInverse
 #include "sky_bruneton_functions.h.slang"
 #include "sky_bruneton_io.h.slang"
+#include "sky_bruneton_radiance.h.slang"  // skyEyeRadius
 
 // Cheap test the call sites use to skip the work entirely.
 //
@@ -68,7 +69,8 @@ bool hasAerialPerspective(SceneFrameInfo* frameInfo)
 // cannot hand back the local source term a march needs, so it comes from the irradiance table as an
 // isotropic term (aerialSkyLight): the sky above and the ground's light below. In clear air the
 // sun's single scattering is most of the light; in a mist the sun is spent within the first
-// kilometre and this is nearly all of it.
+// kilometre and this is nearly all of it, and a haze's air is raised to the tables' own light along the
+// ray where it falls short of it (hazeGlow, below).
 //
 // **The sun's share, and one point on it.** Every point of the march is treated as sunlit, with only
 // the planet's shadow in it: the atmosphere knows nothing of the scene. So the sun's single
@@ -86,13 +88,80 @@ bool hasAerialPerspective(SceneFrameInfo* frameInfo)
 // (E + albedo (E + E_sun)) / 2 pi. E / 4 pi had been taken, half the sky and none of the ground: a
 // clear day's air is the sun's and didn't show it (the meadow's tree line within 0.001 of 255), and
 // in 5 km of visibility the tree line 260 m off came out at 0.05 of the screen, now 0.08 (2026-11-12).
-// Even, it has no glow toward the sun, which a hazy sky's light near it is: there the land's air stays
-// darker than the sky beside it (docs/sky.md, How much air).
+// Even, it has no glow toward the sun, which a hazy sky's light near it is: hazeGlow supplies that.
 float3 aerialSkyLight(SkyAtmosphereParameters atmosphere, Sampler2D<float3> irradianceTexture, float r, float muSun, float3 sunTransmittance)
 {
   const float3 sky         = GetIrradiance(atmosphere, irradianceTexture, r, muSun);
   const float3 sunOnGround = atmosphere.solarIrradiance * sunTransmittance * max(muSun, 0.0F);
   return (sky + atmosphere.groundAlbedo * (sky + sunOnGround)) * (1.0F / (2.0F * M_PI));
+}
+
+// **The haze's glow.** In a haze the sky's light is mostly light scattered many times, and it keeps a
+// glow toward the sun that aerialSkyLight, even, has none of: a misted wood stayed dark under a sky
+// ten times as bright beside it. The sky's own tables have it, along whole rays: what they scatter
+// toward the eye along a direction, per unit of the air's opacity along it, is the light the air
+// sends that way on average, and a segment of that air, of opacity 1 - T, sends that share of it.
+// Where the air before a surface sends less than that, it is raised to it (hazeGlow): in a thick
+// haze, a distant wood fades into the sky above it, as a misted one does.
+//
+// It holds for air the same along the ray, which a mist near the ground is and a clear day's air,
+// its light mostly the sun's single scattering that the march has exactly, is not: it is weighed in
+// by the visibility (hazeGlowWeight), none at kHazeGlowFromKm and over, all of it at kHazeGlowFullKm
+// and under; a clear day is marched as before, and costs nothing more.
+//
+// Only the half of the tables for rays that escape is read: a ray under the horizon takes the light of
+// one kHazeGlowHorizonMu over it, at its own angle to the sun. The other half, for rays that meet the
+// planet, is of rays a few metres long from an eye by the ground, read between rows of its height
+// that are of longer ones: their light over the short ray's opacity drew a band four times the sky's
+// under the horizon (2 km of visibility), where GetSkyRadianceToPoint drew its line
+// (sky_bruneton_functions.h.slang). A misted land fades into its horizon's light; seen from over it,
+// the light it fades to is the horizon's too, not the dimmer light coming up from under a mist.
+//
+// The tables are read from where the sky the camera sees is seen from (`skyRadius`; skyEyeRadius),
+// which over a backdrop is not where the march's eye stands: that counts the land's air several
+// times over, its height with it. Read from the march's, a far hill seen from 150 m up stood 40%
+// darker than the sky over it (5 km of visibility), where the air before it is as thick as the
+// sky's.
+static const float kHazeGlowFromKm     = 30.0F;
+static const float kHazeGlowFullKm     = 8.0F;
+static const float kHazeGlowHorizonMu  = 0.03F;
+static const float kKoschmiederContrast = 3.912F;  // -ln 0.02: what a visibility's 2% of contrast is in optical depth
+
+// The share of hazeGlow to take for an atmosphere: by its visibility by the ground, as
+// sky_visibility::aerosolScale sets it (Rayleigh and aerosol extinction in the green).
+float hazeGlowWeight(SkyAtmosphereParameters atmosphere)
+{
+  const float extinction = atmosphere.rayleighScattering.y * GetProfileDensity(atmosphere.rayleighDensity, 0.0F)
+                           + atmosphere.mieExtinction.y * GetProfileDensity(atmosphere.mieDensity, 0.0F);
+  const float visibility = kKoschmiederContrast / max(extinction, 1e-6F);
+  return saturate((kHazeGlowFromKm - visibility) / (kHazeGlowFromKm - kHazeGlowFullKm));
+}
+
+// What a haze's air of `opacity` (1 - its transmittance) sends toward `observer` along `dir`, by
+// the tables (see above): the light it would raise the march's to.
+float3 hazeGlow(SkyAtmosphereParameters atmosphere,
+                Sampler2D<float3>       transmittanceTexture,
+                Sampler3D<float4>       scatteringTexture,
+                Sampler3D<float4>       singleMieScatteringTexture,
+                float3                  observer,
+                float3                  dir,
+                float3                  sunDirection,
+                float3                  opacity)
+{
+  const float r    = max(length(observer), atmosphere.bottomRadius + 1e-4F);
+  const float mu   = dot(observer, dir) / r;
+  const float mu_s = dot(observer, sunDirection) / r;
+  const float nu   = dot(dir, sunDirection);
+
+  const float sinHorizon = atmosphere.bottomRadius / r;
+  const float above      = max(mu, -sqrt(max(1.0F - sinHorizon * sinHorizon, 0.0F)) + kHazeGlowHorizonMu);
+
+  // what the tables scatter toward the eye along it, over the opacity along it to the top of the air
+  float3       mie;
+  const float3 rayleigh = GetCombinedScattering(atmosphere, scatteringTexture, singleMieScatteringTexture, r, above, mu_s, nu, false, mie);
+  const float3 light    = rayleigh * RayleighPhaseFunction(nu) + mie * MiePhaseFunction(atmosphere.miePhaseFunctionG, nu);
+  const float3 through  = GetTransmittanceToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r, above);
+  return light / max(float3(1.0F) - through, float3(1e-4F)) * opacity;
 }
 
 struct AerialMarch
@@ -102,12 +171,16 @@ struct AerialMarch
   float3 sunInScatter;   // the sun's single-scattering part of inScatter
   float3 sunEstimate;    // one-sample estimate of sunInScatter at `sunPoint`; zero when the sun adds nothing
   float  sunPoint;       // where that sample stands, 0 at the eye to 1 at the surface
+  float3 glow;           // what hazeGlow raised inScatter by, a part of it besides the sun's
 };
 
 AerialMarch marchAerialPerspective(SkyAtmosphereParameters atmosphere,
                                    Sampler2D<float3>       transmittanceTexture,
+                                   Sampler3D<float4>       scatteringTexture,
+                                   Sampler3D<float4>       singleMieScatteringTexture,
                                    Sampler2D<float3>       irradianceTexture,
                                    float3                  observer,
+                                   float                   skyRadius,
                                    float3                  displacement,
                                    float3                  sunDirection,
                                    float2                  u)
@@ -196,8 +269,20 @@ AerialMarch marchAerialPerspective(SkyAtmosphereParameters atmosphere,
     }
   }
 
+  // In a haze, no less than the tables' light along the ray (hazeGlow)
+  float3      glow   = float3(0.0F);
+  const float weight = hazeGlowWeight(atmosphere);
+  if(weight > 0.0F)
+  {
+    const float3 table = hazeGlow(atmosphere, transmittanceTexture, scatteringTexture, singleMieScatteringTexture,
+                                  normalize(observer) * skyRadius, dir, sunDirection, float3(1.0F) - throughput);
+    glow               = weight * max(table - inScatter, float3(0.0F));
+    inScatter += glow;
+  }
+
   AerialMarch march;
   march.inScatter     = inScatter;
+  march.glow          = glow;
   march.transmittance = throughput;
   march.sunInScatter  = sunInScatter;
   march.sunEstimate   = (pickedLum > 0.0F) ? sunPicked * (sunTotal / pickedLum) : float3(0.0F);
@@ -237,6 +322,8 @@ AerialMarch evalAerialPerspective(float3                  worldPos,
                                   SceneFrameInfo*         frameInfo,
                                   SkyAtmosphereParameters atmosphere,
                                   Sampler2D<float3>       transmittanceTexture,
+                                  Sampler3D<float4>       scatteringTexture,
+                                  Sampler3D<float4>       singleMieScatteringTexture,
                                   Sampler2D<float3>       irradianceTexture,
                                   float2                  u)
 {
@@ -253,6 +340,7 @@ AerialMarch evalAerialPerspective(float3                  worldPos,
     none.sunInScatter  = float3(0.0F);
     none.sunEstimate   = float3(0.0F);
     none.sunPoint      = 0.0F;
+    none.glow          = float3(0.0F);
     return none;
   }
 
@@ -260,16 +348,23 @@ AerialMarch evalAerialPerspective(float3                  worldPos,
   // through dot products against this vector.
   const float3 observer = float3(0.0F, atmosphere.bottomRadius + frameInfo->observerAltitudeKm, 0.0F);
   const float3 sunDir   = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
-  AerialMarch  march =
-      marchAerialPerspective(atmosphere, transmittanceTexture, irradianceTexture, observer, displacement, sunDir, u);
+  const float  skyRadius =
+      skyEyeRadius(atmosphere, frameInfo->sunDisk->observerRadius, frameInfo->observerAltitudeKm, frameInfo->aerialPerspectiveScale);
+  AerialMarch march = marchAerialPerspective(atmosphere, transmittanceTexture, scatteringTexture, singleMieScatteringTexture,
+                                             irradianceTexture, observer, skyRadius, displacement, sunDir, u);
 
   // Under a cloud the air in the scene is in its shadow as well as the scene is. The sums take the
   // share at the scene's origin (SkySunDisk::cloudShadow, 1 under a clear sky); the one-sample
   // estimate is left clear, for the caller to take the share where its point stands (cloudSunShare
   // in gltf_pathtrace.slang), which puts the air under a gap in the light and the rest in shade.
+  // A haze's glow is the sun's light scattered many times over kilometres of it, and under the clouds
+  // takes the share of the distant haze the sun still reaches (sunlitGround), as the sky below the
+  // horizon does: the origin's own shade left a misted wood black under a cloud against a lit sky.
   const float cloudShadow = frameInfo->sunDisk->cloudShadow;
-  march.inScatter -= march.sunInScatter * (1.0F - cloudShadow);
+  const float glowShare   = frameInfo->sunDisk->sunlitGround;
+  march.inScatter -= march.sunInScatter * (1.0F - cloudShadow) + march.glow * (1.0F - glowShare);
   march.sunInScatter *= cloudShadow;
+  march.glow *= glowShare;
 
   // The transmittance is dimensionless and needs no conversion; the in-scatter is spectral radiance
   // at three wavelengths and does, exactly as the bake converts what GetSkyRadiance hands it. Miss
@@ -279,6 +374,7 @@ AerialMarch evalAerialPerspective(float3                  worldPos,
   march.inScatter *= toScene;
   march.sunInScatter *= toScene;
   march.sunEstimate *= toScene;
+  march.glow *= toScene;
   return march;
 }
 

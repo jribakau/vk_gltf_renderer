@@ -424,7 +424,8 @@ float4 marchClouds(float r0, float3 dir, float jitter, out float depth)
   const float frontDepth = max(transmittanceSum > 0.0F ? weightedDistanceSum / transmittanceSum : rayNear, 1e-3F);
   depth                  = frontDepth;
   const AerialMarch air =
-      marchAerialPerspective(g_atmosphere, g_transmittance, g_irradiance, observer, dir * frontDepth, sunDir, float2(0.5F));
+      marchAerialPerspective(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, observer, r0,
+                             dir * frontDepth, sunDir, float2(0.5F));
   const float3 airInFront = (air.sunInScatter * s_air.x + (air.inScatter - air.sunInScatter) * s_air.y) * SKY_RADIANCE_TO_LUMINANCE;
   return cloudTexel(radianceIntegral, transmittance, air.transmittance, airInFront);
 }
