@@ -876,6 +876,7 @@ std::vector<DrawItem> RetainedScene::drawItems()
 {
   updateWorld();
   std::vector<DrawItem> out;
+  out.reserve(m_drawItemsWere);  // as many as the last time, most likely: a scene of 100,000 grew the list 17 times
   for(EntityId id : entitiesInOrder())
   {
     const Entity& e = m_entities[id];
@@ -915,6 +916,7 @@ std::vector<DrawItem> RetainedScene::drawItems()
       }
     }
   }
+  m_drawItemsWere = out.size();
   return out;
 }
 

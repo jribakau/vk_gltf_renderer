@@ -805,6 +805,11 @@ private:
   uint32_t                                      m_micromapPrims = 0;  // prims that link one
   std::vector<std::optional<Instance>> m_instances;  // by instance slot, up to the high-water mark
   std::map<InstanceKey, uint32_t>      m_slotOf;
+  // The slot of each of the last sync's draw items, by its place in the list (syncRows): the next
+  // takes them from here while each still names the instance it is, and m_slotOf only for those that
+  // don't. A scene that moves every frame (a backdrop's trees in the wind) has some hundred thousand
+  // items, and a map lookup each was 9 ms a frame.
+  std::vector<uint32_t> m_itemSlots;
   std::map<MaterialId, MaterialSlot>   m_materials;
 
   std::map<ImageKey, ImageGpu>                               m_images;

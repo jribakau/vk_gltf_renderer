@@ -681,12 +681,21 @@ saplings and bushes sway, each turned whole about its base (`swayOf`, `swayedPla
 harder where one of two gust waves rolling over the land at the wind's speed is passing. A plant is
 one rigid copy of a shared mesh, so its trunk bends with its crown and no branch flutters; a fir's
 lean is under a degree at 30 km/h, a bush's a few. Each frame in a wind the host turns the places
-of the variants with any within `kSwayEnd` of the camera (`swayBackdrop`, beside `followBackdrop`)
+of the variants with any near the camera (`swayBackdrop`, beside `followBackdrop`)
 and sets them as the entity's copies (`RetainedScene::setCopies`): as many as before, that is a
 transform change, so the residency moves their rows and keeps last frame's for DLSS motion, and no
-BLAS is touched; past `kSwayFull` the sway eases off, and past `kSwayEnd` a plant stands, its row
-unchanged. The grass, in tiles of one mesh, stands still. A scene that changes every frame is a
+BLAS is touched. Past its role's `Sway::full` a plant's sway eases off, and past its `end` it stands,
+its row unchanged: a tree's reach is some hundreds of metres, a bush's a hundred, where their tops'
+centimetres come under a pixel. The grass, in tiles of one mesh, stands still. A scene that changes every frame is a
 moving one: while the wind blows the still waits. It plants nothing (`samePlanting`).
+
+Measured (2026-11-12, RTX 4080, 1080p, the moving view at rest on the ground, 40 km/h): the meadow
+17.5 ms between frames, as calm; the forest 21.5 against 17.5, path tracing unchanged (11.1 ms). The
+forest's is the sync's CPU, which a change anywhere in a scene of its size pays: every draw item
+gathered (1.8 ms), compared (2.8) and its TLAS row written (2.8), and the swayed plants' rows. The
+row a draw item had is kept by its place in the list (`Residency::m_itemSlots`): a map lookup each
+had been 9 ms a frame. Before the bushes and saplings had a reach of their own, 15,000 copies swayed
+there and the frames came every 33 ms.
 
 **Where it ends.** The ground stops at `kLandsEnd`, and past it is only what the physical sky
 draws under its horizon: the planet, given the land's own colour (the kit's `albedo`, sent as

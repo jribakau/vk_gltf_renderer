@@ -39,6 +39,7 @@
 #include <cctype>
 #include <cstdio>
 #include <chrono>
+#include <limits>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -1502,9 +1503,13 @@ struct FvHost::Impl
     {
       rs::EntityId entity;
       glm::mat4    base{1.0F};  // its node's own turn and scale in its file, under each place
-      // Where it stands (its copies, each `base` under its place), for the wind to sway them
-      // (swayBackdrop); whether it last drew any swayed
+      // Where it stands, for the wind to sway it (swayBackdrop): its places, its copies at rest (each
+      // `base` under its place), which of them stand near enough to sway for a camera over
+      // `nearbyFor`, and whether it last drew any swayed
       std::vector<glm::mat4> places;
+      std::vector<glm::mat4> resting;
+      std::vector<uint32_t>  nearby;
+      glm::vec2              nearbyFor{std::numeric_limits<float>::max()};
       bool                   swayed = false;
     };
     rs::EntityId                                root;

@@ -307,10 +307,13 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
       if(placed[v].empty())
         continue;
       // where it stands, for the wind (swayBackdrop), which turns each place about its base
-      built.variants.at(role)[v].places = placed[v];
-      built.variants.at(role)[v].swayed = false;
+      BackdropBuilt::Variant& standing = built.variants.at(role)[v];
+      standing.places                  = placed[v];
+      standing.swayed                  = false;
+      standing.nearbyFor               = glm::vec2(std::numeric_limits<float>::max());
       for(glm::mat4& m : placed[v])
         m = m * variants[v].base;
+      standing.resting = placed[v];
       plants += placed[v].size();
       rs::MeshInstance instance = *e->mesh;
       instance.copies           = std::move(placed[v]);
@@ -618,7 +621,10 @@ void FvHost::Impl::swayBackdrop()
     eye = glm::vec2(camera->getEye().x, camera->getEye().z);
   const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - backdropWindEpoch).count();
   // the places are under the root, which stands at the floor's height and turns nothing: a place's x
-  // and z are the world's
+  // and z are the world's. Which stand near enough to sway is found again each time the camera has
+  // gone kNearbyStep, out to kNearbyStep past its sway's end: a far tree's places are thousands, and
+  // turning only the few hundred near ones keeps a frame's work to them.
+  constexpr float kNearbyStep = 10.0F;
   for(auto& [role, variants] : backdropBuilt->variants)
   {
     const fv::backdrop::Sway sway = fv::backdrop::swayOf(role);
@@ -627,22 +633,24 @@ void FvHost::Impl::swayBackdrop()
     for(BackdropBuilt::Variant& v : variants)
     {
       const rs::Entity* e = scene.entity(v.entity);
-      if(!e || !e->mesh || v.places.empty() || e->mesh->copies.size() != v.places.size())
+      if(!e || !e->mesh || v.places.empty() || e->mesh->copies.size() != v.places.size() || v.resting.size() != v.places.size())
         continue;
+      if(windy && glm::distance(v.nearbyFor, eye) >= kNearbyStep)
+      {
+        v.nearby.clear();
+        for(uint32_t i = 0; i < v.places.size(); i++)
+          if(glm::distance(glm::vec2(v.places[i][3].x, v.places[i][3].z), eye) < sway.end + kNearbyStep)
+            v.nearby.push_back(i);
+        v.nearbyFor = eye;
+      }
       // a variant with none near the camera is left as it stands, once it stands so
-      bool nearCamera = false;
-      if(windy)
-        for(const glm::mat4& p : v.places)
-          if(glm::distance(glm::vec2(p[3].x, p[3].z), eye) < fv::backdrop::kSwayEnd)
-          {
-            nearCamera = true;
-            break;
-          }
+      const bool nearCamera = windy && !v.nearby.empty();
       if(!nearCamera && !v.swayed)
         continue;
-      std::vector<glm::mat4> copies(v.places.size());
-      for(size_t i = 0; i < copies.size(); i++)
-        copies[i] = (nearCamera ? fv::backdrop::swayedPlace(spec, sway, v.places[i], eye, seconds) : v.places[i]) * v.base;
+      std::vector<glm::mat4> copies = v.resting;
+      if(nearCamera)
+        for(uint32_t i : v.nearby)
+          copies[i] = fv::backdrop::swayedPlace(spec, sway, v.places[i], eye, seconds) * v.base;
       scene.setCopies(v.entity, std::move(copies));
       v.swayed = nearCamera;
     }

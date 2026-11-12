@@ -455,7 +455,7 @@ TEST(BackdropLayers, AForestIsAGladeInAWoodThatRunsToTheHorizon)
 
 // Mature woods: grown firs among the near woods' young ones, the kind's own layers left as they were
 // The wind: a plant turns about its base, its top downwind on the whole and swinging, more in a
-// harder wind, less out toward kSwayEnd and not at all past it; what doesn't sway, and a calm, leave
+// harder wind, less out toward its role's end and not at all past it; what doesn't sway, and a calm, leave
 // it where it stands
 TEST(BackdropWind, PlantsSwayAboutTheirBaseDownwind)
 {
@@ -514,10 +514,11 @@ TEST(BackdropWind, PlantsSwayAboutTheirBaseDownwind)
   EXPECT_EQ(B::swayedPlace(spec, B::swayOf("rock"), place, eye, 7.3), place);
   EXPECT_EQ(B::swayedPlace(spec, tree, place, eye, 7.3), B::swayedPlace(spec, tree, place, eye, 7.3));
 
-  // far from the camera it eases off, and past kSwayEnd it stands
-  const glm::vec2 far(base.x + 0.5F * (B::kSwayFull + B::kSwayEnd), base.z);
+  // far from the camera it eases off, and past its end it stands; a bush stands nearer than a tree
+  EXPECT_LT(B::swayOf("shrub").end, tree.end);
+  const glm::vec2 far(base.x + 0.5F * (tree.full + tree.end), base.z);
   EXPECT_LT(glm::distance(topAt(spec, place, far, 7.3), still), soft);
-  EXPECT_EQ(B::swayedPlace(spec, tree, place, glm::vec2(base.x + B::kSwayEnd + 1.0F, base.z), 7.3), place);
+  EXPECT_EQ(B::swayedPlace(spec, tree, place, glm::vec2(base.x + tree.end + 1.0F, base.z), 7.3), place);
 
   // and the wind plants nothing
   EXPECT_TRUE(B::samePlanting(spec, meadow()));

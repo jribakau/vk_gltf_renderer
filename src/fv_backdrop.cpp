@@ -642,15 +642,17 @@ Place tilePlace(const Spec& spec, float size, int32_t x, int32_t z, float sink)
 Sway swayOf(std::string_view role)
 {
   // A fir's trunk is stiff and swings slowly, a grown one's slower still (a 14 m tree's first mode is
-  // some 0.2 to 0.3 a second); a sapling and a bush are supple and quick
+  // some 0.2 to 0.3 a second); a sapling and a bush are supple and quick. A fir's top moves some 20 cm
+  // at 30 km/h, a pixel through a 28 mm lens at 1080p some 300 m off; a bush's 1.5 m top some 6 cm,
+  // a pixel at 100 m
   if(role == "tree")
-    return {.lean = 0.8F, .hz = 0.30F};
+    return {.lean = 0.8F, .hz = 0.30F, .full = 200.0F, .end = 300.0F};
   if(role == "grown")
-    return {.lean = 0.6F, .hz = 0.22F};
+    return {.lean = 0.6F, .hz = 0.22F, .full = 200.0F, .end = 300.0F};
   if(role == "sapling")
-    return {.lean = 2.0F, .hz = 0.6F};
+    return {.lean = 2.0F, .hz = 0.6F, .full = 60.0F, .end = 100.0F};
   if(role == "shrub")
-    return {.lean = 2.5F, .hz = 0.9F};
+    return {.lean = 2.5F, .hz = 0.9F, .full = 60.0F, .end = 100.0F};
   return {};
 }
 
@@ -672,9 +674,9 @@ glm::mat4 swayedPlace(const Spec& spec, Sway sway, const glm::mat4& place, glm::
   const glm::vec3 base(place[3]);
   const glm::vec2 at(base.x, base.z);
   const float     distance = glm::distance(at, eye);
-  if(distance >= kSwayEnd)
+  if(distance >= sway.end)
     return place;
-  const double reach = distance <= kSwayFull ? 1.0 : double(kSwayEnd - distance) / double(kSwayEnd - kSwayFull);
+  const double reach = distance <= sway.full ? 1.0 : double(sway.end - distance) / double(sway.end - sway.full);
 
   // A wind's push goes as the square of its speed: twice the wind, four times the lean, and no more
   // than four times kSwayWindKmh's however hard it blows

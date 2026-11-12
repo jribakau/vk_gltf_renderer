@@ -709,6 +709,7 @@ public:
   uint64_t     boundsRevision() const { return m_boundsRevision; }
 
 private:
+  size_t m_drawItemsWere = 0;  // how many drawItems() gave the last time, which the next reserves
   template <class T>
   struct Counted
   {

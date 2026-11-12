@@ -1349,16 +1349,25 @@ void VulkanGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> ro
   flushUploads();  // what came before, outside the timed span
   const bool                                      timed = beginSpan();
   std::vector<VkAccelerationStructureInstanceKHR> instances(rows.size());
+  // an instancing entity's copies come one after another, on one BLAS: looked up once for the run
+  uint64_t        lastBlas    = 0;
+  VkDeviceAddress lastAddress = 0;
   for(size_t i = 0; i < rows.size(); i++)
   {
     VkDeviceAddress blas = 0;
-    if(rows[i].blas)
+    if(rows[i].blas && rows[i].blas.value == lastBlas)
+      blas = lastAddress;
+    else if(rows[i].blas)
     {
       auto b = m_blases.find(rows[i].blas.value);
       if(b == m_blases.end())
         LOGE("VulkanGpuBackend::buildTlas: row %zu references a dead or unknown BLAS\n", i);
       else
-        blas = b->second.accel.address;
+      {
+        blas        = b->second.accel.address;
+        lastBlas    = rows[i].blas.value;
+        lastAddress = blas;
+      }
     }
     instances[i] = vkTlasInstance(rows[i], blas);
   }

@@ -254,26 +254,28 @@ Place tilePlace(const Spec& spec, float size, int32_t x, int32_t z, float sink);
 // the land at the wind's speed, so a wood bends in swathes and not all at once. A plant is one rigid
 // instance of a shared mesh (rs::MeshInstance::copies): its trunk bends with its crown, and its
 // branches don't flutter of their own; small angles, as a stiff conifer's are, keep that from showing.
-// Grass, in tiles of one mesh, stands still. Out past kSwayFull from the camera it eases off, and past
-// kSwayEnd it stands: a few centimetres there are under a pixel, and the plants left still are rows
-// the renderer need not write again.
+// Grass, in tiles of one mesh, stands still. Out past its role's `full` from the camera a plant eases
+// off, and past its `end` it stands: where its top's few centimetres are under a pixel. The plants
+// left still are rows the renderer need not write again, which is what a frame in the wind costs:
+// a forest's bushes and saplings out to a tree's reach were 15,000 copies to turn and write a frame.
 
-// How a role sways: how far its top leans, degrees, in a wind of kSwayWindKmh, and how often it swings,
-// a second. Zero for what doesn't (rocks, stumps, dead wood, and what stands in tiles).
+// How a role sways: how far its top leans, degrees, in a wind of kSwayWindKmh, how often it swings, a
+// second, and how far from the camera it does, metres (in full to `full`, easing off to none at
+// `end`). Zero for what doesn't (rocks, stumps, dead wood, and what stands in tiles).
 struct Sway
 {
   float lean = 0.0F;
   float hz   = 0.0F;
-  bool  any() const { return lean > 0.0F; }
+  float full = 0.0F;
+  float end  = 0.0F;
+  bool  any() const { return lean > 0.0F && end > 0.0F; }
 };
 Sway swayOf(std::string_view role);
 inline constexpr float kSwayWindKmh = 30.0F;
-inline constexpr float kSwayFull    = 200.0F;
-inline constexpr float kSwayEnd     = 300.0F;
 
 // Where a plant stands (`place`: its scatter matrix, its base at its origin) turned about its base by
 // the spec's wind at `seconds`, for a camera standing over `eye` (x, z). As it was in a calm, or past
-// kSwayEnd from the camera.
+// its sway's `end` from the camera.
 glm::mat4 swayedPlace(const Spec& spec, Sway sway, const glm::mat4& place, glm::vec2 eye, double seconds);
 
 // The kit's roles a spec plants, sorted: its layers', its grass's and its drifts'. What a kind doesn't

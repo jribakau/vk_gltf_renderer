@@ -3622,10 +3622,20 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
   m_allNodes = false;
   // (a BLAS held for the TLAS that pointed at it: one built without it, so that it can go)
   bool tlasRows = !nodes.empty() || !m_tlasRefs->held.empty();
-  for(const DrawItem& item : items)
+  m_itemSlots.resize(items.size(), ~0U);
+  for(size_t i = 0; i < items.size(); i++)
   {
-    const uint32_t slot = m_slotOf.at({item.entity, item.mesh, item.submesh, item.copy});
-    Instance&      inst = *m_instances[slot];
+    const DrawItem& item = items[i];
+    uint32_t        slot = m_itemSlots[i];
+    const auto      same = [&](uint32_t s) {
+      if(s >= m_instances.size() || !m_instances[s])
+        return false;
+      const Instance& o = *m_instances[s];
+      return o.entity == item.entity && o.mesh == item.mesh && o.submesh == item.submesh && o.copy == item.copy;
+    };
+    if(!same(slot))
+      slot = m_itemSlots[i] = m_slotOf.at({item.entity, item.mesh, item.submesh, item.copy});
+    Instance& inst = *m_instances[slot];
     if(inst.shown != item.shown)
     {
       inst.shown               = item.shown;
