@@ -124,7 +124,8 @@ float groundAt(const Spec& spec, float x, float z);
 // How much of a place is wood that no tree stands for, 0 to 1: beyond where the far trees keep
 // their cover (they thin, and each grows, until its growth is spent), where their layer's groves
 // are. The ground is that much the colour of a wood seen from afar, so the few trees that still
-// stand out there read as the edge of one.
+// stand out there read as the edge of one. As the ground's mesh can draw it: no detail finer than
+// its vertices are apart, nor an edge sharper.
 float woods(const Spec& spec, float x, float z);
 
 // The ground as a mesh: a disc, its rings fine underfoot and coarser with distance out to kLandsEnd, with

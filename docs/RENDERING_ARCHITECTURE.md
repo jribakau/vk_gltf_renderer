@@ -619,9 +619,14 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   disc's edge. `terrain` is its mesh, a disc of rings that widen with distance, so the triangles are
   small underfoot and large far off, and fine enough that the creases between its triangles stay
   under the grass's blades; what colours it (the drier drifts, the far woods) changes over no less
-  than a few rings (`kPatchGrowth`), or the mesh would draw it as blocks (`sizedNoise`: the noise at
-  doublings of its size, blended; a size that simply grew with the place's distance would leave a
-  function of its direction, stripes out from the origin). All of it
+  than a few rings, or the mesh would draw it as blocks: its patches grow with distance as the rings
+  do (`kPatchGrowth`; `sizedNoise`, the noise at doublings of its size, blended, since a size that
+  simply grew with the place's distance would leave a function of its direction, stripes out from
+  the origin), their noise keeps no octave finer than four rings (`meshDetail`), and the woods' edge
+  is four rings across by the noise's own slope there. Sharper, a colour flipped from one vertex to
+  the next and was drawn as a hard-edged triangle tens of metres across (checked by
+  `BackdropGround.TheGroundsColoursChangeOverSeveralVertices`). The trees' own groves (`scatter`)
+  keep every octave. All of it
   is a pure function of the spec: the same seed is the same land on every machine. What stands on
   the ground stands on the mesh (`groundAt`, the height on its triangles), not on `height`: the
   height's bumps, some ten metres across, bulge through triangles metres wide a few tens of metres

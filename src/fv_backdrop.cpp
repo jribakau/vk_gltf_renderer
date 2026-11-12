@@ -51,15 +51,20 @@ float valueNoise(float x, float z, uint32_t seed, uint32_t channel)
   return (a + (b - a) * ux) + ((c + (d - c) * ux) - (a + (b - a) * ux)) * uz;
 }
 
-// Four octaves of it, [0, 1) and near 0.5 on average
-float fbm(float x, float z, uint32_t seed, uint32_t channel)
+// Four octaves of it, [0, 1) and near 0.5 on average. `finest`, in lattice cells of the first octave:
+// an octave whose cells are under twice this fades to its mean, and under this is gone (each octave's
+// are half the last's). A colour drawn at a mesh's vertices has no use for detail finer than they are
+// apart: sampled there it is drawn as triangles, a colour that flips across one edge.
+float fbm(float x, float z, uint32_t seed, uint32_t channel, float finest = 0.0F)
 {
-  float sum = 0.0F, amplitude = 0.5F, total = 0.0F;
+  float sum = 0.0F, amplitude = 0.5F, total = 0.0F, cells = 1.0F;
   for(uint32_t o = 0; o < 4; o++)
   {
-    sum += amplitude * valueNoise(x, z, seed, channel + o);
+    const float kept = finest > 0.0F ? smoothstep(finest, 2.0F * finest, cells) : 1.0F;
+    sum += amplitude * (0.5F + kept * (valueNoise(x, z, seed, channel + o) - 0.5F));
     total += amplitude;
     amplitude *= 0.5F;
+    cells *= 0.5F;
     // turned as well as halved, so the octaves' lattices don't line up
     const float nx = 1.6F * x + 1.2F * z, nz = -1.2F * x + 1.6F * z;
     x = nx + 17.3F;
@@ -105,16 +110,17 @@ float patchAt(const Layer& l, float d)
 // fbm() with features `across` metres wide, `base` at the least: the noise at the doublings of
 // `base` either side of `across`, blended. (Dividing a place by a size that grows with its distance
 // leaves a function of its direction alone, which is stripes out from the origin.)
-float sizedNoise(float x, float z, float base, float across, uint32_t seed, uint32_t channel)
+// `finest`: metres, as fbm()'s (0 every octave).
+float sizedNoise(float x, float z, float base, float across, uint32_t seed, uint32_t channel, float finest = 0.0F)
 {
   const float level = std::max(std::log2(across / base), 0.0F);
   const float whole = std::floor(level);
   const float size  = base * std::exp2(whole);
-  const float near  = fbm(x / size, z / size, seed, channel);
+  const float near  = fbm(x / size, z / size, seed, channel, finest / size);
   const float share = smoothstep(0.0F, 1.0F, level - whole);
   if(share <= 0.0F)
     return near;
-  return near + (fbm(x / (2.0F * size), z / (2.0F * size), seed, channel) - near) * share;
+  return near + (fbm(x / (2.0F * size), z / (2.0F * size), seed, channel, finest / (2.0F * size)) - near) * share;
 }
 
 // The noise level above which a share `cover` of the ground lies. fbm() is near a normal distribution
@@ -154,16 +160,29 @@ namespace {
 // The ground mesh's rings: half a metre apart underfoot, then kMeshGrowth further each, so the ground's detail
 // follows what a camera near the origin sees of it; each of kSegments vertices round
 constexpr uint32_t kSegments = 384;
+
+// How far apart the rings are `d` metres out
+float meshSpacing(float d)
+{
+  return std::max(0.5F, kMeshGrowth * d);
+}
+
 const std::vector<float>& meshRadii()
 {
   static const std::vector<float> radii = [] {
     std::vector<float> out;
-    for(float r = 0.5F; r < kLandsEnd; r += std::max(0.5F, kMeshGrowth * r))
+    for(float r = 0.5F; r < kLandsEnd; r += meshSpacing(r))
       out.push_back(r);
     out.push_back(kLandsEnd);
     return out;
   }();
   return radii;
+}
+
+// The finest detail a colour of the mesh's vertices keeps `d` metres out: four rings (fbm's `finest`)
+float meshDetail(float d)
+{
+  return 2.0F * meshSpacing(d);
 }
 
 // A vertex of a ring's, on the ground's plan
@@ -237,9 +256,11 @@ Terrain terrain(const Spec& spec, float tile)
     t.positions.emplace_back(x, h, z);
     t.normals.push_back(glm::normalize(glm::vec3(-dx, 1.0F, -dz)));
     t.uvs.emplace_back(x * scale, z * scale);
-    // drifts some 40 m across, larger where the mesh is too coarse to draw those
-    const float drift = std::max(40.0F, kPatchGrowth * std::sqrt(x * x + z * z));
-    t.shades.push_back(smoothstep(0.38F, 0.62F, sizedNoise(x, z, 40.0F, drift, uint32_t(spec.seed), kChannelShade)));
+    // drifts some 40 m across, larger where the mesh is too coarse to draw those, and no finer in
+    // their edges than it draws
+    const float d     = std::sqrt(x * x + z * z);
+    const float drift = std::max(40.0F, kPatchGrowth * d);
+    t.shades.push_back(smoothstep(0.38F, 0.62F, sizedNoise(x, z, 40.0F, drift, uint32_t(spec.seed), kChannelShade, meshDetail(d))));
     t.woods.push_back(woodsAt(far, spec, x, z));
   };
   vertex(0.0F, 0.0F, 0.25F);
@@ -374,9 +395,20 @@ float woodsAt(const FarWoods& far, const Spec& spec, float x, float z)
   const float cover = coverAt(l, std::min(d, l.to));
   if(cover >= 1.0F)
     return paint;
-  const float noise = sizedNoise(x, z, l.patch, patchAt(l, d), uint32_t(spec.seed), kChannelCover + 10U * far.index);
-  const float level = coverLevel(cover);
-  return paint * smoothstep(level - 0.02F, level + 0.02F, noise);
+  // the groves' noise as the trees' (scatter), but with no detail finer than the mesh draws; and its
+  // edge four rings across at the least, by how fast the noise changes here, where a step at one
+  // level was drawn a triangle at a time (at three, the smoothstep's steepest ring still took half the
+  // way)
+  const float    across  = patchAt(l, d);
+  const float    detail  = meshDetail(d);
+  const uint32_t channel = kChannelCover + 10U * far.index;
+  const auto     noiseAt = [&](float u, float v) { return sizedNoise(u, v, l.patch, across, uint32_t(spec.seed), channel, detail); };
+  const float    ring    = meshSpacing(d);
+  const float    noise   = noiseAt(x, z);
+  const float    change  = glm::length(glm::vec2(noiseAt(x + ring, z) - noise, noiseAt(x, z + ring) - noise));
+  const float    edge    = std::max(0.02F, 2.0F * change);
+  const float    level   = coverLevel(cover);
+  return paint * smoothstep(level - edge, level + edge, noise);
 }
 
 }  // namespace

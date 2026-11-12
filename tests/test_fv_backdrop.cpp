@@ -148,6 +148,35 @@ TEST(BackdropGround, FarWoodsAreAColourOfTheGround)
   EXPECT_EQ(B::woods(B::Spec{}, 3000.0F, 0.0F), 0.0F);
 }
 
+// The ground's colours, drawn at its vertices, change over several of them: a colour that flipped
+// from one vertex to the next was drawn as a hard-edged triangle, which past a few hundred metres is
+// tens of metres across (the far woods' tint: 4% of the edges there, by 11-12; the drier drifts' 2.5%)
+TEST(BackdropGround, TheGroundsColoursChangeOverSeveralVertices)
+{
+  for(const B::Spec& spec : {meadow(), forest()})
+  {
+    const B::Terrain t = B::terrain(spec, 2.0F);
+    size_t           edges = 0, woods = 0, shades = 0;
+    double           painted = 0.0;
+    for(size_t i = 0; i + 2 < t.indices.size(); i += 3)
+      for(int e = 0; e < 3; e++)
+      {
+        const uint32_t a = t.indices[i + e], b = t.indices[i + (e + 1) % 3];
+        if(glm::length(glm::vec2(t.positions[a].x, t.positions[a].z)) < 600.0F)
+          continue;
+        edges++;
+        woods += std::abs(t.woods[a] - t.woods[b]) > 0.5F ? 1 : 0;
+        shades += std::abs(t.shades[a] - t.shades[b]) > 0.5F ? 1 : 0;
+        painted += t.woods[a];
+      }
+    ASSERT_GT(edges, 10000u);
+    EXPECT_LT(double(woods) / double(edges), 0.01) << spec.kind;
+    EXPECT_LT(double(shades) / double(edges), 0.01) << spec.kind;
+    // and the far woods are still there, a forest's most of its land
+    EXPECT_GT(painted / double(edges), spec.kind == "forest" ? 0.75 : 0.25) << spec.kind;
+  }
+}
+
 TEST(BackdropGround, TheMeshIsTheHeightFunctions)
 {
   const B::Spec    spec = meadow(3);
