@@ -280,6 +280,19 @@ inline constexpr float kSwayWindKmh = 30.0F;
 // the spec's wind at `seconds`, for a camera standing over `eye` (x, z). As it was in a calm, or past
 // its sway's `end` from the camera.
 glm::mat4 swayedPlace(const Spec& spec, Sway sway, const glm::mat4& place, glm::vec2 eye, double seconds);
+// What every plant's sway at one moment shares: the wind's push and way, and the time (swayFrame).
+// `swayed` is swayedPlace for many plants a frame (a forest sways 40,000): a copy drawn at a place,
+// `standing` (the place with anything under it, its node's own turn), turned as the place is, about
+// the place's base.
+struct SwayFrame
+{
+  bool       on = false;
+  double     strength = 0.0, speed = 0.0, seconds = 0.0;
+  glm::dvec2 toward{0.0};
+  glm::vec3  down{0.0F}, across{0.0F};  // the axes its top tips about: across the wind, and along it
+};
+SwayFrame swayFrame(const Spec& spec, double seconds);
+glm::mat4 swayed(const SwayFrame& frame, Sway sway, const glm::mat4& place, const glm::mat4& standing, glm::vec2 eye);
 
 // The kit's roles a spec plants, sorted: its layers', its grass's and its drifts'. What a kind doesn't
 // plant needn't be held (a model's maps are a few megabytes each)

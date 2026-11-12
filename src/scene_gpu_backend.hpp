@@ -367,7 +367,12 @@ public:
   virtual AccelHandle compactBlas(AccelHandle blas) = 0;
   // A TLAS of up to `capacity` rows; its handle stays until it is destroyed.
   virtual AccelHandle createTlas(uint32_t capacity)                                             = 0;
-  virtual void        buildTlas(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode) = 0;
+  // Every row written again
+  void buildTlas(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode) { buildTlasRows(tlas, rows, mode, {}, true); }
+  // `changed`, ascending: the rows that differ from the last build's, the rest as they were (unless
+  // `everyRow`, as after a build of another count): a sway of a forest's copies moves a fifth of its
+  // 190,000 rows, and writing every one again was 6 ms a frame
+  virtual void buildTlasRows(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow) = 0;
   virtual void        destroyAccel(AccelHandle accel)                                           = 0;
   // What one holds on the device: a TLAS's instances and scratch with it, a micromap's inputs until they go
   virtual uint64_t accelBytes(AccelHandle accel) const = 0;

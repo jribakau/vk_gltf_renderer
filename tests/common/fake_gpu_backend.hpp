@@ -194,7 +194,7 @@ public:
   void        refitBlas(AccelHandle blas, const BlasInput& input) override;
   AccelHandle compactBlas(AccelHandle blas) override;
   AccelHandle createTlas(uint32_t capacity) override;
-  void        buildTlas(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode) override;
+  void        buildTlasRows(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow) override;
   void        destroyAccel(AccelHandle accel) override;
   // as a driver might: kBlasBytesPerTriangle a triangle as built, kCompactedBlasBytesPerTriangle compacted,
   // kCompactedRefittableBlasBytesPerTriangle compacted when built to be refitted too

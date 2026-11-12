@@ -309,7 +309,7 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
       // where it stands, for the wind (swayBackdrop), which turns each place about its base
       BackdropBuilt::Variant& standing = built.variants.at(role)[v];
       standing.places                  = placed[v];
-      standing.swayed                  = false;
+      standing.swayedAt.clear();  // planted at rest
       standing.nearbyFor               = glm::vec2(std::numeric_limits<float>::max());
       for(glm::mat4& m : placed[v])
         m = m * variants[v].base;
@@ -643,7 +643,8 @@ void FvHost::Impl::swayBackdrop()
   // and z are the world's. Which stand near enough to sway is found again each time the camera has
   // gone kNearbyStep, out to kNearbyStep past its sway's end: a far tree's places are thousands, and
   // turning only the few hundred near ones keeps a frame's work to them.
-  constexpr float kNearbyStep = 10.0F;
+  constexpr float               kNearbyStep = 10.0F;
+  const fv::backdrop::SwayFrame frame       = fv::backdrop::swayFrame(spec, seconds);
   for(auto& [role, variants] : backdropBuilt->variants)
   {
     const fv::backdrop::Sway sway = fv::backdrop::swayOf(role);
@@ -662,16 +663,28 @@ void FvHost::Impl::swayBackdrop()
             v.nearby.push_back(i);
         v.nearbyFor = eye;
       }
-      // a variant with none near the camera is left as it stands, once it stands so
+      // a variant with none near the camera is left as it stands, once it stands so. Only the copies
+      // near the camera are handed over, and those that swayed last time and are no longer near, back
+      // at rest: all of them each frame was 12 MB copied in a forest
       const bool nearCamera = windy && !v.nearby.empty();
-      if(!nearCamera && !v.swayed)
+      if(!nearCamera && v.swayedAt.empty())
         continue;
-      std::vector<glm::mat4> copies = v.resting;
+      std::vector<uint32_t>  which;
+      std::vector<glm::mat4> to;
       if(nearCamera)
         for(uint32_t i : v.nearby)
-          copies[i] = fv::backdrop::swayedPlace(spec, sway, v.places[i], eye, seconds) * v.base;
-      scene.setCopies(v.entity, std::move(copies));
-      v.swayed = nearCamera;
+        {
+          which.push_back(i);
+          to.push_back(fv::backdrop::swayed(frame, sway, v.places[i], v.resting[i], eye));
+        }
+      for(uint32_t i : v.swayedAt)
+        if(!nearCamera || !std::binary_search(v.nearby.begin(), v.nearby.end(), i))
+        {
+          which.push_back(i);
+          to.push_back(v.resting[i]);
+        }
+      scene.moveCopies(v.entity, which, to);
+      v.swayedAt = nearCamera ? v.nearby : std::vector<uint32_t>{};
     }
   }
 }

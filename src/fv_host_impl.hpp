@@ -1505,12 +1505,12 @@ struct FvHost::Impl
       glm::mat4    base{1.0F};  // its node's own turn and scale in its file, under each place
       // Where it stands, for the wind to sway it (swayBackdrop): its places, its copies at rest (each
       // `base` under its place), which of them stand near enough to sway for a camera over
-      // `nearbyFor`, and whether it last drew any swayed
+      // `nearbyFor` (ascending), and which it last drew swayed
       std::vector<glm::mat4> places;
       std::vector<glm::mat4> resting;
       std::vector<uint32_t>  nearby;
       glm::vec2              nearbyFor{std::numeric_limits<float>::max()};
-      bool                   swayed = false;
+      std::vector<uint32_t>  swayedAt;
     };
     rs::EntityId                                root;
     rs::EntityId                                ground;  // the terrain's entity

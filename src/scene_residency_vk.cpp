@@ -1334,7 +1334,7 @@ AccelHandle VulkanGpuBackend::createTlas(uint32_t capacity)
   return handle;
 }
 
-void VulkanGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> rows, TlasMode mode)
+void VulkanGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow)
 {
   if(!recording("buildTlas"))
     return;
@@ -1347,13 +1347,11 @@ void VulkanGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> ro
   TlasEntry& tlas = it->second;
   flushBuilds();
   flushUploads();  // what came before, outside the timed span
-  const bool                                      timed = beginSpan();
-  std::vector<VkAccelerationStructureInstanceKHR> instances(rows.size());
+  const bool timed = beginSpan();
   // an instancing entity's copies come one after another, on one BLAS: looked up once for the run
   uint64_t        lastBlas    = 0;
   VkDeviceAddress lastAddress = 0;
-  for(size_t i = 0; i < rows.size(); i++)
-  {
+  const auto      instanceOf  = [&](size_t i) {
     VkDeviceAddress blas = 0;
     if(rows[i].blas && rows[i].blas.value == lastBlas)
       blas = lastAddress;
@@ -1369,10 +1367,39 @@ void VulkanGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> ro
         lastAddress = blas;
       }
     }
-    instances[i] = vkTlasInstance(rows[i], blas);
+    return vkTlasInstance(rows[i], blas);
+  };
+  // the rows written, a run of consecutive ones an upload: every one, or the changed (the instance
+  // buffer keeps the rest as the last build wrote them)
+  std::vector<VkAccelerationStructureInstanceKHR> instances;
+  const auto upload = [&](size_t first) {
+    if(!instances.empty())
+      NVVK_CHECK(appendBufferChunked(*m_info.staging, tlas.instances, first * sizeof(VkAccelerationStructureInstanceKHR),
+                                     std::span<const VkAccelerationStructureInstanceKHR>(instances)));
+    instances.clear();
+  };
+  if(everyRow)
+  {
+    instances.reserve(rows.size());
+    for(size_t i = 0; i < rows.size(); i++)
+      instances.push_back(instanceOf(i));
+    upload(0);
   }
-  if(!instances.empty())
-    NVVK_CHECK(appendBufferChunked(*m_info.staging, tlas.instances, 0, std::span<const VkAccelerationStructureInstanceKHR>(instances)));
+  else
+  {
+    size_t first = 0;
+    for(const uint32_t i : changed)
+    {
+      if(i >= rows.size())
+        break;
+      if(!instances.empty() && i != first + instances.size())
+        upload(first);
+      if(instances.empty())
+        first = i;
+      instances.push_back(instanceOf(i));
+    }
+    upload(first);
+  }
   m_uploadsPending = true;
   flushUploads();
   // (the destination masks nvvk's helper takes)

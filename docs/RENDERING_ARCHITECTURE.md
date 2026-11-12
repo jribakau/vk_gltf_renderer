@@ -57,7 +57,9 @@ the original's place, a seventh smaller (an updatable BVH compacts to 86-89%; a 
 41%). Each build of one, a reshape's included, makes a copy a frame or two later. Settling under
 memory pressure still builds a quiet mesh's BVH again static and compacted, the smaller of the two.
 The TLAS is built again over capacity whenever a row changes, keeping its handle until capacity
-grows.
+grows. Its rows are kept between builds (`Residency::buildTlas`): a row's transform is made again only for
+a slot moved or rebound since the last build, and only the rows that differ are written to the device
+(`GpuBackend::buildTlasRows`; every row after a build of another count or into a new TLAS).
 
 **Sync order** (`rs::Residency::sync`, once a frame before the passes): a frame-to-write barrier
 (nothing below overwrites what a frame in flight reads before it); last sync's moved worlds and
@@ -686,21 +688,27 @@ saplings and bushes sway, each turned whole about its base (`swayOf`, `swayedPla
 harder where one of two gust waves rolling over the land at the wind's speed is passing. A plant is
 one rigid copy of a shared mesh, so its trunk bends with its crown and no branch flutters; a fir's
 lean is under a degree at 30 km/h, a bush's a few. Each frame in a wind the host turns the places
-of the variants with any near the camera (`swayBackdrop`, beside `followBackdrop`)
-and sets them as the entity's copies (`RetainedScene::setCopies`): as many as before, that is a
-transform change, so the residency moves their rows and keeps last frame's for DLSS motion, and no
-BLAS is touched. Past its role's `Sway::full` a plant's sway eases off, and past its `end` it stands,
+of the variants with any near the camera (`swayBackdrop`, beside `followBackdrop`; `swayFrame` and
+`swayed` turn the drawn copy directly) and hands over only those, and those that swayed last time and
+no longer stand near, back at rest (`RetainedScene::moveCopies`): a transform change, so the residency
+moves their rows and keeps last frame's for DLSS motion, and no BLAS is touched. Past its role's `Sway::full` a plant's sway eases off, and past its `end` it stands,
 its row unchanged: a tree's reach is some hundreds of metres, a bush's a hundred, where their tops'
 centimetres come under a pixel. The grass, in tiles of one mesh, stands still. A scene that changes every frame is a
 moving one: while the wind blows the still waits. It plants nothing (`samePlanting`).
 
 Measured (2026-11-12, RTX 4080, 1080p, the moving view at rest on the ground, 40 km/h): the meadow
 17.5 ms between frames, as calm; the forest 21.5 against 17.5, path tracing unchanged (11.1 ms). The
-forest's is the sync's CPU, which a change anywhere in a scene of its size pays: every draw item
-gathered (1.8 ms), compared (2.8) and its TLAS row written (2.8), and the swayed plants' rows. The
-row a draw item had is kept by its place in the list (`Residency::m_itemSlots`): a map lookup each
-had been 9 ms a frame. Before the bushes and saplings had a reach of their own, 15,000 copies swayed
-there and the frames came every 33 ms.
+forest's is the sync's CPU, which a change anywhere in a scene of its size pays. The row a draw item
+had is kept by its place in the list (`Residency::m_itemSlots`): a map lookup each had been 9 ms a
+frame. Before the bushes and saplings had a reach of their own, 15,000 copies swayed there and the
+frames came every 33 ms. The user's forest (size 200, density 2, Mature woods) draws 190,000
+instances and sways 40,000 of them: the sync took 25 ms a frame and the host's sway 3.6, frames every
+44 ms. The TLAS rows are kept from build to build and only the moved or changed ones written
+(`buildTlasRows`: 6.1 to 1.8 ms), the moved slots are lists sorted once, not sets (the compare 6.4
+to 1.3), a copy under an entity that only translates is offset rather than multiplied (the gather
+4.4 to 3.3), and the sway turns only the near copies with what a frame shares worked out once (3.6 to
+2.3): frames every 30 ms against 17.4 calm. What is left is about a millisecond or two each: the
+gather, the motion and render-node rows, the TLAS rows, the sway.
 
 **Where it ends.** The ground stops at `kLandsEnd`, and past it is only what the physical sky
 draws under its horizon: the planet, given the land's own colour (the kit's `albedo`, sent as

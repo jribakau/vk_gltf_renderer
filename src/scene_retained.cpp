@@ -572,6 +572,19 @@ void RetainedScene::setCopies(EntityId id, std::vector<glm::mat4> copies)
   m_changes.transforms.insert(id);
 }
 
+void RetainedScene::moveCopies(EntityId id, std::span<const uint32_t> which, std::span<const glm::mat4> to)
+{
+  assertOwner();
+  Entity* e = m_entities.get(id);
+  if(!e || !e->mesh || which.empty())
+    return;
+  std::vector<glm::mat4>& copies = e->mesh->copies;
+  for(size_t k = 0; k < which.size() && k < to.size(); k++)
+    if(which[k] < copies.size())
+      copies[which[k]] = to[k];
+  m_changes.transforms.insert(id);
+}
+
 void RetainedScene::setMorphWeights(EntityId id, std::vector<float> weights)
 {
   assertOwner();
@@ -908,10 +921,24 @@ std::vector<DrawItem> RetainedScene::drawItems()
         out.push_back(item);
         continue;
       }
+      // an entity that only stands somewhere (a backdrop's root at the floor's height) offsets each
+      // copy, a product of matrices for each of a forest's 190,000 being most of this list's time
+      const glm::mat4& w         = d.world;
+      const bool       translate = w[0] == glm::vec4(1, 0, 0, 0) && w[1] == glm::vec4(0, 1, 0, 0) && w[2] == glm::vec4(0, 0, 1, 0) && w[3].w == 1.0F;
       for(uint32_t c = 0; c < e.mesh->copies.size(); c++)
       {
-        item.copy  = c;
-        item.world = d.world * e.mesh->copies[c];
+        item.copy = c;
+        if(translate)
+        {
+          const glm::mat4& copy = e.mesh->copies[c];
+          const glm::vec3  t(w[3]);
+          item.world = copy;
+          for(int k = 0; k < 4; k++)
+            if(copy[k].w != 0.0F)
+              item.world[k] += glm::vec4(t * copy[k].w, 0.0F);
+        }
+        else
+          item.world = w * e.mesh->copies[c];
         out.push_back(item);
       }
     }

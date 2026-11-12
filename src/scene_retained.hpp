@@ -652,6 +652,10 @@ public:
   // count is another instance: setMeshInstance. The bounds are not counted as changed: what this
   // moves, it moves by little.
   void setCopies(EntityId id, std::vector<glm::mat4> copies);
+  // Some of its copies moved: copy `which[k]` to `to[k]`, the rest as they are. The same change as
+  // setCopies, for a few thousand of a variant's tens of thousands without handing over all of them
+  // each frame. An index past its copies is passed over.
+  void moveCopies(EntityId id, std::span<const uint32_t> which, std::span<const glm::mat4> to);
   void setMorphWeights(EntityId id, std::vector<float> weights);
   void setEntityLight(EntityId id, LightId light);    // references it
   void setEntityCamera(EntityId id, CameraId camera);  // references it

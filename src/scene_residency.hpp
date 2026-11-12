@@ -700,8 +700,10 @@ private:
   void ensureUnitAxes(uint64_t count);
 
   void ensureCapacity(SyncResult& result);
-  void writeRenderNodes(const std::set<uint32_t>& slots);
+  void writeRenderNodes(std::span<const uint32_t> slots);  // ascending
   void writeRenderPrims(const std::set<uint32_t>& slots);
+  // m_tlasPlaced: the slots whose world may have changed (moved, rebound, new) since the last build;
+  // every other row keeps its transform from that build, and only the rows that differ are written
   void buildTlas();
   void writeSceneDesc();
 
@@ -795,8 +797,11 @@ private:
   BufferHandle                         m_prevPositionTable, m_prevWorldTable;
   std::vector<glm::mat4>               m_prevWorlds;          // by instance slot: what the table row holds
   std::set<uint32_t>                   m_dirtyPrevPrims;      // prim slots whose table row changes
-  std::set<uint32_t>                   m_dirtyPrevNodes;      // instance slots whose row changes
-  std::set<uint32_t>                   m_movedLast;           // instance slots whose world the last sync moved
+  // Instance slots whose row changes, and whose world the last sync moved: as many as a forest's swaying
+  // copies a frame (40,000), so lists, sorted where they are read, not sets (three set inserts each
+  // were milliseconds)
+  std::vector<uint32_t>                m_dirtyPrevNodes;
+  std::vector<uint32_t>                m_movedLast;
   std::vector<std::optional<Prim>>     m_prims;      // by prim slot, up to the high-water mark
   std::map<const OpacityMicromap*, MicromapGpu> m_micromaps;
   std::optional<nvvkgltf::SceneFeatureSet>      m_shaderFeatures;
@@ -920,6 +925,11 @@ private:
   BufferHandle m_renderNodes, m_renderPrims, m_sceneDesc;
   AccelHandle  m_tlas;
   uint32_t     m_tlasCapacity = 0;
+  // The rows of m_tlasRowsOf's last build (buildTlas): what the device holds, so only what differs is written
+  std::vector<TlasRow> m_tlasRows;
+  AccelHandle          m_tlasRowsOf;
+  // slots placed since the last TLAS build (a sync that stops before its build keeps them for the next)
+  std::vector<uint32_t> m_tlasPlaced;
 
   std::set<uint32_t> m_dirtyNodes;        // render-node rows to write: rebound or now holes
   bool               m_allNodes = false;  // every row, into a new table

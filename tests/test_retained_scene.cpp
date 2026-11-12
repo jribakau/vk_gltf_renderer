@@ -221,6 +221,40 @@ TEST(RetainedScene, DrawItemsComeInSourceOrderOncePerCopy)
   EXPECT_NEAR(bounds[1].x, 9.f, 1e-6f);
 }
 
+// A copy's world is its entity's times its own, whether the entity only stands somewhere (a backdrop's
+// root: the copy offset) or turns too; moveCopies moves the copies it names and no others
+TEST(RetainedScene, CopiesStandWhereTheirEntityPutsThemAndMoveOneByOne)
+{
+  rs::RetainedScene    scene;
+  const rs::MeshId     mesh  = scene.addMesh(triangle());
+  const glm::mat4      copy  = glm::scale(glm::rotate(glm::translate(glm::mat4(1.f), {3, 0, -2}), 0.7f, glm::vec3(0, 1, 0)), glm::vec3(1.5f));
+  const rs::EntityId   moved = scene.createEntity("stands", {}), turned = scene.createEntity("turns", {});
+  scene.setLocal(moved, {.translation = {0, 1.25f, 4}});
+  scene.setLocal(turned, {.translation = {2, 0, 0}, .rotation = glm::angleAxis(0.4f, glm::vec3(0, 0, 1))});
+  for(const rs::EntityId e : {moved, turned})
+    scene.setMeshInstance(e, rs::MeshInstance{.parts = {{mesh, {}}}, .copies = {glm::mat4(1.f), copy, copy}});
+  const auto expectNear = [](const glm::mat4& a, const glm::mat4& b, const char* what) {
+    for(int c = 0; c < 4; c++)
+      for(int r = 0; r < 4; r++)
+        EXPECT_NEAR(a[c][r], b[c][r], 1e-5f) << what << " [" << c << "][" << r << "]";
+  };
+  for(const rs::DrawItem& item : scene.drawItems())
+    expectNear(item.world, scene.world(item.entity) * scene.entity(item.entity)->mesh->copies[item.copy], item.entity == moved ? "stands" : "turns");
+  (void)scene.takeChanges();
+  const glm::mat4      there  = glm::translate(glm::mat4(1.f), {9, 0, 9});
+  const uint32_t       which[] = {2, 7};  // 7: past its copies, passed over
+  const glm::mat4      to[]    = {there, there};
+  scene.moveCopies(moved, which, to);
+  const rs::SceneChanges changes = scene.takeChanges();
+  EXPECT_EQ(changes.transforms.count(moved), 1u);
+  EXPECT_FALSE(changes.structure);
+  const std::vector<glm::mat4>& copies = scene.entity(moved)->mesh->copies;
+  ASSERT_EQ(copies.size(), 3u);
+  expectNear(copies[0], glm::mat4(1.f), "untouched");
+  expectNear(copies[1], copy, "untouched");
+  expectNear(copies[2], there, "moved");
+}
+
 // The store keeps one copy of an IES profile: a lamp model removed and added back (each add imports
 // it again) names the profile it had, with nothing for the residency to do
 TEST(RetainedScene, AnIesProfileThatComesAgainIsTheOneThere)

@@ -670,46 +670,65 @@ double placeHash(double x, double z, double salt)
 
 }  // namespace
 
-glm::mat4 swayedPlace(const Spec& spec, Sway sway, const glm::mat4& place, glm::vec2 eye, double seconds)
+SwayFrame swayFrame(const Spec& spec, double seconds)
 {
-  if(!sway.any() || !(spec.wind > 0.0))
-    return place;
+  SwayFrame f;
+  f.on = spec.wind > 0.0;
+  if(!f.on)
+    return f;
+  // A wind's push goes as the square of its speed: twice the wind, four times the lean, and no more
+  // than four times kSwayWindKmh's however hard it blows
+  f.strength        = std::min(std::pow(spec.wind / double(kSwayWindKmh), 2.0), 4.0);
+  const double from = glm::radians(spec.windFrom);
+  f.toward          = -glm::dvec2(std::sin(from), std::cos(from));
+  f.speed           = spec.wind / 3.6;  // metres a second
+  f.seconds         = seconds;
+  // A turn about the level axis across the wind (up x toward) tips the top downwind; one about the
+  // wind's own axis tips it across
+  f.across = glm::vec3(float(f.toward.x), 0.0F, float(f.toward.y));
+  f.down   = glm::vec3(f.across.z, 0.0F, -f.across.x);
+  return f;
+}
+
+glm::mat4 swayed(const SwayFrame& frame, Sway sway, const glm::mat4& place, const glm::mat4& standing, glm::vec2 eye)
+{
+  if(!sway.any() || !frame.on)
+    return standing;
   const glm::vec3 base(place[3]);
   const glm::vec2 at(base.x, base.z);
   const float     distance = glm::distance(at, eye);
   if(distance >= sway.end)
-    return place;
-  const double reach = distance <= sway.full ? 1.0 : double(sway.end - distance) / double(sway.end - sway.full);
-
-  // A wind's push goes as the square of its speed: twice the wind, four times the lean, and no more
-  // than four times kSwayWindKmh's however hard it blows
-  const double     strength = std::min(std::pow(spec.wind / double(kSwayWindKmh), 2.0), 4.0);
-  const double     from     = glm::radians(spec.windFrom);
-  const glm::dvec2 toward   = -glm::dvec2(std::sin(from), std::cos(from));
-  const double     speed    = spec.wind / 3.6;  // metres a second
-  constexpr double kTau     = 6.283185307179586;
+    return standing;
+  const double     reach = distance <= sway.full ? 1.0 : double(sway.end - distance) / double(sway.end - sway.full);
+  constexpr double kTau  = 6.283185307179586;
+  const double     t     = frame.seconds;
 
   // The gusts: two waves along the wind, at its speed and a little under, the second shorter; a
   // plant leans between a fifth and all of its lean as they pass
-  const double along = toward.x * at.x + toward.y * at.y;
-  const double gust  = 0.6 + 0.25 * std::sin(kTau * (along - speed * seconds) / 70.0)
-                      + 0.15 * std::sin(kTau * (along - 0.8 * speed * seconds) / 23.0 + 1.3);
+  const double along = frame.toward.x * at.x + frame.toward.y * at.y;
+  const double gust  = 0.6 + 0.25 * std::sin(kTau * (along - frame.speed * t) / 70.0)
+                      + 0.15 * std::sin(kTau * (along - 0.8 * frame.speed * t) / 23.0 + 1.3);
   // Its own swing: a phase of its own, and a tenth either way of its role's rate
   const double phase  = kTau * placeHash(at.x, at.y, 1.0);
   const double rate   = sway.hz * (0.9 + 0.2 * placeHash(at.x, at.y, 2.0));
-  const double swing  = std::sin(kTau * rate * seconds + phase);
-  const double across = std::sin(kTau * 1.3 * rate * seconds + 2.0 * phase);
-  const double lean   = double(sway.lean) * strength * reach;
+  const double swing  = std::sin(kTau * rate * t + phase);
+  const double across = std::sin(kTau * 1.3 * rate * t + 2.0 * phase);
+  const double lean   = double(sway.lean) * frame.strength * reach;
   const double down   = lean * gust * (0.6 + 0.4 * swing);  // degrees, its top downwind
   const double side   = lean * 0.15 * across;               // and a little across the wind
 
-  // A turn about the level axis across the wind (up x toward) tips the top downwind; one about the
-  // wind's own axis tips it across
-  const glm::vec3 d(float(toward.x), 0.0F, float(toward.y));
-  const glm::vec3 acrossAxis(d.z, 0.0F, -d.x);
-  const glm::mat4 turn = glm::rotate(glm::mat4(1.0F), float(glm::radians(down)), acrossAxis)
-                         * glm::rotate(glm::mat4(1.0F), float(glm::radians(side)), d);
-  return glm::translate(glm::mat4(1.0F), base) * turn * glm::translate(glm::mat4(1.0F), -base) * place;
+  // the turn about the base: the copy's axes turned, and its origin turned about the base
+  const glm::mat3 turn = glm::mat3_cast(glm::angleAxis(float(glm::radians(down)), frame.down) * glm::angleAxis(float(glm::radians(side)), frame.across));
+  glm::mat4       out  = standing;
+  for(int c = 0; c < 3; c++)
+    out[c] = glm::vec4(turn * glm::vec3(standing[c]), standing[c].w);
+  out[3] = glm::vec4(base + turn * (glm::vec3(standing[3]) - base), standing[3].w);
+  return out;
+}
+
+glm::mat4 swayedPlace(const Spec& spec, Sway sway, const glm::mat4& place, glm::vec2 eye, double seconds)
+{
+  return swayed(swayFrame(spec, seconds), sway, place, place, eye);
 }
 
 std::vector<std::string> roles(const Spec& spec)

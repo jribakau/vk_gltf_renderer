@@ -169,7 +169,7 @@ public:
   // not yet: compaction needs the built size read back a frame later (P7); returns none
   AccelHandle compactBlas(AccelHandle blas) override;
   AccelHandle createTlas(uint32_t capacity) override;
-  void        buildTlas(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode) override;
+  void        buildTlasRows(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow) override;
   void        destroyAccel(AccelHandle accel) override;
   uint64_t    accelBytes(AccelHandle accel) const override;
   uint64_t    buildScratchBytes() const override { return m_blasScratch.bufferSize; }

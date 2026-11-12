@@ -104,8 +104,9 @@ uint32_t capacityFor(uint32_t count, uint32_t minimum)
   return std::max(minimum, std::bit_ceil(std::max(count, 1u)));
 }
 
-// [first, count) runs of consecutive slots
-std::vector<std::pair<uint32_t, uint32_t>> runsOf(const std::set<uint32_t>& slots)
+// [first, count) runs of consecutive slots, ascending
+template <class Slots>
+std::vector<std::pair<uint32_t, uint32_t>> runsOf(const Slots& slots)
 {
   std::vector<std::pair<uint32_t, uint32_t>> runs;
   for(uint32_t s : slots)
@@ -114,6 +115,12 @@ std::vector<std::pair<uint32_t, uint32_t>> runsOf(const std::set<uint32_t>& slot
     else
       runs.push_back({s, 1});
   return runs;
+}
+
+void sortUnique(std::vector<uint32_t>& slots)
+{
+  std::sort(slots.begin(), slots.end());
+  slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
 }
 
 TlasRow tlasRowOf(const glm::mat4& world)
@@ -307,6 +314,8 @@ void Residency::clear()
   m_hasTransmission = false;
   m_renderNodes = m_renderPrims = m_sceneDesc = {};
   m_tlas                                      = {};
+  m_tlasRows.clear();  // the next build writes every row
+  m_tlasPlaced.clear();
   m_instanceCapacity = m_primCapacity = m_tlasCapacity = 0;
   // fresh slot pools: their slots index the tables retired above, so they are never read again
   m_dirtyNodes.clear();
@@ -3017,7 +3026,8 @@ void Residency::writeMotionTables(SyncResult& result)
     result.buffersChanged = result.changed = true;
     return true;
   };
-  std::set<uint32_t> prims, nodes;
+  std::set<uint32_t>    prims;
+  std::vector<uint32_t> nodes;
   prims.swap(m_dirtyPrevPrims);
   nodes.swap(m_dirtyPrevNodes);
   if(fit(m_prevPositionTable, uint64_t(m_primCapacity) * sizeof(uint64_t), "previous positions table"))
@@ -3025,7 +3035,8 @@ void Residency::writeMotionTables(SyncResult& result)
       prims.insert(p);
   if(fit(m_prevWorldTable, uint64_t(m_instanceCapacity) * sizeof(glm::mat4), "previous worlds"))
     for(uint32_t s = 0; s < m_instances.size(); s++)
-      nodes.insert(s);
+      nodes.push_back(s);
+  sortUnique(nodes);
   for(const auto& [first, count] : runsOf(prims))
   {
     std::vector<uint64_t> rows(count, 0);
@@ -3190,7 +3201,7 @@ SyncResult Residency::sync(RetainedScene& scene)
     if(slot < m_instances.size() && m_instances[slot])
     {
       m_prevWorlds[slot] = m_instances[slot]->world;
-      m_dirtyPrevNodes.insert(slot);
+      m_dirtyPrevNodes.push_back(slot);
     }
   m_movedLast.clear();
   snapshotPrevPositions();
@@ -3390,8 +3401,8 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
       releaseDrawer({inst.entity, inst.mesh});
     releaseMaterial(inst.material);
     m_prevWorlds[slot] = glm::mat4(0.f);  // a hole's motion row is zeroed with its render node
-    m_dirtyPrevNodes.insert(slot);
-    m_movedLast.erase(slot);
+    m_dirtyPrevNodes.push_back(slot);
+    // (left in m_movedLast: the next sync passes over a hole, and a slot taken again meanwhile starts at rest)
     m_instances[slot].reset();
     m_gpu.retire([pool = m_instancePool, slot] { pool->destroyID(slot); });
     m_dirtyNodes.insert(slot);  // a hole: its row zeroed; the slot goes back to the pool at its retire frame
@@ -3448,7 +3459,7 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
     if(slot >= m_prevWorlds.size())
       m_prevWorlds.resize(size_t(slot) + 1, glm::mat4(0.f));
     m_prevWorlds[slot] = item.world;
-    m_dirtyPrevNodes.insert(slot);
+    m_dirtyPrevNodes.push_back(slot);
     result.drawListChanged = true;
   }
   if(result.drawListChanged)
@@ -3614,11 +3625,11 @@ void Residency::ensureCapacity(SyncResult& result)
 // The rows that differ from what is drawn, then the BLASes still to build, then the TLAS.
 void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
 {
-  std::set<uint32_t> nodes;
-  nodes.swap(m_dirtyNodes);
+  std::vector<uint32_t> nodes(m_dirtyNodes.begin(), m_dirtyNodes.end());
+  m_dirtyNodes.clear();
   if(m_allNodes)
     for(uint32_t s = 0; s < m_instances.size(); s++)
-      nodes.insert(s);
+      nodes.push_back(s);
   m_allNodes = false;
   // (a BLAS held for the TLAS that pointed at it: one built without it, so that it can go)
   bool tlasRows = !nodes.empty() || !m_tlasRefs->held.empty();
@@ -3645,13 +3656,15 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
     {
       // drawn last where it was: its motion row, until the next sync brings it to rest
       m_prevWorlds[slot] = inst.world;
-      m_dirtyPrevNodes.insert(slot);
-      m_movedLast.insert(slot);
+      m_dirtyPrevNodes.push_back(slot);
+      m_movedLast.push_back(slot);
       inst.world = item.world;
-      nodes.insert(slot);
+      nodes.push_back(slot);
       tlasRows = true;
     }
   }
+
+  sortUnique(nodes);  // the rows written in runs
 
   // prims: new ones and the ones to build again, or every row into a new table
   std::set<uint32_t>    prims;
@@ -3670,6 +3683,7 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
   if(!nodes.empty() || !prims.empty())
     m_gpu.barrier(GpuBarrier::eTransferToBuild);
   writeRenderNodes(nodes);
+  m_tlasPlaced.insert(m_tlasPlaced.end(), nodes.begin(), nodes.end());
   writeRenderPrims(prims);
   // the copies first: built in an earlier frame, they don't wait for this frame's builds
   const bool otherRows = tlasRows;
@@ -3734,7 +3748,7 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
     result.changed = true;
 }
 
-void Residency::writeRenderNodes(const std::set<uint32_t>& slots)
+void Residency::writeRenderNodes(std::span<const uint32_t> slots)
 {
   for(const auto& [first, count] : runsOf(slots))
   {
@@ -3784,25 +3798,51 @@ void Residency::writeRenderPrims(const std::set<uint32_t>& slots)
   }
 }
 
-// Rows up to the high-water mark: a live instance's, a hidden one's without its BLAS, a hole's null
+// Rows up to the high-water mark: a live instance's, a hidden one's without its BLAS, a hole's null.
+// Kept from build to build (m_tlasRows): a row's transform is made again only for a slot placed since, and
+// only the rows that differ go to the device. Its BLAS, mask and flags are looked at for every row, which
+// is cheap: a BLAS built again, compacted or let go of, or a material's bits, change without a move.
 void Residency::buildTlas()
 {
-  std::vector<TlasRow> rows(m_instances.size());
-  for(size_t s = 0; s < m_instances.size(); s++)
+  std::vector<uint32_t> placed;
+  placed.swap(m_tlasPlaced);
+  sortUnique(placed);
+  const size_t n     = m_instances.size();
+  const bool   every = m_tlasRows.size() != n || m_tlasRowsOf != m_tlas;  // another count, or a new TLAS
+  m_tlasRows.resize(n);
+  m_tlasRowsOf = m_tlas;
+  std::vector<uint32_t> changed;
+  size_t                next = 0;
+  for(size_t s = 0; s < n; s++)
   {
-    const std::optional<Instance>& inst = m_instances[s];
-    if(!inst)
-      continue;
-    TlasRow& row                       = rows[s];
-    row                                = tlasRowOf(inst->world);
-    row.customIndex                    = inst->prim;
-    const nvvkgltf::MaterialBits& bits = m_materialStates[inst->materialSlot]->bits;
-    row.mask                           = bits.instanceMask;
-    row.flags                          = bits.instanceFlags;
-    if(inst->shown)
-      row.blas = m_prims[inst->prim]->blas;
+    while(next < placed.size() && placed[next] < s)
+      next++;
+    const bool                     moved = every || (next < placed.size() && placed[next] == s);
+    const std::optional<Instance>& inst  = m_instances[s];
+    TlasRow&                       was   = m_tlasRows[s];
+    TlasRow                        row;  // a hole's: null
+    if(inst)
+    {
+      if(moved)
+        row = tlasRowOf(inst->world);
+      else
+        std::memcpy(row.transform, was.transform, sizeof(row.transform));
+      row.customIndex                    = inst->prim;
+      const nvvkgltf::MaterialBits& bits = m_materialStates[inst->materialSlot]->bits;
+      row.mask                           = bits.instanceMask;
+      row.flags                          = bits.instanceFlags;
+      if(inst->shown)
+        row.blas = m_prims[inst->prim]->blas;
+    }
+    if(every || moved || row.customIndex != was.customIndex || row.mask != was.mask || row.flags != was.flags || row.blas != was.blas)
+    {
+      was = row;
+      if(!every)
+        changed.push_back(uint32_t(s));
+    }
   }
-  m_gpu.buildTlas(m_tlas, rows, TlasMode::eBuild);
+  const std::vector<TlasRow>& rows = m_tlasRows;
+  m_gpu.buildTlasRows(m_tlas, rows, TlasMode::eBuild, changed, every);
   // what it points at now, and since when each it pointed at before no longer is (a drag's builds point at the same)
   std::vector<uint64_t> now(rows.size());
   for(size_t s = 0; s < rows.size(); s++)

@@ -522,6 +522,14 @@ TEST(BackdropWind, PlantsSwayAboutTheirBaseDownwind)
   EXPECT_EQ(B::swayedPlace(calm, tree, place, eye, 7.3), place);
   EXPECT_EQ(B::swayedPlace(spec, B::swayOf("rock"), place, eye, 7.3), place);
   EXPECT_EQ(B::swayedPlace(spec, tree, place, eye, 7.3), B::swayedPlace(spec, tree, place, eye, 7.3));
+  // a copy standing at the place with its node's own turn and offset under it sways as the place does
+  // (the host turns the copies it draws, not the places)
+  const glm::mat4 node    = glm::translate(glm::rotate(glm::mat4(1.0F), 0.6F, glm::vec3(1, 0, 0)), glm::vec3(0.3F, 0.2F, -0.1F));
+  const glm::mat4 drawn   = B::swayed(B::swayFrame(spec, 7.3), tree, place, place * node, eye);
+  const glm::mat4 product = B::swayedPlace(spec, tree, place, eye, 7.3) * node;
+  for(int c = 0; c < 4; c++)
+    for(int r = 0; r < 4; r++)
+      EXPECT_NEAR(drawn[c][r], product[c][r], 1e-4F) << c << r;
 
   // far from the camera it eases off, and past its end it stands; a bush stands nearer than a tree
   EXPECT_LT(B::swayOf("shrub").end, tree.end);

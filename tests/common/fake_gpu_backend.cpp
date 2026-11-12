@@ -583,7 +583,7 @@ AccelHandle FakeGpuBackend::createTlas(uint32_t capacity)
   return handle;
 }
 
-void FakeGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> rows, TlasMode mode)
+void FakeGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow)
 {
   auto it = m_tlases.find(handle.value);
   if(it == m_tlases.end())
@@ -601,6 +601,34 @@ void FakeGpuBackend::buildTlas(AccelHandle handle, std::span<const TlasRow> rows
     error("buildTlas: BLASes built or refitted with no build-to-build barrier before it");
   if(t.builds + t.updates > 0 && t.builtFrame < m_frame && !m_frameFenced)
     error("buildTlas: rebuilds a TLAS a frame in flight may still trace, with no frame-to-write barrier before");
+  // rows named as changed: the others must be the last build's (the device keeps them as written)
+  if(!everyRow)
+  {
+    if(t.builds + t.updates == 0 || rows.size() != t.rows.size())
+      error("buildTlas: changed rows only, with no build of as many rows before");
+    else
+    {
+      size_t next = 0;
+      for(size_t i = 0; i < rows.size(); i++)
+      {
+        if(next < changed.size() && changed[next] == i)
+        {
+          next++;
+          continue;
+        }
+        const TlasRow& a = rows[i];
+        const TlasRow& b = t.rows[i];
+        if(std::memcmp(a.transform, b.transform, sizeof(a.transform)) != 0 || a.customIndex != b.customIndex || a.mask != b.mask
+           || a.flags != b.flags || a.blas != b.blas)
+        {
+          error("buildTlas: row " + std::to_string(i) + " differs from the last build's but is not named as changed");
+          break;
+        }
+      }
+      if(next != changed.size())
+        error("buildTlas: the changed rows are not ascending, or past the rows");
+    }
+  }
   t.builtFrame = m_frame;
   m_buildsBeforeTrace = true;
   if(mode == TlasMode::eUpdate)
