@@ -455,6 +455,55 @@ TEST(FigureMorphSet, AMeshMadeAgainTakesItsMorphsAtItsNewLevel)
   EXPECT_LT(worst(geo->normal, reference.normal), 1e-6);
 }
 
+// A cageOnly mesh's targets with HD detail (.dhdm edits) are mixed by weight as its cage is summed:
+// the tables move the refined mesh as the reference refinement with those edits does, and a dial at
+// zero leaves none.
+TEST(FigureMorphSet, ACageOnlyMeshMixesItsTargetsHdDetail)
+{
+  fv::mesh::BuiltMesh geo = grid(6, 2);
+  const auto          edits = [](float s) {
+    auto e  = std::make_shared<fv::subdiv::LevelEdits>(2);
+    (*e)[0] = {{7, 1, 2, {0.02f * s, 0.05f * s, 0.f}}};
+    (*e)[1] = {{8, 6, 1, {0.f, 0.1f * s, -0.03f * s}}, {14, 3, 0, {0.04f * s, 0.f, 0.f}}};
+    return e;
+  };
+  const auto hdTarget = [&](std::vector<int32_t> v, std::vector<float> d, float s, float scale) {
+    fv::mesh::CageDeltas c;
+    c.verts      = std::move(v);
+    c.deltas     = std::move(d);
+    auto t       = std::make_shared<fv::mesh::RenderTarget>(fv::mesh::target(geo, c));
+    t->hd        = edits(s);
+    t->hdScale   = scale;
+    return fv::dson::TargetPtr(std::move(t));
+  };
+  const auto a = hdTarget({8, 9}, {0, 0, 0.1f, 0, 0, 0.1f}, 1.f, 1.f);
+  const auto b = hdTarget({16}, {0, 0.2f, 0}, -2.f, 0.5f);
+  fv::morph::MorphSet set([&](int) { return &geo; });
+  set.cageOnly = [](int) { return true; };
+  set.addTarget("a", 0, a);
+  set.addTarget("b", 0, b);
+  set.takeChanges();
+  EXPECT_EQ(set.hdDetail(0), nullptr);
+
+  set.set("a", 0.5);
+  set.set("b", 1);
+  set.takeChanges();
+  const auto tables = set.hdDetail(0);
+  ASSERT_NE(tables, nullptr);
+  const auto ea = fv::subdiv::placeEdits(*geo.refinement, geo.cagePolyStart, *a->hd);
+  const auto eb = fv::subdiv::placeEdits(*geo.refinement, geo.cagePolyStart, *b->hd);
+  const std::pair<float, const fv::subdiv::HdEdits*> want[] = {{0.5f, &ea}, {0.5f, &eb}};
+  const std::vector<float> cage = set.morphedCage(0);
+  const auto ref = fv::subdiv::refineWithEdits(*geo.refinement, cage, geo.cagePolyStart, geo.cagePolyVerts, want);
+  const auto got = fv::subdiv::refineWithTables(*geo.refinement, cage, tables.get());
+  EXPECT_LT(worst(got, ref), 1e-5);
+
+  set.set("a", 0);
+  set.set("b", 0);
+  set.takeChanges();
+  EXPECT_EQ(set.hdDetail(0), nullptr);
+}
+
 // gpu-figures-plan.md F5: a cageOnly mesh's dial moves its cage alone, and its target never refines
 // its drawn deltas; catchUp() (an export's) makes them and writes the drawn vertices a flush with the
 // path off would have.

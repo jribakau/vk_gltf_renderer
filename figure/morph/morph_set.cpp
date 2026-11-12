@@ -335,6 +335,12 @@ std::span<const float> MorphSet::morphedCageView(int mesh, std::vector<float>& s
   return scratch;
 }
 
+std::shared_ptr<const subdiv::HdTables> MorphSet::hdDetail(int mesh) const
+{
+  const auto it = m_cpu.find(mesh);
+  return it == m_cpu.end() ? nullptr : it->second.hd;
+}
+
 dson::TargetPtr MorphSet::cpuTarget(const std::string& name, int mesh) const
 {
   const auto it = m_bindings.find(name);
@@ -1201,6 +1207,23 @@ void MorphSet::updateCage(int mesh, MeshState& st)
         add(*entry->second.target, -entry->second.weight);
   }
   st.cageApplied = st.active;
+
+  // the HD detail: the targets that carry it, mixed by weight on the refinement the GPU makes
+  std::vector<subdiv::HdMixer::Weighted> hd;
+  for(const auto* entry : inOrder(st.active))
+    if(const mesh::RenderTarget& t = *entry->second.target; t.hd && entry->second.weight != 0)
+      hd.emplace_back(t.hd, float(entry->second.weight * t.hdScale));
+  if(hd.empty() || !geo.refinement)
+  {
+    st.hd.reset();
+    return;
+  }
+  if(!st.hdMixer || st.hdFor != geo.refinement.get())
+  {
+    st.hdMixer = std::make_unique<subdiv::HdMixer>(geo.refinement, geo.cagePolyStart, geo.cagePolyVerts);
+    st.hdFor   = geo.refinement.get();
+  }
+  st.hd = st.hdMixer->mix(hd);
 }
 
 // Adds each changed target's weight difference; re-welds normals around the moved vertices.

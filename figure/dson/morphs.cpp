@@ -6,6 +6,7 @@
 #include <regex>
 #include <utility>
 
+#include <figure/dson/dhdm.hpp>
 #include <figure/io/gzip.hpp>
 
 namespace fv::dson {
@@ -458,7 +459,29 @@ std::string groupFromPath(const std::string& file)
   return "Morphs";
 }
 
-std::vector<MorphDef> morphsFromDoc(const Doc& doc, const std::string& file, const std::vector<MeshRef>& meshes, const std::vector<size_t>* prefer)
+namespace {
+
+// The edits of the .dhdm `url` names, or null when it isn't installed or can't be read.
+std::shared_ptr<const subdiv::LevelEdits> readHd(const Library& library, const std::string& url, const std::string& file)
+{
+  const std::optional<Ref> ref = parseRef(url, file);
+  const auto               at  = ref ? library.find(ref->file) : std::nullopt;
+  if(!at)
+    return nullptr;
+  try
+  {
+    return std::make_shared<const subdiv::LevelEdits>(parseDhdm(readMaybeCompressed(*at)).levels);
+  }
+  catch(const std::exception&)
+  {
+    return nullptr;
+  }
+}
+
+}  // namespace
+
+std::vector<MorphDef> morphsFromDoc(const Doc& doc, const std::string& file, const std::vector<MeshRef>& meshes, const std::vector<size_t>* prefer,
+                                    const Library* library)
 {
   struct Found
   {
@@ -497,6 +520,10 @@ std::vector<MorphDef> morphsFromDoc(const Doc& doc, const std::string& file, con
     auto target = std::make_shared<mesh::RenderTarget>(mesh::target(f.fm->cageVertices, f.deltas));
     if(!target->moves())
       continue;
+    // its HD detail: the mesh's own only, a shell's polygons being its own
+    target->hdUrl = getString(get(f.mod, "morph"), "hd_url");
+    if(library && !target->hdUrl.empty())
+      target->hd = readHd(*library, target->hdUrl, file);
     const Json* ch = get(f.mod, "channel");
     MorphDef    def;
     def.id = getString(f.mod, "id");
@@ -541,6 +568,9 @@ TargetPtr scaled(const TargetPtr& t, double k)
   out->cageDeltas  = t->cageDeltas;
   for(float& v : out->cageDeltas)
     v = float(v * k);
+  out->hdUrl   = t->hdUrl;
+  out->hd      = t->hd;
+  out->hdScale = float(t->hdScale * k);
   // a target made by hand has its drawn deltas alone
   if(const mesh::RenderTarget::Drawn* d = t->drawnIfMade(); d && t->cageDeltas.empty())
   {
@@ -662,7 +692,7 @@ std::vector<MorphPart> loadMorphFile(Store& store, const std::string& file, cons
 {
   auto                   doc = store.load(file);
   std::vector<MorphPart> own;
-  for(MorphDef& m : morphsFromDoc(*doc, file, meshes))
+  for(MorphDef& m : morphsFromDoc(*doc, file, meshes, nullptr, &store.library()))
     for(MorphPart& p : m.parts)
       own.push_back(std::move(p));
   if(!own.empty())
@@ -679,7 +709,7 @@ std::vector<MorphPart> loadMorphFile(Store& store, const std::string& file, cons
     for(const DrivenMorph& d : drivenMorphs(store, file, getString(&mod, "id")))
     {
       auto ddoc = store.load(d.file);
-      for(MorphDef& m : morphsFromDoc(*ddoc, d.file, meshes))
+      for(MorphDef& m : morphsFromDoc(*ddoc, d.file, meshes, nullptr, &store.library()))
       {
         if(m.id != d.id)
           continue;

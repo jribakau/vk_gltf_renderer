@@ -319,6 +319,60 @@ TEST(HdEdits, TheReferenceAddsEditsLevelByLevel)
     EXPECT_NEAR(spread[i], want[i], 1e-5);
 }
 
+// The mixer's tables, applied as the GPU applies them, move the mesh as the reference does; weights
+// change the offsets only, and a new set of edits makes the topology again.
+TEST(HdEdits, MixedTablesMoveTheMeshAsTheReferenceDoes)
+{
+  const Cage c = box();
+  const auto r = std::make_shared<subdiv::Refinement>(subdiv::refine(c.mesh(), 2));
+  auto       a = std::make_shared<subdiv::LevelEdits>(2);
+  (*a)[0]      = {{0, 1, 2, {0.05f, 0.1f, -0.02f}}, {5, 2, 0, {0.f, 0.2f, 0.f}}};
+  (*a)[1]      = {{2, 5, 2, {0.1f, 0.2f, -0.3f}}, {7, 9, 1, {-0.1f, 0.f, 0.05f}}};
+  auto b       = std::make_shared<subdiv::LevelEdits>(2);
+  (*b)[1]      = {{2, 5, 2, {0.3f, 0.f, 0.f}}, {4, 0, 3, {0.f, -0.1f, 0.f}}};  // shares a's first fine edit
+
+  subdiv::HdMixer mixer(r, c.faceStart, c.faceVerts);
+  const subdiv::HdMixer::Weighted none[] = {{a, 0.f}, {b, 0.f}};
+  EXPECT_EQ(mixer.mix(none), nullptr);
+
+  const subdiv::HdMixer::Weighted justA[] = {{a, 0.7f}};
+  const auto                      first   = mixer.mix(justA);
+  ASSERT_TRUE(first);
+  const subdiv::HdEdits placedA = subdiv::placeEdits(*r, c.faceStart, *a);
+  const subdiv::HdEdits placedB = subdiv::placeEdits(*r, c.faceStart, *b);
+  {
+    const std::pair<float, const subdiv::HdEdits*> want[] = {{0.7f, &placedA}};
+    const auto ref = subdiv::refineWithEdits(*r, c.positions, c.faceStart, c.faceVerts, want);
+    const auto got = subdiv::refineWithTables(*r, c.positions, first.get());
+    ASSERT_EQ(got.size(), ref.size());
+    for(size_t i = 0; i < ref.size(); i++)
+      EXPECT_NEAR(got[i], ref[i], 1e-5);
+  }
+
+  const subdiv::HdMixer::Weighted both[] = {{a, 0.25f}, {b, -0.5f}};
+  const auto                      second = mixer.mix(both);
+  ASSERT_TRUE(second);
+  EXPECT_NE(second->topology, first->topology) << "b joined";
+  {
+    const std::pair<float, const subdiv::HdEdits*> want[] = {{0.25f, &placedA}, {-0.5f, &placedB}};
+    const auto ref = subdiv::refineWithEdits(*r, c.positions, c.faceStart, c.faceVerts, want);
+    const auto got = subdiv::refineWithTables(*r, c.positions, second.get());
+    const auto plain = subdiv::refineWithTables(*r, c.positions, nullptr);
+    double     moved = 0;
+    for(size_t i = 0; i < ref.size(); i++)
+    {
+      EXPECT_NEAR(got[i], ref[i], 1e-5);
+      moved = std::max(moved, std::abs(double(got[i]) - plain[i]));
+    }
+    EXPECT_GE(second->reach + 1e-6, moved) << "the reach bounds the move";
+    EXPECT_EQ(second->topology->levels[1].frame.size(), 3u) << "the shared edit is one entry";
+  }
+
+  const subdiv::HdMixer::Weighted onlyB[] = {{a, 0.f}, {b, 1.f}};
+  EXPECT_EQ(mixer.mix(onlyB)->topology, second->topology) << "a weight going to zero keeps the topology";
+  EXPECT_EQ(mixer.dropped(), 0u);
+}
+
 // Genesis 9's FACS Details, read and placed whole at its cage's two levels. Of the bases an offset
 // could be in, the one the reference uses gives the smoothest field: a wrong basis turns neighbouring
 // offsets different ways and the field turns to noise.

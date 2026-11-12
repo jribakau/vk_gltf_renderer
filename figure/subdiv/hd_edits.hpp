@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <utility>
 #include <vector>
@@ -68,5 +69,70 @@ std::vector<int32_t> cornerFaces(std::span<const int32_t> faceStart);
 // level, frames from those cage positions.
 std::vector<float> refineWithEdits(const Refinement& r, std::span<const float> cagePositions, std::span<const int32_t> faceStart,
                                    std::span<const int32_t> faceVerts, std::span<const std::pair<float, const HdEdits*>> edits);
+
+// The five cage vertices a corner's frame is made from: its face's first, second and last, the
+// corner's own and the one before it.
+using FrameVertices = std::array<int32_t, 5>;
+FrameVertices frameVertices(std::span<const int32_t> faceStart, std::span<const int32_t> faceVerts, std::span<const int32_t> cornerFace,
+                            uint32_t faceCorner);
+// The frame of those five points of `positions` (three floats a vertex): cornerFrame's.
+std::array<float, 9> frameOf(std::span<const float> positions, const FrameVertices& v);
+
+// A mesh's HD edits as the GPU adds them (the stencil pass, shaders/stencil.comp.slang): per level,
+// each row's edits (start per row of the level, plus one), each naming a frame and an offset in it;
+// the frames by their five cage vertices.
+struct HdTables
+{
+  struct Topology
+  {
+    struct Level
+    {
+      std::vector<uint32_t> start;  // the level's rows, plus one
+      std::vector<uint32_t> frame;  // per edit
+    };
+    std::vector<Level>  levels;
+    std::vector<int32_t> frameVertices;  // five per frame
+    size_t frames() const { return frameVertices.size() / 5; }
+  };
+  std::shared_ptr<const Topology> topology;
+  std::vector<std::vector<float>> offsets;  // per level, three per edit: the weighted sum
+  // the most the edits can move a vertex: each level's longest offset, summed (a frame is a rotation)
+  float reach = 0;
+};
+
+// One mesh's HD morphs mixed by weight. Every edit set the mesh has been given keeps its place, so a
+// weight that comes and goes changes offsets only, and the topology is made again only when a new
+// set joins.
+class HdMixer
+{
+public:
+  HdMixer(std::shared_ptr<const Refinement> r, std::vector<int32_t> faceStart, std::vector<int32_t> faceVerts);
+
+  using Weighted = std::pair<std::shared_ptr<const LevelEdits>, float>;
+  // The weighted sum of `edits`; null when none has a weight.
+  std::shared_ptr<const HdTables> mix(std::span<const Weighted> edits);
+
+  // How many edits fell off the refinement (levels it doesn't make, faces it doesn't have).
+  size_t dropped() const { return m_dropped; }
+
+private:
+  struct Known
+  {
+    std::shared_ptr<const LevelEdits> edits;
+    std::vector<std::vector<uint32_t>> entry;  // per level, per placed edit: its place in the topology
+    HdEdits                            placed;
+  };
+  void remake();
+
+  std::shared_ptr<const Refinement>        m_refinement;
+  std::vector<int32_t>                     m_faceStart, m_faceVerts, m_cornerFace;
+  std::vector<Known>                       m_known;
+  std::shared_ptr<const HdTables::Topology> m_topology;
+  size_t                                   m_dropped = 0;
+};
+
+// The tables applied as the GPU applies them: each level refined from the one before (in floats,
+// summed in the stencils' order), then its rows' edits added in frames of `cagePositions`.
+std::vector<float> refineWithTables(const Refinement& r, std::span<const float> cagePositions, const HdTables* tables);
 
 }  // namespace fv::subdiv

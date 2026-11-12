@@ -47,7 +47,7 @@ public:
   std::shared_ptr<const dson::Doc> doc(const std::string& file) override { return m_store->load(file); }
   std::vector<dson::MorphDef> targets(const dson::Doc& doc, const std::string& file) override
   {
-    return dson::morphsFromDoc(doc, file, m_meshes, &m_main);
+    return dson::morphsFromDoc(doc, file, m_meshes, &m_main, &m_store->library());
   }
   std::optional<std::string> find(const std::string& id) override
   {

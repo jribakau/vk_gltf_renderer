@@ -129,8 +129,10 @@ double morphSize(const std::filesystem::path& file);
 
 // Converts every morph modifier in a document into targets. `prefer` (indices into `meshes`)
 // narrows the target to one scene node's meshes when several copies of the same geometry are loaded.
+// With `library`, a morph's HD detail (the .dhdm its `hd_url` names) is read into its target; one not
+// installed or not readable is left out, and the morph moves at base resolution alone.
 std::vector<MorphDef> morphsFromDoc(const Doc& doc, const std::string& file, const std::vector<MeshRef>& meshes,
-                                    const std::vector<size_t>* prefer = nullptr);
+                                    const std::vector<size_t>* prefer = nullptr, const Library* library = nullptr);
 
 // Loads one morph .dsf and returns its targets. A controller dial is built from the morphs it drives.
 std::vector<MorphPart> loadMorphFile(Store& store, const std::string& file, const std::vector<MeshRef>& meshes);

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <figure/subdiv/catmark.hpp>
+#include <figure/subdiv/hd_edits.hpp>
 
 namespace fv::mesh {
 
@@ -279,6 +280,11 @@ struct RenderTarget
   // the cage deltas, out-of-range vertices dropped
   std::vector<uint32_t> cageIndices;
   std::vector<float>    cageDeltas;
+  // DAZ HD detail: a .dhdm file's edits at the subdivided levels (figure/subdiv/hd_edits.hpp), moved
+  // by `hdScale` times the target's weight. `hdUrl` is the file the morph names, kept when unread.
+  std::string                               hdUrl;
+  std::shared_ptr<const subdiv::LevelEdits> hd;
+  float                                     hdScale = 1.f;
 
   // Refined onto `mesh`'s render vertices and spread to every UV split, once for a mesh of its size, by
   // whichever thread asks first (the others wait for it). The size is how a mesh made again shows.

@@ -282,6 +282,9 @@ public:
   // else made into `scratch`: a dial step hands it on every frame, a hair's millions of floats. Good
   // until the set next changes.
   std::span<const float> morphedCageView(int mesh, std::vector<float>& scratch) const;
+  // A cageOnly mesh's HD detail as of the last flush: its active targets' .dhdm edits mixed by
+  // weight, for the GPU's refinement (figure/subdiv/hd_edits.hpp). Null when none moves it.
+  std::shared_ptr<const subdiv::HdTables> hdDetail(int mesh) const;
   // Binds `target` as the channel's target on a mesh, making the channel when it is new and
   // dropping the target it had there. The channel's weight applies to it at once.
   void replaceCpuTarget(const std::string& name, int mesh, dson::TargetPtr target, const ChannelOptions& opts = {});
@@ -317,6 +320,11 @@ private:
     std::unordered_map<const mesh::RenderTarget*, Active> cageApplied;
     int                                                   sinceCageRebuild = 0;
     bool                                                  behind           = false;
+    // a cageOnly mesh's HD detail: its targets' .dhdm edits mixed by weight (null: none moves it), and
+    // the mixer, made for the refinement it places them on
+    std::shared_ptr<const subdiv::HdTables> hd;
+    std::unique_ptr<subdiv::HdMixer>        hdMixer;
+    const subdiv::Refinement*               hdFor = nullptr;
     // the mesh's BuiltMesh::drawnRev the drawn buffers and what is kept of them were made over: another
     // means they were let go and made again as they were at rest, so they start again (freshen)
     uint32_t drawnRev = 0;
