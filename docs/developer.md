@@ -146,6 +146,10 @@ src/
 ├── fv_backdrop.cpp/hpp         # The procedural backdrop's shape, Vulkan-free: the ground's height and mesh, and
 │                               #   where each plant of a meadow or a forest stands, from a seed;
 │                               #   fv_host_backdrop.cpp plants it from a kit
+├── fv_backdrop_state.cpp/hpp   # The backdrop's state over the protocol (backdrop.set, the backdrop topic), and
+│                               #   the renderer parameters one that stands sets over the lighting's
+├── fv_patch.hpp                # What a merge patch's fields are checked with (lighting.set, backdrop.set), and
+│                               #   the merge patch between two states that a topic's change is published as
 │
 ├── sky_sun.cpp/hpp             # SkySun: who the sun is (renderer state, or a scene light marked
 │                               #   as the sky's) and every path that aims it

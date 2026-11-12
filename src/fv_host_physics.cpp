@@ -629,7 +629,9 @@ void FvHost::Impl::stepPhysics()
         f.physics->setGravity({down.x * 980.0, down.y * 980.0, down.z * 980.0});
         if(f.secondary)
           f.secondary->setGravity({down.x * 980.0, down.y * 980.0, down.z * 980.0});
-        if(lighting.ground.mode != "off")
+        // a backdrop's land is ground too, with the lighting's own off: level at the floor's height
+        // where the figures stand
+        if(lighting.ground.mode != "off" || backdropStands())
         {
           const double    height = lighting.ground.autoHeight ? double(autoGround) : lighting.ground.height;
           const glm::vec3 at     = glm::vec3(toRoot * glm::vec4(0, float(height), 0, 1));

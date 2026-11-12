@@ -132,7 +132,11 @@ namespace {
 // land). An older renderer refuses the lighting that has either.
 // 69: backdrop.wind and backdrop.windFrom (the trees, saplings and bushes sway in it). An older
 // renderer refuses the lighting that has either.
-constexpr int kProtocolVersion = 69;
+// 70: the backdrop is a state of its own, no longer a section of the lighting: `backdrop.set` (a merge
+// patch of kind, seed, size, density, relief, air, mature, wind, windFrom; a step of the history) and
+// the `backdrop` topic (those, with the read-only state and plants). The lighting topic has no
+// `backdrop`, and this renderer refuses a lighting.set that has one, but for a kept scene's.
+constexpr int kProtocolVersion = 70;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

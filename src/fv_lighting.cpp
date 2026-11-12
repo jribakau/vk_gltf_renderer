@@ -39,45 +39,33 @@ double radians(double deg)
   return deg * kPi / 180.0;
 }
 
+// The patch's checks (fv_patch.hpp), every message starting "lighting: "
+constexpr fv::patch::Checks kChecks{"lighting"};
+using fv::patch::field;
+
 [[noreturn]] void reject(const std::string& what)
 {
-  throw std::invalid_argument("lighting: " + what);
+  kChecks.reject(what);
 }
 
 double number(const Json& v, const std::string& key, double lo, double hi)
 {
-  if(!v.is_number())
-    reject(key + " must be a number");
-  const double x = v.get<double>();
-  if(!std::isfinite(x))
-    reject(key + " must be finite");
-  return std::clamp(x, lo, hi);
+  return kChecks.number(v, key, lo, hi);
 }
 
 bool boolean(const Json& v, const std::string& key)
 {
-  if(!v.is_boolean())
-    reject(key + " must be true or false");
-  return v.get<bool>();
+  return kChecks.boolean(v, key);
 }
 
 std::string string(const Json& v, const std::string& key)
 {
-  if(!v.is_string())
-    reject(key + " must be a string");
-  return v.get<std::string>();
+  return kChecks.string(v, key);
 }
 
 std::string oneOf(const Json& v, const std::string& key, std::initializer_list<const char*> values)
 {
-  const std::string s = string(v, key);
-  for(const char* allowed : values)
-    if(s == allowed)
-      return s;
-  std::string list;
-  for(const char* allowed : values)
-    list += (list.empty() ? "" : ", ") + std::string(allowed);
-  reject(key + " is one of " + list + ", not \"" + s + "\"");
+  return kChecks.oneOf(v, key, values);
 }
 
 std::string color(const Json& v, const std::string& key)
@@ -100,13 +88,6 @@ const Json& section(const Json& patch, const char* name)
   if(!v.is_object())
     reject(std::string(name) + " must be an object or null");
   return v;
-}
-
-// Each field: null resets it, anything else is checked and clamped. `T` is the field's type.
-template <class T, class Parse>
-void field(T& dst, const T& def, const Json& v, Parse parse)
-{
-  dst = v.is_null() ? def : T(parse(v));
 }
 
 void patchEnv(Env& e, const Json& p)
@@ -395,41 +376,6 @@ Json lookJson(const std::optional<Look>& look)
   };
 }
 
-void patchBackdrop(fv::backdrop::Spec& b, const Json& p)
-{
-  const fv::backdrop::Spec d;
-  for(auto it = p.begin(); it != p.end(); ++it)
-  {
-    const std::string& k   = it.key();
-    const Json&        v   = it.value();
-    const std::string  key = "backdrop." + k;
-    if(k == "kind")
-      field(b.kind, d.kind, v, [&](const Json& x) { return oneOf(x, key, {"none", "meadow", "forest"}); });
-    else if(k == "seed")
-      field(b.seed, d.seed, v, [&](const Json& x) { return int(std::lround(number(x, key, 0.0, double(1 << 20)))); });
-    else if(k == "size")
-      // a clearing's worth of grass to a field's: every metre across costs its plants
-      field(b.size, d.size, v, [&](const Json& x) { return number(x, key, 20.0, 200.0); });
-    else if(k == "density")
-      field(b.density, d.density, v, [&](const Json& x) { return number(x, key, 0.25, 2.0); });
-    else if(k == "relief")
-      field(b.relief, d.relief, v, [&](const Json& x) { return number(x, key, 0.0, 2.0); });
-    else if(k == "air")
-      field(b.air, d.air, v, [&](const Json& x) { return number(x, key, 1.0, 20.0); });
-    else if(k == "mature")
-      field(b.mature, d.mature, v, [&](const Json& x) { return boolean(x, key); });
-    else if(k == "wind")
-      // still air to a gale's at the treetops
-      field(b.wind, d.wind, v, [&](const Json& x) { return number(x, key, 0.0, 100.0); });
-    else if(k == "windFrom")
-      field(b.windFrom, d.windFrom, v, [&](const Json& x) { return wrapDegrees(number(x, key, -1e6, 1e6)); });
-    else if(k == "state" || k == "plants")
-      continue;  // read-only, the host's
-    else
-      reject("unknown key " + key);
-  }
-}
-
 void patchTonemap(Tonemap& t, const Json& p)
 {
   const Tonemap d;
@@ -625,9 +571,6 @@ Json toJson(const State& s)
         {"toe", t.toe},
         {"shoulder", t.shoulder},
         {"highlightsToWhite", t.highlightsToWhite}}},
-      {"backdrop",
-       {{"kind", s.backdrop.kind}, {"seed", s.backdrop.seed}, {"size", s.backdrop.size}, {"density", s.backdrop.density}, {"relief", s.backdrop.relief}, {"air", s.backdrop.air},
-        {"mature", s.backdrop.mature}, {"wind", s.backdrop.wind}, {"windFrom", s.backdrop.windFrom}}},
   };
 }
 
@@ -656,30 +599,9 @@ State applyPatch(const State& s, const Json& patch)
       reset ? void(out.ground = Ground{}) : patchGround(out.ground, section(patch, "ground"));
     else if(k == "tonemap")
       reset ? void(out.tonemap = Tonemap{}) : patchTonemap(out.tonemap, section(patch, "tonemap"));
-    else if(k == "backdrop")
-      reset ? void(out.backdrop = fv::backdrop::Spec{}) : patchBackdrop(out.backdrop, section(patch, "backdrop"));
     else
       reject("unknown key " + k);
   }
-  return out;
-}
-
-Json mergeDiff(const Json& from, const Json& to)
-{
-  if(!from.is_object() || !to.is_object())
-    return to;
-  Json out = Json::object();
-  for(auto it = to.begin(); it != to.end(); ++it)
-  {
-    const auto old = from.find(it.key());
-    if(old == from.end())
-      out[it.key()] = it.value();
-    else if(*old != it.value())
-      out[it.key()] = (old->is_object() && it.value().is_object()) ? mergeDiff(*old, it.value()) : it.value();
-  }
-  for(auto it = from.begin(); it != from.end(); ++it)
-    if(!to.contains(it.key()))
-      out[it.key()] = nullptr;
   return out;
 }
 
@@ -874,12 +796,6 @@ double presetRotation(double dazDegrees)
   return wrapDegrees(dazDegrees);
 }
 
-double wrapDegrees(double degrees)
-{
-  const double x = std::fmod(degrees + 180.0, 360.0);
-  return (x < 0.0 ? x + 360.0 : x) - 180.0;
-}
-
 std::vector<float> studioImage(uint32_t width, uint32_t height)
 {
   std::vector<float> data(size_t(width) * height * 4);
@@ -1028,13 +944,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       // after a load or an environment change and sends it again
       {"ptFireflyClamp", kFireflyClamp / exposure},
       {"ptFireflyClampStill", kFireflyClampStill / exposure},
-      // a backdrop's ground is the ground: the plane under it isn't drawn
-      {"useInfinitePlane", g.mode != "off" && !fv::backdrop::planted(s.backdrop)},
-      // the air over a backdrop's land counts several times over (Spec::air); a scene's own, once
-      {"atmoAerialPerspectiveScale", fv::backdrop::planted(s.backdrop) ? s.backdrop.air : 1.0},
-      // and its land gives way to the sky's own ground before it ends
-      {"landFadeFrom", fv::backdrop::planted(s.backdrop) ? double(fv::backdrop::kLandFadeFrom) : 0.0},
-      {"landFadeTo", fv::backdrop::planted(s.backdrop) ? double(fv::backdrop::kLandFadeTo) : 0.0},
+      // (a backdrop that stands turns the plane off: fv::backdrop::rendererParams)
+      {"useInfinitePlane", g.mode != "off"},
       {"isShadowCatcher", g.mode == "catcher"},
       {"infinitePlaneBaseColor", vec3(linearColor(g.color))},
       {"infinitePlaneRoughness", g.roughness},

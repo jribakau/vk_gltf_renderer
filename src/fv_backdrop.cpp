@@ -206,11 +206,28 @@ float groundAt(const Spec& spec, float x, float z)
   return second.x * h(pb) + second.y * h(pd) + second.z * h(pc);
 }
 
+namespace {
+
+// The layer that carries a kind's trees on with distance, whose far groves the ground is painted as
+// (`woods`): found once for a spec, as the ground's mesh asks at each of its vertices
+struct FarWoods
+{
+  bool     any = false;
+  Layer    layer;
+  uint32_t index = 0;  // in layers(): its cover's noise channel is its scatter's
+  float    spent = 0.0F;  // how far out its trees keep their cover: until their growth is spent
+};
+FarWoods farWoods(const Spec& spec);
+float    woodsAt(const FarWoods& far, const Spec& spec, float x, float z);
+
+}  // namespace
+
 Terrain terrain(const Spec& spec, float tile)
 {
   Terrain t;
   const std::vector<float>& radii = meshRadii();
   const float               scale = tile > 0.0F ? 1.0F / tile : 1.0F;
+  const FarWoods            far   = farWoods(spec);
   // `e`: half the distance the slope is taken over, a ring's width where the rings are wide
   const auto         vertex    = [&](float x, float z, float e) {
     const float h = height(spec, x, z);
@@ -223,7 +240,7 @@ Terrain terrain(const Spec& spec, float tile)
     // drifts some 40 m across, larger where the mesh is too coarse to draw those
     const float drift = std::max(40.0F, kPatchGrowth * std::sqrt(x * x + z * z));
     t.shades.push_back(smoothstep(0.38F, 0.62F, sizedNoise(x, z, 40.0F, drift, uint32_t(spec.seed), kChannelShade)));
-    t.woods.push_back(woods(spec, x, z));
+    t.woods.push_back(woodsAt(far, spec, x, z));
   };
   vertex(0.0F, 0.0F, 0.25F);
   for(const float r : radii)
@@ -326,29 +343,47 @@ std::vector<Layer> kindLayers(const Spec& spec)
 
 }  // namespace
 
-float woods(const Spec& spec, float x, float z)
+namespace {
+
+FarWoods farWoods(const Spec& spec)
 {
   // the layer that carries the trees on with distance: the last that thins
+  FarWoods                 far;
   const std::vector<Layer> all = layers(spec);
-  int                      far = -1;
   for(size_t i = 0; i < all.size(); i++)
     if(all[i].role == "tree" && all[i].thin > 0.0F && all[i].grow > 1.0F)
-      far = int(i);
-  if(far < 0)
+    {
+      far.any   = true;
+      far.layer = all[i];
+      far.index = uint32_t(i);
+    }
+  if(far.any)
+    far.spent = far.layer.thinFrom + far.layer.thin * std::sqrt(far.layer.grow * far.layer.grow - 1.0F);
+  return far;
+}
+
+float woodsAt(const FarWoods& far, const Spec& spec, float x, float z)
+{
+  if(!far.any)
     return 0.0F;
-  const Layer& l = all[size_t(far)];
-  const float  d = std::sqrt(x * x + z * z);
-  // its trees keep their cover until their growth is spent
-  const float spent = l.thinFrom + l.thin * std::sqrt(l.grow * l.grow - 1.0F);
-  const float paint = smoothstep(0.8F * spent, 1.3F * spent, d);
+  const Layer& l     = far.layer;
+  const float  d     = std::sqrt(x * x + z * z);
+  const float  paint = smoothstep(0.8F * far.spent, 1.3F * far.spent, d);
   if(paint <= 0.0F)
     return 0.0F;
   const float cover = coverAt(l, std::min(d, l.to));
   if(cover >= 1.0F)
     return paint;
-  const float noise = sizedNoise(x, z, l.patch, patchAt(l, d), uint32_t(spec.seed), kChannelCover + 10U * uint32_t(far));
+  const float noise = sizedNoise(x, z, l.patch, patchAt(l, d), uint32_t(spec.seed), kChannelCover + 10U * far.index);
   const float level = coverLevel(cover);
   return paint * smoothstep(level - 0.02F, level + 0.02F, noise);
+}
+
+}  // namespace
+
+float woods(const Spec& spec, float x, float z)
+{
+  return woodsAt(farWoods(spec), spec, x, z);
 }
 
 std::vector<std::vector<glm::mat4>> scatter(const Spec& spec, const Layer& layer, uint32_t layerIndex, uint32_t variants)
@@ -400,7 +435,6 @@ std::array<Cover, kGrassLevels> grassCovers(const Spec& spec)
 {
   // thinner by about four a level and larger by the root of it and a little less: seen from standing
   // height a plant hides a strip of the ground behind it that lengthens with distance. Under firs
-  // the grass is tufts on the needles, a seventh as thick
   // the grass is tufts on the needles, a seventh as thick and in clumps: spread evenly, plants that
   // sparse show the grid they stand on
   const bool   forest = spec.kind == "forest";

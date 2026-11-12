@@ -94,6 +94,7 @@
 #include "fv_prop_feed.hpp"
 #include "fv_journal.hpp"
 #include "ram_watch.hpp"
+#include "fv_backdrop_state.hpp"
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
 #include "fv_model_material.hpp"
@@ -1466,8 +1467,22 @@ struct FvHost::Impl
   void setParams(const Json& values);
   void publishLighting();
 
-  // ---- the backdrop (fv_backdrop.hpp, fv_host_backdrop.cpp): the lighting's `backdrop`, as ground and
+  // ---- the backdrop (fv_backdrop.hpp, fv_host_backdrop.cpp): land round the scene, as ground and
   // plants under one entity of the host's own in the scene, as the sun is. Application thread only.
+  //
+  // A state of its own (fv_backdrop_state.hpp): `backdrop.set` patches it, a step of the history, and
+  // the `backdrop` topic is it with whether it stands and how many plants. What it shares with the
+  // lighting is the floor's height it stands at (placeBackdrop, from applyLighting) and the renderer's
+  // parameters, where a backdrop that stands sets its own over the lighting's (backdropParams).
+  fv::backdrop::Spec backdropSpec;
+  Json               publishedBackdrop;
+  Json backdropTopic() const;
+  void publishBackdrop();
+  Json backdropSet(const Json& patch);
+  // Planted and in the scene, not only asked for (its kit may be missing, or being read)
+  bool backdropStands() const;
+  // The renderer's parameters with the backdrop's over them (fv::backdrop::rendererParams)
+  void backdropParams(Json& params) const;
   // The kit as read: each plant's file with its role, and the ground's maps by the backdrop's kind
   struct BackdropKit
   {
@@ -1590,9 +1605,9 @@ struct FvHost::Impl
   glm::vec3 backdropLandAlbedo() const;
   // Brings in the kit's plants the kind plants and lets go of those it doesn't
   void holdBackdropPlants(rs::RetainedScene& scene);
-  // Its root entity (none when none stands), and the floor's height it stands at
+  // Its root entity (none when none stands), and the floor's height it stands at: whether that moved it
   rs::EntityId backdropRoot() const;
-  void         placeBackdrop();
+  bool         placeBackdrop();
   // The scene's shown bounds without the backdrop: what a view frames, and what a flight's speed is by
   nvutils::Bbox contentBounds();
 

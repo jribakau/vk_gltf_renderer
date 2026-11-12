@@ -249,6 +249,8 @@
 //   export.glb      {prop, path} or {scene: true, path}   a GLB of a figure -> {job}; of a model, or of the
 //                                                whole scene, written at once -> {ok}
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
+//   backdrop.set    a merge patch of the backdrop, the land round the scene (fv_backdrop_state.hpp)
+//                                                -> the whole state, as the "backdrop" topic has it
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire, and a
 //                                                value the batch names holds against another's callback
@@ -266,7 +268,7 @@
 //                                                wardrobe.color: the figure's look kept, surfaces and all), or a
 //                                                panel edit (prop.set, morph.*,
 //                                                pose.*, material.set/reset, wardrobe.visible/collision/cloth,
-//                                                dforce.enable/mode, lighting.set, scene.order, view.use, and
+//                                                dforce.enable/mode, lighting.set, backdrop.set, scene.order, view.use, and
 //                                                camera.set looking through a camera prop), captured as it
 //                                                applies (fv_host_journal.cpp); a slider's edits merge into one.
 //                                                A gizmo drag of a prop or a bone, and a drag of the view
@@ -277,8 +279,8 @@
 //   history.clear {}                             the history goes (the app's settings applied at the start)
 //   recovery.file {path | null}                  where the scene is kept for a crash from now on: the ops
 //                                                that put every prop back under its id (records, as
-//                                                scene.clear's undo has them), the order, the lighting and
-//                                                the view, rewritten on a worker a second after the changes
+//                                                scene.clear's undo has them), the order, the lighting, the
+//                                                backdrop and the view, rewritten on a worker a second after the changes
 //                                                pause, whole then renamed into place. null: kept no more,
 //                                                and the copy goes (the scene closed as meant). `keepAs`: the
 //                                                copy there goes to that path first (it didn't all come back)
@@ -320,7 +322,8 @@
 // reach}, for a figure with body contact), "rain/<prop>" ({enabled, busy, amount, time, dried, seed, beads,
 // tracks, landed, runs, dripped}, for a person); a prop's topics
 // are dropped when it leaves the scene. "lighting" is the lighting.set shape, plus read-only
-// env.name, env.size, env.loading. "pose/<prop>" carries `eyes` (whether the figure can look at
+// env.name, env.size, env.loading. "backdrop" is the backdrop.set shape, plus read-only state (off,
+// missing, loading, ready) and plants. "pose/<prop>" carries `eyes` (whether the figure can look at
 // the camera). "morphs/<prop>" is the visible channels ({label, group, value, min, max, weight,
 // order}, and what a file says of its dial when that has been read: path, region, kind, helper, rest
 // when it isn't 0, inert when it holds nothing; reach {cm, deg, morphs, bones, scales} a little after

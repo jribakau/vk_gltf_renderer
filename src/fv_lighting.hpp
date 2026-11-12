@@ -60,15 +60,9 @@
 //            how early and gently its highlights roll off; nvshaders tonemapShaped), protocol 43;
 //            highlightsToWhite (0 to 1, 0.5 Khronos's own: how fast Neutral's and Shaped's compressed
 //            colours go white; nvshaders highlightDesaturation), protocol 63
-//   backdrop: kind none|meadow|forest (ground that rolls away from where the figures stand, planted with the
-//            kit's plants; with one the ground section's plane isn't drawn), seed (which one), size
-//            (metres across what is planted underfoot), density (of every layer's own) and relief (how
-//            hilly, 0 flat): fv_backdrop.hpp, protocol 64; air (1 to 20: how many metres of air a metre
-//            of its land counts for, the distance's haze under the physical sky), protocol 65; mature
-//            (grown firs among the near woods), protocol 67; wind (km/h, 0 to 100, 0 still: the trees,
-//            saplings and bushes sway in it) and windFrom (degrees, an azimuth as the sun's), protocol
-//            69. Read-only in the topic: state (off, missing:
-//            no kit where settings.apply's backdropKit says; loading; ready) and plants (how many stand)
+//
+// The backdrop (the land round the scene) was a section here until protocol 70: it is a state of its
+// own now (fv_backdrop_state.hpp, `backdrop.set`).
 //
 // Colours are "#rrggbb" in sRGB, as the panel shows them. A patch from before protocol 17 (a kept
 // scene's) may also carry sun.shadows and a shadow section, the raster view's shadow map: they are
@@ -83,8 +77,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-#include "fv_backdrop.hpp"
 #include "fv_events.hpp"
+#include "fv_patch.hpp"
 
 namespace fv::lighting {
 
@@ -275,7 +269,6 @@ struct State
   Haze    haze;
   Ground  ground;
   Tonemap tonemap;
-  fv::backdrop::Spec backdrop;  // protocol 64
 };
 
 Json toJson(const State& s);
@@ -287,7 +280,7 @@ Json toJson(const State& s);
 State applyPatch(const State& s, const Json& patch);
 
 // The merge patch that turns `from` into `to` (objects recurse, anything else is replaced).
-Json mergeDiff(const Json& from, const Json& to);
+using fv::patch::mergeDiff;
 
 // ---- conversions (ports of src/lib/viewer/Lighting.ts and src/lib/rtx/export.ts)
 
@@ -343,7 +336,7 @@ glm::vec4 envRotation(double degrees);
 double presetRotation(double dazDegrees);
 
 // Degrees wrapped to [-180, 180).
-double wrapDegrees(double degrees);
+using fv::patch::wrapDegrees;
 
 // The built-in studio (createStudioEnvironment): RGBA32F rows from the top, the layout the renderer
 // takes an environment in.
@@ -351,7 +344,8 @@ std::vector<float> studioImage(uint32_t width = 512, uint32_t height = 256);
 
 // The registered renderer parameters `s` sets, by name, for nvmcp's setParameters. `envSize` is
 // the environment image's size, which hdrBlur depends on. Ground height is the host's (auto needs
-// the scene), so it isn't here. `clouds`, the renderer's last reading of the physical sky's clouds,
+// the scene), so it isn't here; a backdrop that stands sets some over these
+// (fv::backdrop::rendererParams). `clouds`, the renderer's last reading of the physical sky's clouds,
 // for the exposure (cloudExposure).
 Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clouds = {});
 

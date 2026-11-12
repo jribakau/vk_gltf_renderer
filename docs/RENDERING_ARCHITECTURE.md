@@ -602,8 +602,11 @@ saved). `src/white_balance.hpp` holds the rest, Vulkan-free:
 
 ## The procedural backdrop
 
-Land around the scene, out to the horizon: the lighting's `backdrop` (`fv::backdrop::Spec`,
-protocol 64), so undo and a scene file carry it as they carry the ground. Two kinds, the same
+Land around the scene, out to the horizon. It is a state of its own, one `fv::backdrop::Spec`
+(`src/fv_backdrop_state.hpp`): `backdrop.set` patches it as a step of the history, and the `backdrop`
+topic publishes it (until protocol 70 it was a section of the lighting). It meets the lighting in two
+places only: it stands at the lighting's floor height, and its renderer parameters go over the
+lighting's (`fv::backdrop::rendererParams`, `backdropParams`). Two kinds, the same
 machinery with other numbers: a meadow (grass and flowers, bushes, a few rocks, firs in groves that
 close into a wood round it, wooded hills beyond) and a forest (a glade in a fir wood that runs to
 the horizon, on a floor of needles with ferns, tufts of grass, bushes, mossy rocks, stumps and dead
@@ -634,8 +637,7 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   meadow has no outer rim. Where growth is spent the trees thin out to nothing (`kTreesEnd`), and
   the wood carries on as a colour of the ground (`woods`, the kit's `tintWoods`) in the same
   groves, which grow with distance as the mesh does (`Layer::patchGrows`): the last sparse trees
-  stand on ground already dark and read as a wood's edge. **Mature woods** (`Spec::mature`, the
-  lighting's `backdrop.mature`) add one layer after a kind's own, so none of theirs moves: grown firs
+  stand on ground already dark and read as a wood's edge. **Mature woods** (`Spec::mature`) add one layer after a kind's own, so none of theirs moves: grown firs
   (the kit's `grown` role, one 14 m tree of 2.3M triangles the app fetches only for it) at 1 to 1.5
   times, a few hundred among the near woods' young ones. The far woods stay young firs grown with
   distance. All the trees, every one a grown fir, had cost about half again a frame (2026-11-11);
@@ -685,7 +687,7 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   times a second in flight, with every plant near the camera changing size as its distance did.
   With tiles the same flight's worst gap between frames is 30 to 50 ms and none is longer.
 
-**The wind** (`Spec::wind`, `windFrom`, the lighting's `backdrop.wind`, protocol 69): the trees,
+**The wind** (`Spec::wind`, `windFrom`): the trees,
 saplings and bushes sway, each turned whole about its base (`swayOf`, `swayedPlace` in
 `fv_backdrop.hpp`), its top leaning downwind and swinging at its role's rate with a phase of its own,
 harder where one of two gust waves rolling over the land at the wind's speed is passing. A plant is
@@ -720,7 +722,7 @@ draws under its horizon: the planet, given the land's own colour (the kit's `alb
 why the two do not simply meet. Under another environment than the physical sky the land ends at
 its edge.
 
-**The air over it** (`Spec::air`, the lighting's `backdrop.air`): how many metres of air each metre
+**The air over it** (`Spec::air`): how many metres of air each metre
 of the land counts for under the physical sky, sent as `atmoAerialPerspectiveScale` while a backdrop
 stands and 1 without one (see [sky.md](sky.md#how-much-air)). It is what gives the land its
 distance, and it plants nothing (`samePlanting`).
@@ -742,8 +744,9 @@ horizon. The haze is scoped the same way (`setHazeScope`, `scopeHaze`): its sphe
 scene's bounds, and round a 900 m ground the sky was seen through a kilometre of haze that only the
 scene's lights light, which left a midday sky dark grey; so the distance is not hazed. The root sits
 at the floor's height, and the ground is flat within the clearing, so the physics floor and Drop
-still meet it. The lighting topic says `backdrop.state` (off, missing, loading,
-ready) and `backdrop.plants`.
+still meet it. The `backdrop` topic says `state` (off, missing, loading, ready) and `plants` beside
+the spec. Only a backdrop that stands sets its parameters: one asked for whose kit is missing changes
+nothing of the picture.
 
 Measured on an RTX 4080 at 1080p, the moving view, with the app's kit (Poly Haven's grass, two
 flowers, a fern, a bush, fir saplings, three young firs, two sets of mossy rocks, two stumps, a
@@ -790,8 +793,8 @@ A flight of 120 m at 15 m/s over the meadow (measured before the far trees, whic
 not touch): the gaps between frames 18.5 ms at the median (17.3 over the bare floor, the stream's
 60 a second), 29 at the 99th percentile, 32 to 49 at worst. Before the tiles, plants as instances:
 400,000 alpha-tested grass clumps 8.4 ms, about 0.8 KB of GPU memory an instance.
-Checked: `tests/test_fv_backdrop.cpp`, `FvLighting.ABackdropIsPartOfTheLighting`,
-`FvHost.ABackdropIsPlantedFromItsKit`.
+Checked: `tests/test_fv_backdrop.cpp` (the shape, and `BackdropState.*` for the state),
+`FvLighting.TheBackdropIsNoPartOfTheLighting`, `FvHost.ABackdropIsPlantedFromItsKit`.
 
 ## The pixel readout
 

@@ -156,9 +156,11 @@ set(TEST_SOURCES
     # Native P4a: the Light tab's state and unit conversions
     test_fv_lighting.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_lighting.cpp
-    # The backdrop's ground and planting: flat underfoot, a seed's every time, plants where their layer says
+    # The backdrop's ground and planting: flat underfoot, a seed's every time, plants where their layer says;
+    # and its state over the protocol (backdrop.set), checked and clamped
     test_fv_backdrop.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_backdrop.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_backdrop_state.cpp
     # Auto white balance: the light in a frame, and the white balance that makes it grey
     test_white_balance.cpp
     ${CMAKE_SOURCE_DIR}/src/white_balance.cpp

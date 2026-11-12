@@ -281,6 +281,8 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
   }
   if(cmd == "lighting.set")
     return {{"kind", "lighting"}, {"shape", shapeOf(args)}};
+  if(cmd == "backdrop.set")
+    return {{"kind", "backdrop"}, {"shape", shapeOf(args)}};
   if(cmd == "scene.order")
     return {{"kind", "order"}};
   if(cmd == "view.use")
@@ -326,6 +328,8 @@ Json FvHost::Impl::journalState(const Json& scope)
   }
   if(kind == "lighting")
     ops.push_back(op("lighting.set", project(fv::lighting::toJson(lighting), scope["shape"])));
+  else if(kind == "backdrop")
+    ops.push_back(op("backdrop.set", project(fv::backdrop::toJson(backdropSpec), scope["shape"])));
   else if(kind == "order")
   {
     Json order = Json::array();
@@ -688,6 +692,8 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
   }
   if(cmd == "lighting.set")
     return "Lighting";
+  if(cmd == "backdrop.set")
+    return "Backdrop";
   if(cmd == "scene.order")
     return "Reorder";
   if(cmd == "view.use")
@@ -733,7 +739,7 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
     return result;
   }
   // a slider's or a drag's edits merge into one step: the same edit of the same things, back to back
-  bool merges = cmd == "morph.set" || cmd == "material.set" || cmd == "lighting.set" || cmd == "camera.set"
+  bool merges = cmd == "morph.set" || cmd == "material.set" || cmd == "lighting.set" || cmd == "backdrop.set" || cmd == "camera.set"
                 || (cmd == "pose.set" && !args.contains("label")) || (cmd == "figure.contact" && !args.contains("on") && !args.contains("self"))
                 || (cmd == "figure.rain" && !args.contains("on") && !args.contains("seed")) || (cmd == "physics.set" && (args.contains("strength") || args.contains("parts")) && !args.contains("on"))
                 || (cmd == "physics.secondary" && !args.contains("on")) || (cmd == "physics.soft" && !args.contains("on"));
@@ -840,6 +846,8 @@ Json FvHost::Impl::applyOp(const Json& o)
     return dforceCommand(cmd.substr(std::string("dforce.").size()), args);
   if(cmd == "lighting.set")
     return lightingSet(args);
+  if(cmd == "backdrop.set")
+    return backdropSet(args);
   if(cmd == "scene.order")
     return sceneOrder(args);
   if(cmd == "view.use")
@@ -985,6 +993,7 @@ void FvHost::Impl::writeRecovery()
   Json ops = journalState({{"kind", "props"}, {"ids", ids}});
   ops.push_back(op("scene.order", {{"order", ids}}));
   ops.push_back(op("lighting.set", fv::lighting::toJson(lighting)));
+  ops.push_back(op("backdrop.set", fv::backdrop::toJson(backdropSpec)));
   ops.push_back(op("view.use", {{"camera", viewCamera.empty() ? Json() : Json(viewCamera)}}));
   if(auto manip = renderer->getCameraManipulator(); manip && viewCamera.empty())
   {

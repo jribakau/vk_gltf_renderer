@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include "../src/fv_backdrop.hpp"
+#include "../src/fv_backdrop_state.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -856,3 +857,100 @@ TEST(BackdropTiles, ATileLiesOnTheGroundLeaningAsItDoes)
   EXPECT_TRUE(turned);
 }
 
+// ---- its state over the protocol (fv_backdrop_state.hpp): `backdrop.set` and the `backdrop` topic
+
+using fv::Json;
+
+// None by default; its values checked and clamped, reset by null, the host's read-only keys taken and
+// dropped, so the topic replays as a patch
+TEST(BackdropState, APatchIsCheckedAndClamped)
+{
+  EXPECT_EQ(B::toJson(B::Spec{})["kind"], "none");
+  const B::Spec s = B::applyPatch({}, {{"kind", "meadow"}, {"seed", 7}, {"size", 80}, {"density", 1.5}, {"relief", 0.5}, {"state", "ready"}, {"plants", 1234}});
+  EXPECT_EQ(s.kind, "meadow");
+  EXPECT_EQ(s.seed, 7);
+  EXPECT_DOUBLE_EQ(s.size, 80.0);
+  EXPECT_DOUBLE_EQ(s.density, 1.5);
+  EXPECT_DOUBLE_EQ(s.relief, 0.5);
+  const Json topic = B::toJson(s);
+  EXPECT_EQ(topic["seed"], 7);
+  EXPECT_FALSE(topic.contains("state"));
+  EXPECT_EQ(B::toJson(B::applyPatch({}, topic)), topic);
+  // what a patch doesn't name stays
+  EXPECT_EQ(B::applyPatch(s, {{"kind", "forest"}}).kind, "forest");
+  EXPECT_EQ(B::applyPatch(s, {{"kind", "forest"}}).seed, 7);
+  EXPECT_EQ(B::applyPatch(s, Json::object()), s);
+  // clamped, reset by null, and refused when it makes no sense, with nothing applied
+  EXPECT_DOUBLE_EQ(B::applyPatch({}, {{"size", 5000}}).size, 200.0);
+  EXPECT_DOUBLE_EQ(B::applyPatch({}, {{"density", 0}}).density, 0.25);
+  EXPECT_DOUBLE_EQ(B::applyPatch(s, {{"air", 0}}).air, 1.0);
+  EXPECT_DOUBLE_EQ(B::applyPatch(s, {{"air", 99}}).air, 20.0);
+  EXPECT_EQ(B::applyPatch(s, {{"wind", 500}}).wind, 100.0);
+  EXPECT_EQ(B::applyPatch(s, {{"kind", nullptr}, {"size", nullptr}}).kind, "none");
+  EXPECT_DOUBLE_EQ(B::applyPatch(s, {{"kind", nullptr}, {"size", nullptr}}).size, B::Spec{}.size);
+  EXPECT_THROW(B::applyPatch({}, {{"kind", "jungle"}}), std::invalid_argument);
+  EXPECT_THROW(B::applyPatch({}, {{"trees", 3}}), std::invalid_argument);
+  EXPECT_THROW(B::applyPatch({}, {{"size", "wide"}}), std::invalid_argument);
+  EXPECT_THROW(B::applyPatch({}, {{"mature", 1}}), std::invalid_argument);
+  EXPECT_THROW(B::applyPatch({}, Json::array()), std::invalid_argument);
+  try
+  {
+    B::applyPatch({}, {{"kind", "jungle"}});
+  }
+  catch(const std::invalid_argument& e)
+  {
+    EXPECT_EQ(std::string(e.what()).rfind("backdrop: kind is one of none, meadow, forest", 0), 0u) << e.what();
+  }
+}
+
+// The air, the grown firs and the wind: kept in the topic; only the firs are a planting of their own
+TEST(BackdropState, TheAirAndTheWindPlantNothing)
+{
+  const B::Spec s    = B::applyPatch({}, {{"kind", "meadow"}, {"seed", 7}});
+  const B::Spec hazy = B::applyPatch(s, {{"air", 12}});
+  EXPECT_EQ(B::toJson(hazy)["air"], 12.0);
+  EXPECT_FALSE(hazy == s);
+  EXPECT_TRUE(B::samePlanting(hazy, s));
+  EXPECT_FALSE(s.mature);
+  const B::Spec mature = B::applyPatch(s, {{"mature", true}});
+  EXPECT_TRUE(mature.mature);
+  EXPECT_EQ(B::toJson(mature)["mature"], true);
+  EXPECT_FALSE(B::samePlanting(mature, s));
+  EXPECT_EQ(s.wind, 0.0);
+  const B::Spec windy = B::applyPatch(s, {{"wind", 30}, {"windFrom", -450}});
+  EXPECT_EQ(windy.wind, 30.0);
+  EXPECT_EQ(windy.windFrom, -90.0);
+  EXPECT_EQ(B::toJson(windy)["wind"], 30.0);
+  EXPECT_EQ(B::toJson(windy)["windFrom"], -90.0);
+  EXPECT_TRUE(B::samePlanting(windy, s));
+  EXPECT_FALSE(B::samePlanting(B::applyPatch(s, {{"seed", 8}}), s));
+}
+
+// What the renderer is told: one that stands takes the ground plane's place, counts its air several
+// times over and has its land give way to the sky's ground before its end; one that is only asked
+// for (its kit missing, or being read) changes nothing, and leaves the plane to the lighting
+TEST(BackdropState, OneThatStandsSetsTheRenderersParameters)
+{
+  const B::Spec   s = B::applyPatch({}, {{"kind", "meadow"}, {"air", 12}});
+  const glm::vec3 land(0.06F, 0.08F, 0.03F);
+  const Json      stands = B::rendererParams(s, true, land);
+  EXPECT_EQ(stands["useInfinitePlane"], false);
+  EXPECT_EQ(stands["atmoAerialPerspectiveScale"], 12.0);
+  EXPECT_GT(stands["landFadeFrom"].get<double>(), 0.5 * double(B::kLandsEnd));
+  EXPECT_GT(stands["landFadeTo"].get<double>(), stands["landFadeFrom"].get<double>());
+  EXPECT_LT(stands["landFadeTo"].get<double>(), double(B::kLandsEnd));
+  EXPECT_EQ(stands["atmoLandAlbedo"], Json::array({land.x, land.y, land.z}));
+  for(const B::Spec& spec : {s, B::Spec{}})
+  {
+    const Json asked = B::rendererParams(spec, false, land);
+    EXPECT_FALSE(asked.contains("useInfinitePlane"));
+    EXPECT_EQ(asked["atmoAerialPerspectiveScale"], 1.0);
+    EXPECT_EQ(asked["landFadeFrom"], 0.0);
+    EXPECT_EQ(asked["landFadeTo"], 0.0);
+    EXPECT_EQ(asked["atmoLandAlbedo"], Json::array({0.0F, 0.0F, 0.0F}));
+    // the same parameters either way, so what one sets the other puts back
+    for(auto it = stands.begin(); it != stands.end(); ++it)
+      if(it.key() != "useInfinitePlane")
+        EXPECT_TRUE(asked.contains(it.key())) << it.key();
+  }
+}

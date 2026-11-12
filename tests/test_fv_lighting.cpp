@@ -574,65 +574,18 @@ TEST(FvLighting, TheShapedCurveAndItsHandlesGoToTheRenderer)
   EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"shoulder", "soft"}}}}), std::invalid_argument);
 }
 
-// The backdrop's section (protocol 64): none by default, its values checked and clamped, the host's
-// read-only keys taken and dropped, and the ground's plane not drawn under one
-TEST(FvLighting, ABackdropIsPartOfTheLighting)
+// The backdrop is a state of its own since protocol 70 (fv_backdrop_state.hpp): the lighting has no
+// such section, refuses a patch with one, and leaves the backdrop's parameters to it
+TEST(FvLighting, TheBackdropIsNoPartOfTheLighting)
 {
   const L::State none;
-  EXPECT_EQ(L::toJson(none)["backdrop"]["kind"], "none");
-  EXPECT_EQ(L::rendererParams(none, {})["useInfinitePlane"], true);
-  const L::State s = L::applyPatch(L::State{}, {{"backdrop", {{"kind", "meadow"}, {"seed", 7}, {"size", 80}, {"density", 1.5}, {"relief", 0.5}, {"state", "ready"}, {"plants", 1234}}}});
-  EXPECT_EQ(s.backdrop.kind, "meadow");
-  EXPECT_EQ(s.backdrop.seed, 7);
-  EXPECT_DOUBLE_EQ(s.backdrop.size, 80.0);
-  EXPECT_DOUBLE_EQ(s.backdrop.density, 1.5);
-  EXPECT_DOUBLE_EQ(s.backdrop.relief, 0.5);
-  const Json topic = L::toJson(s);
-  EXPECT_EQ(topic["backdrop"]["seed"], 7);
-  EXPECT_FALSE(topic["backdrop"].contains("state"));
-  EXPECT_EQ(L::toJson(L::applyPatch(L::State{}, topic)), topic);
-  EXPECT_EQ(L::rendererParams(s, {})["useInfinitePlane"], false);
-  // clamped, reset by null, and refused when it makes no sense
-  EXPECT_DOUBLE_EQ(L::applyPatch(L::State{}, {{"backdrop", {{"size", 5000}}}}).backdrop.size, 200.0);
-  EXPECT_DOUBLE_EQ(L::applyPatch(L::State{}, {{"backdrop", {{"density", 0}}}}).backdrop.density, 0.25);
-  EXPECT_EQ(L::applyPatch(s, {{"backdrop", nullptr}}).backdrop.kind, "none");
-  EXPECT_EQ(L::applyPatch(s, {{"backdrop", {{"kind", "forest"}}}}).backdrop.kind, "forest");
-  // its air (protocol 65): the land's distance counts several times over for the sky's haze, a
-  // scene without a backdrop's once
-  EXPECT_EQ(L::rendererParams(none, {})["atmoAerialPerspectiveScale"], 1.0);
-  EXPECT_EQ(L::rendererParams(s, {})["atmoAerialPerspectiveScale"], fv::backdrop::Spec{}.air);
-  const L::State hazy = L::applyPatch(s, {{"backdrop", {{"air", 12}}}});
-  EXPECT_EQ(L::rendererParams(hazy, {})["atmoAerialPerspectiveScale"], 12.0);
-  EXPECT_EQ(L::toJson(hazy)["backdrop"]["air"], 12.0);
-  EXPECT_DOUBLE_EQ(L::applyPatch(s, {{"backdrop", {{"air", 0}}}}).backdrop.air, 1.0);
-  EXPECT_DOUBLE_EQ(L::applyPatch(s, {{"backdrop", {{"air", 99}}}}).backdrop.air, 20.0);
-  EXPECT_EQ(L::rendererParams(L::applyPatch(hazy, {{"backdrop", {{"kind", "none"}}}}), {})["atmoAerialPerspectiveScale"], 1.0);
-  // the land gives way to the sky's ground before its end; without a backdrop there is no such end
-  EXPECT_EQ(L::rendererParams(none, {})["landFadeTo"], 0.0);
-  EXPECT_GT(L::rendererParams(s, {})["landFadeFrom"].get<double>(), 0.5 * double(fv::backdrop::kLandsEnd));
-  EXPECT_GT(L::rendererParams(s, {})["landFadeTo"].get<double>(), L::rendererParams(s, {})["landFadeFrom"].get<double>());
-  EXPECT_LT(L::rendererParams(s, {})["landFadeTo"].get<double>(), double(fv::backdrop::kLandsEnd));
-  // and it plants nothing
-  EXPECT_TRUE(fv::backdrop::samePlanting(hazy.backdrop, s.backdrop));
-  // mature woods (protocol 67): off unless asked, kept in the topic, and a planting of its own
-  EXPECT_FALSE(s.backdrop.mature);
-  const L::State mature = L::applyPatch(s, {{"backdrop", {{"mature", true}}}});
-  EXPECT_TRUE(mature.backdrop.mature);
-  EXPECT_EQ(L::toJson(mature)["backdrop"]["mature"], true);
-  EXPECT_FALSE(fv::backdrop::samePlanting(mature.backdrop, s.backdrop));
-  // the wind (protocol 69): still unless asked, kept in the topic, a gale's at most, and it plants nothing
-  EXPECT_EQ(s.backdrop.wind, 0.0);
-  const L::State windy = L::applyPatch(s, {{"backdrop", {{"wind", 30}, {"windFrom", -450}}}});
-  EXPECT_EQ(windy.backdrop.wind, 30.0);
-  EXPECT_EQ(windy.backdrop.windFrom, -90.0);
-  EXPECT_EQ(L::toJson(windy)["backdrop"]["wind"], 30.0);
-  EXPECT_EQ(L::toJson(windy)["backdrop"]["windFrom"], -90.0);
-  EXPECT_EQ(L::applyPatch(s, {{"backdrop", {{"wind", 500}}}}).backdrop.wind, 100.0);
-  EXPECT_TRUE(fv::backdrop::samePlanting(windy.backdrop, s.backdrop));
-  EXPECT_FALSE(hazy.backdrop == s.backdrop);
-  EXPECT_FALSE(fv::backdrop::samePlanting(L::applyPatch(s, {{"backdrop", {{"seed", 8}}}}).backdrop, s.backdrop));
-  EXPECT_THROW(L::applyPatch(L::State{}, {{"backdrop", {{"kind", "jungle"}}}}), std::invalid_argument);
-  EXPECT_THROW(L::applyPatch(L::State{}, {{"backdrop", {{"trees", 3}}}}), std::invalid_argument);
+  EXPECT_FALSE(L::toJson(none).contains("backdrop"));
+  EXPECT_THROW(L::applyPatch(none, {{"backdrop", {{"kind", "meadow"}}}}), std::invalid_argument);
+  const Json params = L::rendererParams(none, {});
+  EXPECT_EQ(params["useInfinitePlane"], true);
+  EXPECT_EQ(L::rendererParams(L::applyPatch(none, {{"ground", {{"mode", "off"}}}}), {})["useInfinitePlane"], false);
+  for(const char* its : {"atmoAerialPerspectiveScale", "landFadeFrom", "landFadeTo", "atmoLandAlbedo"})
+    EXPECT_FALSE(params.contains(its)) << its;
 }
 
 // The sky's visibility (protocol 65): the atmosphere's own by default, sent as the renderer's

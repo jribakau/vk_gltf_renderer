@@ -40,9 +40,6 @@ Json FvHost::Impl::lightingTopic() const
   // what the clouds leave of the light, for the camera's meter to show; rounded, so a re-bake that
   // measures what it did doesn't send a patch
   t["tonemap"]["cloudLight"] = std::round(fv::lighting::cloudLight(lighting, cloudReading) * 1000.0) / 1000.0;
-  // whether the backdrop stands, and how many plants (fv_host_backdrop.cpp)
-  t["backdrop"]["state"]  = backdropState;
-  t["backdrop"]["plants"] = backdropPlants;
   return t;
 }
 
@@ -58,7 +55,6 @@ void FvHost::Impl::followCloudReading()
 
 void FvHost::Impl::publishLighting()
 {
-  backdropPlantsSaid = backdropPlants;
   const Json now = lightingTopic();
   if(publishedLighting.is_null())
     protocol->events().snapshot("lighting", now);
@@ -69,6 +65,14 @@ void FvHost::Impl::publishLighting()
 
 Json FvHost::Impl::lightingSet(const Json& patch)
 {
+  // a scene kept for a crash by a renderer from before protocol 70 has the backdrop in its lighting
+  if(patch.is_object() && patch.contains("backdrop"))
+  {
+    Json rest = patch;
+    rest.erase("backdrop");
+    backdropSet(patch["backdrop"].is_null() ? fv::backdrop::toJson({}) : patch["backdrop"]);
+    return lightingSet(rest);
+  }
   fv::lighting::State next = fv::lighting::applyPatch(lighting, patch);  // throws, leaving everything as it was
   if(next.env.source == "hdr" && next.env.path.empty())
     throw std::invalid_argument("lighting: env.path is required for an hdr environment");
@@ -104,7 +108,9 @@ void FvHost::Impl::applyLighting(bool everything)
     fv::timing::Scope t("requestEnvironment", 20);
     requestEnvironment();
   }
-  applyBackdrop();
+  // the floor's height is the lighting's: a backdrop stands at it
+  if(placeBackdrop())
+    scopeHaze();
 
   // the look being previewed graded in place of the state's
   fv::lighting::State shown = lighting;
@@ -115,12 +121,7 @@ void FvHost::Impl::applyLighting(bool everything)
   }
   Json params                     = fv::lighting::rendererParams(shown, envSize, cloudReading);
   params["infinitePlaneDistance"] = lighting.ground.autoHeight ? double(autoGround) : lighting.ground.height;
-  // a backdrop that doesn't stand (its kit missing, or being read) leaves the ground's plane drawn
-  if(fv::backdrop::planted(lighting.backdrop) && backdropState != "ready")
-    params["useInfinitePlane"] = lighting.ground.mode != "off";
-  // past a backdrop's land the planet under the physical sky is the land's colour, not average ground
-  const glm::vec3 land   = backdropLandAlbedo();
-  params["atmoLandAlbedo"] = Json::array({land.x, land.y, land.z});
+  backdropParams(params);
   if(const auto still = appliedParams.find("ptFireflyClampStill"); still != appliedParams.end() && still->is_number())
     params["ptFireflyClampStill"] = fv::lighting::stillFireflyClamp(params["ptFireflyClampStill"].get<double>(), still->get<double>());
   Json changed                    = Json::object();

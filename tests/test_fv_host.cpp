@@ -216,10 +216,11 @@ rs::EntityId rootNamed(rs::RetainedScene& scene, const std::string& name)
 
 }  // namespace
 
-// The backdrop (the lighting's `backdrop`, fv_host_backdrop.cpp): nothing stands until its kit is where
-// the settings say; then ground and plants under one root of the host's own, each variant drawn at its
-// places as copies; replanted in place by another density; back after the scene is cleared; gone with
-// `none`; and a variant too heavy for it left out
+// The backdrop (`backdrop.set`, the `backdrop` topic, fv_host_backdrop.cpp): nothing stands until its
+// kit is where the settings say; then ground and plants under one root of the host's own, each variant
+// drawn at its places as copies; replanted in place by another density; back after the scene is cleared;
+// gone with `none`; and a variant too heavy for it left out. A state of its own: the lighting's topic
+// has none of it, and a change of it is a step of the history
 TEST(FvHost, ABackdropIsPlantedFromItsKit)
 {
   const fs::path kit = fs::temp_directory_path() / ("fv-backdrop-kit-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -238,7 +239,7 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
                                          .dump();
   HostRig            rig;
   rs::RetainedScene& scene = rig.renderer.hostScene();
-  const auto         state = [&] { return rig.topic("lighting").value("backdrop", Json::object()); };
+  const auto         state = [&] { return rig.topic("backdrop"); };
   const auto         until = [&](const std::string& wanted) {
     const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
     while(state().value("state", "") != wanted && std::chrono::steady_clock::now() < end)
@@ -248,9 +249,17 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
     }
     return state().value("state", "") == wanted;
   };
+  // its topic is there from the first frame, with none: off
+  rig.host->onUpdate();
+  EXPECT_EQ(state().value("kind", ""), "none");
+  EXPECT_EQ(state().value("state", ""), "off");
+  EXPECT_FALSE(rig.topic("lighting").contains("backdrop"));
   // asked for with no kit: missing, and nothing of it in the scene
-  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"kind", "meadow"}, {"size", 30}}}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "meadow"}, {"size", 30}}).value("ok", false));
   EXPECT_EQ(state().value("state", ""), "missing");
+  EXPECT_EQ(state().value("kind", ""), "meadow");
+  EXPECT_EQ(state().value("size", 0.0), 30.0);
+  EXPECT_FALSE(rig.topic("lighting").contains("backdrop"));
   EXPECT_TRUE(rootNamed(scene, "Backdrop").isNone());
 
   // the kit comes: read on a worker, then planted
@@ -362,11 +371,15 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
 
   // twice the density plants again in place: as many tiles, about twice the plants
   const size_t entities = scene.entityCount();
-  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"density", 2.0}}}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"density", 2.0}}).value("ok", false));
   EXPECT_EQ(scene.entityCount(), entities);
   EXPECT_EQ(rootNamed(scene, "Backdrop"), root);
   EXPECT_NEAR(double(state().value("plants", uint64_t(0))), 2.0 * double(plants), 0.15 * double(plants));
-  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"density", 1.0}}}}).value("ok", false));
+  // a step of the history: undone, it is planted as it was
+  rig.cmd("history.undo");
+  EXPECT_EQ(state().value("density", 0.0), 1.0);
+  EXPECT_EQ(rootNamed(scene, "Backdrop"), root);
+  EXPECT_NEAR(double(state().value("plants", uint64_t(0))), double(plants), 0.05 * double(plants));
 
   // the camera goes to stand far off: thick grass there too, what stood by the scene stays, and
   // nothing is made but the few tiles that weren't there
@@ -416,8 +429,31 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
   EXPECT_EQ(stands().places, drawnNow);
 
   // more air over the land plants nothing: every tile's entity is the one it was
-  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"air", 12}}}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"air", 12}}).value("ok", false));
+  EXPECT_EQ(state().value("air", 0.0), 12.0);
   EXPECT_EQ(stands().places, drawnNow);
+
+  // the land stands at the floor's height: with the floor 40 m further under a camera that stays where
+  // it is, the camera is that far over the land, past where its thick grass shows; back on the floor it
+  // has it again
+  const auto thickUnder = [&](glm::vec2 at) {
+    size_t n = 0;
+    for(const rs::EntityId e : scene.entity(root)->children)
+      if(const rs::Entity* entity = scene.entity(e); entity->mesh && scene.shown(e) && entity->name == "Backdrop tile" && entity->mesh->parts.at(0).mesh == thickNow)
+        n += glm::distance(glm::vec2(scene.world(e)[3].x, scene.world(e)[3].z), at) < 4.0F ? 1 : 0;
+    return n;
+  };
+  rig.cmd("camera.goto", {{"position", {300.0, 2.0, 100.0}}, {"target", {290.0, 1.0, 100.0}}});
+  frames(100);
+  ASSERT_GT(thickUnder({300.0F, 100.0F}), 0u);
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"ground", {{"height", -40.0}}}}).value("ok", false));
+  frames(100);
+  EXPECT_EQ(thickUnder({300.0F, 100.0F}), 0u);
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"ground", {{"height", "auto"}}}}).value("ok", false));
+  frames(100);
+  EXPECT_GT(thickUnder({300.0F, 100.0F}), 0u);
+  rig.cmd("camera.goto", {{"position", {1.0, 2.0, 2.0}}, {"target", {0.0, 1.0, 0.0}}});
+  frames(100);
 
   // another kind plants again in place, the ground too: a forest has more trees and thinner grass
   const Stands       asMeadow     = stands();
@@ -429,7 +465,7 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
     return rs::EntityId{};
   };
   const rs::EntityId meadowGround = groundOf();
-  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"kind", "forest"}}}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "forest"}}).value("ok", false));
   EXPECT_EQ(state().value("state", ""), "ready");
   EXPECT_EQ(rootNamed(scene, "Backdrop"), root);
   {
@@ -467,7 +503,7 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
     return n;
   };
   const size_t inForest = meshEntities();
-  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"kind", "meadow"}}}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "meadow"}}).value("ok", false));
   EXPECT_EQ(stands().copies, asMeadow.copies);
   // (the fern's variant, and the ferns' two tile holders)
   EXPECT_EQ(meshEntities() + 3, inForest);
@@ -478,12 +514,35 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
   ASSERT_TRUE(until("ready"));
   EXPECT_FALSE(rootNamed(scene, "Backdrop").isNone());
 
+  // a change of the lighting leaves it standing as it is, at the floor's height
+  const rs::EntityId standing      = rootNamed(scene, "Backdrop");
+  const size_t       beforeLight   = scene.entityCount();
+  const uint64_t     plantsInLight = state().value("plants", uint64_t(0));
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"ground", {{"height", 0.25}}}, {"tonemap", {{"exposure", 1.5}}}}).value("ok", false));
+  EXPECT_EQ(rootNamed(scene, "Backdrop"), standing);
+  EXPECT_EQ(scene.entityCount(), beforeLight);
+  EXPECT_FLOAT_EQ(scene.entity(standing)->local.translation.y, 0.25F);
+  EXPECT_EQ(state().value("state", ""), "ready");
+  EXPECT_EQ(state().value("plants", uint64_t(0)), plantsInLight);
+
   // none: gone
-  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"kind", "none"}}}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "none"}}).value("ok", false));
   EXPECT_EQ(state().value("state", ""), "off");
   EXPECT_EQ(state().value("plants", uint64_t(1)), 0u);
   EXPECT_TRUE(rootNamed(scene, "Backdrop").isNone());
   EXPECT_FALSE(rig.renderer.hazeScope.has_value());
+
+  // a scene kept for a crash by a renderer from before protocol 70 has the backdrop in its lighting:
+  // it goes to the backdrop, the rest to the lighting
+  ASSERT_TRUE(rig.cmd("lighting.set", {{"backdrop", {{"kind", "meadow"}, {"seed", 3}}}, {"tonemap", {{"exposure", 2.0}}}}).value("ok", false));
+  EXPECT_EQ(state().value("kind", ""), "meadow");
+  EXPECT_EQ(state().value("seed", 0), 3);
+  EXPECT_EQ(state().value("state", ""), "ready");
+  EXPECT_EQ(rig.topic("lighting").at("tonemap").value("exposure", 0.0), 2.0);
+  EXPECT_FALSE(rig.topic("lighting").contains("backdrop"));
+  // and a patch that makes no sense is refused whole
+  EXPECT_FALSE(rig.cmd("backdrop.set", {{"kind", "jungle"}}).value("ok", false));
+  EXPECT_EQ(state().value("kind", ""), "meadow");
   fs::remove_all(kit);
 }
 

@@ -468,6 +468,8 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     });
   });
   cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("lighting.set", args); }); });
+  // the land round the scene (fv_backdrop_state.hpp): a state of its own, and a step of the history
+  cmds.add("backdrop.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("backdrop.set", args); }); });
   // a look shown while the app's pointer is on its chip: no history step, no topic change
   cmds.add("lighting.preview", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->lightingPreview(args); }); });
   // any registered renderer parameter, read or written as nvmcp's parameter tools do
@@ -711,6 +713,7 @@ void FvHost::onUpdate()
     try
     {
       s.applyLighting(true);
+      s.publishBackdrop();  // its topic from the start: none stands
     }
     catch(const std::exception& e)
     {

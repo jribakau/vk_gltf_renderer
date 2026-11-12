@@ -106,7 +106,7 @@ std::optional<Json> fvhost::listedPatch(const std::vector<ListedDial>& sent, con
   Json channels = Json::object();
   for(size_t i = 0; i < now.size(); i++)
     if(!(sent[i] == now[i]))
-      if(Json diff = fv::lighting::mergeDiff(listedJson(sent[i], i), listedJson(now[i], i)); !diff.empty())
+      if(Json diff = fv::patch::mergeDiff(listedJson(sent[i], i), listedJson(now[i], i)); !diff.empty())
         channels[now[i].name] = std::move(diff);
   return channels;
 }

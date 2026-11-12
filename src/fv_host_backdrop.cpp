@@ -1,5 +1,6 @@
 //
-// FvHost: the backdrop (fv_backdrop.hpp), the lighting's `backdrop` section drawn.
+// FvHost: the backdrop (fv_backdrop.hpp), drawn: its state (fv_backdrop_state.hpp, `backdrop.set`, the
+// `backdrop` topic), and the ground and plants that stand for it in the scene.
 //
 // The kit is a folder the app fills (settings.apply's backdropKit) with plant models and ground
 // textures and a kit.json that says what each is:
@@ -206,24 +207,64 @@ rs::EntityId FvHost::Impl::backdropRoot() const
 }
 
 // The root at the floor's height: the ground is flat there, where the figures stand
-void FvHost::Impl::placeBackdrop()
+bool FvHost::Impl::placeBackdrop()
 {
   if(!backdropBuilt || !renderer->feedsHostScene())
-    return;
+    return false;
   rs::RetainedScene& scene = renderer->hostScene();
   const rs::Entity*  root  = scene.entity(backdropBuilt->root);
   if(!root)
-    return;
-  const float floor = lighting.ground.autoHeight ? autoGround : float(lighting.ground.height);
-  if(root->local.translation.y != floor)
-    scene.setLocal(backdropBuilt->root, {.translation = {0.0F, floor, 0.0F}});
+    return false;
+  const float floor = groundHeight();
+  if(root->local.translation.y == floor)
+    return false;
+  scene.setLocal(backdropBuilt->root, {.translation = {0.0F, floor, 0.0F}});
+  return true;
+}
+
+Json FvHost::Impl::backdropTopic() const
+{
+  Json t      = fv::backdrop::toJson(backdropSpec);
+  t["state"]  = backdropState;
+  t["plants"] = backdropPlants;
+  return t;
+}
+
+void FvHost::Impl::publishBackdrop()
+{
+  backdropPlantsSaid = backdropPlants;
+  const Json now     = backdropTopic();
+  if(publishedBackdrop.is_null())
+    protocol->events().snapshot("backdrop", now);
+  else if(Json diff = fv::patch::mergeDiff(publishedBackdrop, now); !diff.empty())
+    protocol->events().patch("backdrop", diff);
+  publishedBackdrop = now;
+}
+
+Json FvHost::Impl::backdropSet(const Json& patch)
+{
+  backdropSpec = fv::backdrop::applyPatch(backdropSpec, patch);  // throws, leaving everything as it was
+  fv::timing::Scope t("backdrop.set", 20);
+  applyBackdrop();
+  applyLighting(false);  // the renderer's parameters: the ground's plane gives way to it, its air
+  return backdropTopic();
+}
+
+bool FvHost::Impl::backdropStands() const
+{
+  return backdropState == "ready" && fv::backdrop::planted(backdropSpec);
+}
+
+void FvHost::Impl::backdropParams(Json& params) const
+{
+  params.update(fv::backdrop::rendererParams(backdropSpec, backdropStands(), backdropLandAlbedo()));
 }
 
 glm::vec3 FvHost::Impl::backdropLandAlbedo() const
 {
-  if(!backdropKit || backdropState != "ready" || !fv::backdrop::planted(lighting.backdrop))
+  if(!backdropKit || !backdropStands())
     return glm::vec3(0.0F);
-  const auto found = backdropKit->ground.find(lighting.backdrop.kind);
+  const auto found = backdropKit->ground.find(backdropSpec.kind);
   return found != backdropKit->ground.end() && found->second.albedo.x >= 0.0F ? found->second.albedo : glm::vec3(0.0F);
 }
 
@@ -237,7 +278,7 @@ nvutils::Bbox FvHost::Impl::contentBounds()
   if(b[0].x <= b[1].x)
     return nvutils::Bbox(b[0], b[1]);
   // only the backdrop: where a figure would stand
-  const float floor = lighting.ground.autoHeight ? autoGround : float(lighting.ground.height);
+  const float floor = groundHeight();
   return nvutils::Bbox(glm::vec3(-1.0F, floor, -1.0F), glm::vec3(1.0F, floor + 2.0F, 1.0F));
 }
 
@@ -247,7 +288,7 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
     return;
   fv::timing::Scope             time("backdrop: planting", 20);
   BackdropBuilt&                built = *backdropBuilt;
-  const fv::backdrop::Spec&     spec  = lighting.backdrop;
+  const fv::backdrop::Spec&     spec  = backdropSpec;
   // the tiles go first, their meshes being made of the plants' own: made again below
   for(BackdropBuilt::Tiles* tiles : {&built.grass, &built.drifts})
   {
@@ -344,7 +385,7 @@ FvHost::Impl::BackdropBuilt::Patch FvHost::Impl::makeBackdropPatch(rs::RetainedS
   if(found == built.variants.end() || found->second.empty())
     return out;
   const std::vector<BackdropBuilt::Variant>&       variants = found->second;
-  const std::vector<std::vector<glm::mat4>> placed   = fv::backdrop::patch(lighting.backdrop, cover, uint32_t(variants.size()));
+  const std::vector<std::vector<glm::mat4>> placed   = fv::backdrop::patch(backdropSpec, cover, uint32_t(variants.size()));
   // what every variant's mesh has, the merged one has: colours when any does (white for the rest),
   // tangents and UVs only when all do
   bool colours = false, tangents = true, uvs = true;
@@ -449,7 +490,7 @@ void FvHost::Impl::tileBackdrop(rs::RetainedScene& scene)
   if(!backdropBuilt || !scene.entity(backdropBuilt->root))
     return;
   BackdropBuilt&                built = *backdropBuilt;
-  const fv::backdrop::Spec&     spec  = lighting.backdrop;
+  const fv::backdrop::Spec&     spec  = backdropSpec;
   const std::vector<fv::backdrop::Focus> foci = backdropFociNow();
   uint64_t                      plants = built.placed;
   const auto lay = [&](BackdropBuilt::Tiles& tiles, const std::vector<fv::backdrop::Tile>& wanted, std::span<const fv::backdrop::Cover> covers) {
@@ -508,7 +549,7 @@ void FvHost::Impl::tileBackdrop(rs::RetainedScene& scene)
 void FvHost::Impl::holdBackdropPlants(rs::RetainedScene& scene)
 {
   BackdropBuilt&                 built  = *backdropBuilt;
-  const std::vector<std::string> wanted = fv::backdrop::roles(lighting.backdrop);
+  const std::vector<std::string> wanted = fv::backdrop::roles(backdropSpec);
   for(size_t i = 0; i < backdropKit->plants.size(); i++)
   {
     const BackdropKit::Plant& plant = backdropKit->plants[i];
@@ -583,13 +624,14 @@ void FvHost::Impl::feedBackdrop(rs::RetainedScene& scene)
 void FvHost::Impl::applyBackdrop(bool reread)
 {
   // where the scene's content is, before anything is planted round it
-  if(renderer->feedsHostScene() && fv::backdrop::planted(lighting.backdrop))
+  if(renderer->feedsHostScene() && fv::backdrop::planted(backdropSpec))
   {
     const nvutils::Bbox content = contentBounds();
     backdropContent = content.isEmpty() ? glm::vec2(0.0F) : glm::vec2(content.center().x, content.center().z);
   }
   standBackdrop(reread);
   scopeHaze();
+  publishBackdrop();
 }
 
 std::vector<fv::backdrop::Focus> FvHost::Impl::backdropFociNow()
@@ -597,8 +639,9 @@ std::vector<fv::backdrop::Focus> FvHost::Impl::backdropFociNow()
   std::vector<fv::backdrop::Focus> foci{{backdropContent.x, 0.0F, backdropContent.y}};
   if(const auto camera = renderer->getCameraManipulator())
   {
+    // (the land stands at the floor's height, its own heights over that)
     const glm::vec3 eye   = camera->getEye();
-    const float     above = std::max(eye.y - fv::backdrop::groundAt(lighting.backdrop, eye.x, eye.z), 0.0F);
+    const float     above = std::max(eye.y - groundHeight() - fv::backdrop::groundAt(backdropSpec, eye.x, eye.z), 0.0F);
     foci.emplace_back(eye.x, above, eye.z);
   }
   return foci;
@@ -623,7 +666,7 @@ void FvHost::Impl::followBackdrop()
   // the topic's count of plants, when it is off by more than a twentieth: not a topic a metre
   const uint64_t said = backdropPlantsSaid;
   if(backdropPlants > said + said / 20 || backdropPlants + said / 20 < said)
-    publishLighting();
+    publishBackdrop();
 }
 
 void FvHost::Impl::swayBackdrop()
@@ -633,7 +676,7 @@ void FvHost::Impl::swayBackdrop()
   rs::RetainedScene& scene = renderer->hostScene();
   if(!scene.entity(backdropBuilt->root))
     return;
-  const fv::backdrop::Spec& spec  = lighting.backdrop;
+  const fv::backdrop::Spec& spec  = backdropSpec;
   const bool                windy = spec.wind > 0.0;
   glm::vec2                 eye(0.0F);
   if(const auto camera = renderer->getCameraManipulator())
@@ -705,7 +748,7 @@ void FvHost::Impl::standBackdrop(bool reread)
   if(!renderer->feedsHostScene())
     return;
   rs::RetainedScene&        scene = renderer->hostScene();
-  const fv::backdrop::Spec& spec  = lighting.backdrop;
+  const fv::backdrop::Spec& spec  = backdropSpec;
   const auto                drop  = [&] {
     if(backdropBuilt && scene.entity(backdropBuilt->root))
       scene.destroyEntity(backdropBuilt->root);
@@ -780,12 +823,13 @@ void FvHost::Impl::standBackdrop(bool reread)
         backdropState = "missing";
         if(error.rfind("no kit.json", 0) != 0)
           notice("The backdrop's plants could not be read: " + error, "error");
-        publishLighting();
+        publishBackdrop();
         return;
       }
       backdropKit   = kit;
       backdropState = "off";
-      applyLighting(false);  // plants it, and the ground's plane gives way to it
+      applyBackdrop();       // plants it
+      applyLighting(false);  // and the ground's plane gives way to it
     });
   });
 }
