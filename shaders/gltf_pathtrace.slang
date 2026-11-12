@@ -1390,7 +1390,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
                                                  renderPrim, payload.primitiveID, renderNode.objectToWorld);
       }
       const float3 throughCoat = bsdfCoatEmission(pbrMat.clearcoat, pbrMat.clearcoatRoughness, pbrMat.baseColor, pbrMat.metallic,
-                                                  bsdfCoatClearTransmission(pbrMat), 0.5F * (pbrMat.roughness.x + pbrMat.roughness.y), abs(dot(pbrMat.N, ray.Direction)));
+                                                  bsdfCoatBaseSpecular(pbrMat.specular, pbrMat.ior2), bsdfCoatClearTransmission(pbrMat),
+                                                  0.5F * (pbrMat.roughness.x + pbrMat.roughness.y), abs(dot(pbrMat.N, ray.Direction)));
       addRadiance(pt, emissiveMis * pbrMat.emissive * throughCoat * pt.throughput, pt.prefixIndirect);
     }
 

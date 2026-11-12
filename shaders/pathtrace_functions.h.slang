@@ -863,6 +863,23 @@ bool emissiveTreeOn()
 // uniform point `u`. `totalWeight`: the weight of the triangles it was picked among (all of them,
 // or its group's). `pointOnly`: where the sample lands and its pdf, not what it emits (no radiance:
 // the material, its emission and opacity textures are not read), for the haze's guide.
+// What a material row's own dielectric specular reflects on average, for its coat's darkening
+// (bsdfCoatBaseSpecular): its factors alone, as a light sample reads no textures but the emission's.
+float coatBaseSpecularOfRow(GltfShadeMaterial mat)
+{
+#if MAT_EXT_SPECULAR
+  const float specular = mat.specularFactor;
+#else
+  const float specular = 1.0F;
+#endif
+#if MAT_EXT_IOR
+  const float ior = mat.ior;
+#else
+  const float ior = 1.5F;
+#endif
+  return bsdfCoatBaseSpecular(specular, ior);
+}
+
 EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, float2 u, float totalWeight, bool pointOnly = false)
 {
 #if USE_LIGHT_RIS
@@ -941,6 +958,7 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
   }
   es.radiance *= bsdfCoatEmission(materials[materialID].clearcoatFactor, materials[materialID].clearcoatRoughness,
                                   materials[materialID].pbrBaseColorFactor.rgb, materials[materialID].pbrMetallicFactor,
+                                  coatBaseSpecularOfRow(materials[materialID]),
                                   materials[materialID].scatterStrengthFactor > 0.0F ? 0.0F : materials[materialID].transmissionFactor,
                                   materials[materialID].pbrRoughnessFactor * materials[materialID].pbrRoughnessFactor, cosLight);
   // A ray meets a see-through surface with the probability of its opacity there (the any-hit's
@@ -1613,6 +1631,7 @@ ReusedLight evaluateReusedLight(LightReuseRecord r, float3 pos, float3 normal, L
     }
     radiance *= bsdfCoatEmission(materials[materialID].clearcoatFactor, materials[materialID].clearcoatRoughness,
                                  materials[materialID].pbrBaseColorFactor.rgb, materials[materialID].pbrMetallicFactor,
+                                 coatBaseSpecularOfRow(materials[materialID]),
                                  materials[materialID].scatterStrengthFactor > 0.0F ? 0.0F : materials[materialID].transmissionFactor,
                                  materials[materialID].pbrRoughnessFactor * materials[materialID].pbrRoughnessFactor, cosLight);
     radiance *= getOpacity(node, prim, int(et.triangleID), bary, mul(float4(dir, 0.0F), node.worldToObject).xyz);

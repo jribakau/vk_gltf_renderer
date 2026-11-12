@@ -1566,7 +1566,7 @@ TEST(BsdfLobes, ACoatDarkensAWalkAsItsThinPreview)
   walk.scatterCoefficient    = vec3(500.0f, 200.0f, 100.0f);
   walk.transmissionTint      = 1.0f / skin;
 
-  const vec3 darkening = bsdfCoatDarkening(1.0f, skin, 0.0f, 0.0f, preview.roughness.x);
+  const vec3 darkening = bsdfCoatDarkening(1.0f, skin, 0.0f, bsdfCoatBaseSpecular(preview.specular, preview.ior2), 0.0f, preview.roughness.x);
   EXPECT_LT(darkening.x, 0.8f);
   vec3 tintWalk = walk.baseColor, tintPreview = preview.baseColor;
   computeLobeWeights(walk, 1.0f, tintWalk);
@@ -1601,8 +1601,9 @@ TEST(BsdfLobes, ACoatDarkensAWalkAsItsThinPreview)
   EXPECT_NEAR(coated.bsdf_diffuse.x / plain.bsdf_diffuse.x, darkening.x, 1e-4f);
 
   EXPECT_FLOAT_EQ(bsdfCoatClearTransmission(walk), 0.0f);
-  EXPECT_NEAR(bsdfCoatEmission(1.0f, 0.1f, skin, 0.0f, bsdfCoatClearTransmission(walk), preview.roughness.x, 1.0f).x,
-              bsdfCoatEmission(1.0f, 0.1f, skin, 0.0f, bsdfCoatClearTransmission(preview), preview.roughness.x, 1.0f).x, 1e-6f);
+  const float skinSpecular = bsdfCoatBaseSpecular(preview.specular, preview.ior2);
+  EXPECT_NEAR(bsdfCoatEmission(1.0f, 0.1f, skin, 0.0f, skinSpecular, bsdfCoatClearTransmission(walk), preview.roughness.x, 1.0f).x,
+              bsdfCoatEmission(1.0f, 0.1f, skin, 0.0f, skinSpecular, bsdfCoatClearTransmission(preview), preview.roughness.x, 1.0f).x, 1e-6f);
 
   // and clear glass keeps sending its light on
   PbrMaterial glass        = walk;
@@ -1634,7 +1635,7 @@ TEST(BsdfLobes, ACoatDarkensADarkMetal)
     return a.bsdf_glossy.x / b.bsdf_glossy.x;
   };
   const vec3  dark(0.3f, 0.2f, 0.1f);
-  const float factor = bsdfCoatDarkening(1.0f, dark, 1.0f, 0.0f, metal(dark, 1.0f).roughness.x).x;
+  const float factor = bsdfCoatDarkening(1.0f, dark, 1.0f, bsdfCoatBaseSpecular(metal(dark, 1.0f).specular, 1.5f), 0.0f, metal(dark, 1.0f).roughness.x).x;
   EXPECT_LT(factor, 0.9f);
   EXPECT_NEAR(ratio(dark, normalize(vec3(0.3f, 0.1f, 0.9f))), factor, 1e-4f);
   EXPECT_NEAR(ratio(dark, normalize(vec3(0.95f, 0.0f, 0.2f))), factor, 1e-4f);
@@ -1809,9 +1810,10 @@ TEST(BsdfLobes, TheCoatReferenceKeepsEnergyAndIsTheSmoothCoatsClosedForm)
 }
 
 // A coat over a diffuse base darkens it by physics: of a base of 0.3, 0.49 of what the coat lets in comes
-// back out under a smooth coat. Our closure darkens it a little less (OpenPBR's formula with K near the
-// diffuse 0.596, but E taking a base specular of 9% that a Lambert base doesn't have): 0-7.5% brighter
-// than the exact stack, most head-on, at every view and both coat roughnesses DAZ uses most.
+// back out under a smooth coat. Our closure is OpenPBR's formula with K the diffuse 0.596 and E the base's
+// colour, the smooth coat's closed form: within 1.5% of the exact stack at every view and both coat
+// roughnesses DAZ uses most. (E had taken a base specular of 9% that a Lambert base doesn't have: 0-7.5%
+// too bright.)
 TEST(BsdfLobes, ACoatDarkensADiffuseBaseAsTheLayersStackedExactly)
 {
   std::printf("A coat over a Lambert base: the exact stack's albedo against our closure's\n");
@@ -1827,8 +1829,8 @@ TEST(BsdfLobes, ACoatDarkensADiffuseBaseAsTheLayersStackedExactly)
         printCoatRow("lambert", base, coatRoughness, NoV, ref, ours);
         for(int c = 0; c < 3; c++)
         {
-          EXPECT_GT(ours[c], 0.99f * ref[c]) << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
-          EXPECT_LT(ours[c], 1.10f * ref[c]) << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
+          EXPECT_GT(ours[c], 0.985f * ref[c]) << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
+          EXPECT_LT(ours[c], 1.02f * ref[c]) << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
         }
       }
   }
@@ -1838,11 +1840,12 @@ TEST(BsdfLobes, ACoatDarkensADiffuseBaseAsTheLayersStackedExactly)
 // stack. The coat bends the light in, so the base sees the view within 42 degrees of its normal and its
 // Fresnel never rises toward grazing, and what the base sends past 42 degrees stays inside by total internal
 // reflection. Ours keeps the base's own rise under the coat's: from a view cosine of 0.4 to grazing, a
-// coated dark plastic is up to 37% too bright and a smooth metal 33%. A rough metal's light meets the coat's
+// coated dark plastic is up to 12% too bright and a smooth metal 33%. A rough metal's light meets the coat's
 // inside nearly as a diffuse base's does, where ours takes K 0.45: up to 22% too bright at every view.
 // Head-on, a smooth metal's light leaves straight through the coat, which ours darkens as if it were spread
-// over the hemisphere (up to 11% too dark), and a plastic's own specular isn't darkened (8-15% too bright).
-// These bounds hold today's gaps; closing them tightens them.
+// over the hemisphere (up to 11% too dark), and so is a dark plastic's (10%). A plastic's own specular is
+// darkened as its diffuse is (it had not been: 8-15% too bright head-on, 37% at a view cosine of 0.4).
+// These bounds hold today's gaps, a plastic's and a metal's apart; closing them tightens them.
 TEST(BsdfLobes, ACoatOverASpecularBaseAgainstTheExactStack)
 {
   std::printf("A coat over a plastic or a metal: the exact stack's albedo against our closure's\n");
@@ -1860,10 +1863,12 @@ TEST(BsdfLobes, ACoatOverASpecularBaseAgainstTheExactStack)
           const vec3 ref  = coatedReference(base, coatRoughness * coatRoughness, NoV, 50000).all();
           const vec3 ours = carriedAt(withCoat(base, coatRoughness), NoV, 50000).all;
           printCoatRow(name, base, coatRoughness, NoV, ref, ours);
+          const bool  plastic = base.metallic == 0.0f;
+          const float least = plastic ? 0.88f : 0.85f, most = plastic ? 1.15f : 1.45f;
           for(int c = 0; c < 3; c++)
           {
-            EXPECT_GT(ours[c], 0.85f * ref[c]) << name << ", " << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
-            EXPECT_LT(ours[c], 1.45f * ref[c]) << name << ", " << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
+            EXPECT_GT(ours[c], least * ref[c]) << name << ", " << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
+            EXPECT_LT(ours[c], most * ref[c]) << name << ", " << colour[c] << ", coat " << coatRoughness << ", NoV " << NoV;
           }
         }
   }
@@ -1873,14 +1878,15 @@ TEST(BsdfLobes, ACoatOverASpecularBaseAgainstTheExactStack)
 // Not with no coat.
 TEST(BsdfLobes, EmissionComesOutThroughACoat)
 {
-  const vec3 base(0.3f);
-  EXPECT_EQ(bsdfCoatEmission(0.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f), vec3(1.0f));
-  const vec3 straight = bsdfCoatEmission(1.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f);
-  const vec3 grazing  = bsdfCoatEmission(1.0f, 0.1f, base, 0.0f, 0.0f, 0.25f, 0.2f);
-  EXPECT_NEAR(straight.x, 0.96f * bsdfCoatDarkening(1.0f, base, 0.0f, 0.0f, 0.25f).x, 0.005f);
+  const vec3  base(0.3f);
+  const float spec = bsdfCoatBaseSpecular(1.0f, 1.5f);
+  EXPECT_EQ(bsdfCoatEmission(0.0f, 0.1f, base, 0.0f, spec, 0.0f, 0.25f, 1.0f), vec3(1.0f));
+  const vec3 straight = bsdfCoatEmission(1.0f, 0.1f, base, 0.0f, spec, 0.0f, 0.25f, 1.0f);
+  const vec3 grazing  = bsdfCoatEmission(1.0f, 0.1f, base, 0.0f, spec, 0.0f, 0.25f, 0.2f);
+  EXPECT_NEAR(straight.x, 0.96f * bsdfCoatDarkening(1.0f, base, 0.0f, spec, 0.0f, 0.25f).x, 0.005f);
   EXPECT_LT(grazing.x, straight.x);
   // half the coverage takes less
-  EXPECT_GT(bsdfCoatEmission(0.5f, 0.1f, base, 0.0f, 0.0f, 0.25f, 1.0f).x, straight.x);
+  EXPECT_GT(bsdfCoatEmission(0.5f, 0.1f, base, 0.0f, spec, 0.0f, 0.25f, 1.0f).x, straight.x);
 }
 
 // The baked sheen albedo is the sheen lobe's own integral, as its sampler carries it, over its
