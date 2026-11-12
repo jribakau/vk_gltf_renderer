@@ -18,13 +18,15 @@
 
 The still's denoiser runs on the accumulated image, so the further the accumulation has converged,
 the less denoising it needs; at full strength it keeps smoothing away detail the samples already
-resolve (skin pores, hair strands). **Keep detail** mixes the noisy accumulation back in, rising
+resolve (skin pores, hair strands). **The blend** mixes the noisy accumulation back in, rising
 linearly with the samples from 0 to that share at the cap (`sample_schedule::denoiseBlend`,
 `--rrStillBlendMax`), by a pass over the denoised image (`ImageBlend` in `src/denoiser_handoff.hpp`,
 the hand-off's weighted sum, written over the RGBA32F output without the hand-off's half-float clamp).
 
 **Keep detail per pixel** (`--rrStillKeepNoise`, on by default) does it pixel by pixel, before that
-blend: a pixel whose accumulation has converged takes back its raw value, and the denoised image stays
+blend, and is what the Figure Viewer's Keep detail slider sets (its blend is 0 since 2026-11-12: a share
+of the whole raw image brought the grain back everywhere, where this brings it back only where the
+samples have settled): a pixel whose accumulation has converged takes back its raw value, and the denoised image stays
 where the samples are still noisy (`StillKeep`, `src/still_keep.hpp`, `shaders/still_keep.slang`).
 A pixel's noise is the adaptive stop's measure, its mean's standard error over the root of its
 brightness, from the luminance moments the path tracer keeps in the convergence image on the still's
