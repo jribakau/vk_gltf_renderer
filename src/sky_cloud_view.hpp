@@ -69,12 +69,44 @@ constexpr float kCloudViewMinAltitude = 0.001F;
 
 // Where a camera stands: its view matrix, the environment's orientation (environment frame to world),
 // a scene unit a metre, the scene's origin `originAltitudeKm` above the planet's surface (the sky
-// bake's observer).
-inline SkyCloudAnchor cloudEyeOf(const glm::mat4& view, const glm::quat& envRotation, float originAltitudeKm)
+// bake's observer). Over the clouds, which the wind has carried `driftKm` (cloudDriftStep): an anchor
+// is a place under the clouds as they are, so a camera at rest under drifting clouds goes the other
+// way among them, and the follow carries them past it as it carries a camera that flies.
+inline SkyCloudAnchor cloudEyeOf(const glm::mat4& view, const glm::quat& envRotation, float originAltitudeKm, const glm::vec2& driftKm = glm::vec2(0.0F))
 {
   const glm::vec3 eyeKm = glm::conjugate(glm::normalize(envRotation)) * glm::vec3(glm::inverse(view)[3]) * 0.001F;
-  return {.land = glm::vec2(eyeKm.x, eyeKm.z), .altitude = std::max(originAltitudeKm + eyeKm.y, kCloudViewMinAltitude)};
+  return {.land = glm::vec2(eyeKm.x, eyeKm.z) - driftKm, .altitude = std::max(originAltitudeKm + eyeKm.y, kCloudViewMinAltitude)};
 }
+
+// ---- the clouds drift on the wind -------------------------------------------------------------------
+//
+// The whole cloud field moves over the land, every tier alike, at `kmh` toward where the wind goes:
+// it blows from `fromDeg`, an azimuth as the sun's is (toward +z at 0, +x at 90; fv::lighting::
+// sunDirection). The clouds' shape doesn't change as they go: a wind that builds and dissolves them
+// is not modelled.
+
+// How far the clouds go in a second, km along the environment's x and z.
+inline glm::vec2 cloudDriftVelocity(float kmh, float fromDeg)
+{
+  const float from = glm::radians(fromDeg);
+  return -glm::vec2(std::sin(from), std::cos(from)) * (std::max(kmh, 0.0F) / 3600.0F);
+}
+
+// The longest a frame counts for, seconds: a frame after a stall (a load, a bake) moves the clouds no
+// further than a frame at 10 a second would, rather than jumping them.
+constexpr float kCloudDriftLongestFrame = 0.1F;
+
+// The clouds' drift after a frame `seconds` long.
+inline glm::vec2 cloudDriftStep(const glm::vec2& driftKm, const glm::vec2& velocity, float seconds)
+{
+  return driftKm + velocity * std::clamp(seconds, 0.0F, kCloudDriftLongestFrame);
+}
+
+// How far the clouds go from where the shadow image was baked of them before it is baked again, km.
+// Between bakes a reader takes it shifted by as much (cloudSunShare in gltf_pathtrace.slang), which is
+// exact, the sun standing where it did: the bake only keeps the scene under the image's middle, which
+// reaches CLOUD_SHADOW_EXTENT / 2 each way.
+constexpr float kCloudShadowDrift = 0.5F;
 
 // How far the camera goes from where an image was baked before the image is baked again from where
 // the camera is, km. Within it the image is shifted by the clouds' distance, which is right to well
@@ -215,7 +247,8 @@ inline std::optional<SkyCloudView> cloudViewFor(const glm::mat4& view,
                                                 const glm::mat4& projection,
                                                 const glm::quat& envRotation,
                                                 glm::uvec2       frameSize,
-                                                float            originAltitudeKm = 0.0F)
+                                                float            originAltitudeKm = 0.0F,
+                                                const glm::vec2& driftKm          = glm::vec2(0.0F))
 {
   if(frameSize.x == 0 || frameSize.y == 0 || projection[2][3] == 0.0F)
     return std::nullopt;  // no frame, or orthographic: its rays are parallel, one direction a frame
@@ -257,5 +290,5 @@ inline std::optional<SkyCloudView> cloudViewFor(const glm::mat4& view,
                       .up      = glm::vec4(up, tanUp),
                       .forward = forward,
                       .size    = size,
-                      .eye     = cloudEyeOf(view, envRotation, originAltitudeKm)};
+                      .eye     = cloudEyeOf(view, envRotation, originAltitudeKm, driftKm)};
 }

@@ -504,6 +504,67 @@ TEST(SkyClouds, AShadowIsReadWhereTheSunsRayComesUpFromTheGround)
   EXPECT_EQ(cloudShadowWeight(float2(0.3F, -0.2F)), 0.0F);
   // a 900 m ground with its hills is well inside
   EXPECT_EQ(cloudShadowWeight(cloudShadowUv(float3(0.9F, 0.06F, -0.9F), normalize(float3(0.5F, 0.5F, 0.0F)))), 1.0F);
+
+  // Clouds that drifted 0.3 km east since the bake shade a point with the shadow the image has 0.3 km
+  // west of it, whatever the sun: the shadow went with them
+  const float3 sun   = normalize(float3(0.4F, 0.6F, -0.2F));
+  const float3 point = float3(1.0F, 0.02F, -0.5F);
+  const float2 moved = cloudShadowUv(point, sun, float2(0.3F, 0.0F));
+  const float2 west  = cloudShadowUv(point - float3(0.3F, 0.0F, 0.0F), sun);
+  EXPECT_NEAR(length(moved - west), 0.0F, 1e-6F);
+  EXPECT_EQ(cloudShadowUv(point, sun, float2(0.0F)), cloudShadowUv(point, sun));
+}
+
+// The wind carries the clouds as a camera flying the other way under them would see them: an anchor
+// is a place under the clouds as they have drifted, the follow bakes from where a camera at rest has
+// drifted to among them, and the shadow image is baked again once they are far enough on.
+TEST(SkyClouds, DriftingCloudsPassOverACameraAtRest)
+{
+  // From where the wind blows, as the sun's azimuth: from 90 (+x) at 36 km/h, 10 m a second toward -x
+  const glm::vec2 v = cloudDriftVelocity(36.0F, 90.0F);
+  EXPECT_NEAR(v.x, -0.01F, 1e-7F);
+  EXPECT_NEAR(v.y, 0.0F, 1e-7F);
+  const glm::vec2 fromNorth = cloudDriftVelocity(36.0F, 0.0F);
+  EXPECT_NEAR(fromNorth.x, 0.0F, 1e-7F);
+  EXPECT_NEAR(fromNorth.y, -0.01F, 1e-7F);
+  EXPECT_EQ(cloudDriftVelocity(0.0F, 45.0F), glm::vec2(0.0F));
+  EXPECT_EQ(cloudDriftVelocity(-5.0F, 45.0F), glm::vec2(0.0F));
+
+  // A frame moves them by its length, a stall no further than kCloudDriftLongestFrame
+  EXPECT_NEAR(cloudDriftStep(glm::vec2(0.0F), v, 0.5F * kCloudDriftLongestFrame).x, -0.0005F, 1e-7F);
+  EXPECT_EQ(cloudDriftStep(glm::vec2(0.0F), v, 30.0F), cloudDriftStep(glm::vec2(0.0F), v, kCloudDriftLongestFrame));
+  EXPECT_EQ(cloudDriftStep(glm::vec2(1.0F), v, -1.0F), glm::vec2(1.0F));
+
+  // A camera 300 m east under clouds gone 2 km west stands 2.3 km east among them
+  const glm::mat4 view = glm::lookAt(glm::vec3(300.0F, 1.6F, 0.0F), glm::vec3(300.0F, 1.8F, -1.0F), glm::vec3(0.0F, 1.0F, 0.0F));
+  const glm::quat none(1.0F, 0.0F, 0.0F, 0.0F);
+  const SkyCloudAnchor eye = cloudEyeOf(view, none, 0.3F, glm::vec2(-2.0F, 0.0F));
+  EXPECT_NEAR(eye.land.x, 2.3F, 1e-5F);
+  EXPECT_NEAR(eye.land.y, 0.0F, 1e-6F);
+  const glm::mat4 projection = glm::perspective(glm::radians(40.0F), 16.0F / 9.0F, 0.1F, 1000.0F);
+  const std::optional<SkyCloudView> seen = cloudViewFor(view, projection, none, {1920, 1080}, 0.3F, glm::vec2(-2.0F, 0.0F));
+  ASSERT_TRUE(seen.has_value());
+  EXPECT_TRUE(seen->eye == eye);
+
+  // At rest at the origin under a 10 m/s wind, 60 frames a second: the sky bake's image, shifted, for
+  // its first kCloudFollowDistance; then a bake from where the camera has drifted to among the clouds
+  const SkyCloudAnchor home{.land = {0.0F, 0.0F}, .altitude = 0.3016F};
+  SkyCloudFollow       f;
+  f.reset(home);
+  glm::vec2 drift(0.0F);
+  int       frames = 0;
+  bool      baking = false;
+  while(!baking && frames < 600)
+  {
+    drift = cloudDriftStep(drift, v, 1.0F / 60.0F);
+    ++frames;
+    const SkyCloudAnchor at{.land = -drift, .altitude = home.altitude};
+    baking = cloudFollowStep(f, at, 1024, 8).bake;
+  }
+  EXPECT_TRUE(baking);
+  EXPECT_GT(frames, 55);  // just past a second
+  EXPECT_LT(frames, 65);
+  EXPECT_GT(f.bakingFrom.land.x, kCloudFollowDistance);  // east of the origin among clouds gone west
 }
 
 // Among the clouds they are tens of metres from the camera: the image is baked again after fewer

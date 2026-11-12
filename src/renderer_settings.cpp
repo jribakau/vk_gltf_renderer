@@ -437,6 +437,14 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   .help            = "Physical sky: cirrus 7.5 km up, the share of the sky it veils",
                   .callbackSuccess = invalidateAtmosphere},
                  &m_resources.settings.cloudHighCoverage, Persist::eYes, 0.0F, 1.0F);
+  // The wind: neither re-bakes anything. The frames carry the clouds on (updateCloudView), and a
+  // wind that drops leaves them where it took them, baked there afresh.
+  m_settings.add({.name = "cloudDrift",
+                  .help = "Physical sky: how fast the wind carries the clouds over the land (km/h); 0 they hold still. "
+                          "While they drift every frame is a moving one: the still waits for them to stop"},
+                 &m_resources.settings.cloudDrift, Persist::eYes, 0.0F, 1000.0F);
+  m_settings.add({.name = "cloudDriftFrom", .help = "Physical sky: where the wind blows the clouds from (degrees, an azimuth as the sun's)"},
+                 &m_resources.settings.cloudDriftFrom, Persist::eYes, -360.0F, 360.0F);
 
   // A preset is an action, not a mode: its callback overwrites every field above and nothing reads
   // it back. That is also why it does not persist -- restoring it after the individual values

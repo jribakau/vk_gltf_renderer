@@ -416,6 +416,10 @@ struct SceneFrameInfo
   // Where the frame counts what it throws away as not finite (shaders/invalid_samples.h.slang,
   // PathTracer::prepareInvalidSamples); null: not counted. (Appended.)
   uint* invalidSamples;
+  // How far the wind has carried the physical sky's clouds since their shadow image was baked, km
+  // along the environment's x and z (SkyClouds::shadowShift): the image is read that much the other
+  // way (cloudSunShare). (Appended.)
+  float2 cloudShadowShift = {0.0F, 0.0F};
 };
 
 enum PathtracerFlags

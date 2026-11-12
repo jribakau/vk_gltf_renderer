@@ -1220,9 +1220,10 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.cloudEye = glm::vec4(0.0F, 0.0F, 0.0F, m_resources.settings.atmoObserverAltitude * 0.001F);
     if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.viewable())
     {
-      const SkyCloudAnchor eye = cloudEyeOf(m_cameraManip->getViewMatrix(), envRot, m_resources.settings.atmoObserverAltitude * 0.001F);
+      const SkyCloudAnchor eye = cloudEyeOf(m_cameraManip->getViewMatrix(), envRot, m_resources.settings.atmoObserverAltitude * 0.001F, m_cloudDrift);
       const SkyCloudFollow& followed = m_skyClouds.followed();
       finfo.cloudEye                 = glm::vec4(cloudEyeFrom(followed.anchor, eye), followed.anchor.altitude);
+      finfo.cloudShadowShift         = m_skyClouds.shadowShift();
       finfo.cloudFront               = followed.front;
       finfo.cloudImageBase           = m_skyClouds.followedWholeBaseKm();
       if(m_skyClouds.viewCurrent() && cloudAnchorDistance(m_skyClouds.view().eye, eye) <= kCloudFollowDistance)

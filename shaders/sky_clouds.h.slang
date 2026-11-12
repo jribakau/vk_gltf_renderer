@@ -160,6 +160,13 @@ inline float2 cloudShadowUv(float3 p, float3 sunDir)
   return ground / CLOUD_SHADOW_EXTENT + float2(0.5F);
 }
 
+// The same once the clouds have drifted `shift` km along x and z since the image was baked of them
+// (SceneFrameInfo::cloudShadowShift): their shadow has gone as far, the sun standing where it did.
+inline float2 cloudShadowUv(float3 p, float3 sunDir, float2 shift)
+{
+  return cloudShadowUv(float3(p.x - shift.x, p.y, p.z - shift.y), sunDir);
+}
+
 // How much the image counts where it is read, against the land's mean share (SkySunDisk::
 // sunlitGround): all of it inside, none past its edge, over the outer tenth of its half-width.
 inline float cloudShadowWeight(float2 uv)

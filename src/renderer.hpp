@@ -531,7 +531,13 @@ private:
   // The physical sky's clouds as the camera sees them from where it is: the sky image follows it
   // (SkyClouds::follow), and the view image is baked where it looks once it has been at rest a
   // moment (SkyClouds::recordView). True when a still's sky changed under it: the still restarts.
+  // The wind carries them on first (cloudDrift).
   bool updateCloudView(VkCommandBuffer cmd);
+  // How far the wind has carried the clouds, km in the environment's frame (cloudDriftStep), and
+  // when it last did; whether they drifted in the last frame. Not saved: a restart has them back.
+  glm::vec2                             m_cloudDrift{0.0F};
+  std::chrono::steady_clock::time_point m_cloudDriftAt{};
+  bool                                  m_cloudDrifting{false};
   // What the clouds' images depend on of the camera and the frame; the last frame's, to tell a camera
   // at rest from one in motion.
   struct CloudCamera

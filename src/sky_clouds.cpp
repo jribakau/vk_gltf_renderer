@@ -490,9 +490,11 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
     m_bakedAltitude = observerAltitudeKm;
     m_bakedClouds   = hasClouds();
     m_bakedBaseKm   = m_bakedClouds ? cloudBakeParameters(m_settings, false).minHeight : 0.0F;
-    // the readers take the sky image again, from the scene's origin, whatever followed the camera
-    m_follow.reset({.land = glm::vec2(0.0F), .altitude = observerAltitudeKm});
+    // the readers take the sky image again, from the scene's origin, whatever followed the camera:
+    // where the origin is under the clouds as they have drifted
+    m_follow.reset({.land = -m_drift, .altitude = observerAltitudeKm});
   }
+  m_shadowDrift = m_drift;
   if(!hasClouds())
   {
     clearImage(cmd, m_cloudImage);
@@ -516,6 +518,7 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
         .sunlitAir        = cloudSunlitGround(m_settings),
         .sunDirection     = sunDirection,
         .texelAngle       = 6.2831853F / float(size.width),
+        .land             = -m_drift,
         .writeDepth       = preview ? 0 : 1,
     };
     const std::array<VkDescriptorSet, 2> sets{m_bakePack.getSet(preview ? 1 : 0), m_brunetonSet};
@@ -649,6 +652,38 @@ void SkyClouds::recordFollow(VkCommandBuffer cmd, const SkyCloudFollowStep& step
   // For the frames that draw the sky from it.
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+}
+
+// The shadow image again, of the clouds where they have drifted: the last full bake's clouds and sun,
+// the march shadowMain makes in record. About a millisecond.
+void SkyClouds::recordShadow(VkCommandBuffer cmd)
+{
+  assert(m_initialized && "init must be called first");
+  assert(viewable() && "a shadow bake repeats a full bake's clouds");
+  const shaderio::SkyCloudsParameters params = cloudBakeParameters(m_bakedSettings, false);
+  vkCmdUpdateBuffer(cmd, m_paramsBuf.buffer, 0, sizeof(params), &params);
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
+  const shaderio::SkyCloudsPushConstant push{
+      .imageSize        = {kCloudImageSize.width, kCloudImageSize.height},
+      .observerAltitude = m_bakedAltitude,
+      .sunlitAir        = cloudSunlitGround(m_bakedSettings),
+      .sunDirection     = m_bakedSun,
+      .texelAngle       = 6.2831853F / float(kCloudImageSize.width),
+      .land             = -m_drift,
+  };
+  const std::array<VkDescriptorSet, 2> sets{m_bakePack.getSet(0), m_brunetonSet};
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bakeLayout, 0, uint32_t(sets.size()), sets.data(), 0, nullptr);
+  vkCmdPushConstants(cmd, m_bakeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_shadowPipeline);
+  vkCmdDispatch(cmd, groups(CLOUD_SHADOW_SIZE, CLOUD_WORKGROUP_SIZE), groups(CLOUD_SHADOW_SIZE, CLOUD_WORKGROUP_SIZE), 1);
+  m_shadowDrift = m_drift;
+  // For the frames that read it, and a follow's or a view's bake after it in this frame, which writes
+  // the parameters again.
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT
+                             | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 }
 

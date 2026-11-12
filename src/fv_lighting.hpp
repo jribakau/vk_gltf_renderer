@@ -32,7 +32,9 @@
 //   clouds:  coverage (0 clear to 1 overcast: the share of the land they shade), thickness (km from
 //            the base to the highest tops), seed (which arrangement), type cumulus|stratocumulus|
 //            stratus -- the low tier's -- and mid (altocumulus) and high (cirrus: the share of the sky
-//            it veils), the tiers over it, each 0 to 1. The physical sky's only
+//            it veils), the tiers over it, each 0 to 1; drift (km/h the wind carries them all over the
+//            land, 0 to 300, 0 they hold still) and driftFrom (degrees, where it blows from, an
+//            azimuth as the sun's), protocol 68. The physical sky's only
 //   haze:    enabled, visibility (metres: where the haze leaves 2% of a dark object's contrast),
 //            glow (how much it scatters forward, the halo round a light seen through it:
 //            Henyey-Greenstein g, 0 to 0.9), height (metres it thins over above the floor, 0
@@ -115,6 +117,8 @@ struct Clouds
   std::string type      = "cumulus";
   double      mid       = 0.0;
   double      high      = 0.0;
+  double      drift     = 0.0;   // km/h; 0 they hold still
+  double      driftFrom = 90.0;  // degrees, an azimuth as the sun's
 };
 
 struct Haze

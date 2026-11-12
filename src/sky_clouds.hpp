@@ -110,10 +110,24 @@ public:
   // below it is under the clouds' shade (sky_clouds_air.h.slang).
   float topKm() const { return hasClouds() ? cloudBakeParameters(m_settings, false).maxHeight : 0.0F; }
 
+  // How far the wind has carried the clouds over the land, km along the environment's x and z
+  // (cloudDriftStep in sky_cloud_view.hpp). Every bake from here on is of the clouds there: the
+  // anchors are places under them (cloudEyeOf), and the shadow image lies on the land under them.
+  void             setDrift(const glm::vec2& driftKm) { m_drift = driftKm; }
+  const glm::vec2& drift() const { return m_drift; }
+  // How far the clouds have gone since the shadow image was baked, km: a reader takes the image that
+  // much the other way (cloudSunShare in gltf_pathtrace.slang).
+  glm::vec2 shadowShift() const { return m_drift - m_shadowDrift; }
+  // Whether the clouds have gone far enough that the shadow image is baked again (kCloudShadowDrift),
+  // by recordShadow, behind recordWait.
+  bool shadowDue() const { return viewable() && glm::length(shadowShift()) > kCloudShadowDrift; }
+  void recordShadow(VkCommandBuffer cmd);
+
   // Bake the clouds for this sun (toward it, the environment's frame) and observer, into the
   // caller's command buffer, behind a barrier for frames still reading the last bake and ahead of
   // one for the passes that read this one. `preview` bakes the quarter-size image at low quality.
-  // A full bake is from the scene's origin, and the readers take it: the follow starts over.
+  // A full bake is from the scene's origin under the clouds as they have drifted, and the readers
+  // take it: the follow starts over.
   void record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float observerAltitudeKm, bool preview);
 
   // The sky image as the camera at `eye` sees it: one frame of its follow (cloudFollowStep in
@@ -191,6 +205,8 @@ private:
   uint64_t          m_viewGeneration{~uint64_t(0)};
   SkyCloudView      m_view{};
   SkyCloudFollow    m_follow{};  // the sky image the readers take, and the bake of the next one
+  glm::vec2         m_drift{0.0F};        // how far the wind has carried the clouds, km (setDrift)
+  glm::vec2         m_shadowDrift{0.0F};  // ... when the shadow image was baked
   uint32_t          m_imageMips{1};
   uint32_t          m_weatherMips{1};
   uint32_t          m_shapeMips{1};

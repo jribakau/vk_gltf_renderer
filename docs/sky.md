@@ -795,9 +795,24 @@ lighting field keeps the cloud image: the light of a sky kilometres up is the sa
   grid of dots. The cloud image itself, the origin's, is never whole: the environment bake reads it.
 - **The view image** (below) is baked from where the camera stands, and shifted the same way
   while the camera is within `kCloudFollowDistance` of that.
+- **The wind** (`cloudDrift`, `cloudDriftFrom`; `cloudDriftVelocity` and `cloudDriftStep` in
+  `src/sky_cloud_view.hpp`, `GltfRenderer::updateCloudView`). The whole field drifts over the land,
+  every tier alike, by each frame's length. A cloud that drifts is a camera that flies the other
+  way under it, so every anchor is a place under the clouds as they have drifted (`cloudEyeOf`'s
+  drift, `SkyClouds::setDrift`; a full bake's observer, the origin, too), and the follow carries
+  the clouds past a camera at rest as it carries a camera past them. The shadow image lies on the
+  land: a reader takes it as far on as the clouds have gone since it was baked
+  (`SceneFrameInfo::cloudShadowShift`, `cloudShadowUv`'s shift), which is exact under a sun that
+  has not moved, and it is baked again every `kCloudShadowDrift` (`SkyClouds::recordShadow`).
+  While they drift every frame is a moving one: the still waits for them to stop. The view image
+  is not baked meanwhile (a hitch of tens of milliseconds every second or two in a moving view),
+  so the sky image draws the clouds at its own sharpness, and the lighting keeps the sky bake's
+  image. When the wind drops they stay where it took them, and the environment is baked again
+  there (`m_envCommitOwed`).
 
 So round a figure at the origin nothing is baked: the cloud image, shifted. In flight a band is
-baked every frame.
+baked every frame, and under a wind a band every frame for `kCloudFollowFrames` of each
+`kCloudFollowDistance` the clouds go.
 
 Measured (RTX 4080, 1920 x 1080, cumulus 0.4 with cirrus 0.2, the sun 40 degrees up): a flight at 15 m/s bakes a band nearly every frame, 1.2 ms a frame on average, beside 1.1 ms of path tracing for the empty scene under it; the gaps between delivered frames are 17.4 ms at the median, 19.7 at the 99th percentile and 24 at worst, as under a clear sky (17.3, 19.7, 20).
 Among the clouds and over them (2026-11-11, the same card and size, cumulus 0.27 under a sun 8 degrees up, over a meadow backdrop): the follow is 2.1 ms a frame at 15 m/s inside the layer and 2.7 ms above it, against 1.0 ms under the bases, in frames of 10.0, 9.7 and 14.3 ms.
@@ -988,9 +1003,10 @@ share here, not marched; and the sky's share of the ground's own light under the
 
 ### What it leaves out
 
-- Moving clouds: the image is baked per sun and setting, and a wind would mean a bake, an alias
-  table and an accumulation restart every frame.
-- Shadows that move across the scene: the clouds stand still, and their shadows with them.
+- Clouds that change as they drift: the wind carries the field whole (above), and no cloud builds
+  or dissolves on the way; the tiers all go at one speed and from one direction.
+- A still under a wind: the frames stay moving ones while the clouds drift, and the light from the
+  sky's clouds stays the last bake's.
 - Light shafts (the air under the clouds is shaded by a share, above), takram's haze, and rain.
 - A fast flight through a cloud: the image is some metres old while the cloud is some tens of
   metres off, so near cloud holds its place for a few frames and then steps (`cloudShiftDepth`),

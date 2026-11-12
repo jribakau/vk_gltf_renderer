@@ -140,14 +140,15 @@ static bool doDebug = false;
 // The share of the sun's light the clouds let through to a place in the scene: their shadow on the
 // land (the shadow image, baked with the clouds), read where the sun's ray through the place comes
 // up from the ground. 1 under a clear sky and for every sky but the physical one. Past the image's
-// edge, kilometres out, the land's mean share.
+// edge, kilometres out, the land's mean share. Clouds that have drifted since the image was baked
+// cast it as far on (cloudShadowShift).
 float cloudSunShare(float3 worldPos, SceneFrameInfo* frameInfo)
 {
   if(frameInfo->sunDisk == nullptr || !(frameInfo->sunDisk->cloudTop > 0.0F))
     return 1.0F;
   const float3 p      = quatRotateInverse(frameInfo->envRotation, worldPos) * 0.001F;
   const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
-  const float2 uv     = cloudShadowUv(p, sunDir);
+  const float2 uv     = cloudShadowUv(p, sunDir, frameInfo->cloudShadowShift);
   return lerp(frameInfo->sunDisk->sunlitGround, g_cloudShadow.SampleLevel(uv, 0.0F), cloudShadowWeight(uv));
 }
 

@@ -336,6 +336,18 @@ TEST(FvLighting, CloudsAreClearUntilSetAndReachTheRenderer)
   EXPECT_EQ(tiers.clouds.coverage, 0.4);  // the low tier stays
   EXPECT_EQ(st.clouds.coverage, 0.4);  // the rest of the clouds stay
   EXPECT_THROW(L::applyPatch(s, {{"clouds", {{"type", "cirrus"}}}}), std::invalid_argument);
+
+  // The wind: still until set, a gale's at most, from an azimuth as the sun's, wrapped
+  EXPECT_EQ(p["cloudDrift"], 0.0);
+  EXPECT_EQ(p["cloudDriftFrom"], 90.0);
+  const L::State windy = L::applyPatch(s, {{"clouds", {{"drift", 40.0}, {"driftFrom", 450.0}}}});
+  EXPECT_EQ(L::rendererParams(windy, {})["cloudDrift"], 40.0);
+  EXPECT_EQ(L::rendererParams(windy, {})["cloudDriftFrom"], 90.0);
+  EXPECT_EQ(L::toJson(windy)["clouds"]["drift"], 40.0);
+  EXPECT_EQ(L::toJson(windy)["clouds"]["driftFrom"], 90.0);
+  EXPECT_EQ(windy.clouds.coverage, 0.4);
+  EXPECT_EQ(L::applyPatch(s, {{"clouds", {{"drift", 900.0}}}}).clouds.drift, 300.0);
+  EXPECT_EQ(L::applyPatch(windy, {{"clouds", {{"drift", nullptr}}}}).clouds.drift, 0.0);
 }
 
 // Haze: off by default (as a scene from before it), kept with its visibility and glow while off, clamped

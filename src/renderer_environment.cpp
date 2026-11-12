@@ -899,6 +899,20 @@ void GltfRenderer::updateBakerParameters()
 //    for a fair-weather cumulus in a 2160 x 1395 view, 49 ms for a sunset under three tiers, against
 //    the sky bake's 145 (RTX 4080, 2026-11-06).
 //
+// The wind carries the clouds on over the land (cloudDrift), by the frame's own length. A cloud that
+// drifts is a camera that flies the other way under it, so every anchor is a place under the clouds
+// as they have drifted (cloudEyeOf), and the follow carries them past a camera at rest as it carries
+// a camera past them. The shadow image is read as far on as they have gone since it was baked, and
+// baked again every kCloudShadowDrift. While they drift:
+//
+//  - every frame is a moving one, and the still waits: the sky the still is of would not hold;
+//  - the view image is not baked, a hitch of tens of milliseconds every few seconds in a moving view;
+//    the sky image draws the clouds at its own sharpness;
+//  - the lighting keeps the sky bake's image, from where they were then.
+//
+// When the wind drops the clouds stay where it took them, and the environment is baked again there,
+// the sky image, its light and the meter's reading with it.
+//
 // Marching the view image every moving frame instead was measured first: 10.4 ms a frame at half the
 // frame's pixels each way and one march a texel, looking up into cumulus, where the path tracing of
 // an empty scene is 0.7.
@@ -909,10 +923,26 @@ void GltfRenderer::updateBakerParameters()
 bool GltfRenderer::updateCloudView(VkCommandBuffer cmd)
 {
   constexpr std::chrono::milliseconds kCloudRest{100};
+  const auto                          now = std::chrono::steady_clock::now();
+  // The wind first, whatever the frame draws of the sky: under a drag's preview too, so the clouds
+  // don't stop while a slider moves.
+  const bool drifting = m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.hasClouds()
+                        && m_resources.settings.cloudDrift > 0.0F;
+  if(drifting && m_cloudDrifting)
+  {
+    const float seconds = std::chrono::duration<float>(now - m_cloudDriftAt).count();
+    m_cloudDrift = cloudDriftStep(m_cloudDrift, cloudDriftVelocity(m_resources.settings.cloudDrift, m_resources.settings.cloudDriftFrom), seconds);
+  }
+  if(m_cloudDrifting && !drifting && m_skyClouds.drift() != -m_skyClouds.followed().home.land)
+    m_envCommitOwed = true;  // the wind dropped: the environment from where it took the clouds
+  m_cloudDrifting = drifting;
+  m_cloudDriftAt  = now;
+  m_skyClouds.setDrift(m_cloudDrift);
+
   if(m_resources.settings.envSystem != shaderio::EnvSystem::eSky || m_resources.settings.useSolidBackground || !m_skyClouds.viewable())
   {
     m_lastCloudCamera.reset();
-    return false;
+    return drifting;
   }
   const glm::mat4      view           = m_cameraManip->getViewMatrix();
   const glm::mat4      projection     = m_cameraManip->getPerspectiveMatrix();
@@ -923,31 +953,34 @@ bool GltfRenderer::updateCloudView(VkCommandBuffer cmd)
   // At rest: the camera as it was for kCloudRest. One frame alike is not rest: a camera driven by
   // input that comes slower than the frames (a slow drag, a script) has such frames all through its
   // motion, and the view bake is a hitch of tens of milliseconds each time.
-  const auto now = std::chrono::steady_clock::now();
   if(!m_lastCloudCamera.has_value() || !(camera == *m_lastCloudCamera))
     m_cloudCameraSince = now;
   m_lastCloudCamera  = camera;
   const bool settled = now - m_cloudCameraSince >= kCloudRest;
-  const SkyCloudAnchor eye     = cloudEyeOf(view, envRotation, originAltitude);
+  const SkyCloudAnchor eye     = cloudEyeOf(view, envRotation, originAltitude, m_cloudDrift);
 
-  const std::optional<SkyCloudView> wanted = cloudViewFor(view, projection, envRotation, frameSize, originAltitude);
-  if(!wanted.has_value())
-    m_skyClouds.dropView();  // a camera the view image does not serve
-  const bool viewDue = wanted.has_value() && settled && !m_skyClouds.viewHolds(*wanted);
+  const std::optional<SkyCloudView> wanted = cloudViewFor(view, projection, envRotation, frameSize, originAltitude, m_cloudDrift);
+  if(!wanted.has_value() || drifting)
+    m_skyClouds.dropView();  // a camera the view image does not serve, or clouds it would not keep up with
+  const bool viewDue   = wanted.has_value() && !drifting && settled && !m_skyClouds.viewHolds(*wanted);
+  const bool shadowDue = m_skyClouds.shadowDue();
 
   // What the frame bakes goes behind one wait for the frames in flight, in a section of its own (a
   // profiler section starts at the top of the pipe). The sections are recorded every frame, bake or
   // none: the profiler's averages are of a frame's set of sections.
   {
     auto section = m_profilerGpuTimer.cmdFrameSection(cmd, "Cloud wait");
-    if(viewDue || m_skyClouds.followBakes(eye))
+    if(viewDue || shadowDue || m_skyClouds.followBakes(eye))
       m_skyClouds.recordWait(cmd);
   }
   bool changed = false;
   {
     auto section = m_profilerGpuTimer.cmdFrameSection(cmd, "Cloud follow");
-    // a camera in motion restarts its frame by moving: only a still's sky changing restarts it
-    changed = m_skyClouds.follow(cmd, eye) && settled;
+    if(shadowDue)
+      m_skyClouds.recordShadow(cmd);
+    // a camera in motion restarts its frame by moving: only a still's sky changing restarts it, or
+    // clouds that drift, which change it every frame
+    changed = (m_skyClouds.follow(cmd, eye) && settled) || drifting;
   }
   if(!viewDue)
     return changed;

@@ -199,6 +199,11 @@ void patchClouds(Clouds& c, const Json& p)
       field(c.mid, d.mid, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
     else if(k == "high")
       field(c.high, d.high, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "drift")
+      // a still sky to a gale's at their height
+      field(c.drift, d.drift, v, [&](const Json& x) { return number(x, key, 0.0, 300.0); });
+    else if(k == "driftFrom")
+      field(c.driftFrom, d.driftFrom, v, [&](const Json& x) { return wrapDegrees(number(x, key, -1e6, 1e6)); });
     else
       reject("unknown key " + key);
   }
@@ -576,7 +581,14 @@ Json toJson(const State& s)
         {"color", u.color},
         {"softness", u.softness}}},
       {"clouds",
-       {{"coverage", c.coverage}, {"thickness", c.thickness}, {"seed", c.seed}, {"type", c.type}, {"mid", c.mid}, {"high", c.high}}},
+       {{"coverage", c.coverage},
+        {"thickness", c.thickness},
+        {"seed", c.seed},
+        {"type", c.type},
+        {"mid", c.mid},
+        {"high", c.high},
+        {"drift", c.drift},
+        {"driftFrom", c.driftFrom}}},
       {"haze", {{"enabled", h.enabled}, {"visibility", h.visibility}, {"glow", h.glow}, {"height", h.height}, {"patches", h.patches}}},
       {"ground",
        {{"mode", g.mode},
@@ -959,6 +971,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"cloudType", cloudType(s.clouds.type)},
       {"cloudMidCoverage", s.clouds.mid},
       {"cloudHighCoverage", s.clouds.high},
+      {"cloudDrift", s.clouds.drift},
+      {"cloudDriftFrom", s.clouds.driftFrom},
       // under every environment; 0 is none
       {"hazeVisibility", s.haze.enabled ? s.haze.visibility : 0.0},
       {"hazeAnisotropy", s.haze.glow},
