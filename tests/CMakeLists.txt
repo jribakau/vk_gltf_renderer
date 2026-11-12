@@ -62,6 +62,7 @@ set(TEST_SOURCES
     figure/test_dson_parse.cpp
     figure/test_jobs.cpp
     figure/test_catmark.cpp
+    figure/test_hd_edits.cpp
     figure/test_formulas.cpp
     figure/test_erc.cpp
     figure/test_morph_set.cpp
