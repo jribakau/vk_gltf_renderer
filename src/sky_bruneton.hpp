@@ -144,8 +144,11 @@ public:
   // What a drag can afford. ~6 ms: a sixteenth of the directions (a quarter per axis) and two
   // bounces instead of four.
   // Visibly softer in the multiple-scattering term at twilight, indistinguishable by day, and
-  // replaced by kQualityFinal the moment the drag stops.
+  // replaced by the final quality (finalQuality) the moment the drag stops.
   static constexpr Quality kQualityPreview{4, 2};
+  // The final quality for an atmosphere: kQualityFinal's directions, and as many bounces as its air
+  // is deep (sky_visibility::scatteringOrders): four in a clear air, eleven in a 2 km mist.
+  static Quality finalQuality(const shaderio::SkyAtmosphereParameters& parameters);
 
   // Replace the atmosphere. Does not rebuild anything -- call precompute() for that, which is the
   // expensive half and should not happen implicitly from a setter.
@@ -185,7 +188,7 @@ private:
   void reportPassTimings(Resources& res) const;
 
   // Per-pass GPU timing, active only while the blocking precompute() is running.
-  static constexpr uint32_t               kMaxTimestamps = 32;
+  static constexpr uint32_t               kMaxTimestamps = 48;  // 4 + 3 a bounce past the first, to kMostOrders
   VkQueryPool                             m_timingPool{VK_NULL_HANDLE};
   std::array<const char*, kMaxTimestamps> m_timingLabels{};
   uint32_t                                m_timingCount{0};

@@ -1226,3 +1226,26 @@ TEST(SkyVisibility, TheAerosolIsScaledToTheVisibilityAskedFor)
     EXPECT_GT(scatter.y / extinct.y, 0.98F);
   }
 }
+
+// The sky's tables bounce the light as many times as the air is deep: a clear day keeps the four it
+// always had, a mist takes more, and none takes more than kMostOrders
+TEST(SkyVisibility, AHazierAirIsBouncedMoreTimes)
+{
+  namespace V = sky_visibility;
+  constexpr float rayleigh = 0.0135578F, aerosol = 0.06F / 0.9F;  // Earth's own as the preset has it, green, per km
+  constexpr float rayleighHeight = 8.0F, aerosolHeight = 1.2F;
+  const auto ordersAt = [&](float visibilityKm) {
+    const float aerosolNow = aerosol * V::aerosolScale(visibilityKm, rayleigh, aerosol);
+    return V::scatteringOrders(rayleigh * rayleighHeight + aerosolNow * aerosolHeight, 4);
+  };
+  EXPECT_EQ(ordersAt(0.0F), 4);  // the atmosphere's own
+  EXPECT_EQ(ordersAt(150.0F), 4);
+  EXPECT_EQ(ordersAt(15.0F), 5);
+  EXPECT_EQ(ordersAt(8.0F), 6);
+  EXPECT_EQ(ordersAt(5.0F), 7);
+  EXPECT_EQ(ordersAt(2.0F), 11);
+  EXPECT_EQ(ordersAt(0.5F), V::kMostOrders);
+  // never fewer than the clear air's, whatever it asks
+  EXPECT_EQ(V::scatteringOrders(0.0F, 4), 4);
+  EXPECT_EQ(V::scatteringOrders(1e9F, 4), V::kMostOrders);
+}

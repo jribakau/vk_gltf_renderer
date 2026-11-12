@@ -114,17 +114,26 @@ float3 aerialSkyLight(SkyAtmosphereParameters atmosphere, Sampler2D<float3> irra
 // planet, is of rays a few metres long from an eye by the ground, read between rows of its height
 // that are of longer ones: their light over the short ray's opacity drew a band four times the sky's
 // under the horizon (2 km of visibility), where GetSkyRadianceToPoint drew its line
-// (sky_bruneton_functions.h.slang). A misted land fades into its horizon's light; seen from over it,
-// the light it fades to is the horizon's too, not the dimmer light coming up from under a mist.
+// (sky_bruneton_functions.h.slang). A misted land fades into its horizon's light. Light coming toward
+// an eye that looks down comes up from under it, the ground's, far dimmer than the horizon's glow
+// and what aerialSkyLight already takes: the horizon's light is tapered out by kHazeGlowDownMu under
+// the horizon (about 30 degrees), and the ground at the feet keeps the march's own. Taken whole, the
+// few metres of air before the grass by the camera, counted over by a backdrop, put a horizon's glow
+// on it: the ground 4.5 times as bright as on a clear day under a 60-degree sun (2 km).
 //
 // The tables are read from where the sky the camera sees is seen from (`skyRadius`; skyEyeRadius),
 // which over a backdrop is not where the march's eye stands: that counts the land's air several
 // times over, its height with it. Read from the march's, a far hill seen from 150 m up stood 40%
 // darker than the sky over it (5 km of visibility), where the air before it is as thick as the
 // sky's.
+//
+// (The numbers above were measured on the tables before their steps were integrated exactly, when a
+// mist's sky came out several times too bright: sky_bruneton_functions.h.slang,
+// IntegrateExponentialStep. What they ruled out still stands.)
 static const float kHazeGlowFromKm     = 30.0F;
 static const float kHazeGlowFullKm     = 8.0F;
 static const float kHazeGlowHorizonMu  = 0.03F;
+static const float kHazeGlowDownMu     = 0.5F;
 static const float kKoschmiederContrast = 3.912F;  // -ln 0.02: what a visibility's 2% of contrast is in optical depth
 
 // The share of hazeGlow to take for an atmosphere: by its visibility by the ground, as
@@ -154,14 +163,18 @@ float3 hazeGlow(SkyAtmosphereParameters atmosphere,
   const float nu   = dot(dir, sunDirection);
 
   const float sinHorizon = atmosphere.bottomRadius / r;
-  const float above      = max(mu, -sqrt(max(1.0F - sinHorizon * sinHorizon, 0.0F)) + kHazeGlowHorizonMu);
+  const float horizon    = -sqrt(max(1.0F - sinHorizon * sinHorizon, 0.0F));
+  const float above      = max(mu, horizon + kHazeGlowHorizonMu);
+  const float taper      = saturate(1.0F + (mu - horizon) / kHazeGlowDownMu);
+  if(taper <= 0.0F)
+    return float3(0.0F);
 
   // what the tables scatter toward the eye along it, over the opacity along it to the top of the air
   float3       mie;
   const float3 rayleigh = GetCombinedScattering(atmosphere, scatteringTexture, singleMieScatteringTexture, r, above, mu_s, nu, false, mie);
   const float3 light    = rayleigh * RayleighPhaseFunction(nu) + mie * MiePhaseFunction(atmosphere.miePhaseFunctionG, nu);
   const float3 through  = GetTransmittanceToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r, above);
-  return light / max(float3(1.0F) - through, float3(1e-4F)) * opacity;
+  return light / max(float3(1.0F) - through, float3(1e-4F)) * opacity * taper;
 }
 
 struct AerialMarch

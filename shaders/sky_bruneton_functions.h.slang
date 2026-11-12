@@ -148,12 +148,14 @@ float ComputeOpticalLengthToTopAtmosphereBoundary(SkyAtmosphereParameters atmosp
   return result;
 }
 
-float3 ComputeTransmittanceToTopAtmosphereBoundary(SkyAtmosphereParameters atmosphere, float r, float mu)
+// The optical depth to the top of the atmosphere, which the transmittance table holds rather than
+// upstream's transmittance (GetTransmittance takes the difference of two).
+float3 ComputeOpticalDepthToTopAtmosphereBoundary(SkyAtmosphereParameters atmosphere, float r, float mu)
 {
-  return exp(-(atmosphere.rayleighScattering * ComputeOpticalLengthToTopAtmosphereBoundary(atmosphere, atmosphere.rayleighDensity, r, mu)
-               + atmosphere.mieExtinction * ComputeOpticalLengthToTopAtmosphereBoundary(atmosphere, atmosphere.mieDensity, r, mu)
-               + atmosphere.absorptionExtinction
-                     * ComputeOpticalLengthToTopAtmosphereBoundary(atmosphere, atmosphere.absorptionDensity, r, mu)));
+  return atmosphere.rayleighScattering * ComputeOpticalLengthToTopAtmosphereBoundary(atmosphere, atmosphere.rayleighDensity, r, mu)
+         + atmosphere.mieExtinction * ComputeOpticalLengthToTopAtmosphereBoundary(atmosphere, atmosphere.mieDensity, r, mu)
+         + atmosphere.absorptionExtinction
+               * ComputeOpticalLengthToTopAtmosphereBoundary(atmosphere, atmosphere.absorptionDensity, r, mu);
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -209,40 +211,47 @@ void GetRMuFromTransmittanceTextureUv(SkyAtmosphereParameters atmosphere, float2
 }
 
 // One texel of the transmittance LUT. `fragCoord` is the texel centre, i.e. pixel index + 0.5.
-float3 ComputeTransmittanceToTopAtmosphereBoundaryTexture(SkyAtmosphereParameters atmosphere, float2 fragCoord)
+float3 ComputeOpticalDepthToTopAtmosphereBoundaryTexture(SkyAtmosphereParameters atmosphere, float2 fragCoord)
 {
   const float2 TRANSMITTANCE_TEXTURE_SIZE = float2(TRANSMITTANCE_TEXTURE_WIDTH, TRANSMITTANCE_TEXTURE_HEIGHT);
   float        r;
   float        mu;
   GetRMuFromTransmittanceTextureUv(atmosphere, fragCoord / TRANSMITTANCE_TEXTURE_SIZE, r, mu);
-  return ComputeTransmittanceToTopAtmosphereBoundary(atmosphere, r, mu);
+  return ComputeOpticalDepthToTopAtmosphereBoundary(atmosphere, r, mu);
 }
 
 //-------------------------------------------------------------------------------------------------
 // Transmittance lookups
 
-float3 GetTransmittanceToTopAtmosphereBoundary(SkyAtmosphereParameters atmosphere, Sampler2D<float3> transmittanceTexture, float r, float mu)
+// The optical depth to the top of the atmosphere, which the table holds (the precompute's
+// TransmittanceTexture pass), and the transmittance it is.
+float3 GetOpticalDepthToTopAtmosphereBoundary(SkyAtmosphereParameters atmosphere, Sampler2D<float3> transmittanceTexture, float r, float mu)
 {
   const float2 uv = GetTransmittanceTextureUvFromRMu(atmosphere, r, mu);
   return transmittanceTexture.SampleLevel(uv, 0.0F);
 }
 
-// Transmittance between two points inside the atmosphere, as the ratio of their transmittances to
-// the top boundary. Two lookups rather than an integration.
+float3 GetTransmittanceToTopAtmosphereBoundary(SkyAtmosphereParameters atmosphere, Sampler2D<float3> transmittanceTexture, float r, float mu)
+{
+  return exp(-GetOpticalDepthToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r, mu));
+}
+
+// Transmittance between two points inside the atmosphere, from the difference of their optical depths
+// to the top boundary: two lookups rather than an integration. Upstream divides two transmittances,
+// which along a ray near the horizon through a haze are e to the minus some hundreds (a level ray
+// crosses some 100 km of the aerosol's scale height), nothing in a float: their 0 / 0 is no number
+// at all. At 1 km of visibility it had the grass by the camera eight times as bright.
 float3 GetTransmittance(SkyAtmosphereParameters atmosphere, Sampler2D<float3> transmittanceTexture, float r, float mu, float d, bool rayRMuIntersectsGround)
 {
   const float r_d  = ClampRadius(atmosphere, sqrt(d * d + 2.0F * r * mu * d + r * r));
   const float mu_d = ClampCosine((r * mu + d) / r_d);
 
-  if(rayRMuIntersectsGround)
-  {
-    return min(GetTransmittanceToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r_d, -mu_d)
-                   / GetTransmittanceToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r, -mu),
-               float3(1.0F));
-  }
-  return min(GetTransmittanceToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r, mu)
-                 / GetTransmittanceToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r_d, mu_d),
-             float3(1.0F));
+  const float3 depth = rayRMuIntersectsGround ?
+                           GetOpticalDepthToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r_d, -mu_d)
+                               - GetOpticalDepthToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r, -mu) :
+                           GetOpticalDepthToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r, mu)
+                               - GetOpticalDepthToTopAtmosphereBoundary(atmosphere, transmittanceTexture, r_d, mu_d);
+  return exp(-max(depth, float3(0.0F)));
 }
 
 // Transmittance to the sun, softened across the solar disk: the sun is not a point, so near the
@@ -262,6 +271,9 @@ float3 GetTransmittanceToSun(SkyAtmosphereParameters atmosphere, Sampler2D<float
 // out of the integrand and applied afterwards -- the phase functions only at render time, which is
 // what buys the angular precision a 4D LUT could not store.
 
+// The integrand at `d` along the ray, split in two: `toEye`, the transmittance from the eye to it,
+// and what it scatters toward the eye before that (the sun's transmittance to it, times each
+// density).
 void ComputeSingleScatteringIntegrand(SkyAtmosphereParameters atmosphere,
                                       Sampler2D<float3>       transmittanceTexture,
                                       float                   r,
@@ -270,15 +282,45 @@ void ComputeSingleScatteringIntegrand(SkyAtmosphereParameters atmosphere,
                                       float                   nu,
                                       float                   d,
                                       bool                    rayRMuIntersectsGround,
+                                      out float3              toEye,
                                       out float3              rayleigh,
                                       out float3              mie)
 {
-  const float  r_d           = ClampRadius(atmosphere, sqrt(d * d + 2.0F * r * mu * d + r * r));
-  const float  mu_s_d        = ClampCosine((r * mu_s + d * nu) / r_d);
-  const float3 transmittance = GetTransmittance(atmosphere, transmittanceTexture, r, mu, d, rayRMuIntersectsGround)
-                               * GetTransmittanceToSun(atmosphere, transmittanceTexture, r_d, mu_s_d);
-  rayleigh = transmittance * GetProfileDensity(atmosphere.rayleighDensity, r_d - atmosphere.bottomRadius);
-  mie      = transmittance * GetProfileDensity(atmosphere.mieDensity, r_d - atmosphere.bottomRadius);
+  const float  r_d    = ClampRadius(atmosphere, sqrt(d * d + 2.0F * r * mu * d + r * r));
+  const float  mu_s_d = ClampCosine((r * mu_s + d * nu) / r_d);
+  const float3 toSun  = GetTransmittanceToSun(atmosphere, transmittanceTexture, r_d, mu_s_d);
+  toEye    = GetTransmittance(atmosphere, transmittanceTexture, r, mu, d, rayRMuIntersectsGround);
+  rayleigh = toSun * GetProfileDensity(atmosphere.rayleighDensity, r_d - atmosphere.bottomRadius);
+  mie      = toSun * GetProfileDensity(atmosphere.mieDensity, r_d - atmosphere.bottomRadius);
+}
+
+// The weights of a step's two ends in the integral over it of T(x) s(x), T the transmittance from the
+// eye falling exponentially from t0 to t1 across it and s a source going straight from s0 to s1: the
+// integral is the step's length times t0 (w.x s0 + w.y s1). In a clear air, a step's T barely falls
+// and they are the trapezoid's half and half; upstream's trapezoid, kept where it falls fast, took a
+// step's near end at half a step whatever the light lost along it. A level ray is some 1,100 km to
+// the top of the air, its fifty steps 22 km each, and in a mist of 2 km of visibility the light it
+// gathers comes from its first half kilometre: the first step's half counted it twenty times over,
+// each order of scattering multiplying the last's by as much, so more orders grew without end and four
+// lit the land under a mist more brightly than a clear day.
+float2 ExponentialStepWeights(float t0, float t1)
+{
+  const float e = t0 > 0.0F ? clamp(t1 / t0, 0.0F, 1.0F) : 1.0F;
+  const float a = -log(max(e, 1e-30F));  // the step's optical depth
+  // their series where 1 - e (1 + a), of the order of a squared, would be lost to a float's rounding
+  if(a < 0.05F)
+    return float2(0.5F - a / 6.0F + a * a / 24.0F, 0.5F - a / 3.0F + a * a / 8.0F);
+  const float w1 = (1.0F - e * (1.0F + a)) / (a * a);
+  return float2((1.0F - e) / a - w1, w1);
+}
+
+// The integral over a step of length `dx` of T(x) s(x), per channel (ExponentialStepWeights).
+float3 IntegrateExponentialStep(float3 t0, float3 t1, float3 s0, float3 s1, float dx)
+{
+  const float2 x = ExponentialStepWeights(t0.x, t1.x);
+  const float2 y = ExponentialStepWeights(t0.y, t1.y);
+  const float2 z = ExponentialStepWeights(t0.z, t1.z);
+  return dx * t0 * (float3(x.x, y.x, z.x) * s0 + float3(x.y, y.y, z.y) * s1);
 }
 
 float DistanceToNearestAtmosphereBoundary(SkyAtmosphereParameters atmosphere, float r, float mu, bool rayRMuIntersectsGround)
@@ -300,21 +342,26 @@ void ComputeSingleScattering(SkyAtmosphereParameters atmosphere,
   const int   SAMPLE_COUNT = 50;
   const float dx = DistanceToNearestAtmosphereBoundary(atmosphere, r, mu, rayRMuIntersectsGround) / float(SAMPLE_COUNT);
 
+  // step by step, each integrated as its transmittance falls (IntegrateExponentialStep)
   float3 rayleigh_sum = float3(0.0F);
   float3 mie_sum      = float3(0.0F);
-  for(int i = 0; i <= SAMPLE_COUNT; ++i)
+  float3 toEye_0, rayleigh_0, mie_0;
+  ComputeSingleScatteringIntegrand(atmosphere, transmittanceTexture, r, mu, mu_s, nu, 0.0F, rayRMuIntersectsGround, toEye_0,
+                                   rayleigh_0, mie_0);
+  for(int i = 1; i <= SAMPLE_COUNT; ++i)
   {
     const float d_i = float(i) * dx;
-    float3      rayleigh_i;
-    float3      mie_i;
+    float3      toEye_i, rayleigh_i, mie_i;
     ComputeSingleScatteringIntegrand(atmosphere, transmittanceTexture, r, mu, mu_s, nu, d_i, rayRMuIntersectsGround,
-                                     rayleigh_i, mie_i);
-    const float weight_i = (i == 0 || i == SAMPLE_COUNT) ? 0.5F : 1.0F;
-    rayleigh_sum += rayleigh_i * weight_i;
-    mie_sum += mie_i * weight_i;
+                                     toEye_i, rayleigh_i, mie_i);
+    rayleigh_sum += IntegrateExponentialStep(toEye_0, toEye_i, rayleigh_0, rayleigh_i, dx);
+    mie_sum += IntegrateExponentialStep(toEye_0, toEye_i, mie_0, mie_i, dx);
+    toEye_0    = toEye_i;
+    rayleigh_0 = rayleigh_i;
+    mie_0      = mie_i;
   }
-  rayleigh = rayleigh_sum * dx * atmosphere.solarIrradiance * atmosphere.rayleighScattering;
-  mie      = mie_sum * dx * atmosphere.solarIrradiance * atmosphere.mieScattering;
+  rayleigh = rayleigh_sum * atmosphere.solarIrradiance * atmosphere.rayleighScattering;
+  mie      = mie_sum * atmosphere.solarIrradiance * atmosphere.mieScattering;
 }
 
 float RayleighPhaseFunction(float nu)
@@ -539,7 +586,17 @@ float3 ComputeScatteringDensity(SkyAtmosphereParameters atmosphere,
   const int   SAMPLE_COUNT = sampleCount;
   const float dphi         = M_PI / float(SAMPLE_COUNT);
   const float dtheta       = M_PI / float(SAMPLE_COUNT);
-  float3      rayleighMie  = float3(0.0F);
+
+  // The light each particle type scatters toward -omega, and what its phase function sums to over
+  // the same directions: divided by it, each sums to exactly 1, as the phase function integrates
+  // to. A water haze's forward lobe is some 11 degrees wide, as wide as the steps here, and summed
+  // as it fell against them it came to a tenth or more over 1 or under it; every order of scattering
+  // took the last's light times that sum, and the light on the ground under a 2 km mist grew with
+  // each order to twice a clear day's.
+  float3 rayleighSum  = float3(0.0F);
+  float3 mieSum       = float3(0.0F);
+  float  rayleighNorm = 0.0F;
+  float  mieNorm      = 0.0F;
 
   // How much this altitude scatters does not depend on which direction the light arrives from, so
   // the two density evaluations -- an exp() apiece -- are lifted out of a loop that runs 2N^2 times
@@ -629,15 +686,17 @@ float3 ComputeScatteringDensity(SkyAtmosphereParameters atmosphere,
         incidentRadiance += transmittanceToGround * atmosphere.groundAlbedo * (1.0F / M_PI) * groundIrradiance;
       }
 
-      // What that incident radiance scatters towards -omega, summed over both particle types.
-      const float nu2 = dot(omega, omega_i);
-      rayleighMie += incidentRadiance
-                     * (rayleighAtAltitude * RayleighPhaseFunction(nu2)
-                        + mieAtAltitude * MiePhaseFunction(atmosphere.miePhaseFunctionG, nu2))
-                     * domega_i;
+      // What that incident radiance scatters towards -omega, by each particle type.
+      const float nu2           = dot(omega, omega_i);
+      const float rayleighPhase = RayleighPhaseFunction(nu2) * domega_i;
+      const float miePhase      = MiePhaseFunction(atmosphere.miePhaseFunctionG, nu2) * domega_i;
+      rayleighSum += incidentRadiance * rayleighPhase;
+      mieSum += incidentRadiance * miePhase;
+      rayleighNorm += rayleighPhase;
+      mieNorm += miePhase;
     }
   }
-  return rayleighMie;
+  return rayleighAtAltitude * rayleighSum / max(rayleighNorm, 1e-6F) + mieAtAltitude * mieSum / max(mieNorm, 1e-6F);
 }
 
 float3 ComputeMultipleScattering(SkyAtmosphereParameters atmosphere,
@@ -652,7 +711,10 @@ float3 ComputeMultipleScattering(SkyAtmosphereParameters atmosphere,
   const int   SAMPLE_COUNT = 50;
   const float dx = DistanceToNearestAtmosphereBoundary(atmosphere, r, mu, rayRMuIntersectsGround) / float(SAMPLE_COUNT);
 
+  // step by step, each integrated as its transmittance falls (IntegrateExponentialStep)
   float3 rayleighMieSum = float3(0.0F);
+  float3 toEye_0        = float3(0.0F);
+  float3 density_0      = float3(0.0F);
   for(int i = 0; i <= SAMPLE_COUNT; ++i)
   {
     const float d_i = float(i) * dx;
@@ -662,11 +724,13 @@ float3 ComputeMultipleScattering(SkyAtmosphereParameters atmosphere,
     const float mu_i   = ClampCosine((r * mu + d_i) / r_i);
     const float mu_s_i = ClampCosine((r * mu_s + d_i * nu) / r_i);
 
-    const float3 rayleighMie_i =
-        GetScatteringTexel(atmosphere, scatteringDensityTexture, r_i, mu_i, mu_s_i, nu, rayRMuIntersectsGround).rgb
-        * GetTransmittance(atmosphere, transmittanceTexture, r, mu, d_i, rayRMuIntersectsGround) * dx;
-    const float weight_i = (i == 0 || i == SAMPLE_COUNT) ? 0.5F : 1.0F;
-    rayleighMieSum += rayleighMie_i * weight_i;
+    const float3 density_i =
+        GetScatteringTexel(atmosphere, scatteringDensityTexture, r_i, mu_i, mu_s_i, nu, rayRMuIntersectsGround).rgb;
+    const float3 toEye_i = GetTransmittance(atmosphere, transmittanceTexture, r, mu, d_i, rayRMuIntersectsGround);
+    if(i > 0)
+      rayleighMieSum += IntegrateExponentialStep(toEye_0, toEye_i, density_0, density_i, dx);
+    toEye_0   = toEye_i;
+    density_0 = density_i;
   }
   return rayleighMieSum;
 }

@@ -77,8 +77,9 @@ void Transmittance(uint3 threadId: SV_DispatchThreadID)
   // coordinate here would shift the whole table by half a texel.
   const float2 fragCoord = float2(texel) + 0.5F;
 
-  const float3 transmittance = ComputeTransmittanceToTopAtmosphereBoundaryTexture(atmosphere, fragCoord);
-  outTransmittance[texel]    = float4(transmittance, 1.0F);
+  // the optical depth, not the transmittance: the table's readers take it (GetTransmittance)
+  const float3 depth      = ComputeOpticalDepthToTopAtmosphereBoundaryTexture(atmosphere, fragCoord);
+  outTransmittance[texel] = float4(depth, 1.0F);
 }
 
 //--------------------------------------------------------------------------------------------------

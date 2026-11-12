@@ -1025,10 +1025,11 @@ void GltfRenderer::refreshBakedEnvironment()
   if(settings.envSystem == shaderio::EnvSystem::eSky)
   {
     const shaderio::SkyAtmosphereParameters wanted = buildAtmosphereParameters();
-    if(!m_skyBruneton.lutsSatisfy(wanted, SkyBruneton::kQualityFinal))
+    const SkyBruneton::Quality                quality = SkyBruneton::finalQuality(wanted);
+    if(!m_skyBruneton.lutsSatisfy(wanted, quality))
     {
       m_skyBruneton.setParameters(wanted);
-      m_skyBruneton.precompute(m_resources);
+      m_skyBruneton.precompute(m_resources, quality);
     }
   }
 

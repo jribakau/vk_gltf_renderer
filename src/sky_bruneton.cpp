@@ -45,6 +45,7 @@
 #include <cmath>
 
 #include "resources.hpp"
+#include "sky_visibility.hpp"
 #include "_autogen/sky_bruneton_precompute.slang.h"
 
 #include "sky_bruneton.hpp"
@@ -492,6 +493,17 @@ void SkyBruneton::recordPrecompute(VkCommandBuffer cmd, Quality quality)
   // buffer runs, they hold exactly this.
   m_lutParameters = m_parameters;
   m_lutQuality    = quality;
+}
+
+SkyBruneton::Quality SkyBruneton::finalQuality(const shaderio::SkyAtmosphereParameters& p)
+{
+  // a profile's scale height from its exponential layer (layer 0 is upstream's padding)
+  const auto height = [](const shaderio::DensityProfile& d) {
+    const float s = d.layers[1].expScale;
+    return s < 0.0F ? -1.0F / s : 0.0F;
+  };
+  const float depth = p.rayleighScattering.y * height(p.rayleighDensity) + p.mieExtinction.y * height(p.mieDensity);
+  return {kQualityFinal.densitySamples, sky_visibility::scatteringOrders(depth, kQualityFinal.scatteringOrders)};
 }
 
 bool SkyBruneton::lutsSatisfy(const shaderio::SkyAtmosphereParameters& parameters, Quality quality) const

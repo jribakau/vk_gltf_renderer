@@ -16,6 +16,7 @@
 //-------------------------------------------------------------------------------------------------------
 
 #include <algorithm>
+#include <cmath>
 
 namespace sky_visibility {
 
@@ -43,6 +44,23 @@ inline float aerosolScale(float visibilityKm, float rayleighGreen, float aerosol
     return 1.0F;
   const float wanted = kKoschmieder / visibilityKm - rayleighGreen;
   return std::clamp(wanted / aerosolExtinctionGreen, kLeast, kMost);
+}
+
+// How many bounces of light the sky's tables take (SkyBruneton::finalQuality) for an air `depth`
+// deep straight up in the green: `clearOrders` in a clear air, and one more for each third of a depth
+// past kClearDepth, to kMostOrders. A haze scatters what it meets and absorbs next to nothing, so its
+// light is light bounced about as many times as the depths it crossed: a 2 km mist cut at four
+// bounces was dim and brown toward the sun and violet away from it, at eleven white. Earth's own air
+// is 0.19 deep and keeps four; 15 km of visibility takes 5, 8 km 6, 5 km 7, 2 km 11. A bounce costs
+// some 15 ms of the precompute.
+inline constexpr float kClearDepth     = 0.25F;
+inline constexpr float kOrdersPerDepth = 3.0F;
+inline constexpr int   kMostOrders     = 12;
+
+inline int scatteringOrders(float depth, int clearOrders)
+{
+  const float past = std::max(depth - kClearDepth, 0.0F) * kOrdersPerDepth;
+  return std::min(clearOrders + int(std::ceil(std::min(past, float(kMostOrders)))), std::max(clearOrders, kMostOrders));
 }
 
 // The aerosol for a scale (aerosolScale): clearer air is less of the same aerosol; hazier air is the
