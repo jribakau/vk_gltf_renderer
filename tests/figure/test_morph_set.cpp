@@ -490,13 +490,21 @@ TEST(FigureMorphSet, ACageOnlyMeshMixesItsTargetsHdDetail)
   set.takeChanges();
   const auto tables = set.hdDetail(0);
   ASSERT_NE(tables, nullptr);
-  const auto ea = fv::subdiv::placeEdits(*geo.refinement, geo.cagePolyStart, *a->hd);
-  const auto eb = fv::subdiv::placeEdits(*geo.refinement, geo.cagePolyStart, *b->hd);
+  // a build lets go of the refinement's quads; the mesh's triangles give them back, the same
+  const std::vector<int32_t> quads = fv::mesh::refinedQuads(geo);
+  EXPECT_TRUE(geo.refinement->quads.empty());
+  EXPECT_EQ(quads, fv::subdiv::refine({geo.dsonVertexCount, geo.cagePolyStart, geo.cagePolyVerts, {}, {}}, 2).quads);
+  ASSERT_EQ(tables->topology->frames(), 3u) << "every edit placed: three face corners, shared by both targets";
+  const auto ea = fv::subdiv::placeEdits(*geo.refinement, geo.cagePolyStart, *a->hd, quads);
+  const auto eb = fv::subdiv::placeEdits(*geo.refinement, geo.cagePolyStart, *b->hd, quads);
+  EXPECT_EQ(ea.dropped + eb.dropped, 0u);
   const std::pair<float, const fv::subdiv::HdEdits*> want[] = {{0.5f, &ea}, {0.5f, &eb}};
   const std::vector<float> cage = set.morphedCage(0);
   const auto ref = fv::subdiv::refineWithEdits(*geo.refinement, cage, geo.cagePolyStart, geo.cagePolyVerts, want);
-  const auto got = fv::subdiv::refineWithTables(*geo.refinement, cage, tables.get());
+  const auto got   = fv::subdiv::refineWithTables(*geo.refinement, cage, tables.get());
+  const auto plain = fv::subdiv::refineWithTables(*geo.refinement, cage, nullptr);
   EXPECT_LT(worst(got, ref), 1e-5);
+  EXPECT_GT(worst(got, plain), 0.01) << "the edits moved the mesh";
 
   set.set("a", 0);
   set.set("b", 0);

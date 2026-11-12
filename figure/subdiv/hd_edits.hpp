@@ -55,8 +55,9 @@ struct HdEdits
   bool empty() const;
 };
 
-// Places `edits` on `r`, made from a cage whose faces start at `faceStart`.
-HdEdits placeEdits(const Refinement& r, std::span<const int32_t> faceStart, const LevelEdits& edits);
+// Places `edits` on `r`, made from a cage whose faces start at `faceStart`. `quads` are its finest
+// quads (mesh::refinedQuads, once a build has let go of r.quads); empty: r.quads.
+HdEdits placeEdits(const Refinement& r, std::span<const int32_t> faceStart, const LevelEdits& edits, std::span<const int32_t> quads = {});
 
 // The frame of cage face corner `faceCorner`: columns x, n, -y as above, so frame * offset is the move.
 std::array<float, 9> cornerFrame(std::span<const float> cagePositions, std::span<const int32_t> faceStart,
@@ -111,7 +112,8 @@ struct HdTables
 class HdMixer
 {
 public:
-  HdMixer(std::shared_ptr<const Refinement> r, std::vector<int32_t> faceStart, std::vector<int32_t> faceVerts);
+  // `quads`: the finest quads, as placeEdits takes them (empty: the refinement's own)
+  HdMixer(std::shared_ptr<const Refinement> r, std::vector<int32_t> faceStart, std::vector<int32_t> faceVerts, std::vector<int32_t> quads = {});
 
   using Weighted = std::pair<std::shared_ptr<const LevelEdits>, float>;
   // The weighted sum of `edits`; null when none has a weight.
@@ -130,7 +132,7 @@ private:
   void remake();
 
   std::shared_ptr<const Refinement>        m_refinement;
-  std::vector<int32_t>                     m_faceStart, m_faceVerts, m_cornerFace;
+  std::vector<int32_t>                     m_faceStart, m_faceVerts, m_cornerFace, m_quads;
   std::vector<Known>                       m_known;
   std::shared_ptr<const HdTables::Topology> m_topology;
   size_t                                   m_dropped = 0;

@@ -16,6 +16,7 @@
 #include <tinygltf/json.hpp>
 
 #include <figure/dson/dhdm.hpp>
+#include <figure/figure.hpp>
 #include <figure/io/gzip.hpp>
 #include <figure/subdiv/catmark.hpp>
 #include <figure/subdiv/hd_edits.hpp>
@@ -371,6 +372,62 @@ TEST(HdEdits, MixedTablesMoveTheMeshAsTheReferenceDoes)
   const subdiv::HdMixer::Weighted onlyB[] = {{a, 0.f}, {b, 1.f}};
   EXPECT_EQ(mixer.mix(onlyB)->topology, second->topology) << "a weight going to zero keeps the topology";
   EXPECT_EQ(mixer.dropped(), 0u);
+}
+
+// A Genesis 9 character from the library: FACS Detail Strength on and a brow unit set, the unit's
+// FACS Details morph loads with its .dhdm and the body's flush mixes it into HD tables
+TEST(HdEdits, AGenesis9CharactersBrowTakesItsWrinklesWhenTheLibraryIsAvailable)
+{
+  const char* lib = std::getenv("DAZ_LIBRARY");
+  if(!lib || !*lib)
+    GTEST_SKIP() << "DAZ_LIBRARY not set";
+  const char* rel = std::getenv("HD_FIGURE") ? std::getenv("HD_FIGURE") : "People/Genesis 9/Characters/Leyla 9.duf";
+  if(!fs::exists(fs::path(lib) / rel))
+    GTEST_SKIP() << rel << " not installed";
+  dson::LoadOptions options;
+  options.subdivision = 2;
+  auto f = Figure::load(std::make_shared<dson::Store>(std::make_shared<dson::Library>(std::vector<fs::path>{fs::path(lib)})), rel, options);
+  ASSERT_TRUE(f && f->morphs);
+  f->morphs->cageOnly = [](int) { return true; };
+  f->settle();
+  f->drain();
+  for(const char* strength : {"facs_ctrl_FACSDetailStrength", "FACSDetails_facs_ctrl_FACStrength"})
+    std::printf("dial %s: has %d\n", strength, int(f->morphs->has(strength)));
+  for(const char* unit : {"facs_BrowDownLeft", "facs_bs_BrowDownLeft"})
+    std::printf("dial %s: has %d\n", unit, int(f->morphs->has(unit)));
+  f->morphs->set(f->morphs->has("facs_ctrl_FACSDetailStrength") ? "facs_ctrl_FACSDetailStrength" : "FACSDetails_facs_ctrl_FACStrength", 1);
+  f->morphs->set(f->morphs->has("facs_BrowDownLeft") ? "facs_BrowDownLeft" : "facs_bs_BrowDownLeft", 1);
+  f->settle();
+  f->drain();
+  const std::string detail = "FACSDetails_facs_bs_BrowDownLeft_HD2";
+  std::printf("%s: has %d, weight %.3f\n", detail.c_str(), int(f->morphs->has(detail)), f->morphs->weightOf(detail));
+  int withHd = 0, tables = 0;
+  for(size_t mi = 0; mi < f->loaded.scene.meshes.size(); mi++)
+  {
+    for(const auto& [t, w] : f->morphs->activeTargets(int(mi)))
+      if(t->hd)
+      {
+        withHd++;
+        std::printf("mesh %zu: an active target with HD, weight %.3f x %.3f, %zu levels\n", mi, w, t->hdScale, t->hd->size());
+      }
+    if(const auto& geo = f->loaded.scene.meshes[mi].geo)
+      std::printf("mesh %zu: %d cage vertices, %zu polygons, %zu levels, %zu finest quads, hidden sets %zu\n", mi, geo->dsonVertexCount,
+                  geo->cagePolyStart.size() - 1, geo->refinement ? geo->refinement->levels.size() : size_t(0),
+                  geo->refinement ? geo->refinement->quads.size() / 4 : size_t(0), geo->hiddenPolys.size());
+    if(const auto hd = f->morphs->hdDetail(int(mi)))
+    {
+      tables++;
+      std::printf("mesh %zu: HD tables, %zu frames, reach %.4f\n", mi, hd->topology->frames(), hd->reach);
+    }
+  }
+  EXPECT_GT(withHd, 0) << "no active target carries HD detail";
+  EXPECT_GT(tables, 0) << "no mesh mixed HD tables";
+  for(size_t mi = 0; mi < f->loaded.scene.meshes.size(); mi++)
+    if(const auto hd = f->morphs->hdDetail(int(mi)))
+    {
+      EXPECT_GT(hd->topology->frames(), 0u) << "mesh " << mi << ": every edit dropped";
+      EXPECT_GT(hd->reach, 0.f) << "mesh " << mi;
+    }
 }
 
 // Genesis 9's FACS Details, read and placed whole at its cage's two levels. Of the bases an offset

@@ -1401,6 +1401,28 @@ RenderTarget target(const BuiltMesh& mesh, const CageDeltas& d)
   return target(mesh.dsonVertexCount, d);
 }
 
+std::vector<int32_t> refinedQuads(const BuiltMesh& mesh)
+{
+  if(!mesh.refinement || mesh.refinement->levels.empty())
+    return {};
+  if(!mesh.refinement->quads.empty())
+    return mesh.refinement->quads;
+  // the faces are the finest quads, each fanned into two triangles in face order
+  const size_t quads = mesh.renderTris.size() / 6;
+  if(mesh.renderTris.size() != quads * 6)
+    return {};
+  std::vector<int32_t> out(quads * 4);
+  for(size_t q = 0; q < quads; q++)
+  {
+    const uint32_t* t = &mesh.renderTris[q * 6];
+    out[q * 4]        = int32_t(t[0]);
+    out[q * 4 + 1]    = int32_t(t[1]);
+    out[q * 4 + 2]    = int32_t(t[2]);
+    out[q * 4 + 3]    = int32_t(t[5]);
+  }
+  return out;
+}
+
 RenderTarget target(int cageVertices, const CageDeltas& d)
 {
   std::vector<uint32_t> cageIndices;

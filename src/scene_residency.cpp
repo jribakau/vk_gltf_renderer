@@ -3577,6 +3577,15 @@ std::set<MeshId> Residency::syncHd(const RetainedScene& scene, const std::set<Me
     uploadHd(*record, r);
     moved.insert(id);
     bases.push_back(&it->second);
+    // its prims' and its drawers' prims' bounds widen or narrow with the edits' reach
+    for(int32_t p : it->second.prims)
+      if(p >= 0)
+        fitBounds(*m_prims[size_t(p)], *record);
+    for(auto& [key, d] : m_drawers)
+      if(key.second == id)
+        for(int32_t p : d.prims)
+          if(p >= 0)
+            fitBounds(*m_prims[size_t(p)], *record);
   }
   // an unposed base is made from its cage here and nowhere else; a posed one's drawers run again
   refineOnGpu(bases);

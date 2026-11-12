@@ -390,7 +390,7 @@ TEST(FvPropFeed, AFiguresHdDetailIsAddedAsItsCageIsRefined)
       if(!geo.refinement || geo.cagePolyStart.size() < 3)
         continue;
       if(!mixers[mi])
-        mixers[mi] = std::make_unique<fv::subdiv::HdMixer>(geo.refinement, geo.cagePolyStart, geo.cagePolyVerts);
+        mixers[mi] = std::make_unique<fv::subdiv::HdMixer>(geo.refinement, geo.cagePolyStart, geo.cagePolyVerts, fv::mesh::refinedQuads(geo));
       const fv::subdiv::HdMixer::Weighted one[] = {{edits, w}};
       tables[mi]                               = mixers[mi]->mix(one);
     }
@@ -434,6 +434,20 @@ TEST(FvPropFeed, AFiguresHdDetailIsAddedAsItsCageIsRefined)
     if(const rs::Residency::MeshGpu* mesh = residency.meshGpu(figure.meshOf(int(mi))); mesh && mesh->refine && mesh->refine->hdOffsets)
       withHd++;
   ASSERT_GT(withHd, 0u) << "no mesh took its HD detail: the check above compared plain refinements";
+  // and the detail moved something: the tables hold edits, and the refinement with them isn't the plain one
+  float moved = 0.f;
+  for(size_t mi = 0; mi < meshes; mi++)
+    if(tables[mi])
+    {
+      EXPECT_GT(tables[mi]->topology->frames(), 0u) << "mesh " << mi << ": every edit dropped";
+      const fv::mesh::BuiltMesh& geo   = *box->loaded.scene.meshes[mi].geo;
+      const std::vector<float>   cage  = box->morphs->morphedCage(int(mi));
+      const std::vector<float>   with  = fv::subdiv::refineWithTables(*geo.refinement, cage, tables[mi].get());
+      const std::vector<float>   plain = fv::subdiv::refineWithTables(*geo.refinement, cage, nullptr);
+      for(size_t i = 0; i < with.size(); i++)
+        moved = std::max(moved, std::abs(with[i] - plain[i]));
+    }
+  EXPECT_GT(moved, 0.01f);
   const auto refined = [&] {
     std::vector<int> all;
     for(size_t mi = 0; mi < meshes; mi++)

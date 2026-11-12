@@ -1220,7 +1220,7 @@ void MorphSet::updateCage(int mesh, MeshState& st)
   }
   if(!st.hdMixer || st.hdFor != geo.refinement.get())
   {
-    st.hdMixer = std::make_unique<subdiv::HdMixer>(geo.refinement, geo.cagePolyStart, geo.cagePolyVerts);
+    st.hdMixer = std::make_unique<subdiv::HdMixer>(geo.refinement, geo.cagePolyStart, geo.cagePolyVerts, mesh::refinedQuads(geo));
     st.hdFor   = geo.refinement.get();
   }
   st.hd = st.hdMixer->mix(hd);

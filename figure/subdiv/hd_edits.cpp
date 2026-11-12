@@ -38,8 +38,10 @@ bool HdEdits::empty() const
   return true;
 }
 
-HdEdits placeEdits(const Refinement& r, std::span<const int32_t> faceStart, const LevelEdits& edits)
+HdEdits placeEdits(const Refinement& r, std::span<const int32_t> faceStart, const LevelEdits& edits, std::span<const int32_t> quads)
 {
+  if(quads.empty())
+    quads = r.quads;
   HdEdits out;
   const int    finest  = int(r.levels.size());
   const size_t faces   = faceStart.empty() ? 0 : faceStart.size() - 1;
@@ -73,12 +75,12 @@ HdEdits placeEdits(const Refinement& r, std::span<const int32_t> faceStart, cons
       for(int d = level; d < finest; d++)
         g = g * 4 + e.corner;
       const size_t q = size_t(g) * 4 + e.corner;
-      if(q >= r.quads.size())
+      if(q >= quads.size())
       {
         out.dropped++;
         continue;
       }
-      l.vertex.push_back(uint32_t(r.quads[q]));
+      l.vertex.push_back(uint32_t(quads[q]));
       l.faceCorner.push_back(uint32_t(faceStart[e.face]) + e.sub / per);
       l.offset.insert(l.offset.end(), e.offset, e.offset + 3);
     }
@@ -173,11 +175,12 @@ std::vector<float> refineWithEdits(const Refinement& r, std::span<const float> c
   return out;
 }
 
-HdMixer::HdMixer(std::shared_ptr<const Refinement> r, std::vector<int32_t> faceStart, std::vector<int32_t> faceVerts)
+HdMixer::HdMixer(std::shared_ptr<const Refinement> r, std::vector<int32_t> faceStart, std::vector<int32_t> faceVerts, std::vector<int32_t> quads)
     : m_refinement(std::move(r))
     , m_faceStart(std::move(faceStart))
     , m_faceVerts(std::move(faceVerts))
     , m_cornerFace(cornerFaces(m_faceStart))
+    , m_quads(std::move(quads))
 {
 }
 
@@ -255,7 +258,7 @@ std::shared_ptr<const HdTables> HdMixer::mix(std::span<const Weighted> edits)
     {
       Known k;
       k.edits  = e;
-      k.placed = placeEdits(*m_refinement, m_faceStart, *e);
+      k.placed = placeEdits(*m_refinement, m_faceStart, *e, m_quads);
       m_dropped += k.placed.dropped;
       m_known.push_back(std::move(k));
       joined = true;

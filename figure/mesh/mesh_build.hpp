@@ -309,6 +309,11 @@ private:
 
 // A morph target from cage deltas, those of vertices the cage doesn't have left out.
 RenderTarget target(int cageVertices, const CageDeltas& d);
+
+// A refined mesh's finest quads, four refined vertices each, in OpenSubdiv's order: the refinement's
+// own, or, once build has let go of them, read back from renderTris, which fans each quad (a, b, c, d)
+// into (a, b, c) and (a, c, d) in face order. Empty for a mesh that isn't refined.
+std::vector<int32_t> refinedQuads(const BuiltMesh& mesh);
 RenderTarget target(const BuiltMesh& mesh, const CageDeltas& d);
 // The same from cage vertices already in range, taken over rather than copied (a projection onto a
 // hair's strands lists a million).
