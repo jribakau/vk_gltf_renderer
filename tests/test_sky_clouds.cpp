@@ -1198,4 +1198,31 @@ TEST(SkyVisibility, TheAerosolIsScaledToTheVisibilityAskedFor)
   // this model's to make
   EXPECT_FLOAT_EQ(V::aerosolScale(1000.0F, rayleigh, aerosol), V::kLeast);
   EXPECT_FLOAT_EQ(V::aerosolScale(0.01F, rayleigh, aerosol), V::kMost);
+
+  // Clearer air is less of the same aerosol; hazier is the atmosphere's own and water haze added,
+  // whose extinction gives the visibility asked for and which absorbs next to nothing
+  const glm::vec3 ownScatter(0.06F), ownExtinction(aerosol);
+  for(const float km : {30.0F, 10.0F, 2.0F, 100.0F})
+  {
+    const float scale     = V::aerosolScale(km, rayleigh, aerosol);
+    glm::vec3   scatter   = ownScatter;
+    glm::vec3   extinct   = ownExtinction;
+    V::applyAerosolScale(scale, scatter, extinct);
+    EXPECT_NEAR(V::of(rayleigh, extinct.y), km, 1e-3F * km) << km;
+    const float absorbed  = extinct.y - scatter.y;
+    const float ownAbsorb = ownExtinction.y - ownScatter.y;
+    if(scale > 1.0F)
+    {
+      EXPECT_NEAR(absorbed, ownAbsorb + (extinct.y - ownExtinction.y) * (1.0F - V::kAddedHazeAlbedo), 1e-5F) << km;
+      EXPECT_GT(scatter.y / extinct.y, 0.9F) << km;
+    }
+    else
+      EXPECT_NEAR(scatter.y / extinct.y, 0.9F, 1e-5F) << km;  // the same aerosol, less of it
+  }
+  // a 2 km mist scatters 98% of what it meets, against Earth's dust's 90%
+  {
+    glm::vec3 scatter = ownScatter, extinct = ownExtinction;
+    V::applyAerosolScale(V::aerosolScale(2.0F, rayleigh, aerosol), scatter, extinct);
+    EXPECT_GT(scatter.y / extinct.y, 0.98F);
+  }
 }

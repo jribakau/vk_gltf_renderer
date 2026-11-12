@@ -819,8 +819,7 @@ shaderio::SkyAtmosphereParameters GltfRenderer::buildAtmosphereParameters() cons
   p.mieExtinction = s.atmoMieScattering / std::max(s.atmoMieAlbedo, 1e-3F);
   // A visibility asked for is the aerosol scaled to it: more or less of the same haze
   const float haze = sky_visibility::aerosolScale(s.atmoVisibility, s.atmoRayleighScattering.y, p.mieExtinction.y);
-  p.mieScattering *= haze;
-  p.mieExtinction *= haze;
+  sky_visibility::applyAerosolScale(haze, p.mieScattering, p.mieExtinction);
 
   p.absorptionExtinction = s.atmoOzoneExtinction;
   p.bottomRadius         = s.atmoBottomRadius;

@@ -148,11 +148,15 @@ Two settings say how much of it there is, and they are not the same thing:
   The sky and the air before a surface are one model, so a hazier air whitens the horizon, widens
   the glow round the sun, dims the sun and veils the distance together. It rebuilds the tables.
   Earth's own air is about 49 km by this measure. Down to some 8 km it reads as a summer haze (the
-  app's Air slider stops there). Below it is no mist: the aerosol scaled is Earth's own, dust that
-  absorbs a tenth of what it scatters, and through kilometres of it the light goes brown and dark
-  where a mist's water droplets, which absorb next to nothing, go white; and the air before a
-  surface takes the sky's light evenly (`aerialSkyLight`), with none of the glow a hazy sky has
-  toward the sun, so looking toward it the land stays dark against the sky.
+  app's Air slider stops there). Clearer air than Earth's is less of its aerosol; hazier air is its
+  own and the rest water haze, which scatters 99% of what it meets (`applyAerosolScale`,
+  `kAddedHazeAlbedo`): Earth's aerosol scaled up was dust absorbing a tenth, through kilometres of
+  which the light went brown. Below 8 km it is still no mist. The air before a surface or a cloud
+  takes the sky's light evenly (`aerialSkyLight`), while the sky's tables keep the forward glow of
+  light scattered many times: in a mist the land and the clouds stay dark against a sky ten times as
+  bright toward the sun. More bounces in the tables are no way out: past the four of
+  `kQualityFinal` their build grows with each one in thick air (2 km of visibility at ten bounces:
+  the sky 20,000 times a clear day's, the grass beside the camera 1,700 times), dust or water alike.
 - **`atmoAerialPerspectiveScale`** is how many metres of air a scene unit counts for between the
   eye and a surface, and it leaves the sky alone. A procedural backdrop sets it (`Spec::air`,
   `fv_backdrop.hpp`): its land is some hundreds of metres to its horizon, and through that much

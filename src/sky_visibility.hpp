@@ -31,14 +31,36 @@ inline float of(float rayleighGreen, float aerosolExtinctionGreen)
   return kKoschmieder / std::max(rayleighGreen + aerosolExtinctionGreen, 1e-6F);
 }
 
-// What to multiply the aerosol (its scattering and its extinction alike) by for `visibilityKm`;
-// 1 for 0 or less, which leaves the atmosphere as it is
+// A mist's droplets are water, which scatters what it meets and absorbs next to nothing: the share of
+// the haze added past the atmosphere's own aerosol that is scattered (applyAerosolScale)
+inline constexpr float kAddedHazeAlbedo = 0.99F;
+
+// What to multiply the aerosol by for `visibilityKm`; 1 for 0 or less, which leaves the atmosphere as
+// it is
 inline float aerosolScale(float visibilityKm, float rayleighGreen, float aerosolExtinctionGreen)
 {
   if(!(visibilityKm > 0.0F) || !(aerosolExtinctionGreen > 0.0F))
     return 1.0F;
   const float wanted = kKoschmieder / visibilityKm - rayleighGreen;
   return std::clamp(wanted / aerosolExtinctionGreen, kLeast, kMost);
+}
+
+// The aerosol for a scale (aerosolScale): clearer air is less of the same aerosol; hazier air is the
+// atmosphere's own and the rest water haze (kAddedHazeAlbedo). Scaling Earth's own aerosol, dust that
+// absorbs a tenth of what it scatters, past a summer haze turned kilometres of it brown and dark where
+// a mist is white.
+template <class Vec3>
+inline void applyAerosolScale(float scale, Vec3& scattering, Vec3& extinction)
+{
+  if(scale <= 1.0F)
+  {
+    scattering *= scale;
+    extinction *= scale;
+    return;
+  }
+  const Vec3 added = extinction * (scale - 1.0F);
+  scattering += added * kAddedHazeAlbedo;
+  extinction += added;
 }
 
 }  // namespace sky_visibility
