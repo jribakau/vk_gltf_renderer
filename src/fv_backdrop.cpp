@@ -406,10 +406,13 @@ std::array<Cover, kGrassLevels> grassCovers(const Spec& spec)
   const bool   forest = spec.kind == "forest";
   const double thick  = (forest ? 1.0 / 7.0 : 1.0) * spec.density;
   const float  clumps = forest ? 0.35F : 1.0F;
+  // shade-grown on brown needles, a wood's grass is darker and yellower than the meadow green the kit
+  // gives it, which stood out of the olive floor as if lit from elsewhere
+  const glm::vec3 tint = forest ? glm::vec3(0.8F, 0.75F, 0.45F) : glm::vec3(1.0F);
   return {{
-      {.role = "grass", .tile = 2.0F, .perSquareMetre = 150.0 * thick, .scaleMin = 0.85F, .scaleMax = 1.35F, .sink = 0.02F, .clumps = clumps, .salt = 0},
-      {.role = "grass", .tile = 4.0F, .perSquareMetre = 36.0 * thick, .scaleMin = 1.3F, .scaleMax = 1.9F, .sink = 0.06F, .clumps = clumps, .salt = 1},
-      {.role = "grass", .tile = 8.0F, .perSquareMetre = 5.0 * thick, .scaleMin = 1.9F, .scaleMax = 2.6F, .sink = 0.15F, .clumps = clumps, .salt = 2},
+      {.role = "grass", .tile = 2.0F, .perSquareMetre = 150.0 * thick, .scaleMin = 0.85F, .scaleMax = 1.35F, .sink = 0.02F, .clumps = clumps, .salt = 0, .tint = tint},
+      {.role = "grass", .tile = 4.0F, .perSquareMetre = 36.0 * thick, .scaleMin = 1.3F, .scaleMax = 1.9F, .sink = 0.06F, .clumps = clumps, .salt = 1, .tint = tint},
+      {.role = "grass", .tile = 8.0F, .perSquareMetre = 5.0 * thick, .scaleMin = 1.9F, .scaleMax = 2.6F, .sink = 0.15F, .clumps = clumps, .salt = 2, .tint = tint},
   }};
 }
 

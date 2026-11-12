@@ -447,6 +447,17 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
     EXPECT_LT(state().value("plants", uint64_t(0)), meadowPlants);
     EXPECT_NE(groundOf(), meadowGround) << "the ground is made again for the kind";
     EXPECT_FALSE(groundOf().isNone());
+    // its grass draws with tinted copies of the kit's leaf (white in this kit), the light it passes on too
+    const glm::vec3 tint   = fv::backdrop::grassCovers({.kind = "forest"})[0].tint;
+    size_t          tinted = 0;
+    for(const rs::EntityId e : scene.entity(root)->children)
+      if(const rs::Entity* entity = scene.entity(e); entity->mesh && scene.shown(e) && entity->name == "Backdrop tile")
+        for(const rs::MaterialId m : entity->mesh->parts.at(0).materials)
+        {
+          const fv::mat::Rgba& c = scene.material(m)->payload.baseColor;
+          tinted += glm::vec3(c[0], c[1], c[2]) == tint ? 1 : 0;
+        }
+    EXPECT_GT(tinted, 0u);
   }
   // a kind holds the plants it uses: the fern's file is in the scene under a forest only
   const auto meshEntities = [&] {

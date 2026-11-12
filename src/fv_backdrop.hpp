@@ -192,6 +192,9 @@ struct Cover
   // thick in them as keeps the tile's count: 1 evenly over it
   float clumps = 1.0F;
   uint32_t    salt           = 0;     // which arrangement: two covers alike but for this are two patches
+  // What its plants' colour is multiplied by, the light they reflect and the light they pass on alike
+  // (the kit sets a plant's colour for an open meadow)
+  glm::vec3 tint{1.0F};
 };
 
 // The grass's three levels, the finest first: thick grass underfoot in 2 m tiles, thinner and larger

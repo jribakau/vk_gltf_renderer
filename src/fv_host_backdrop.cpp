@@ -409,6 +409,23 @@ FvHost::Impl::BackdropBuilt::Patch FvHost::Impl::makeBackdropPatch(rs::RetainedS
   }
   if(merged.positions.empty())
     return {};
+  // a tinted cover draws with copies of its plants' materials, tinted: a vertex colour would tint only
+  // the light a leaf reflects, not what it passes on
+  std::vector<rs::MaterialId> tinted;
+  if(cover.tint != glm::vec3(1.0F))
+    for(rs::MaterialId& material : materials)
+      if(const rs::MaterialRecord* record = scene.material(material))
+      {
+        rs::MaterialRecord copy = *record;
+        for(int c = 0; c < 3; c++)
+        {
+          copy.payload.baseColor[c] *= cover.tint[c];
+          if(copy.payload.diffuseTransmission)
+            copy.payload.diffuseTransmission->color[c] *= cover.tint[c];
+        }
+        material = scene.addMaterial(std::move(copy));
+        tinted.push_back(material);
+      }
   std::vector<uint32_t>& indices = merged.indices.own();
   for(size_t slot = 0; slot < runs.size(); slot++)
   {
@@ -422,6 +439,8 @@ FvHost::Impl::BackdropBuilt::Patch FvHost::Impl::makeBackdropPatch(rs::RetainedS
   out.instance.parts.push_back({.mesh = mesh, .materials = materials});
   scene.setMeshInstance(out.holder, rs::MeshInstance(out.instance));
   scene.release(mesh);  // the holder's now
+  for(const rs::MaterialId material : tinted)
+    scene.release(material);
   return out;
 }
 

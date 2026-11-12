@@ -650,6 +650,9 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   changes nothing. What stands in drifts (a meadow's flowers, a forest's ferns) is tiles on the
   middle grid where a drift noise says. A forest's grass is a seventh as thick and in clumps
   (`Cover::clumps`): plants that sparse, spread evenly, show the grid they stand on.
+  It is also darker and yellower than the kit's meadow green (`Cover::tint`): its tiles draw with
+  tinted copies of the grass's materials, the light the blades pass on tinted with what they
+  reflect, which a vertex colour would not do.
 - **The planting** (`src/fv_host_backdrop.cpp`): the plants are files in a kit folder the app fills
   (`settings.apply {backdropKit}`), listed by its `kit.json` with a role each (`readBackdropKit`, read
   on a loader thread). Under one host-owned root entity each plant file is imported once and each of

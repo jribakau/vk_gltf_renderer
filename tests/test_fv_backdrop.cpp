@@ -442,6 +442,15 @@ TEST(BackdropLayers, AForestIsAGladeInAWoodThatRunsToTheHorizon)
   EXPECT_GT(forests, meadows * 6 / 5);
   // its grass is tufts, its drifts are ferns and reach further than a meadow's flowers
   EXPECT_LT(B::grassCovers(forest())[0].perSquareMetre, 0.25 * B::grassCovers(meadow())[0].perSquareMetre);
+  // tinted darker and yellower than the kit's meadow green, every level alike; a meadow's as the kit has it
+  for(size_t level = 0; level < B::kGrassLevels; level++)
+  {
+    const glm::vec3 tint = B::grassCovers(forest())[level].tint;
+    EXPECT_EQ(tint, B::grassCovers(forest())[0].tint);
+    EXPECT_LT(tint.y, 0.9F);
+    EXPECT_LT(tint.z, tint.y);
+    EXPECT_EQ(B::grassCovers(meadow())[level].tint, glm::vec3(1.0F));
+  }
   EXPECT_EQ(B::drifts(forest()).covers[0].role, "fern");
   EXPECT_EQ(B::drifts(meadow()).covers[0].role, "flower");
   EXPECT_GT(B::drifts(forest()).reach, B::drifts(meadow()).reach);
