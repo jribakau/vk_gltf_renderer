@@ -233,6 +233,9 @@ void SkyClouds::init(Resources& res, const Shaders& shaders, VkDescriptorSetLayo
   // Device-local and written by record() through the command buffer: a preview is recorded while
   // earlier frames may still be running an earlier bake that reads it.
   static_assert(sizeof(shaderio::SkyCloudsParameters) % 4 == 0 && sizeof(shaderio::SkyCloudsParameters) <= 65536, "vkCmdUpdateBuffer limits");
+  // every device takes 128 bytes of push constants; the bake's shaftsLand sits 8-aligned
+  static_assert(sizeof(shaderio::SkyCloudsPushConstant) <= 128, "the bake's push constants");
+  static_assert(offsetof(shaderio::SkyCloudsPushConstant, shaftsLand) % 8 == 0, "a float2 a shader reads 8-aligned");
   NVVK_CHECK(res.allocator.createBuffer(m_paramsBuf, sizeof(shaderio::SkyCloudsParameters),
                                         VK_BUFFER_USAGE_2_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT));
   NVVK_DBG_NAME(m_paramsBuf.buffer);
@@ -258,13 +261,13 @@ void SkyClouds::deinit(Resources& res)
   vkDestroyImageView(m_device, m_cloudStorageView, nullptr);
   for(nvvk::Image* image : {&m_shapeNoise, &m_detailNoise, &m_weatherNoise, &m_turbulenceNoise, &m_cloudImage, &m_previewImage,
                             &m_rawImage, &m_viewImage, &m_followImages[0], &m_followImages[1], &m_rawDepth, &m_depthImages[0],
-                            &m_depthImages[1], &m_depthImages[2], &m_shadowImage})
+                            &m_depthImages[1], &m_depthImages[2], &m_shadowImage, &m_shaftsImage})
     destroyImage(res, *image);
   res.allocator.destroyBuffer(m_paramsBuf);
   res.allocator.destroyBuffer(m_airBuf);
   for(VkPipeline pipeline :
       {m_shapePipeline, m_detailPipeline, m_weatherPipeline, m_turbulencePipeline, m_bakePipeline, m_filterPipeline, m_airPipeline,
-       m_airShadePipeline, m_depthPipeline, m_shadowPipeline})
+       m_airShadePipeline, m_depthPipeline, m_shadowPipeline, m_shaftsPipeline})
     vkDestroyPipeline(m_device, pipeline, nullptr);
   vkDestroyPipelineLayout(m_device, m_noiseLayout, nullptr);
   vkDestroyPipelineLayout(m_device, m_bakeLayout, nullptr);
@@ -306,6 +309,7 @@ void SkyClouds::createImages(Resources& res)
   for(nvvk::Image& image : m_depthImages)
     image = createImage(res, {CLOUD_DEPTH_WIDTH, CLOUD_DEPTH_HEIGHT, 1}, VK_FORMAT_R16_SFLOAT, 1, kClamp, "SkyClouds::depth");
   m_shadowImage = createImage(res, {CLOUD_SHADOW_SIZE, CLOUD_SHADOW_SIZE, 1}, VK_FORMAT_R16_SFLOAT, 1, kClamp, "SkyClouds::shadow", kClamp);
+  m_shaftsImage = createImage(res, {CLOUD_SHAFTS_SIZE, CLOUD_SHAFTS_SIZE, 1}, VK_FORMAT_R16_SFLOAT, 1, kClamp, "SkyClouds::shafts", kClamp);
 
   m_shapeStorageView   = createLevelView(m_device, m_shapeNoise, VK_FORMAT_R8_UNORM, true);
   m_detailStorageView  = createLevelView(m_device, m_detailNoise, VK_FORMAT_R8_UNORM, true);
@@ -358,6 +362,7 @@ void SkyClouds::createPipelines(const Shaders& shaders, VkDescriptorSetLayout br
     bindings.addBinding(B::eCloudBakeDepthRaw, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(B::eCloudBakeDepth, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(B::eCloudBakeShadow, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(B::eCloudBakeShafts, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     NVVK_CHECK(m_bakePack.init(bindings, m_device, kBakeSets));
     NVVK_DBG_NAME(m_bakePack.getLayout());
 
@@ -370,6 +375,7 @@ void SkyClouds::createPipelines(const Shaders& shaders, VkDescriptorSetLayout br
     m_airShadePipeline = createComputePipeline(m_device, m_bakeLayout, shaders.bake, "airShadeMain");
     m_depthPipeline    = createComputePipeline(m_device, m_bakeLayout, shaders.bake, "depthMain");
     m_shadowPipeline   = createComputePipeline(m_device, m_bakeLayout, shaders.bake, "shadowMain");
+    m_shaftsPipeline   = createComputePipeline(m_device, m_bakeLayout, shaders.bake, "shaftsMain");
 
     nvvk::WriteSetContainer writes;
     writes.append(m_bakePack.makeWrite(B::eCloudBakeOut, 0), m_rawImage);
@@ -387,6 +393,7 @@ void SkyClouds::createPipelines(const Shaders& shaders, VkDescriptorSetLayout br
       // the view image make none, and are bound the sky image's for the layout's sake)
       writes.append(m_bakePack.makeWrite(B::eCloudBakeDepthRaw, set), m_rawDepth);
       writes.append(m_bakePack.makeWrite(B::eCloudBakeShadow, set), m_shadowImage);
+      writes.append(m_bakePack.makeWrite(B::eCloudBakeShafts, set), m_shaftsImage);
       writes.append(m_bakePack.makeWrite(B::eCloudBakeDepth, set), m_depthImages[set >= kFollowSet ? 1 + set - kFollowSet : 0]);
       writes.append(m_bakePack.makeWrite(B::eCloudBakeShape, set), m_shapeNoise);
       writes.append(m_bakePack.makeWrite(B::eCloudBakeDetail, set), m_detailNoise);
@@ -409,6 +416,7 @@ void SkyClouds::createPipelines(const Shaders& shaders, VkDescriptorSetLayout br
     bindings.addBinding(CLOUD_FOLLOW_BINDING, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2, VK_SHADER_STAGE_ALL);
     bindings.addBinding(CLOUD_DEPTH_BINDING, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3, VK_SHADER_STAGE_ALL);
     bindings.addBinding(CLOUD_SHADOW_BINDING, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_ALL);
+    bindings.addBinding(CLOUD_SHAFTS_BINDING, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_ALL);
     NVVK_CHECK(m_runtimePack.init(bindings, m_device, 1));
     NVVK_DBG_NAME(m_runtimePack.getLayout());
 
@@ -421,6 +429,7 @@ void SkyClouds::createPipelines(const Shaders& shaders, VkDescriptorSetLayout br
     for(uint32_t i = 0; i < 3; ++i)
       writes.append(m_runtimePack.makeWrite(CLOUD_DEPTH_BINDING, 0, i), m_depthImages[i]);
     writes.append(m_runtimePack.makeWrite(CLOUD_SHADOW_BINDING), m_shadowImage);
+    writes.append(m_runtimePack.makeWrite(CLOUD_SHAFTS_BINDING), m_shaftsImage);
     vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
   }
 }
@@ -433,7 +442,7 @@ void SkyClouds::generateNoise(Resources& res)
 
   for(nvvk::Image* image : {&m_shapeNoise, &m_detailNoise, &m_weatherNoise, &m_turbulenceNoise, &m_cloudImage, &m_previewImage,
                             &m_rawImage, &m_viewImage, &m_followImages[0], &m_followImages[1], &m_rawDepth, &m_depthImages[0],
-                            &m_depthImages[1], &m_depthImages[2], &m_shadowImage})
+                            &m_depthImages[1], &m_depthImages[2], &m_shadowImage, &m_shaftsImage})
     nvvk::cmdImageMemoryBarrier(cmd, {image->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL});
 
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_noiseLayout, 0, 1, m_noisePack.getSetPtr(), 0, nullptr);
@@ -500,6 +509,7 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
     clearImage(cmd, m_cloudImage);
     clearImage(cmd, m_depthImages[0], kNoDepth);
     clearImage(cmd, m_shadowImage, kNoShadow);
+    clearImage(cmd, m_shaftsImage, kNoShadow);
     m_imageClear     = true;
     m_showingPreview = false;
     m_bakedClouds    = false;
@@ -520,6 +530,8 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
         .texelAngle       = 6.2831853F / float(size.width),
         .land             = -m_drift,
         .writeDepth       = preview ? 0 : 1,
+        .shaftsAltitude   = observerAltitudeKm,
+        .shaftsLand       = -m_drift,
     };
     const std::array<VkDescriptorSet, 2> sets{m_bakePack.getSet(preview ? 1 : 0), m_brunetonSet};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bakeLayout, 0, uint32_t(sets.size()), sets.data(), 0, nullptr);
@@ -531,6 +543,8 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
     // follows the clouds as they are dragged
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_shadowPipeline);
     vkCmdDispatch(cmd, groups(CLOUD_SHADOW_SIZE, CLOUD_WORKGROUP_SIZE), groups(CLOUD_SHADOW_SIZE, CLOUD_WORKGROUP_SIZE), 1);
+    // ... and over the wider square, which the march below reads for the light shafts
+    recordShafts(cmd);
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bakePipeline);
@@ -559,6 +573,13 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+}
+
+// The shafts image (shaftsMain), under the push constants of the bake that sets the clouds and the sun.
+void SkyClouds::recordShafts(VkCommandBuffer cmd)
+{
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_shaftsPipeline);
+  vkCmdDispatch(cmd, groups(CLOUD_SHAFTS_SIZE, CLOUD_WORKGROUP_SIZE), groups(CLOUD_SHAFTS_SIZE, CLOUD_WORKGROUP_SIZE), 1);
 }
 
 void SkyClouds::recordAirShade(VkCommandBuffer cmd, uint32_t width, uint32_t height)
@@ -633,6 +654,8 @@ void SkyClouds::recordFollow(VkCommandBuffer cmd, const SkyCloudFollowStep& step
       .firstRow         = step.firstRow,
       .writeDepth       = 1,
       .whole            = shaderio::cloudImageWhole(step.from.altitude, params.minHeight) ? 1 : 0,
+      .shaftsAltitude   = m_bakedAltitude,
+      .shaftsLand       = -m_shadowDrift,
   };
   const std::array<VkDescriptorSet, 2> sets{m_bakePack.getSet(kFollowSet + uint32_t(step.target - 1)), m_brunetonSet};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bakeLayout, 0, uint32_t(sets.size()), sets.data(), 0, nullptr);
@@ -678,6 +701,7 @@ void SkyClouds::recordShadow(VkCommandBuffer cmd)
   vkCmdPushConstants(cmd, m_bakeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_shadowPipeline);
   vkCmdDispatch(cmd, groups(CLOUD_SHADOW_SIZE, CLOUD_WORKGROUP_SIZE), groups(CLOUD_SHADOW_SIZE, CLOUD_WORKGROUP_SIZE), 1);
+  recordShafts(cmd);
   m_shadowDrift = m_drift;
   // For the frames that read it, and a follow's or a view's bake after it in this frame, which writes
   // the parameters again.
@@ -720,6 +744,8 @@ void SkyClouds::recordView(VkCommandBuffer cmd, const SkyCloudView& view)
       .viewUp           = view.up,
       .viewForward      = glm::vec4(view.forward, 1.0F),
       .land             = view.eye.land,
+      .shaftsAltitude   = m_bakedAltitude,
+      .shaftsLand       = -m_shadowDrift,
   };
   const std::array<VkDescriptorSet, 2> sets{m_bakePack.getSet(2), m_brunetonSet};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bakeLayout, 0, uint32_t(sets.size()), sets.data(), 0, nullptr);

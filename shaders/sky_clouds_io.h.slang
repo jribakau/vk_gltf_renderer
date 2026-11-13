@@ -52,6 +52,7 @@ enum SkyCloudsBakeBindings
   eCloudBakeDepthRaw   = 8,  // RWTexture2D<float>: how far the clouds are along each texel of the march, km (0: none)
   eCloudBakeDepth      = 9,  // RWTexture2D<float>: the image's depth image, what depthMain makes of that
   eCloudBakeShadow     = 10,  // RWTexture2D<float>: the shadow image (shadowMain)
+  eCloudBakeShafts     = 11,  // RWTexture2D<float>: the shafts image (shaftsMain)
 };
 
 // The ground points, and the directions over the sky, the bake measures the air's shares at (airMain):
@@ -93,6 +94,11 @@ enum SkyCloudsNoiseBindings
 // CLOUD_SHADOW_SIZE texels a side. Sampler2D<float>, clamped.
 #define CLOUD_SHADOW_BINDING 5
 #define CLOUD_SHADOW_SIZE 512
+// ... and the same over a square twelve times as wide, coarser (CLOUD_SHAFTS_EXTENT): what lights the
+// air far under the clouds, their light shafts, and the land past the shadow image's edge.
+// Sampler2D<float>, clamped.
+#define CLOUD_SHAFTS_BINDING 6
+#define CLOUD_SHAFTS_SIZE 1024
 // The settled bake's raw march is an image of the sky image's size (SkyClouds::m_rawImage); a view
 // bake's, as many texels or fewer, runs through it row after row (rawTexel in sky_clouds_bake.slang).
 #define CLOUD_RAW_WIDTH 4096
@@ -191,6 +197,10 @@ struct SkyCloudsPushConstant
   // 1 when the image's rows are a whole image's (cloudImageUv): a follow image baked from above the
   // clouds' bases. Not a view bake's, whose map is the camera's.
   int whole;
+  // Where the shafts image was baked from (shaftsMain): the observer's height, km, and the land its
+  // centre is on, as `land` is. A march reads it there (shaftSunShare in sky_clouds_bake.slang).
+  float  shaftsAltitude;
+  float2 shaftsLand;
 };
 
 NAMESPACE_SHADERIO_END()

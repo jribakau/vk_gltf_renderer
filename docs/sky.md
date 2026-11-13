@@ -1032,8 +1032,41 @@ became 3.3 / 1.7; under a closed deck below the horizon 49 became 3.4, against t
 it. A clear sky is untouched (no clouds, no pass). The settled bake costs what it did (95-100 ms
 there, against 101).
 
-Left out: the gaps' own pattern in the air -- light shafts, a lit stretch of air under a gap -- is a
-share here, not marched; and the sky's share of the ground's own light under the clouds.
+Left out: the sky's share of the ground's own light under the clouds.
+
+### Light shafts
+
+The air under the clouds is lit where the sun gets through them and shaded elsewhere, and seen through,
+the two are light shafts: crepuscular rays, strongest toward a low sun, where the haze scatters most
+forward, and fanning out from the gaps by perspective. The bake draws them in the cloud image, so
+they cost nothing a frame.
+
+- **The shafts image** (`shaftsMain`, `CLOUD_SHAFTS_SIZE` square over `CLOUD_SHAFTS_EXTENT` km) is
+  the shadow image's march over a square twelve times as wide: under a low sun the air the eye looks
+  through toward the horizon is tens of kilometres under the bases. It is baked with the shadow image,
+  and again with it as the clouds drift.
+- **The lit share along a ray** (`shaftShareAlong`): the ray's steps, each weighed by what its air
+  scatters the eye's way (Rayleigh and Mie at the ray's phase angle) and what the air before it lets
+  through, and lit by the shafts image where the sun's ray through it comes up from the ground
+  (`shaftSunShare`; inside the layers it goes to 1 at their top). It replaces the land's mean share
+  for the sun's part of the air in front of the clouds (`marchClouds`) and of the air seen through a
+  gap (`airShadeMain`), so a beam is as bright as the mean-lit air it replaces is on average. Past
+  the image's edge the mean stands in.
+- **The scene's haze**: the sun's point of the aerial perspective takes the cloud shadow where it
+  stands (`cloudSunShare`), the shadow image near the scene and the shafts image past it, so the air
+  over the land and the sea far off falls into shafts as well.
+
+How strong they are is the air's: through clean air (Air at 200 km) they are faint, as they are; a
+hazier Air and a low sun ahead show them. Standing in a cloud's shadow, the near air is shaded too,
+and the glow round a hidden sun goes with it.
+
+Measured on 6TEST (RTX 4080, cumulus 0.74, 1.45 km thick; 5 commits each, the median): the commit's
+bake 72.5 -> 77.7 ms with the scene's sun (33 degrees up, behind the camera), 86.9 -> 87.0 and
+84.1 -> 88.8 ms with the sun 7 degrees up ahead and behind, 76.4 -> 81.2 ms 18 degrees up ahead.
+
+Not done: the sky below the horizon, read per ray (`evalPhysicalSky`), keeps the mean share, as the
+lighting field does; a whole image's clouds in front of a point get the mean shade back
+(`cloudsInFrontOf`), not the shafts'.
 
 ### What it leaves out
 
@@ -1041,7 +1074,7 @@ share here, not marched; and the sky's share of the ground's own light under the
   or dissolves on the way; the tiers all go at one speed and from one direction.
 - A still under a wind: the frames stay moving ones while the clouds drift, and the light from the
   sky's clouds stays the last bake's.
-- Light shafts (the air under the clouds is shaded by a share, above), takram's haze, and rain.
+- Takram's haze, and rain.
 - A fast flight through a cloud: the image is some metres old while the cloud is some tens of
   metres off, so near cloud holds its place for a few frames and then steps (`cloudShiftDepth`),
   and at speed it smears. At rest it is the view image, baked where the camera stands.

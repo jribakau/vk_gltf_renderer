@@ -176,12 +176,14 @@ public:
   const SkyCloudView& view() const { return m_view; }
 
   // The images, as combined image samplers at CLOUD_IMAGE_BINDING, CLOUD_PREVIEW_BINDING,
-  // CLOUD_VIEW_BINDING, CLOUD_FOLLOW_BINDING, CLOUD_DEPTH_BINDING and CLOUD_SHADOW_BINDING.
+  // CLOUD_VIEW_BINDING, CLOUD_FOLLOW_BINDING, CLOUD_DEPTH_BINDING, CLOUD_SHADOW_BINDING and
+  // CLOUD_SHAFTS_BINDING.
   VkDescriptorSetLayout getDescriptorSetLayout() const { return m_runtimePack.getLayout(); }
   VkDescriptorSet       getDescriptorSet() const { return m_runtimePack.getSet(0); }
 
 private:
   void createImages(Resources& res);
+  void recordShafts(VkCommandBuffer cmd);
   void recordAirShade(VkCommandBuffer cmd, uint32_t width, uint32_t height);
   void recordDepth(VkCommandBuffer cmd);
   void recordFollow(VkCommandBuffer cmd, const SkyCloudFollowStep& step);
@@ -224,6 +226,7 @@ private:
   nvvk::Image m_rawDepth;         // how far the clouds are in each texel of a march, km: the sky image's size, R16F
   nvvk::Image m_depthImages[3];   // each sky image's depth image (depthMain): the sky image's, then the follow images'
   nvvk::Image m_shadowImage;      // the clouds' shadow on the land (shadowMain): CLOUD_SHADOW_SIZE square, R16F, clamped
+  nvvk::Image m_shaftsImage;      // ... over a wider square, for the light shafts (shaftsMain): CLOUD_SHAFTS_SIZE square
   // Storage writes need a view of one level; the images' own views span their chains for sampling.
   VkImageView m_shapeStorageView{VK_NULL_HANDLE};
   VkImageView m_detailStorageView{VK_NULL_HANDLE};
@@ -250,5 +253,6 @@ private:
   VkPipeline       m_airShadePipeline{VK_NULL_HANDLE};
   VkPipeline       m_depthPipeline{VK_NULL_HANDLE};
   VkPipeline       m_shadowPipeline{VK_NULL_HANDLE};
+  VkPipeline       m_shaftsPipeline{VK_NULL_HANDLE};
   VkCommandPool    m_transientCmdPool{VK_NULL_HANDLE};
 };

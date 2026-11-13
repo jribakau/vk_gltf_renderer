@@ -136,12 +136,14 @@ static bool doDebug = false;
 [[vk::binding(CLOUD_FOLLOW_BINDING, 4)]]  Sampler2D<float4>     g_cloudFollow[2];
 [[vk::binding(CLOUD_DEPTH_BINDING, 4)]]   Sampler2D<float>      g_cloudDepth[3];
 [[vk::binding(CLOUD_SHADOW_BINDING, 4)]]  Sampler2D<float>      g_cloudShadow;
+[[vk::binding(CLOUD_SHAFTS_BINDING, 4)]]  Sampler2D<float>      g_cloudShafts;
 
 // The share of the sun's light the clouds let through to a place in the scene: their shadow on the
 // land (the shadow image, baked with the clouds), read where the sun's ray through the place comes
 // up from the ground. 1 under a clear sky and for every sky but the physical one. Past the image's
-// edge, kilometres out, the land's mean share. Clouds that have drifted since the image was baked
-// cast it as far on (cloudShadowShift).
+// edge, kilometres out, the shafts image's coarser one, which also lights the haze far over the land
+// and the sea in shafts (the sun's point of the aerial perspective); past that the land's mean share.
+// Clouds that have drifted since the images were baked cast it as far on (cloudShadowShift).
 float cloudSunShare(float3 worldPos, SceneFrameInfo* frameInfo)
 {
   if(frameInfo->sunDisk == nullptr || !(frameInfo->sunDisk->cloudTop > 0.0F))
@@ -149,7 +151,9 @@ float cloudSunShare(float3 worldPos, SceneFrameInfo* frameInfo)
   const float3 p      = quatRotateInverse(frameInfo->envRotation, worldPos) * 0.001F;
   const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
   const float2 uv     = cloudShadowUv(p, sunDir, frameInfo->cloudShadowShift);
-  return lerp(frameInfo->sunDisk->sunlitGround, g_cloudShadow.SampleLevel(uv, 0.0F), cloudShadowWeight(uv));
+  const float2 far    = cloudShaftsUv(p, sunDir, frameInfo->cloudShadowShift);
+  const float  coarse = lerp(frameInfo->sunDisk->sunlitGround, g_cloudShafts.SampleLevel(far, 0.0F), cloudShadowWeight(far));
+  return lerp(coarse, g_cloudShadow.SampleLevel(uv, 0.0F), cloudShadowWeight(uv));
 }
 
 // The horizon of the place the cloud images the frame takes were baked from, where their rows begin

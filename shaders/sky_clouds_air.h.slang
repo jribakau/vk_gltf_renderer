@@ -37,7 +37,9 @@
 // integrate the same air differently, by as much as half of it toward a low sun below the horizon,
 // so taking the march's amount off the tables' sky would leave or take the difference.
 //
-// A share, not shafts: the gaps' own pattern of light and shadow in the air is not marched.
+// The sun's share is the caller's: the land's mean (SkySunDisk::sunlitGround) where the readers take it
+// per ray, and in the cloud bake the lit share along the ray itself (shaftShareAlong in
+// sky_clouds_bake.slang), which draws the clouds' light shafts in the air seen through a gap.
 //
 // The cloud bake takes what the gaps' air loses off each texel, by the texel's transparency, so the
 // image composes to the shaded sky (sky_clouds_bake.slang main); below the horizon, where the image

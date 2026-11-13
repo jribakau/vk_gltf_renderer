@@ -515,6 +515,39 @@ TEST(SkyClouds, AShadowIsReadWhereTheSunsRayComesUpFromTheGround)
   EXPECT_EQ(cloudShadowUv(point, sun, float2(0.0F)), cloudShadowUv(point, sun));
 }
 
+// The shafts image is the shadow image's march over a wider square: a point reads the same ground in
+// both, and the air tens of kilometres off toward a low sun, past the shadow image, is inside it.
+TEST(SkyClouds, TheShaftsImageReadsTheShadowImagesGroundFarther)
+{
+  EXPECT_EQ(cloudShaftsUv(float3(0.0F), float3(0.0F, 1.0F, 0.0F)), float2(0.5F));
+  EXPECT_EQ(cloudShaftsGround(float2(1.0F, 0.0F)), float2(0.5F * CLOUD_SHAFTS_EXTENT, -0.5F * CLOUD_SHAFTS_EXTENT));
+  EXPECT_GT(CLOUD_SHAFTS_EXTENT, 10.0F * CLOUD_SHADOW_EXTENT);
+  // a texel is under a tenth of a kilometre: a shaft some hundreds of metres across spans several
+  EXPECT_LT(CLOUD_SHAFTS_EXTENT / float(CLOUD_SHAFTS_SIZE), 0.1F);
+
+  const float3 sun = normalize(float3(0.4F, 0.6F, -0.2F));
+  for(const float3 p : {float3(0.2F, 0.03F, 0.1F), float3(-1.5F, 0.4F, 2.0F), float3(3.0F, 1.2F, -0.7F)})
+  {
+    const float2 near = cloudShadowGround(cloudShadowUv(p, sun));
+    const float2 far  = cloudShaftsGround(cloudShaftsUv(p, sun));
+    EXPECT_NEAR(length(near - far), 0.0F, 1e-4F);
+    // drifted clouds move both alike
+    EXPECT_NEAR(length(cloudShadowGround(cloudShadowUv(p, sun, float2(0.3F, -0.1F)))
+                       - cloudShaftsGround(cloudShaftsUv(p, sun, float2(0.3F, -0.1F)))),
+                0.0F, 1e-4F);
+  }
+
+  // Looking 3 degrees up toward a sun 8 degrees up, under a base 1.2 km up: the air just under the
+  // base is 23 km off, and the sun's ray through it comes up from the ground about 8 km nearer the
+  // sun. Past the shadow image, inside the shafts image.
+  const float  el    = 8.0F * kPi / 180.0F;
+  const float3 low   = float3(0.0F, std::sin(el), std::cos(el));
+  const float  look  = 3.0F * kPi / 180.0F;
+  const float3 under = float3(0.0F, std::sin(look), std::cos(look)) * (1.2F / std::sin(look));
+  EXPECT_EQ(cloudShadowWeight(cloudShadowUv(under, low)), 0.0F);
+  EXPECT_EQ(cloudShadowWeight(cloudShaftsUv(under, low)), 1.0F);
+}
+
 // The wind carries the clouds as a camera flying the other way under them would see them: an anchor
 // is a place under the clouds as they have drifted, the follow bakes from where a camera at rest has
 // drifted to among them, and the shadow image is baked again once they are far enough on.

@@ -58,6 +58,7 @@
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeDepthRaw, 0)]]   [[vk::image_format("r16f")]] RWTexture2D<float> g_depthRaw;
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeDepth, 0)]]      [[vk::image_format("r16f")]] RWTexture2D<float> g_depth;
 [[vk::binding(SkyCloudsBakeBindings::eCloudBakeShadow, 0)]]     [[vk::image_format("r16f")]] RWTexture2D<float> g_shadow;
+[[vk::binding(SkyCloudsBakeBindings::eCloudBakeShafts, 0)]]     [[vk::image_format("r16f")]] RWTexture2D<float> g_shafts;
 
 // Set 1 is SkyBruneton's runtime set, as in the environment bake.
 [[vk::binding(0, 1)]] Sampler2D<float3>                       g_transmittance;
@@ -305,6 +306,76 @@ float stepJitter(uint2 pixel, int sampleIndex)
   return frac(ign + 0.618033989F * float(sampleIndex));
 }
 
+// ---- light shafts ---------------------------------------------------------------------------------
+//
+// The air under the clouds is lit where the sun gets through them and in their shade elsewhere, and
+// looking through it the eye sees the two as rays: crepuscular rays toward the sun, where the haze
+// scatters most forward, fanning out from the gaps by perspective. The shafts image holds the sun's
+// transmittance through the layers from the ground round the scene (shaftsMain), and the air at a
+// point is lit by what it holds where the sun's ray through the point comes up from the ground. A
+// march then takes, of the air's sun along a ray, the share that is lit (shaftShareAlong): of the
+// air in front of the clouds (marchClouds) and of the air seen through a gap (airShadeMain), where
+// both took the land's mean share (s_air.x) before. Past the image's edge they still do.
+
+// The shafts image at `uv`, bilinear (a storage image, read by its texels), clamped at its edges
+float shaftsAt(float2 uv)
+{
+  const float2 t  = uv * float(CLOUD_SHAFTS_SIZE) - 0.5F;
+  const float2 f  = t - floor(t);
+  const int2   i0 = clamp(int2(floor(t)), int2(0), int2(CLOUD_SHAFTS_SIZE - 1));
+  const int2   i1 = min(i0 + int2(1), int2(CLOUD_SHAFTS_SIZE - 1));
+  const float  a  = lerp(g_shafts[uint2(i0.x, i0.y)], g_shafts[uint2(i1.x, i0.y)], f.x);
+  const float  b  = lerp(g_shafts[uint2(i0.x, i1.y)], g_shafts[uint2(i1.x, i1.y)], f.x);
+  return lerp(a, b, f.y);
+}
+
+// The share of the sun's light the clouds let through to a point `p` of a march (planet-centred, the
+// march's observer on +Y): the shafts image where the sun's ray through it comes up from the ground,
+// the land's mean share past the image. Inside the layers less of them is above the point, and the
+// share goes to 1 at their top.
+float shaftSunShare(float3 p)
+{
+  const float  height = length(p) - g_atmosphere.bottomRadius;
+  const float2 land   = landXz(p) - pc.shaftsLand;
+  const float2 uv     = cloudShaftsUv(float3(land.x, height - pc.shaftsAltitude, land.y), pc.sunDirection);
+  const float  below  = lerp(s_air.x, shaftsAt(uv), cloudShadowWeight(uv));
+  const float  inside = clamp((height - g_params.minHeight) / max(g_params.maxHeight - g_params.minHeight, 1e-3F), 0.0F, 1.0F);
+  return lerp(below, 1.0F, inside);
+}
+
+// Of the sun's light the air scatters toward the observer along [start, end] of a ray from it, the
+// share that is lit (shaftSunShare), each step weighed by what it scatters the eye's way and by what
+// the air before it lets through. `steps` jittered steps, short near the observer, where the air is
+// dense and the shafts are wide.
+float shaftShareAlong(float3 observer, float3 dir, float start, float end, int steps, float jitter)
+{
+  if(end <= start)
+    return s_air.x;
+  const float nu      = dot(dir, pc.sunDirection);
+  const float phaseR  = RayleighPhaseFunction(nu);
+  const float phaseM  = MiePhaseFunction(g_atmosphere.miePhaseFunctionG, nu);
+  const float span    = end - start;
+  float       through = 1.0F;
+  float       lit     = 0.0F;
+  float       all     = 0.0F;
+  for(int i = 0; i < steps; ++i)
+  {
+    const float  s        = (float(i) + jitter) / float(steps);
+    const float  t        = start + span * s * s;
+    const float  stepKm   = 2.0F * s * span / float(steps);
+    const float3 p        = float3(0.0F, observer.y, 0.0F) + dir * t;
+    const float  altitude = max(length(p) - g_atmosphere.bottomRadius, 0.0F);
+    const float  mieShare = GetProfileDensity(g_atmosphere.mieDensity, altitude);
+    const float  rayleigh = g_atmosphere.rayleighScattering.y * GetProfileDensity(g_atmosphere.rayleighDensity, altitude);
+    const float  mie      = g_atmosphere.mieScattering.y * mieShare;
+    const float  weight   = (rayleigh * phaseR + mie * phaseM) * stepKm * through;
+    lit += weight * shaftSunShare(p);
+    all += weight;
+    through *= exp(-(rayleigh + g_atmosphere.mieExtinction.y * mieShare) * stepKm);
+  }
+  return all > 0.0F ? lit / all : s_air.x;
+}
+
 // `depth` is how far the clouds are along the ray, km: where they are on average, as the air in
 // front of them is taken; 0 with none.
 float4 marchClouds(float r0, float3 dir, float jitter, out float depth)
@@ -426,7 +497,9 @@ float4 marchClouds(float r0, float3 dir, float jitter, out float depth)
   const AerialMarch air =
       marchAerialPerspective(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, observer, r0,
                              dir * frontDepth, sunDir, float2(0.5F));
-  const float3 airInFront = (air.sunInScatter * s_air.x + (air.inScatter - air.sunInScatter) * s_air.y) * SKY_RADIANCE_TO_LUMINANCE;
+  // the sun's part lit where the sun gets through to it: the light shafts in front of the clouds
+  const float  sunLit     = shaftShareAlong(observer, dir, 0.0F, frontDepth, 16, jitter);
+  const float3 airInFront = (air.sunInScatter * sunLit + (air.inScatter - air.sunInScatter) * s_air.y) * SKY_RADIANCE_TO_LUMINANCE;
   return cloudTexel(radianceIntegral, transmittance, air.transmittance, airInFront);
 }
 
@@ -505,9 +578,15 @@ void airShadeMain(uint3 group: SV_DispatchThreadID)
   if(RayIntersectsGround(g_atmosphere, r0, dir.y))
     return;
   const float3 clear = evalBrunetonSkyInScatter(g_atmosphere, g_transmittance, g_scattering, g_singleMie, r0, dir, pc.sunDirection);
+  // the sun's share of the shaded air is the lit share along the ray through it: the light shafts
+  // seen through a gap, against the sky
+  s_air               = float2(g_air[0], g_air[1]);
+  const float  R      = g_atmosphere.bottomRadius;
+  const float2 shell  = cloudLayerSegment(r0, dir.y, R, R + g_params.maxHeight);
+  const float  sunLit = shaftShareAlong(float3(0.0F, r0, 0.0F), dir, shell.x, shell.y, 32, stepJitter(id.xy, 0));
   texel.xyz -= texel.w
                * cloudShadeOfClearSky(g_atmosphere, g_transmittance, g_irradiance, r0, dir, pc.sunDirection, g_params.maxHeight,
-                                      g_air[0], g_air[1], clear);
+                                      sunLit, g_air[1], clear);
   g_out[at] = texel;
 }
 
@@ -727,4 +806,18 @@ void shadowMain(uint3 id: SV_DispatchThreadID)
   const float2 ground = cloudShadowGround((float2(id.xy) + 0.5F) / float(CLOUD_SHADOW_SIZE));
   const float3 origin = normalize(float3(ground.x, r0, ground.y)) * r0;
   g_shadow[id.xy]     = sunTransmittanceFrom(origin, 0.5F, 64);
+}
+
+// The same march over the shafts image's wider square (CLOUD_SHAFTS_EXTENT), for the light shafts.
+[shader("compute")]
+[numthreads(CLOUD_WORKGROUP_SIZE, CLOUD_WORKGROUP_SIZE, 1)]
+void shaftsMain(uint3 id: SV_DispatchThreadID)
+{
+  if(any(id.xy >= uint2(CLOUD_SHAFTS_SIZE, CLOUD_SHAFTS_SIZE)))
+    return;
+  s_air               = float2(pc.sunlitAir, 1.0F);
+  const float  r0     = g_atmosphere.bottomRadius + pc.observerAltitude;
+  const float2 ground = cloudShaftsGround((float2(id.xy) + 0.5F) / float(CLOUD_SHAFTS_SIZE));
+  const float3 origin = normalize(float3(ground.x, r0, ground.y)) * r0;
+  g_shafts[id.xy]     = sunTransmittanceFrom(origin, 0.5F, 64);
 }

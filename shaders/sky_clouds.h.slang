@@ -151,13 +151,18 @@ inline float2 cloudShadowGround(float2 uv)
   return (uv - float2(0.5F)) * CLOUD_SHADOW_EXTENT;
 }
 
-// Where the image is read for a point `p`, km from the scene's origin in the environment's frame, y
-// its height over the origin's ground: the ground point the sun's ray through `p` comes up from.
-// Under the cloud bases the clouds are all above both, so they are in the same shadow.
+// The ground point the sun's ray through `p` comes up from, km along x and z: `p` km from the scene's
+// origin in the environment's frame, y its height over the origin's ground. Under the cloud bases the
+// clouds are all above both, so they are in the same shadow.
+inline float2 cloudSunGround(float3 p, float3 sunDir)
+{
+  return float2(p.x, p.z) - float2(sunDir.x, sunDir.z) * (p.y / max(sunDir.y, CLOUD_SHADOW_MIN_SUN));
+}
+
+// Where the image is read for a point `p` (cloudSunGround).
 inline float2 cloudShadowUv(float3 p, float3 sunDir)
 {
-  const float2 ground = float2(p.x, p.z) - float2(sunDir.x, sunDir.z) * (p.y / max(sunDir.y, CLOUD_SHADOW_MIN_SUN));
-  return ground / CLOUD_SHADOW_EXTENT + float2(0.5F);
+  return cloudSunGround(p, sunDir) / CLOUD_SHADOW_EXTENT + float2(0.5F);
 }
 
 // The same once the clouds have drifted `shift` km along x and z since the image was baked of them
@@ -165,6 +170,27 @@ inline float2 cloudShadowUv(float3 p, float3 sunDir)
 inline float2 cloudShadowUv(float3 p, float3 sunDir, float2 shift)
 {
   return cloudShadowUv(float3(p.x - shift.x, p.y, p.z - shift.y), sunDir);
+}
+
+// The shafts image: the shadow image's march over a square this wide, km, centred where the shadow
+// image is. Under a low sun the air the eye looks through toward the horizon lies tens of kilometres
+// under the clouds' bases, and its light and shade there are their light shafts; a shaft is some
+// hundreds of metres across, and a texel here under a tenth of a kilometre.
+static const float CLOUD_SHAFTS_EXTENT = 96.0F;
+
+inline float2 cloudShaftsGround(float2 uv)
+{
+  return (uv - float2(0.5F)) * CLOUD_SHAFTS_EXTENT;
+}
+
+inline float2 cloudShaftsUv(float3 p, float3 sunDir)
+{
+  return cloudSunGround(p, sunDir) / CLOUD_SHAFTS_EXTENT + float2(0.5F);
+}
+
+inline float2 cloudShaftsUv(float3 p, float3 sunDir, float2 shift)
+{
+  return cloudShaftsUv(float3(p.x - shift.x, p.y, p.z - shift.y), sunDir);
 }
 
 // How much the image counts where it is read, against the land's mean share (SkySunDisk::
