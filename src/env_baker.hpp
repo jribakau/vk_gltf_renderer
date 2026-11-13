@@ -118,6 +118,8 @@ public:
     m_secondScale     = scale;
   }
   void setMoonDirection(const glm::vec3& direction) { m_moonDirection = direction; }
+  // The night's glow against the sky's light (EnvBakePushConstant::nightScale), 0 none
+  void setNightScale(float scale) { m_nightScale = scale; }
 
   // Observer height above the planet surface, in kilometres. Fixed rather than tracking the
   // camera -- see the fixed-observer note on brunetonObserver() in shaders/env_bake.slang.
@@ -194,6 +196,7 @@ private:
   glm::vec3                  m_secondDirection{0.0F, -1.0F, 0.0F};
   float                      m_secondScale = 0.0F;
   glm::vec3                  m_moonDirection{0.0F, -1.0F, 0.0F};
+  float                      m_nightScale = 0.0F;
   float                      m_observerAltitude{0.001F};  // 1 m
 
   // Set and layout borrowed from SkyBruneton; this class does not own them.

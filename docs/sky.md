@@ -358,10 +358,39 @@ from the sun as the phase says), and the renderer draws it and, at night, lights
   meter keeps three stops of the dark) and the image reaches DLSS-RR pre-exposed (denoising.md,
   Pre-exposure).
 
-Left out: stars, the Milky Way and the night sky's own glow (airglow), so a night without a moon is
-black; the moon's 5° tilt to the sun's path, its distance and its libration; its colour (its light is
+Left out: the moon's 5° tilt to the sun's path, its distance and its libration; its colour (its light is
 the sun's, a little whiter than the moon's); the haze's in-scatter of the second body over the
 scene's surfaces; the moon's own apparent size (drawn and lighting as the sun's, 3% wider).
+
+## The night sky
+
+Past the air, the physical sky has its night (the lighting's `night` section, protocol 72): the stars,
+the Milky Way and the upper air's own glow, turned by the clock. The host says where the sky stands
+(`siderealTime`, the right ascension on the meridian; `latitude`; `turn`, the azimuth of the meridian's
+south in the scene), and `fv::lighting::celestialAxes` makes that the world directions of the
+celestial (J2000 equatorial) axes, `SceneFrameInfo::celestialX`, `Y`, `Z`. All of it is in the sun's
+light above the air (shaders/night_sky.h.slang), dimmed by the air on the way in, and scaled against
+the sky's light (`nightScale`: the moon's share by moonlight), so a moonlit sky outshines it as it should.
+
+- **The glow** (airglow, with the faint stars and zodiacal light in it): 22 magnitudes a square
+  arcsecond at the zenith, 2e-4 cd/m^2, thicker toward the horizon by the layer's slant 90 km up (van
+  Rhijn's, 6 at the horizon), a dark site's teal grey. It is in the environment bake too: it lights a
+  moonless night, some 6e-4 lux.
+- **The Milky Way** (`milkyWay`): a band on the galaxy's plane (its pole and centre, IAU), brightest
+  toward the centre in Sagittarius, broken into star clouds and cut by dust (the Great Rift, and
+  dark nebulae along the plane), procedural. Its brightest some three times the glow.
+- **The stars**: the Yale Bright Star Catalogue to V 6.5, the eye's limit on a dark night (8,404 stars,
+  `src/star_catalog.inc`, made by `utils/make_star_catalog.py`), each its light by its magnitude
+  (the sun's -26.74) and its colour by its B-V (a black body at Ballesteros' temperature, against the
+  sun's). Binned by right ascension and declination two degrees a cell (`NightStarCell`, two buffers
+  read through `SceneFrameInfo::nightStars`), and drawn on the rays that see the sky (`evalStars`) as
+  a spot a pixel wide, so a star's light lands whole whatever the jitter. DLSS-RR took them for noise
+  on the sky's flat 0.5 albedo and smeared a field of them into blobs: the sky's albedo guide marks
+  them (`skyGuideAlbedo`), up to 1 where a star is, and it keeps them. Behind clouds, as the sun's disk.
+
+Left out: the planets, the moon's own light on the clouds' undersides at night (the clouds at night are
+lit by nothing but what comes through them, so they stand black on the glow), twinkling, light
+pollution, the Milky Way's real map (its structure is procedural, its place the galaxy's).
 
 ## What you can edit, and what travels with the scene
 

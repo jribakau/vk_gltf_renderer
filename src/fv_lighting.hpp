@@ -29,6 +29,9 @@
 //            skyVisibility (km one sees through the physical sky's air, which veils the distance and
 //            whitens the horizon alike: sky_visibility.hpp; 0 the atmosphere's own), protocol 65
 //   sun:     enabled, intensity, azimuth, elevation (degrees), color, softness
+//   night:   enabled, siderealTime (degrees: the right ascension on the meridian), latitude (degrees
+//            north), turn (degrees: the azimuth the meridian's south lies at). The physical sky's stars,
+//            Milky Way and glow; protocol 72
 //   moon:    enabled, azimuth, elevation (degrees, as the sun's), phase (0 new, 0.25 first quarter,
 //            0.5 full, 0.75 last quarter: the app places it by that, sunPath.ts moonAt) and light
 //            (the moon, not the sun, is the physical sky's light: its light beats the twilight's,
@@ -73,6 +76,7 @@
 // taken and dropped.
 //
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -118,6 +122,18 @@ struct Moon
   double elevation = -90.0;
   double phase     = 0.5;
   bool   light     = false;
+};
+
+// The physical sky's night (protocol 72): its stars, the Milky Way and the air's glow, turned by the
+// clock. `siderealTime`, degrees, the right ascension on the meridian; `latitude`, degrees north; `turn`,
+// degrees, the azimuth the meridian's south lies at in the scene (the sun's arc's turn, sunPath.ts).
+// Off for an app from before it.
+struct Night
+{
+  bool   enabled      = false;
+  double siderealTime = 0.0;
+  double latitude     = 45.0;
+  double turn         = 0.0;
 };
 
 struct Clouds
@@ -280,6 +296,7 @@ struct State
   Env     env;
   Sun     sun;
   Moon    moon;
+  Night   night;
   Clouds  clouds;
   Haze    haze;
   Ground  ground;
@@ -317,6 +334,10 @@ glm::dvec2 skyLightAngles(const State& s);
 // exposure itself rounded to a power of four, so a dark scene's light reaches DLSS-RR, which takes no
 // exposure, in a half float's range. A change restarts a still, so it moves only in steps.
 double preExposure(double exposure);
+
+// Where the celestial (J2000 equatorial) axes point in the world for a night's clock: right ascension
+// 0 and 90 on the equator, and the north pole, as sunDirection's unit vectors.
+std::array<glm::vec3, 3> celestialAxes(const Night& n);
 
 // The physical sky's light against its sun's: the moon's share of it (moon::lightShare) when the
 // moon is the light, else 1. Everything the sky gives is scaled by it (hdrIntensity).

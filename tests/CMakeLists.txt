@@ -156,6 +156,9 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/sun_position.cpp
     # The physical sky's moon: its light by phase, its face's shading
     test_moon.cpp
+    # The night sky: the stars' catalogue, colours and grid, the sky turned by the clock, the Milky Way, the glow
+    test_night_sky.cpp
+    ${CMAKE_SOURCE_DIR}/src/night_stars.cpp
     # Native P4a: the Light tab's state and unit conversions
     test_fv_lighting.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_lighting.cpp

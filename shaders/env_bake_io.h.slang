@@ -104,7 +104,8 @@ struct EnvBakePushConstant
   float3 secondDirection;
   float  secondScale;
   float3 moonDirection;
-  float  _pad1;
+  // The night's glow (night_sky.h.slang) against the sky's light, 0 none: what lights a moonless night
+  float  nightScale;
 };
 
 // The floor's reflectance the meter takes (the panel's default ground, 20% grey): the sky's light

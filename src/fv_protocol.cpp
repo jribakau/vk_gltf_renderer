@@ -139,7 +139,9 @@ namespace {
 // 71: the lighting's `moon` section (enabled, azimuth, elevation, phase, light): the physical sky's
 // moon, drawn with its phase, and at night the sky's light. An older renderer refuses the lighting
 // that has it.
-constexpr int kProtocolVersion = 71;
+// 72: the lighting's `night` section (enabled, siderealTime, latitude, turn): the physical sky's stars,
+// the Milky Way and the air's glow, turned by the clock. An older renderer refuses the lighting that has it.
+constexpr int kProtocolVersion = 72;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

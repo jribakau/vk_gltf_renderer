@@ -83,6 +83,7 @@ static bool doDebug = false;
 #include "sky_clouds.h.slang"
 #include "sky_clouds_air.h.slang"
 #include "sky_clouds_io.h.slang"
+#include "night_sky.h.slang"
 
 // NVSHADERS are under: https://github.com/nvpro-samples/nvpro_core2/tree/main/nvshaders
 #include "nvshaders/functions.h.slang"
@@ -231,6 +232,86 @@ float4 cloudsAlong(float3 dir, SceneFrameInfo* frameInfo, out float depth)
 // horizon, where sky meets ground in a hard edge, is what a lat-long would otherwise smear, and the
 // clouds' edges what its 0.35 degrees would.
 // `cloudsLeave` is what the clouds along the ray leave of what is behind them, 1 with none.
+// The sun's light above the air, in the sky's units: its disk's radiance and its illuminance,
+// luminance alone (the night sky's light is given against them, night_sky.h.slang)
+float sunAboveAirRadiance()
+{
+  const float3 radiance = g_atmosphere.solarIrradiance / (M_PI * g_atmosphere.sunAngularRadius * g_atmosphere.sunAngularRadius) * SUN_RADIANCE_TO_LUMINANCE;
+  return dot(radiance, float3(0.2126F, 0.7152F, 0.0722F));
+}
+
+// The night sky along `dir` (world), past the air and through it, before `envIntensity` and against
+// the sky's light (SceneFrameInfo::nightScale): the glow and the Milky Way, the stars aside (evalStars)
+float3 evalNightSky(float3 worldDir, float eyeRadius, SceneFrameInfo* frameInfo)
+{
+  const float3 v      = float3(dot(worldDir, frameInfo->celestialX), dot(worldDir, frameInfo->celestialY), dot(worldDir, frameInfo->celestialZ));
+  const float3 dir    = quatRotateInverse(frameInfo->envRotation, worldDir);
+  const float3 through = GetTransmittanceToSun(g_atmosphere, g_transmittance, eyeRadius, dir.y);
+  const float  glow   = NIGHT_GLOW_ZENITH * nightGlowPath(dir.y, g_atmosphere.bottomRadius);
+  return frameInfo->nightScale * sunAboveAirRadiance() * through * (glow * nightGlowColor() + NIGHT_GLOW_ZENITH * milkyWay(v));
+}
+
+// The stars along `dir` (world), before `envIntensity` and against the sky's light: each a spot as wide
+// as a pixel (or the air's arcminute of seeing), so its light lands whole whatever the jitter and
+// DLSS-RR sees a steady spot, not a point that comes and goes with the jitter (which it smeared), dimmed
+// by the air on the way. The camera's and a mirror's alone: their light is in the glow's.
+float3 evalStars(float3 worldDir, SceneFrameInfo* frameInfo)
+{
+  if(!(frameInfo->nightScale > 0.0F) || frameInfo->nightStars == nullptr || frameInfo->nightStarCells == nullptr)
+    return float3(0.0F);
+  const float3 dir = quatRotateInverse(frameInfo->envRotation, worldDir);
+  if(dir.y <= 0.0F)
+    return float3(0.0F);
+  const float3 v      = float3(dot(worldDir, frameInfo->celestialX), dot(worldDir, frameInfo->celestialY), dot(worldDir, frameInfo->celestialZ));
+  const float  sigma  = max(pushConst.pixelAngle, 2.9e-4F);
+  const float  reach  = 1.0F - 0.5F * (4.0F * sigma) * (4.0F * sigma);  // cos of four sigma
+  const int    column = nightStarColumn(v);
+  const int    row    = nightStarRow(v);
+  float3       sum    = float3(0.0F);
+  for(int dr = -1; dr <= 1; ++dr)
+  {
+    const int r = row + dr;
+    if(r < 0 || r >= NIGHT_STAR_CELLS_DEC)
+      continue;
+    // the rows at the poles are narrower than a star's spot: all of them
+    const bool polar = r == 0 || r == NIGHT_STAR_CELLS_DEC - 1;
+    const int  from  = polar ? 0 : column - 1;
+    const int  to    = polar ? NIGHT_STAR_CELLS_RA - 1 : column + 1;
+    for(int c = from; c <= to; ++c)
+    {
+      const NightStarCell cell = frameInfo->nightStarCells[r * NIGHT_STAR_CELLS_RA + (c + NIGHT_STAR_CELLS_RA) % NIGHT_STAR_CELLS_RA];
+      for(uint k = 0; k < cell.count; ++k)
+      {
+        const NightStar star = frameInfo->nightStars[cell.first + k];
+        const float     d    = dot(v, star.direction);
+        if(d < reach)
+          continue;
+        const float theta2 = 2.0F * (1.0F - d);
+        sum += star.light * exp(-theta2 / (2.0F * sigma * sigma));
+      }
+    }
+  }
+  if(!any(sum > 0.0F))
+    return float3(0.0F);
+  // the spot's light is the star's: its peak its illuminance over the spot's solid angle
+  const float  sunIlluminance = sunAboveAirRadiance() * M_PI * g_atmosphere.sunAngularRadius * g_atmosphere.sunAngularRadius;
+  const float3 through        = GetTransmittanceToSun(g_atmosphere, g_transmittance, g_atmosphere.bottomRadius + frameInfo->observerAltitudeKm, dir.y);
+  return frameInfo->nightScale * sunIlluminance * through * sum / (M_TWO_PI * sigma * sigma);
+}
+
+// The stars' share of what the first sky a path sees holds (luminance: the stars, the sky without
+// them), for the sky's albedo guide: DLSS-RR took a star on the flat 0.5 of the sky's albedo for noise
+// and smeared a field of them into blobs; marked there, it is detail it keeps. Set by the path's first
+// evalPhysicalSkyBackground, which is the camera ray's when it met nothing.
+static float2 g_skyStars = float2(0.0F);
+
+// The sky's albedo guide where the camera ray met nothing: 0.5 (NVIDIA's RR guide: 0 boils at the
+// silhouette), up to 1 where a star is
+float skyGuideAlbedo()
+{
+  return 0.5F + 0.5F * saturate(g_skyStars.x / max(g_skyStars.x + g_skyStars.y, 1e-30F));
+}
+
 float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo, out float cloudsLeave)
 {
   cloudsLeave         = 1.0F;
@@ -251,6 +332,9 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo, out float clo
     sky += frameInfo->skySecondScale
            * evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, eyeRadius, dir, second, 1.0F);
   }
+  // the night's: its glow and the Milky Way, behind the clouds
+  if(frameInfo->nightScale > 0.0F && dir.y > horizonMu)
+    sky += evalNightSky(worldDir, eyeRadius, frameInfo);
   // Below the horizon is the planet's ground with its air in front, all of it under the clouds, under
   // their shade (sky_clouds_air.h.slang; above the horizon the cloud images carry that shade). The
   // ground's own light is the sunlit share's.
@@ -316,8 +400,11 @@ float4 cloudsInFrontOf(float3 toPoint, SceneFrameInfo* frameInfo)
 float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
 {
   float        cloudsLeave;
-  const float3 sky = evalPhysicalSky(worldDir, frameInfo, cloudsLeave);
-  return sky + evalSunDiskBackground(quatRotateInverse(frameInfo->envRotation, worldDir), frameInfo) * cloudsLeave;
+  const float3 sky   = evalPhysicalSky(worldDir, frameInfo, cloudsLeave);
+  const float3 stars = evalStars(worldDir, frameInfo) * cloudsLeave;
+  if(g_skyStars.y <= 0.0F)
+    g_skyStars = float2(luminance(stars), max(luminance(sky), 1e-30F));
+  return sky + evalSunDiskBackground(quatRotateInverse(frameInfo->envRotation, worldDir), frameInfo) * cloudsLeave + stars;
 }
 
 // A lobe whose pdf at the sampled direction is above this, per steradian, is narrower than about a
@@ -2275,6 +2362,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
 {
   PathTracerState pt = {};
+  g_skyStars         = float2(0.0F);
   pt.inWater         = groundUnderWater(ray.Origin, pushConst.frameInfo);
 
 #if GLTF_USE_VOLUME
@@ -2626,7 +2714,7 @@ void addDenoiserGuides(SampleResult sampleResult, inout float3 albedoSum, inout 
 #if USE_DLSS_SHADER
   // DLSS-RR's still: the sky's albedo is 0.5, as on its moving frames (NVIDIA's RR guide)
   if(sampleResult.radiance.w <= 0.0f && hasFlag(pushConst.flags, PathtracerFlags::ePtRrStillGuides))
-    albedo = float3(0.5f);
+    albedo = float3(skyGuideAlbedo());
   else
 #endif
   if(sampleResult.radiance.w <= 0.0f)
@@ -2980,7 +3068,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     // the sky's albedo is 0.5, as NVIDIA's RR guide asks: 0 makes it boil at the silhouette
     float4 guideAlbedo = sampleResult.guideOutput.albedo;
     if(!hasSolidHit)
-      guideAlbedo = float4(0.5f);
+      guideAlbedo = float4(skyGuideAlbedo());
     // a guide that isn't finite would stay in RR's history: 0 in its place, counted
     bool guidesFinite = true;
     outImages[int(OutputImage::eDlssDepth)][int2(samplePos)]           = float4(finiteGuide(guideDepth, guidesFinite));

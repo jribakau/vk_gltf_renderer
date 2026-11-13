@@ -303,6 +303,12 @@ struct Settings
   glm::vec3 skySecondDirection = glm::vec3(0.0f, -1.0f, 0.0f);
   float     skySecondScale     = 0.0f;
   bool      skyLightIsMoon     = false;
+  // The night sky (SceneFrameInfo::celestialX to nightScale): where the celestial axes point in the
+  // world by the clock, and its light against the sky's light (0: none)
+  glm::vec3 skyCelestialX = glm::vec3(1.0f, 0.0f, 0.0f);
+  glm::vec3 skyCelestialY = glm::vec3(0.0f, 1.0f, 0.0f);
+  glm::vec3 skyCelestialZ = glm::vec3(0.0f, 0.0f, 1.0f);
+  float     skyNightScale = 0.0f;
   // Haze in the air, lit by the scene's lights (shaders/haze.h.slang): its visibility in metres, the
   // distance at which it leaves 2% of a dark object's contrast (0: no haze), and how strongly it
   // scatters forward (Henyey-Greenstein g), which is what puts a halo round a light seen through it.

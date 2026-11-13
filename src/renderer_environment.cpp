@@ -40,6 +40,9 @@
 
 #include "sky_visibility.hpp"
 #include "renderer.hpp"
+#include "night_stars.hpp"
+
+#include <cstring>
 
 #include <figure/io/timing.hpp>
 #include "env_image_loader.hpp"
@@ -874,6 +877,7 @@ void GltfRenderer::updateBakerParameters()
   const glm::quat toEnvironment = glm::inverse(m_resources.settings.envRotationQuat());
   m_envBaker.setSecondSky(toEnvironment * m_resources.settings.skySecondDirection, m_resources.settings.skySecondScale);
   m_envBaker.setMoonDirection(toEnvironment * m_resources.settings.skyMoonDirection);
+  m_envBaker.setNightScale(m_resources.settings.skyNightScale);
 
   // The clouds bake with the sky, so they take their settings at the same moment.
   const Settings& s = m_resources.settings;
@@ -883,6 +887,25 @@ void GltfRenderer::updateBakerParameters()
                          .type        = s.cloudType,
                          .midCoverage  = s.cloudMidCoverage,
                          .highCoverage = s.cloudHighCoverage});
+}
+
+//--------------------------------------------------------------------------------------------------
+// The night sky's stars (src/night_stars.hpp): the catalogue binned by the sky's grid, written once
+// into two small buffers the path tracer reads through their addresses (SceneFrameInfo::nightStars).
+// Host-visible: a few hundred kilobytes, read only by night by the rays that see the sky.
+void GltfRenderer::createNightStars()
+{
+  const fv::night::StarTables tables = fv::night::buildStarTables(fv::night::catalog());
+  const auto                  make   = [this](nvvk::Buffer& buffer, const void* data, size_t bytes) {
+    NVVK_CHECK(m_resources.allocator.createBuffer(buffer, bytes, VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
+                                                                       VMA_MEMORY_USAGE_AUTO,
+                                                                       VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT));
+    std::memcpy(buffer.mapping, data, bytes);
+  };
+  make(m_nightStars, tables.stars.data(), tables.stars.size() * sizeof(shaderio::NightStar));
+  make(m_nightStarCells, tables.cells.data(), tables.cells.size() * sizeof(shaderio::NightStarCell));
+  NVVK_DBG_NAME(m_nightStars.buffer);
+  NVVK_DBG_NAME(m_nightStarCells.buffer);
 }
 
 //--------------------------------------------------------------------------------------------------

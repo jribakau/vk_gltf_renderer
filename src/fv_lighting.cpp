@@ -183,6 +183,27 @@ void patchMoon(Moon& m, const Json& p)
   }
 }
 
+void patchNight(Night& n, const Json& p)
+{
+  const Night d;
+  for(auto it = p.begin(); it != p.end(); ++it)
+  {
+    const std::string& k   = it.key();
+    const Json&        v   = it.value();
+    const std::string  key = "night." + k;
+    if(k == "enabled")
+      field(n.enabled, d.enabled, v, [&](const Json& x) { return boolean(x, key); });
+    else if(k == "siderealTime")
+      field(n.siderealTime, d.siderealTime, v, [&](const Json& x) { return number(x, key, -1e6, 1e6); });
+    else if(k == "latitude")
+      field(n.latitude, d.latitude, v, [&](const Json& x) { return number(x, key, -90.0, 90.0); });
+    else if(k == "turn")
+      field(n.turn, d.turn, v, [&](const Json& x) { return wrapDegrees(number(x, key, -1e6, 1e6)); });
+    else
+      reject("unknown key " + key);
+  }
+}
+
 void patchClouds(Clouds& c, const Json& p)
 {
   const Clouds d;
@@ -559,6 +580,8 @@ Json toJson(const State& s)
         {"softness", u.softness}}},
       {"moon",
        {{"enabled", m.enabled}, {"azimuth", m.azimuth}, {"elevation", m.elevation}, {"phase", m.phase}, {"light", m.light}}},
+      {"night",
+       {{"enabled", s.night.enabled}, {"siderealTime", s.night.siderealTime}, {"latitude", s.night.latitude}, {"turn", s.night.turn}}},
       {"clouds",
        {{"coverage", c.coverage},
         {"thickness", c.thickness},
@@ -621,6 +644,8 @@ State applyPatch(const State& s, const Json& patch)
     }
     else if(k == "moon")
       reset ? void(out.moon = Moon{}) : patchMoon(out.moon, section(patch, "moon"));
+    else if(k == "night")
+      reset ? void(out.night = Night{}) : patchNight(out.night, section(patch, "night"));
     else if(k == "clouds")
       reset ? void(out.clouds = Clouds{}) : patchClouds(out.clouds, section(patch, "clouds"));
     else if(k == "haze")
@@ -667,6 +692,22 @@ glm::vec3 sunDirection(double azimuthDeg, double elevationDeg)
 {
   const double az = radians(azimuthDeg), el = radians(elevationDeg);
   return glm::vec3(float(std::cos(el) * std::sin(az)), float(std::sin(el)), float(std::cos(el) * std::cos(az)));
+}
+
+std::array<glm::vec3, 3> celestialAxes(const Night& n)
+{
+  // a celestial direction's place in the scene: its hour angle from the sidereal time, its height and
+  // its swing from the meridian's south (as sunPath.ts's sunAt has the sun's), turned by `turn`
+  const double rad = 3.14159265358979323846 / 180.0;
+  const double phi = n.latitude * rad;
+  const auto   at  = [&](double raDeg, double decDeg) {
+    const double h     = (n.siderealTime - raDeg) * rad;
+    const double delta = decDeg * rad;
+    const double el    = std::asin(std::clamp(std::sin(phi) * std::sin(delta) + std::cos(phi) * std::cos(delta) * std::cos(h), -1.0, 1.0));
+    const double swing = std::atan2(std::sin(h) * std::cos(delta), std::cos(h) * std::cos(delta) * std::sin(phi) - std::sin(delta) * std::cos(phi));
+    return sunDirection(n.turn + swing / rad, el / rad);
+  };
+  return {at(0.0, 0.0), at(90.0, 0.0), at(0.0, 90.0)};
 }
 
 double preExposure(double exposure)
@@ -967,6 +1008,7 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
   const double exposure = tmExposure(t.method, t.exposure) * cloudExposure(s, clouds);
   const Grade  g2       = grade(t);
   const MoonParams mp   = moonParams(s);
+  const auto       axes = celestialAxes(s.night);
 
   int envSystem = 1;  // studio and hdr are both a lat-long image
   if(e.source == "sky")
@@ -1069,6 +1111,11 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"skySecondScale", mp.secondScale},
       {"skyLightIsMoon", moonIsLight(s)},
       {"ptOutputScale", preExposure(exposure)},
+      {"skyCelestialX", vec3(axes[0])},
+      {"skyCelestialY", vec3(axes[1])},
+      {"skyCelestialZ", vec3(axes[2])},
+      // the night's light is its own: against the sky's light, which is the moon's by night
+      {"skyNightScale", e.source == "sky" && s.night.enabled && s.sun.elevation < 0.0 ? 1.0 / skyLightScale(s) : 0.0},
   };
 }
 

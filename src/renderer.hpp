@@ -738,6 +738,10 @@ private:
   EnvBaker      m_envBaker;       // Bakes analytic skies into the shared lighting environment
   SkyBruneton   m_skyBruneton;    // Precomputed atmospheric scattering LUTs
   SkyClouds     m_skyClouds;      // The physical sky's cloud layer, baked ahead of the environment
+  // The night sky's stars and their grid (createNightStars, SceneFrameInfo::nightStars)
+  nvvk::Buffer m_nightStars;
+  nvvk::Buffer m_nightStarCells;
+  void         createNightStars();
   // Which environment the firefly clamp was last calibrated for, as an int so it can hold a
   // "none yet" sentinel. The clamp is a starting point the user is free to override, so it is
   // recalibrated when the environment changes *kind* and not on every re-bake.

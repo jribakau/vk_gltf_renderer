@@ -219,6 +219,24 @@ struct SkySunDisk
   float3 moonRadiance;
 };
 
+// A star of the night sky (src/night_stars.cpp, shaders/night_sky.h.slang): toward it, celestial
+// (J2000), and its light against the sun's above the air, in its colour
+struct NightStar
+{
+  float3 direction;
+  float  _pad0;
+  float3 light;
+  float  _pad1;
+};
+
+// The stars of a cell of the night sky's grid (NIGHT_STAR_CELLS_RA x NIGHT_STAR_CELLS_DEC): where they
+// begin in the stars' table, and how many
+struct NightStarCell
+{
+  uint first;
+  uint count;
+};
+
 struct SceneFrameInfo
 {
   float4x4 viewMatrix;      // View matrix
@@ -440,6 +458,16 @@ struct SceneFrameInfo
   // The pre-exposure: what the path tracer writes is its light times this (Settings::ptOutputScale),
   // and whatever reads the image as light takes it back out (Resources::shownExposure). (Appended.)
   float outputScale = 1.0F;
+  // The night sky (night_sky.h.slang): where the celestial axes point in the world, as the clock has
+  // them; its light against the sky's light (0: none); the stars and their grid. (Appended.)
+  float3         celestialX     = {1.0F, 0.0F, 0.0F};
+  float          nightScale     = 0.0F;
+  float3         celestialY     = {0.0F, 1.0F, 0.0F};
+  float          _nightPad      = 0.0F;
+  float3         celestialZ     = {0.0F, 0.0F, 1.0F};
+  float          _nightPad2     = 0.0F;
+  NightStar*     nightStars     = nullptr;
+  NightStarCell* nightStarCells = nullptr;
 };
 
 enum PathtracerFlags

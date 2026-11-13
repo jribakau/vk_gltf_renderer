@@ -248,6 +248,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   // After SkyBruneton and SkyClouds: EnvBaker takes their descriptor-set layouts to build a pipeline
   // layout that covers every producer.
   m_envBaker.init(m_resources, m_skyBruneton.getDescriptorSetLayout(), m_skyBruneton.getDescriptorSet(), m_skyClouds);
+  createNightStars();
   m_envBaker.setResolution(m_resources, kEnvBakeSize);
 
   // Publish the same set to the two renderers, which read the tables directly for aerial
@@ -1199,6 +1200,12 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.skySecondScale     = m_resources.settings.skySecondScale;
     finfo.skyLightIsMoon     = m_resources.settings.skyLightIsMoon ? 1 : 0;
     finfo.outputScale        = m_resources.settings.ptOutputScale;
+    finfo.celestialX         = m_resources.settings.skyCelestialX;
+    finfo.celestialY         = m_resources.settings.skyCelestialY;
+    finfo.celestialZ         = m_resources.settings.skyCelestialZ;
+    finfo.nightScale         = m_resources.settings.envSystem == shaderio::EnvSystem::eSky ? m_resources.settings.skyNightScale : 0.0F;
+    finfo.nightStars         = reinterpret_cast<shaderio::NightStar*>(m_nightStars.address);
+    finfo.nightStarCells     = reinterpret_cast<shaderio::NightStarCell*>(m_nightStarCells.address);
     finfo.landFadeFrom   = m_resources.settings.landFadeFrom;
     finfo.landFadeTo     = m_resources.settings.landFadeTo;
     finfo.shadowRayShare = std::clamp(m_resources.settings.ptShadowShare, 0.0F, 1.0F);
@@ -1975,6 +1982,8 @@ void GltfRenderer::destroyResources()
   m_skyBruneton.deinit(m_resources);
   m_envBaker.deinit(m_resources);
   m_skyClouds.deinit(m_resources);
+  m_resources.allocator.destroyBuffer(m_nightStars);
+  m_resources.allocator.destroyBuffer(m_nightStarCells);
 
   m_resources.tonemapper.deinit();
   m_resources.appMemoryTracker.untrack("GBuffers", m_resources.gBuffers, Resources::eImgCount);

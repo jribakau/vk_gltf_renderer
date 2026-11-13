@@ -120,10 +120,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   // auto-exposure off -- what a reproducible capture wants. Out-of-range values are clamped rather
   // than refused, so too high a floor is silent: the run succeeds and the image is simply not the
   // one that was asked for.
-  // The ceiling is the host's lighting.set exposure (1e5, for the physical sky at twilight) over
+  // The ceiling is the host's lighting.set exposure (1e8, for the physical sky's moonless night) over
   // ACES's 0.6 (fv_lighting.cpp tmExposure), with room.
   m_settings.add({"tmExposure", "Tonemapper: Exposure multiplier"}, &m_resources.tonemapperData.exposure, Persist::eYes,
-                 0.01F, 1e6F);
+                 0.01F, 1e9F);
   m_settings.add({"tmContrast", "Tonemapper: Contrast"}, &m_resources.tonemapperData.contrast, Persist::eYes, 0.0F, 2.0F);
   m_settings.add({"tmBrightness", "Tonemapper: Brightness"}, &m_resources.tonemapperData.brightness, Persist::eYes, 0.0F, 2.0F);
   m_settings.add({"tmSaturation", "Tonemapper: Saturation"}, &m_resources.tonemapperData.saturation, Persist::eYes, 0.0F, 2.0F);
@@ -590,6 +590,15 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.skySecondScale, Persist::eNo, 0.0F, 1e12F);
   m_settings.add({.name = "skyLightIsMoon", .help = "Sky: the sky's light is the moon (its disk not drawn as the sun's)", .callbackSuccess = skyBaked},
                  &m_resources.settings.skyLightIsMoon, Persist::eNo);
+  // The night sky (fv_lighting.cpp): the stars and the Milky Way per ray, its glow in the bake too
+  m_settings.addVector({.name = "skyCelestialX", .help = "Sky: where the celestial x axis (right ascension 0) points, world space", .callbackSuccess = groundChanged},
+                       &m_resources.settings.skyCelestialX, Persist::eNo);
+  m_settings.addVector({.name = "skyCelestialY", .help = "Sky: where the celestial y axis (right ascension 90) points, world space", .callbackSuccess = groundChanged},
+                       &m_resources.settings.skyCelestialY, Persist::eNo);
+  m_settings.addVector({.name = "skyCelestialZ", .help = "Sky: where the celestial north pole points, world space", .callbackSuccess = groundChanged},
+                       &m_resources.settings.skyCelestialZ, Persist::eNo);
+  m_settings.add({.name = "skyNightScale", .help = "Sky: the night sky's stars, Milky Way and glow against the sky's light (0: none)", .callbackSuccess = skyBaked},
+                 &m_resources.settings.skyNightScale, Persist::eNo, 0.0F, 1e12F);
   // Haze: SceneFrameInfo alone, as the aerial perspective (fillHaze)
   m_settings.add({.name            = "hazeVisibility",
                   .help            = "Haze: a thin haze in the air, lit by the scene's lights; its visibility in metres (0: none)",

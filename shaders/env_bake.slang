@@ -66,6 +66,7 @@
 #include "sky_bruneton_radiance.h.slang"
 #include "sky_clouds.h.slang"
 #include "sky_clouds_air.h.slang"
+#include "night_sky.h.slang"
 #include "sky_clouds_io.h.slang"
 
 // clang-format off
@@ -139,6 +140,15 @@ float3 evalSkyBruneton(float3 dir, out float3 clear)
   if(pc.secondScale > 0.0F)
     sky += pc.secondScale
            * evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r, dir, pc.secondDirection, 1.0F);
+  // the night's own glow, which lights a moonless night (the stars and the Milky Way it leaves to the
+  // per-ray sky: their light is in the glow's)
+  if(pc.nightScale > 0.0F)
+  {
+    const float3 sunRadiance = g_atmosphere.solarIrradiance / (M_PI * g_atmosphere.sunAngularRadius * g_atmosphere.sunAngularRadius) * SUN_RADIANCE_TO_LUMINANCE;
+    const float  sunY        = dot(sunRadiance, float3(0.2126F, 0.7152F, 0.0722F));
+    sky += pc.nightScale * sunY * NIGHT_GLOW_ZENITH * nightGlowPath(dir.y, g_atmosphere.bottomRadius) * nightGlowColor()
+           * GetTransmittanceToSun(g_atmosphere, g_transmittance, r, dir.y);
+  }
   clear = sky;
   // The clouds over it, above the horizon. Below, the ground is in the way, and what they change is
   // the air in front of it, under their shade (sky_clouds_air.h.slang), as the background's.
