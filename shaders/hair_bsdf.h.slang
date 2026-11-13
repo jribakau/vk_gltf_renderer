@@ -175,8 +175,8 @@ HairScales hairScales(float betaM, float betaN)
   betaN = clamp(betaN, 0.0F, 1.0F);
   float bm2 = betaM * betaM;
   float bn2 = betaN * betaN;
-  sc.v[0]   = pow(0.726F * betaM + 0.812F * bm2 + 3.7F * pow(betaM, 20.0F), 2.0F);
-  sc.v[0]   = max(sc.v[0], 1e-5F);
+  const float v0 = 0.726F * betaM + 0.812F * bm2 + 3.7F * pow(betaM, 20.0F);
+  sc.v[0]        = max(v0 * v0, 1e-5F);
   sc.v[1]   = 0.25F * sc.v[0];
   sc.v[2]   = 4.0F * sc.v[0];
   sc.v[3]   = sc.v[2];

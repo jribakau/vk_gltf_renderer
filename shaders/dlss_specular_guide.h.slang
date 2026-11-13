@@ -49,6 +49,15 @@ float dlssReflectionShare(float fresnel, float3 through)
   return fresnel / max(fresnel + t, 1e-6F);
 }
 
+// What a dielectric reflects head-on between indices `n1` and `n2`, ((n2 - n1) / (n2 + n1))^2, the
+// same from either side. Squared by a product: from inside (glass, under water) the ratio is negative,
+// and pow of a negative base is undefined on the GPU (pbr_ggx_microfacet.h.slang's schlickFresnel).
+float dlssDielectricF0(float n1, float n2)
+{
+  const float r = (n2 - n1) / (n2 + n1);
+  return r * r;
+}
+
 // The diffuse albedo guide: the glass's or water's own colour where it reflects, the surface behind
 // as it comes through elsewhere
 float3 dlssSeeThroughAlbedo(float3 behind, float3 surfaceColour, float fresnel, float3 through)

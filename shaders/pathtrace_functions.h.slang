@@ -2330,7 +2330,7 @@ float3 dlssEnforceMinAlbedo(float3 albedo, float3 specularAlbedo)
 float3 dlssSpecularAlbedo(PbrMaterial mat, float3 dir)
 {
   const float  ndotv        = dot(mat.N, dir);
-  const float  f0FromIor    = pow((mat.ior2 - mat.ior1) / (mat.ior2 + mat.ior1), 2.0F);
+  const float  f0FromIor    = dlssDielectricF0(mat.ior1, mat.ior2);
   const float3 dielectricF0 = min(f0FromIor * mat.specularColor, float3(1.0F)) * mat.specular;
   const float3 f0           = lerp(dielectricF0, mat.baseColor, mat.metallic);
   float3       albedo       = EnvBRDFApprox2(f0, mat.roughness.x, ndotv);

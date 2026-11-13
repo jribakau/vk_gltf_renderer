@@ -12,7 +12,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
 #include <map>
+#include <regex>
 #include <set>
 #include <string>
 #include <vector>
@@ -579,3 +582,55 @@ TEST(StructLayout, GltfShadeMaterial)
   expectAgree(gltfShadeMaterial());
   expectAgree(gltfTextureInfo());
 }
+
+// No shader squares with pow. pow of a negative base is undefined on the GPU, and whether a driver
+// folds pow(x, 2) to x * x differs from one build of a pipeline to the next: (1 - ior) / (1 + ior)
+// squared that way was a NaN on every clear glass and water pixel of some builds and of no others.
+// A square is written as a product, whatever its base's sign.
+TEST(ShaderSource, NothingIsSquaredByPow)
+{
+  namespace fs = std::filesystem;
+  const std::regex squared(R"(\bpow\s*\(.*,\s*2(\.0*)?[fF]?\s*\))");
+  int              files = 0;
+  for(const char* dir : {FV_SHADER_DIR, FV_NVSHADERS_DIR})
+  {
+    for(const fs::directory_entry& entry : fs::recursive_directory_iterator(dir))
+    {
+      const std::string ext = entry.path().extension().string();
+      if(!entry.is_regular_file() || (ext != ".slang" && ext != ".h"))
+        continue;
+      files++;
+      std::ifstream in(entry.path());
+      std::string   line;
+      bool          inComment = false;
+      for(int number = 1; std::getline(in, line); number++)
+      {
+        // code only: a block comment's lines and a line comment's tail may quote the formula
+        std::string code;
+        for(size_t i = 0; i < line.size(); i++)
+        {
+          if(inComment)
+          {
+            if(line.compare(i, 2, "*/") == 0)
+            {
+              inComment = false;
+              i++;
+            }
+          }
+          else if(line.compare(i, 2, "/*") == 0)
+          {
+            inComment = true;
+            i++;
+          }
+          else if(line.compare(i, 2, "//") == 0)
+            break;
+          else
+            code += line[i];
+        }
+        EXPECT_FALSE(std::regex_search(code, squared)) << entry.path().string() << ":" << number << ": " << line;
+      }
+    }
+  }
+  EXPECT_GT(files, 50);  // the folders were found
+}
+

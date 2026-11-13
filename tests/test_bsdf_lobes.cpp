@@ -2513,6 +2513,24 @@ TEST(DlssSpecularGuide, TheSeeThroughGuidesFollowWhatMakesThePixel)
   EXPECT_LT(dlssReflectionShare(schlick(1.33f, std::cos(60.0f * 3.14159265f / 180.0f)), metre), DLSS_REFLECTION_KEEPS_SURFACE);
 }
 
+// A dielectric's head-on reflectance is the same from either side and never a NaN: from inside glass or
+// from under water the index ratio's term is negative, which the shaders once squared with pow (undefined
+// on the GPU: a NaN in every see-through guide of the pipeline builds whose driver did not fold it).
+TEST(DlssSpecularGuide, ADielectricReflectsTheSameHeadOnFromEitherSide)
+{
+  for(float n : {1.33f, 1.5f, 2.4f})
+  {
+    const float f0 = ((n - 1.0f) / (n + 1.0f)) * ((n - 1.0f) / (n + 1.0f));
+    EXPECT_NEAR(dlssDielectricF0(1.0f, n), f0, 1e-7f) << n;
+    EXPECT_NEAR(dlssDielectricF0(n, 1.0f), f0, 1e-7f) << n;
+    // Schlick's by index (pbr_ggx_microfacet.h.slang): that head-on, all of it at grazing, out as in
+    EXPECT_NEAR(schlickFresnel(n, 1.0f), f0, 1e-7f) << n;
+    EXPECT_NEAR(schlickFresnel(1.0f / n, 1.0f), f0, 1e-6f) << n;
+    EXPECT_NEAR(schlickFresnel(n, 0.0f), 1.0f, 1e-6f) << n;
+  }
+  EXPECT_EQ(dlssDielectricF0(1.5f, 1.5f), 0.0f);  // no boundary
+}
+
 // Under water the guide point sits where the eye sees the surface behind: through flat surfaces, on the
 // line through it along their normal, which is the camera ray's point at s n0 / n per segment
 // (dlssSeenScale). Built here from Snell's law alone: the ray refracted at the surface, the point that
