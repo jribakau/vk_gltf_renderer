@@ -573,6 +573,23 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.groundWaves, Persist::eYes, 0.0F, 1.0F);
   m_settings.add({.name = "skySunScale", .help = "Sky: multiplier on the light the sky's sun gives (0: no sun light)", .callbackSuccess = groundChanged},
                  &m_resources.settings.skySunScale, Persist::eNo, 0.0F, 100.0F);
+  m_settings.add({.name = "ptOutputScale", .help = "Path tracer: the pre-exposure its image is written at (the tone mapper takes it back out)", .callbackSuccess = groundChanged},
+                 &m_resources.settings.ptOutputScale, Persist::eNo, 1e-6F, 1e12F);
+  // The moon (fv_lighting.cpp moonParams): drawn per ray, but its colour through the air and the other
+  // body's sky are the bake's
+  const auto skyBaked = [this](const nvutils::ParameterBase* const) { requestEnvironmentPreview(); };
+  m_settings.addVector({.name = "skyMoonDirection", .help = "Sky: toward the physical sky's moon, world space", .callbackSuccess = skyBaked},
+                       &m_resources.settings.skyMoonDirection, Persist::eNo);
+  m_settings.add({.name = "skyMoonScale", .help = "Sky: the moon's face, its light per unit of shading against the sky's light (0: none)", .callbackSuccess = groundChanged},
+                 &m_resources.settings.skyMoonScale, Persist::eNo, 0.0F, 1e7F);
+  m_settings.add({.name = "skyMoonEarthshine", .help = "Sky: the moon's dark side, lit by the Earth, against the sky's light", .callbackSuccess = groundChanged},
+                 &m_resources.settings.skyMoonEarthshine, Persist::eNo, 0.0F, 1e7F);
+  m_settings.addVector({.name = "skySecondDirection", .help = "Sky: toward the other body whose sky is added (the moon's, or the sun's twilight)", .callbackSuccess = skyBaked},
+                       &m_resources.settings.skySecondDirection, Persist::eNo);
+  m_settings.add({.name = "skySecondScale", .help = "Sky: the other body's sky against the sky's light (0: none)", .callbackSuccess = skyBaked},
+                 &m_resources.settings.skySecondScale, Persist::eNo, 0.0F, 1e12F);
+  m_settings.add({.name = "skyLightIsMoon", .help = "Sky: the sky's light is the moon (its disk not drawn as the sun's)", .callbackSuccess = skyBaked},
+                 &m_resources.settings.skyLightIsMoon, Persist::eNo);
   // Haze: SceneFrameInfo alone, as the aerial perspective (fillHaze)
   m_settings.add({.name            = "hazeVisibility",
                   .help            = "Haze: a thin haze in the air, lit by the scene's lights; its visibility in metres (0: none)",

@@ -136,7 +136,10 @@ namespace {
 // patch of kind, seed, size, density, relief, air, mature, wind, windFrom; a step of the history) and
 // the `backdrop` topic (those, with the read-only state and plants). The lighting topic has no
 // `backdrop`, and this renderer refuses a lighting.set that has one, but for a kept scene's.
-constexpr int kProtocolVersion = 70;
+// 71: the lighting's `moon` section (enabled, azimuth, elevation, phase, light): the physical sky's
+// moon, drawn with its phase, and at night the sky's light. An older renderer refuses the lighting
+// that has it.
+constexpr int kProtocolVersion = 71;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -329,6 +329,40 @@ pixel by every background pass. It is published to a small device buffer and rea
 passes through an address in `SceneFrameInfo` — no host readback, so a preview during a drag shows a
 fresh disk rather than a stale one.
 
+## The moon
+
+The physical sky has a moon: where it stands is the host's to say (the lighting's `moon` section,
+protocol 71; the Figure Viewer places it by its sun clock and a phase, on the sun's yearly path as far
+from the sun as the phase says), and the renderer draws it and, at night, lights by it.
+
+- **Its light** against the sun's, above the air, is `fv::moon::lightShare` (src/moon.hpp): a full
+  moon's 2.5e-6 (0.32 lux against 1.27e5), falling with the phase angle as Allen's lunar magnitude
+  does, a quarter about a tenth of it. The phase angle comes from where the two stand.
+- **The sky's light.** The renderer has one sky light (the sun's direction, its light, its disk's
+  radiance, the clouds' bake, their shadow and shafts, the aerial perspective's sun). When the host
+  says the moon is the light (`moon.light`: the app's call, when its light beats what is left of the
+  twilight), that light is the moon's: the sun light's entity is aimed at it, and everything the sky
+  gives is scaled by its share (`hdrIntensity`), so the moonlit sky, its clouds, their shadows and the
+  haze's glow round it are the daylit ones, dimmer. The Sun section's strength is the sun's alone.
+- **The other body's sky** is added to the light's (`skySecondDirection`, `skySecondScale`, per ray in
+  `evalPhysicalSky` and in the environment bake): the moon's at twilight, and the sun's twilight once
+  the moon is the light, so the switch between them changes the sky by the sky's share alone. The
+  switch still moves the direct light, from none (the sun under the horizon) to the moon's.
+- **Its disk** (`evalMoonDisk` in sky_background.h.slang) is as wide as the sun's, its face lit by the
+  sun (Lommel-Seeliger, which keeps a full moon as bright at its edge as in its middle), its maria a
+  painted albedo, its dark side lit by the Earth (earthshine, the most at a thin crescent). The face's
+  scale (`moonScale`) makes its mean the moon's light, its colour through the air the bake's
+  (`SkySunDisk::moonRadiance`). What NEE samples, and what an escaped rough ray is weighed against, is
+  the light's even disk (`evalSkyLightDisk`); the drawn face is what the camera and mirrors see.
+- **Exposure.** A night is some 400,000 times darker than the day: the app opens the exposure (its
+  meter keeps three stops of the dark) and the image reaches DLSS-RR pre-exposed (denoising.md,
+  Pre-exposure).
+
+Left out: stars, the Milky Way and the night sky's own glow (airglow), so a night without a moon is
+black; the moon's 5° tilt to the sun's path, its distance and its libration; its colour (its light is
+the sun's, a little whiter than the moon's); the haze's in-scatter of the second body over the
+scene's surfaces; the moon's own apparent size (drawn and lighting as the sun's, 3% wider).
+
 ## What you can edit, and what travels with the scene
 
 The whole atmosphere is editable, and every field is registered once through `SettingsRegistry`,

@@ -1711,11 +1711,11 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   m_pushConst.flags |= (m_adaptiveStop && !useDlss && !pixelTimeOn(resources)) ? shaderio::ePtAdaptiveStop : 0;
   m_sampleCountsLive = (m_pushConst.flags & shaderio::ePtAdaptiveStop) != 0;
   // in displayed brightness, with the exposure the host sets (auto exposure, which it never uses, has none)
-  m_pushConst.adaptiveThreshold = resources.tonemapperData.autoExposure ?
-                                      m_adaptiveThreshold :
-                                      adaptiveSceneThreshold(m_adaptiveThreshold, resources.tonemapperData.exposure);
+  // (of the image as written, pre-exposed: Resources::shownTonemapper)
+  const shaderio::TonemapperData shown = resources.shownTonemapper();
+  m_pushConst.adaptiveThreshold = shown.autoExposure ? m_adaptiveThreshold : adaptiveSceneThreshold(m_adaptiveThreshold, shown.exposure);
   m_pushConst.adaptiveMin       = m_adaptiveMin;
-  const adaptive_relax::Table relax = m_adaptiveRelax ? adaptive_relax::build(resources.tonemapperData) : adaptive_relax::Table{};
+  const adaptive_relax::Table relax = m_adaptiveRelax ? adaptive_relax::build(shown) : adaptive_relax::Table{};
   m_pushConst.adaptiveRelaxBase     = relax.base;
   std::memcpy(m_pushConst.adaptiveRelax, relax.relax.data(), sizeof(m_pushConst.adaptiveRelax));
   m_pushConst.adaptiveActive = (m_pushConst.flags & shaderio::ePtAdaptiveStop) && m_adaptiveDone > 0.0F ?

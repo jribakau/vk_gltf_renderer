@@ -292,6 +292,17 @@ struct Settings
   float groundWaves      = 0.4f;
   // A multiplier on the light the sky's sun gives (SceneFrameInfo::skySunScale).
   float skySunScale = 1.0f;
+  // The path tracer's pre-exposure (SceneFrameInfo::outputScale): what it writes is its light times
+  // this; the exposure is taken as that much less wherever the image is read as light (shownExposure)
+  float ptOutputScale = 1.0f;
+  // The physical sky's moon and the other body's sky (SceneFrameInfo::moonDirection to skyLightIsMoon),
+  // as the host works them out (fv_lighting.cpp moonParams)
+  glm::vec3 skyMoonDirection   = glm::vec3(0.0f, -1.0f, 0.0f);
+  float     skyMoonScale       = 0.0f;
+  float     skyMoonEarthshine  = 0.0f;
+  glm::vec3 skySecondDirection = glm::vec3(0.0f, -1.0f, 0.0f);
+  float     skySecondScale     = 0.0f;
+  bool      skyLightIsMoon     = false;
   // Haze in the air, lit by the scene's lights (shaders/haze.h.slang): its visibility in metres, the
   // distance at which it leaves 2% of a dark object's contrast (0: no haze), and how strongly it
   // scatters forward (Henyey-Greenstein g), which is what puts a halo round a light seen through it.
@@ -452,6 +463,14 @@ struct Resources
   bool                                        sunYIsUp{true};
   nvshaders::Tonemapper                       tonemapper{};                       // Tonemapper
   shaderio::TonemapperData                    tonemapperData{.autoExposure = 1};  // Tonemapper data
+  // The tone mapper's data for the image the path tracer writes, pre-exposed (Settings::ptOutputScale):
+  // its exposure that much less, so the picture is the light times the exposure the host set
+  shaderio::TonemapperData shownTonemapper() const
+  {
+    shaderio::TonemapperData t = tonemapperData;
+    t.exposure /= std::max(settings.ptOutputScale, 1e-30F);
+    return t;
+  }
   std::shared_ptr<nvutils::CameraManipulator> cameraManip;         // Camera manipulator (owned by GltfRenderer)
   std::filesystem::path                       headlessOutputPath;  // --output: override for headless image save path
   int accumulatedSamples{0};     // Path tracer: samples per pixel in eImgRendered as of the last recorded frame

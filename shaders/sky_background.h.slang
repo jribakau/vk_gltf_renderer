@@ -67,7 +67,9 @@
 //
 // Same call rule as evalAuthoredSkyBackground: unweighted on camera rays and post-delta bounces;
 // anywhere else only through evalSkySunDisk() and its MIS weight.
-float3 evalSunDiskBackground(float3 dir, SceneFrameInfo* frameInfo)
+// The disk of the sky's light, as NEE samples it: the sun's, or the moon's as an even disk of its
+// mean light (the moon is drawn with its face, evalMoonDisk, where it is seen rather than weighed).
+float3 evalSkyLightDisk(float3 dir, SceneFrameInfo* frameInfo)
 {
   if(frameInfo->sunDisk == nullptr)
     return float3(0.0F);  // not the physical sky, or the bake has not published a disk yet
@@ -85,6 +87,68 @@ float3 evalSunDiskBackground(float3 dir, SceneFrameInfo* frameInfo)
   // an escaped BSDF ray, so it must be as bright as the light NEE samples (0: the sun is off)
   const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
   return (dot(dir, sunDir) >= disk.cosAngularRadius) ? disk.radiance * frameInfo->skySunScale : float3(0.0F);
+}
+
+// The moon's face at `p` (across its disk, -1 to 1, as the eye sees it): its albedo against the mean,
+// the dark maria of the near side on its bright highlands, and Tycho's bright young crater in the
+// south. As seen from the north, the face's tilt to the horizon left out.
+float moonAlbedo(float2 p)
+{
+  // centre and radii of the maria: Procellarum, Imbrium, Serenitatis, Tranquillitatis, Crisium,
+  // Fecunditatis, Nectaris, Nubium, Humorum, Frigoris
+  const float4 maria[10] = {float4(-0.62F, 0.12F, 0.28F, 0.48F), float4(-0.3F, 0.52F, 0.24F, 0.22F), float4(0.2F, 0.47F, 0.15F, 0.15F),
+                            float4(0.38F, 0.15F, 0.18F, 0.16F),  float4(0.73F, 0.32F, 0.1F, 0.08F),  float4(0.6F, -0.12F, 0.12F, 0.15F),
+                            float4(0.4F, -0.3F, 0.09F, 0.09F),   float4(-0.18F, -0.32F, 0.17F, 0.13F), float4(-0.5F, -0.4F, 0.09F, 0.09F),
+                            float4(0.05F, 0.78F, 0.42F, 0.06F)};
+  float mare = 0.0F;
+  for(int i = 0; i < 10; ++i)
+    mare = max(mare, 1.0F - smoothstep(0.55F, 1.0F, length((p - maria[i].xy) / maria[i].zw)));
+  const float tycho = 1.0F - smoothstep(0.0F, 0.06F, length(p - float2(-0.12F, -0.72F)));
+  return lerp(1.12F, 0.62F, mare) + 0.5F * tycho;
+}
+
+// The physical sky's moon along `dir` (environment frame), before `envIntensity`: its face lit by
+// the sun (Lommel-Seeliger, moon::faceShade), the phase following from where the two stand, and its
+// dark side by earthshine. Scaled so the disk's mean is the moon's light (fv_lighting.cpp moonParams).
+// Its half a degree is drawn as wide as the sun's, as its light is.
+float3 evalMoonDisk(float3 dir, SceneFrameInfo* frameInfo, SkySunDisk disk)
+{
+  if(!(frameInfo->moonScale > 0.0F) && !(frameInfo->moonEarthshine > 0.0F))
+    return float3(0.0F);
+  const float3 moon = quatRotateInverse(frameInfo->envRotation, frameInfo->moonDirection);
+  const float  c    = dot(dir, moon);
+  if(c < disk.cosAngularRadius)
+    return float3(0.0F);
+  // across the disk as the eye sees it, its up the sky's
+  const float  sinR  = sqrt(max(1.0F - disk.cosAngularRadius * disk.cosAngularRadius, 1e-12F));
+  float3       right = cross(moon, float3(0.0F, 1.0F, 0.0F));
+  right              = dot(right, right) > 1e-8F ? normalize(right) : float3(1.0F, 0.0F, 0.0F);
+  const float3 up    = cross(right, moon);
+  const float3 off   = dir - moon * c;
+  const float2 p     = float2(dot(off, right), dot(off, up)) / sinR;
+  const float  rr    = dot(p, p);
+  if(rr >= 1.0F)
+    return float3(0.0F);
+  // the face's normal there, toward the eye, and the sun on it
+  const float  z      = sqrt(1.0F - rr);
+  const float3 normal = right * p.x + up * p.y - moon * z;
+  const float3 sun    = quatRotateInverse(frameInfo->envRotation, frameInfo->skyLightIsMoon != 0 ? frameInfo->skySecondDirection : frameInfo->sunDirection);
+  const float  cosI   = dot(normal, sun);
+  const float  shade  = cosI > 0.0F ? cosI / (cosI + z) : 0.0F;
+  return disk.moonRadiance * moonAlbedo(p) * (frameInfo->moonScale * shade + frameInfo->moonEarthshine);
+}
+
+// What the camera, a mirror or a smooth refraction sees of the physical sky's bodies along `dir`:
+// the sun's disk, unless the moon is the sky's light, and the moon's face.
+float3 evalSunDiskBackground(float3 dir, SceneFrameInfo* frameInfo)
+{
+  if(frameInfo->sunDisk == nullptr)
+    return float3(0.0F);
+  const SkySunDisk disk = *frameInfo->sunDisk;
+  if(dir.y <= disk.horizonMu)
+    return float3(0.0F);
+  const float3 light = frameInfo->skyLightIsMoon != 0 ? float3(0.0F) : evalSkyLightDisk(dir, frameInfo);
+  return light + evalMoonDisk(dir, frameInfo, disk);
 }
 
 // The sky's own sun, as a light.
@@ -204,7 +268,7 @@ float skySunSolidAngle(SceneFrameInfo* frameInfo)
 float3 evalSkySunDisk(float3 dir, SceneFrameInfo* frameInfo)
 {
   if(frameInfo->sunDisk != nullptr)
-    return evalSunDiskBackground(dir, frameInfo);
+    return evalSkyLightDisk(dir, frameInfo);
   float3 radiance = float3(0.0F);
   if(frameInfo->envSkyType == SkyType::eGradient)
     gradientSunDisk(dir, frameInfo, radiance);

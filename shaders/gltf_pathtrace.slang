@@ -244,6 +244,13 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo, out float clo
   const float      horizonMu = brunetonHorizonMu(g_atmosphere, eyeRadius);
   float3           sky = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, eyeRadius, dir,
                                                  sunDir, disk.sunlitGround);
+  // the other body's sky: the moon's at twilight, the sun's twilight once the moon is the light
+  if(frameInfo->skySecondScale > 0.0F)
+  {
+    const float3 second = quatRotateInverse(frameInfo->envRotation, frameInfo->skySecondDirection);
+    sky += frameInfo->skySecondScale
+           * evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, eyeRadius, dir, second, 1.0F);
+  }
   // Below the horizon is the planet's ground with its air in front, all of it under the clouds, under
   // their shade (sky_clouds_air.h.slang; above the horizon the cloud images carry that shade). The
   // ground's own light is the sunlit share's.
@@ -2571,6 +2578,12 @@ SampleResult samplePixel(IRaytracer raytracer,
     countInvalidSample(samplePos, INVALID_SAMPLE_COLOR);
   }
 
+  // The pre-exposure (SceneFrameInfo::outputScale): the sample that much brighter, so a night's light,
+  // hundreds of thousands of times under the day's, reaches DLSS-RR, which takes no exposure, where a half
+  // float holds it (at 1e-6 its grain stood still in blotches); the tone mapper takes it back out
+  const float outputScale = pushConst.frameInfo->outputScale;
+  sampleResult.radiance.xyz *= outputScale;
+
   // Removing fireflies. With ePtClampIndirect each indirect contribution was clamped as it was added
   // (addRadiance), and what is left here is a cap that keeps a sample within half float, which the
   // DLSS input is. Otherwise (upstream) the whole path is scaled to the clamp's level by its mean,
@@ -2583,7 +2596,7 @@ SampleResult samplePixel(IRaytracer raytracer,
   }
   else
   {
-    const float threshold = fireflyClampLevel();
+    const float threshold = fireflyClampLevel() * outputScale;
     const float lum       = dot(sampleResult.radiance.xyz, float3(1.0F / 3.0F));
     if(threshold > 0.0F && lum > threshold)
       sampleResult.radiance.xyz *= threshold / lum;
@@ -3133,7 +3146,8 @@ void inspectPixel(IRaytracer raytracer)
   result.ids          = int4(-1, -1, -1, hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) ? 1 : 0);
   result.uv           = float4(0.0F, 0.0F, float2(pixel));
   // a still's mean so far, or a moving frame's sample; the host says how many samples it holds
-  result.radiance = float4(outImages[int(OutputImage::eResultImage)][pixel].xyz, float(pushConst.totalSamples));
+  result.radiance = float4(outImages[int(OutputImage::eResultImage)][pixel].xyz / max(pushConst.frameInfo->outputScale, 1e-30F),
+                           float(pushConst.totalSamples));
 
   SceneFrameInfo* frameInfo      = pushConst.frameInfo;
   const bool      isOrthographic = hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneIsOrthographic);

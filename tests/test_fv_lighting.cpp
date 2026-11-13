@@ -183,7 +183,7 @@ TEST(FvLighting, TheFloorIsAverageGround)
 TEST(FvLighting, UnknownKeyRejectsTheWholePatch)
 {
   const L::State s;
-  EXPECT_THROW(L::applyPatch(s, {{"sun", {{"intensity", 5}}}, {"moon", {{"enabled", true}}}}), std::invalid_argument);
+  EXPECT_THROW(L::applyPatch(s, {{"sun", {{"intensity", 5}}}, {"comet", {{"enabled", true}}}}), std::invalid_argument);
   EXPECT_THROW(L::applyPatch(s, {{"sun", {{"intensity", 5}, {"brightness", 1}}}}), std::invalid_argument);
   EXPECT_THROW(L::applyPatch(s, {{"ground", {{"mode", "lava"}}}}), std::invalid_argument);
   EXPECT_THROW(L::applyPatch(s, {{"tonemap", {{"exposure", "bright"}}}}), std::invalid_argument);
@@ -209,7 +209,9 @@ TEST(FvLighting, NumbersAreClamped)
   EXPECT_NEAR(L::sunRadiusKm(200) / 149597870.0, std::tan(15.0 * 3.14159265358979 / 180.0), 1e-9);
   // twilight under the physical sky takes thousands (lighting.ts sentExposure)
   EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"exposure", 4000}}}}).tonemap.exposure, 4000);
-  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"exposure", 1e7}}}}).tonemap.exposure, 1e5);
+  // and a moonlit night a hundred to a thousand times more
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"exposure", 1e7}}}}).tonemap.exposure, 1e7);
+  EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"exposure", 1e9}}}}).tonemap.exposure, 1e8);
   EXPECT_EQ(L::applyPatch(L::State{}, {{"tonemap", {{"exposure", 0}}}}).tonemap.exposure, 0.01);
 }
 
@@ -787,4 +789,65 @@ TEST(FvLighting, APreviewShowsALookInPlaceOfTheOneOn)
   EXPECT_FALSE(L::previewed(t, {{"look", nullptr}}).look.has_value());
   EXPECT_THROW(L::previewed(t, Json::object()), std::invalid_argument);
   EXPECT_THROW(L::previewed(t, {{"look", {{"sparkle", 1}}}}), std::invalid_argument);
+}
+
+// The moon (protocol 71): a section of the lighting, and at night, when the app says its light beats
+// the twilight's, the physical sky's light.
+TEST(FvLighting, AtNightTheMoonIsTheSkysLight)
+{
+  L::State s;
+  s.env.source = "sky";
+  s.sun        = {.enabled = true, .intensity = 2.2, .azimuth = 0.0, .elevation = -30.0};
+  s            = L::applyPatch(s, {{"moon", {{"enabled", true}, {"azimuth", 180.0}, {"elevation", 30.0}, {"phase", 0.5}}}});
+  EXPECT_TRUE(s.moon.enabled);
+  EXPECT_EQ(L::toJson(s)["moon"]["elevation"], 30.0);
+  EXPECT_THROW(L::applyPatch(s, {{"moon", {{"glow", 1}}}}), std::invalid_argument);
+  EXPECT_DOUBLE_EQ(L::applyPatch(s, {{"moon", {{"phase", 3.0}}}}).moon.phase, 1.0);
+
+  // until the app says otherwise the sun stays the light; the moon is drawn, and its sky added once
+  // the sun is down
+  Json p = L::rendererParams(s, {});
+  EXPECT_FALSE(L::moonIsLight(s));
+  EXPECT_EQ(L::skyLightAngles(s), glm::dvec2(0.0, -30.0));
+  EXPECT_EQ(p["hdrIntensity"], 1.0);
+  EXPECT_EQ(p["skyLightIsMoon"], false);
+  EXPECT_GT(p["skyMoonScale"].get<double>(), 0.0);
+  EXPECT_GT(p["skySecondScale"].get<double>(), 0.0);  // the sun is down: the moon's sky counts
+
+  // the moon the light: everything the sky gives scaled to its light, the sun's twilight added back
+  s = L::applyPatch(s, {{"moon", {{"light", true}}}});
+  p = L::rendererParams(s, {});
+  EXPECT_TRUE(L::moonIsLight(s));
+  EXPECT_EQ(L::skyLightAngles(s), glm::dvec2(-180.0, 30.0));  // azimuths wrap to -180..180
+  const double share = p["hdrIntensity"].get<double>();
+  EXPECT_NEAR(share / 2.5e-6, 1.0, 0.05);  // the sun 30 degrees down opposite it: nearly full
+  EXPECT_EQ(p["skyLightIsMoon"], true);
+  EXPECT_EQ(p["skySunScale"], 1.0);
+  EXPECT_NEAR(p["skySecondScale"].get<double>() * share, 0.0, 1e-12);  // the sun past -20: no twilight left
+  // its face's mean is the light it gives: per unit of shading, the mean shading's inverse
+  EXPECT_NEAR(p["skyMoonScale"].get<double>(), 2.0, 0.05);
+
+  // not the physical sky: no moon at all
+  s.env.source = "studio";
+  p            = L::rendererParams(s, {});
+  EXPECT_FALSE(L::moonIsLight(s));
+  EXPECT_EQ(p["hdrIntensity"], s.env.intensity);
+  EXPECT_EQ(p["skyMoonScale"], 0.0);
+}
+
+// A dark scene's image is written pre-exposed, in steps of four, so DLSS-RR, which takes no exposure,
+// gets it where a half float holds it; daylight is written as it is.
+TEST(FvLighting, ADarkSceneIsWrittenPreExposed)
+{
+  EXPECT_EQ(L::preExposure(1.0), 1.0);
+  EXPECT_EQ(L::preExposure(255.0), 1.0);
+  EXPECT_EQ(L::preExposure(256.0), 256.0);
+  EXPECT_EQ(L::preExposure(1000.0), 1024.0);
+  EXPECT_EQ(L::preExposure(60000.0), 65536.0);  // a moonlit night's
+  EXPECT_EQ(L::preExposure(0.0), 1.0);
+  L::State s;
+  s.tonemap.method = "agx";
+  EXPECT_EQ(L::rendererParams(s, {})["ptOutputScale"], 1.0);
+  s.tonemap.exposure = 4e4;
+  EXPECT_EQ(L::rendererParams(s, {})["ptOutputScale"], 65536.0);
 }

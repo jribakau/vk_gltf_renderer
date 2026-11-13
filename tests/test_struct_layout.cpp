@@ -253,7 +253,8 @@ HostStruct sceneFrameInfo()
     F(hazeAnisotropy), F(hazeCenter), F(hazeRadius), F(hazeCandidates), F(hazeFloor), F(hazeInvHeight), F(hazePatches),
     F(hazeInvPatchSize), F(estimator), F(pixelTimeScale), F(pixelTimeSlots), F(pixelTime), F(aerialSunShare), F(pixelTimeCount), F(skinSlab), F(skinSpread), F(skinView),
     F(radianceCacheSlots), F(radianceCache), F(radianceCacheCell), F(radianceCacheFrame), F(radianceCacheStill),
-    F(shadowRayShare), F(cloudFront), F(cloudEye), F(cloudViewEye), F(landFadeFrom), F(landFadeTo), F(cloudImageBase), F(invalidSamples), F(cloudShadowShift)
+    F(shadowRayShare), F(cloudFront), F(cloudEye), F(cloudViewEye), F(landFadeFrom), F(landFadeTo), F(cloudImageBase), F(invalidSamples), F(cloudShadowShift),
+    F(moonDirection), F(moonScale), F(moonEarthshine), F(skySecondDirection), F(skySecondScale), F(skyLightIsMoon), F(outputScale)
   }};
 }
 
@@ -262,7 +263,7 @@ HostStruct skySunDisk()
   using Self = SkySunDisk;
   return {"SkySunDisk", sizeof(Self), {
     F(radiance), F(cosAngularRadius), F(angularRadius), F(horizonMu), F(observerRadius), F(cloudShadow),
-    F(sunlitGround), F(cloudPreview), F(cloudTop), F(cloudSkyShare)
+    F(sunlitGround), F(cloudPreview), F(cloudTop), F(cloudSkyShare), F(moonRadiance)
   }};
 }
 

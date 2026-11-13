@@ -58,6 +58,20 @@ NGX is warmed, but its heavier guide buffers stay unsized until the user enables
 that fails leaves DLSS in **Loading** (no frame evaluates) and is asked again on the next resize or
 DLSS setting change, not every frame.
 
+## Pre-exposure
+
+DLSS-RR takes no exposure (NVIDIA's RR integration guide, 3.7: the DLSS guide's exposure, auto-exposure
+and pre-exposure sections do not apply to it), and it works in half floats. A scene lit hundreds of
+thousands of times less than the day, a moonlit night or deep twilight, reached it at around 1e-6,
+where its denoised grain stood still in blotches. So the path tracer writes each sample times a
+pre-exposure (`SceneFrameInfo::outputScale`, the `ptOutputScale` setting) before its half-float cap,
+and whatever reads the image as light takes it back out: the tone mapper and the HDR output, the
+adaptive stop's and the still denoiser's thresholds (`Resources::shownTonemapper`), and the pixel
+readout. The firefly clamp is in light, so its threshold is scaled with it. The host sets it
+(`fv::lighting::preExposure`): 1 up to an exposure of 256, then the exposure rounded to a power of
+four, so a still restarts only when the exposure moves by that much. A `.hdr` or `.pfm` saved from the
+rendered image holds it pre-exposed; an `.exr` is taken through the tone mapper's data and does not.
+
 ## DLSS-RR input resolution
 
 DLSS-RR path-traces at an input resolution NGX recommends for the viewport, then upscales to it.

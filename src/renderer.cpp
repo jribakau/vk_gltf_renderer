@@ -1192,6 +1192,13 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     fillHaze(finfo);
     finfo.estimator = std::clamp(m_resources.settings.ptEstimator, 0, 2);
     finfo.aerialSunShare = std::clamp(m_resources.settings.ptAerialSunShare, 0.0F, 1.0F);
+    finfo.moonDirection      = m_resources.settings.skyMoonDirection;
+    finfo.moonScale          = m_resources.settings.skyMoonScale;
+    finfo.moonEarthshine     = m_resources.settings.skyMoonEarthshine;
+    finfo.skySecondDirection = m_resources.settings.skySecondDirection;
+    finfo.skySecondScale     = m_resources.settings.skySecondScale;
+    finfo.skyLightIsMoon     = m_resources.settings.skyLightIsMoon ? 1 : 0;
+    finfo.outputScale        = m_resources.settings.ptOutputScale;
     finfo.landFadeFrom   = m_resources.settings.landFadeFrom;
     finfo.landFadeTo     = m_resources.settings.landFadeTo;
     finfo.shadowRayShare = std::clamp(m_resources.settings.ptShadowShare, 0.0F, 1.0F);
@@ -1467,7 +1474,8 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
 #endif
 
   // Disable tonemapping for debug buffers or guide buffers (display raw values)
-  shaderio::TonemapperData tonemapperData = m_resources.tonemapperData;
+  // the image pre-exposed (Settings::ptOutputScale): its exposure that much less
+  shaderio::TonemapperData tonemapperData = m_resources.shownTonemapper();
   // (the Time view's colours are display values too, though its paths are the shaded image's)
   const bool               vizNormal      = (m_resources.settings.visualization == shaderio::Visualization::eRendered
                           || m_resources.settings.visualization == shaderio::Visualization::eClay)

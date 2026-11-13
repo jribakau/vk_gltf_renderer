@@ -154,6 +154,8 @@ set(TEST_SOURCES
     # Phase 5a: NOAA sun position, checked against astronomy rather than recorded output
     test_sun_position.cpp
     ${CMAKE_SOURCE_DIR}/src/sun_position.cpp
+    # The physical sky's moon: its light by phase, its face's shading
+    test_moon.cpp
     # Native P4a: the Light tab's state and unit conversions
     test_fv_lighting.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_lighting.cpp

@@ -18,6 +18,7 @@
  */
 
 #include "fv_lighting.hpp"
+#include "moon.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -154,6 +155,29 @@ void patchSun(Sun& s, const Json& p)
     {
       // the raster view's shadow map, from before protocol 17
     }
+    else
+      reject("unknown key " + key);
+  }
+}
+
+void patchMoon(Moon& m, const Json& p)
+{
+  const Moon d;
+  for(auto it = p.begin(); it != p.end(); ++it)
+  {
+    const std::string& k   = it.key();
+    const Json&        v   = it.value();
+    const std::string  key = "moon." + k;
+    if(k == "enabled")
+      field(m.enabled, d.enabled, v, [&](const Json& x) { return boolean(x, key); });
+    else if(k == "azimuth")
+      field(m.azimuth, d.azimuth, v, [&](const Json& x) { return wrapDegrees(number(x, key, -1e6, 1e6)); });
+    else if(k == "elevation")
+      field(m.elevation, d.elevation, v, [&](const Json& x) { return number(x, key, -90.0, 90.0); });
+    else if(k == "phase")
+      field(m.phase, d.phase, v, [&](const Json& x) { return number(x, key, 0.0, 1.0); });
+    else if(k == "light")
+      field(m.light, d.light, v, [&](const Json& x) { return boolean(x, key); });
     else
       reject("unknown key " + key);
   }
@@ -388,8 +412,9 @@ void patchTonemap(Tonemap& t, const Json& p)
       field(t.method, d.method, v, [&](const Json& x) { return oneOf(x, key, {"aces", "agx", "neutral", "filmic", "shaped"}); });
     else if(k == "exposure")
       // the app opens it up as the physical sky's sun goes down: twilight is some 10,000 times
-      // darker than the studio (lighting.ts sentExposure)
-      field(t.exposure, d.exposure, v, [&](const Json& x) { return number(x, key, 0.01, 1e5); });
+      // darker than the studio, a moonlit night a hundred to a thousand times darker again
+      // (lighting.ts sentExposure)
+      field(t.exposure, d.exposure, v, [&](const Json& x) { return number(x, key, 0.01, 1e8); });
     else if(k == "contrast")
       field(t.contrast, d.contrast, v, [&](const Json& x) { return number(x, key, 0.0, 2.0); });
     else if(k == "saturation")
@@ -508,6 +533,7 @@ Json toJson(const State& s)
 {
   const Env&     e = s.env;
   const Sun&     u = s.sun;
+  const Moon&    m = s.moon;
   const Clouds&  c = s.clouds;
   const Haze&    h = s.haze;
   const Ground&  g = s.ground;
@@ -531,6 +557,8 @@ Json toJson(const State& s)
         {"elevation", u.elevation},
         {"color", u.color},
         {"softness", u.softness}}},
+      {"moon",
+       {{"enabled", m.enabled}, {"azimuth", m.azimuth}, {"elevation", m.elevation}, {"phase", m.phase}, {"light", m.light}}},
       {"clouds",
        {{"coverage", c.coverage},
         {"thickness", c.thickness},
@@ -591,6 +619,8 @@ State applyPatch(const State& s, const Json& patch)
     {
       // the raster view's shadow map, from before protocol 17
     }
+    else if(k == "moon")
+      reset ? void(out.moon = Moon{}) : patchMoon(out.moon, section(patch, "moon"));
     else if(k == "clouds")
       reset ? void(out.clouds = Clouds{}) : patchClouds(out.clouds, section(patch, "clouds"));
     else if(k == "haze")
@@ -638,6 +668,76 @@ glm::vec3 sunDirection(double azimuthDeg, double elevationDeg)
   const double az = radians(azimuthDeg), el = radians(elevationDeg);
   return glm::vec3(float(std::cos(el) * std::sin(az)), float(std::sin(el)), float(std::cos(el) * std::cos(az)));
 }
+
+double preExposure(double exposure)
+{
+  if(!(exposure >= 256.0))
+    return 1.0;
+  return std::pow(4.0, std::round(std::log(exposure) / std::log(4.0)));
+}
+
+bool moonIsLight(const State& s)
+{
+  return s.env.source == "sky" && s.moon.enabled && s.moon.light;
+}
+
+glm::dvec2 skyLightAngles(const State& s)
+{
+  return moonIsLight(s) ? glm::dvec2(s.moon.azimuth, s.moon.elevation) : glm::dvec2(s.sun.azimuth, s.sun.elevation);
+}
+
+double skyLightScale(const State& s)
+{
+  if(!moonIsLight(s))
+    return 1.0;
+  const glm::vec3 toSun  = sunDirection(s.sun.azimuth, s.sun.elevation);
+  const glm::vec3 toMoon = sunDirection(s.moon.azimuth, s.moon.elevation);
+  return moon::lightShare(moon::phaseAngle(toSun, toMoon));
+}
+
+namespace {
+
+// The moon as the renderer draws it and the sky the other body lights (the moon's by day, the
+// sun's twilight once the moon is the light), all against the sky's light (skyLightScale)
+struct MoonParams
+{
+  glm::vec3 direction{0.0F, -1.0F, 0.0F};
+  double    scale      = 0.0;  // the drawn face's light per unit of its shading (0: no moon drawn)
+  double    earthshine = 0.0;  // the dark side's, per unit of its albedo
+  glm::vec3 secondDirection{0.0F, -1.0F, 0.0F};
+  double    secondScale = 0.0;  // the other body's sky (0: none)
+};
+
+MoonParams moonParams(const State& s)
+{
+  MoonParams p;
+  if(s.env.source != "sky" || !s.moon.enabled)
+    return p;
+  const glm::vec3 toSun  = sunDirection(s.sun.azimuth, s.sun.elevation);
+  const glm::vec3 toMoon = sunDirection(s.moon.azimuth, s.moon.elevation);
+  const double    angle  = moon::phaseAngle(toSun, toMoon);
+  const double    share  = moon::lightShare(angle);
+  const double    light  = skyLightScale(s);
+  const double    mean   = moon::meanFaceShade(angle);
+  p.direction            = toMoon;
+  p.scale                = mean > 1e-6 ? share / light / mean : 0.0;
+  p.earthshine           = moon::kFullShare * moon::earthshineShare(angle) / light;
+  if(moonIsLight(s))
+  {
+    // the twilight the sun still gives, until it is too far down to give any
+    p.secondDirection = toSun;
+    p.secondScale     = s.sun.elevation > -20.0 ? 1.0 / light : 0.0;
+  }
+  else if(s.sun.elevation < 0.0 && s.moon.elevation > -2.0)
+  {
+    // the moon's sky at twilight; by day it is under a hundred-thousandth of the sun's
+    p.secondDirection = toMoon;
+    p.secondScale     = share;
+  }
+  return p;
+}
+
+}  // namespace
 
 glm::quat sunRotation(double azimuthDeg, double elevationDeg)
 {
@@ -866,6 +966,7 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
   // what the camera takes: the app's exposure, and what the clouds take from the light given back
   const double exposure = tmExposure(t.method, t.exposure) * cloudExposure(s, clouds);
   const Grade  g2       = grade(t);
+  const MoonParams mp   = moonParams(s);
 
   int envSystem = 1;  // studio and hdr are both a lat-long image
   if(e.source == "sky")
@@ -877,7 +978,8 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
 
   return {
       {"envSystem", envSystem},
-      {"hdrIntensity", e.intensity},
+      // the physical sky's light is the moon's at night: everything it gives that much less
+      {"hdrIntensity", e.intensity * skyLightScale(s)},
       {"envRotation", Json::array({rot.x, rot.y, rot.z, rot.w})},
       {"hdrBlur", e.background == "blurred" ? hdrBlur(e.blur, envSize.x, envSize.y) : 0.0},
       {"useSolidBackground", e.background == "color"},
@@ -958,7 +1060,15 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"groundWaterDepth", g.mode == "water" ? g.depth : 0.0},
       {"groundWaves", g.waves},
       // the physical sky measures its own sun; the panel's strength scales it, from the default up
-      {"skySunScale", s.sun.enabled ? s.sun.intensity / Sun{}.intensity : 0.0},
+      // the moon's light is as it is: the Sun section's strength and switch are the sun's
+      {"skySunScale", moonIsLight(s) ? 1.0 : (s.sun.enabled ? s.sun.intensity / Sun{}.intensity : 0.0)},
+      {"skyMoonDirection", vec3(mp.direction)},
+      {"skyMoonScale", mp.scale},
+      {"skyMoonEarthshine", mp.earthshine},
+      {"skySecondDirection", vec3(mp.secondDirection)},
+      {"skySecondScale", mp.secondScale},
+      {"skyLightIsMoon", moonIsLight(s)},
+      {"ptOutputScale", preExposure(exposure)},
   };
 }
 

@@ -29,6 +29,10 @@
 //            skyVisibility (km one sees through the physical sky's air, which veils the distance and
 //            whitens the horizon alike: sky_visibility.hpp; 0 the atmosphere's own), protocol 65
 //   sun:     enabled, intensity, azimuth, elevation (degrees), color, softness
+//   moon:    enabled, azimuth, elevation (degrees, as the sun's), phase (0 new, 0.25 first quarter,
+//            0.5 full, 0.75 last quarter: the app places it by that, sunPath.ts moonAt) and light
+//            (the moon, not the sun, is the physical sky's light: its light beats the twilight's,
+//            the app's call). The physical sky's only; protocol 71
 //   clouds:  coverage (0 clear to 1 overcast: the share of the land they shade), thickness (km from
 //            the base to the highest tops), seed (which arrangement), type cumulus|stratocumulus|
 //            stratus -- the low tier's -- and mid (altocumulus) and high (cirrus: the share of the sky
@@ -104,6 +108,16 @@ struct Sun
   double      elevation = 50.0;
   std::string color     = "#fff4e6";
   double      softness  = 3.0;
+};
+
+// The physical sky's moon (src/moon.hpp). Off for an app from before protocol 71, which sends none.
+struct Moon
+{
+  bool   enabled   = false;
+  double azimuth   = 0.0;
+  double elevation = -90.0;
+  double phase     = 0.5;
+  bool   light     = false;
 };
 
 struct Clouds
@@ -265,6 +279,7 @@ struct State
 {
   Env     env;
   Sun     sun;
+  Moon    moon;
   Clouds  clouds;
   Haze    haze;
   Ground  ground;
@@ -289,6 +304,23 @@ glm::vec3 linearColor(const std::string& hex);
 
 // Unit vector toward the sun: (cos el sin az, sin el, cos el cos az).
 glm::vec3 sunDirection(double azimuthDeg, double elevationDeg);
+
+// Whether the moon is the physical sky's light: it is there, the app says its light beats the
+// twilight's, and the sky is the physical one.
+bool moonIsLight(const State& s);
+
+// Where the sky's light stands, azimuth and elevation in degrees: the moon's when it is the light
+// (moonIsLight), else the sun's. The sun light's entity is aimed there (FvHost::Impl::applySun).
+glm::dvec2 skyLightAngles(const State& s);
+
+// The path tracer's pre-exposure for an exposure (the tone mapper's, tmExposure): 1 up to 256, then the
+// exposure itself rounded to a power of four, so a dark scene's light reaches DLSS-RR, which takes no
+// exposure, in a half float's range. A change restarts a still, so it moves only in steps.
+double preExposure(double exposure);
+
+// The physical sky's light against its sun's: the moon's share of it (moon::lightShare) when the
+// moon is the light, else 1. Everything the sky gives is scaled by it (hdrIntensity).
+double skyLightScale(const State& s);
 
 // The sun node's rotation: glTF aims a directional light down its -Z, so +Z goes to the sun.
 glm::quat sunRotation(double azimuthDeg, double elevationDeg);

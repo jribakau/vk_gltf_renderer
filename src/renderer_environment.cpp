@@ -870,6 +870,10 @@ void GltfRenderer::updateBakerParameters()
   m_envBaker.skyParams() = buildSkyOmiParameters();
   m_envBaker.setSkyType(shaderio::SkyType(bakeSkyType(m_resources.settings.envSystem)));
   m_envBaker.setSunDirection(sunInEnvironmentFrame());
+  // the moon's and the other body's sky, in the environment's frame as the sun is
+  const glm::quat toEnvironment = glm::inverse(m_resources.settings.envRotationQuat());
+  m_envBaker.setSecondSky(toEnvironment * m_resources.settings.skySecondDirection, m_resources.settings.skySecondScale);
+  m_envBaker.setMoonDirection(toEnvironment * m_resources.settings.skyMoonDirection);
 
   // The clouds bake with the sky, so they take their settings at the same moment.
   const Settings& s = m_resources.settings;

@@ -214,6 +214,9 @@ struct SkySunDisk
   // is under their shade, by that and `sunlitGround` (sky_clouds_air.h.slang).
   float cloudTop;
   float cloudSkyShare;
+  // The moon's disk as the sun's would be along the moon's ray, through the same air (the moon's face
+  // is lit by the sun): what the drawn moon is scaled from (SceneFrameInfo::moonScale). (Appended.)
+  float3 moonRadiance;
 };
 
 struct SceneFrameInfo
@@ -420,6 +423,23 @@ struct SceneFrameInfo
   // along the environment's x and z (SkyClouds::shadowShift): the image is read that much the other
   // way (cloudSunShare). (Appended.)
   float2 cloudShadowShift = {0.0F, 0.0F};
+  // The physical sky's moon (src/moon.hpp, fv_lighting.cpp moonParams): toward it, world space; its
+  // face's light per unit of its shading, against the sky's light (0: none drawn); and its dark
+  // side's per unit of albedo, the earthshine. (Appended.)
+  float3 moonDirection  = {0.0F, -1.0F, 0.0F};
+  float  moonScale      = 0.0F;
+  float  moonEarthshine = 0.0F;
+  // The other body's sky, added to the sky's light's own: the moon's at twilight, and the sun's
+  // twilight once the moon is the light. World space, and its light against the sky's light (0:
+  // none). (Appended.)
+  float3 skySecondDirection = {0.0F, -1.0F, 0.0F};
+  float  skySecondScale     = 0.0F;
+  // 1 when the sky's light is the moon: sunDirection, the light and the disk's radiance are its, the
+  // sun's disk is not drawn, and the moon's face is lit from skySecondDirection. (Appended.)
+  int skyLightIsMoon = 0;
+  // The pre-exposure: what the path tracer writes is its light times this (Settings::ptOutputScale),
+  // and whatever reads the image as light takes it back out (Resources::shownExposure). (Appended.)
+  float outputScale = 1.0F;
 };
 
 enum PathtracerFlags

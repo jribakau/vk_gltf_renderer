@@ -240,11 +240,13 @@ void FvHost::Impl::applySun(bool force)
   const Json               light = {{"color", {color.x, color.y, color.z}},
                                     {"intensity", s.enabled ? s.intensity : 0.0},
                                     {"radius", fv::lighting::sunRadiusKm(s.softness)}};
-  const Json               aim   = {s.azimuth, s.elevation};
+  // at night the moon is the sky's light (fv::lighting::moonIsLight)
+  const glm::dvec2         at    = fv::lighting::skyLightAngles(lighting);
+  const Json               aim   = {at.x, at.y};
   if(force || appliedSun.is_null() || appliedSun["light"] != light)
     scene.setLight(sunLight, sunPayload());
   if(force || appliedSun.is_null() || appliedSun["aim"] != aim)
-    scene.setLocal(sunEntity, {.rotation = fv::lighting::sunRotation(s.azimuth, s.elevation)});
+    scene.setLocal(sunEntity, {.rotation = fv::lighting::sunRotation(at.x, at.y)});
   appliedSun = {{"light", light}, {"aim", aim}};
 }
 
@@ -270,7 +272,8 @@ void FvHost::Impl::feedSun(rs::RetainedScene& scene)
 {
   const fv::lighting::Sun& s = lighting.sun;
   sunEntity                  = scene.createEntity("Sun", {0, -1});
-  scene.setLocal(sunEntity, {.rotation = fv::lighting::sunRotation(s.azimuth, s.elevation)});
+  const glm::dvec2 at        = fv::lighting::skyLightAngles(lighting);
+  scene.setLocal(sunEntity, {.rotation = fv::lighting::sunRotation(at.x, at.y)});
   sunLight = scene.addLight({.owner = {0, -1}, .payload = sunPayload(), .skySun = true});
   scene.setEntityLight(sunEntity, sunLight);
   scene.release(sunLight);

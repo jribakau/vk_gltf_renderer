@@ -61,7 +61,7 @@ struct EnvBakePushConstant
   // PhysicalBruneton only. The Bruneton sky is the only type whose bake depends on where the sun
   // is and where the observer stands; the analytic types are either sun-free or evaluate the sun
   // from their own parameter block.
-  float3 sunDirection;      // unit, world space, pointing *at* the sun
+  float3 sunDirection;      // unit, the environment's frame (world turned by envRotation's inverse), pointing *at* the sun
   float  observerAltitude;  // km above the planet surface (fixed-observer policy)
 
   // Where the bake publishes the solar disk it deliberately leaves out of the image: radiance and
@@ -97,6 +97,14 @@ struct EnvBakePushConstant
   // PhysicalBruneton with clouds: where SkyClouds' bake measured the shares of the air's light they
   // leave, the sun's and the sky's (float2, airMain in sky_clouds_bake.slang). Zero without clouds.
   uint64_t cloudAirAddress;
+
+  // The other body's sky, added to the sun's (SceneFrameInfo::skySecondDirection, here in the
+  // environment's frame) by its scale, 0 none; and toward the moon, environment frame, for its disk's
+  // colour through the air (SkySunDisk::moonRadiance).
+  float3 secondDirection;
+  float  secondScale;
+  float3 moonDirection;
+  float  _pad1;
 };
 
 // The floor's reflectance the meter takes (the panel's default ground, 20% grey): the sky's light

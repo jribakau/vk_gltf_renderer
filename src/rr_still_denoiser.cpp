@@ -265,7 +265,7 @@ void RrStillDenoiser::evaluate(VkCommandBuffer         cmd,
     const shaderio::StillKeepPushConstant keep{
         .threshold = resources.tonemapperData.autoExposure ?
                          m_settings.keepNoise :
-                         adaptiveSceneThreshold(m_settings.keepNoise, resources.tonemapperData.exposure),
+                         adaptiveSceneThreshold(m_settings.keepNoise, resources.shownTonemapper().exposure),
         .samples   = samples,
         .view      = m_settings.keepView ? 1 : 0,
     };

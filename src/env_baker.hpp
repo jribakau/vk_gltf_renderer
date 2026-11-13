@@ -110,6 +110,14 @@ public:
   // Where the sun is, for the sky types whose *lighting* depends on it. Only Bruneton does: the
   // gradient bakes without its sun, and plain has none.
   void setSunDirection(const glm::vec3& direction) { m_sunDirection = direction; }
+  // The other body's sky, added to the sun's (EnvBakePushConstant::secondDirection), and the moon's
+  // direction, for its disk's colour (SkySunDisk::moonRadiance); environment frame
+  void setSecondSky(const glm::vec3& direction, float scale)
+  {
+    m_secondDirection = direction;
+    m_secondScale     = scale;
+  }
+  void setMoonDirection(const glm::vec3& direction) { m_moonDirection = direction; }
 
   // Observer height above the planet surface, in kilometres. Fixed rather than tracking the
   // camera -- see the fixed-observer note on brunetonObserver() in shaders/env_bake.slang.
@@ -183,6 +191,9 @@ private:
   shaderio::SkyType          m_skyType{shaderio::SkyType::ePlain};
   shaderio::SkyOmiParameters m_skyParams{};
   glm::vec3                  m_sunDirection{0.0F, 0.707F, 0.707F};
+  glm::vec3                  m_secondDirection{0.0F, -1.0F, 0.0F};
+  float                      m_secondScale = 0.0F;
+  glm::vec3                  m_moonDirection{0.0F, -1.0F, 0.0F};
   float                      m_observerAltitude{0.001F};  // 1 m
 
   // Set and layout borrowed from SkyBruneton; this class does not own them.

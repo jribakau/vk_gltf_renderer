@@ -133,8 +133,12 @@ float3 evalSkyBruneton(float3 dir, out float3 clear)
 {
   const float  r      = g_atmosphere.bottomRadius + pc.observerAltitude;
   const float2 shares = cloudAirShares();
-  const float3 sky    = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r,
+  float3       sky    = evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r,
                                                 dir, pc.sunDirection, shares.x);
+  // the other body's sky: the moon's at twilight, the sun's twilight once the moon is the light
+  if(pc.secondScale > 0.0F)
+    sky += pc.secondScale
+           * evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r, dir, pc.secondDirection, 1.0F);
   clear = sky;
   // The clouds over it, above the horizon. Below, the ground is in the way, and what they change is
   // the air in front of it, under their shade (sky_clouds_air.h.slang), as the background's.
@@ -196,6 +200,7 @@ void publishSunDisk()
   out->cloudPreview     = pc.cloudPreview;
   out->cloudTop         = pc.clouds != 0 ? pc.cloudTop : 0.0F;
   out->cloudSkyShare    = shares.y;
+  out->moonRadiance     = solarRadiance * GetTransmittanceToSun(g_atmosphere, g_transmittance, r, pc.moonDirection.y) * SUN_RADIANCE_TO_LUMINANCE;
 
   // and for the meter, after its cells
   if(pc.meterAddress != 0)
