@@ -256,7 +256,7 @@ HostStruct sceneFrameInfo()
     F(shadowRayShare), F(cloudFront), F(cloudEye), F(cloudViewEye), F(landFadeFrom), F(landFadeTo), F(cloudImageBase), F(invalidSamples), F(cloudShadowShift),
     F(moonDirection), F(moonScale), F(moonEarthshine), F(skySecondDirection), F(skySecondScale), F(skyLightIsMoon), F(outputScale),
     F(celestialX), F(nightScale), F(celestialY), F(_nightPad), F(celestialZ), F(_nightPad2), F(nightStars), F(nightStarCells),
-    F(rainWet), F(rainPuddles), F(rainShear), F(rainShelterCentre), F(rainShelter)
+    F(rainWet), F(rainPuddles), F(rainShear), F(rainShelterCentre), F(rainShelter), F(rainRate), F(rainTime)
   }};
 }
 

@@ -1772,12 +1772,16 @@ PbrMaterial waterSurfaceMaterial(float3 pos, float3 geometricNormal, bool fromAb
 {
   const GroundWaves waves   = groundWavesAt(pos.xz, footprint, groundWaterWaves(frameInfo));
   const GroundSlope ripples = groundRipplesAt(pos.xz, footprint, frameInfo->groundRipples);
-  const float2      slope   = waves.slope.slope + ripples.slope;
+  // and where it rains on it, the drops' rings
+  float3 rings = float3(0.0F);
+  if(frameInfo->rainRate > 0.0F)
+    rings = rainRingsAt(pos.xz, footprint, frameInfo->rainRate * rainExposure(pos, float3(0.0F, 1.0F, 0.0F), frameInfo), frameInfo->rainTime);
+  const float2      slope   = waves.slope.slope + ripples.slope + rings.xy;
   const float3      up      = normalize(float3(-slope.x, 1.0F, -slope.y));
   PbrMaterial       mat     = defaultPbrMaterial(float3(1.0F), 0.0F, 0.0F, fromAbove ? up : -up, geometricNormal);
   mat.faceSided             = false;  // the waves are the surface, not a map over the flat plane
   // pbrMat.roughness holds alpha; the averaged-out slopes add to its square as in groundMaterial
-  const float alpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * (waves.slope.variance + ripples.variance));
+  const float alpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * (waves.slope.variance + ripples.variance + rings.z));
   mat.roughness     = float2(max(alpha, MICROFACET_MIN_ROUGHNESS));
   // Those slopes are Gaussian, as a wind's ripples are (Cox and Munk 1954), and the variance above is
   // Beckmann's alpha: GGX's long tail of steep microfacets made far water reflect the sky up to 18
@@ -1830,11 +1834,14 @@ void rainWetMaterial(inout PbrMaterial mat, float3 pos, float3 Ng, float footpri
   if(absorbs)
     mat.baseColor = lerp(mat.baseColor, groundWetAlbedo(mat.baseColor), puddle * (1.0F - mat.metallic));
   mat.ior2               = lerp(mat.ior2, GROUND_WATER_IOR, puddle);
-  const float waterAlpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * water.slopeVariance);
+  // the drops' rings on it
+  const float3 rings     = rainRingsAt(pos.xz, footprint, frameInfo->rainRate * exposure, frameInfo->rainTime);
+  const float2 slope     = water.slope + rings.xy;
+  const float  waterAlpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * (water.slopeVariance + rings.z));
   mat.roughness          = max(lerp(mat.roughness, float2(waterAlpha), puddle), float2(MICROFACET_MIN_ROUGHNESS));
-  if(any(water.slope != float2(0.0F)))
+  if(any(slope != float2(0.0F)))
   {
-    mat.N = normalize(lerp(mat.N, normalize(float3(-water.slope.x, 1.0F, -water.slope.y)), puddle));
+    mat.N = normalize(lerp(mat.N, normalize(float3(-slope.x, 1.0F, -slope.y)), puddle));
     orthonormalBasis(mat.N, mat.T, mat.B);
   }
 }
@@ -1861,6 +1868,13 @@ PbrMaterial groundMaterial(float3 pos, float footprint, SceneFrameInfo* frameInf
 
   GroundWater water = groundWaterAt(pos.xz, footprint, amount, frameInfo->groundRipples);
   water.damp        = max(water.damp, soaked);
+  // the drops' rings on its puddles
+  if(rain > 0.0F && water.puddle > 0.0F)
+  {
+    const float3 rings = rainRingsAt(pos.xz, footprint, frameInfo->rainRate * rain, frameInfo->rainTime);
+    water.slope += rings.xy * water.puddle;
+    water.slopeVariance += rings.z;
+  }
   mat.baseColor           = lerp(mat.baseColor, groundWetAlbedo(mat.baseColor), water.damp);
   mat.ior2                = lerp(mat.ior2, GROUND_WATER_IOR, water.damp);
   // pbrMat.roughness holds alpha = roughness^2; the ripples' variance adds to the water's alpha^2 (twice

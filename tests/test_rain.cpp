@@ -148,6 +148,63 @@ TEST(Rain, ItWetsWhatItReaches)
   EXPECT_NEAR(rainExposureAt(float3(1.0f, 1.5f, 0.0f), float3(1.0f, 0.0f, 0.0f), still, float2(0.0f), shelter.data()), 0.5f, 1e-5f);
 }
 
+// Rings on standing water: none without rain, more drops landing the harder it rains, a ring that
+// spreads at its speed and dies away, and rings finer than the footprint become roughness
+TEST(Rain, DropsRingTheWater)
+{
+  EXPECT_EQ(rainImpactRate(0.0f), 0.0f);
+  EXPECT_GT(rainImpactRate(10.0f), rainImpactRate(2.5f));
+  EXPECT_GT(rainImpactRate(5.0f), 100.0f);  // hundreds a square metre a second
+  EXPECT_EQ(rainRingsAt(float2(0.3f, 0.7f), 0.001f, 0.0f, 1.0f), float3(0.0f));
+
+  // over a square of water at a moderate rate: rings tilt it, and over a wide footprint the rings go
+  // into the variance instead
+  double sharp = 0.0, spread = 0.0, varianceWide = 0.0;
+  for(int i = 0; i < 400; ++i)
+  {
+    const float2 xz(0.013f * float(i % 20), 0.017f * float(i / 20));
+    const float3 near = rainRingsAt(xz, 0.0005f, 5.0f, 3.0f);
+    const float3 far  = rainRingsAt(xz, 0.05f, 5.0f, 3.0f);
+    sharp += std::sqrt(near.x * near.x + near.y * near.y);
+    spread += std::sqrt(far.x * far.x + far.y * far.y);
+    varianceWide += far.z;
+  }
+  EXPECT_GT(sharp / 400.0, 0.01);
+  EXPECT_EQ(spread, 0.0);
+  EXPECT_GT(varianceWide / 400.0, 1e-4);
+  // slopes stay gentle: no ring tips the water past 45 degrees
+  for(int i = 0; i < 400; ++i)
+  {
+    const float3 s = rainRingsAt(float2(0.011f * float(i), 0.3f), 0.0005f, 50.0f, 1.7f);
+    EXPECT_LT(std::sqrt(s.x * s.x + s.y * s.y), 1.0f);
+  }
+}
+
+// A splash's droplets leave up and out at a metre or two a second, rise a few centimetres at most
+// and are back down within a few tenths of a second; they leave every way round
+TEST(Rain, ASplashThrowsDropletsUpAndOut)
+{
+  float3 sum(0.0f);
+  for(uint key = 1; key < 200; ++key)
+    for(uint k = 0; k < RAIN_SPLASH_DROPLETS; ++k)
+    {
+      const RainSplashDroplet d = rainSplashDroplet(key * 2654435761U, k);
+      const float             v = length(d.velocity);
+      EXPECT_GE(v, 1.0f - 1e-4f);
+      EXPECT_LE(v, 2.2f + 1e-4f);
+      EXPECT_GT(d.velocity.y, 0.5f * v);  // 35 degrees up at least
+      EXPECT_GE(d.diameter, 0.33f);
+      EXPECT_LE(d.diameter, 0.67f + 1e-4f);
+      sum += float3(d.velocity.x, 0.0f, d.velocity.z) / v;
+      // its highest point, and when it is back down
+      const float top = d.velocity.y * d.velocity.y / (2.0f * 9.81f);
+      EXPECT_LT(top, 0.25f);
+      const float3 landed = rainSplashAt(float3(0.0f), d.velocity, 2.0f * d.velocity.y / 9.81f);
+      EXPECT_NEAR(landed.y, 0.0f, 1e-4f);
+    }
+  EXPECT_LT(length(sum) / (199.0f * RAIN_SPLASH_DROPLETS), 0.1f);
+}
+
 // A water sphere's phase without its diffraction peak integrates to 1 and is brightest toward the light
 TEST(Rain, TheSunsPhaseIsNormalised)
 {

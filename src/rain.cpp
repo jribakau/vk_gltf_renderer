@@ -29,6 +29,7 @@ using namespace glm;
 using float2 = glm::vec2;
 using float3 = glm::vec3;
 using int3   = glm::ivec3;
+using int2   = glm::ivec2;
 using uint   = uint32_t;
 #include "shaders/rain.h.slang"
 }  // namespace rain_physics
@@ -88,6 +89,7 @@ void Rain::createPipelines(Resources& resources)
   compute(rain_slang, rain_slang_sizeInBytes, "rainLight", m_lightPipeline);
   compute(rain_slang, rain_slang_sizeInBytes, "rainCopy", m_copyPipeline);
   compute(rain_slang, rain_slang_sizeInBytes, "rainCull", m_cullPipeline);
+  compute(rain_slang, rain_slang_sizeInBytes, "rainSplash", m_splashPipeline);
   compute(rain_shelter_slang, rain_shelter_slang_sizeInBytes, "rainShelter", m_shelterPipeline);
 
   VkShaderCreateInfoEXT shaderInfo{
@@ -131,7 +133,8 @@ void Rain::deinit(Resources& /*resources*/)
   vkDestroyPipeline(m_device, m_copyPipeline, nullptr);
   vkDestroyPipeline(m_device, m_shelterPipeline, nullptr);
   vkDestroyPipeline(m_device, m_cullPipeline, nullptr);
-  m_cullPipeline = VK_NULL_HANDLE;
+  vkDestroyPipeline(m_device, m_splashPipeline, nullptr);
+  m_cullPipeline = m_splashPipeline = VK_NULL_HANDLE;
   vkDestroyShaderEXT(m_device, m_vertexShader, nullptr);
   vkDestroyShaderEXT(m_device, m_fragmentShader, nullptr);
   vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
@@ -301,6 +304,17 @@ void Rain::cmdPrepare(VkCommandBuffer cmd, Resources& resources, VkExtent2D size
   rf.streaks       = reinterpret_cast<shaderio::RainStreak*>(m_streaks.address);
   rf.drawArgs      = reinterpret_cast<uint32_t*>(m_drawArgs.address);
   rf.minCoverage   = kMinCoverage;
+  // the splashes: as many as land a cell over a splash's life, round where the camera looks down to
+  const float splashes = rain_physics::rainImpactRate(m_settings.rate) * rain_physics::RAIN_SPLASH_LIFE
+                         * rain_physics::RAIN_SPLASH_CELL * rain_physics::RAIN_SPLASH_CELL;
+  m_splashSlots   = uint32_t(std::clamp(std::ceil(splashes), 1.0f, float(kMaxSplashSlots)));
+  rf.splashSlots  = m_splashSlots;
+  rf.splashChance = std::min(splashes / float(m_splashSlots), 1.0f);
+  rf.splashCentre = glm::vec2(camera.x - shear.x * camera.y, camera.z - shear.y * camera.y);
+  rf.splashReach  = kSplashReach;
+  // where nothing in the scene stops them, drops land on the floor, or on its water
+  const ::Settings& s = resources.settings;
+  rf.groundHeight   = s.useInfinitePlane ? s.infinitePlaneDistance + std::max(s.groundWaterDepth, 0.0f) : rain_physics::RAIN_SHELTER_OPEN;
   // the shelter map's middle on whole texels, so it doesn't shimmer as the camera moves
   const float texel = rain_physics::RAIN_SHELTER_EXTENT / float(RAIN_SHELTER_SIZE);
   rf.shelterCentre  = glm::floor(rf.shelterCentre / texel) * texel;
@@ -398,6 +412,11 @@ VkDescriptorImageInfo Rain::cmdApply(VkCommandBuffer cmd, Resources& resources, 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_cullPipeline);
     vkCmdDispatch(cmd, (slots + RAIN_CULL_GROUP - 1) / RAIN_CULL_GROUP, m_cellCount, 1);
   }
+  {
+    auto section = timer.cmdFrameSection(cmd, "Rain splashes");
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_splashPipeline);
+    vkCmdDispatch(cmd, (m_splashSlots + RAIN_CULL_GROUP - 1) / RAIN_CULL_GROUP, RAIN_SPLASH_CELLS * RAIN_SPLASH_CELLS, 1);
+  }
 
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
@@ -406,8 +425,8 @@ VkDescriptorImageInfo Rain::cmdApply(VkCommandBuffer cmd, Resources& resources, 
                          VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
                              | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
-  // the drops
-  if(any)
+  // the drops and the splashes' droplets
+  if(any || m_splashSlots > 0)
   {
     auto section = timer.cmdFrameSection(cmd, "Rain drops");
     const VkRenderingAttachmentInfo color{.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,

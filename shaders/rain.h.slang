@@ -121,14 +121,19 @@ inline RainDrop rainDropAt(int3 cell, uint index, float cellSize, float2 shear, 
 static const float RAIN_SHELTER_EXTENT = 64.0F;
 static const float RAIN_SHELTER_OPEN   = -1e30F;
 
-// The texel of the shelter map under `position`, or -1 off the map
-inline int rainShelterTexel(float3 position, float2 shear, float2 centre)
+// The texel of the shelter map at `h` on the sheared ground, or -1 off the map
+inline int rainShelterTexelAt(float2 h, float2 centre)
 {
-  const float2 h  = float2(position.x - shear.x * position.y, position.z - shear.y * position.y);
   const float2 uv = (h - centre) * (1.0F / RAIN_SHELTER_EXTENT) + float2(0.5F, 0.5F);
   if(uv.x < 0.0F || uv.y < 0.0F || uv.x >= 1.0F || uv.y >= 1.0F)
     return -1;
   return int(uv.y * float(RAIN_SHELTER_SIZE)) * RAIN_SHELTER_SIZE + int(uv.x * float(RAIN_SHELTER_SIZE));
+}
+
+// ... and under `position`
+inline int rainShelterTexel(float3 position, float2 shear, float2 centre)
+{
+  return rainShelterTexelAt(float2(position.x - shear.x * position.y, position.z - shear.y * position.y), centre);
 }
 
 // ---- where it lands ---------------------------------------------------------------------------------
@@ -168,6 +173,114 @@ inline float rainExposureAt(float3 position, float3 normal, float2 shear, float2
       return 0.0F;
   }
   return facing;
+}
+
+// ---- rings where it lands on standing water --------------------------------------------------------
+
+// A drop landing on still water sends out a ring of capillary waves: its front at their slowest speed
+// (about 0.23 m/s, a wavelength of 1.7 cm), fading as it spreads and dies away within a second.
+static const float RAIN_RING_SPEED      = 0.23F;   // m/s, the front's
+static const float RAIN_RING_WAVELENGTH = 0.017F;  // m
+static const float RAIN_RING_LIFE       = 0.8F;    // s a ring is drawn for
+static const float RAIN_RING_DECAY      = 3.0F;    // per second, its height's
+static const float RAIN_RING_SLOPE      = 0.3F;    // a fresh ring's steepest slope
+// Rings are a cell's each, a ring a cell at a time; cells as wide as a ring reaches, so a point need
+// look at its own and the eight round it; RAIN_RING_LAYERS grids over one another for the density
+static const float RAIN_RING_CELL = 0.15F;
+#define RAIN_RING_LAYERS 4
+
+// Drops a square metre a second that leave a ring worth drawing (a millimetre across and more): the
+// distribution's above it, falling at its mean size's speed
+inline float rainImpactRate(float rate)
+{
+  if(rate <= 0.0F)
+    return 0.0F;
+  const float slope = rainSlope(rate);
+  return RAIN_N0 / slope * exp(-slope) * rainFallSpeed(1.0F + 1.0F / slope);
+}
+
+// The rings at `xz` at `time` seconds, for a footprint `footprint` metres wide: the water surface's slope
+// along x and z, and the variance of the rings finer than the footprint (for the roughness), as
+// groundRipplesAt has them. Each layer's cells hold a ring at a time, at the chance that gives the
+// rate's impacts; where it rains harder than the layers hold, they all are rings.
+inline float3 rainRingsAt(float2 xz, float footprint, float rate, float time)
+{
+  float2 slope    = float2(0.0F, 0.0F);
+  float  variance = 0.0F;
+  const float impacts = rainImpactRate(rate);
+  if(impacts <= 0.0F)
+    return float3(0.0F, 0.0F, 0.0F);
+  const float chance = min(impacts * RAIN_RING_LIFE * RAIN_RING_CELL * RAIN_RING_CELL / float(RAIN_RING_LAYERS), 1.0F);
+  const float kept   = clamp(2.0F - 4.0F * footprint / RAIN_RING_WAVELENGTH, 0.0F, 1.0F);
+  for(int layer = 0; layer < RAIN_RING_LAYERS; ++layer)
+  {
+    const float2 p    = xz / RAIN_RING_CELL + float2(0.37F, 0.61F) * float(layer);
+    const float2 base = floor(p);
+    for(int dz = -1; dz <= 1; ++dz)
+      for(int dx = -1; dx <= 1; ++dx)
+      {
+        const int2  id  = int2(int(base.x) + dx, int(base.y) + dz);
+        const uint  key = rainHash((uint(id.x) * 73856093U) ^ (uint(id.y) * 19349663U) ^ (uint(layer) * 83492791U) ^ 0x2c1b3c6dU);
+        // the cell's rings come one after another, each at its own place, from its own phase
+        const float t   = time / RAIN_RING_LIFE + rainUnit(key);
+        const float n   = floor(t);
+        const uint  now = rainHash(key + uint(int(n)) * 0x9E3779B9U);
+        if(rainUnit(now) >= chance)
+          continue;
+        const float  age    = (t - n) * RAIN_RING_LIFE;
+        const float2 centre = (float2(id) + float2(rainUnit(now + 1U), rainUnit(now + 2U))) - float2(0.37F, 0.61F) * float(layer);
+        const float2 d      = xz - centre * RAIN_RING_CELL;
+        const float  r      = length(d);
+        if(r < 1e-5F)
+          continue;
+        const float x = r - RAIN_RING_SPEED * age;
+        // a packet of a wave and a half round the front, spreading (its height as the ring's length
+        // grows) and dying away; bigger drops ring harder
+        const float width    = 1.5F * RAIN_RING_WAVELENGTH;
+        const float envelope = exp(-(x * x) / (width * width)) * exp(-RAIN_RING_DECAY * age)
+                               * sqrt(RAIN_RING_WAVELENGTH / max(r, RAIN_RING_WAVELENGTH));
+        const float strength = RAIN_RING_SLOPE * (0.5F + 0.5F * rainUnit(now + 3U)) * envelope;
+        slope += d / r * (strength * cos(6.28318531F * x / RAIN_RING_WAVELENGTH) * kept);
+        variance += 0.25F * strength * strength * (1.0F - kept * kept);
+      }
+  }
+  return float3(slope, variance);
+}
+
+// ---- splashes where it lands -----------------------------------------------------------------------
+
+// A drop that lands throws a few droplets up and out (its crown breaking up), a few centimetres, for
+// a few hundredths of a second: RAIN_SPLASH_DROPLETS a splash, at 1 to 2.2 m/s, 35 to 70 degrees up,
+// a third to two thirds of a millimetre across. Splashes are a cell's each on the sheared ground, a
+// splash a slot at a time, the cells RAIN_SPLASH_CELL across over a square RAIN_SPLASH_CELLS wide.
+static const float RAIN_SPLASH_LIFE    = 0.08F;  // s
+static const float RAIN_SPLASH_CELL    = 0.25F;  // m
+#define RAIN_SPLASH_CELLS 64
+#define RAIN_SPLASH_DROPLETS 4
+
+struct RainSplashDroplet
+{
+  float3 velocity;  // m/s as it leaves
+  float  diameter;  // mm
+};
+
+// Droplet `k` of the splash keyed `key`
+inline RainSplashDroplet rainSplashDroplet(uint key, uint k)
+{
+  const uint              d     = rainHash(key + (k + 7U) * 0x85ebca6bU);
+  const float             turn  = 6.28318531F * (float(k) + rainUnit(d)) / float(RAIN_SPLASH_DROPLETS);
+  const float             up    = 0.61F + 0.61F * rainUnit(d + 1U);  // 35 to 70 degrees
+  const float             speed = 1.0F + 1.2F * rainUnit(d + 2U);
+  RainSplashDroplet       out;
+  out.velocity = speed * float3(cos(up) * cos(turn), sin(up), cos(up) * sin(turn));
+  out.diameter = 0.33F + 0.34F * rainUnit(d + 3U);
+  return out;
+}
+
+// Where a droplet thrown at `velocity` from `impact` is `age` seconds after (falling as it flies)
+inline float3 rainSplashAt(float3 impact, float3 velocity, float age)
+{
+  return impact + velocity * age - float3(0.0F, 4.905F * age * age, 0.0F);
 }
 
 // The light table (rainLight): what a drop shows, a cosine-weighted mean of the environment round a

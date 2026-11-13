@@ -67,6 +67,15 @@ struct RainFrame
   uint*           drawArgs;   // the draw's VkDrawIndirectCommand: rainCull counts the drops into its instances
   float           minCoverage;  // a faint drop is drawn at a chance of its coverage over this, that much stronger
   uint            _pad0;
+  // The splashes (rainSplash): the middle of their square on the sheared ground, a slot's chance of a
+  // splash and a cell's slots, the height drops land at where nothing in the scene stops them (the
+  // floor's, or its water's; -1e30 none), and how far out they are drawn
+  float2 splashCentre;
+  float  splashChance;
+  uint   splashSlots;
+  float  groundHeight;
+  float  splashReach;
+  float2 _pad1;
 };
 
 struct RainPush

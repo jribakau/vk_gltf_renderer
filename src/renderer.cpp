@@ -1223,6 +1223,12 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
       finfo.rainShear         = m_rain.shear();
       finfo.rainShelterCentre = m_rain.shelterCentre();
       finfo.rainShelter       = reinterpret_cast<float*>(m_rain.shelterAddress());
+      // the rings show the moment the accumulation began: a still holds it, a moving view's every
+      // frame begins one
+      if(m_resources.frameCount == 0)
+        m_rainRingTime = m_rain.time();
+      finfo.rainRate = m_rain.rate();
+      finfo.rainTime = m_rainRingTime;
     }
     finfo.landFadeFrom   = m_resources.settings.landFadeFrom;
     finfo.landFadeTo     = m_resources.settings.landFadeTo;

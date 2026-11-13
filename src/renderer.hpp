@@ -709,6 +709,7 @@ private:
   BusyState    m_busy;
   Silhouette    m_silhouette;     // Silhouette renderer
   HdrOutput     m_hdrOutput;      // The frame an HDR display is shown, and EXR exports
+  float         m_rainRingTime = 0.0f;  // the rain's clock when the accumulation began: its rings' moment
   Rain          m_rain;           // The drops falling in the air, drawn over the image the tone mapper takes, before the lens
   Lens          m_lens;           // A cheap wide lens's distortion and fringing on the image the tone mapper takes, before the bloom
   Bloom         m_bloom;          // The glow and the star on the image the tone mapper takes

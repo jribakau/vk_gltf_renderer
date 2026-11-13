@@ -1230,9 +1230,19 @@ so a backlit drop glows. An `.exr` keeps it.
   likewise, dry under a roof. How wet is the rate's steady state (`rainWetness`: a drizzle 0.6, light
   rain 0.9; `rainPuddleShare`: from 1 mm/h, all from 10), not how long it has rained. A change of
   the rate or the wind restarts the still.
+- **Rings.** Where it lands on standing water (puddles, the floor's, the ground's body of water) the
+  drops' rings tilt its surface (`rainRingsAt`): capillary waves at their slowest speed and wavelength
+  spreading from each impact and dying within a second, as many as land (`rainImpactRate`, drops from
+  a millimetre), four grids of cells a ring each. Rings finer than a pixel's footprint go into the
+  water's roughness, so a far rainy sea turns matte. They show the rain's clock when the accumulation
+  began (`SceneFrameInfo::rainTime`): a still holds one moment, a moving view's frames move them.
+- **Splashes.** `rainSplash` throws a few droplets up and out of each drop that lands within
+  `Rain::kSplashReach` (`rainSplashDroplet`: 1 to 2.2 m/s, a few centimetres up, back within tenths of
+  a second), on the first surface the shelter map holds or the floor (or its water); drawn as the
+  drops are. 0.03 ms.
 
 Left out: the rain's haze past `rainReach` (the drops there are a veil, not streaks: the Haze
-section's job, not tied to the rate); ripples and splashes where it lands; wetness that builds and
+section's job, not tied to the rate); a splash's crown and the craters drops make in water; wetness that builds and
 dries over time, water running down walls, wet hair's clumping; the drops' depth of field, and their
 lighting by the scene's own lights; the rainbow (the drops' 138° bow is not in `rainSunPhase`).
 

@@ -100,6 +100,59 @@ void rainCopy(uint3 id: SV_DispatchThreadID)
 
 // ---- the drops -----------------------------------------------------------------------------------
 
+// A drop's streak from `p0` (where it was as the shutter opened) to `p1` (where it is), `dropM` metres
+// across, `streak` metres of travel: on screen, faint ones at a chance (keyed `key`) and that much
+// stronger, lit, and counted into the draw
+void rainEmit(RainFrame* f, float3 p0, float3 p1, float dropM, float streak, uint key)
+{
+  const float4 c0 = mul(float4(p0, 1.0F), f->viewProj);
+  const float4 c1 = mul(float4(p1, 1.0F), f->viewProj);
+  if(c0.w < 0.5F * f->minDistance || c1.w < 0.5F * f->minDistance)
+    return;
+  // off screen: both ends past the same edge
+  if((c0.x < -c0.w && c1.x < -c1.w) || (c0.x > c0.w && c1.x > c1.w) || (c0.y < -c0.w && c1.y < -c1.w) || (c0.y > c0.w && c1.y > c1.w)
+     || (c0.z > c0.w && c1.z > c1.w))
+    return;
+
+  // its width at either end, pixels, and the time it spends over a point of its streak
+  const float width0 = dropM * f->focal / c0.w;
+  const float width1 = dropM * f->focal / c1.w;
+  float       along  = dropM / (streak + dropM);
+  // a faint one at a chance, stronger for it
+  const float coverage = along * min(max(width0, width1), 1.0F);
+  if(coverage < f->minCoverage)
+  {
+    const float chance = coverage / f->minCoverage;
+    if(rainUnit(key) >= chance)
+      return;
+    along /= chance;
+  }
+
+  // its light: the environment round the way through it (most of it lets through, a little it
+  // reflects from in front), and the sun's where it shines through
+  SceneFrameInfo* fi   = f->frameInfo;
+  const float3    view = normalize(p1 - f->camera);
+  float3          lit  = 0.9F * rainLightAt(f, view) + 0.06F * rainLightAt(f, -view);
+  if(fi->sunDisk != nullptr)
+  {
+    const SkySunDisk disk = *fi->sunDisk;
+    const float3     sun  = disk.radiance * (6.28318531F * (1.0F - cos(disk.angularRadius))) * (fi->envIntensity * fi->skySunScale * disk.cloudShadow);
+    lit += sun * rainSunPhase(dot(fi->sunDirection, view));
+  }
+
+  uint at = 0u;
+  InterlockedAdd(f->drawArgs[1], 1u, at);
+  if(at >= RAIN_MAX_STREAKS)
+    return;
+  const float2 half_ = 0.5F * f->viewport;
+  RainStreak   s;
+  s.ends         = float4(c0.xy / c0.w * half_, c1.xy / c1.w * half_);
+  s.depth        = float4(c0.z, c0.w, c1.z, c1.w);
+  s.light        = float4(lit * fi->outputScale, along);
+  s.width        = float4(width0, width1, 0.0F, 0.0F);
+  f->streaks[at] = s;
+}
+
 // Each of a cell's slots once (a workgroup of RAIN_CULL_GROUP slots of a cell): the drop there if it
 // has one, it falls here (no shelter over it), it is within reach and on screen; lit, and counted into
 // the draw. A faint drop (a far one, under a pixel) is drawn at a chance of its coverage over
@@ -127,54 +180,50 @@ void rainCull(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID)
   const float3 velocity = float3(f->wind.x, -d.speed, f->wind.y);
   const float3 p1       = d.position;
   const float3 p0       = p1 - velocity * f->shutter;
-  const float4 c0       = mul(float4(p0, 1.0F), f->viewProj);
-  const float4 c1       = mul(float4(p1, 1.0F), f->viewProj);
-  if(c0.w < 0.5F * f->minDistance || c1.w < 0.5F * f->minDistance)
-    return;
-  // off screen: both ends past the same edge
-  if((c0.x < -c0.w && c1.x < -c1.w) || (c0.x > c0.w && c1.x > c1.w) || (c0.y < -c0.w && c1.y < -c1.w) || (c0.y > c0.w && c1.y > c1.w)
-     || (c0.z > c0.w && c1.z > c1.w))
-    return;
+  rainEmit(f, p0, p1, d.diameter * 1e-3F, length(velocity) * f->shutter,
+           rainHash((uint(cell.x) * 73856093U) ^ (uint(cell.y) * 19349663U) ^ (uint(cell.z) * 83492791U) ^ 0x5bd1e995U) + slot * 0x9E3779B9U);
+}
 
-  // its width at either end, pixels, and the time it spends over a point of its streak
-  const float dropM  = d.diameter * 1e-3F;
-  const float width0 = dropM * f->focal / c0.w;
-  const float width1 = dropM * f->focal / c1.w;
-  float       along  = dropM / (length(velocity) * f->shutter + dropM);
-  // a faint one at a chance, stronger for it
-  const float coverage = along * min(max(width0, width1), 1.0F);
-  if(coverage < f->minCoverage)
+// The splashes where the drops land: each of a splash cell's slots once, a splash at a time at the
+// slot's chance, on the first surface the shelter map holds there or the floor; its droplets thrown
+// up and out (rainSplashDroplet), each the streak its flight makes over the shutter
+[shader("compute")]
+[numthreads(RAIN_CULL_GROUP, 1, 1)]
+void rainSplash(uint3 group: SV_GroupID, uint3 thread: SV_GroupThreadID)
+{
+  RainFrame* f    = pc.frame;
+  const uint slot = group.x * RAIN_CULL_GROUP + thread.x;
+  if(slot >= f->splashSlots)
+    return;
+  const int2  id  = int2(int(group.y % RAIN_SPLASH_CELLS), int(group.y / RAIN_SPLASH_CELLS)) - int2(RAIN_SPLASH_CELLS / 2);
+  const int2  at  = int2(floor(f->splashCentre / RAIN_SPLASH_CELL)) + id;
+  const uint  key = rainHash((uint(at.x) * 73856093U) ^ (uint(at.y) * 19349663U) ^ (slot * 83492791U) ^ 0x68e31da4U);
+  const float t   = f->time / RAIN_SPLASH_LIFE + rainUnit(key);
+  const float n   = floor(t);
+  const uint  now = rainHash(key + uint(int(n)) * 0x9E3779B9U);
+  if(rainUnit(now) >= f->splashChance)
+    return;
+  const float  age = (t - n) * RAIN_SPLASH_LIFE;
+  const float2 h   = (float2(at) + float2(rainUnit(now + 1U), rainUnit(now + 2U))) * RAIN_SPLASH_CELL;
+  // where it lands: the first surface down its slant, or the floor
+  const int texel  = rainShelterTexelAt(h, f->shelterCentre);
+  float     height = texel >= 0 ? f->shelter[texel] : RAIN_SHELTER_OPEN;
+  if(height <= RAIN_SHELTER_OPEN * 0.5F)
+    height = f->groundHeight;
+  if(height <= RAIN_SHELTER_OPEN * 0.5F)
+    return;
+  const float3 impact = float3(h.x + f->shear.x * height, height, h.y + f->shear.y * height);
+  if(length(impact - f->camera) > f->splashReach)
+    return;
+  for(uint k = 0U; k < RAIN_SPLASH_DROPLETS; ++k)
   {
-    const uint key = rainHash((uint(cell.x) * 73856093U) ^ (uint(cell.y) * 19349663U) ^ (uint(cell.z) * 83492791U) ^ 0x5bd1e995U) + slot * 0x9E3779B9U;
-    const float chance = coverage / f->minCoverage;
-    if(rainUnit(key) >= chance)
-      return;
-    along /= chance;
+    const RainSplashDroplet d  = rainSplashDroplet(now, k);
+    const float3            p1 = rainSplashAt(impact, d.velocity, age);
+    if(p1.y < impact.y)
+      continue;  // back down
+    const float3 p0 = rainSplashAt(impact, d.velocity, max(age - f->shutter, 0.0F));
+    rainEmit(f, p0, p1, d.diameter * 1e-3F, length(p1 - p0), now + k * 0x27d4eb2dU);
   }
-
-  // its light: the environment round the way through it (most of it lets through, a little it
-  // reflects from in front), and the sun's where it shines through
-  SceneFrameInfo* fi   = f->frameInfo;
-  const float3    view = normalize(p1 - f->camera);
-  float3          lit  = 0.9F * rainLightAt(f, view) + 0.06F * rainLightAt(f, -view);
-  if(fi->sunDisk != nullptr)
-  {
-    const SkySunDisk disk = *fi->sunDisk;
-    const float3     sun  = disk.radiance * (6.28318531F * (1.0F - cos(disk.angularRadius))) * (fi->envIntensity * fi->skySunScale * disk.cloudShadow);
-    lit += sun * rainSunPhase(dot(fi->sunDirection, view));
-  }
-
-  uint at = 0u;
-  InterlockedAdd(f->drawArgs[1], 1u, at);
-  if(at >= RAIN_MAX_STREAKS)
-    return;
-  const float2 half_ = 0.5F * f->viewport;
-  RainStreak   s;
-  s.ends          = float4(c0.xy / c0.w * half_, c1.xy / c1.w * half_);
-  s.depth         = float4(c0.z, c0.w, c1.z, c1.w);
-  s.light         = float4(lit * fi->outputScale, along);
-  s.width         = float4(width0, width1, 0.0F, 0.0F);
-  f->streaks[at] = s;
 }
 
 struct RainVertexOut

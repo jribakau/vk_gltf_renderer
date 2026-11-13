@@ -477,6 +477,11 @@ struct SceneFrameInfo
   float2 rainShear         = {0.0F, 0.0F};
   float2 rainShelterCentre = {0.0F, 0.0F};
   float* rainShelter       = nullptr;
+  // The rings on standing water where drops land (rainRingsAt): the rain's rate, mm/h (0: none), and
+  // the moment they show, the rain's clock when the frame's accumulation began (a still holds one
+  // moment, as a photograph does). (Appended.)
+  float rainRate = 0.0F;
+  float rainTime = 0.0F;
 };
 
 enum PathtracerFlags

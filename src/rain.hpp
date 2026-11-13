@@ -76,6 +76,8 @@ public:
   // This frame's, once prepared: how wet it leaves an open surface (0 to 1: a drizzle wets, harder
   // rain soaks), the share of flat ground under puddles, the drops' slant, and the shelter map
   bool      prepared() const { return m_prepared; }
+  float     rate() const { return active() ? m_settings.rate : 0.0f; }
+  float     time() const { return m_time; }
   float     wetness() const;
   float     puddles() const;
   glm::vec2 shear() const { return m_planShear; }
@@ -95,6 +97,8 @@ public:
   static constexpr float    kLongestFrame = 0.1f;    // seconds a frame's fall counts for at most
   static constexpr float    kClockWrap    = 600.0f;  // the clock goes round, so a float holds it finely
   static constexpr float    kMinCoverage  = 0.04f;   // a fainter drop is drawn at a chance (rainCull)
+  static constexpr float    kSplashReach  = 8.0f;    // metres out to which splashes are drawn
+  static constexpr uint32_t kMaxSplashSlots = 64;     // splashes a cell at once at most
 
 private:
   bool ensureTarget(VkCommandBuffer cmd, VkExtent2D size);
@@ -127,6 +131,8 @@ private:
   nvvk::Buffer              m_streaks;   // the drops drawn (rainCull's)
   nvvk::Buffer              m_drawArgs;  // their draw's VkDrawIndirectCommand
   VkPipeline                m_cullPipeline{};
+  VkPipeline                m_splashPipeline{};
+  uint32_t                  m_splashSlots = 0;
 
   nvvk::DescriptorBindings    m_bindings;
   VkDescriptorSetLayout       m_setLayout{};
