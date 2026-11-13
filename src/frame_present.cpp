@@ -106,6 +106,28 @@ struct FramePresent::Impl
   bool              late{false};
   Clock::time_point frameStart{};
 
+  // A second of the view moving, logged (`[fv-time] view frames`, noteLoop): how often the loop ran, drew a
+  // new image and presented it, how many of those frames showed new input, what a frame cost and what
+  // the loop waited on, so the app's own log says where a moving frame goes
+  struct Window
+  {
+    Clock::time_point since{};
+    Clock::time_point lastLoop{};
+    int               loops{0};
+    int               drawn{0};
+    int               presented{0};
+    int               inputs{0};
+    int               costs{0};
+    double            intervalMs{0.0};
+    double            intervalMaxMs{0.0};
+    double            cpuMs{0.0};
+    double            gpuMs{0.0};
+    uint64_t          skippedAt{0};
+    uint64_t          droppedAt{0};
+  };
+  Window window;
+  void   noteLoop(Clock::time_point now);
+
   // the viewport's size (POST /present/view), packed width << 32 | height: HTTP -> application thread
   std::atomic<uint64_t> view{0};
   std::atomic<bool>     attached{false};
@@ -191,6 +213,39 @@ void FramePresent::onResize(VkCommandBuffer /*cmd*/, const VkExtent2D& extent)
   s.slots.reset();
 }
 
+// The application thread's loop came round: counted, and each second that showed new input logged
+void FramePresent::Impl::noteLoop(Clock::time_point now)
+{
+  Window& w = window;
+  if(w.lastLoop != Clock::time_point{})
+  {
+    const double ms = std::chrono::duration<double, std::milli>(now - w.lastLoop).count();
+    w.intervalMs += ms;
+    w.intervalMaxMs = std::max(w.intervalMaxMs, ms);
+    w.loops++;
+  }
+  w.lastLoop = now;
+  if(w.since == Clock::time_point{})
+  {
+    w.since     = now;
+    w.skippedAt = skipped.load();
+    w.droppedAt = dropped.load();
+  }
+  const double seconds = std::chrono::duration<double>(now - w.since).count();
+  if(seconds < 1.0)
+    return;
+  if(w.inputs > 0 && w.loops > 0)
+    LOGI("[fv-time] view frames: %.2f s, the loop %d times (%.1f ms mean, %.1f max), %d drawn, %d presented, %d with new "
+         "input, %d skipped, %d dropped; a frame %.1f ms CPU and %.1f GPU over %d; refresh %.1f ms, waits %s\n",
+         seconds, w.loops, w.intervalMs / w.loops, w.intervalMaxMs, w.drawn, w.presented, w.inputs,
+         int(skipped.load() - w.skippedAt), int(dropped.load() - w.droppedAt), w.costs ? w.cpuMs / w.costs : 0.0,
+         w.costs ? w.gpuMs / w.costs : 0.0, w.costs, refreshMs.load(),
+         !paced ? "for nothing (unpaced)" : (late ? "before its present" : "before its input"));
+  const Clock::time_point last = w.lastLoop;
+  w                            = Window{};
+  w.lastLoop                   = last;
+}
+
 void FramePresent::onUpdate()
 {
   Impl&                              s = *m_impl;
@@ -236,6 +291,8 @@ void FramePresent::onUpdate()
   if(s.paced && !s.late && !s.token)
     s.token = s.target->waitPresentable(50);
   s.frameStart = Impl::Clock::now();
+  if(s.target && s.visible)
+    s.noteLoop(s.frameStart);
 }
 
 void FramePresent::onRender(VkCommandBuffer cmd)
@@ -260,6 +317,7 @@ void FramePresent::onRender(VkCommandBuffer cmd)
   // draw (a tonemapper setting) still shows within a tenth of a second.
   const uint64_t drawn = s.info.drawn ? s.info.drawn() : s.lastDrawn + 1;
   const auto     now   = Impl::Clock::now();
+  s.window.drawn += drawn != s.lastDrawn ? 1 : 0;
   if(drawn == s.lastDrawn && size == s.lastSize && now - s.lastPresent < 100ms)
     return;
 
@@ -363,6 +421,7 @@ void FramePresent::onRender(VkCommandBuffer cmd)
   s.pendingValue   = value;
   s.pendingSize    = size;
   s.pendingInputNs = s.info.takeInput ? s.info.takeInput() : 0;
+  s.window.inputs += s.pendingInputNs != 0 ? 1 : 0;
   s.lastDrawn      = drawn;
   s.lastSize       = size;
   s.lastPresent    = now;
@@ -383,6 +442,9 @@ void FramePresent::onPostRender()
     const double gpuMs = s.info.gpuMs ? s.info.gpuMs() : 0.0;
     const double rate  = s.target->refreshMs();
     s.pacing.note(cpuMs + gpuMs, rate);
+    s.window.cpuMs += cpuMs;
+    s.window.gpuMs += gpuMs;
+    s.window.costs++;
     s.waitsLate = s.pacing.waitsLate();
     s.costMs    = s.pacing.costMs();
     s.refreshMs = rate;
@@ -403,6 +465,7 @@ void FramePresent::onPostRender()
     return;
   }
   s.presented++;
+  s.window.presented++;
   if(s.pendingInputNs != 0)
   {
     const double ms = double(steadyNs() - s.pendingInputNs) * 1e-6;
