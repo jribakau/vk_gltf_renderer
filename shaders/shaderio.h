@@ -468,6 +468,15 @@ struct SceneFrameInfo
   float          _nightPad2     = 0.0F;
   NightStar*     nightStars     = nullptr;
   NightStarCell* nightStarCells = nullptr;
+  // Rain where it lands (src/rain.hpp; rainWetMaterial in pathtrace_functions.h.slang): how wet it
+  // leaves a surface open to it (0: no rain), the share of flat ground under puddles, the drops' slant
+  // (rainShear in rain.h.slang), and the shelter map the frame traced round rainShelterCentre (null:
+  // open everywhere). (Appended.)
+  float  rainWet           = 0.0F;
+  float  rainPuddles       = 0.0F;
+  float2 rainShear         = {0.0F, 0.0F};
+  float2 rainShelterCentre = {0.0F, 0.0F};
+  float* rainShelter       = nullptr;
 };
 
 enum PathtracerFlags

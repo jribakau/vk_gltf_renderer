@@ -30,6 +30,7 @@
 #include "smooth_vertex.h.slang"
 #include "dlss_specular_guide.h.slang"
 #include "haze.h.slang"
+#include "rain.h.slang"  // rainShelterTexel: where the rain lands
 
 //-----------------------------------------------------------------------
 // Types and tuning constants
@@ -1789,6 +1790,55 @@ PbrMaterial waterSurfaceMaterial(float3 pos, float3 geometricNormal, bool fromAb
   return mat;
 }
 
+//-----------------------------------------------------------------------
+// Rain where it lands (src/rain.hpp: SceneFrameInfo's rain fields)
+//-----------------------------------------------------------------------
+// How much of the rain reaches a surface at `pos` facing `Ng`, 0 without rain (rainExposureAt)
+float rainExposure(float3 pos, float3 Ng, SceneFrameInfo* frameInfo)
+{
+  if(frameInfo->rainWet <= 0.0F)
+    return 0.0F;
+  return rainExposureAt(pos, Ng, frameInfo->rainShear, frameInfo->rainShelterCentre, frameInfo->rainShelter);
+}
+
+// A mesh's surface wet where the rain reaches it (rainExposure), as the ground's damp is: a porous one
+// (a rough dielectric that `absorbs`: not a metal, glass or skin) soaks it up and darkens
+// (groundWetAlbedo); every one's top layer turns water's, smoother and, on a dielectric, of water's
+// index. On what is flat and faces up, puddles where the ground's field has them (groundWaterAt), their
+// surface water, rippled as the ground's are.
+void rainWetMaterial(inout PbrMaterial mat, float3 pos, float3 Ng, float footprint, bool absorbs, SceneFrameInfo* frameInfo)
+{
+  const float exposure = rainExposure(pos, Ng, frameInfo);
+  if(exposure <= 0.0F)
+    return;
+  const float wet      = frameInfo->rainWet * exposure;
+  const float porosity = absorbs ? (1.0F - mat.metallic) * (1.0F - mat.transmission) * smoothstep(0.1F, 0.5F, sqrt(mat.roughness.x)) : 0.0F;
+  mat.baseColor        = lerp(mat.baseColor, groundWetAlbedo(mat.baseColor), wet * porosity);
+  // pbrMat.roughness holds alpha = roughness^2
+  const float dampAlpha = GROUND_DAMP_ROUGHNESS * GROUND_DAMP_ROUGHNESS;
+  mat.roughness         = lerp(mat.roughness, min(mat.roughness, float2(dampAlpha)), wet);
+  if(mat.transmission <= 0.0F)
+    mat.ior2 = lerp(mat.ior2, GROUND_WATER_IOR, wet * (1.0F - mat.metallic));
+
+  const float flat = smoothstep(0.97F, 0.995F, Ng.y);
+  if(frameInfo->rainPuddles <= 0.0F || flat <= 0.0F)
+    return;
+  const GroundWater water  = groundWaterAt(pos.xz, footprint, (0.3F + 0.7F * frameInfo->rainPuddles) * exposure, frameInfo->groundRipples);
+  const float       puddle = water.puddle * flat;
+  if(puddle <= 0.0F)
+    return;
+  if(absorbs)
+    mat.baseColor = lerp(mat.baseColor, groundWetAlbedo(mat.baseColor), puddle * (1.0F - mat.metallic));
+  mat.ior2               = lerp(mat.ior2, GROUND_WATER_IOR, puddle);
+  const float waterAlpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * water.slopeVariance);
+  mat.roughness          = max(lerp(mat.roughness, float2(waterAlpha), puddle), float2(MICROFACET_MIN_ROUGHNESS));
+  if(any(water.slope != float2(0.0F)))
+  {
+    mat.N = normalize(lerp(mat.N, normalize(float3(-water.slope.x, 1.0F, -water.slope.y)), puddle));
+    orthonormalBasis(mat.N, mat.T, mat.B);
+  }
+}
+
 // The ground's material at `pos`, for a ray footprint `footprint` wide: the plane's colour and
 // roughness, under the water the host sets (groundWaterAt). Damp ground darkens and turns glossier,
 // its top layer becoming water's; a puddle's surface is water, smooth but for its ripples, whose
@@ -1800,10 +1850,17 @@ PbrMaterial groundMaterial(float3 pos, float footprint, SceneFrameInfo* frameInf
                                         frameInfo->infinitePlaneRoughness, up, up);
   mat.faceSided    = false;  // a puddle's ripples are its surface, as the water's waves
   // The catcher is a compositing effect, not a surface
-  if(frameInfo->groundWater <= 0.0F || hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher))
+  if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneInfinitePlaneShadowCatcher))
+    return mat;
+  // The rain where it reaches the ground: all of it damp, and its puddles over the floor's own
+  const float rain   = rainExposure(pos, up, frameInfo);
+  const float amount = max(frameInfo->groundWater, frameInfo->rainPuddles > 0.0F ? (0.3F + 0.7F * frameInfo->rainPuddles) * rain : 0.0F);
+  const float soaked = frameInfo->rainWet * rain;
+  if(amount <= 0.0F && soaked <= 0.0F)
     return mat;
 
-  const GroundWater water = groundWaterAt(pos.xz, footprint, frameInfo->groundWater, frameInfo->groundRipples);
+  GroundWater water = groundWaterAt(pos.xz, footprint, amount, frameInfo->groundRipples);
+  water.damp        = max(water.damp, soaked);
   mat.baseColor           = lerp(mat.baseColor, groundWetAlbedo(mat.baseColor), water.damp);
   mat.ior2                = lerp(mat.ior2, GROUND_WATER_IOR, water.damp);
   // pbrMat.roughness holds alpha = roughness^2; the ripples' variance adds to the water's alpha^2 (twice

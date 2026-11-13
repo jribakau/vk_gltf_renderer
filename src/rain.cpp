@@ -159,18 +159,33 @@ void Rain::deinit(Resources& /*resources*/)
   m_size = {};
 }
 
-void Rain::registerParameters(SettingsRegistry* settings)
+void Rain::registerParameters(SettingsRegistry* settings, std::function<void()> wetChanged)
 {
+  const auto changed = [wetChanged](const nvutils::ParameterBase* const) {
+    if(wetChanged)
+      wetChanged();
+  };
   // Not persisted: the host sends them with the lighting (fv_lighting.cpp), after every load too
-  settings->add({"rainRate", "Rain: how hard it rains, mm/h (0 = none, 2.5 light, 7.5 heavy, 50 a downpour)"}, &m_settings.rate,
-                Persist::eNo, 0.0f, 300.0f);
-  settings->add({"rainWind", "Rain: the wind at the ground, m/s, which slants the drops"}, &m_settings.wind, Persist::eNo, 0.0f, 40.0f);
-  settings->add({"rainWindFrom", "Rain: where the wind blows from (degrees, an azimuth as the sun's)"}, &m_settings.windFrom,
-                Persist::eNo, -360.0f, 360.0f);
+  settings->add({.name = "rainRate", .help = "Rain: how hard it rains, mm/h (0 = none, 2.5 light, 7.5 heavy, 50 a downpour)", .callbackSuccess = changed},
+                &m_settings.rate, Persist::eNo, 0.0f, 300.0f);
+  settings->add({.name = "rainWind", .help = "Rain: the wind at the ground, m/s, which slants the drops", .callbackSuccess = changed},
+                &m_settings.wind, Persist::eNo, 0.0f, 40.0f);
+  settings->add({.name = "rainWindFrom", .help = "Rain: where the wind blows from (degrees, an azimuth as the sun's)", .callbackSuccess = changed},
+                &m_settings.windFrom, Persist::eNo, -360.0f, 360.0f);
   settings->add({"rainShutter", "Rain: the camera's shutter, seconds: a drop's streak is its fall while it is open"},
                 &m_settings.shutter, Persist::eNo, 1.0f / 8000.0f, 30.0f);
   settings->add({"rainFalling", "Rain: the drops fall (off: they hold where they are)"}, &m_settings.falling, Persist::eNo);
   settings->add({"rainReach", "Rain: metres out to which drops are drawn"}, &m_settings.reach, Persist::eNo, 2.0f, 40.0f);
+}
+
+float Rain::wetness() const
+{
+  return active() ? rain_physics::rainWetness(m_settings.rate) : 0.0f;
+}
+
+float Rain::puddles() const
+{
+  return active() ? rain_physics::rainPuddleShare(m_settings.rate) : 0.0f;
 }
 
 void Rain::onResize(VkCommandBuffer cmd, VkExtent2D size)
@@ -205,11 +220,11 @@ bool Rain::ensureTarget(VkCommandBuffer cmd, VkExtent2D size)
   return true;
 }
 
-VkDescriptorImageInfo Rain::cmdApply(VkCommandBuffer cmd, Resources& resources, const VkDescriptorImageInfo& input, VkExtent2D size,
-                                     const View& view, nvvk::ProfilerGpuTimer& timer)
+void Rain::cmdPrepare(VkCommandBuffer cmd, Resources& resources, VkExtent2D size, const View& view)
 {
-  if(!active() || size.width == 0 || size.height == 0 || view.depthExtent.width == 0 || !ensureTarget(cmd, size))
-    return input;
+  m_prepared = false;
+  if(!active() || size.width == 0 || size.height == 0)
+    return;
   NVVK_DBG_SCOPE(cmd);
 
   // the clock: real time while the drops fall, a long stall counting as a short frame
@@ -247,7 +262,7 @@ VkDescriptorImageInfo Rain::cmdApply(VkCommandBuffer cmd, Resources& resources, 
     NVVK_DBG_NAME(m_drawArgs.buffer);
   }
   if(frame.mapping == nullptr)
-    return input;
+    return;
 
   // the frame: the camera, the wind, the cells it sees
   const glm::mat4 viewProj = view.proj * view.view;
@@ -293,7 +308,45 @@ VkDescriptorImageInfo Rain::cmdApply(VkCommandBuffer cmd, Resources& resources, 
   if(!cells.empty())
     std::memcpy(reinterpret_cast<char*>(frame.mapping) + kCellsOffset, cells.data(), cells.size() * sizeof(glm::ivec4));
 
-  const shaderio::RainPush pushFrame{.frame = reinterpret_cast<shaderio::RainFrame*>(frame.address), .size = {int(size.width), int(size.height)}};
+  m_frameAddress = frame.address;
+  m_slots        = slots;
+  m_cellCount    = uint32_t(cells.size());
+  m_planShear    = shear;
+  m_planCentre   = rf.shelterCentre;
+
+  const shaderio::RainPush push{.frame = reinterpret_cast<shaderio::RainFrame*>(m_frameAddress), .size = {RAIN_SHELTER_SIZE, RAIN_SHELTER_SIZE}};
+  // the last frame's readers of the map, and the scene's build this frame
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                         VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+  const VkAccelerationStructureKHR tlas = resources.gpuView().tlas();
+  // the shelter map: traced, or open everywhere without a scene to trace
+  if(tlas != VK_NULL_HANDLE)
+  {
+    nvvk::WriteSetContainer writes;
+    writes.append(m_bindings.getWriteSet(shaderio::RainBindings::eRainTlas), tlas);
+    vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, uint32_t(writes.size()), writes.data());
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_shelterPipeline);
+    vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(push), &push);
+    vkCmdDispatch(cmd, RAIN_SHELTER_SIZE / 16, RAIN_SHELTER_SIZE / 16, 1);
+  }
+  else
+    vkCmdFillBuffer(cmd, m_shelter.buffer, 0, VK_WHOLE_SIZE, 0xFF800000u);  // -inf: open
+  // read by the path tracer (where it rains on what) and the drops
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+  m_prepared = true;
+}
+
+VkDescriptorImageInfo Rain::cmdApply(VkCommandBuffer cmd, Resources& resources, const VkDescriptorImageInfo& input, VkExtent2D size,
+                                     const View& view, nvvk::ProfilerGpuTimer& timer)
+{
+  if(!m_prepared || size.width == 0 || size.height == 0 || view.depthExtent.width == 0 || !ensureTarget(cmd, size))
+    return input;
+  NVVK_DBG_SCOPE(cmd);
+  const uint32_t           slots = m_slots;
+  const bool               any   = m_cellCount > 0;
+  const shaderio::RainPush pushFrame{.frame = reinterpret_cast<shaderio::RainFrame*>(m_frameAddress), .size = {int(size.width), int(size.height)}};
 
   // The previous frame's readers of the image and the buffers, and whatever wrote the image. In a
   // section of its own: the profiler's sections start at the top of the pipe, so the first after
@@ -310,13 +363,10 @@ VkDescriptorImageInfo Rain::cmdApply(VkCommandBuffer cmd, Resources& resources, 
   const VkDescriptorImageInfo depth{.sampler     = resources.linearSampler,
                                     .imageView   = resources.gBuffers.getDepthImageView(),
                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
-  const VkAccelerationStructureKHR tlas = resources.gpuView().tlas();
   nvvk::WriteSetContainer          writes;
   writes.append(m_bindings.getWriteSet(shaderio::RainBindings::eRainIn), in);
   writes.append(m_bindings.getWriteSet(shaderio::RainBindings::eRainOut), m_out.getColorStorageImageInfo(0));
   writes.append(m_bindings.getWriteSet(shaderio::RainBindings::eRainDepth), depth);
-  if(tlas != VK_NULL_HANDLE)
-    writes.append(m_bindings.getWriteSet(shaderio::RainBindings::eRainTlas), tlas);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, &resources.descriptorSet, 0, nullptr);
   vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, uint32_t(writes.size()), writes.data());
 
@@ -325,20 +375,6 @@ VkDescriptorImageInfo Rain::cmdApply(VkCommandBuffer cmd, Resources& resources, 
   vkCmdUpdateBuffer(cmd, m_drawArgs.buffer, 0, sizeof(none), &none);
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-
-  // the shelter map: traced, or open everywhere without a scene to trace
-  {
-  auto section = timer.cmdFrameSection(cmd, "Rain shelter");
-  if(tlas != VK_NULL_HANDLE)
-  {
-    const shaderio::RainPush push{.frame = pushFrame.frame, .size = {RAIN_SHELTER_SIZE, RAIN_SHELTER_SIZE}};
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_shelterPipeline);
-    vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(push), &push);
-    vkCmdDispatch(cmd, RAIN_SHELTER_SIZE / 16, RAIN_SHELTER_SIZE / 16, 1);
-  }
-  else
-    vkCmdFillBuffer(cmd, m_shelter.buffer, 0, VK_WHOLE_SIZE, 0xFF800000u);  // -inf: open
-  }
 
   // the light table, and the image copied for the drops to be drawn over
   {
@@ -356,11 +392,11 @@ VkDescriptorImageInfo Rain::cmdApply(VkCommandBuffer cmd, Resources& resources, 
   // the drops: the shelter map and the light table read
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-  if(!cells.empty())
+  if(any)
   {
     auto section = timer.cmdFrameSection(cmd, "Rain cull");
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_cullPipeline);
-    vkCmdDispatch(cmd, (slots + RAIN_CULL_GROUP - 1) / RAIN_CULL_GROUP, uint32_t(cells.size()), 1);
+    vkCmdDispatch(cmd, (slots + RAIN_CULL_GROUP - 1) / RAIN_CULL_GROUP, m_cellCount, 1);
   }
 
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -371,7 +407,7 @@ VkDescriptorImageInfo Rain::cmdApply(VkCommandBuffer cmd, Resources& resources, 
                              | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
   // the drops
-  if(!cells.empty())
+  if(any)
   {
     auto section = timer.cmdFrameSection(cmd, "Rain drops");
     const VkRenderingAttachmentInfo color{.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,

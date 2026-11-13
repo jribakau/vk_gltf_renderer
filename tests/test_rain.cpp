@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <vector>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -108,6 +109,43 @@ TEST(Rain, TheShelterMapLiesAlongTheFall)
   // ten metres up, a drop over the same ground is two metres downwind
   EXPECT_EQ(rainShelterTexel(float3(12.0f, 10.0f, -5.0f), shear, centre), middle);
   EXPECT_EQ(rainShelterTexel(float3(10.0f + RAIN_SHELTER_EXTENT, 0.0f, -5.0f), shear, centre), -1);
+}
+
+// Where it lands: a drizzle wets, harder rain soaks and pools; up-facing surfaces take all of it, a
+// wall half (more into the wind), an underside none, and nothing under a roof, though a wall isn't
+// sheltered by its own top
+TEST(Rain, ItWetsWhatItReaches)
+{
+  EXPECT_EQ(rainWetness(0.0f), 0.0f);
+  EXPECT_NEAR(rainWetness(1.0f), 0.63f, 0.01f);
+  EXPECT_GT(rainWetness(2.5f), 0.9f);
+  EXPECT_EQ(rainPuddleShare(1.0f), 0.0f);
+  EXPECT_EQ(rainPuddleShare(10.0f), 1.0f);
+
+  const float2 still(0.0f);
+  const float3 here(0.0f, 0.0f, 0.0f);
+  EXPECT_EQ(rainExposureAt(here, float3(0.0f, 1.0f, 0.0f), still, float2(0.0f), nullptr), 1.0f);
+  EXPECT_NEAR(rainExposureAt(here, float3(1.0f, 0.0f, 0.0f), still, float2(0.0f), nullptr), 0.5f, 1e-5f);
+  EXPECT_EQ(rainExposureAt(here, float3(0.0f, -1.0f, 0.0f), still, float2(0.0f), nullptr), 0.0f);
+  // a wind toward +x: a wall facing -x, into it, takes more than one facing away
+  const float2 windy = rainShear(float2(5.0f, 0.0f));
+  EXPECT_GT(rainExposureAt(here, float3(-1.0f, 0.0f, 0.0f), windy, float2(0.0f), nullptr),
+            rainExposureAt(here, float3(1.0f, 0.0f, 0.0f), windy, float2(0.0f), nullptr));
+
+  // a roof 3 m up over a 2 m square round the middle; a wall's face at the square's edge
+  std::vector<float> shelter(RAIN_SHELTER_SIZE * RAIN_SHELTER_SIZE, RAIN_SHELTER_OPEN);
+  for(int i = 0; i < RAIN_SHELTER_SIZE * RAIN_SHELTER_SIZE; ++i)
+  {
+    const float x = (float(i % RAIN_SHELTER_SIZE) + 0.5f) / RAIN_SHELTER_SIZE * RAIN_SHELTER_EXTENT - 0.5f * RAIN_SHELTER_EXTENT;
+    const float z = (float(i / RAIN_SHELTER_SIZE) + 0.5f) / RAIN_SHELTER_SIZE * RAIN_SHELTER_EXTENT - 0.5f * RAIN_SHELTER_EXTENT;
+    if(std::abs(x) < 1.0f && std::abs(z) < 1.0f)
+      shelter[i] = 3.0f;
+  }
+  EXPECT_EQ(rainExposureAt(float3(0.0f, 0.0f, 0.0f), float3(0.0f, 1.0f, 0.0f), still, float2(0.0f), shelter.data()), 0.0f);
+  EXPECT_EQ(rainExposureAt(float3(3.0f, 0.0f, 0.0f), float3(0.0f, 1.0f, 0.0f), still, float2(0.0f), shelter.data()), 1.0f);
+  // the roof's own top is in the rain, and the house's wall below it on the outside
+  EXPECT_EQ(rainExposureAt(float3(0.0f, 3.0f, 0.0f), float3(0.0f, 1.0f, 0.0f), still, float2(0.0f), shelter.data()), 1.0f);
+  EXPECT_NEAR(rainExposureAt(float3(1.0f, 1.5f, 0.0f), float3(1.0f, 0.0f, 0.0f), still, float2(0.0f), shelter.data()), 0.5f, 1e-5f);
 }
 
 // A water sphere's phase without its diffraction peak integrates to 1 and is brightest toward the light

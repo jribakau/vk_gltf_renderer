@@ -1102,6 +1102,13 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   changed |= m_pathTracer.pollStillDenoiser();  // DLSS-RR's still came on or went off
   changed |= syncRetainedScene(cmd);  // the clip, and the residency's sync of the host's edits
 
+  // The rain's frame and its shelter map, which the path tracer reads for where it rains on what, and
+  // the drops drawn after it for where they fall: every frame while it rains, the scene as synced
+  m_rain.cmdPrepare(cmd, m_resources, m_resources.gBuffers.getSize(),
+                    {.view        = m_cameraManip->getViewMatrix(),
+                     .proj        = m_cameraManip->getPerspectiveMatrix(),
+                     .depthExtent = m_pathTracer.depthExtent(m_resources.gBuffers.getSize())});
+
   // #DLSS motion: the retained scene keeps both tables current every sync (a row at rest is no motion)
   const bool dlss = m_pathTracer.isDlssEnabled();
   m_resources.dlssInstanceMotionActive = dlss && m_resources.gpuView().prevObjectToWorldTable() != 0;
@@ -1208,6 +1215,15 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.nightScale         = m_resources.settings.envSystem == shaderio::EnvSystem::eSky ? m_resources.settings.skyNightScale : 0.0F;
     finfo.nightStars         = reinterpret_cast<shaderio::NightStar*>(m_nightStars.address);
     finfo.nightStarCells     = reinterpret_cast<shaderio::NightStarCell*>(m_nightStarCells.address);
+    // where the rain lands (cmdPrepare traced its shelter map above)
+    if(m_rain.prepared())
+    {
+      finfo.rainWet           = m_rain.wetness();
+      finfo.rainPuddles       = m_rain.puddles();
+      finfo.rainShear         = m_rain.shear();
+      finfo.rainShelterCentre = m_rain.shelterCentre();
+      finfo.rainShelter       = reinterpret_cast<float*>(m_rain.shelterAddress());
+    }
     finfo.landFadeFrom   = m_resources.settings.landFadeFrom;
     finfo.landFadeTo     = m_resources.settings.landFadeTo;
     finfo.shadowRayShare = std::clamp(m_resources.settings.ptShadowShare, 0.0F, 1.0F);

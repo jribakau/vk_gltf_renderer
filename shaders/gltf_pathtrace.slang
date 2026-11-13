@@ -1116,6 +1116,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         else if(pbrMat.ior2 == 1.0F)
           pbrMat.ior2 = GROUND_WATER_IOR;
       }
+      // Wet where the rain reaches it (rainWetMaterial), on the side seen (a leaf's underside stays dry),
+      // from outside and above the water; skin and what light goes into don't soak it up (the figure's
+      // own rain is Physics › Rain's)
+      else if(frameInfo->rainWet > 0.0F && !ptIsInside(pt))
+        rainWetMaterial(pbrMat, hit.pos, dot(hit.geonrm, ray.Direction) < 0.0F ? hit.geonrm : -hit.geonrm, worldFoot,
+                        materials[materialIndex].thicknessFactor <= 0.0F && materials[materialIndex].scatterStrengthFactor <= 0.0F, frameInfo);
 #if GLTF_USE_VOLUME
       // In a mesh's medium likewise (medium_stack.h.slang): oil in a bottle that is one solid of glass
       // meets the glass, not air, and so does a spoon in a drink. A medium that only absorbs: a walk's

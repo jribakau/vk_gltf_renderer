@@ -5,7 +5,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <functional>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -58,12 +61,26 @@ public:
 
   void init(Resources& resources);
   void deinit(Resources& resources);
-  void registerParameters(SettingsRegistry* settings);
+  // `wetChanged`: a setting the path tracer sees changed (the rate, the wind: where it rains on what)
+  void registerParameters(SettingsRegistry* settings, std::function<void()> wetChanged);
   void onResize(VkCommandBuffer cmd, VkExtent2D size);
 
   bool active() const { return m_settings.rate > 0.0f; }
   // Advanced on every frame the drops fall, so the presenter shows each one
   uint64_t version() const { return m_version; }
+
+  // Before the path tracer, every frame while it rains: the frame planned (the clock, the cells the
+  // camera sees) and the shelter map traced, which the path tracer reads for where it rains on what
+  // (frame info's rainShelter) and the drops for where they fall
+  void cmdPrepare(VkCommandBuffer cmd, Resources& resources, VkExtent2D size, const View& view);
+  // This frame's, once prepared: how wet it leaves an open surface (0 to 1: a drizzle wets, harder
+  // rain soaks), the share of flat ground under puddles, the drops' slant, and the shelter map
+  bool      prepared() const { return m_prepared; }
+  float     wetness() const;
+  float     puddles() const;
+  glm::vec2 shear() const { return m_planShear; }
+  glm::vec2 shelterCentre() const { return m_planCentre; }
+  VkDeviceAddress shelterAddress() const { return m_prepared ? m_shelter.address : 0; }
 
   // The tone mapper's input with the rain drawn over it, sampled linearly; `input` itself when off.
   // `timer`: each pass in a section of its own (the wait for the image, the shelter map, the light
@@ -86,6 +103,13 @@ private:
 
   Settings m_settings{};
   float    m_time    = 0.0f;
+  // this frame's plan (cmdPrepare)
+  bool            m_prepared     = false;
+  VkDeviceAddress m_frameAddress = 0;
+  uint32_t        m_slots        = 0;
+  uint32_t        m_cellCount    = 0;
+  glm::vec2       m_planShear{0.0f};
+  glm::vec2       m_planCentre{0.0f};
   uint64_t m_version = 0;
   std::chrono::steady_clock::time_point m_lastFrame{};
 

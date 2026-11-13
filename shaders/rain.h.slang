@@ -131,6 +131,45 @@ inline int rainShelterTexel(float3 position, float2 shear, float2 centre)
   return int(uv.y * float(RAIN_SHELTER_SIZE)) * RAIN_SHELTER_SIZE + int(uv.x * float(RAIN_SHELTER_SIZE));
 }
 
+// ---- where it lands ---------------------------------------------------------------------------------
+
+// How wet a surface open to the rain is at a rate (mm/h), 0 to 1: a drizzle 0.6, light rain 0.9 (the
+// steady state: not how long it has rained)
+inline float rainWetness(float rate)
+{
+  return rate > 0.0F ? 1.0F - exp(-rate / 1.0F) : 0.0F;
+}
+
+// The share of the puddles flat ground can hold that it holds (groundWaterAt's): none in a drizzle,
+// from 1 mm/h up, all from 10
+inline float rainPuddleShare(float rate)
+{
+  return clamp((rate - 1.0F) / 9.0F, 0.0F, 1.0F);
+}
+
+// How far out from a surface the shelter map is read, metres: past its texels, so a wall's own top
+// doesn't shelter its face
+static const float RAIN_SHELTER_OUT = 0.3F;
+
+// How much of the rain reaches a surface at `position` facing `normal` (0 to 1): none under what the
+// shelter map `shelter` (null: open everywhere) holds over it, a roof, a tree, a figure; none on what
+// faces down; half on a wall (what drift and splashes bring); more on a face turned into the wind
+inline float rainExposureAt(float3 position, float3 normal, float2 shear, float2 centre, float* shelter)
+{
+  const float3 fall   = normalize(float3(-shear.x, -1.0F, -shear.y));
+  const float  facing = clamp(0.5F - 1.5F * dot(normal, fall), 0.0F, 1.0F);
+  if(facing <= 0.0F)
+    return 0.0F;
+  if(shelter != nullptr)
+  {
+    const float3 out   = position + normal * RAIN_SHELTER_OUT;
+    const int    texel = rainShelterTexel(out, shear, centre);
+    if(texel >= 0 && out.y < shelter[texel] - 0.02F)
+      return 0.0F;
+  }
+  return facing;
+}
+
 // The light table (rainLight): what a drop shows, a cosine-weighted mean of the environment round a
 // direction, on a lat-long grid
 #define RAIN_LIGHT_WIDTH 32

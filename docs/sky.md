@@ -1219,11 +1219,22 @@ so a backlit drop glows. An `.exr` keeps it.
   0.23, 0.63, 0.96.
 - **Falling.** While `rainFalling`, the pass's clock runs in real time and each frame is presented
   anew (`Rain::version`, in `GltfRenderer::shownVersion`); off, the drops hold where they are.
+- **Where it lands.** The shelter map is traced before the path tracer (`Rain::cmdPrepare`), which
+  reads it through the frame info (`rainShelter`, `rainWet`, `rainPuddles`). A surface takes the rain
+  by `rainExposureAt` (rain.h.slang): none under what the map holds over it (read a little out from
+  the surface, so a wall's own top doesn't shelter its face), none facing down, half on a wall, more
+  into the wind. Where it does, `rainWetMaterial` wets it as the ground's Wet does: a porous surface
+  (a rough dielectric, not metal, glass or skin) darkens by `groundWetAlbedo`, every surface's top
+  layer turns water's (smoother, water's index on a dielectric), and flat upward faces gather puddles
+  where the ground's field has them (`groundWaterAt`), rippled as the floor's. The infinite floor
+  likewise, dry under a roof. How wet is the rate's steady state (`rainWetness`: a drizzle 0.6, light
+  rain 0.9; `rainPuddleShare`: from 1 mm/h, all from 10), not how long it has rained. A change of
+  the rate or the wind restarts the still.
 
 Left out: the rain's haze past `rainReach` (the drops there are a veil, not streaks: the Haze
-section's job, not tied to the rate); wet surfaces, puddles, ripples and splashes where it lands; the
-drops' depth of field, and their lighting by the scene's own lights; the rainbow (the drops' 138°
-bow is not in `rainSunPhase`).
+section's job, not tied to the rate); ripples and splashes where it lands; wetness that builds and
+dries over time, water running down walls, wet hair's clumping; the drops' depth of field, and their
+lighting by the scene's own lights; the rainbow (the drops' 138° bow is not in `rainSunPhase`).
 
 ## References
 

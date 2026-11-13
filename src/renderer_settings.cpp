@@ -128,7 +128,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({"tmBrightness", "Tonemapper: Brightness"}, &m_resources.tonemapperData.brightness, Persist::eYes, 0.0F, 2.0F);
   m_settings.add({"tmSaturation", "Tonemapper: Saturation"}, &m_resources.tonemapperData.saturation, Persist::eYes, 0.0F, 2.0F);
   m_settings.add({"tmVignette", "Tonemapper: Vignette (0 = none)"}, &m_resources.tonemapperData.vignette, Persist::eYes, -1.0F, 1.0F);
-  m_rain.registerParameters(&m_settings);
+  m_rain.registerParameters(&m_settings, [this] { resetFrame(); });  // the path tracer wets what it rains on
   m_lens.registerParameters(&m_settings);
   m_bloom.registerParameters(&m_settings);
   m_localExposure.registerParameters(&m_settings);
