@@ -2658,7 +2658,9 @@ struct DlssMirror
 
 DlssMirror dlssTraceMirror(PbrMaterial mat, HitState surface, float3 dir, float3 surfaceDelta, SceneFrameInfo* frameInfo)
 {
-  DlssMirror   result;
+  // = {}: Slang applies a struct's member defaults only to an initialised declaration, and a ray to the
+  // sky leaves both as they are (a bare `DlssMirror result;` gave RR whatever the registers held there)
+  DlssMirror   result = {};
   const float3 N   = dot(mat.N, dir) < 0.0f ? mat.N : -mat.N;
   const float3 Ng  = dot(surface.geonrm, dir) < 0.0f ? surface.geonrm : -surface.geonrm;
   float3       out = reflect(dir, N);

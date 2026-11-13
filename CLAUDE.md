@@ -194,6 +194,9 @@ you are expected to keep them that way:
 - Match the naming and file-pairing already in `src/` (`foo.cpp` / `foo.hpp`,
   `*_vk` for Vulkan-resource owners, `scene_*` for scene subsystems).
 - Slang shaders, not GLSL.
+- **Initialise a struct you declare in Slang** (`Foo f = {};`): a bare `Foo f;` gets none of its member
+  defaults, and a path that leaves a field unset reads garbage. The build makes Slang's uninitialised-variable
+  warning (E41035) an error for the shaders it compiles; the runtime-compiled variants are not checked.
 - **Text files are stored as LF**, enforced by `.gitattributes` (`* text=auto`).
   Your working tree follows your own `core.autocrlf` / `core.eol`, not your OS:
   `autocrlf=true` gives CRLF, `input` gives LF, and `false` defers to `core.eol`

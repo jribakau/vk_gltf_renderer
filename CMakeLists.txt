@@ -439,7 +439,9 @@ endif()
 #                      pressure). Off in the main embedded path tracer; a second
 #                      embedded copy has it on (see compile_slang ... _dlss below).
 # Both stay independently controllable.
-set(SHADER_EXTRA_FLAGS "-I${NVSHADERS_DIR}")
+# A variable read before it is written is an error: Slang leaves a struct declared without `= {}` as
+# the registers held, member defaults and all (the water's reflection guide, 2026-11-13)
+set(SHADER_EXTRA_FLAGS "-I${NVSHADERS_DIR}" -warnings-as-errors 41035)
 if(DLSS_AVAILABLE)
   list(APPEND SHADER_EXTRA_FLAGS "-DUSE_GUIDE_SHADER=1")
 endif()

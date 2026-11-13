@@ -676,7 +676,7 @@ inline SkyCloudsParameters cloudHighTier(SkyCloudsParameters p, float cover)
 inline SkyCloudsParameters cloudFinishLayers(SkyCloudsParameters p)
 {
   // the spans of the layers that are on, in order of their bases (four at most: an insertion sort)
-  float lo[4], hi[4];
+  float lo[4] = {0.0F, 0.0F, 0.0F, 0.0F}, hi[4] = {0.0F, 0.0F, 0.0F, 0.0F};  // read only where written; set for Slang's check
   int   n = 0;
   for(int i = 0; i < 4; ++i)
   {
