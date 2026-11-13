@@ -47,6 +47,10 @@
 //            Henyey-Greenstein g, 0 to 0.9), height (metres it thins over above the floor, 0
 //            even through the height), patches (0 even to 1). A thin haze in the air, lit by every
 //            light of the scene, between the eye and what it sees (shaders/haze.h.slang)
+//   rain:    rate (mm/h, 0 none to 300; 2.5 light, 7.5 heavy, 50 a downpour), wind (m/s at the
+//            ground, 0 to 40), windFrom (degrees, an azimuth as the sun's), shutter (seconds the
+//            camera's is open: a drop's streak is its fall over it), falling (the drops fall, or hold
+//            still). The drops in the air, drawn over the picture (src/rain.hpp), protocol 73
 //   ground:  mode floor|water|catcher|off, height ("auto" or world units), color, roughness,
 //            darkness, fade, water (0 dry to 1 a sheet of it, on a floor), depth (metres, of the
 //            water mode's body of water), waves (on it, 0 still to 1), ripples (on either, 0 still to 1)
@@ -155,6 +159,15 @@ struct Haze
   double glow       = 0.7;
   double height     = 0.0;  // metres it thins over above the floor; 0: even through the height
   double patches    = 0.0;
+};
+
+struct Rain
+{
+  double rate     = 0.0;  // mm/h
+  double wind     = 0.0;  // m/s
+  double windFrom = 90.0;
+  double shutter  = 1.0 / 60.0;
+  bool   falling  = true;
 };
 
 struct Ground
@@ -299,6 +312,7 @@ struct State
   Night   night;
   Clouds  clouds;
   Haze    haze;
+  Rain    rain;
   Ground  ground;
   Tonemap tonemap;
 };

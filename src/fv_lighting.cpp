@@ -235,6 +235,29 @@ void patchClouds(Clouds& c, const Json& p)
   }
 }
 
+void patchRain(Rain& r, const Json& p)
+{
+  const Rain d;
+  for(auto it = p.begin(); it != p.end(); ++it)
+  {
+    const std::string& k   = it.key();
+    const Json&        v   = it.value();
+    const std::string  key = "rain." + k;
+    if(k == "rate")
+      field(r.rate, d.rate, v, [&](const Json& x) { return number(x, key, 0.0, 300.0); });
+    else if(k == "wind")
+      field(r.wind, d.wind, v, [&](const Json& x) { return number(x, key, 0.0, 40.0); });
+    else if(k == "windFrom")
+      field(r.windFrom, d.windFrom, v, [&](const Json& x) { return wrapDegrees(number(x, key, -1e6, 1e6)); });
+    else if(k == "shutter")
+      field(r.shutter, d.shutter, v, [&](const Json& x) { return number(x, key, 1.0 / 8000.0, 30.0); });
+    else if(k == "falling")
+      field(r.falling, d.falling, v, [&](const Json& x) { return boolean(x, key); });
+    else
+      reject("unknown key " + key);
+  }
+}
+
 void patchHaze(Haze& h, const Json& p)
 {
   const Haze d;
@@ -592,6 +615,8 @@ Json toJson(const State& s)
         {"drift", c.drift},
         {"driftFrom", c.driftFrom}}},
       {"haze", {{"enabled", h.enabled}, {"visibility", h.visibility}, {"glow", h.glow}, {"height", h.height}, {"patches", h.patches}}},
+      {"rain",
+       {{"rate", s.rain.rate}, {"wind", s.rain.wind}, {"windFrom", s.rain.windFrom}, {"shutter", s.rain.shutter}, {"falling", s.rain.falling}}},
       {"ground",
        {{"mode", g.mode},
         {"height", g.autoHeight ? Json("auto") : Json(g.height)},
@@ -650,6 +675,8 @@ State applyPatch(const State& s, const Json& patch)
       reset ? void(out.clouds = Clouds{}) : patchClouds(out.clouds, section(patch, "clouds"));
     else if(k == "haze")
       reset ? void(out.haze = Haze{}) : patchHaze(out.haze, section(patch, "haze"));
+    else if(k == "rain")
+      reset ? void(out.rain = Rain{}) : patchRain(out.rain, section(patch, "rain"));
     else if(k == "ground")
       reset ? void(out.ground = Ground{}) : patchGround(out.ground, section(patch, "ground"));
     else if(k == "tonemap")
@@ -1040,6 +1067,12 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"cloudDriftFrom", s.clouds.driftFrom},
       // under every environment; 0 is none
       {"hazeVisibility", s.haze.enabled ? s.haze.visibility : 0.0},
+      // the drops in the air (src/rain.hpp)
+      {"rainRate", s.rain.rate},
+      {"rainWind", s.rain.wind},
+      {"rainWindFrom", s.rain.windFrom},
+      {"rainShutter", s.rain.shutter},
+      {"rainFalling", s.rain.falling},
       {"hazeAnisotropy", s.haze.glow},
       {"hazeHeight", s.haze.height},
       {"hazePatches", s.haze.patches},

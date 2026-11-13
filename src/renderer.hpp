@@ -59,6 +59,7 @@
 #include "renderer_silhouette.hpp"
 #include "bloom.hpp"
 #include "lens.hpp"
+#include "rain.hpp"
 #include "sample_map.hpp"
 #include "local_exposure.hpp"
 #include "hdr_output.hpp"
@@ -375,7 +376,7 @@ public:
   uint64_t drawnFrameCount() const { return m_resources.drawnFrameCount; }
   // That count and the changes of what the hover outlines: what the presenter shows anew, since an
   // outline changes the image without a frame drawn.
-  uint64_t shownVersion() const { return m_resources.drawnFrameCount + m_hover.version; }
+  uint64_t shownVersion() const { return m_resources.drawnFrameCount + m_hover.version + m_rain.version(); }
   // The frame's profile as a JSON object for the viewport's stats (the frame stream's /stats):
   // `sections`, the profiler's frame sections in the order they ran (name, nesting level, CPU and
   // GPU ms averaged over its recent frames), and the device-local memory in use and its budget, in
@@ -708,6 +709,7 @@ private:
   BusyState    m_busy;
   Silhouette    m_silhouette;     // Silhouette renderer
   HdrOutput     m_hdrOutput;      // The frame an HDR display is shown, and EXR exports
+  Rain          m_rain;           // The drops falling in the air, drawn over the image the tone mapper takes, before the lens
   Lens          m_lens;           // A cheap wide lens's distortion and fringing on the image the tone mapper takes, before the bloom
   Bloom         m_bloom;          // The glow and the star on the image the tone mapper takes
   LocalExposure m_localExposure;  // Shadows lifted and highlights held, region by region, after the bloom

@@ -352,6 +352,26 @@ TEST(FvLighting, CloudsAreClearUntilSetAndReachTheRenderer)
   EXPECT_EQ(L::applyPatch(windy, {{"clouds", {{"drift", nullptr}}}}).clouds.drift, 0.0);
 }
 
+// Rain (protocol 73): none by default, as a scene from before it; held to the renderer's ranges, its
+// wind's direction round, sent whole, and the topic replays as a patch
+TEST(FvLighting, RainIsNoneUntilItRains)
+{
+  const fv::Json none = L::rendererParams(L::State{}, {});
+  EXPECT_EQ(none["rainRate"], 0.0);
+  EXPECT_EQ(none["rainFalling"], true);
+  const L::State wet = L::applyPatch(L::State{}, {{"rain", {{"rate", 500.0}, {"wind", 6.0}, {"windFrom", 450.0}, {"shutter", 0.004}}}});
+  EXPECT_EQ(wet.rain.rate, 300.0);
+  EXPECT_EQ(wet.rain.windFrom, 90.0);
+  const fv::Json params = L::rendererParams(wet, {});
+  EXPECT_EQ(params["rainRate"], 300.0);
+  EXPECT_EQ(params["rainWind"], 6.0);
+  EXPECT_EQ(params["rainShutter"], 0.004);
+  EXPECT_EQ(L::applyPatch(L::State{}, L::toJson(wet)).rain.wind, 6.0);
+  EXPECT_EQ(L::applyPatch(wet, {{"rain", nullptr}}).rain.rate, 0.0);
+  EXPECT_THROW(L::applyPatch(wet, {{"rain", {{"drops", 1}}}}), std::invalid_argument);
+  EXPECT_THROW(L::applyPatch(wet, {{"rain", {{"falling", 1}}}}), std::invalid_argument);
+}
+
 // Haze: off by default (as a scene from before it), kept with its visibility and glow while off, clamped
 // to the renderer's ranges, and sent as its visibility, 0 while off (protocol 36)
 TEST(FvLighting, HazeIsOffUntilSwitchedOnAndKeepsItsValues)

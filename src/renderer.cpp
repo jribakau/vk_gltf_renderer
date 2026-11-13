@@ -220,6 +220,7 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_silhouette.init(m_resources);
   // The frame an HDR display is shown
   m_hdrOutput.init(m_resources);
+  m_rain.init(m_resources);
   m_lens.init(m_resources);
   m_bloom.init(m_resources);
   m_localExposure.init(m_resources);
@@ -382,6 +383,7 @@ void GltfRenderer::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
   m_resources.appMemoryTracker.track("GBuffers", m_resources.gBuffers, Resources::eImgCount);
   m_pathTracer.onResize(cmd, size, m_resources);
   m_hdrOutput.onResize(cmd, size);
+  m_rain.onResize(cmd, size);
   m_lens.onResize(cmd, size);
   m_bloom.onResize(cmd, size);
   m_localExposure.onResize(cmd, size);
@@ -991,7 +993,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   gpu_trail::frameStart(cmd, ++m_trailFrames);
   // for refuseFrameSize on the stream's thread
   m_frameBytesPerPixel.store(kPathTracerBytesPerPixel + (m_pathTracer.isDlssEnabled() ? kDlssBytesPerPixel : 0)
-                              + (m_hdrOutput.active() ? HdrOutput::kBytesPerPixel : 0) + (m_lens.active() ? Lens::kBytesPerPixel : 0) + (m_bloom.active() ? Bloom::kBytesPerPixel : 0)
+                              + (m_hdrOutput.active() ? HdrOutput::kBytesPerPixel : 0) + (m_lens.active() ? Lens::kBytesPerPixel : 0) + (m_rain.active() ? Lens::kBytesPerPixel : 0) + (m_bloom.active() ? Bloom::kBytesPerPixel : 0)
                               + (m_localExposure.active() ? LocalExposure::kBytesPerPixel : 0));
   {
     const VkExtent2D s = renderSize();
@@ -1499,11 +1501,21 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
   // the grain moves with each frame drawn, as film's does, and holds on a finished still
   tonemapperData.grainSeed = uint32_t(m_resources.drawnFrameCount);
 
-  // The lens's bend and fringes (Lens), the glow and the star (Bloom), then the shadows lifted and the
-  // highlights held (local exposure), on what the tone mapper and the HDR output take, not on a debug
-  // or guide view; an .exr keeps the image without them (m_tonemapInput below)
-  const VkDescriptorImageInfo unbloomed = inputBuffer;
+  // The rain in the air (Rain), part of the picture an .exr keeps; then the lens's bend and fringes
+  // (Lens), the glow and the star (Bloom), then the shadows lifted and the highlights held (local
+  // exposure), on what the tone mapper and the HDR output take, not on a debug or guide view; an .exr
+  // keeps the image without them (m_tonemapInput below)
   const bool  picture  = vizNormal && !usingGuideBuffer && !bypassTonemapper && tonemapperData.isActive && !sampleCounts;
+  if(picture && m_rain.active())
+  {
+    auto rainSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Rain");
+    inputBuffer      = m_rain.cmdApply(cmd, m_resources, inputBuffer, gbufSize,
+                                       {.view        = m_cameraManip->getViewMatrix(),
+                                        .proj        = m_cameraManip->getPerspectiveMatrix(),
+                                        .depthExtent = m_pathTracer.depthExtent(gbufSize)},
+                                       m_profilerGpuTimer);
+  }
+  const VkDescriptorImageInfo unbloomed = inputBuffer;
   const float exposure = tonemapperData.autoExposure ? 1.0F : tonemapperData.exposure;
   if(picture && m_lens.active())
   {
@@ -1972,6 +1984,7 @@ void GltfRenderer::destroyResources()
   }
   m_silhouette.deinit(m_resources);
   m_hdrOutput.deinit(m_resources);
+  m_rain.deinit(m_resources);
   m_lens.deinit(m_resources);
   m_bloom.deinit(m_resources);
   m_localExposure.deinit(m_resources);

@@ -1187,6 +1187,44 @@ Memory: the shadow image half a megabyte, the noise about 4 MB with its mips, th
 filter reads 32 MB, the view image 32 MB, the preview 2 MB, the two follow images 32 MB each, the
 march's depth 8 MB and the three depth images 128 KB each.
 
+## Rain
+
+Rain falling in the air (`src/rain.hpp`, the physics in `shaders/rain.h.slang`; the lighting's `rain`
+section, protocol 73), under any environment. Drawn over the image the tone mapper takes, after DLSS
+and the still's denoiser, so neither smears a thin moving streak, and before the lens and the bloom,
+so a backlit drop glows. An `.exr` keeps it.
+
+- **The drops.** A rate in mm/h gives Marshall and Palmer's sizes (`rainSlope`,
+  `rainDropsPerCubicMetre`): hundreds of drops a cubic metre from half a millimetre up, falling at
+  their size's terminal speed (`rainFallSpeed`, Atlas 1973). Together they carry the rate back within a
+  fifth (`tests/test_rain.cpp`). The wind slants them.
+- **Where they are.** Cells a metre across, the world's, sheared along the fall, so a drop keeps its
+  cell and falls through it, coming in again at the top (`rainDropAt`). Each frame the host lists the
+  cells round the camera within `rainReach` its frustum sees (`src/rain_cells.hpp`).
+- **What each shows.** A streak: the drop's fall while the camera's shutter is open (`rainShutter`,
+  the app's physical camera's). It covers a point of it for its diameter over the streak's length,
+  and a pixel for its width when narrower. Its light is the environment round the way the eye looks
+  through it (a cosine-weighted mean, `rainLight`, nine tenths of it, a few hundredths reflected from
+  in front; Garg and Nayar 2006) and the sun's through it, forward-scattered (`rainSunPhase`), under
+  the clouds' shadow. So rain is faint against a bright sky and plain against a dark wall, and glows
+  toward a low sun, as it does.
+- **Sheltered.** A shelter map (`shaders/rain_shelter.slang`, traced every frame along the slant
+  over a square round the camera) holds the first surface a drop falling there meets; none is drawn
+  below it, so no rain falls under a roof, a tree or a figure. Drops behind the scene are hidden by
+  the path tracer's depth.
+- **Cost.** `rainCull` takes each of a cell's slots once, keeps the drops that fall and are seen,
+  lights them and counts them into an indirect draw; a faint one (far, under a pixel) at a chance of
+  its coverage over `Rain::kMinCoverage`, that much stronger. 1080p, 6TEST from its street, best of
+  60 frames: moderate rain (5 mm/h) shelter 0.10 ms, cull 0.23, drops 0.26; a downpour (50 mm/h)
+  0.23, 0.63, 0.96.
+- **Falling.** While `rainFalling`, the pass's clock runs in real time and each frame is presented
+  anew (`Rain::version`, in `GltfRenderer::shownVersion`); off, the drops hold where they are.
+
+Left out: the rain's haze past `rainReach` (the drops there are a veil, not streaks: the Haze
+section's job, not tied to the rate); wet surfaces, puddles, ripples and splashes where it lands; the
+drops' depth of field, and their lighting by the scene's own lights; the rainbow (the drops' 138°
+bow is not in `rainSunPhase`).
+
 ## References
 
 - Eric Bruneton and Fabrice Neyret, *Precomputed Atmospheric Scattering*, EGSR 2008, and the

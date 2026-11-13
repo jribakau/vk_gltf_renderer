@@ -174,6 +174,8 @@ src/
 ├── hdr_output.cpp/hpp          # The frame an HDR display is shown (scRGB), and EXR exports' linear image
 ├── white_balance.cpp/hpp       # Auto white balance: the frame's light, and the white balance that makes it grey
 ├── lens.cpp/hpp                # A cheap wide lens on the tone mapper's input: barrel distortion and colour fringing
+├── rain.cpp/hpp                # Rain in the air: drops culled, lit and drawn as streaks over the tone mapper's input
+├── rain_cells.hpp              # The rain's cells a frame draws (plain C++, tested)
 ├── sample_map.cpp/hpp          # Display › Samples: each pixel of a still by the samples it took, in place of the tone mapper
 ├── invalid_samples.hpp         # What the path tracer threw away as not finite, tallied per accumulation and logged
 ├── present_pacing.hpp          # Where native presentation waits for the swapchain: before the input or the present (unit-tested)
@@ -232,6 +234,10 @@ shaders/
 ├── hdr_output.h.slang          # Its tone curve: Neutral with the display's peak, the others' shoulder opened (unit-tested)
 ├── hdr_output_io.h.slang       # Its bindings and push constant
 ├── lens.slang                  # The lens pass: the rendered image bent and its colours split toward the corners
+├── rain.slang                  # The rain pass: its light table, the drops culled and drawn
+├── rain_shelter.slang          # The rain's shelter map: the first surface a drop meets, traced along the slant
+├── rain.h.slang                # The rain's physics (sizes, speeds, cells), C++ too
+├── rain_io.h.slang             # Its frame, streak record and bindings
 ├── lens.h.slang                # Its mapping, picture to rendered image (unit-tested as C++)
 ├── lens_io.h.slang             # Its bindings and push constant
 ├── sample_map.slang            # The Samples view: viridis by a still pixel's samples (adaptiveSamplesRamp)

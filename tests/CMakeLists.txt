@@ -156,6 +156,8 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/sun_position.cpp
     # The physical sky's moon: its light by phase, its face's shading
     test_moon.cpp
+    # Rain in the air: the drops a rate holds, their fall, their cells, the shelter map
+    test_rain.cpp
     # The night sky: the stars' catalogue, colours and grid, the sky turned by the clock, the Milky Way, the glow
     test_night_sky.cpp
     ${CMAKE_SOURCE_DIR}/src/night_stars.cpp

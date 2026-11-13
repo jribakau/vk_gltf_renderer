@@ -141,7 +141,9 @@ namespace {
 // that has it.
 // 72: the lighting's `night` section (enabled, siderealTime, latitude, turn): the physical sky's stars,
 // the Milky Way and the air's glow, turned by the clock. An older renderer refuses the lighting that has it.
-constexpr int kProtocolVersion = 72;
+// 73: the lighting's `rain` section (rate, wind, windFrom, shutter, falling): the drops falling in the air,
+// drawn over the picture. An older renderer refuses the lighting that has it.
+constexpr int kProtocolVersion = 73;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace
