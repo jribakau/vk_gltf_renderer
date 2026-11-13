@@ -18,6 +18,7 @@ using namespace glm;
 using namespace shaderio;
 inline float saturate(float x) { return glm::clamp(x, 0.0f, 1.0f); }
 #include "../shaders/ground.h.slang"
+#include "../src/sky_ground.hpp"
 
 namespace {
 
@@ -198,6 +199,44 @@ TEST(GroundWater, RipplesTheFootprintCoversBecomeRoughness)
     if(footprint == 1.0f)
       EXPECT_EQ(kept, 0.0);
   }
+}
+
+// The sea as the sky's ground: the open sea a little blue over its surface's 6.6%, whatever floor lies
+// far below; shallow water over white sand a lagoon's cyan; deeper, darker, down to the sea
+TEST(GroundWater, TheSeaAsTheSkysGround)
+{
+  const float3 sea = groundWaterAlbedo(float3(0.8f), 1000.0f);
+  EXPECT_NEAR(sea.x, 0.066f, 0.002f);
+  EXPECT_NEAR(sea.y, 0.069f, 0.002f);
+  EXPECT_NEAR(sea.z, 0.096f, 0.004f);
+  EXPECT_NEAR(groundWaterAlbedo(float3(0.05f), 1000.0f).z, sea.z, 1e-4f);
+
+  const float3 lagoon = groundWaterAlbedo(float3(0.6f), 2.0f);
+  EXPECT_LT(lagoon.x, 0.2f);
+  EXPECT_GT(lagoon.y, 0.3f);
+  EXPECT_GT(lagoon.z, lagoon.y);
+
+  float last = 1.0f;
+  for(float d = 0.0f; d <= 40.0f; d += 2.0f)
+  {
+    const float g = groundWaterAlbedo(float3(0.6f), d).y;
+    EXPECT_LE(g, last);
+    EXPECT_GE(g, sea.y - 1e-4f);
+    last = g;
+  }
+  // a floor under a film of water is no brighter than dry
+  EXPECT_LE(groundWaterAlbedo(float3(0.3f), 0.0f).y, 0.3f);
+}
+
+// The sky's ground: the backdrop's land first, then the water, then the atmosphere's own setting
+TEST(GroundWater, TheSkysGroundIsTheLandThenTheWater)
+{
+  const glm::vec3 none(0.0f), land(0.1f, 0.12f, 0.05f), floor(0.5f), ground(0.2f);
+  EXPECT_EQ(sky_ground::albedo(land, 3.0f, floor, ground), land);
+  EXPECT_EQ(sky_ground::albedo(none, 0.0f, floor, ground), ground);
+  const glm::vec3 water = sky_ground::albedo(none, 3.0f, floor, ground);
+  EXPECT_NEAR(water.x, groundWaterAlbedo(float3(0.5f), 3.0f).x, 1e-6f);
+  EXPECT_LT(water.x, ground.x);
 }
 
 // Wet ground is darker, a dark one by more, and never brighter than dry

@@ -98,7 +98,14 @@ Two things the camera sees are not the fixed observer's:
 
 What the sky draws under its horizon is the planet's ground: a matte surface of
 `atmoGroundAlbedo`, average ground, or of **`atmoLandAlbedo`** when the scene says what its land
-reflects (a procedural backdrop's, from its kit). A hit's shading gives way to that toward the
+reflects (a procedural backdrop's, from its kit), or, when the ground is a body of water
+(`groundWaterDepth`), what that water reflects of diffuse light (`groundWaterAlbedo` in
+`shaders/water_optics.h.slang`, picked by `src/sky_ground.hpp`): its surface's share and the floor seen
+through it, so the open sea is dark and a little blue, and shallow water over a bright floor a
+lagoon's cyan. The same albedo is the ground the sky's tables scatter off and the land the clouds'
+ground bounce comes from, so cloud bases over a sea are darker than over land, and over a lagoon
+tinted as they are over atolls. A change to the water rebuilds the tables (the ground settings'
+callback compares the atmosphere by value). A hit's shading gives way to that toward the
 land's end (`SceneFrameInfo::landFadeFrom`, `landFadeTo`; `fv_backdrop.hpp`'s `kLandFadeFrom`): the
 land's air is a march to the surface, counted several times over under a backdrop and with an
 isotropic stand-in for the higher orders of scattering, and the planet's is the tables' whole ray

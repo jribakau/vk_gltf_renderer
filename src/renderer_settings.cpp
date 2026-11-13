@@ -546,7 +546,14 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({"uiGizmoLocal", "The gizmo along the object's own axes, not its parent's"}, &m_resources.settings.gizmoLocal, Persist::eNo);
 
   // The ground: the path tracer's infinite plane.
-  const auto groundChanged = [this](const nvutils::ParameterBase* const) { resetFrame(); };
+  // the ground is also the physical sky's when it is water (sky_ground.hpp): its tables and clouds
+  // are rebuilt when what it reflects changes
+  const auto groundChanged = [this](const nvutils::ParameterBase* const) {
+    resetFrame();
+    if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky
+       && !m_skyBruneton.lutsSatisfy(buildAtmosphereParameters(), SkyBruneton::kQualityPreview))
+      requestEnvironmentPreview();
+  };
   m_settings.add({.name = "useInfinitePlane", .help = "Ground: draw an infinite plane under the scene", .callbackSuccess = groundChanged},
                  &m_resources.settings.useInfinitePlane, Persist::eYes);
   m_settings.add({.name = "isShadowCatcher", .help = "Ground: the plane only darkens the background where shadows fall", .callbackSuccess = groundChanged},

@@ -8,6 +8,7 @@
 #define GROUND_H_SLANG
 
 #include "shaderio.h"
+#include "water_optics.h.slang"  // the water's IOR, absorption and scattering
 
 // How much of the ground there is at `pos`: 1 over the inner 55% of the fade disk, falling linearly
 // to 0 at its edge -- the radial gradient the Figure Viewer's three.js floor disk is drawn with.
@@ -61,7 +62,6 @@ float groundCatcherStrength(SceneFrameInfo* frameInfo)
 // by half; from 0.3 puddles form, and they join until at 1 the floor is under a sheet of water,
 // whose surface ripples. Evaluated where a ray meets the floor: no texture and no extra ray.
 
-static const float GROUND_WATER_IOR = 1.33F;
 // The field's largest octave, metres: puddles about the size of a figure's stance
 static const float GROUND_PUDDLE_SCALE = 1.2F;
 // The edges, as logistic widths in the field's logit (groundWaterAt): about 1.3 cm for the water's,
@@ -244,16 +244,6 @@ float3 groundWetAlbedo(float3 dry)
 // and the clouds' shadows darken it (groundWaterInScatter). A path's ray refracts at the surface; a shadow ray crosses it straight, losing its
 // Fresnel share, as through clear glass, and from under it takes the caustic the surface focuses
 // there (groundWaterShadowTransmittance, groundWaterCaustic).
-
-// Pure water's absorption, per metre, over the bands of the sRGB primaries (Pope and Fry 1997: about
-// 630, 550 and 470 nm)
-static const float3 GROUND_WATER_ABSORPTION = float3(0.29F, 0.055F, 0.011F);
-// Pure seawater's scattering, per metre, over the same bands: Morel's 0.00288 at 500 nm, as the
-// wavelength to the -4.32. Deep water is blue by it: of light straight down it sends back about 4.6% of
-// the blue, 0.6% of the green and 0.07% of the red (once scattered; groundWaterInScatter), the open
-// sea's colour. Its phase function is the molecules' (groundWaterPhase).
-static const float3 GROUND_WATER_SCATTERING = float3(0.00106F, 0.00191F, 0.00376F);
-static const float3 GROUND_WATER_EXTINCTION = GROUND_WATER_ABSORPTION + GROUND_WATER_SCATTERING;
 
 // Seawater's phase function, per steradian: the molecules', (1 + 0.835 cos^2) normalised (Morel 1974)
 float groundWaterPhase(float cosTheta)

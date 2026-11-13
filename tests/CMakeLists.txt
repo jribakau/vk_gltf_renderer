@@ -387,7 +387,7 @@ add_executable(${BSDF_TEST_NAME} test_bsdf_lobes.cpp test_aperture.cpp test_ligh
                test_thin_scatter.cpp test_hair_bsdf.cpp test_hdr_output.cpp test_woven_opacity.cpp test_flake_noise.cpp
                test_sky_clouds.cpp test_mirror_image.cpp test_skin_albedo.cpp test_haze.cpp test_bloom.cpp
                test_local_exposure.cpp test_unit_vector_pack.cpp test_debug_colors.cpp test_contribution_roulette.cpp test_path_roulette.cpp test_still_keep.cpp test_medium_stack.cpp
-               test_radiance_cache.cpp test_dlss_jitter.cpp test_lens.cpp)
+               test_radiance_cache.cpp test_dlss_jitter.cpp test_lens.cpp ${CMAKE_SOURCE_DIR}/src/sky_ground.cpp)
 target_link_libraries(${BSDF_TEST_NAME} PRIVATE GTest::gtest GTest::gtest_main glm)
 target_include_directories(${BSDF_TEST_NAME} PRIVATE ${NVSHADERS_DIR})
 gtest_discover_tests(${BSDF_TEST_NAME})

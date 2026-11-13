@@ -161,6 +161,7 @@ src/
 ├── sky_visibility.hpp          # The air's visibility as a setting: the aerosol scaled to a distance one sees
 │                               #   through it (unit-tested)
 ├── sun_position.cpp/hpp        # NOAA solar position: (place, UTC instant) -> bearing + altitude.
+├── sky_ground.cpp/hpp          # The physical sky's ground albedo: the backdrop's land, the water's, or the setting.
 │                               #   Pure, self-contained, nothing else links against it
 ├── frame_stream.cpp/hpp        # --stream: the headless run's rendered frames as MJPEG over HTTP, for a
 │                               #   host application. Paces the loop to --streamFps, except a still being
@@ -238,6 +239,7 @@ shaders/
 ├── invalid_samples.h.slang     # A frame's block of non-finite samples and guides: counts and the first pixels
 ├── gltf_light_ies.h.slang      # EXT_lights_ies: photometric-profile falloff lookup
 ├── sky_background.h.slang      # Background (sun-bearing) field for authored skies
+├── water_optics.h.slang        # The ground's water as a medium (IOR, absorption, scattering) and its albedo; C++ too
 ├── sky_omi_shaderio.h.slang    # SkyType + the per-type OMI_environment_sky parameter blocks
 ├── sky_gradient.h.slang        # OMI `gradient` evaluator (bands + sun), shared by bake and background
 ├── env_bake.slang              # Bakes any sky into the lat-long image + importance buffer; one

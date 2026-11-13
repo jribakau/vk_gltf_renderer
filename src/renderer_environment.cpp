@@ -41,6 +41,7 @@
 #include "sky_visibility.hpp"
 #include "renderer.hpp"
 #include "night_stars.hpp"
+#include "sky_ground.hpp"
 
 #include <cstring>
 
@@ -811,7 +812,9 @@ shaderio::SkyAtmosphereParameters GltfRenderer::buildAtmosphereParameters() cons
 
   p.solarIrradiance    = s.atmoSolarIrradiance;
   p.sunAngularRadius   = s.atmoSunAngularRadius;
-  p.groundAlbedo       = glm::any(glm::greaterThan(s.atmoLandAlbedo, glm::vec3(0.0F))) ? s.atmoLandAlbedo : s.atmoGroundAlbedo;
+  // the land round the scene, the sea when the ground is water, or the setting (sky_ground.hpp)
+  const bool water     = s.useInfinitePlane && !s.isShadowCatcher;
+  p.groundAlbedo       = sky_ground::albedo(s.atmoLandAlbedo, water ? s.groundWaterDepth : 0.0F, s.infinitePlaneBaseColor, s.atmoGroundAlbedo);
   p.rayleighScattering = s.atmoRayleighScattering;
   p.mieScattering      = s.atmoMieScattering;
   p.miePhaseFunctionG  = s.atmoMieAnisotropy;
