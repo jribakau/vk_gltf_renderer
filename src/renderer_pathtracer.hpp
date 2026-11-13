@@ -298,9 +298,12 @@ public:
   int   m_hairCutDlss{4};
   float m_hairCutTail{4.0F};
   // DLSS frames: DLSS-RR's responsivity mask on hair (ptHairResponsivity; 0: no mask). Negative trusts
-  // the history more: test4 held on DLSS, 12 frames, the hair's per-pixel std 2.32 -> 1.45 (top of the
-  // head) and 2.19 -> 1.35 (long strands) at -1, -0.5 halfway, +1 worse (2.96); skin 1.04 -> 0.98
-  float m_hairResponsivity{-1.0F};
+  // the history more, which steadies a held view (test4 held on DLSS, 12 frames, the hair's per-pixel std
+  // 2.32 at 0, 1.45 at -1, 2.96 at +1) and smooths the strands away: of a 1024-sample reference's strand
+  // detail on a dark hair (5TEST, preset F, Performance) -1 keeps 0.33-0.50 just after an orbit and
+  // 0.39-0.67 held, +1 0.40-0.58 and 0.53-0.86, 0 and 0.5 no more than -1 in motion. Preset E ignores the
+  // mask. +1 since 2026-11-13: the app's view is held on DLSS for under half a second
+  float m_hairResponsivity{1.0F};
   // An accumulation's pixel stops once its mean has converged (ptAdaptiveStop, ptAdaptiveThreshold,
   // ptAdaptiveMin; shaders/adaptive_stop.h.slang). 0.09: test4's still 12.7 -> 9.0 s with its skin's
   // pores as the full still's; at 0.11 (7.5 s) and 0.13 (6.5 s) the denoiser of the time (OptiX) smoothed

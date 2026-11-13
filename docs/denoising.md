@@ -92,7 +92,11 @@ the enum for the authoritative list and formats):
 | `eDlssDepth` | NDC depth (`z/w`, `1.0` on miss) | `pInDepth` |
 | `eDlssSpecularHitDist` | Specular hit distance, captured at the first reflection bounce; on clear glass and water, a mirror ray's on every DLSS frame (`dlssTraceMirror`); on an eye's tear film, half the film's radius behind it on every sample (`shaders/mirror_image.h.slang`), so the catchlight goes with the eye | `pInSpecularHitDistance` (optional) |
 | `eDlssSpecularMotion` | The motion of reflections, every pixel: of a reflection's image, or the surface's own where there is none (see [below](#the-motion-of-reflections)) | `pInMotionVectorsReflections` (optional) |
+| `eDlssResponsivity` | Hair only: how far a pixel trusts its history, written where the first hit is hair (`ptHairResponsivity`; positive trusts it less, which keeps strands and shimmers more; 0 binds no mask). Preset E ignores it | `pInResponsivityMask` (optional) |
 
+- **Hair's guides** describe the fibre (`processPixel`, the `hairOn` block): the base colour as the albedo (black on a melanin hair),
+  the R lobe's Fresnel as the specular, the longitudinal roughness. Its lock colour or a grey as the albedo keeps less
+  strand detail, with or without the specular (measured 2026-11-13, the app's docs/improvements.md).
 - **DLSS-SR** uses only color + depth + motion — the material guides above are RR-only.
 - **The still's guides** (DLSS-RR's still): `eDenoiserAlbedo` and `eDenoiserNormal` (world-space
   normal), written when `ePtDenoiserGuides` is set, plus those `ePtRrStillGuides` adds
