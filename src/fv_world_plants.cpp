@@ -105,6 +105,48 @@ fv::backdrop::Spec flatSpec(const World& w, const char* kind, double density)
   return flat;
 }
 
+// A role's grid over a cube face, a plant a cell at the most, `thickest` of them a square metre where
+// they stand thickest: calls each(u, v, cell, h) for every cell whose plant falls on the quad (a cell
+// on the quad's edge is the quad's the plant falls in). `h`: the cell's own hash.
+template <class Each>
+void overCells(const World& w, const Quad& q, double thickest, uint32_t salt, Each&& each)
+{
+  const double  span = 2.0 / double(uint64_t(1) << q.level);
+  const double  u0 = double(q.x) * span - 1.0, v0 = double(q.y) * span - 1.0;
+  const double  n    = std::max(1.0, std::round(2.0 * halfFace(w) * std::sqrt(thickest)));
+  const double  cell = 2.0 / n;  // in the face's own measure, -1 to 1 across it
+  const int64_t x0 = int64_t(std::floor((u0 + 1.0) / cell)), x1 = int64_t(std::ceil((u0 + span + 1.0) / cell));
+  const int64_t y0 = int64_t(std::floor((v0 + 1.0) / cell)), y1 = int64_t(std::ceil((v0 + span + 1.0) / cell));
+  for(int64_t iy = y0; iy < y1; iy++)
+    for(int64_t ix = x0; ix < x1; ix++)
+    {
+      const uint32_t h = hash(uint32_t(w.spec.seed) + salt, uint32_t(q.face), uint32_t(ix), uint32_t(iy));
+      const double   u = (double(ix) + double(unit(h))) * cell - 1.0, v = (double(iy) + double(unit(mix(h + 1U)))) * cell - 1.0;
+      if(u >= u0 && u < u0 + span && v >= v0 && v < v0 + span)
+        each(u, v, cell, h);
+    }
+}
+
+// A cell's share of a plant where they stand thickest: a face's cells are smaller toward its edges,
+// and there are as many plants a square metre everywhere
+double cellShare(const World& w, uint8_t face, double u, double v, double cell, double thickest)
+{
+  const double     e = 0.5 * cell;
+  const glm::dvec3 across = direction(face, u + e, v) - direction(face, u - e, v), along = direction(face, u, v + e) - direction(face, u, v - e);
+  return glm::length(glm::cross(across, along)) * w.spec.radius * w.spec.radius * thickest;
+}
+
+// Where a plant stands: on the planet's point `d` at `elevation`, about `centre`, upright there,
+// turned by `turn` (0..1 of a whole turn) and scaled
+glm::mat4 placeOn(const World& w, const glm::dvec3& d, double elevation, const glm::dvec3& centre, float turn, float scale)
+{
+  const glm::dvec3 at = toScene(w, d, elevation);
+  glm::mat4        m  = glm::translate(glm::mat4(1.0F), glm::vec3(at - centre));
+  m                   = m * glm::mat4_cast(toUp(glm::normalize(at - w.frame.centre)));
+  m                   = glm::rotate(m, float(2.0 * kPi) * turn, glm::vec3(0.0F, 1.0F, 0.0F));
+  return glm::scale(m, glm::vec3(scale));
+}
+
 }  // namespace
 
 // ---- what has a place ----------------------------------------------------------------------------------
@@ -136,13 +178,9 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
   std::vector<Stand> out;
   if(!(density > 0.0))
     return out;
-  const double R     = w.spec.radius;
-  const double wide  = width(w, q);
-  const double span  = 2.0 / double(uint64_t(1) << q.level);
-  const double u0 = double(q.x) * span - 1.0, v0 = double(q.y) * span - 1.0;
+  const double wide = width(w, q);
   // what draws the quad's ground: a plant stands on the ground as drawn
-  const double   footprint = wide / double(kGroundCells);
-  const uint32_t seed      = uint32_t(w.spec.seed);
+  const double footprint = wide / double(kGroundCells);
   for(size_t r = 0; r < kStandingRoles.size() && r < variants.size(); r++)
   {
     const std::string_view role = kStandingRoles[r];
@@ -161,27 +199,15 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
         }
     if(!(thickest > 0.0))
       continue;
-    // the role's grid over the face: a plant a cell at the most
-    const double  n    = std::max(1.0, std::round(2.0 * halfFace(w) * std::sqrt(thickest)));
-    const double  cell = 2.0 / n;  // in the face's own measure, -1 to 1 across it
-    const int64_t x0 = int64_t(std::floor((u0 + 1.0) / cell)), x1 = int64_t(std::ceil((u0 + span + 1.0) / cell));
-    const int64_t y0 = int64_t(std::floor((v0 + 1.0) / cell)), y1 = int64_t(std::ceil((v0 + span + 1.0) / cell));
-    const bool    rock = role == "rock";
+    const bool                          rock = role == "rock";
     std::vector<std::vector<glm::mat4>> placed(variants[r]);
-    for(int64_t iy = y0; iy < y1; iy++)
-      for(int64_t ix = x0; ix < x1; ix++)
-      {
-        const uint32_t h = hash(seed + 7919U * uint32_t(r + 1), uint32_t(q.face), uint32_t(ix), uint32_t(iy));
-        const double   u = (double(ix) + double(unit(h))) * cell - 1.0, v = (double(iy) + double(unit(mix(h + 1U)))) * cell - 1.0;
-        // (a cell on the quad's edge is the quad's the plant falls in)
-        if(u < u0 || u >= u0 + span || v < v0 || v >= v0 + span)
-          continue;
+    overCells(w, q, thickest, 7919U * uint32_t(r + 1), [&](double u, double v, double cell, uint32_t h) {
         if(unit(mix(h + 6U)) >= kept.share)
-          continue;
+          return;
         const glm::dvec3 d = direction(q.face, u, v);
         const Sample     s = sample(w, d, footprint);
         if(bare(s, rock) || cleared(w, d) || (!rock && s.rock > 0.5F))
-          continue;
+          return;
         // how thickly it grows here: each biome's own by its share, in its groves
         double        odds = 0.0;
         const Growth* most = nullptr;
@@ -204,23 +230,85 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
             most = g;
           }
         }
-        if(!most)
-          continue;
-        // a face's cells are smaller toward its edges: as many plants a square metre everywhere
-        const double     e = 0.5 * cell;
-        const glm::dvec3 across = direction(q.face, u + e, v) - direction(q.face, u - e, v), along = direction(q.face, u, v + e) - direction(q.face, u, v - e);
-        odds *= glm::length(glm::cross(across, along)) * R * R * thickest;
-        if(double(unit(mix(h + 2U))) >= odds)
-          continue;
-        const float      scale = (most->scaleMin + (most->scaleMax - most->scaleMin) * unit(mix(h + 5U))) * kept.grow;
-        const glm::dvec3 at    = toScene(w, d, s.elevation - double(most->sink * scale));
-        const glm::dvec3 up    = glm::normalize(at - w.frame.centre);
-        glm::mat4        m     = glm::translate(glm::mat4(1.0F), glm::vec3(at - centre));
-        m                      = m * glm::mat4_cast(toUp(up));
-        m                      = glm::rotate(m, float(2.0 * kPi) * unit(mix(h + 4U)), glm::vec3(0.0F, 1.0F, 0.0F));
-        m                      = glm::scale(m, glm::vec3(scale));
-        placed[mix(h + 3U) % variants[r]].push_back(m);
-      }
+        if(!most || double(unit(mix(h + 2U))) >= odds * cellShare(w, q.face, u, v, cell, thickest))
+          return;
+        const float scale = (most->scaleMin + (most->scaleMax - most->scaleMin) * unit(mix(h + 5U))) * kept.grow;
+        placed[mix(h + 3U) % variants[r]].push_back(placeOn(w, d, s.elevation - double(most->sink * scale), centre, unit(mix(h + 4U)), scale));
+    });
+    for(uint32_t v = 0; v < placed.size(); v++)
+      if(!placed[v].empty())
+        out.push_back({uint8_t(r), v, std::move(placed[v])});
+  }
+  return out;
+}
+
+namespace {
+
+// How a sea floor role grows: how thickly, in water how deep and how warm at its surface, how large
+// (times its mesh), and in what share of the floor, in patches how far across
+struct SeaGrowth
+{
+  std::string_view role;
+  double           perSquareMetre;
+  float            depthFrom, depthTo;
+  float            warmFrom, warmTo;  // degrees C
+  float            scaleMin, scaleMax;
+  float            cover, patch;
+};
+constexpr SeaGrowth kSeaGrowths[] = {
+    {"seagrass", 0.3, 0.8F, 9.0F, 2.0F, 100.0F, 0.7F, 1.4F, 0.45F, 35.0F},
+    {"kelp", 0.03, 5.0F, 28.0F, -2.0F, 21.0F, 0.6F, 1.4F, 0.3F, 60.0F},
+    {"coral", 0.06, 1.5F, 18.0F, 17.0F, 100.0F, 0.6F, 2.0F, 0.35F, 25.0F},
+    {"sponge", 0.015, 4.0F, 40.0F, 0.0F, 100.0F, 0.5F, 1.6F, 0.3F, 30.0F},
+    {"searock", 0.006, 0.5F, 60.0F, -100.0F, 100.0F, 0.4F, 2.5F, 0.35F, 45.0F},
+};
+
+}  // namespace
+
+std::vector<Stand> seaStanding(const World& w, const Quad& q, const glm::dvec3& centre, std::span<const SeaMesh> meshes, double density)
+{
+  std::vector<Stand> out;
+  const double       wide = width(w, q);
+  if(!(density > 0.0) || wide > 70.0)
+    return out;
+  const double footprint = wide / double(kGroundCells);
+  for(size_t r = 0; r < kSeaRoles.size(); r++)
+  {
+    const SeaGrowth* grow = nullptr;
+    for(const SeaGrowth& g : kSeaGrowths)
+      if(g.role == kSeaRoles[r])
+        grow = &g;
+    // the role's meshes, in the order they come
+    std::vector<const SeaMesh*> of;
+    for(const SeaMesh& m : meshes)
+      if(m.role == r)
+        of.push_back(&m);
+    if(!grow || of.empty())
+      continue;
+    const double                        thickest = grow->perSquareMetre * density;
+    const double                        level    = coverLevel(double(grow->cover));
+    std::vector<std::vector<glm::mat4>> placed(of.size());
+    overCells(w, q, thickest, 104729U * uint32_t(r + 1), [&](double u, double v, double cell, uint32_t h) {
+      const glm::dvec3 d = direction(q.face, u, v);
+      const Sample     s = sample(w, d, footprint);
+      // the sea's own floor: not a lake's, not a river's bed where it runs out
+      const double deep = -s.elevation;
+      if(deep < double(grow->depthFrom) || deep > double(grow->depthTo) || s.inland.lake > 0.2 || (s.inland.river && s.inland.riverAway < s.inland.riverHalf + 1.0))
+        return;
+      const double warm = temperatureAt(w, d, 0.0);
+      if(warm < double(grow->warmFrom) || warm > double(grow->warmTo))
+        return;
+      const double odds = smooth(level - 0.03, level + 0.03, noise(w, d, double(grow->patch), uint32_t(200 + r))) * cellShare(w, q.face, u, v, cell, thickest);
+      if(double(unit(mix(h + 2U))) >= odds)
+        return;
+      // no taller than the water over it
+      const uint32_t variant = mix(h + 3U) % uint32_t(of.size());
+      const float    tallest = float(0.85 * deep) / std::max(of[variant]->height, 1e-3F);
+      const float    scale   = std::min(grow->scaleMin + (grow->scaleMax - grow->scaleMin) * unit(mix(h + 5U)), tallest);
+      if(scale < 0.5F * grow->scaleMin)
+        return;
+      placed[variant].push_back(placeOn(w, d, s.elevation, centre, unit(mix(h + 4U)), scale));
+    });
     for(uint32_t v = 0; v < placed.size(); v++)
       if(!placed[v].empty())
         out.push_back({uint8_t(r), v, std::move(placed[v])});

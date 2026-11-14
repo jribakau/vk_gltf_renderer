@@ -27,6 +27,9 @@
 // are of. The grass and its drifts are tiles round the camera and the figures (tilePlanet), the
 // meadow's own way. Nothing sways in the wind yet.
 //
+// The sea floor's plants need no kit (fv_world_sea.hpp): their meshes are made with the planet and
+// held hidden the same way, and a quad's arrive with it as the kit's do.
+//
 
 #include "fv_host_impl.hpp"
 #include "fv_world_map.hpp"
@@ -70,7 +73,8 @@ struct FvHost::Impl::PlanetMade
   W::Quad                     quad;
   W::ChunkMesh                ground;
   std::optional<W::ChunkMesh> sea;
-  std::vector<W::Stand>       stands;  // what stands on it, about the ground's centre
+  std::vector<W::Stand>       stands;     // what stands on it, about the ground's centre: the kit's plants,
+  std::vector<W::Stand>       seaStands;  // and the sea floor's
 };
 
 glm::dvec3 FvHost::Impl::planetCentre() const
@@ -88,9 +92,15 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
   if(alive && planetBuilt->asked == asked)
   {
     placeBackdrop();
-    // (planted thicker or thinner: its plants again, on the planet as it is)
-    if(planetBuilt->planted && planetBuilt->density != backdropSpec.density)
-      plantPlanet(scene);
+    // (planted thicker or thinner: its plants again, on the planet as it is; a bare one's sea floor)
+    if(planetBuilt->density != backdropSpec.density && planetBuilt->world)
+    {
+      planetBuilt->density = backdropSpec.density;
+      if(planetBuilt->planted)
+        plantPlanet(scene);
+      else
+        replantPlanet(scene);
+    }
     planetBuilt->tiledFor = glm::dvec3(1.0e30);  // (its grass's reach may be another: laid again)
     return;  // as it stands, or as it is being made
   }
@@ -124,6 +134,40 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
                                              .attenuationDistance = fv::world::kSeaColourDistance,
                                              .attenuationColor    = {fv::world::kSeaColour.x, fv::world::kSeaColour.y, fv::world::kSeaColour.z}};
   p.sea                    = scene.addMaterial(std::move(sea));
+  p.density                = backdropSpec.density;
+
+  // the sea floor's plants: made here (the kit has none), a mesh a variant, held hidden under the
+  // root. Their colours are their vertices'; leaves are seen from both sides.
+  rs::MaterialRecord plant;
+  plant.owner             = {0, -1};
+  plant.payload.name      = "Planet sea plant";
+  plant.payload.metallic  = 0.0F;
+  plant.payload.roughness = 0.85F;
+  rs::MaterialRecord leaf = plant;
+  leaf.payload.name        = "Planet sea leaf";
+  leaf.payload.doubleSided = true;
+  p.seaPlant               = scene.addMaterial(std::move(plant));
+  p.seaLeaf                = scene.addMaterial(std::move(leaf));
+  p.seaMeshes              = std::make_shared<const std::vector<W::SeaMesh>>(W::seaMeshes(asked.seed));
+  for(const W::SeaMesh& m : *p.seaMeshes)
+  {
+    rs::MeshRecord record;
+    record.name          = "Planet sea plant";
+    record.owner         = {0, -1};
+    record.positions     = m.positions;
+    record.normals       = m.normals;
+    record.colors        = m.colors;
+    record.indices.own() = m.indices;
+    record.submeshes.push_back({.firstIndex = 0, .indexCount = uint32_t(m.indices.size()), .material = 0, .order = 0});
+    const rs::MeshId   mesh = scene.addMesh(std::move(record));
+    const rs::EntityId e    = scene.createEntity("Planet sea plant", {0, -1}, backdropBuilt->root);
+    rs::MeshInstance   instance;
+    instance.parts.push_back({.mesh = mesh, .materials = {m.leaves ? p.seaLeaf : p.seaPlant}});
+    scene.setMeshInstance(e, std::move(instance));
+    scene.release(mesh);  // the entity's now
+    scene.setVisible(e, false);
+    p.seaPlants[m.role].push_back(e);
+  }
 
   backdropState = "loading";
   placeBackdrop();
@@ -157,7 +201,7 @@ void FvHost::Impl::dropPlanet()
   {
     // (its entities went with the backdrop's root)
     rs::RetainedScene& scene = renderer->hostScene();
-    for(const rs::MaterialId material : {planetBuilt->ground, planetBuilt->sea})
+    for(const rs::MaterialId material : {planetBuilt->ground, planetBuilt->sea, planetBuilt->seaPlant, planetBuilt->seaLeaf})
       if(scene.material(material))
         scene.release(material);
   }
@@ -275,7 +319,7 @@ void FvHost::Impl::followPlanet()
     return;
   p.busy = true;
   loaders.spawn([this, held = p.world, ask = std::move(ask), generation = p.generation, planted = p.planted, variants = p.variants,
-                 density = p.density] {
+                 density = p.density, seaMeshes = p.seaMeshes] {
     auto made = std::make_shared<std::vector<PlanetMade>>(ask.size());
     fv::jobs::parallelFor(ask.size(), 1, [&](size_t begin, size_t end) {
       for(size_t i = begin; i < end; i++)
@@ -290,6 +334,8 @@ void FvHost::Impl::followPlanet()
           m.sea = W::waterMesh(*held, ask[i]);
         if(planted && m.ground.highest > 0.0)
           m.stands = W::standing(*held, ask[i], m.ground.centre, variants, density);
+        if(seaMeshes && m.ground.lowest < 0.0)
+          m.seaStands = W::seaStanding(*held, ask[i], m.ground.centre, *seaMeshes, density);
       }
     });
     post([this, made, generation] { planetArrived(*made, generation); });
@@ -335,27 +381,32 @@ void FvHost::Impl::planetArrived(std::vector<PlanetMade>& made, uint64_t generat
     chunk.ground = entity(m.ground, p.ground, "Planet ground");
     if(m.sea)
       chunk.sea = entity(*m.sea, p.sea, "Planet sea");
-    // what stands on it: each variant's places as the copies of an entity that draws the kit's mesh
-    for(W::Stand& stand : m.stands)
-    {
-      const auto found = backdropBuilt->variants.find(std::string(W::kStandingRoles[stand.role]));
-      if(found == backdropBuilt->variants.end() || stand.variant >= found->second.size())
-        continue;
-      const BackdropBuilt::Variant& variant = found->second[stand.variant];
-      const rs::Entity*             of      = scene.entity(variant.entity);
-      if(!of || !of->mesh)
-        continue;
-      rs::MeshInstance instance = *of->mesh;
-      for(glm::mat4& place : stand.places)
-        place = place * variant.base;
-      chunk.standing += stand.places.size();
-      instance.copies       = std::move(stand.places);
-      const rs::EntityId e  = scene.createEntity("Planet plants", {0, -1}, backdropBuilt->root);
+    // what stands on it: each variant's places as the copies of an entity that draws the variant's
+    // mesh (`of`: the entity that holds it, hidden; `base`: its own turn and scale under each place)
+    const auto stand = [&](rs::EntityId of, const glm::mat4& base, std::vector<glm::mat4>& places) {
+      const rs::Entity* held = scene.entity(of);
+      if(!held || !held->mesh || places.empty())
+        return;
+      rs::MeshInstance instance = *held->mesh;
+      for(glm::mat4& place : places)
+        place = place * base;
+      chunk.standing += places.size();
+      instance.copies      = std::move(places);
+      const rs::EntityId e = scene.createEntity("Planet plants", {0, -1}, backdropBuilt->root);
       scene.setLocal(e, {.translation = centre});
       scene.setMeshInstance(e, std::move(instance));
       scene.setVisible(e, false);
       chunk.plants.push_back(e);
-    }
+    };
+    // the kit's
+    for(W::Stand& s : m.stands)
+      if(const auto found = backdropBuilt->variants.find(std::string(W::kStandingRoles[s.role]));
+         found != backdropBuilt->variants.end() && s.variant < found->second.size())
+        stand(found->second[s.variant].entity, found->second[s.variant].base, s.places);
+    // the sea floor's
+    for(W::Stand& s : m.seaStands)
+      if(s.role < p.seaPlants.size() && s.variant < p.seaPlants[s.role].size())
+        stand(p.seaPlants[s.role][s.variant], glm::mat4(1.0F), s.places);
     p.arrived[m.quad] = chunk;
   }
   resolvePlanet(scene);
@@ -540,9 +591,14 @@ void FvHost::Impl::plantPlanet(rs::RetainedScene& scene)
   for(const W::TileKind& kind : p.tileKinds)
     p.patches.push_back(makeBackdropPatch(scene, kind.cover));
   p.planted = true;
+  replantPlanet(scene);
+}
 
-  // the quads that stand have nothing on them: made again, the first cut whole before any shows.
-  // (A batch on its way was made without: it is of a planet gone, as far as its arrival can tell.)
+void FvHost::Impl::replantPlanet(rs::RetainedScene& scene)
+{
+  PlanetBuilt& p = *planetBuilt;
+  // the quads that stand have what was on them: made again, the first cut whole before any shows.
+  // (A batch on its way was made as before: it is of a planet gone, as far as its arrival can tell.)
   const auto gone = [&](const PlanetBuilt::Chunk& chunk) {
     for(const rs::EntityId e : {chunk.ground, chunk.sea})
       if(!e.isNone() && scene.entity(e))

@@ -909,6 +909,11 @@ their kit when there is one. It needs no kit: without one it stands bare.
   stretched to its square of the sphere. Every plant is an instance the scene sync walks on any
   change, and a planet's quads change as the camera moves, which is what bounds how many there are
   (`keptOn`) and how many quads arrive at once.
+- **The sea floor** has plants of its own, which need no kit (`src/fv_world_sea.hpp`): seagrass,
+  kelp, corals, sponges and rocks as small meshes made from the planet's seed (the generators after
+  abyssal-garden's, MIT), held hidden under the root as the kit's plants are and placed the same
+  way (`seaStanding`): by the water's depth and warmth, in patches, none taller than the water over
+  it, on the finest quads only.
 - **The sky** takes the planet's radius, its air scaled to it, and its centre (`worldRadius`,
   `worldAirScale`, `worldCentre`), and is then asked every question from a place of the planet: what
   a ray sees from inside the air or from orbit, the sun's light at a hit, the sky's light there

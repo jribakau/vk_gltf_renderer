@@ -571,7 +571,7 @@ TEST(FvHost, APlanetStandsWithNoKit)
   EXPECT_EQ(state().value("plants", uint64_t(1)), 0u);
   struct Stands
   {
-    int    ground = 0, sea = 0, hidden = 0;
+    int    ground = 0, sea = 0, hidden = 0, held = 0;
     float  nearest = 1e9F;  // the ground's vertex nearest the origin
     double area    = 0.0;   // of the ground's quads' surfaces, about
   };
@@ -585,9 +585,21 @@ TEST(FvHost, APlanetStandsWithNoKit)
       const rs::Entity* entity = scene.entity(e);
       if(!entity->mesh)
         continue;
+      // (the sea floor's plants: their meshes held hidden, and a quad's as copies of them)
+      if(entity->name == "Planet sea plant")
+      {
+        EXPECT_FALSE(scene.shown(e));
+        out.held++;
+        continue;
+      }
       if(!scene.shown(e))
       {
         out.hidden++;
+        continue;
+      }
+      if(entity->name == "Planet plants")
+      {
+        EXPECT_FALSE(entity->mesh->copies.empty());
         continue;
       }
       const rs::MeshRecord* mesh = scene.mesh(entity->mesh->parts.at(0).mesh);
@@ -616,6 +628,7 @@ TEST(FvHost, APlanetStandsWithNoKit)
   EXPECT_GT(first.sea, 0);
   EXPECT_LT(first.sea, first.ground + 1);
   EXPECT_EQ(first.hidden, 0) << "nothing waits once the first cut shows";
+  EXPECT_GT(first.held, 4) << "the sea floor's plants are made with the planet, kit or no kit";
   // the figures' floor is its ground: a vertex within a metre of the origin
   EXPECT_LT(first.nearest, 1.5F);
   // the quads are the planet once over: their areas add up to a sphere's, about (a quad's corners'

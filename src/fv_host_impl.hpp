@@ -1649,6 +1649,11 @@ struct FvHost::Impl
     std::shared_ptr<const fv::world::World> world;       // shared with the pool's jobs; none while it is being made
     uint64_t                                generation = 0;  // a batch made for a planet since gone is dropped
     rs::MaterialId                          ground, sea;
+    // The sea floor's plants (fv_world_sea.hpp), made for the planet's seed: their meshes, shared
+    // with the pool's jobs, and an entity each that is never shown, which a quad's copies are of
+    std::shared_ptr<const std::vector<fv::world::SeaMesh>>                        seaMeshes;
+    std::array<std::vector<rs::EntityId>, fv::world::kSeaRoles.size()>            seaPlants;
+    rs::MaterialId                                                                seaPlant, seaLeaf;
     struct Chunk
     {
       rs::EntityId              ground, sea;  // the sea's: none where the ground is all above it
@@ -1687,6 +1692,8 @@ struct FvHost::Impl
   // The kit's plants on the planet that stands: held, its tiles' meshes made, and its quads made again
   // with what stands on them. Again when the backdrop's density is another.
   void plantPlanet(rs::RetainedScene& scene);
+  // Its quads made again, the first cut whole before any shows: what stands on them is another
+  void replantPlanet(rs::RetainedScene& scene);
   // The grass's tiles for where the camera is (fv::world::grassTiles), laid
   void tilePlanet(rs::RetainedScene& scene, const glm::dvec3& eye);
   // Reads the kit for a planet that stands without one, on a worker: planted when it has come

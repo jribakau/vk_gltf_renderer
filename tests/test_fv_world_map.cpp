@@ -533,6 +533,25 @@ TEST(WorldMapBake, DISABLED_Report)
       if(nearestAway < 1e30)
         place(std::string(w.biomes[biome].name).c_str(), best, up, w.frame.site, nearestAway * w.spec.radius);
     }
+    // the sea's shallows nearest the figures, some 4 m deep: where it is warm (corals) and where it is cool (kelp)
+    for(const bool warm : {true, false})
+    {
+      glm::dvec3 best(0.0);
+      double     nearestAway = 1e30;
+      for(uint32_t i = 0; i < 200000; i++)
+      {
+        const glm::dvec3 d = spread(i, 200000);
+        if(glm::distance(d, w.frame.site) >= nearestAway || (W::temperatureAt(w, d, 0.0) > 18.0) != warm)
+          continue;
+        const W::Sample smp = W::sample(w, d, 30.0);
+        if(smp.elevation > (warm ? -3.0 : -7.0) || smp.elevation < (warm ? -6.0 : -12.0) || smp.inland.any())
+          continue;
+        nearestAway = glm::distance(d, w.frame.site);
+        best        = d;
+      }
+      if(nearestAway < 1e30)
+        place(warm ? "sea-warm" : "sea-cool", best, 0.0, w.frame.site, nearestAway * w.spec.radius);
+    }
     uint32_t lakeAt = W::CubeGrid::kNone;
     for(uint32_t c = 0; c < m.grid.count(); c++)
       if(m.kind[c] == W::eMapLake && (lakeAt == W::CubeGrid::kNone || glm::distance(m.grid.centre(c), w.frame.site) < glm::distance(m.grid.centre(lakeAt), w.frame.site)))

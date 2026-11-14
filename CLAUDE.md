@@ -71,7 +71,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 - `src/fv_world.*`, `src/fv_host_world.cpp`, `src/sky_world.hpp`, `shaders/sky_world.h.slang`,
   `shaders/world_bodies.h.slang` — a small planet as the backdrop's `planet` kind: its fields by
   stages, its base map (`src/fv_world_map.*`: rain, erosion, lakes and rivers, baked once a planet),
-  its plants by biome from the backdrop's kit (`src/fv_world_plants.*`),
+  its plants by biome from the backdrop's kit (`src/fv_world_plants.*`) and its sea floor's, made
+  from a seed (`src/fv_world_sea.*`),
   its quadtree meshes drawn a cut at a time, the sky scaled to it and asked from any place of
   it, on the ground or in orbit, and the other bodies in that sky
   ([docs/RENDERING_ARCHITECTURE.md](docs/RENDERING_ARCHITECTURE.md#a-planet)).

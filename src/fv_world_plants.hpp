@@ -29,6 +29,7 @@
 
 #include "fv_backdrop.hpp"
 #include "fv_world.hpp"
+#include "fv_world_sea.hpp"
 
 namespace fv::world {
 
@@ -58,6 +59,13 @@ struct Kept
   float grow  = 1.0F;
 };
 Kept keptOn(std::string_view role, double width);
+
+// What stands on a quad's sea floor (fv_world_sea.hpp), of `meshes`: seagrass on the shallows, kelp
+// where the water is cool and deep enough to hold it, corals where it is warm, sponges deeper, rocks
+// anywhere. Each no taller than the water over it. A Stand's `role` is of kSeaRoles and its `variant`
+// counts the role's meshes in the order they come. Only the finest quads have any: they are seen
+// from near the water, or from in it.
+std::vector<Stand> seaStanding(const World& world, const Quad& quad, const glm::dvec3& centre, std::span<const SeaMesh> meshes, double density = 1.0);
 
 // ---- grass ---------------------------------------------------------------------------------------------
 

@@ -176,6 +176,7 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_world.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_map.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_plants.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_world_sea.cpp
     # What grows on a planet: a quad's plants are its children's, none in the water or where the figures
     # stand, more in a wood than on a steppe; the grass's tiles on the ground, none twice
     test_fv_world_plants.cpp

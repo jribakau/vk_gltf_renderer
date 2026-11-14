@@ -271,3 +271,110 @@ TEST(WorldPlants, TheGrassIsTilesOnTheGroundRoundWhereOneLooksFrom)
   const std::vector<glm::dvec3> high{from + glm::normalize(from - w.frame.centre) * 800.0};
   EXPECT_TRUE(W::grassTiles(w, high, kinds, fresh).empty());
 }
+
+TEST(WorldSea, ItsPlantsAreMeshesOfASeed)
+{
+  const std::vector<W::SeaMesh> meshes = W::seaMeshes(1), again = W::seaMeshes(1), other = W::seaMeshes(2);
+  ASSERT_EQ(meshes.size(), again.size());
+  std::map<uint8_t, int> variants;
+  for(size_t k = 0; k < meshes.size(); k++)
+  {
+    const W::SeaMesh& m = meshes[k];
+    ASSERT_LT(m.role, W::kSeaRoles.size());
+    variants[m.role]++;
+    // the same for a seed, another for another
+    EXPECT_EQ(m.positions, again[k].positions);
+    EXPECT_NE(m.positions, other[k].positions);
+    ASSERT_FALSE(m.positions.empty());
+    ASSERT_EQ(m.positions.size(), m.normals.size());
+    ASSERT_EQ(m.positions.size(), m.colors.size());
+    EXPECT_EQ(m.indices.size() % 3, 0U);
+    EXPECT_LT(m.indices.size() / 3, 20000U);
+    for(const uint32_t i : m.indices)
+      ASSERT_LT(i, m.positions.size());
+    // it stands on y = 0, some decimetres to some metres high, and is no wider than a few metres
+    EXPECT_GT(m.height, 0.25F);
+    EXPECT_LT(m.height, 12.0F);
+    glm::vec3 middle(0.0F);
+    for(size_t v = 0; v < m.positions.size(); v++)
+    {
+      EXPECT_GT(m.positions[v].y, -0.3F);
+      EXPECT_LT(std::abs(m.positions[v].x), 3.0F);
+      EXPECT_NEAR(glm::length(m.normals[v]), 1.0F, 1e-3F);
+      for(int c = 0; c < 3; c++)
+      {
+        EXPECT_GE(m.colors[v][c], 0.0F);
+        EXPECT_LT(m.colors[v][c], 0.9F);
+      }
+      middle += m.positions[v] / float(m.positions.size());
+    }
+    // a rock's faces face out of it
+    if(W::kSeaRoles[m.role] == "searock")
+    {
+      size_t out = 0;
+      for(size_t v = 0; v < m.positions.size(); v++)
+        out += glm::dot(m.normals[v], m.positions[v] - middle) > 0.0F;
+      EXPECT_GT(out, m.positions.size() * 9 / 10);
+    }
+  }
+  EXPECT_EQ(variants.size(), W::kSeaRoles.size());
+}
+
+TEST(WorldSea, ItsPlantsStandOnTheSeasFloorUnderItsSurface)
+{
+  const W::World&               w      = planet();
+  const std::vector<W::SeaMesh> meshes = W::seaMeshes(w.spec.seed);
+  const uint8_t                 level  = W::finestLevel(w);
+  std::map<uint8_t, size_t>     byRole;
+  size_t                        quads = 0;
+  // (shallows from all over the planet, the warm seas and the cold: a stride through the sphere's points)
+  for(uint32_t k = 0; k < 20000 && quads < 120; k++)
+  {
+    const glm::dvec3 d = spread((k * 7919U) % 20000U, 20000);
+    const W::Sample  s = W::sample(w, d, 30.0);
+    if(s.elevation > -1.5 || s.elevation < -25.0)
+      continue;
+    quads++;
+    const W::Quad    q      = quadAt(d, level);
+    const glm::dvec3 centre = W::toScene(w, W::direction(q.face, 0.0, 0.0), 0.0);
+    for(const W::Stand& stand : W::seaStanding(w, q, centre, meshes))
+    {
+      ASSERT_LT(stand.role, W::kSeaRoles.size());
+      // its mesh: the role's `variant`th
+      const W::SeaMesh* mesh = nullptr;
+      uint32_t          nth  = 0;
+      for(const W::SeaMesh& m : meshes)
+        if(m.role == stand.role && nth++ == stand.variant)
+          mesh = &m;
+      ASSERT_TRUE(mesh);
+      byRole[stand.role] += stand.places.size();
+      for(const glm::mat4& m : stand.places)
+      {
+        const glm::dvec3 at = centre + glm::dvec3(m[3]);
+        double           r  = 0.0;
+        const glm::dvec3 on = W::toPlanet(w, at, &r);
+        const W::Sample  here = W::sample(w, on, W::width(w, q) / W::kGroundCells);
+        // on the sea's floor, and its top under the water
+        EXPECT_LT(here.elevation, -0.4);
+        EXPECT_NEAR(r - w.spec.radius, here.elevation, 0.05);
+        const double scale = glm::length(glm::dvec3(m[1]));
+        EXPECT_LT(scale * double(mesh->height), -here.elevation);
+        EXPECT_GT(glm::dot(glm::dvec3(m[1]) / scale, glm::normalize(at - w.frame.centre)), 0.9999);
+        // kelp in cool water, coral in warm
+        const double warm = W::temperatureAt(w, on, 0.0);
+        if(W::kSeaRoles[stand.role] == "kelp")
+          EXPECT_LT(warm, 21.5);
+        if(W::kSeaRoles[stand.role] == "coral")
+          EXPECT_GT(warm, 16.5);
+      }
+    }
+  }
+  ASSERT_GT(quads, 20U);
+  // every role somewhere on the shallows
+  for(uint8_t role = 0; role < W::kSeaRoles.size(); role++)
+    EXPECT_GT(byRole[role], 5U) << W::kSeaRoles[role];
+  EXPECT_GT(byRole[0], 200U);
+  // none on a quad too coarse to be seen from the water, and none on dry land
+  EXPECT_TRUE(W::seaStanding(w, {0, uint8_t(level - 2), 3, 3}, glm::dvec3(0.0), meshes).empty());
+  EXPECT_TRUE(W::seaStanding(w, quadAt(w.frame.site, level), glm::dvec3(0.0), meshes).empty());
+}
