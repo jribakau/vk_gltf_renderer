@@ -366,6 +366,9 @@ struct LightProp
   std::vector<std::string> litProps;
   std::string              shadowMode = "all";
   std::vector<std::string> shadowProps;
+  // Its light group among the lamps' three (0 to 2: the lighting's mix.lamps, lamps2, lamps3), which
+  // the mix scales and tints as one
+  int group = 0;
 };
 
 // A light as prop.set takes it and the scene topic, the journal and a scene file hold it
@@ -373,7 +376,7 @@ inline Json lightJson(const LightProp& l)
 {
   return {{"type", l.type},       {"color", l.color},       {"intensity", l.intensity},   {"radius", l.radius},           {"inner", l.inner},
           {"outer", l.outer},     {"litMode", l.litMode},   {"litProps", l.litProps},     {"shadowMode", l.shadowMode},
-          {"shadowProps", l.shadowProps}};
+          {"shadowProps", l.shadowProps}, {"group", l.group}};
 }
 
 // One thing in the scene. Its prop root (fv_compose.hpp) carries `transform` and `visible`; under

@@ -45,6 +45,7 @@
 #include <nvutils/profiler.hpp>
 #include "denoiser_handoff.hpp"
 #include "invalid_samples.hpp"
+#include "light_groups.hpp"
 #include "radiance_cache.hpp"
 #include "renderer_base.hpp"
 #include "pipeline_build_record.hpp"
@@ -376,6 +377,9 @@ public:
     // True when the path keeps the medium around the one it is in (USE_NESTED_MEDIA): the scene draws
     // a clear solid (SceneFeatureSet::eNestedMedia), optimal shader or not
     bool nestedMedia = false;
+    // True when the paths keep each light group's share (USE_LIGHT_GROUPS: ptLightGroups), for the
+    // frames of an accumulation alone
+    bool lightGroups = false;
 
     // Same SPIR-V: every shader macro matches. dlssTransparency is a pipeline specialization
     // constant, not a macro, so it is left out. dlss and dlssGuide are compared in every mode (they
@@ -385,7 +389,7 @@ public:
     {
       return wireframe == o.wireframe && visualize == o.visualize && omm == o.omm && optimal == o.optimal
              && dlss == o.dlss && dlssGuide == o.dlssGuide && lightRis == o.lightRis && pixelTime == o.pixelTime
-             && radianceCache == o.radianceCache && nestedMedia == o.nestedMedia
+             && radianceCache == o.radianceCache && nestedMedia == o.nestedMedia && lightGroups == o.lightGroups
              && (optimal ? (features == o.features) : true);
     }
     bool operator==(const VariantKey& o) const { return sameShader(o) && dlssTransparency == o.dlssTransparency; }
@@ -594,6 +598,13 @@ public:
   // (VariantKey::radianceCache): DLSS's alone while the setting is on (the still's too for the debug
   // setting that measures the cache)
   bool radianceCacheFor(bool dlssFrame) const { return m_radianceCache.reads(dlssFrame); }
+  // Whether the variant for DLSS's frames, or the still's, keeps each light group's share
+  // (VariantKey::lightGroups): the frames of an accumulation with ptLightGroups on. Not in the Time
+  // view, whose image holds no light.
+  bool lightGroupsFor(const Resources& resources, bool dlssFrame) const
+  {
+    return keepsLightGroups(resources) && !dlssFrame;
+  }
   // DLSS rendered the last frame (every frame, frame 0, or the frames of the hand-off delay)
   bool dlssFrame() const { return m_dlssFrame; }
   // DLSS renders on while the hand-off delay runs: those frames are no part of the accumulation,
@@ -615,6 +626,25 @@ public:
 
   // DLSS-RR's still is the still's denoiser: its frames gather RR's guides on the DLSS shader variant
   bool rrStillOn() const;
+
+  // A still keeps its lights apart (ptLightGroups, LightGroups): the Light tab's mix changes a finished
+  // one with nothing traced again
+  bool keepsLightGroups(const Resources& resources) const { return resources.settings.ptLightGroups && !pixelTimeOn(resources); }
+  // The mix as the settings have it: each light group's strength times its tint
+  static LightGroups::Mix lightMix(const Resources& resources)
+  {
+    LightGroups::Mix mix;
+    for(size_t i = 0; i < mix.size(); i++)
+      mix[i] = glm::vec4(glm::max(resources.settings.lightMix[i], glm::vec3(0.0F)), 1.0F);
+    return mix;
+  }
+
+  // The light groups the scene has light in, a bit a group (SceneFrameInfo::lightGroupsUsed): the sky,
+  // the lights' own groups, glowing surfaces where any emits, and the sun where the sky has one
+  static uint32_t lightGroupsUsed(const Resources& resources);
+
+  LightGroups m_lightGroups;
+  bool        m_lightGroupsFrame = false;  // this frame's paths keep their groups, and the images are bound
 
   // True when the user has DLSS-RR enabled
   bool isDlssEnabled() const

@@ -372,6 +372,35 @@ TEST(FvLighting, RainIsNoneUntilItRains)
   EXPECT_THROW(L::applyPatch(wet, {{"rain", {{"falling", 1}}}}), std::invalid_argument);
 }
 
+// The light groups' mix (protocol 79): neutral by default, so a scene from before it is lit as it was; a
+// group's factor is two to its stops times its tint, 0 while it is off, and its values are kept while off
+TEST(FvLighting, TheMixScalesAndTintsEachLightGroup)
+{
+  const fv::Json none = L::rendererParams(L::State{}, {});
+  EXPECT_EQ(none["ptLightGroups"], false);
+  for(const char* name : {"lightMixSky", "lightMixSun", "lightMixGlow", "lightMixLamps", "lightMixLamps2", "lightMixLamps3"})
+    EXPECT_EQ(none[name], fv::Json::array({1.0f, 1.0f, 1.0f})) << name;
+  EXPECT_EQ(L::toJson(L::State{})["mix"]["lamps2"], (fv::Json{{"on", true}, {"stops", 0.0}, {"tint", "#ffffff"}}));
+
+  const L::State set = L::applyPatch(L::State{}, {{"mix", {{"keep", true}, {"sun", {{"stops", 1.0}}}, {"lamps", {{"stops", -2.0}, {"tint", "#ff0000"}}},
+                                                           {"glow", {{"on", false}, {"stops", 3.0}}}, {"sky", {{"stops", 20.0}}}}}});
+  const fv::Json p = L::rendererParams(set, {});
+  EXPECT_EQ(p["ptLightGroups"], true);
+  EXPECT_EQ(p["lightMixSun"], fv::Json::array({2.0f, 2.0f, 2.0f}));
+  EXPECT_EQ(p["lightMixLamps"], fv::Json::array({0.25f, 0.0f, 0.0f}));
+  EXPECT_EQ(p["lightMixGlow"], fv::Json::array({0.0f, 0.0f, 0.0f}));     // off: none of it
+  EXPECT_EQ(p["lightMixSky"], fv::Json::array({256.0f, 256.0f, 256.0f}));  // clamped to 8 stops
+  EXPECT_EQ(p["lightMixLamps3"], fv::Json::array({1.0f, 1.0f, 1.0f}));
+  // kept while off, and back with it
+  EXPECT_EQ(L::toJson(set)["mix"]["glow"]["stops"], 3.0);
+  EXPECT_EQ(L::rendererParams(L::applyPatch(set, {{"mix", {{"glow", {{"on", true}}}}}}), {})["lightMixGlow"], fv::Json::array({8.0f, 8.0f, 8.0f}));
+  // a group, or the whole mix, back to what it was lit as
+  EXPECT_EQ(L::applyPatch(set, {{"mix", {{"sun", nullptr}}}}).mix.groups[1], L::MixGroup{});
+  EXPECT_EQ(L::rendererParams(L::applyPatch(set, {{"mix", nullptr}}), {})["lightMixLamps"], fv::Json::array({1.0f, 1.0f, 1.0f}));
+  EXPECT_THROW(L::applyPatch(L::State{}, {{"mix", {{"moon", {{"stops", 1.0}}}}}}), std::invalid_argument);
+  EXPECT_THROW(L::applyPatch(L::State{}, {{"mix", {{"sun", {{"tint", "red"}}}}}}), std::invalid_argument);
+}
+
 // Haze: off by default (as a scene from before it), kept with its visibility and glow while off, clamped
 // to the renderer's ranges, and sent as its visibility, 0 while off (protocol 36)
 TEST(FvLighting, HazeIsOffUntilSwitchedOnAndKeepsItsValues)

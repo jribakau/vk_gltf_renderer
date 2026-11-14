@@ -4709,6 +4709,29 @@ rs::LightLink strayLink(HostRig& rig)
 
 }  // namespace
 
+// A lamp is in one of the lamps' three light groups (the lighting's mix scales each): the first until
+// it is put in another, which the scene keeps and the undo takes back
+TEST(FvHost, aLampIsInALightGroup)
+{
+  Seated            s;
+  const std::string lamp = s.rig.cmd("prop.add", {{"kind", "light"}}).at("result").at("prop").get<std::string>();
+  ASSERT_TRUE(s.rig.settle());
+  ASSERT_TRUE(lampOf(s.rig, lamp));
+  EXPECT_EQ(lampOf(s.rig, lamp)->group, 0);
+  EXPECT_EQ(s.rig.topic("scene")["props"][lamp]["light"].value("group", -1), 0);
+
+  ASSERT_TRUE(s.rig.cmd("prop.set", {{"prop", lamp}, {"light", {{"group", 2}}}}).value("ok", false));
+  EXPECT_EQ(lampOf(s.rig, lamp)->group, 2);
+  EXPECT_EQ(s.rig.topic("scene")["props"][lamp]["light"].value("group", -1), 2);
+  EXPECT_FALSE(s.rig.cmd("prop.set", {{"prop", lamp}, {"light", {{"group", 3}}}}).value("ok", false));
+  EXPECT_EQ(lampOf(s.rig, lamp)->group, 2);
+
+  ASSERT_TRUE(s.rig.cmd("history.undo").value("ok", false));
+  ASSERT_TRUE(s.rig.settle());
+  ASSERT_TRUE(lampOf(s.rig, lamp));
+  EXPECT_EQ(lampOf(s.rig, lamp)->group, 0);
+}
+
 TEST(FvHost, aLampLightsAndIsShadowedByWhatItsLinkSays)
 {
   Seated            s;

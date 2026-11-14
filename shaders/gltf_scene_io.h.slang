@@ -160,8 +160,9 @@ struct GltfLight
   // instance's or one INSTANCE_MASK_SHADOW_* bit.
   uint litBit     = 0;
   uint shadowMask = 0xFF;
-  uint pad0       = 0;
-  uint pad1       = 0;
+  // Its light group (shaderio.h LIGHT_GROUP_*): one of the lamps' three, or the sun's
+  uint group = 3;
+  uint pad1  = 0;
 };
 
 

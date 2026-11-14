@@ -1206,6 +1206,17 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     if(m_resources.settings.ptEyeCaustic)
       finfo.flags |= shaderio::eSceneEyeCaustic;
     finfo.aerialSunShare = std::clamp(m_resources.settings.ptAerialSunShare, 0.0F, 1.0F);
+    {
+      // The light groups' mix, for the frames that take it as their paths add light (a still that keeps
+      // its groups takes it afterwards and reads none of this)
+      const LightGroups::Mix mix = PathTracer::lightMix(m_resources);
+      for(int i = 0; i < LIGHT_GROUP_COUNT; i++)
+        finfo.lightMix[i] = mix[i];
+      if(!lightMixNeutral(mix))
+        finfo.flags |= shaderio::eSceneLightMix;
+      // the groups the scene has light in: a still that keeps its lights apart gives each a turn
+      finfo.lightGroupsUsed = PathTracer::lightGroupsUsed(m_resources);
+    }
     finfo.moonDirection      = m_resources.settings.skyMoonDirection;
     finfo.moonScale          = m_resources.settings.skyMoonScale;
     finfo.moonEarthshine     = m_resources.settings.skyMoonEarthshine;

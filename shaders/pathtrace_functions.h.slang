@@ -67,6 +67,7 @@ struct DirectLight
   float     distance;         // Distance to the light
   float     pdf;              // Probability of sampling this light
   bool      punctual;         // A lamp or the sun (a place or a direction), not the environment or an emitting surface
+  uint      group;            // Its light group (LIGHT_GROUP_*)
   uint      shadowMask;       // The instances that shadow it: all, or a linked lamp's own (GltfLight::shadowMask)
   LightPick pick;             // What the pick gave each light at this vertex, for the BSDF side's MIS
   // What the sample was, as a pixel's record keeps it from frame to frame (light_ris.h.slang): the
@@ -160,6 +161,9 @@ struct GuideScratch
 struct SampleResult
 {
   float4 radiance    = float4(0, 0, 0, 0);
+#if USE_LIGHT_GROUPS
+  float3 share = float3(0.0F);  // what of `radiance` the sample's light group gave (PathTracerState::share)
+#endif
   float3 hitPosition = 1e34f;  // World-space first-hit position; always present (drives NDC depth + DLSS motion).
 #if USE_GUIDE_SHADER
 #if USE_DLSS_SHADER
@@ -1054,6 +1058,7 @@ DirectLight noDirectLight()
   directLight.distance        = INFINITE;
   directLight.radianceOverPdf = float3(0.0f);
   directLight.punctual        = false;
+  directLight.group           = uint(LIGHT_GROUP_SKY);
   directLight.shadowMask      = 0xFFu;
   directLight.pick            = {0.0F, 0.0F, 0.0F, float3(0.0F), float3(0.0F), false};
 #if USE_LIGHT_RIS
@@ -1318,6 +1323,7 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
       // es.pdf already includes the power-weighted selection; fold in the emissive share.
       directLight.pdf             = set.pick.emissive * es.pdf;  // left as 0 otherwise -> caller skips NEE
       directLight.radianceOverPdf = es.radiance / directLight.pdf;
+      directLight.group           = uint(LIGHT_GROUP_GLOW);
 #if USE_LIGHT_RIS
       directLight.reuseKind  = LIGHT_REUSE_EMISSIVE;
       directLight.reuseIndex = uint(tri);
@@ -1392,6 +1398,7 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
     {
       directLight.pdf             = set.restShare * draw.share * walk.prob * es.pdf;
       directLight.radianceOverPdf = es.radiance / directLight.pdf;
+      directLight.group           = uint(LIGHT_GROUP_GLOW);
 #if USE_LIGHT_RIS
       directLight.reuseKind  = LIGHT_REUSE_EMISSIVE;
       directLight.reuseIndex = uint(tri);
@@ -1423,6 +1430,7 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
   directLight.distance        = contrib.distance;
   directLight.radianceOverPdf = contrib.intensity / selectionPdf;
   directLight.punctual        = true;
+  directLight.group           = light.group;
   directLight.shadowMask      = light.shadowMask;
   // A sphere's sample ends on the sphere: the cone reaches its silhouette, where the centre's
   // distance runs past the light into whatever is behind it
@@ -2149,10 +2157,12 @@ bool handleVolumeScatter(VolumeMedium medium, float hitDistance, inout RayDesc r
 // Scatter-only: next-event estimation at the scatter point. Only meaningful when a
 // scatter event can actually happen, so gated on GLTF_USE_SCATTER.
 #if GLTF_USE_SCATTER
-float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatterPos, float3 wiBeforeScatter, float3 throughput, inout uint seed)
+// `group`: the sampled light's (LIGHT_GROUP_*)
+float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatterPos, float3 wiBeforeScatter, float3 throughput, inout uint seed, out uint group)
 {
   DirectLight directLight;
   sampleLights(scatterPos, /*normal=*/wiBeforeScatter, wiBeforeScatter, seed, directLight, /*isVolumeSample=*/true);
+  group = directLight.group;
 
   // pdf 0 is a failed sample; a punctual light is DIRAC (negative) and must go through, since no
   // phase-sampled ray can reach it. Skip lights that give nothing here (a spot whose cone misses
@@ -2186,9 +2196,10 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
 // surface as every one does (groundWaterShadowTransmittance: its Fresnel share, what the water takes on
 // the way down, the caustic), so the sun reaching the point is under the clouds' shadow
 // (getPunctualLightAt) and the scene's, the sky through the surface. Per unit of the path's throughput,
-// which the segment's extinction is charged to apart from this.
-float3 groundWaterInScatter(IRaytracer raytracer, float3 origin, float3 dir, float length, inout uint seed)
+// which the segment's extinction is charged to apart from this. `group`: the sampled light's.
+float3 groundWaterInScatter(IRaytracer raytracer, float3 origin, float3 dir, float length, inout uint seed, out uint group)
 {
+  group = uint(LIGHT_GROUP_SKY);
   const float3 sigmaT  = GROUND_WATER_EXTINCTION;
   const float  sigmaLo = min(sigmaT.x, min(sigmaT.y, sigmaT.z));
   // the point, drawn as exp(-sigmaLo t) over [0, length): every channel's weight then at most its
@@ -2204,6 +2215,7 @@ float3 groundWaterInScatter(IRaytracer raytracer, float3 origin, float3 dir, flo
 
   DirectLight light;
   sampleLights(pos, /*normal=*/dir, dir, seed, light, /*isVolumeSample=*/true);
+  group = light.group;
   if(light.pdf == 0.0F || all(light.radianceOverPdf == 0.0F))
     return float3(0.0F);
   RayDesc shadowRay;
@@ -2224,6 +2236,7 @@ struct HazeSegmentResult
 {
   float3 inScatter;
   float  transmittance;
+  uint   group;  // the light group of the light `inScatter` is of
 };
 
 HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir, float tEnd, inout uint seed)
@@ -2232,6 +2245,7 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
   HazeSegmentResult result;
   result.inScatter     = float3(0.0F);
   result.transmittance = 1.0F;
+  result.group         = uint(LIGHT_GROUP_SKY);
   const float2 seg     = hazeSegment(eye, dir, tEnd, frameInfo->hazeCenter, frameInfo->hazeRadius);
   if(!(seg.y > seg.x))
     return result;
@@ -2345,6 +2359,7 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
       phase    = candidatePhase;
       air      = candidateAir;
       shadowMask = candidate.shadowMask;
+      result.group = candidate.group;
     }
   }
   if(!(reservoir.kept > 0.0F))
@@ -2903,6 +2918,11 @@ enum PathStepResult
 struct PathTracerState
 {
   float3  radiance      = float3(0.0F, 0.0F, 0.0F);
+#if USE_LIGHT_GROUPS
+  // A still that keeps its lights apart: what of `radiance` the light group whose turn this sample is
+  // gave (g_shareGroup, addLight). One group's, not every group's: see light_mix.h.slang.
+  float3 share = float3(0.0F);
+#endif
   float3  throughput    = float3(1.0F, 1.0F, 1.0F);
   float3  firstHitPos   = float3(1e34f);  // matches SampleResult::hitPosition sentinel
   float   lastSamplePdf = DIRAC;
@@ -2987,6 +3007,7 @@ struct BounceScratch
 {
   bool   nextEventValid = false;
   bool   indirect       = false;  // The contribution reached the path after a rough bounce: the clamp may cut it
+  uint   lightGroup     = 0u;     // The light group of the sampled light (DirectLight::group)
   float3 contribution   = float3(0.0F);
   // Keep shadow rays full precision: half packing erases the self-intersection offset.
   float3 shadowRayPos        = float3(0.0F);
@@ -3044,11 +3065,55 @@ float fireflyClampLevel()
   return pushConst.fireflyClampThreshold;
 }
 
+#if USE_LIGHT_GROUPS
+// The light group whose share this sample's path notes (lightGroupOfSample; LIGHT_GROUP_COUNT: none)
+static uint g_shareGroup = uint(LIGHT_GROUP_COUNT);
+#endif
+
+// Light of a light group that joins the path's radiance as it is (addRadiance clamps first; the air's
+// and the haze's own come here). A still that keeps its lights apart (USE_LIGHT_GROUPS) notes the
+// share of the group whose turn the sample is, and the Light tab's mix is applied to the images of them
+// afterwards (light_mix.slang); any other frame takes the mix here, as if each light's own strength
+// and colour had been changed.
+void addLight(inout PathTracerState pt, float3 light, uint group)
+{
+#if USE_LIGHT_GROUPS
+  pt.share += (group == g_shareGroup) ? light : float3(0.0F);
+#else
+  if(hasFlag(pushConst.frameInfo->flags, SceneFrameInfoFlags::eSceneLightMix))
+    light *= pushConst.frameInfo->lightMix[group].xyz;
+#endif
+  pt.radiance += light;
+}
+
+// What the camera sees where its ray met nothing (tryPrimaryMissBackplate), in place of whatever the
+// path held: the sky's light, as the mix has it
+void setBackplate(inout PathTracerState pt, float3 light)
+{
+  pt.radiance = float3(0.0F);
+#if USE_LIGHT_GROUPS
+  pt.share = float3(0.0F);
+#endif
+  addLight(pt, light, uint(LIGHT_GROUP_SKY));
+}
+
+// What dims the path's light on its way to the camera (the air, the haze, clouds in front of it) dims
+// every group's share alike
+void dimRadiance(inout PathTracerState pt, float3 by)
+{
+  pt.radiance *= by;
+#if USE_LIGHT_GROUPS
+  pt.share *= by;
+#endif
+}
+
 // Adds a contribution to the path's radiance. With ePtClampIndirect, an indirect one (`indirect`: the
 // path's roughness before it is above DIRECT_PATH_ROUGHNESS) is scaled down to the clamp's level by
 // its largest channel, keeping its colour; direct light never is (Unreal's FPathState::AccumulateRadiance).
 // The clamp biases the mean where rare bright paths carry the light, so it cuts only bounced light.
-void addRadiance(inout PathTracerState pt, float3 contribution, bool indirect)
+//
+// `group`: the light group (LIGHT_GROUP_*) of the light it came from.
+void addRadiance(inout PathTracerState pt, float3 contribution, bool indirect, uint group)
 {
   if(indirect && hasFlag(pushConst.flags, PathtracerFlags::ePtClampIndirect))
   {
@@ -3057,7 +3122,7 @@ void addRadiance(inout PathTracerState pt, float3 contribution, bool indirect)
     if(level > 0.0F && largest > level)
       contribution *= level / largest;
   }
-  pt.radiance += contribution;
+  addLight(pt, contribution, group);
 }
 
 // Safe accessor for pt.isInside. The field only exists when GLTF_USE_TRANSMISSION or
@@ -3166,10 +3231,15 @@ uint ptViewMask(PathTracerState pt)
 // irradiance over the cone's solid angle, a spot's falloff and an IES profile read along the cone's
 // axis -- so both techniques estimate the same light. After a delta event (no light sample to weigh
 // against) the vertex is the ray's origin. A camera ray sees the lights with ePtLightsVisible only.
-float3 sizedLightHits(RayDesc ray, float tMax, bool escaped, PathTracerState pt)
+//
+// `group`: the light group of the lamp that gave the most of it (two lamps of different groups on one
+// ray are rare, and their light then counts as the brighter one's).
+float3 sizedLightHits(RayDesc ray, float tMax, bool escaped, PathTracerState pt, out uint group)
 {
+  group = uint(LIGHT_GROUP_LAMPS);
   if(ptOnCameraRay(pt) && !hasFlag(pushConst.flags, PathtracerFlags::ePtLightsVisible))
     return float3(0.0F);
+  float most = 0.0F;
   const bool   delta    = pt.lastSamplePdf == DIRAC;
   const float3 vertex   = delta ? ray.Origin : pt.lightPick.pos;
   const int    sunIndex = skySunPunctualIndex();
@@ -3200,6 +3270,12 @@ float3 sizedLightHits(RayDesc ray, float tMax, bool escaped, PathTracerState pt)
     if(!delta && !pt.lightPick.bsdfOnly)
       w = misBsdfWeight(pt.lastSamplePdf, sizedLightNeePdf(pt.lightPick, light, omc), pushConst.frameInfo->estimator);
     sum += w * radiance;
+    const float size = w * max(radiance.x, max(radiance.y, radiance.z));
+    if(size > most)
+    {
+      most  = size;
+      group = light.group;
+    }
   }
   return sum;
 }
@@ -3244,8 +3320,9 @@ PathStepResult processVolumeSegment(IRaytracer raytracer, float hitDistance, ino
       {
         pt.exitedVolumeWalk = true;
         // A walk leaves the path's roughness as it was: under a surface seen directly, its light is direct
-        addRadiance(pt, volumeScatterNEE(raytracer, pt.volumeMedium, ray.Origin, wiBeforeScatter, pt.throughput, seed),
-                    pt.pathRoughness > DIRECT_PATH_ROUGHNESS);
+        uint         lightGroup = 0u;
+        const float3 gathered   = volumeScatterNEE(raytracer, pt.volumeMedium, ray.Origin, wiBeforeScatter, pt.throughput, seed, lightGroup);
+        addRadiance(pt, gathered, pt.pathRoughness > DIRECT_PATH_ROUGHNESS, lightGroup);
       }
       else
         pt.lastSamplePdf = DIRAC;  // no light sample at this scatter: a light the next segment reaches has weight 1
@@ -3291,7 +3368,7 @@ bool tryPrimaryMissBackplate(RayDesc ray, SceneFrameInfo* frameInfo, inout PathT
 
   if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneUseSolidBackground))
   {
-    pt.radiance = frameInfo->backgroundColor;
+    setBackplate(pt, frameInfo->backgroundColor);
     return true;
   }
 
@@ -3300,7 +3377,7 @@ bool tryPrimaryMissBackplate(RayDesc ray, SceneFrameInfo* frameInfo, inout PathT
   if(hasAuthoredSkyBackground(frameInfo->envSkyType))
   {
     const float3 dir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
-    pt.radiance      = evalAuthoredSkyBackground(dir, frameInfo) * frameInfo->envIntensity;
+    setBackplate(pt, evalAuthoredSkyBackground(dir, frameInfo) * frameInfo->envIntensity);
     return true;
   }
 
@@ -3313,7 +3390,7 @@ bool tryPrimaryMissBackplate(RayDesc ray, SceneFrameInfo* frameInfo, inout PathT
     // The physical sky's disk is not in its baked image, so it is added here as on the unblurred
     // path; a no-op for every other environment.
     const float3 blurred = smoothHDRBlur(texturesHdr[HDR_IMAGE_INDEX], uv, frameInfo->envBlur).xyz;
-    pt.radiance = (blurred + evalSunDiskBackground(dir, frameInfo) * cloudSunShare(ray.Origin, frameInfo)) * frameInfo->envIntensity;
+    setBackplate(pt, (blurred + evalSunDiskBackground(dir, frameInfo) * cloudSunShare(ray.Origin, frameInfo)) * frameInfo->envIntensity);
     return true;
   }
 
@@ -3324,6 +3401,9 @@ SampleResult packSampleResult(PathTracerState pt)
 {
   SampleResult sampleResult = {};
   sampleResult.radiance     = float4(pt.radiance, pt.solid ? 1 : 0);
+#if USE_LIGHT_GROUPS
+  sampleResult.share = pt.share;
+#endif
   sampleResult.hitPosition  = pt.firstHitPos;
 #if USE_GUIDE_SHADER
 #if USE_DLSS_SHADER

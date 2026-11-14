@@ -774,6 +774,9 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     {
       light.litBit     = record->litBit;
       light.shadowMask = record->shadowBit ? uint32_t(record->shadowBit) : 0xFFu;
+      // the lighting's sun is the sun's group under any environment; a lamp, one of the lamps' three
+      light.group = record->skySun ? uint32_t(LIGHT_GROUP_SUN) :
+                                     uint32_t(LIGHT_GROUP_LAMPS) + std::min<uint32_t>(record->group, LIGHT_GROUP_COUNT - LIGHT_GROUP_LAMPS - 1);
     }
     lights.push_back(light);
   }

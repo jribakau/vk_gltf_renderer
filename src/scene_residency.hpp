@@ -505,6 +505,9 @@ public:
   BufferHandle materialTable() const { return m_materialTable; }
   BufferHandle lightTable() const { return m_lightTable; }
   uint32_t     lightCount() const { return m_lightCount; }
+  // The light groups the scene's lights are in, a bit a group (shaderio LIGHT_GROUP_*): those of the
+  // lights that shine (syncLights)
+  uint32_t     lightGroupMask() const { return m_lightGroupMask; }
   BufferHandle emissiveTable() const { return m_emissiveTable; }
   BufferHandle emissiveGroupTable() const { return m_emissiveGroupTable; }
   uint32_t     emissiveGroupCount() const { return m_emissiveGroupCount; }  // the light tree's cut
@@ -931,6 +934,7 @@ private:
   bool                                 m_waterDirty = false;
   uint32_t                             m_emissiveCount       = 0;
   float                                m_emissiveTotalWeight = 0.f;
+  uint32_t                             m_lightGroupMask      = 0;
   float                                m_emissiveMeanLum     = 0.f;
   bool                                 m_descDirty           = false;  // a table moved or a count changed
   bool                                 m_emissiveStale       = false;  // see emissiveSettling()

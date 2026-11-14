@@ -444,6 +444,16 @@ void RetainedScene::setLightLinkBits(LightId id, uint32_t litBit, uint8_t shadow
   }
 }
 
+void RetainedScene::setLightGroup(LightId id, uint8_t group)
+{
+  assertOwner();
+  if(auto* r = m_lights.get(id); r && r->value.group != group)
+  {
+    r->value.group = group;
+    m_changes.lights.insert(id);
+  }
+}
+
 void RetainedScene::setLightShown(LightId id, bool shown)
 {
   assertOwner();

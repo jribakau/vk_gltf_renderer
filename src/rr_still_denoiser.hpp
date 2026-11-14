@@ -141,6 +141,9 @@ public:
     m_schedule.forgetDenoised();
   }
 
+  // The image changed with no sample added (the light groups' mix): the final image is evaluated again
+  void redoFinal() { m_triedSamples = -1; }
+
   void disable(Resources& resources);
 
 private:

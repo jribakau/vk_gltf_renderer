@@ -257,7 +257,8 @@ HostStruct sceneFrameInfo()
     F(moonDirection), F(moonScale), F(moonEarthshine), F(skySecondDirection), F(skySecondScale), F(skyLightIsMoon), F(outputScale),
     F(celestialX), F(nightScale), F(celestialY), F(_nightPad), F(celestialZ), F(_nightPad2), F(nightStars), F(nightStarCells),
     F(rainWet), F(rainPuddles), F(rainShear), F(rainShelterCentre), F(rainShelter), F(rainRate), F(rainTime),
-    F(worldCentre), F(worldRadiusKm), F(worldBodyPlace), F(worldBodyLook), F(worldBodyCount), F(worldBodyLight)
+    F(worldCentre), F(worldRadiusKm), F(worldBodyPlace), F(worldBodyLook), F(worldBodyCount), F(worldBodyLight),
+    F(lightMix), F(lightGroupsUsed)
   }};
 }
 
@@ -395,7 +396,7 @@ HostStruct gltfLight()
   using Self = GltfLight;
   return {"GltfLight", sizeof(Self), {
     F(direction), F(type), F(position), F(radius), F(color), F(intensity), F(angularSizeOrInvRange), F(innerAngle),
-    F(outerAngle), F(iesProfile), F(litBit), F(shadowMask), F(pad0), F(pad1)
+    F(outerAngle), F(iesProfile), F(litBit), F(shadowMask), F(group), F(pad1)
   }};
 }
 

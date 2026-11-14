@@ -362,6 +362,13 @@ struct Settings
   // The cornea's caustic (eye_caustic.h.slang, SceneFrameInfoFlags::eSceneEyeCaustic): a punctual
   // light's sample in an eye's chamber is bent through the tear film; off, it goes straight
   bool ptEyeCaustic = true;
+  // Light groups (shaders/light_mix.h.slang). `lightMix`: what each group's light is multiplied by, its
+  // strength times its tint (shaderio LIGHT_GROUP_*: the sky, the sun, glowing surfaces, three of lamps).
+  // `ptLightGroups`: a still keeps each group's share (LightGroups), so the mix changes a finished one
+  // with nothing traced again; off, a change starts the still again.
+  std::array<glm::vec3, LIGHT_GROUP_COUNT> lightMix{glm::vec3(1.0F), glm::vec3(1.0F), glm::vec3(1.0F),
+                                                    glm::vec3(1.0F), glm::vec3(1.0F), glm::vec3(1.0F)};
+  bool ptLightGroups = false;
   // `ptEstimator` (debug): what counts the light both a light sample and a BSDF ray reach
   // (SceneFrameInfo::estimator): 0 both (MIS), 1 light samples alone, 2 BSDF rays alone
   int ptEstimator = 0;

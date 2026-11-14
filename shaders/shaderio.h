@@ -106,8 +106,21 @@ enum OutputImage
                          // DLSS frames only, so it shares the still's eConvergence slot
   eDlssSpecularMotion = 10,  // DLSS-RR's motion of reflections (RG16F, pixels, as eDlssMotion): of a reflection's
                              // image, the surface's own where there is none
-  eOutputImageSlots = 11,    // How many slots the output image binding holds: one past the last above
+  // A still that keeps its lights apart (USE_LIGHT_GROUPS, light_mix.h.slang): the mean of each light
+  // group's share over the samples that were its turn (RGBA16F), LIGHT_GROUP_COUNT slots from here.
+  // eResultImage is then the accumulation's own image, and the rendered one is the mix of them all
+  eLightGroup0 = 11,
+  eOutputImageSlots = 17,    // How many slots the output image binding holds: one past the last above
 };
+
+// Light groups (light_mix.h.slang): every light is in one, and the Light tab's mix scales and tints each
+// group's light. The sky (the environment, the air's and the clouds' own light, and whatever no other
+// group claims), the sun (the sky's sun or moon), glowing surfaces, and three of lamps (GltfLight::group).
+#define LIGHT_GROUP_COUNT 6
+#define LIGHT_GROUP_SKY 0
+#define LIGHT_GROUP_SUN 1
+#define LIGHT_GROUP_GLOW 2
+#define LIGHT_GROUP_LAMPS 3  // and the two after it
 
 // Binding points for descriptors
 enum BindingPoints
@@ -134,6 +147,14 @@ enum StillKeepBindings
   eKeepDenoised,  // In and out: the still's denoised image, the raw pixels kept written over it (RGBA32F)
   eKeepRaw,       // In: the accumulation (RGBA32F)
   eKeepMoments,   // In: the accumulation's luminance moments (RG32F, OutputImage::eConvergence)
+};
+
+// The light groups' mix over a still (light_mix.slang): storage images, in VK_IMAGE_LAYOUT_GENERAL
+enum LightMixBindings
+{
+  eMixOut,     // Out: the rendered image (RGBA32F), the mix of the groups
+  eMixTotal,   // In: the accumulation of every light (RGBA32F)
+  eMixGroups,  // In: LIGHT_GROUP_COUNT images, each group's share of it (RGBA16F)
 };
 
 // Binding points for descriptors
@@ -197,6 +218,7 @@ enum SceneFrameInfoFlags
   eSceneInfinitePlaneShadowCatcher = 1 << 4,
   eSceneUseNoEnvironment           = 1 << 5,  // No sky/HDR environment lighting or background
   eSceneEyeCaustic                 = 1 << 6,  // A light sample in an eye's chamber is bent through the tear film, which focuses it (eye_caustic.h.slang); else straight
+  eSceneLightMix                   = 1 << 7,  // The light groups' mix (SceneFrameInfo::lightMix) scales each contribution as the path adds it: a frame that keeps no group images, with a mix that is not neutral
 };
 
 // Camera info
@@ -513,6 +535,13 @@ struct SceneFrameInfo
   float4 worldBodyLook[WORLD_BODY_MAX];
   int    worldBodyCount = 0;
   float  worldBodyLight = 1.0F;
+  // The light groups' mix (light_mix.h.slang): what each group's light is multiplied by, its strength
+  // times its tint, in .xyz. Read by the paths with eSceneLightMix alone (addLight); a still that keeps
+  // its groups apart takes the mix afterwards (light_mix.slang). (Appended.)
+  float4 lightMix[LIGHT_GROUP_COUNT];
+  // The light groups the scene has light in, a bit a group (the sky's always): the ones a still that
+  // keeps its lights apart gives turns to (lightGroupOfSample). (Appended.)
+  uint lightGroupsUsed = 0;
 };
 
 enum PathtracerFlags
@@ -642,6 +671,16 @@ struct StillKeepPushConstant
   int   samples   = 0;     // The accumulation's samples per pixel, where the moments hold no count of their own
   int   view      = 0;     // 1: show the share kept as grey (rrStillKeepView), for tuning
   int   pad       = 0;
+};
+
+// The light groups' mix over a still (light_mix.slang): each group's strength times its tint, in .xyz
+struct LightMixPushConstant
+{
+  float4 mix[LIGHT_GROUP_COUNT];
+  uint   used = 0;  // the groups the scene has light in, a bit a group (SceneFrameInfo::lightGroupsUsed)
+  uint   pad0 = 0;
+  uint   pad1 = 0;
+  uint   pad2 = 0;
 };
 
 // The bounce cache's pass after a frame (radiance_cache_resolve.slang): each cell's sums of the frame

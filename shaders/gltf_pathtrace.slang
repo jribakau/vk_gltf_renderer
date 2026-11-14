@@ -37,6 +37,13 @@
 #ifndef USE_PIXEL_TIME
 #define USE_PIXEL_TIME 0
 #endif
+// A still that keeps its lights apart (light_mix.h.slang): each path carries what one light group gave
+// it, the groups taking turns, and the frame writes that group's mean image beside its own. Set by the
+// host for the frames of an accumulation with ptLightGroups on; what it carries and writes costs a
+// path, so no other frame has it.
+#ifndef USE_LIGHT_GROUPS
+#define USE_LIGHT_GROUPS 0
+#endif
 // clang-format off: the SPIR-V ids (%ommEnable) must stay as written
 #if USE_OMM
 #define RAYQUERY_USE_OPACITY_MICROMAP(entryPoint)                                                                      \
@@ -78,6 +85,7 @@ static bool doDebug = false;
 #include "radiance_cache.h.slang"
 #include "skin_slab.h.slang"
 #include "skin_spread.h.slang"
+#include "light_mix.h.slang"
 #include "eye_caustic.h.slang"
 #include "aperture.h.slang"
 #include "sky_bruneton_radiance.h.slang"
@@ -1049,8 +1057,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     {
       const uint leftUnlit = g_unlitLamps;
       g_unlitLamps         = 0u;  // the water takes every lamp, whatever the ray left
-      addRadiance(pt, pt.throughput * groundWaterInScatter(raytracer, ray.Origin, ray.Direction, payload.hitT, seed),
-                  pt.pathRoughness > DIRECT_PATH_ROUGHNESS);
+      uint         waterGroup = 0u;
+      const float3 waterLight = groundWaterInScatter(raytracer, ray.Origin, ray.Direction, payload.hitT, seed, waterGroup);
+      addRadiance(pt, pt.throughput * waterLight, pt.pathRoughness > DIRECT_PATH_ROUGHNESS, waterGroup);
       g_unlitLamps = leftUnlit;  // (the sized lights this ray meets are still weighed at the surface it left)
       if(payload.hitT == INFINITE)
         return PathStepResult.eBreak;
@@ -1177,10 +1186,14 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         // The partner of the last vertex's light sample, so the same class: the path before that vertex
         const bool indirect = pt.prefixIndirect;
-        addRadiance(pt, pt.throughput * misWeight * envColor, indirect);
+        addRadiance(pt, pt.throughput * misWeight * envColor, indirect, uint(LIGHT_GROUP_SKY));
         // Sized lights it meets on the way out, a sun's disc among them (not in a medium: it scatters there)
         if(!ptIsInside(pt))
-          addRadiance(pt, pt.throughput * sizedLightHits(ray, INFINITE, /*escaped=*/true, pt), indirect);
+        {
+          uint         lampGroup = 0u;
+          const float3 lamps     = sizedLightHits(ray, INFINITE, /*escaped=*/true, pt, lampGroup);
+          addRadiance(pt, pt.throughput * lamps, indirect, lampGroup);
+        }
 
         // The sun the lighting field leaves out. Without it a lobe narrower than the disk -- smooth
         // glass, a polished mirror -- shows no sun at all, as NEE's cone samples almost never land in it.
@@ -1195,7 +1208,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           else
             disk = evalSkySunDisk(bgDir, frameInfo) * cloudSunShare(ray.Origin, frameInfo);
           if(any(disk > 0.0F))
-            addRadiance(pt, pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf, pt.lightPick) * disk * frameInfo->envIntensity, indirect);
+            addRadiance(pt, pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf, pt.lightPick) * disk * frameInfo->envIntensity, indirect,
+                        uint(LIGHT_GROUP_SUN));
         }
       }
 
@@ -1211,7 +1225,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       walkExit = pt.exitedVolumeWalk;
 #endif
       if(!ptIsInside(pt) && !walkExit)
-        addRadiance(pt, pt.throughput * sizedLightHits(ray, payload.hitT, /*escaped=*/false, pt), pt.prefixIndirect);
+      {
+        uint         lampGroup = 0u;
+        const float3 lamps     = sizedLightHits(ray, payload.hitT, /*escaped=*/false, pt, lampGroup);
+        addRadiance(pt, pt.throughput * lamps, pt.prefixIndirect, lampGroup);
+      }
     }
     // Light linking: from here the lamps are this surface's (g_unlitLamps). The floor and the water
     // are no mesh and take every lamp.
@@ -1800,7 +1818,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       const float3 throughCoat = bsdfCoatEmission(pbrMat.clearcoat, pbrMat.clearcoatRoughness, pbrMat.baseColor, pbrMat.metallic,
                                                   bsdfCoatBaseSpecular(pbrMat.specular, pbrMat.ior2), bsdfCoatClearTransmission(pbrMat),
                                                   0.5F * (pbrMat.roughness.x + pbrMat.roughness.y), abs(dot(pbrMat.N, ray.Direction)));
-      addRadiance(pt, emissiveMis * pbrMat.emissive * throughCoat * pt.throughput, pt.prefixIndirect);
+      addRadiance(pt, emissiveMis * pbrMat.emissive * throughCoat * pt.throughput, pt.prefixIndirect, uint(LIGHT_GROUP_GLOW));
     }
 
     //-----------------------------------------------------------------------
@@ -1811,7 +1829,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     {
       // Through the path's throughput, like any emission: an unlit backdrop seen in a 4% reflection
       // is 4% of itself
-      addRadiance(pt, pt.throughput * pbrMat.baseColor, pt.prefixIndirect);
+      addRadiance(pt, pt.throughput * pbrMat.baseColor, pt.prefixIndirect, uint(LIGHT_GROUP_GLOW));
       return PathStepResult.eBreak;
     }
 #endif
@@ -1862,7 +1880,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           }
           if(radianceCacheValid(held))
           {
-            addRadiance(pt, pt.throughput * radianceCacheRadiance(held), true);
+            addRadiance(pt, pt.throughput * radianceCacheRadiance(held), true, uint(LIGHT_GROUP_SKY));
             return PathStepResult.eBreak;
           }
         }
@@ -2331,7 +2349,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           bounce.contribution += w * evalData.bsdf_diffuse;
         bounce.contribution += w * evalData.bsdf_glossy;
         // Classed by the path before this vertex, as the sample below is about to change it
-        bounce.indirect = pt.pathRoughness > DIRECT_PATH_ROUGHNESS;
+        bounce.indirect   = pt.pathRoughness > DIRECT_PATH_ROUGHNESS;
+        bounce.lightGroup = directLight.group;
       }
       // The shadow ray could only multiply zero: the BSDF cannot scatter toward the light, or the
       // light sends nothing this way (a black texel of an emissive texture, a sized spot's sample
@@ -2769,7 +2788,7 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, bounce.shadowRayInside, bounce.shadowRayExtinction, bounce.shadowRayMask);
       // the spread's diffuse share by each channel's own shadow, or this one's where it found no point
       const float3 spreadShadow = lerp(shadowFactor, bounce.spreadVisibility, float3(bounce.spreadVisibility >= 0.0F));
-      addRadiance(pt, bounce.contribution * shadowFactor + bounce.spreadContribution * spreadShadow, bounce.indirect);
+      addRadiance(pt, bounce.contribution * shadowFactor + bounce.spreadContribution * spreadShadow, bounce.indirect, bounce.lightGroup);
 #if USE_LIGHT_RIS
       // what the pixel carries to the next frame is what it found lit (light_ris.h.slang)
       if(bounce.lightReuseWritten && all(shadowFactor <= float3(0.0F)))
@@ -2903,7 +2922,8 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
         inScatter += visibility * sunEstimate / chance;
       }
     }
-    pt.radiance = pt.radiance * march.transmittance + inScatter;
+    dimRadiance(pt, march.transmittance);
+    addLight(pt, inScatter, uint(LIGHT_GROUP_SKY));
 
     // A camera above the clouds' bases sees what it hit through the clouds between: those beside it,
     // those under it, and the one it is in, which is fog over everything. The sky image is then a
@@ -2911,7 +2931,9 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     if(cloudImageIsWhole(pushConst.frameInfo))
     {
       const float4 clouds = cloudsInFrontOf(pt.firstHitPos - eye, pushConst.frameInfo);
-      pt.radiance         = max(pt.radiance * clouds.w + clouds.xyz * pushConst.frameInfo->envIntensity, float3(0.0F));
+      dimRadiance(pt, float3(clouds.w));
+      addLight(pt, clouds.xyz * pushConst.frameInfo->envIntensity, uint(LIGHT_GROUP_SKY));
+      pt.radiance = max(pt.radiance, float3(0.0F));
     }
 
     // The land's end (SceneFrameInfo::landFadeFrom): toward it what was hit gives way to what the
@@ -2922,7 +2944,11 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     {
       const float fade = smoothstep(pushConst.frameInfo->landFadeFrom, pushConst.frameInfo->landFadeTo, length(pt.firstHitPos.xz));
       if(fade > 0.0F)
-        pt.radiance = lerp(pt.radiance, evalPhysicalSky(normalize(pt.firstHitPos - eye), pushConst.frameInfo) * pushConst.frameInfo->envIntensity, fade);
+      {
+        dimRadiance(pt, float3(1.0F - fade));
+        addLight(pt, evalPhysicalSky(normalize(pt.firstHitPos - eye), pushConst.frameInfo) * pushConst.frameInfo->envIntensity * fade,
+                 uint(LIGHT_GROUP_SKY));
+      }
     }
   }
 
@@ -2940,7 +2966,8 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     const float3            dir   = pt.solid ? toHit / max(tEnd, 1e-20F) : pt.firstHitPos;  // a miss keeps its direction there
     g_unlitLamps                  = 0u;  // the air takes every lamp, whatever the path ended on
     const HazeSegmentResult haze  = hazeCameraSegment(raytracer, eye, dir, tEnd, seed);
-    pt.radiance                   = pt.radiance * haze.transmittance + haze.inScatter;
+    dimRadiance(pt, float3(haze.transmittance));
+    addLight(pt, haze.inScatter, haze.group);
   }
 
   return packSampleResult(pt);
@@ -3034,9 +3061,11 @@ SampleResult samplePixel(IRaytracer raytracer,
 
   // A non-finite sample would stick in the accumulation for the rest of the still and reach the
   // denoiser: it is dropped (the clamp below passes NaN, and Inf times 0 is NaN in the mean)
+  bool dropped = false;
   if(any(isnan(sampleResult.radiance.xyz)) || any(isinf(sampleResult.radiance.xyz)))
   {
     sampleResult.radiance.xyz = float3(0.0F);
+    dropped                   = true;
     countInvalidSample(samplePos, INVALID_SAMPLE_COLOR);
   }
 
@@ -3045,6 +3074,7 @@ SampleResult samplePixel(IRaytracer raytracer,
   // float holds it (at 1e-6 its grain stood still in blotches); the tone mapper takes it back out
   const float outputScale = pushConst.frameInfo->outputScale;
   sampleResult.radiance.xyz *= outputScale;
+  float groupScale = dropped ? 0.0F : outputScale;  // what the light groups' shares are scaled by with it
 
   // Removing fireflies. With ePtClampIndirect each indirect contribution was clamped as it was added
   // (addRadiance), and what is left here is a cap that keeps a sample within half float, which the
@@ -3054,15 +3084,28 @@ SampleResult samplePixel(IRaytracer raytracer,
   {
     const float largest = max(sampleResult.radiance.x, max(sampleResult.radiance.y, sampleResult.radiance.z));
     if(largest > 60000.0F)
+    {
       sampleResult.radiance.xyz *= 60000.0F / largest;
+      groupScale *= 60000.0F / largest;
+    }
   }
   else
   {
     const float threshold = fireflyClampLevel() * outputScale;
     const float lum       = dot(sampleResult.radiance.xyz, float3(1.0F / 3.0F));
     if(threshold > 0.0F && lum > threshold)
+    {
       sampleResult.radiance.xyz *= threshold / lum;
+      groupScale *= threshold / lum;
+    }
   }
+#if USE_LIGHT_GROUPS
+  // the group's share by the same (one that is not finite goes with a sample that is not, and alone
+  // it is dropped alone)
+  sampleResult.share *= groupScale;
+  if(any(isnan(sampleResult.share)) || any(isinf(sampleResult.share)))
+    sampleResult.share = float3(0.0F);
+#endif
 
   return sampleResult;
 }
@@ -3245,6 +3288,14 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     subpixelJitter = gaussianSubpixelJitter(seed);
   }
 
+#if USE_LIGHT_GROUPS
+  // Whose share this sample notes: the scene's light groups in turn, from a start of the pixel's own
+  // (light_mix.h.slang)
+  const uint shareStart = xxhash32(uint3(uint2(samplePos.xy), 0x51ed270bu));
+  g_shareGroup            = lightGroupOfSample(pushConst.frameInfo->lightGroupsUsed,
+                                               hasFlag(pushConst.flags, PathtracerFlags::ePtFirstFrame) ? 0u : uint(pushConst.totalSamples), shareStart);
+#endif
+
   // One sample of the pixel. The frame traces exactly the samples the host counts, a pass each: a
   // frame DLSS denoises gets ptSamplesDlss (1 but for the DLSS refine of a still: DLSS does its own
   // temporal accumulation); with DLSS-RR's still on, the frames after DLSS's frame 0 get Auto SPP's
@@ -3256,6 +3307,23 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
                                           pushConst.frameInfo->viewInv, pushConst.focalDistance, pushConst.aperture);
   float4 pixelColor = sampleResult.radiance;
   float  lumSquared = square(luminance(sampleResult.radiance.xyz));  // the sample's second moment, for ePtAdaptiveStop
+
+#if USE_LIGHT_GROUPS && !USE_PIXEL_TIME
+  // A still that keeps its lights apart: the mean image of the group whose turn it was, as the image's
+  // own below (and here, before the selection ray, so the share is not carried through its trace)
+  if(g_shareGroup < uint(LIGHT_GROUP_COUNT))
+  {
+    // the mean of the samples whose turn was this group's (the host cleared the images as the still began)
+    const uint  before = hasFlag(pushConst.flags, PathtracerFlags::ePtFirstFrame) ?
+                             0u :
+                             lightGroupTurnsBefore(pushConst.frameInfo->lightGroupsUsed, uint(pushConst.totalSamples));
+    const int   slot   = int(OutputImage::eLightGroup0) + int(g_shareGroup);
+    float4      share  = float4(sampleResult.share, 0.0F);
+    if(before > 0u)
+      share = (outImages[slot][int2(samplePos)] * float(before) + share) / float(before + 1u);
+    outImages[slot][int2(samplePos)] = share;
+  }
+#endif
 
 #if USE_GUIDE_SHADER
   // The denoiser guides average every sample of the frame, like the color

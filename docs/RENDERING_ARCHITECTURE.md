@@ -233,6 +233,54 @@ immediately.
 
 ---
 
+## Light groups
+
+A picture is the sum of what each of its lights gives it, so a group of lights made twice as strong,
+or tinted, is that group's share of the picture times two, or times the tint. The Light tab's mix
+(the lighting's `mix`, `fv_lighting.hpp`) does that for six groups (`shaderio.h` `LIGHT_GROUP_*`):
+the sky (the environment and what is seen of it, the air's and the clouds' own light),
+the sun (the lighting's sun under any environment, the sky's sun or moon), glowing surfaces, and
+three of lamps (`GltfLight::group`, a lamp's `group` in `prop.set`).
+
+Every contribution a path adds goes through `addRadiance` or `addLight`
+(`shaders/pathtrace_functions.h.slang`) with the group of the light it came from: a light sample
+carries its light's (`DirectLight::group`), a ray that meets an emitter, the sky, the sun's disc or
+a sized lamp knows what it met. What dims the camera's segment (the air, the haze, clouds in front)
+dims every group alike (`dimRadiance`). Two things follow from the frame's variant:
+
+- **A frame that keeps no groups** (every moving frame, and a still with `ptLightGroups` off)
+  multiplies each contribution by its group's factor as it is added (`SceneFrameInfo::lightMix`,
+  with `eSceneLightMix`; no cost while the mix is neutral). A change to the mix starts such a still
+  again. The light pick does not know the mix: a group turned off is still sampled.
+- **A still that keeps its lights apart** (`ptLightGroups`, the variant's `USE_LIGHT_GROUPS`,
+  `VariantKey::lightGroups`: an accumulation's frames alone, so a camera start or stop is a cached
+  swap) notes one group's share a sample (`PathTracerState::share`, `g_shareGroup`): the groups the
+  scene has light in (`SceneFrameInfo::lightGroupsUsed`, `PathTracer::lightGroupsUsed`) take turns, a
+  pixel's samples in order from a start of its own (`lightGroupOfSample`,
+  `shaders/light_mix.h.slang`). The frame writes that group's mean image beside the whole
+  (`LightGroups`, `src/light_groups.hpp`: one RGBA32F and six RGBA16F, 64 bytes a pixel, bound at
+  `eResultImage` and `eLightGroup0`; cleared as a still begins). The rendered image is then written
+  by a pass over them (`shaders/light_mix.slang`): with each group's factor m and the least of them
+  a, it is a times the whole plus (m - a) times each group's image. Every term is a light times a
+  factor that is not negative, so the mix is never under zero; it is right on average whatever the
+  images' noise; and with every factor 1 it is the whole picture bit for bit. Everything after it
+  (the still's denoiser, Keep detail, the tone mapper, an export) reads the rendered image as
+  before. On an idle frame of a finished still a changed mix runs the pass and the still's denoiser
+  again (`RrStillDenoiser::redoFinal`), with nothing traced.
+
+Why one share a sample: a path that carried every group's share made a still half again as slow (a
+face at 1280x960: 33 ms a sample against 21 with five shares, 42% more with three; indexing them
+by the group, looping over them or naming them made no difference), while one share costs about a
+twentieth (23.8 against 22.5). The price is noise in what the mix changes: a group's image holds a
+K-th of the samples with K groups in turn, so a group made brighter adds its image's noise, and
+with a group turned off the mix is the other groups' images alone. The whole picture, and so the
+still while the mix is neutral, has every sample as before.
+
+What the camera sees where its ray met nothing (`tryPrimaryMissBackplate`: a solid colour, the
+sky drawn analytically, a blurred HDRI) is the sky's (`setBackplate`), under either kind of frame.
+A ray that meets two sized lamps of different groups at once counts both as the brighter one's. The
+firefly clamp acts on each contribution before the mix either way.
+
 ## Haze in the air
 
 A thin, even haze lit by every light of the scene (`shaders/haze.h.slang`), set by `hazeVisibility`

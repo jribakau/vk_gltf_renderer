@@ -207,6 +207,7 @@ GltfLight makeSkySunLight(SceneFrameInfo* frameInfo)
   GltfLight light             = {};
   light.litBit                = 0u;     // the sky's sun is not linked: it lights everything,
   light.shadowMask            = 0xFFu;  // and everything shadows it
+  light.group                 = uint(LIGHT_GROUP_SUN);
   light.type                  = LightType::eLightTypeDirectional;
   light.direction             = -frameInfo->sunDirection;  // the way the light travels
   light.position              = float3(0.0F);
@@ -242,6 +243,7 @@ void applySkySunLight(inout GltfLight light, int lightIndex, SceneFrameInfo* fra
   light.color                 = sun.color;
   light.intensity             = sun.intensity;
   light.angularSizeOrInvRange = sun.angularSizeOrInvRange;
+  light.group                 = sun.group;
 }
 
 // True when `envSkyType` names a sky this header can evaluate.

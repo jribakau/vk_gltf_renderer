@@ -83,7 +83,9 @@
 //                   litMode?: all | only | except, litProps?: [prop id] (what it lights: everything, only
 //                   the props listed with what rides on them and a group's members, or all but them),
 //                   shadowMode?, shadowProps? (likewise what casts its shadows; three lights at once can
-//                   have shadows of their own, a fourth is told so in a notice)}}
+//                   have shadows of their own, a fourth is told so in a notice),
+//                   group?: 0 | 1 | 2 (its light group among the lamps' three, which the lighting's mix
+//                   scales and tints as one: mix.lamps, lamps2, lamps3)}}
 //   prop.remove     {prop}                       what rode on it stays where it was in the world
 //   prop.duplicate  {prop}                       -> {prop}, or {job} for a figure (loaded again, its state put back)
 //   prop.drop       {prop | props: [id]}?        (the selection without either) down, or up out of what it

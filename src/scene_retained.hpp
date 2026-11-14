@@ -426,6 +426,9 @@ struct LightRecord
   // INSTANCE_MASK_SHADOW_*, 0 for a light every instance shadows.
   uint32_t litBit    = 0;
   uint8_t  shadowBit = 0;
+  // Its light group among the lamps' (setLightGroup): 0 to 2, shaderio LIGHT_GROUP_LAMPS and the two
+  // after it. The light tab's mix scales each group's light (shaders/light_mix.h.slang).
+  uint8_t group = 0;
 };
 
 // Light and shadow linking, an entity's side: the linked lights that leave it dark
@@ -658,6 +661,8 @@ public:
   void setLightShown(LightId id, bool shown);
   // Light and shadow linking: the light's bits among the entities' LightLink (LightRecord::litBit, shadowBit)
   void setLightLinkBits(LightId id, uint32_t litBit, uint8_t shadowBit);
+  // Its light group among the lamps' (LightRecord::group), 0 to 2
+  void setLightGroup(LightId id, uint8_t group);
   void setSkySun(LightId id, bool skySun);
 
   // ---- IES profiles: append-only (a scene replace starts a new store); returns the profile's index,

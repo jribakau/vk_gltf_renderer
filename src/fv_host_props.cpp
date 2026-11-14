@@ -359,7 +359,10 @@ std::vector<std::string> FvHost::Impl::applyLightLinks()
     if((p->light.litMode != "all" && !l.litBit) || (p->light.shadowMode != "all" && !l.shadowBit))
       unlinked.push_back(p->id);
     if(scene.light(p->lightRecord))
+    {
       scene.setLightLinkBits(p->lightRecord, l.litBit, l.shadowBit);
+      scene.setLightGroup(p->lightRecord, uint8_t(p->light.group));
+    }
     if(l.litBit || l.shadowBit)
       linked.push_back(l);
   }
@@ -1346,6 +1349,15 @@ Json FvHost::Impl::propSet(const Json& args)
           v.push_back(s);
       into = std::move(v);
     };
+    if(l.contains("group"))
+    {
+      const int group = l["group"].get<int>();
+      if(group < 0 || group > 2)
+        throw std::runtime_error("a light's group is 0, 1 or 2");
+      p->light.group = group;
+      if(renderer->feedsHostScene() && renderer->hostScene().light(p->lightRecord))
+        renderer->hostScene().setLightGroup(p->lightRecord, uint8_t(group));
+    }
     mode("litMode", p->light.litMode);
     ids("litProps", p->light.litProps);
     mode("shadowMode", p->light.shadowMode);

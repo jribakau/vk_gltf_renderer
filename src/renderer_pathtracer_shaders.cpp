@@ -1308,6 +1308,9 @@ PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) co
       radianceCacheFor(isDlssEnabled() && m_dlssShaderFrame),
       // a medium inside another, only where the scene draws a clear solid for one to be in or around
       resources.currentFeatureSet.has(nvvkgltf::SceneFeatureSet::eNestedMedia),
+      // each light group's share, in the variant of an accumulation's frames alone: the frames DLSS
+      // draws carry none of it, and a camera start or stop is a cached swap, as above
+      lightGroupsFor(resources, isDlssEnabled() && m_dlssShaderFrame),
   };
 }
 
@@ -1328,6 +1331,7 @@ std::string PathTracer::VariantKey::shaderDiff(const VariantKey& to) const
   add("pixelTime", pixelTime, to.pixelTime);
   add("radianceCache", radianceCache, to.radianceCache);
   add("nestedMedia", nestedMedia, to.nestedMedia);
+  add("lightGroups", lightGroups, to.lightGroups);
   if(optimal && to.optimal && features != to.features)
     diff += std::string(diff.empty() ? "" : ", ") + "features [" + features.toString() + "] -> [" + to.features.toString() + "]";
   return diff.empty() ? "no shader field changed" : diff;
@@ -1524,6 +1528,9 @@ std::vector<std::pair<std::string, std::string>> PathTracer::variantMacros(const
       // The medium around the one a path is in (medium_stack.h.slang): compiled in only for a scene
       // with a clear solid, as its state costs every frame
       {"USE_NESTED_MEDIA", std::to_string(key.nestedMedia ? 1 : 0)},
+      // A still that keeps its lights apart (light_mix.h.slang): compiled in only for an accumulation's
+      // frames with ptLightGroups on, as the shares a path carries cost it
+      {"USE_LIGHT_GROUPS", std::to_string(key.lightGroups ? 1 : 0)},
   };
   nvvkgltf::SceneFeatureSet guide;
   guide.set(nvvkgltf::SceneFeatureSet::eDlssGuide, key.dlssGuide);
@@ -1786,6 +1793,7 @@ void PathTracer::installBuiltVariant(Resources& resources)
   sibling.dlss       = !job.key.dlss;
   sibling.lightRis   = lightRisFor(sibling.dlss);  // the still's settings, not DLSS's (or the other way)
   sibling.radianceCache = radianceCacheFor(sibling.dlss);
+  sibling.lightGroups   = lightGroupsFor(resources, sibling.dlss);
   bool known         = false;
   {
     std::lock_guard<std::mutex> lock(m_compileMutex);

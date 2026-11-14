@@ -281,6 +281,47 @@ TEST(RetainedResidency, OffCameraClearsTheRowsCameraBitAndKeepsItsBlas)
 // Light and shadow linking: an entity's link reaches its instances' render nodes (the lamps that
 // leave them dark) and TLAS masks (the lamps they cast no shadow from), a lamp's bits its row of the
 // light table; the BLASes stay
+// A lamp's light group (the Light tab's mix scales each group's light) reaches the lamp the shaders read:
+// the first of the lamps' three unless it is put in another
+TEST(RetainedResidency, ALampsGroupReachesTheLamp)
+{
+  RetainedScene   scene;
+  tinygltf::Light l;
+  l.type               = "point";
+  l.intensity          = 10.0;
+  const LightId  key   = scene.addLight({.owner = {1, -1}, .payload = l});
+  const EntityId holder = scene.createEntity("key", {});
+  scene.setEntityLight(holder, key);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  const auto lamp = [&] {
+    shaderio::GltfLight light;
+    std::memcpy(&light, gpu.bytesAt(gpu.bufferAddress(residency.lightTable()), sizeof(light)).data(), sizeof(light));
+    return light;
+  };
+  EXPECT_EQ(lamp().group, uint32_t(LIGHT_GROUP_LAMPS));
+
+  scene.setLightGroup(key, 2);
+  gpu.beginFrame();
+  const SyncResult r = residency.sync(scene);
+  EXPECT_TRUE(r.changed);  // the picture starts again: a group is a light's, as its colour is
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(lamp().group, uint32_t(LIGHT_GROUP_LAMPS) + 2u);
+
+  // a group past the lamps' three is the last of them
+  scene.setLightGroup(key, 9);
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_EQ(lamp().group, uint32_t(LIGHT_GROUP_COUNT) - 1u);
+
+  // the lighting's sun is the sun's group, under any environment and whatever its lamp group says
+  scene.setSkySun(key, true);
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_EQ(lamp().group, uint32_t(LIGHT_GROUP_SUN));
+}
+
 TEST(RetainedResidency, ALightLinkReachesTheNodeTheMaskAndTheLamp)
 {
   RetainedScene  scene;

@@ -258,6 +258,53 @@ void patchRain(Rain& r, const Json& p)
   }
 }
 
+void patchMixGroup(MixGroup& g, const Json& p, const std::string& name)
+{
+  const MixGroup d;
+  if(!p.is_object())
+    reject("mix." + name + " must be an object");
+  for(auto it = p.begin(); it != p.end(); ++it)
+  {
+    const std::string& k   = it.key();
+    const Json&        v   = it.value();
+    const std::string  key = "mix." + name + "." + k;
+    if(k == "on")
+      field(g.on, d.on, v, [&](const Json& x) { return boolean(x, key); });
+    else if(k == "stops")
+      // a light 256 times dimmer to 256 times brighter than it was lit
+      field(g.stops, d.stops, v, [&](const Json& x) { return number(x, key, -8.0, 8.0); });
+    else if(k == "tint")
+      field(g.tint, d.tint, v, [&](const Json& x) { return color(x, key); });
+    else
+      reject("unknown key " + key);
+  }
+}
+
+void patchMix(Mix& m, const Json& p)
+{
+  const Mix d;
+  for(auto it = p.begin(); it != p.end(); ++it)
+  {
+    const std::string& k = it.key();
+    const Json&        v = it.value();
+    if(k == "keep")
+    {
+      field(m.keep, d.keep, v, [&](const Json& x) { return boolean(x, "mix.keep"); });
+      continue;
+    }
+    int group = -1;
+    for(int i = 0; i < kMixGroups; i++)
+      if(k == kMixGroupKeys[i])
+        group = i;
+    if(group < 0)
+      reject("unknown key mix." + k);
+    if(v.is_null())
+      m.groups[group] = MixGroup{};
+    else
+      patchMixGroup(m.groups[group], v, k);
+  }
+}
+
 void patchHaze(Haze& h, const Json& p)
 {
   const Haze d;
@@ -573,8 +620,18 @@ Tonemap previewed(const Tonemap& t, const Json& preview)
   return out;
 }
 
+glm::vec3 mixFactor(const MixGroup& g)
+{
+  if(!g.on)
+    return glm::vec3(0.0F);
+  return linearColor(g.tint) * float(std::exp2(g.stops));
+}
+
 Json toJson(const State& s)
 {
+  Json mix = {{"keep", s.mix.keep}};
+  for(int i = 0; i < kMixGroups; i++)
+    mix[kMixGroupKeys[i]] = {{"on", s.mix.groups[i].on}, {"stops", s.mix.groups[i].stops}, {"tint", s.mix.groups[i].tint}};
   const Env&     e = s.env;
   const Sun&     u = s.sun;
   const Moon&    m = s.moon;
@@ -615,6 +672,7 @@ Json toJson(const State& s)
         {"drift", c.drift},
         {"driftFrom", c.driftFrom}}},
       {"haze", {{"enabled", h.enabled}, {"visibility", h.visibility}, {"glow", h.glow}, {"height", h.height}, {"patches", h.patches}}},
+      {"mix", mix},
       {"rain",
        {{"rate", s.rain.rate}, {"wind", s.rain.wind}, {"windFrom", s.rain.windFrom}, {"shutter", s.rain.shutter}, {"falling", s.rain.falling}}},
       {"ground",
@@ -675,6 +733,8 @@ State applyPatch(const State& s, const Json& patch)
       reset ? void(out.clouds = Clouds{}) : patchClouds(out.clouds, section(patch, "clouds"));
     else if(k == "haze")
       reset ? void(out.haze = Haze{}) : patchHaze(out.haze, section(patch, "haze"));
+    else if(k == "mix")
+      reset ? void(out.mix = Mix{}) : patchMix(out.mix, section(patch, "mix"));
     else if(k == "rain")
       reset ? void(out.rain = Rain{}) : patchRain(out.rain, section(patch, "rain"));
     else if(k == "ground")
@@ -1076,6 +1136,14 @@ Json rendererParams(const State& s, glm::uvec2 envSize, const CloudReading& clou
       {"hazeAnisotropy", s.haze.glow},
       {"hazeHeight", s.haze.height},
       {"hazePatches", s.haze.patches},
+      // the light groups' mix (shaders/light_mix.h.slang), in shaderio LIGHT_GROUP_*'s order
+      {"ptLightGroups", s.mix.keep},
+      {"lightMixSky", vec3(mixFactor(s.mix.groups[0]))},
+      {"lightMixSun", vec3(mixFactor(s.mix.groups[1]))},
+      {"lightMixGlow", vec3(mixFactor(s.mix.groups[2]))},
+      {"lightMixLamps", vec3(mixFactor(s.mix.groups[3]))},
+      {"lightMixLamps2", vec3(mixFactor(s.mix.groups[4]))},
+      {"lightMixLamps3", vec3(mixFactor(s.mix.groups[5]))},
       {"tmActive", 1},
       {"tmAutoExposure", 0},
       {"tmMethod", tmMethod(t.method)},

@@ -637,6 +637,35 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                                      "film, which focuses it on the far side (the cornea's caustic); off: it goes straight",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.ptEyeCaustic, Persist::eNo);
+  // Light groups (light_mix.h.slang, LightGroups)
+  m_settings.add({.name            = "ptLightGroups",
+                  .help            = "PathTracer: a still keeps each light group's share of the picture beside it, so the "
+                                     "light mix (lightMix*) changes a finished still with nothing traced again; costs "
+                                     "64 bytes a pixel and about a twentieth of a still's time, and what the mix changes is noisier than a still traced again",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.ptLightGroups, Persist::eNo);
+  {
+    static const char* const kMixNames[LIGHT_GROUP_COUNT] = {"lightMixSky",   "lightMixSun",    "lightMixGlow",
+                                                             "lightMixLamps", "lightMixLamps2", "lightMixLamps3"};
+    static const char* const kMixHelp[LIGHT_GROUP_COUNT]  = {
+        "Light mix: what the sky's light is multiplied by, r g b (its strength times its tint): the environment, the air and the clouds",
+        "Light mix: what the sun's (or the moon's) light is multiplied by, r g b",
+        "Light mix: what glowing surfaces' light is multiplied by, r g b",
+        "Light mix: what the lamps of the first lamp group give is multiplied by, r g b",
+        "Light mix: what the lamps of the second lamp group give is multiplied by, r g b",
+        "Light mix: what the lamps of the third lamp group give is multiplied by, r g b",
+    };
+    for(int i = 0; i < LIGHT_GROUP_COUNT; i++)
+      m_settings.addVector({.name = kMixNames[i],
+                            .help = kMixHelp[i],
+                            // a still that keeps its groups takes the mix as it is; any other starts again
+                            .callbackSuccess =
+                                [this](const nvutils::ParameterBase* const) {
+                                  if(!m_pathTracer.keepsLightGroups(m_resources))
+                                    resetFrame();
+                                }},
+                           &m_resources.settings.lightMix[i], Persist::eNo);
+  }
   // A debug check that light sampling and BSDF sampling each give the whole image (light_pick.h.slang)
   m_settings.add({.name            = "ptEstimator",
                   .help            = "PathTracer (debug): what counts light both a light sample and a BSDF ray reach "

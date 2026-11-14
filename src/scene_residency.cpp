@@ -4027,9 +4027,16 @@ void Residency::syncLights(RetainedScene& scene)
     {
       light.litBit     = record->litBit;
       light.shadowMask = record->shadowBit ? uint32_t(record->shadowBit) : 0xFFu;
+      // the lighting's sun is the sun's group under any environment; a lamp, one of the lamps' three
+      light.group = record->skySun ? uint32_t(LIGHT_GROUP_SUN) :
+                                     uint32_t(LIGHT_GROUP_LAMPS) + std::min<uint32_t>(record->group, LIGHT_GROUP_COUNT - LIGHT_GROUP_LAMPS - 1);
     }
     lights.push_back(light);
   }
+  m_lightGroupMask = 0;
+  for(const shaderio::GltfLight& light : lights)
+    if(light.intensity > 0.f)
+      m_lightGroupMask |= 1u << light.group;
   const uint64_t bytes = std::span(lights).size_bytes();
   m_descDirty |= fitBuffer(m_gpu, m_lightTable, bytes, "lights", [this](BufferHandle b) { retireBuffer(b); });
   if(bytes)

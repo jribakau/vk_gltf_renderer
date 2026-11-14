@@ -190,6 +190,7 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
 
   m_handoff.init(resources);
   m_radianceCache.init(resources);
+  m_lightGroups.init(resources);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -545,6 +546,7 @@ void PathTracer::onDetach(Resources& resources)
   m_hitFrames = 0;
   m_depthStaging.deinit();
   m_convergence.deinit();
+  m_lightGroups.deinit(resources);
 
 #if defined(USE_DLSS)
   m_rrStill->deinit(resources);  // its feature before the NGX context it was made in
@@ -727,6 +729,10 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   VkExtent2D renderingSize = resources.gBuffers.getSize();
   updateDepthStaging(cmd, resources);  // first frame: onResize may not have run yet
   updateConvergence(cmd, resources);
+  // A still that keeps its lights apart: its images, and whether this frame's paths write them (as
+  // makeVariantKey chose the frame's variant)
+  m_lightGroups.ensure(cmd, resources, keepsLightGroups(resources));
+  m_lightGroupsFrame = lightGroupsFor(resources, isDlssEnabled() && m_dlssShaderFrame) && m_lightGroups.ready();
 #if defined(USE_DLSS)
   m_rrStill->setMoments(m_convergence.getColorStorageImageInfo(0));  // its per-pixel Keep detail reads them
 #endif
@@ -751,6 +757,17 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   if(m_handoffFrame)
     if(const std::optional<DenoiserHandoff::Denoiser> denoiser = handoffDenoiser(resources))
       m_handoff.cmdCapture(cmd, resources, *denoiser);
+
+  // The light groups' images as a still begins: no group has a share yet (each image is written on
+  // its group's turns alone). Or they take over an accumulation they did not see begin (its first frame
+  // was traced without them: DLSS still loading), its samples so far as the sky's.
+  if(m_lightGroupsFrame)
+  {
+    if(pushConst.totalSamples == 0 || (pushConst.flags & shaderio::ePtFirstFrame))
+      m_lightGroups.cmdClearGroups(cmd);
+    else if(!m_lightGroups.holdsStill())
+      m_lightGroups.cmdAdopt(cmd, resources.gBuffers.getColorImage(Resources::eImgRendered));
+  }
 
   // Make sure buffer is ready to be used.
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -798,6 +815,18 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
 
+  // A still that keeps its lights apart: the paths wrote the whole picture and each group's share into
+  // the light groups' images, and the rendered image is the mix of them (light_mix.slang), for everything
+  // after this to read
+  if(m_lightGroupsFrame)
+  {
+    m_lightGroups.cmdMix(cmd, resources.gBuffers.getColorStorageImageInfo(Resources::eImgRendered), lightMix(resources), lightGroupsUsed(resources));
+    m_lightGroups.setHoldsStill(true);
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+  }
+  else if(!(pushConst.flags & shaderio::ePtUseDlss))
+    m_lightGroups.setHoldsStill(false);  // an accumulation without them: what they hold is no part of it
+
   // Where the depth format cannot be a storage image the trace wrote a staging image: the frame that
   // starts the depth brings it into the depth buffer before the overlays read it. (What a still's later
   // frames bring nearer, processPixel, stays in the staging image on such a device.)
@@ -833,6 +862,22 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
 }
 
 //--------------------------------------------------------------------------------------------------
+uint32_t PathTracer::lightGroupsUsed(const Resources& resources)
+{
+  uint32_t used = (1u << LIGHT_GROUP_COUNT) - 1u;  // every group, where the scene cannot say
+  if(resources.retainedGpu)
+  {
+    const rs::Residency& residency = resources.retainedGpu->residency();
+    used = residency.lightGroupMask();
+    if(residency.emissiveTotalWeight() > 0.0F)
+      used |= 1u << LIGHT_GROUP_GLOW;
+  }
+  if(skyHasSun(resources.settings.envSystem))
+    used |= 1u << LIGHT_GROUP_SUN;
+  return used | (1u << LIGHT_GROUP_SKY);
+}
+
+//--------------------------------------------------------------------------------------------------
 // Idle frames, once the accumulation is complete: the still's denoiser denoises its final image, which
 // is shown from then on, if its last denoise was not of it (the adaptive stop ended the still before the
 // cap, the cap was lowered below it, or the denoiser came on since).
@@ -846,6 +891,17 @@ void PathTracer::onAccumulationComplete(VkCommandBuffer cmd, Resources& resource
   if(m_hitFrames > 0)
     copyHitCounts(cmd, resources);
   takePixelTimes(resources);  // the accumulation's last frames, as they come back
+  // The light groups' mix changed on a finished still: the rendered image again from the groups'
+  // images, with nothing traced, and the still's denoiser over it again
+  if(keepsLightGroups(resources) && m_lightGroups.holdsStill() && m_lightGroups.mixed() != lightMix(resources))
+  {
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+    m_lightGroups.cmdMix(cmd, resources.gBuffers.getColorStorageImageInfo(Resources::eImgRendered), lightMix(resources), lightGroupsUsed(resources));
+    nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+#if defined(USE_DLSS)
+    m_rrStill->redoFinal();
+#endif
+  }
 #if defined(USE_DLSS)
   // an accumulation the adaptive stop ended before the cap, or one complete when RR's still came on
   if(rrStillOn())
@@ -1207,6 +1263,16 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
   {
     outputCount                          = std::max<uint32_t>(outputCount, shaderio::eConvergence + 1);
     outputImages[shaderio::eConvergence] = m_convergence.getColorStorageImageInfo(0);
+  }
+
+  // A still that keeps its lights apart (LightGroups): the accumulation is written to the light groups'
+  // own image of the whole, each group's share beside it, and the rendered image is their mix (onRender)
+  if(m_lightGroupsFrame)
+  {
+    outputCount                          = std::max<uint32_t>(outputCount, shaderio::eLightGroup0 + LIGHT_GROUP_COUNT);
+    outputImages[shaderio::eResultImage] = m_lightGroups.total();
+    for(int i = 0; i < LIGHT_GROUP_COUNT; i++)
+      outputImages[shaderio::eLightGroup0 + i] = m_lightGroups.group(i);
   }
 
   // A slot below the count that this frame's images leave empty (a still's DLSS guide slots under its

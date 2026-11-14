@@ -47,6 +47,13 @@
 //            Henyey-Greenstein g, 0 to 0.9), height (metres it thins over above the floor, 0
 //            even through the height), patches (0 even to 1). A thin haze in the air, lit by every
 //            light of the scene, between the eye and what it sees (shaders/haze.h.slang)
+//   mix:     the light groups' mix (shaders/light_mix.h.slang), protocol 79: keep (a still keeps each
+//            group's share, so the mix changes a finished one with nothing traced again, at about a
+//            twentieth of its time and with more noise in what the mix changes), and for each
+//            of sky, sun, glow, lamps, lamps2 and lamps3: on, stops (its light that many stops
+//            brighter, -8 to 8) and tint (a colour its light is multiplied by). Every light is in one
+//            group: the sky (the environment, the air, the clouds), the sun (or the moon), glowing
+//            surfaces, and a lamp in one of three (prop.set's light.group)
 //   rain:    rate (mm/h, 0 none to 300; 2.5 light, 7.5 heavy, 50 a downpour), wind (m/s at the
 //            ground, 0 to 40), windFrom (degrees, an azimuth as the sun's), shutter (seconds the
 //            camera's is open: a drop's streak is its fall over it), falling (the drops fall, or hold
@@ -159,6 +166,27 @@ struct Haze
   double glow       = 0.7;
   double height     = 0.0;  // metres it thins over above the floor; 0: even through the height
   double patches    = 0.0;
+};
+
+// The light groups' mix (shaders/light_mix.h.slang): every light is in one group, and each group's light
+// is scaled and tinted as a whole
+struct MixGroup
+{
+  bool        on    = true;
+  double      stops = 0.0;  // brighter by that many stops
+  std::string tint  = "#ffffff";
+  bool        operator==(const MixGroup&) const = default;
+};
+
+inline constexpr int         kMixGroups                = 6;  // shaderio LIGHT_GROUP_COUNT, in its order
+inline constexpr const char* kMixGroupKeys[kMixGroups] = {"sky", "sun", "glow", "lamps", "lamps2", "lamps3"};
+
+struct Mix
+{
+  // A still keeps each group's share of the picture (the renderer's ptLightGroups), so a change to the
+  // mix shows on a finished still at once; off, it starts the still again
+  bool     keep = false;
+  MixGroup groups[kMixGroups];
 };
 
 struct Rain
@@ -312,10 +340,14 @@ struct State
   Night   night;
   Clouds  clouds;
   Haze    haze;
+  Mix     mix;
   Rain    rain;
   Ground  ground;
   Tonemap tonemap;
 };
+
+// What a mix group's light is multiplied by: 0 while off, else two to its stops times its tint (linear)
+glm::vec3 mixFactor(const MixGroup& g);
 
 Json toJson(const State& s);
 

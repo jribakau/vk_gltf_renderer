@@ -1321,6 +1321,7 @@ void FvHost::Impl::placeFrom(Prop& p, const Json& rec)
     p.light.litProps    = l.value("litProps", p.light.litProps);
     p.light.shadowMode  = l.value("shadowMode", p.light.shadowMode);
     p.light.shadowProps = l.value("shadowProps", p.light.shadowProps);
+    p.light.group       = std::clamp(l.value("group", p.light.group), 0, 2);
   }
   // its place in the scene's order
   const auto self = std::find_if(props.begin(), props.end(), [&](const auto& q) { return q.get() == &p; });
