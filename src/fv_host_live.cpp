@@ -562,6 +562,8 @@ void FvHost::Impl::applyInput(const std::vector<Json>& events)
       fly.fast  = e.value("fast", false);
       fly.heard = std::chrono::steady_clock::now();
     }
+    else if(type == "play")
+      playInput(e);
     else if(type == "leave" && (lmb || mmb || rmb))
     {
       lmb = mmb = rmb = false;

@@ -115,6 +115,13 @@
 //                                                (the selection's state.moves)
 //   scene.clear     {}                           every prop goes
 //   scene.order     {order: [prop]}              the props in this order (the ones it leaves out after them), one composition
+//   play.start      {ship?: path}                play mode (fv_host_play.cpp): on foot where the view is, the keys and
+//                                                the mouse from /input's `play` events; with no ship in the scene (a
+//                                                model with an fv_seat node), `ship` is loaded and put down ahead
+//   play.stop       {}                           the view free again; each ship flown stays where it was left, one
+//                                                step of the history ("Fly <name>"). The "play" topic: {active, mode
+//                                                (walk|enter|fly|exit), prompt, ship, ships, view (chase|cockpit),
+//                                                speed, height, throttle, boost}
 //   pose.set        {prop, values: {"bone/kind/axis": value}, gesture?}
 //   pose.reset      {prop}
 //   pose.eyes       {prop}                       aim the eyeballs at the camera

@@ -158,6 +158,10 @@ src/
 ├── fv_world_map.cpp/hpp        # The planet's base map, baked once over a cube map: rain by the wind, hollows
 │                               #   and lakes, what the water wore away, rivers as curves; and what the stages
 │                               #   read of it (the wear, the water near a point, a river's bed and surface)
+├── fv_play.cpp/hpp             # Play mode's controllers, Vulkan-free: someone on foot (collide and slide,
+│                               #   steps, gravity) and a ship on a throttle with flight assist that lands on
+│                               #   its pads, with a chase camera; fv_host_play.cpp drives them from the app's
+│                               #   keys, finds ships by their glTF markers (fv_seat) and moves their parts
 ├── fv_patch.hpp                # What a merge patch's fields are checked with (lighting.set, backdrop.set), and
 │                               #   the merge patch between two states that a topic's change is published as
 │

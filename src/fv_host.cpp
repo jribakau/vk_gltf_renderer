@@ -141,6 +141,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
     });
   });
   cmds.add("scene.order", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("scene.order", args); }); });
+  // play mode (fv_host_play.cpp): on foot where the view is, a ship brought when none stands
+  cmds.add("play.start", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->playStart(args); }); });
+  cmds.add("play.stop", [impl](const Json&) { return impl->onApp([impl] { return impl->playStop(); }); });
   cmds.add("view.use", [impl](const Json& args) {
     return impl->onApp([impl, args] {
       fv::timing::Scope t("view.use", 20);
@@ -786,6 +789,7 @@ void FvHost::onUpdate()
   }
   s.applyLook();
   s.applyFly();
+  s.applyPlay();
   s.applyGizmoEdit();
   // not while a composition settles: the renderer moves the view to a scene camera for a frame or two
   if(!s.viewCamera.empty() && s.frameIn == 0)

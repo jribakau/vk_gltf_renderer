@@ -1378,6 +1378,16 @@ struct FvHost::Impl
   void applyFly();
   void applyLook();
   void turnLook(const glm::dvec2& pixels);
+  // ---- play mode (fv_host_play.cpp): walking about the scene in first person and flying a ship in it
+  // (fv_play.hpp). The app holds the keys and the mouse and sends them as `play` input events.
+  struct PlayState;
+  std::shared_ptr<PlayState> play;  // made by the first play.start
+  bool playing() const;
+  Json playStart(const Json& args);
+  Json playStop();
+  void playInput(const Json& event);
+  void applyPlay();  // once a frame, after the input
+  void publishPlay(bool force);
   // a drag of the view ends: a camera prop looked through takes where the drag left the view (its
   // step ends with it)
   void endViewGesture();

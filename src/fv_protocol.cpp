@@ -158,7 +158,12 @@ namespace {
 // 79: the lighting's `mix` (the light groups' mix: keep, and on, stops and tint for each of sky, sun,
 // glow, lamps, lamps2, lamps3) and a light's `group` (0 to 2) in prop.set's `light` and the scene
 // topic's. An older renderer refuses a lighting patch that has a mix.
-constexpr int kProtocolVersion = 80;
+// 80: a planet's sea as the ground's body of water on a sphere: the backdrop's `waves`. An older
+// renderer refuses the backdrop that has it.
+// 81: play mode: play.start {ship?} and play.stop, the /input event `play` ({k, dx, dy, wheel}: the keys
+// held as fv::play::Key bits, the mouse's move), and the `play` topic (fv_host_play.cpp). An older
+// renderer refuses the commands.
+constexpr int kProtocolVersion = 81;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -28,9 +28,11 @@
 //   POST /input    [{t, x, y, w, h, seq, ...}, ...] pointer, wheel and key events for the viewport: x and y in
 //                  the pixels of the frame of w by h the app mapped them to (scaled to the frame drawn when a
 //                  /size is in flight), seq the batch's number (batches are put in order; a late one loses its
-//                  moves); both optional. t is down, up, move, wheel, leave, dblclick, or fly ({m: [right, up, forward],
+//                  moves); both optional. t is down, up, move, wheel, leave, dblclick, fly ({m: [right, up, forward],
 //                  fast}: the movement keys held with the right button, sent each frame they are held and once
-//                  more when they are let go; FvHost::Impl::applyFly)
+//                  more when they are let go; FvHost::Impl::applyFly), or play ({k, dx, dy, wheel}: in play
+//                  mode the keys held, as fv::play::Key bits, and the mouse's move under pointer lock in CSS
+//                  pixels; sent on every key change and each frame the mouse moves; FvHost::Impl::playInput)
 //
 // The UI sends its JSON as text/plain, which a browser posts without a CORS preflight.
 //

@@ -183,6 +183,10 @@ set(TEST_SOURCES
     # The planet's base map: the cube's grids across their edges, water that all runs to the sea or a lake,
     # rivers that never rise, their beds under their water
     test_fv_world_map.cpp
+    # Play mode's controllers: someone on foot against floors, steps and walls; a ship's throttle, flight
+    # assist, turn and landing; the chase camera
+    test_fv_play.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_play.cpp
     # Auto white balance: the light in a frame, and the white balance that makes it grey
     test_white_balance.cpp
     ${CMAKE_SOURCE_DIR}/src/white_balance.cpp
@@ -259,6 +263,7 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_host_lighting.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_live.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_physics.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_play.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_looks.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_props.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_place.cpp

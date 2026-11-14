@@ -236,8 +236,9 @@ void FvHost::Impl::followPlanet()
   {
     eye = glm::dvec3(camera->getEye()) - floor;
     // The free view's up is the planet's away from the figures (fv::world::viewUp), so the horizon
-    // stays level on its far side; a scene camera keeps its own. And its far plane clears the planet.
-    if(viewCamera.empty())
+    // stays level on its far side; a scene camera keeps its own, and so does play mode's (a ship
+    // banks). And its far plane clears the planet.
+    if(viewCamera.empty() && !playing())
     {
       glm::dvec3 at, centre, up;
       camera->getLookat(at, centre, up);
