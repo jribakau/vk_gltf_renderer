@@ -138,7 +138,7 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     if(!p || !args.contains("node") || !args["node"].is_number_integer())
       return nullptr;
     Json fields = Json::array();
-    for(const char* f : {"visible", "transform"})
+    for(const char* f : {"visible", "offCamera", "transform"})
       if(args.contains(f))
         fields.push_back(f);
     return {{"kind", "node"}, {"prop", p->id}, {"node", args["node"]}, {"fields", fields}};
@@ -150,7 +150,7 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
       return nullptr;
     Json fields = Json::array();
     if(cmd == "prop.set")
-      for(const char* f : {"kind", "parent", "name", "visible", "transform", "order"})
+      for(const char* f : {"kind", "parent", "name", "visible", "offCamera", "transform", "order"})
         if(args.contains(f) || (f == std::string_view("parent") && args.contains("bone")))
           fields.push_back(f);
     // a new parent (or bone) keeps the prop where it is in the world: its transform changes with it
@@ -359,6 +359,8 @@ Json FvHost::Impl::journalState(const Json& scope)
         set["name"] = p->name;
       else if(field == "visible")
         set["visible"] = p->visible;
+      else if(field == "offCamera")
+        set["offCamera"] = p->offCamera;
       else if(field == "order")
         set["order"] = int(std::find(props.begin(), props.end(), p) - props.begin());
       else if(field == "transform")
@@ -520,6 +522,8 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
       return "Rename " + name;
     if(args.contains("visible"))
       return (args["visible"].get<bool>() ? "Show " : "Hide ") + name;
+    if(const auto c = args.find("offCamera"); c != args.end())
+      return c->is_boolean() && c->get<bool>() ? "Hide " + name + " from the camera" : "Show " + name + " to the camera";
     if(args.contains("parent") || args.contains("bone"))
       return "Change what " + name + " rides on";
     if(const auto t = args.find("transform"); t != args.end() && t->is_object())
@@ -543,6 +547,8 @@ std::string FvHost::Impl::journalLabel(const std::string& cmd, const Json& args,
     const std::string node = p ? nodeName(*p, args.value("node", -1)) : std::string("a node");
     if(const auto v = args.find("visible"); v != args.end())
       return (v->is_boolean() && !v->get<bool>() ? "Hide " : "Show ") + node;
+    if(const auto c = args.find("offCamera"); c != args.end())
+      return c->is_boolean() && c->get<bool>() ? "Hide " + node + " from the camera" : "Show " + node + " to the camera";
     return (args.contains("transform") && args["transform"].is_null() ? "Put back " : "Move ") + node;
   }
   if(cmd == "prop.remove")
@@ -744,9 +750,9 @@ Json FvHost::Impl::journaled(const std::string& cmd, const Json& args, const std
                 || (cmd == "figure.rain" && !args.contains("on") && !args.contains("seed")) || (cmd == "physics.set" && (args.contains("strength") || args.contains("parts")) && !args.contains("on"))
                 || (cmd == "physics.secondary" && !args.contains("on")) || (cmd == "physics.soft" && !args.contains("on"));
   if(cmd == "node.set")
-    merges = !args.contains("visible") && args.contains("transform") && !args["transform"].is_null();
+    merges = !args.contains("visible") && !args.contains("offCamera") && args.contains("transform") && !args["transform"].is_null();
   if(cmd == "prop.set")
-    merges = !args.contains("label") && !args.contains("kind") && !args.contains("name") && !args.contains("visible") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
+    merges = !args.contains("label") && !args.contains("kind") && !args.contains("name") && !args.contains("visible") && !args.contains("offCamera") && !args.contains("parent") && !args.contains("bone") && !args.contains("order");
   Json shape = shapeOf(args);
   if(shape.is_object())
     for(const char* k : {"prop", "gesture"})
@@ -1243,6 +1249,7 @@ Json FvHost::Impl::propRecord(const Prop& p)
   Json             rec = {{"kind", kindName(p.kind)},
                           {"name", p.name},
                           {"visible", p.visible},
+                          {"offCamera", p.offCamera},
                           {"parent", p.parent.empty() ? Json() : Json(p.parent)},
                           {"bone", p.bone.empty() ? Json() : Json(p.bone)},
                           {"order", int(std::find_if(props.begin(), props.end(), [&](const auto& q) { return q.get() == &p; }) - props.begin())},
@@ -1284,7 +1291,8 @@ void FvHost::Impl::placeFrom(Prop& p, const Json& rec)
   if(const auto kind = kindOf(rec.value("kind", "")); kind && p.figure && dazKind(p.kind) && dazKind(*kind) && *kind != p.kind)
     setKind(p, *kind);
   p.name    = rec.value("name", p.name);
-  p.visible = rec.value("visible", true);
+  p.visible   = rec.value("visible", true);
+  p.offCamera = rec.value("offCamera", false);
   if(const Json& t = rec.value("transform", Json::object()); t.contains("t") && t.contains("r") && t.contains("s"))
   {
     p.transform.translation = vec3From(t["t"]);

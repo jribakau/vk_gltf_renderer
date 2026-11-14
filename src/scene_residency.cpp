@@ -3514,6 +3514,7 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
     inst.materialSlot = acquireMaterial(scene, item.material);
     inst.world        = item.world;
     inst.shown        = item.shown;
+    inst.offCamera    = item.offCamera;
     m_instances[slot] = inst;
     m_slotOf[key]     = slot;
     m_dirtyNodes.insert(slot);
@@ -3745,6 +3746,11 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
       inst.shown               = item.shown;
       result.visibilityChanged = tlasRows = true;  // the TLAS row, not the render node
     }
+    if(inst.offCamera != item.offCamera)
+    {
+      inst.offCamera = item.offCamera;
+      tlasRows       = true;  // its row's mask alone: it lights and is lit as before
+    }
     if(inst.world != item.world)
     {
       // drawn last where it was: its motion row, until the next sync brings it to rest
@@ -3922,7 +3928,7 @@ void Residency::buildTlas()
         std::memcpy(row.transform, was.transform, sizeof(row.transform));
       row.customIndex                    = inst->prim;
       const nvvkgltf::MaterialBits& bits = m_materialStates[inst->materialSlot]->bits;
-      row.mask                           = bits.instanceMask;
+      row.mask                           = nvvkgltf::instanceMaskOf(bits, inst->offCamera);
       row.flags                          = bits.instanceFlags;
       if(inst->shown)
         row.blas = m_prims[inst->prim]->blas;

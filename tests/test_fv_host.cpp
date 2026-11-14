@@ -4467,6 +4467,86 @@ TEST(FvHost, aDazPropsHiddenNodeStaysHiddenAsItPoses)
   EXPECT_EQ(shownItems(rig), all);
 }
 
+namespace {
+
+// the draw items the camera looks through
+int offCameraItems(HostRig& rig)
+{
+  int n = 0;
+  for(const rs::DrawItem& item : rig.renderer.hostScene().drawItems())
+    n += item.offCamera;
+  return n;
+}
+
+}  // namespace
+
+// What the camera looks through (node.set's and prop.set's offCamera): drawn as before, so it still
+// shades and bounces light, and off the camera's rays alone; kept in scene.state and the scene topic,
+// one step of the history each
+TEST(FvHost, aNodeAndAPropHideFromTheCameraAlone)
+{
+  Seated    s;
+  const int all  = shownItems(s.rig);
+  const int node = nodeOfKind(s.rig, s.box, "mesh");
+  ASSERT_GE(node, 0) << s.rig.topic("nodes/" + s.box).dump();
+  ASSERT_EQ(offCameraItems(s.rig), 0);
+
+  Json set = s.rig.cmd("node.set", {{"prop", s.box}, {"node", node}, {"offCamera", true}});
+  ASSERT_TRUE(set.value("ok", false)) << set.dump();
+  EXPECT_EQ(shownItems(s.rig), all) << "hidden from the camera is not hidden";
+  const int one = offCameraItems(s.rig);
+  EXPECT_GE(one, 1);
+  EXPECT_TRUE(s.rig.topic("nodes/" + s.box)["nodes"][std::to_string(node)].value("offCamera", false));
+  Json state = s.rig.cmd("scene.state", {{"prop", s.box}}).value("result", Json::object());
+  EXPECT_TRUE(state["nodes"][std::to_string(node)].value("offCamera", false)) << state.dump();
+  ASSERT_TRUE(s.rig.cmd("select", {{"prop", s.box}, {"node", node}}).value("ok", false));
+  EXPECT_TRUE(s.rig.topic("selection")["state"].value("offCamera", false)) << s.rig.topic("selection").dump();
+
+  // the whole prop: every item of it
+  set = s.rig.cmd("prop.set", {{"prop", s.box}, {"offCamera", true}});
+  ASSERT_TRUE(set.value("ok", false)) << set.dump();
+  EXPECT_GE(offCameraItems(s.rig), one);
+  EXPECT_EQ(shownItems(s.rig), all);
+  EXPECT_TRUE(s.rig.topic("scene")["props"][s.box].value("offCamera", false)) << s.rig.topic("scene").dump();
+
+  const Json undo = s.rig.topic("history").value("undo", Json::array());
+  ASSERT_GE(undo.size(), 2u);
+  EXPECT_NE(undo[0].get<std::string>().find(" from the camera"), std::string::npos) << undo.dump();
+  EXPECT_NE(undo[1].get<std::string>().find(" from the camera"), std::string::npos) << undo.dump();
+  s.rig.cmd("history.undo");
+  EXPECT_FALSE(s.rig.topic("scene")["props"][s.box].value("offCamera", true));
+  EXPECT_EQ(offCameraItems(s.rig), one) << "the node's own stays when the prop's goes";
+  s.rig.cmd("history.undo");
+  EXPECT_EQ(offCameraItems(s.rig), 0);
+  state = s.rig.cmd("scene.state", {{"prop", s.box}}).value("result", Json::object());
+  EXPECT_FALSE(state.contains("nodes")) << state.dump();
+  // null is shown, as false is
+  ASSERT_TRUE(s.rig.cmd("node.set", {{"prop", s.box}, {"node", node}, {"offCamera", true}}).value("ok", false));
+  ASSERT_TRUE(s.rig.cmd("node.set", {{"prop", s.box}, {"node", node}, {"offCamera", nullptr}}).value("ok", false));
+  EXPECT_EQ(offCameraItems(s.rig), 0);
+}
+
+// A DAZ prop's node stays off camera as the prop is posed: the feed writes its nodes every step, and
+// leaves this to the entity
+TEST(FvHost, aDazPropsNodeStaysOffCameraAsItPoses)
+{
+  HostRig           rig;
+  const std::string stool = addDaz(rig, {{"rel", "Props/Test/Box Stool.duf"}});
+  const int         all   = shownItems(rig);
+  int               mesh  = nodeOfKind(rig, stool, "skinned");
+  if(mesh < 0)
+    mesh = nodeOfKind(rig, stool, "mesh");
+  ASSERT_GE(mesh, 0) << rig.topic("nodes/" + stool).dump();
+  ASSERT_TRUE(rig.cmd("node.set", {{"prop", stool}, {"node", mesh}, {"offCamera", true}}).value("ok", false));
+  const int off = offCameraItems(rig);
+  EXPECT_GE(off, 1);
+  ASSERT_TRUE(rig.cmd("pose.set", {{"prop", stool}, {"values", {{"head/rotation/x", 30.0}}}}).value("ok", false));
+  for(int i = 0; i < 4; i++)
+    rig.host->onUpdate();
+  EXPECT_EQ(offCameraItems(rig), off) << "a pose step showed it to the camera again";
+  EXPECT_EQ(shownItems(rig), all);
+}
+
 //--------------------------------------------------------------------------------------------------
 // Several selected: select's props, add and toggle, a Ctrl+Shift+click; the gizmo moves them together as one
 // step; a group holds them, ungrouped they keep their place.

@@ -160,6 +160,32 @@ TEST(RetainedScene, VisibilityCascadesAndOrderIsDepthFirst)
   EXPECT_FALSE(scene.shown(a1));
 }
 
+TEST(RetainedScene, OffCameraCascadesAndLeavesItShown)
+{
+  rs::RetainedScene  scene;
+  const rs::EntityId a  = scene.createEntity("a", {});
+  const rs::EntityId b  = scene.createEntity("b", {});
+  const rs::EntityId a1 = scene.createEntity("a1", {}, a);
+  scene.takeChanges();
+  scene.setOffCamera(a, true);
+  EXPECT_TRUE(scene.offCamera(a));
+  EXPECT_TRUE(scene.offCamera(a1));  // its parent's
+  EXPECT_FALSE(scene.entity(a1)->offCamera);
+  EXPECT_FALSE(scene.offCamera(b));
+  EXPECT_TRUE(scene.shown(a) && scene.shown(a1));
+  const rs::SceneChanges changes = scene.takeChanges();
+  EXPECT_TRUE(changes.visibility.count(a) && changes.visibility.count(a1));
+  EXPECT_FALSE(changes.visibility.count(b));
+  // the same again is no change
+  scene.setOffCamera(a, true);
+  EXPECT_TRUE(scene.takeChanges().empty());
+  // a child's own stays when the parent's goes
+  scene.setOffCamera(a1, true);
+  scene.setOffCamera(a, false);
+  EXPECT_FALSE(scene.offCamera(a));
+  EXPECT_TRUE(scene.offCamera(a1));
+}
+
 TEST(RetainedScene, RecordsGoWithTheirLastReference)
 {
   rs::RetainedScene    scene;

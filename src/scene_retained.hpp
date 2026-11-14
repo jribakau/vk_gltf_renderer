@@ -504,6 +504,10 @@ struct Entity
   std::vector<EntityId>       children;
   Transform                   local;
   bool                        visible = true;  // its own; shown() cascades the parents'
+  // The camera looks through it and what is under it (offCamera() cascades the parents'): gone from
+  // the camera's own rays and the picks, there for every other ray, so it still shades, bounces light
+  // and shows in mirrors (shaderio.h INSTANCE_MASK_CAMERA). A wall between the camera and a room.
+  bool offCamera = false;
   std::optional<MeshInstance> mesh;
   LightId                     light;
   CameraId                    camera;
@@ -521,6 +525,7 @@ struct DrawItem
   uint32_t   copy  = 0;
   glm::mat4  world = glm::mat4(1.f);
   bool       shown = true;
+  bool       offCamera = false;  // the camera looks through it (Entity::offCamera, cascaded)
 };
 
 struct LightItem
@@ -536,7 +541,7 @@ struct SceneChanges
 {
   bool                 structure = false;  // entities, instances, lights or cameras came or went
   std::set<EntityId>   transforms;         // their world matrices moved (descendants included)
-  std::set<EntityId>   visibility;         // their shown state may have changed (descendants included)
+  std::set<EntityId>   visibility;         // their shown or off-camera state may have changed (descendants included)
   std::set<EntityId>   morphWeights;       // their mesh instance's morph weights changed
   std::set<MeshId>     meshes;             // vertices edited
   std::set<MeshId>     displacements;      // a refined mesh's displacement set, moved or dropped
@@ -651,6 +656,8 @@ public:
   bool setParent(EntityId id, EntityId parent, int index = -1, bool keepWorld = false);
   void setLocal(EntityId id, const Transform& local);
   void setVisible(EntityId id, bool visible);
+  // The camera looks through the entity and what is under it (Entity::offCamera)
+  void setOffCamera(EntityId id, bool offCamera);
   // Short of GPU memory, comes down last. Nothing to draw again: read when memory is next fitted.
   void setMaterialKeepFull(MaterialId id, bool on);
   // Draws `instance` (references its meshes, materials and skin); nullopt draws nothing.
@@ -684,6 +691,7 @@ public:
   // world matrix and cascaded visibility, brought up to date first
   glm::mat4 world(EntityId id);
   bool      shown(EntityId id);
+  bool      offCamera(EntityId id);  // its own or a parent's
   // The joint matrices of the skin an entity's mesh instance draws with, from the world matrices:
   // inverse(world(id)) * world(joint) * the joint's inverse bind matrix, as
   // skinning takes them (identity for a joint that is gone).
@@ -772,6 +780,7 @@ private:
   {
     glm::mat4 world = glm::mat4(1.f);
     bool      shown = true;
+    bool      offCamera = false;
     bool      dirty = true;
     // for jointMatrices: this entity's matrix from the anchor, and the walk that last reached it
     glm::mat4 anchored  = glm::mat4(1.f);

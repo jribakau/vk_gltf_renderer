@@ -139,6 +139,7 @@ const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& FvHost::
     return prop.contactSets;
   prop.contactSetsAt = prop.contactRev;
   prop.contactSets.clear();
+  prop.contactSetNodes.clear();
   const fv::SceneGraph& scene = prop.fig->loaded.scene;
   const int             body  = prop.contact ? prop.contact->bodyMesh() : -1;
   // by node: copies of a prop drawing one mesh are each met where they stand
@@ -161,6 +162,7 @@ const std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>& FvHost::
           return out;
         },
         bounds));
+    prop.contactSetNodes.push_back(nodes[k]);
   }
   return prop.contactSets;
 }

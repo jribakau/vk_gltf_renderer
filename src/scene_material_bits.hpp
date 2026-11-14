@@ -87,8 +87,9 @@ inline MaterialBits materialBits(const fv::mat::Material& mat)
   if(mat.doubleSided || thickness > 0.0F || transmission > 0.0F || diffuseTransmission > 0.0F)
     bits.instanceFlags |= kInstanceCullDisable;
 
-  // A surface a scatter walk passes through (shaderio.h INSTANCE_MASK_WALK)
-  bits.instanceMask = mat.walkThrough ? INSTANCE_MASK_OTHER : INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER;
+  // A surface a scatter walk passes through (shaderio.h INSTANCE_MASK_WALK). The camera's bit is the
+  // material's to give and the instance's to take away (instanceMaskOf).
+  bits.instanceMask = INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | (mat.walkThrough ? 0 : INSTANCE_MASK_WALK);
   // A surface no ray can keep (surface_opacity.h.slang: the base colour factor's alpha only ever
   // multiplies down) and that emits nothing is left out of every ray: a helper mesh at opacity 0, such
   // as a hair's face dummy, otherwise stops each ray that crosses it for an alpha test that discards
@@ -105,6 +106,13 @@ inline MaterialBits materialBits(const fv::mat::Material& mat)
 inline MaterialBits materialBits(const tinygltf::Material& mat)
 {
   return materialBits(fv::mat::fromGltf(mat));
+}
+
+// The mask of an instance that draws with `bits`: its material's, less the camera's bit when the
+// camera looks through it (rs::Entity::offCamera). Every other ray still meets it.
+inline uint8_t instanceMaskOf(const MaterialBits& bits, bool offCamera)
+{
+  return offCamera ? uint8_t(bits.instanceMask & ~INSTANCE_MASK_CAMERA) : bits.instanceMask;
 }
 
 // The texture indices a material samples as colour (sRGB). decides it:

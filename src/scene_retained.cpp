@@ -562,6 +562,16 @@ void RetainedScene::setVisible(EntityId id, bool visible)
   }
 }
 
+void RetainedScene::setOffCamera(EntityId id, bool offCamera)
+{
+  assertOwner();
+  if(Entity* e = m_entities.get(id); e && e->offCamera != offCamera)
+  {
+    e->offCamera = offCamera;
+    markVisibilityDirty(id);  // (the bounds are of what is there, seen or not)
+  }
+}
+
 void RetainedScene::setMeshInstance(EntityId id, std::optional<MeshInstance> instance)
 {
   assertOwner();
@@ -782,22 +792,23 @@ void RetainedScene::updateWorld()
 {
   if(!m_anyDirty)
     return;
-  const std::function<void(EntityId, const glm::mat4&, bool, bool)> walk = [&](EntityId id, const glm::mat4& parentWorld,
-                                                                               bool parentShown, bool force) {
+  const std::function<void(EntityId, const glm::mat4&, bool, bool, bool)> walk = [&](EntityId id, const glm::mat4& parentWorld, bool parentShown,
+                                                                                     bool parentOffCamera, bool force) {
     Derived&      d    = m_derived[id.index];
     const Entity& e    = m_entities[id];
     const bool    redo = force || d.dirty;
     if(redo)
     {
-      d.world = parentWorld * e.local.local();
-      d.shown = parentShown && e.visible;
-      d.dirty = false;
+      d.world     = parentWorld * e.local.local();
+      d.shown     = parentShown && e.visible;
+      d.offCamera = parentOffCamera || e.offCamera;
+      d.dirty     = false;
     }
     for(EntityId c : e.children)
-      walk(c, d.world, d.shown, redo);
+      walk(c, d.world, d.shown, d.offCamera, redo);
   };
   for(EntityId r : m_roots)
-    walk(r, glm::mat4(1.f), true, false);
+    walk(r, glm::mat4(1.f), true, false, false);
   m_anyDirty = false;
 }
 
@@ -811,6 +822,12 @@ bool RetainedScene::shown(EntityId id)
 {
   updateWorld();
   return m_entities.contains(id) && m_derived[id.index].shown;
+}
+
+bool RetainedScene::offCamera(EntityId id)
+{
+  updateWorld();
+  return m_entities.contains(id) && m_derived[id.index].offCamera;
 }
 
 std::vector<glm::mat4> RetainedScene::jointMatrices(EntityId id)
@@ -938,7 +955,7 @@ std::vector<DrawItem> RetainedScene::drawItems()
       const MeshPart& part = e.mesh->parts[r.part];
       const uint32_t  slot = mesh(part.mesh)->submeshes[r.submesh].material;
       DrawItem        item{.entity = id, .mesh = part.mesh, .submesh = r.submesh,
-                           .material = slot < part.materials.size() ? part.materials[slot] : MaterialId{}, .world = d.world, .shown = d.shown};
+                           .material = slot < part.materials.size() ? part.materials[slot] : MaterialId{}, .world = d.world, .shown = d.shown, .offCamera = d.offCamera};
       if(e.mesh->copies.empty())
       {
         out.push_back(item);

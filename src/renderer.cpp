@@ -1365,7 +1365,10 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
                           .perspectiveInv = m_pendingClickPick->perspectiveInv,
                           .isOrthographic = m_pendingClickPick->isOrthographic,
                           .pickPos        = m_pendingClickPick->pickPos,
-                          .tlas           = m_resources.gpuView().tlas()});
+                          // a click, a hover and the orbit's pivot land on what the camera sees, not on
+                          // what it looks through (rs::Entity::offCamera)
+                          .instanceMask = INSTANCE_MASK_CAMERA,
+                          .tlas         = m_resources.gpuView().tlas()});
     m_pendingClickResult =
         PendingClickResult{.semaphoreState = nvvk::SemaphoreState::makeFixed(m_app->getFrameSignalSemaphore()),
                            .isDoubleClick  = m_pendingClickPick->isDoubleClick,

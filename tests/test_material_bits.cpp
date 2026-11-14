@@ -43,7 +43,7 @@ TEST(MaterialBits, AnOpaqueSurfaceIsSolidAndSkipsAnyHit)
 {
   const auto bits = materialBits(tinygltf::Material{});
   EXPECT_EQ(bits.instanceFlags, nvvkgltf::kInstanceForceOpaque);
-  EXPECT_EQ(bits.instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER);
+  EXPECT_EQ(bits.instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA);
   EXPECT_TRUE(bits.solid());
   EXPECT_FALSE(bits.solidDoubleSided() || bits.blend());
 }
@@ -85,7 +85,22 @@ TEST(MaterialBits, AWalkThroughSurfaceLeavesTheWalkMask)
   tinygltf::Value::Object extras;
   extras["fvWalkThrough"] = tinygltf::Value(true);
   m.extras                = tinygltf::Value(extras);
-  EXPECT_EQ(materialBits(m).instanceMask, INSTANCE_MASK_OTHER);
+  EXPECT_EQ(materialBits(m).instanceMask, INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA);
+}
+
+// What the camera looks through is met by every ray but the camera's own: a bounce or shadow ray
+// (0xFF) and a walk's (INSTANCE_MASK_WALK) see it as before
+TEST(MaterialBits, OffCameraAnInstanceLosesTheCamerasBitAlone)
+{
+  const auto bits = materialBits(tinygltf::Material{});
+  EXPECT_EQ(nvvkgltf::instanceMaskOf(bits, false), bits.instanceMask);
+  const uint8_t off = nvvkgltf::instanceMaskOf(bits, true);
+  EXPECT_EQ(off & INSTANCE_MASK_CAMERA, 0);
+  EXPECT_EQ(off, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER);
+  EXPECT_NE(off & 0xFF, 0);
+  // what no ray keeps stays out of every ray
+  nvvkgltf::MaterialBits none;
+  EXPECT_EQ(nvvkgltf::instanceMaskOf(none, true), 0);
 }
 
 TEST(MaterialBits, ASurfaceNoRayKeepsLeavesEveryRay)
@@ -107,5 +122,5 @@ TEST(MaterialBits, ASurfaceNoRayKeepsLeavesEveryRay)
 
   tinygltf::Material ghost = transparent("BLEND", 0.0);  // a ghost light: emits, never seen
   ghost.emissiveFactor     = {1.0, 1.0, 1.0};
-  EXPECT_EQ(materialBits(ghost).instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER);
+  EXPECT_EQ(materialBits(ghost).instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA);
 }

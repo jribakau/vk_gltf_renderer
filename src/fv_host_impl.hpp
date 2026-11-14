@@ -225,6 +225,7 @@ struct Loaded
   int                                                               contactRev    = 0;
   int                                                               contactSetsAt = -1;
   std::vector<std::shared_ptr<const fv::physics::SharedTriangles>> contactSets;
+  std::vector<int>                                                  contactSetNodes;  // the scene node each is of
   // what it is in the renderer's scene, the prop feed's (fv_prop_feed.hpp), and the scene node each of
   // the feed's entities is; set by each composition
   fv::FigureFeed*             feed = nullptr;
@@ -369,6 +370,9 @@ struct Prop
   fv::composer::Trs        transform;
   std::optional<glm::vec3> euler;  // the rotation as the panel typed it, degrees XYZ; a gizmo turn drops it
   bool                    visible = true;
+  // The camera looks through it and what rides on it, while it still shades, bounces light and shows
+  // in mirrors (prop.set's offCamera; rs::Entity::offCamera). A node inside it has its own (NodeEdit).
+  bool                    offCamera = false;
   std::string             parent;  // a prop id, "" at the scene's root
   std::string             bone;    // the parent figure's posable bone it rides on (its id), "" for the figure itself
   std::shared_ptr<Loaded> figure;
@@ -394,6 +398,8 @@ struct Prop
     std::optional<bool>          visible;
     std::optional<rs::Transform> baseLocal;
     bool                         baseVisible = true;
+    bool                         offCamera   = false;  // the camera looks through it (rs::Entity::offCamera)
+    bool                         none() const { return !local && !visible && !offCamera; }
   };
   std::map<int, NodeEdit> nodeEdits;
 };
@@ -1068,6 +1074,7 @@ struct FvHost::Impl
   {
     std::shared_ptr<const fv::physics::SharedTriangles> set;
     glm::mat4                                            toWorld{1.f};
+    bool offCamera = false;  // the camera looks through it: a ray from the pointer does too (prop.place)
   };
   struct SceneHit
   {

@@ -40,12 +40,16 @@ NAMESPACE_SHADERIO_BEGIN()
 #define PT_WORKGROUP_Y 8
 #define SILHOUETTE_WORKGROUP_SIZE 16
 
-// TLAS instance masks. Every ray sees every instance but the rays of a scatter walk, which see only
-// what can bound the medium: a material whose extras say `"fvWalkThrough": true` (lashes, hair,
+// TLAS instance masks. Every ray sees every instance but two kinds. The rays of a scatter walk see
+// only what can bound the medium: a material whose extras say `"fvWalkThrough": true` (lashes, hair,
 // clothing on a figure) has no INSTANCE_MASK_WALK, so a walk under the skin passes through it
-// instead of leaving the skin early.
+// instead of leaving the skin early. And the camera's own rays (ptCameraView, the click and hover
+// picks, the pixel readout) see only what has INSTANCE_MASK_CAMERA: an entity hidden from the camera
+// (rs::Entity::offCamera) has none, so it is looked through while it still shades, bounces light and
+// shows in mirrors.
 #define INSTANCE_MASK_WALK 0x01
 #define INSTANCE_MASK_OTHER 0x02
+#define INSTANCE_MASK_CAMERA 0x04
 
 
 // Indices into `texturesHdr[]` (eTexturesHdr binding).

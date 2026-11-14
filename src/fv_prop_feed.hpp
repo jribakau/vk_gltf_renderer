@@ -56,6 +56,7 @@ struct PropSpec
   int           parentNode = -1;
   rs::Transform transform;
   bool          visible = true;
+  bool          offCamera = false;  // the camera looks through it and what rides on it (rs::Entity::offCamera)
   // what goes under its root, one of: a figure's scene graph and what its feed lowers with
   const SceneGraph*   figure     = nullptr;
   int                 figureRoot = -1;

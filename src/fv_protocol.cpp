@@ -143,7 +143,9 @@ namespace {
 // the Milky Way and the air's glow, turned by the clock. An older renderer refuses the lighting that has it.
 // 73: the lighting's `rain` section (rate, wind, windFrom, shutter, falling): the drops falling in the air,
 // drawn over the picture. An older renderer refuses the lighting that has it.
-constexpr int kProtocolVersion = 73;
+// 74: `offCamera` on prop.set, node.set, the scene topic's props and a "nodes/<prop>" node: hidden from
+// the camera alone (rs::Entity::offCamera). An older renderer takes the command and changes nothing.
+constexpr int kProtocolVersion = 74;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

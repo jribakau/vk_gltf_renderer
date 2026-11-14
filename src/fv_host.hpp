@@ -71,7 +71,10 @@
 //                                                (the gizmo's drag of several selected is one)
 //   prop.set        {prop, kind?: a DAZ kind (the object treated as one: a body gains or loses its
 //                   collider, dForce and, for a character, contact and Physics mode; what it wears stays),
-//                   name?, visible?, transform?: {t, e (degrees XYZ) | r (quaternion xyzw), s},
+//                   name?, visible?, offCamera?: the camera looks through it and what rides on it, while it
+//                   still shades, bounces light and shows in mirrors (a wall between the camera and a
+//                   room, a softbox in frame; a click and prop.place pass it too),
+//                   transform?: {t, e (degrees XYZ) | r (quaternion xyzw), s},
 //                   parent?: prop id | null, bone?: a posable bone of the parent figure (id or name) |
 //                   null (with a new parent, none unless given; alone, another bone of the same figure):
 //                   it rides on the bone, posed with it, its transform relative to the bone,
@@ -92,12 +95,15 @@
 //                                                -> {ok, hit}: whether it met a surface
 //   prop.aim        {prop, at: prop id | [x, y, z]}   turned so its -Z looks at the prop's middle or the
 //                                                point, once (it doesn't follow); a step of the history
-//   node.set        {prop, node, visible?: bool | null, transform?: {t (metres), e | r, s} | null}   a node
+//   node.set        {prop, node, visible?: bool | null, offCamera?: bool | null, transform?: {t (metres), e | r, s}
+//                   | null}                      a node
 //                                                of the prop's "nodes/<prop>" topic hidden, shown or moved
-//                                                in its parent's space; null puts the field back as the
+//                                                in its parent's space, or hidden from the camera alone
+//                                                (prop.set's offCamera, for the node and what is under
+//                                                it); null puts the field back as the
 //                                                file has it. Kept over every step of the feed (a pose, a
 //                                                dial), in scene.state's `nodes` ({"<node>": {visible?,
-//                                                transform?}}) and the history. Refused for a figure's root
+//                                                offCamera?, transform?}}) and the history. Refused for a figure's root
 //                                                (the prop's Transform) and what it wears (the Wardrobe's);
 //                                                a posable bone or a skinned mesh hides but doesn't move
 //                                                (the selection's state.moves)
@@ -309,11 +315,11 @@
 // texture size allows to fit GPU memory, and the long edge of the largest), "lighting", "history" ({undo: [label], redo: [label], busy},
 // the next to undo or redo first), "animation" ({clips: {number: {name,
 // duration, order, prop}}, current: number | null, playing, time, speed, loop}), "selection", "camera",
-// "scene" ({props: {id: {kind, name, parent, bone, visible, order, transform: {t, r, e, s}, stats?, source?,
+// "scene" ({props: {id: {kind, name, parent, bone, visible, offCamera, order, transform: {t, r, e, s}, stats?, source?,
 // format?, generation?, posable?, morphs?, body?, camera?, light?}}, order: [id], solo: [id]}; `morphs` a
 // DAZ object with dials, `body` a character or creature, `solo` what Isolate shows, empty for all), and per
 // prop "nodes/<prop>"
-// (its hierarchy; `hidden` on a node node.set hid), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",
+// (its hierarchy; `hidden` on a node node.set hid, `offCamera` on one it hid from the camera alone), "materials/<prop>" (fv_materials.hpp), "pose/<prop>", "morphs/<prop>",
 // "wardrobe/<prop>" ({figure, items: {id: {label, kind, rel, visible, own, channels, collision,
 // cloth: {able, native, on, strength}, meshes: [scene mesh], color?: rel | null}}, collision: {enabled,
 // busy, corrected}}; `color` is the colour preset on the item, from wardrobe.color or the last preset that

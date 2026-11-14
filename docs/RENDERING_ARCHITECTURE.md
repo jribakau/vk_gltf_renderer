@@ -28,7 +28,11 @@ morph targets, is deformed for that entity: its own prims, over output streams t
 passes write and refit.
 
 **Slots and side tables.** An entity's draw item (entity, mesh, submesh, instancing copy) is an
-instance: a render-node row and a TLAS row, whose custom index is its prim slot. A submesh drawn
+instance: a render-node row and a TLAS row, whose custom index is its prim slot. The row's mask and
+flags are its material's (`materialBits`), less the camera's bit for an instance the camera looks
+through (`Entity::offCamera`, `instanceMaskOf`): the camera's own rays and the picks trace with that
+bit alone, every other ray with all of them, so such an instance still shades, bounces light and
+shows in mirrors. A hidden instance's row has no BLAS, so no ray meets it. A submesh drawn
 somewhere is a prim: its own index buffer and BLAS over its mesh's streams, or over its drawer's
 outputs when the entity deforms it. Instance, prim and material slots come lowest-first from pools;
 a freed slot is a hole (a zeroed row, a null TLAS row) until its retire frame, and only then goes

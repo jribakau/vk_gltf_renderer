@@ -230,6 +230,54 @@ TEST(RetainedResidency, HidingNullsTheTlasRowAndKeepsTheSlot)
   expectClean(scene, residency, gpu);
 }
 
+// What the camera looks through keeps its BLAS and its place in every table: its row's mask alone
+// loses the camera's bit, so bounce and shadow rays still meet it
+TEST(RetainedResidency, OffCameraClearsTheRowsCameraBitAndKeepsItsBlas)
+{
+  RetainedScene  scene;
+  const EntityId room = scene.createEntity("room", {});
+  const EntityId wall = drawn(scene, "wall", scene.addMesh(gridMesh(2, 0.f)), {material(scene, "m")});
+  const EntityId lamp = drawn(scene, "lamp", scene.addMesh(gridMesh(2, 1.f)), {material(scene, "n")});
+  scene.setParent(wall, room);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  const auto maskOf = [&](EntityId e) {
+    for(uint32_t s = 0; s < residency.instanceCapacity(); s++)
+      if(const Residency::Instance* inst = residency.instance(s); inst && inst->entity == e)
+        return gpu.tlas(residency.tlas())->rows[s];
+    return TlasRow{};
+  };
+  EXPECT_NE(maskOf(wall).mask & INSTANCE_MASK_CAMERA, 0);
+
+  scene.setOffCamera(room, true);  // the wall's parent
+  gpu.beginFrame();
+  SyncResult r = residency.sync(scene);
+  EXPECT_TRUE(r.changed);  // the picture starts again
+  EXPECT_FALSE(r.drawListChanged || r.visibilityChanged);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(maskOf(wall).mask & INSTANCE_MASK_CAMERA, 0);
+  EXPECT_NE(maskOf(wall).mask, 0);
+  EXPECT_TRUE(maskOf(wall).blas);
+  EXPECT_NE(maskOf(lamp).mask & INSTANCE_MASK_CAMERA, 0);
+
+  scene.setOffCamera(room, false);
+  gpu.beginFrame();
+  r = residency.sync(scene);
+  EXPECT_TRUE(r.changed);
+  expectClean(scene, residency, gpu);
+  EXPECT_NE(maskOf(wall).mask & INSTANCE_MASK_CAMERA, 0);
+
+  // made off camera, an instance starts so
+  scene.setOffCamera(lamp, true);
+  const EntityId late = drawn(scene, "late", scene.addMesh(gridMesh(2, 2.f)), {material(scene, "o")});
+  scene.setParent(late, lamp);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(maskOf(late).mask & INSTANCE_MASK_CAMERA, 0);
+}
+
 TEST(RetainedResidency, AMoveRewritesTheRowsOfWhatMoved)
 {
   RetainedScene  scene;
@@ -2764,7 +2812,10 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
         scene.setLocal(pick(live), t);
       }
       else if(op == 4)
+      {
         scene.setVisible(pick(live), rng() % 2 == 0);
+        scene.setOffCamera(pick(live), rng() % 3 == 0);
+      }
       else if(op == 7)
       {
         // a pose: the second bone turns

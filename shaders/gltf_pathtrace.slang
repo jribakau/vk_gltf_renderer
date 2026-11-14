@@ -740,8 +740,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 #endif
 
     // Trace the ray through the scene. A walk's step sees only what can bound its medium: it
-    // passes through lashes, hair and clothing that reach under the skin (INSTANCE_MASK_WALK).
-    raytracer.Trace(ray, payload, seed, freeFlight.drawn ? INSTANCE_MASK_WALK : 0xFF,
+    // passes through lashes, hair and clothing that reach under the skin (INSTANCE_MASK_WALK). A ray
+    // that still looks as the camera does passes what the camera looks through (ptViewMask).
+    raytracer.Trace(ray, payload, seed, freeFlight.drawn ? uint(INSTANCE_MASK_WALK) : ptViewMask(pt),
                     ptOnCameraRay(pt) || ptIsInside(pt) ? CAMERA_RAY_FLAGS : BOUNCE_RAY_FLAGS);
     ray.TMax = INFINITE;
 
@@ -1316,7 +1317,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // (dlssReflectionShare: water from a low camera, a window edge-on): then its own, which the
         // reflection moves with. The roughness follows the share.
         DlssGlassPsr psr     = hitWater ? dlssTraceWater(pbrMat, hit, ray.Direction, frameInfo)
-                                        : dlssTraceClearGlass(pbrMat, hit, materialIndex >= 0 ? rayIntoEyeChamber(ray.Direction, pbrMat.N, hit, materials + materialIndex) : ray.Direction, ptIsInside(pt));
+                                        : dlssTraceClearGlass(pbrMat, hit, materialIndex >= 0 ? rayIntoEyeChamber(ray.Direction, pbrMat.N, hit, materials + materialIndex) : ray.Direction, ptIsInside(pt), ptViewMask(pt));
         float        ndotv   = saturate(dot(pbrMat.N, -ray.Direction));
         float        fresnel = schlickFresnel((pbrMat.ior2 > 0.0f) ? (pbrMat.ior2 / pbrMat.ior1) : 1.5f, ndotv);
         if(bsdfIsPlate(pbrMat))
@@ -3184,7 +3185,7 @@ void probeCameraMedium(IRaytracer raytracer)
   for(int i = 0; i < CAMERA_MEDIUM_MAX_SURFACES; i++)
   {
     HitPayload payload;
-    raytracer.Trace(ray, payload, seed, 0xFF, CAMERA_RAY_FLAGS);
+    raytracer.Trace(ray, payload, seed, INSTANCE_MASK_CAMERA, CAMERA_RAY_FLAGS);  // as the camera's paths start
     if(payload.hitT == INFINITE)
       break;
 
@@ -3249,7 +3250,7 @@ void inspectPixel(IRaytracer raytracer)
   uint    seed = 0x9E3779B9u;
 
   HitPayload payload;
-  raytracer.Trace(ray, payload, seed, 0xFF, CAMERA_RAY_FLAGS);
+  raytracer.Trace(ray, payload, seed, INSTANCE_MASK_CAMERA, CAMERA_RAY_FLAGS);  // what the camera sees there
   GltfRenderNode      node = {};
   GltfRenderPrimitive prim = {};
   HitState            hit  = {};

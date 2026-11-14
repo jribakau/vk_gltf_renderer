@@ -71,7 +71,7 @@
 // Topics: "selection" ({prop, props, node, name, mesh, kind, bone, surface, state}: `props` every prop
 // selected, `prop` first; `node` is null when the prop itself
 // is selected; `bone`, the pose bone id, when a posable bone is; `state` for another node the Scene
-// tab may change ({visible, t, r, e, s, edited, moves}, metres and degrees, the host's node.set); `surface`, after a click on the prop,
+// tab may change ({visible, offCamera, t, r, e, s, edited, moves}, metres and degrees, the host's node.set); `surface`, after a click on the prop,
 // the surface it hit as its "materials/<prop>" topic names it, "m:<i>"), "camera" ({position, target, up,
 // focalLength, view, free?}, at most every 33 ms while it moves: `view` is the camera prop looked
 // through or null, and `free` where the free view was left meanwhile). The host publishes "scene" and "nodes/<prop>"

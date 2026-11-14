@@ -2474,7 +2474,10 @@ float3 dlssPaneTint(GltfShadeMaterial* mat, GltfRenderPrimitive prim, uint trian
   return bsdfThinTintAtSlant(mat.pbrBaseColorFactor.xyz, ior, abs(dot(dir, normal)));
 }
 
-HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float3 through)
+//
+// `instanceMask`: the instances the ray can meet, the camera's own (INSTANCE_MASK_CAMERA) where the
+// path it stands for still looks as the camera does (ptCameraView).
+HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float3 through, uint instanceMask)
 {
   GltfShadeMaterial*   materials        = pushConst.gltfScene->materials;
   GltfRenderNode*      renderNodes      = pushConst.gltfScene->renderNodes;
@@ -2490,7 +2493,7 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float
   float    committedT = INFINITE;
   RayQuery rayQuery;
   PIXEL_TIME_COUNT(kPixelTimeCountRays);
-  rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, ray);
+  rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES, instanceMask, ray);
   while(rayQuery.Proceed())
   {
     GltfRenderNode     node       = renderNodes[rayQuery.CandidateInstanceIndex()];
@@ -2590,7 +2593,7 @@ float3 dlssCrossingTint(PbrMaterial mat, float3 dir)
   return bsdfThinPaneTint(mat) ? bsdfThinTintAtSlant(tint, mat.ior2 / mat.ior1, abs(dot(dir, mat.N))) : tint;
 }
 
-DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3 dir, bool isInside)
+DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3 dir, bool isInside, uint instanceMask)
 {
   GltfShadeMaterial*   materials       = pushConst.gltfScene->materials;
   GltfRenderNode*      renderNodes     = pushConst.gltfScene->renderNodes;
@@ -2632,7 +2635,7 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     guideRay.Direction = dir;
     guideRay.TMin      = 0.0f;
     guideRay.TMax      = INFINITE;
-    HitPayload payload = dlssTraceSkipThinGlass(guideRay, glassCount, result.through);
+    HitPayload payload = dlssTraceSkipThinGlass(guideRay, glassCount, result.through, instanceMask);
     if(payload.hitT == INFINITE || glassCount >= pushConst.maxDepth)
       return result;
     result.pathLength += payload.hitT;
@@ -2684,7 +2687,7 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
 // no mesh, so the chain does not see it.
 DlssGlassPsr dlssTraceWater(PbrMaterial waterMat, HitState waterHit, float3 dir, SceneFrameInfo* frameInfo)
 {
-  DlssGlassPsr psr       = dlssTraceClearGlass(waterMat, waterHit, dir, false);
+  DlssGlassPsr psr       = dlssTraceClearGlass(waterMat, waterHit, dir, false, 0xFFu);  // past the water is a view of its own (ptCameraView)
   const float3 N         = dot(waterMat.N, dir) < 0.0f ? waterMat.N : -waterMat.N;
   const float3 refracted = refract(dir, N, waterMat.ior1 / waterMat.ior2);
   if(dot(refracted, refracted) <= 0.0f || refracted.y >= 0.0f)
@@ -2745,7 +2748,7 @@ DlssMirror dlssTraceMirror(PbrMaterial mat, HitState surface, float3 dir, float3
   ray.TMax           = INFINITE;
   int        glass   = 0;
   float3     through = float3(1.0f);
-  HitPayload payload = dlssTraceSkipThinGlass(ray, glass, through);
+  HitPayload payload = dlssTraceSkipThinGlass(ray, glass, through, 0xFFu);  // a reflection is a view of its own
 
   const float floorT = infinitePlaneCrossing(ray.Origin, out, payload.hitT, frameInfo);
   if(floorT > 0.0f)
@@ -3079,6 +3082,31 @@ bool ptOnCameraRay(PathTracerState pt)
   none = none && pt.glassBounces == 0;
 #endif
   return none && pt.waterBounces == 0;
+}
+
+// Whether the path still looks as the camera does: on its camera ray, or past it through clear
+// crossings alone (a pane, a lens, a film: nullDistance counts them since the last real event). A
+// reflection is a view of its own, and so is what lies past the water's surface or a fibre. (A pane's
+// reflection seen again through a second pane counts as the camera's: the counts can't tell the two
+// apart, and a flag for it would ride with every path.)
+bool ptCameraView(PathTracerState pt)
+{
+  bool view = pt.surfaceDepth == 0 && pt.waterBounces == 0;
+#if GLTF_USE_HAIR
+  view = view && pt.hairBounces == 0;
+#endif
+#if GLTF_USE_TRANSMISSION
+  view = view && (pt.glassBounces == 0 || pt.nullDistance > 0.0F);
+#endif
+  return view;
+}
+
+// The TLAS instances the path's next ray can meet: while it looks as the camera does, not what the
+// camera looks through (shaderio.h INSTANCE_MASK_CAMERA); every instance after that, so a wall hidden
+// from the camera still shades, bounces light and shows in a mirror.
+uint ptViewMask(PathTracerState pt)
+{
+  return ptCameraView(pt) ? uint(INSTANCE_MASK_CAMERA) : 0xFFu;
 }
 
 // The light a path's ray meets on sized lights before `tMax` (with `escaped`, the discs of

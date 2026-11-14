@@ -323,6 +323,8 @@ void FvHost::Impl::applyVisible(const Prop& p)
   if(!renderer->feedsHostScene() || !renderer->hostScene().entity(p.root))
     return;
   renderer->hostScene().setVisible(p.root, shownNow(p));
+  // and what the camera looks through: its own flag, its riders with it (RetainedScene::offCamera)
+  renderer->hostScene().setOffCamera(p.root, p.offCamera);
 }
 
 tinygltf::Light FvHost::Impl::lightPayload(const Prop& p) const
@@ -378,6 +380,7 @@ Json FvHost::Impl::propJson(const Prop& p) const
                      {"parent", p.parent.empty() ? Json() : Json(p.parent)},
                      {"bone", p.bone.empty() ? Json() : Json(p.bone)},
                      {"visible", p.visible},
+                     {"offCamera", p.offCamera},
                      {"order", order},
                      {"transform",
                       {{"t", vec3Json(p.transform.translation)},
@@ -794,7 +797,7 @@ void FvHost::Impl::releaseFed()
 
 fv::PropSpec FvHost::Impl::specOf(const Prop& p, bool figureChanged) const
 {
-  fv::PropSpec s{.id = p.id, .number = uint32_t(std::atoi(p.id.c_str() + 2)), .name = p.name, .parent = p.parent, .visible = shownNow(p)};
+  fv::PropSpec s{.id = p.id, .number = uint32_t(std::atoi(p.id.c_str() + 2)), .name = p.name, .parent = p.parent, .visible = shownNow(p), .offCamera = p.offCamera};
   if(const auto up = p.parent.empty() ? nullptr : findProp(p.parent))
     s.parentNode = boneNode(*up, p.bone);
   s.transform = {.translation = p.transform.translation, .rotation = p.transform.rotation, .scale = p.transform.scale};
@@ -1004,8 +1007,13 @@ void FvHost::Impl::compose()
         // what the user hid or moved inside it, put on what was fed (a new feed, a new import) again
         applyNodeEdits(p);
         for(const auto& [node, edit] : p.nodeEdits)
-          if(edit.visible == std::optional<bool>(false) && described["nodes"].contains(std::to_string(node)))
-            described["nodes"][std::to_string(node)]["hidden"] = true;
+          if(const std::string key = std::to_string(node); described["nodes"].contains(key))
+          {
+            if(edit.visible == std::optional<bool>(false))
+              described["nodes"][key]["hidden"] = true;
+            if(edit.offCamera)
+              described["nodes"][key]["offCamera"] = true;
+          }
         p.stats = described["stats"];
         protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
       }
@@ -1030,8 +1038,13 @@ void FvHost::Impl::compose()
         // what the user hid or moved inside it, put on what was fed (a new feed, a new import) again
         applyNodeEdits(p);
         for(const auto& [node, edit] : p.nodeEdits)
-          if(edit.visible == std::optional<bool>(false) && described["nodes"].contains(std::to_string(node)))
-            described["nodes"][std::to_string(node)]["hidden"] = true;
+          if(const std::string key = std::to_string(node); described["nodes"].contains(key))
+          {
+            if(edit.visible == std::optional<bool>(false))
+              described["nodes"][key]["hidden"] = true;
+            if(edit.offCamera)
+              described["nodes"][key]["offCamera"] = true;
+          }
         p.stats = described["stats"];
         protocol->events().snapshot("nodes/" + p.id, {{"prop", p.id}, {"nodes", described["nodes"]}});
       }
@@ -1202,6 +1215,11 @@ Json FvHost::Impl::propSet(const Json& args)
     p->visible = args["visible"].get<bool>();
     applyVisible(*p);
   }
+  if(args.contains("offCamera"))
+  {
+    p->offCamera = args["offCamera"].is_boolean() && args["offCamera"].get<bool>();
+    applyVisible(*p);
+  }
   if(args.contains("camera") && p->kind == PropKind::eCamera)
   {
     const Json& c  = args["camera"];
@@ -1309,6 +1327,7 @@ Json FvHost::Impl::propDuplicate(const Json& args)
     p->transform = src->transform;
     p->euler     = src->euler;
     p->visible   = src->visible;
+    p->offCamera = src->offCamera;
     p->parent    = under.empty() ? src->parent : under;
     p->bone      = under.empty() ? src->bone : std::string();
   };

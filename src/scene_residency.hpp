@@ -324,6 +324,7 @@ public:
     uint32_t   materialSlot = 0;
     glm::mat4  world        = glm::mat4(1.f);
     bool       shown        = true;
+    bool       offCamera    = false;  // the camera looks through it: its TLAS mask (instanceMaskOf)
     bool       deformed     = false;  // its prim is its drawer's
   };
 

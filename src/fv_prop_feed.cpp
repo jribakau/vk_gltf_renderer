@@ -138,6 +138,8 @@ PropFeed::Result PropFeed::sync(std::span<const PropSpec> props)
       m_scene.setLocal(p.root, s.transform);
     if(m_scene.entity(p.root)->visible != s.visible)
       m_scene.setVisible(p.root, s.visible);
+    if(m_scene.entity(p.root)->offCamera != s.offCamera)
+      m_scene.setOffCamera(p.root, s.offCamera);
   }
 
   for(const PropSpec& s : props)

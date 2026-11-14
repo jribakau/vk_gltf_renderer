@@ -97,7 +97,7 @@ std::vector<FvHost::Impl::PlacedSet> FvHost::Impl::placedSets(const Prop& p)
       const tinygltf::Node& n = model.nodes[node];
       const rs::EntityId    e = p.imported.entities[node];
       if(n.mesh >= 0 && n.skin < 0 && scene.entity(e) && scene.shown(e))
-        out.push_back({contactMesh(p.model, n.mesh), scene.world(e)});
+        out.push_back({contactMesh(p.model, n.mesh), scene.world(e), scene.offCamera(e)});
     }
   }
   else if(p.figure && p.figure->feed)
@@ -106,8 +106,9 @@ std::vector<FvHost::Impl::PlacedSet> FvHost::Impl::placedSets(const Prop& p)
     if(scene.entity(root))
     {
       const glm::mat4 world = scene.world(root);
-      for(const auto& set : contactSets(*p.figure))
-        out.push_back({set, world});
+      const auto&     sets  = contactSets(*p.figure);
+      for(size_t k = 0; k < sets.size(); k++)
+        out.push_back({sets[k], world, scene.offCamera(p.figure->feed->entityOf(p.figure->contactSetNodes[k]))});
     }
   }
   return out;
@@ -504,8 +505,9 @@ Json FvHost::Impl::nodeState(const Prop& p, int node)
   if(!e)
     return Json();
   Json out       = transformJson(e->local, unitOf(p));
-  out["visible"] = e->visible;
-  out["edited"]  = p.nodeEdits.count(node) > 0;
+  out["visible"]   = e->visible;
+  out["offCamera"] = e->offCamera;
+  out["edited"]    = p.nodeEdits.count(node) > 0;
   out["moves"]   = nodeMoves(p, node);
   return out;
 }
@@ -612,8 +614,9 @@ std::optional<glm::vec3> FvHost::Impl::nodePivot(rs::EntityId entity)
   return nodePivotKept.at;
 }
 
-// node.set {prop, node, visible?: bool | null, transform?: {t (metres), e (degrees) | r, s} | null}: a
-// node shown or hidden, moved, or (null) back as its file has it.
+// node.set {prop, node, visible?: bool | null, offCamera?: bool | null, transform?: {t (metres), e (degrees)
+// | r, s} | null}: a node shown or hidden, hidden from the camera alone, moved, or (null) back as its file
+// has it.
 Json FvHost::Impl::nodeSet(const Json& args)
 {
   const auto p = findProp(args.at("prop").get<std::string>());
@@ -638,6 +641,8 @@ Json FvHost::Impl::nodeSet(const Json& args)
   }
   if(args.contains("visible"))
     edit.visible = args["visible"].is_boolean() ? std::optional<bool>(args["visible"].get<bool>()) : std::nullopt;
+  if(args.contains("offCamera"))  // no file has it: null is false
+    edit.offCamera = args["offCamera"].is_boolean() && args["offCamera"].get<bool>();
   if(args.contains("transform"))
   {
     const Json& t = args["transform"];
@@ -666,10 +671,13 @@ Json FvHost::Impl::nodeSet(const Json& args)
   }
   p->nodeEdits[node] = edit;
   applyNodeEdit(*p, node);
-  if(!edit.visible && !edit.local)
+  if(edit.none())
     p->nodeEdits.erase(node);
   // the eye in the Nodes list, and the selected node's fields
-  protocol->events().patch("nodes/" + p->id, {{"nodes", {{std::to_string(node), {{"hidden", edit.visible == std::optional<bool>(false) ? Json(true) : Json()}}}}}});
+  protocol->events().patch("nodes/" + p->id, {{"nodes",
+                                              {{std::to_string(node),
+                                                {{"hidden", edit.visible == std::optional<bool>(false) ? Json(true) : Json()},
+                                                 {"offCamera", edit.offCamera ? Json(true) : Json()}}}}}});
   if(view)
     view->refreshSelection();
   return {{"ok", true}};
@@ -678,6 +686,11 @@ Json FvHost::Impl::nodeSet(const Json& args)
 void FvHost::Impl::applyNodeEdit(Prop& p, int node)
 {
   const auto it = p.nodeEdits.find(node);
+  // what the camera looks through is the entity's own, which no feed sets: put on it here, for a DAZ
+  // object's node and a model's alike
+  if(renderer->feedsHostScene())
+    if(const rs::EntityId e = nodeEntity(p, node); renderer->hostScene().entity(e))
+      renderer->hostScene().setOffCamera(e, it != p.nodeEdits.end() && it->second.offCamera);
   if(p.figure && p.figure->feed)
   {
     const fv::Figure& fig = *p.figure->fig;
@@ -712,6 +725,8 @@ Json FvHost::Impl::nodeEditJson(const Prop& p, int node) const
   {
     if(it->second.visible)
       out["visible"] = *it->second.visible;
+    if(it->second.offCamera)
+      out["offCamera"] = true;
     if(it->second.local)
     {
       Json t = transformJson(*it->second.local, unitOf(p));
@@ -854,8 +869,10 @@ Json FvHost::Impl::propPlace(const Json& args)
   {
     if(!shown(*q) || std::any_of(moving.begin(), moving.end(), [&](const auto& m) { return m == q || ridesOn(*q, m->id); }))
       continue;
+    // the pointer's ray is the camera's: it passes what the camera looks through, as a click does
     for(PlacedSet& s : placedSets(*q))
-      under.push_back(std::move(s));
+      if(!s.offCamera)
+        under.push_back(std::move(s));
   }
   for(const PlacedSet& s : under)
     if(!s.set->made() && placeIndexing.insert(s.set.get()).second)

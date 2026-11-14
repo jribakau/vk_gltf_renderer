@@ -421,8 +421,8 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       if(const fv::mat::Material* payload = drawnPayload(scene, residency, item.material))
       {
         const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(*payload);
-        if(row.mask != bits.instanceMask || row.flags != bits.instanceFlags)
-          out.push_back(at("I1", s) + "its TLAS mask or flags are not its material's");
+        if(row.mask != nvvkgltf::instanceMaskOf(bits, item.offCamera) || row.flags != bits.instanceFlags)
+          out.push_back(at("I1", s) + "its TLAS mask or flags are not its material's (less the camera's bit off camera)");
       }
     }
 
