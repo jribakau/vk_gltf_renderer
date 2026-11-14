@@ -352,6 +352,9 @@ struct Settings
   // `blasTimeBuilds` (debug): the GPU time of a frame's BLAS builds and refits and its TLAS build, a
   // `GPU BLAS frame` timing line for one frame in a few (GltfRenderer::syncRetainedScene)
   bool blasTimeBuilds = false;
+  // The cornea's caustic (eye_caustic.h.slang, SceneFrameInfoFlags::eSceneEyeCaustic): a punctual
+  // light's sample in an eye's chamber is bent through the tear film; off, it goes straight
+  bool ptEyeCaustic = true;
   // `ptEstimator` (debug): what counts the light both a light sample and a BSDF ray reach
   // (SceneFrameInfo::estimator): 0 both (MIS), 1 light samples alone, 2 BSDF rays alone
   int ptEstimator = 0;

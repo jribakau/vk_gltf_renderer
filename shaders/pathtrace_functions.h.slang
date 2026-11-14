@@ -66,6 +66,7 @@ struct DirectLight
   float3    radianceOverPdf;  // Radiance over pdf
   float     distance;         // Distance to the light
   float     pdf;              // Probability of sampling this light
+  bool      punctual;         // A lamp or the sun (a place or a direction), not the environment or an emitting surface
   LightPick pick;             // What the pick gave each light at this vertex, for the BSDF side's MIS
   // What the sample was, as a pixel's record keeps it from frame to frame (light_ris.h.slang): the
   // emissive triangle and the point's barycentrics, or the environment's direction; LIGHT_REUSE_NONE
@@ -1030,6 +1031,7 @@ DirectLight noDirectLight()
   directLight.pdf             = 0.0f;
   directLight.distance        = INFINITE;
   directLight.radianceOverPdf = float3(0.0f);
+  directLight.punctual        = false;
   directLight.pick            = {0.0F, 0.0F, 0.0F, float3(0.0F), float3(0.0F), false};
 #if USE_LIGHT_RIS
   directLight.reuseKind  = LIGHT_REUSE_NONE;
@@ -1389,6 +1391,7 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
   directLight.direction       = -contrib.incidentVector;
   directLight.distance        = contrib.distance;
   directLight.radianceOverPdf = contrib.intensity / selectionPdf;
+  directLight.punctual        = true;
   // A sphere's sample ends on the sphere: the cone reaches its silhouette, where the centre's
   // distance runs past the light into whatever is behind it
   if(light.type != LightType::eLightTypeDirectional && light.radius > 0.0F)

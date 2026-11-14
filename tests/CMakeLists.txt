@@ -400,6 +400,10 @@ target_include_directories(${BSDF_TEST_NAME} PRIVATE ${NVSHADERS_DIR})
 gtest_discover_tests(${BSDF_TEST_NAME})
 set_target_properties(${BSDF_TEST_NAME} PROPERTIES FOLDER "Tests")
 
+# The cornea's caustic: the walk through an eye's tear film arrives on Snell's ray, a flat film moves
+# no light, and over an iris it puts the light where a beam traced through the same film lands it
+target_sources(${BSDF_TEST_NAME} PRIVATE test_eye_caustic.cpp)
+
 #####################################################################################
 # Benchmark executable (separate from tests)
 set(BENCHMARK_NAME ${PROJECT_NAME}_benchmarks)

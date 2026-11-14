@@ -88,6 +88,24 @@ TEST(MaterialBits, AWalkThroughSurfaceLeavesTheWalkMask)
   EXPECT_EQ(materialBits(m).instanceMask, INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA);
 }
 
+// An eye's tear film (a chamber behind it) is found by itself: the rays from the iris under it see
+// nothing else
+TEST(MaterialBits, ATearFilmHasAMaskBitOfItsOwn)
+{
+  fv::mat::Material film;
+  film.transmission = fv::mat::Transmission{.factor = 1.0f};
+  film.chamberIor   = 1.336f;
+  film.walkThrough  = true;
+  EXPECT_EQ(materialBits(film).instanceMask, INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_TEAR_FILM);
+  // not what lies in the chamber, nor a pane of glass
+  fv::mat::Material iris;
+  iris.inChamberIor = 1.336f;
+  EXPECT_EQ(materialBits(iris).instanceMask & INSTANCE_MASK_TEAR_FILM, 0);
+  fv::mat::Material glass;
+  glass.transmission = fv::mat::Transmission{.factor = 1.0f};
+  EXPECT_EQ(materialBits(glass).instanceMask & INSTANCE_MASK_TEAR_FILM, 0);
+}
+
 // What the camera looks through is met by every ray but the camera's own: a bounce or shadow ray
 // (0xFF) and a walk's (INSTANCE_MASK_WALK) see it as before
 TEST(MaterialBits, OffCameraAnInstanceLosesTheCamerasBitAlone)

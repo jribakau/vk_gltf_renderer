@@ -631,6 +631,12 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   .help            = "Haze: how much it scatters forward, the halo round a light (Henyey-Greenstein g, -0.9 to 0.9)",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.hazeAnisotropy, Persist::eNo, -0.9F, 0.9F);
+  // The cornea's caustic (eye_caustic.h.slang)
+  m_settings.add({.name            = "ptEyeCaustic",
+                  .help            = "PathTracer: a lamp's or the sun's light on an iris is bent through the eye's tear "
+                                     "film, which focuses it on the far side (the cornea's caustic); off: it goes straight",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.ptEyeCaustic, Persist::eNo);
   // A debug check that light sampling and BSDF sampling each give the whole image (light_pick.h.slang)
   m_settings.add({.name            = "ptEstimator",
                   .help            = "PathTracer (debug): what counts light both a light sample and a BSDF ray reach "

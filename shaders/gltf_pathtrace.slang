@@ -78,6 +78,7 @@ static bool doDebug = false;
 #include "radiance_cache.h.slang"
 #include "skin_slab.h.slang"
 #include "skin_spread.h.slang"
+#include "eye_caustic.h.slang"
 #include "aperture.h.slang"
 #include "sky_bruneton_radiance.h.slang"
 #include "sky_clouds.h.slang"
@@ -621,6 +622,77 @@ PbrMaterial lightReuseMaterialThere(PbrMaterial m, float3 shading)
   }
   m.N = n;
   return m;
+}
+#endif
+
+#if GLTF_USE_TRANSMISSION
+// An eye's tear film as the walk of eye_caustic_solve.h.slang meets it, from a point of the iris under
+// it: the film's own mesh, found by a ray that sees tear films alone (INSTANCE_MASK_TEAR_FILM), with
+// its interpolated normal. From inside the chamber only: a film met from its front is another eye's,
+// or the point is not under one.
+static const float EYE_FILM_REACH = 0.03F;  // metres: no film is further from its iris than an eyeball is wide
+// A film nearer than this lies on the surface (the white of the eye): it focuses nothing there, and
+// the walk's steps would be finer than a position's last digits
+static const float EYE_FILM_MIN_DEPTH = 2.0e-4F;
+struct EyeFilmMesh
+{
+  float3 point;  // the shaded point
+
+  EyeExit leave(float3 origin, float3 w, float4 light)
+  {
+    RayDesc ray;
+    ray.Origin    = point + origin;
+    ray.Direction = w;
+    ray.TMin      = 0.0F;
+    ray.TMax      = EYE_FILM_REACH;
+    PIXEL_TIME_COUNT(kPixelTimeCountRays);
+    RayQuery rayQuery;
+    rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE, INSTANCE_MASK_TEAR_FILM, ray);
+    while(rayQuery.Proceed())
+    {
+    }  // opaque: nothing to decide
+    if(rayQuery.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+      return eyeNoExit();
+    const GltfRenderNode node = pushConst.gltfScene->renderNodes[rayQuery.CommittedInstanceIndex()];
+    const float          ior  = pushConst.gltfScene->materials[node.materialID].chamberIor;
+    if(!(ior > 0.0F))
+      return eyeNoExit();
+    const GltfRenderPrimitive prim = pushConst.gltfScene->renderPrimitives[rayQuery.CommittedInstanceID()];
+    const float2              b    = rayQuery.CommittedTriangleBarycentrics();
+    const uint3               idx  = getTriangleIndices(prim, rayQuery.CommittedPrimitiveIndex());
+    float3                    n;
+    if(hasVertexNormal(prim))
+      n = getInterpolatedVertexNormal(prim, idx, float3(1.0F - b.x - b.y, b.x, b.y));
+    else
+      n = cross(getVertexPosition(prim, idx.y) - getVertexPosition(prim, idx.x), getVertexPosition(prim, idx.z) - getVertexPosition(prim, idx.x));
+    const float3 normal = normalize(mul(node.worldToObject, float4(n, 0.0F)).xyz);
+    // its normals face out of the eye: a ray that meets them head-on came from outside
+    if(!(dot(normal, w) > 0.0F))
+      return eyeNoExit();
+    return eyeFilmExit(origin, w, rayQuery.CommittedRayT(), normal, ior, light);
+  }
+};
+#define EYE_FILM EyeFilmMesh
+#include "eye_caustic_solve.h.slang"
+
+// Whether anything stands between a point of the chamber and where its light came through the film
+// (`exit`, from the point): the iris's own rim, the white of the eye. What a walk stops at
+// (INSTANCE_MASK_WALK), which leaves out the film and the clear cornea under it.
+bool eyeChamberBlocked(float3 origin, float3 exit)
+{
+  RayDesc ray;
+  ray.Origin    = origin;
+  ray.TMax      = length(exit);
+  ray.Direction = exit / max(ray.TMax, 1.0e-12F);
+  ray.TMin      = 0.0F;
+  ray.TMax     *= 0.98F;
+  PIXEL_TIME_COUNT(kPixelTimeCountRays);
+  RayQuery rayQuery;
+  rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, INSTANCE_MASK_WALK, ray);
+  while(rayQuery.Proceed())
+  {
+  }
+  return rayQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 #endif
 
@@ -1740,8 +1812,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // The vertex before this one, for a ray that crosses this surface clear (below)
     const float     prevSamplePdf = pt.lastSamplePdf;
     const LightPick prevLightPick = pt.lightPick;
+    // A surface in an eye's chamber (FV_materials_eye): its lamps reach it through the film's curve, a
+    // low one from under its own horizon, so none is culled by the surface here (the bent sample below)
+    bool inEyeChamber = false;
+#if GLTF_USE_TRANSMISSION
+    inEyeChamber = !hairOn && materialIndex >= 0 && materials[materialIndex].chamberIor < 0.0F
+                   && hasFlag(pushConst.frameInfo->flags, SceneFrameInfoFlags::eSceneEyeCaustic);
+#endif
     sampleLights(hit.pos, hit.nrm, ray.Direction, seed, directLight, /*isVolumeSample=*/false,
-                 /*lightsFromBothSides=*/bothSides, /*compensatedEnv=*/!lastVertex, g_sobol ? nextSobolDecision() : float4(-1.0F));
+                 /*lightsFromBothSides=*/bothSides || inEyeChamber, /*compensatedEnv=*/!lastVertex, g_sobol ? nextSobolDecision() : float4(-1.0F));
     // The BSDF ray sampled below is weighed against this vertex's pick when it reaches a light
     pt.lightPick          = directLight.pick;
     pt.lightPick.bsdfOnly = smoothHere;
@@ -1917,6 +1996,47 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         bounce.lightReuseWritten            = next.W > 0.0F;
       }
     }
+#endif
+
+    // The cornea's caustic (eye_caustic.h.slang): a lamp's or the sun's sample at a point in an eye's
+    // chamber is bent through the tear film, as the camera's ray was on its way in. Its direction here
+    // becomes the one the light arrives by, its light is scaled by how much the film concentrates it,
+    // and its shadow ray starts where the light came through the film. Where no ray comes through (the
+    // far rim, in the film's own shadow), nothing: that is what bounds the crescent. The environment's
+    // and an emitter's samples go straight, as before, and so does a BSDF ray leaving the eye.
+    bool   eyeBent = false;
+    float3 eyeShadowPos = float3(0.0F);
+    float3 eyeShadowDir = float3(0.0F, 0.0F, 1.0F);
+    float  eyeShadowDist = INFINITE;
+#if GLTF_USE_TRANSMISSION
+    if(inEyeChamber && directLight.punctual && directLight.pdf != 0.0F)
+    {
+      EyeFilmMesh film;
+      film.point = hit.pos;
+      const bool   lamp  = directLight.distance < INFINITE;
+      const float4 light = lamp ? float4(directLight.direction * directLight.distance, 1.0F) : float4(directLight.direction, 0.0F);
+      const EyeCaustic caustic = eyeCausticSolve(film, directLight.direction, hit.geonrm, light, EYE_FILM_MIN_DEPTH);
+      if(caustic.film)
+      {
+        if(caustic.valid && !eyeChamberBlocked(safeOffsetRay(hit.pos, hit.geonrm, hit.offsetDistance), caustic.exit))
+        {
+          eyeBent = true;
+          // just under the film, so the shadow ray crosses it where the light did and takes its share
+          const float3 under = caustic.exit - caustic.normal * max(0.02F * length(caustic.exit), 2.0e-5F);
+          eyeShadowPos       = hit.pos + under;
+          eyeShadowDir       = caustic.toLight;
+          eyeShadowDist      = lamp ? length(float3(light.x, light.y, light.z) - under) : INFINITE;
+          directLight.direction        = caustic.arrival;
+          directLight.radianceOverPdf *= caustic.focus;
+        }
+        else
+          directLight.pdf = 0.0F;  // the film lets none of it here
+      }
+      else if(!(dot(directLight.direction, hit.nrm) > 0.0F) && !bothSides)
+        directLight.pdf = 0.0F;  // no chamber to speak of: culled as the pick would have (the white of the eye)
+    }
+    else if(inEyeChamber && !(dot(directLight.direction, hit.nrm) > 0.0F) && !bothSides)
+      directLight.pdf = 0.0F;
 #endif
 
     // This checks if the light could contribute, but doesn't send a next event estimation (NEE) shadow ray yet.
@@ -2290,11 +2410,19 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       bounce.shadowRayPos      = safeOffsetRay(shadowOffsetBase, shadowOffsetDir, hit.offsetDistance);
       bounce.shadowRayDir      = directLight.direction;
       bounce.shadowRayDist     = directLight.distance;
+      // A light bent through an eye's film (above): from where it came through, toward the light
+      const bool eyeShadow = eyeBent;
+      if(eyeShadow)
+      {
+        bounce.shadowRayPos  = eyeShadowPos;
+        bounce.shadowRayDir  = eyeShadowDir;
+        bounce.shadowRayDist = eyeShadowDist;
+      }
 
       // The light was sampled from `hit.pos`, stopping just short of the emitter. The terminator
       // offset moves the origin, so aim at that same end point: keeping direction and distance would
       // shift it through a grazing emissive triangle, which then shadows itself.
-      if(directLight.distance < INFINITE)
+      if(directLight.distance < INFINITE && !eyeShadow)
       {
         const float3 toTarget = hit.pos + directLight.direction * directLight.distance - bounce.shadowRayPos;
         bounce.shadowRayDist  = length(toTarget);

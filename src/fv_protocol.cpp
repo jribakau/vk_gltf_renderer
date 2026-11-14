@@ -147,7 +147,9 @@ namespace {
 // the camera alone (rs::Entity::offCamera). An older renderer takes the command and changes nothing.
 // 75: the backdrop's `planet` kind, with `radius` and `sea`: a small world under the scene (fv_world.hpp),
 // which needs no kit. An older renderer refuses the backdrop that has it.
-constexpr int kProtocolVersion = 75;
+// 76: the renderer's `ptEyeCaustic` parameter (the cornea's caustic, eye_caustic.h.slang), which the app's
+// Render tab sends. An older renderer refuses the batch that has it.
+constexpr int kProtocolVersion = 76;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

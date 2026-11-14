@@ -1201,6 +1201,8 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     fillGround(finfo);
     fillHaze(finfo);
     finfo.estimator = std::clamp(m_resources.settings.ptEstimator, 0, 2);
+    if(m_resources.settings.ptEyeCaustic)
+      finfo.flags |= shaderio::eSceneEyeCaustic;
     finfo.aerialSunShare = std::clamp(m_resources.settings.ptAerialSunShare, 0.0F, 1.0F);
     finfo.moonDirection      = m_resources.settings.skyMoonDirection;
     finfo.moonScale          = m_resources.settings.skyMoonScale;

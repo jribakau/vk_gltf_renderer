@@ -266,7 +266,9 @@ struct GltfShadeMaterial
 #if MAT_EXT_TRANSMISSION
   float transmissionFactor = 0;
   // FV_materials_eye: the index of the chamber behind a tear film, which a ray entering through the
-  // surface's front face bends into (rayIntoEyeChamber); 0: it passes straight, as thin glass does
+  // surface's front face bends into (rayIntoEyeChamber); 0: it passes straight, as thin glass does.
+  // Negative: the surface lies in a chamber of that index, behind such a film (the iris, the white of
+  // the eye), where a light sample is bent through the film too (eye_caustic.h.slang).
   float chamberIor  = 0;
   // FV_materials_pane: 1 where a thin-walled surface is a pane, both its faces reflecting
   // (PbrMaterial::plate, plate_fresnel); 0: one interface. Keeps the row a multiple of 8 with no padding.

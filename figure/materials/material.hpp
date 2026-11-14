@@ -251,6 +251,9 @@ struct Material
   std::optional<Sheen>               sheen;
   std::optional<Transmission>        transmission;
   std::optional<float>               chamberIor;  // the eye's chamber behind a tear film, which an entering ray bends into
+  // A surface in that chamber (the iris, the white), by the chamber's index: a light sample there
+  // reaches it through the film's curve, which focuses it (shaders/eye_caustic.h.slang)
+  std::optional<float> inChamberIor;
   bool pane = false;  // thin-walled refraction is a pane: both its faces reflect (FV_materials_pane)
   std::optional<Volume>              volume;
   std::optional<Scatter>             scatter;

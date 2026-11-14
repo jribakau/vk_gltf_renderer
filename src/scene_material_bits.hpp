@@ -90,6 +90,9 @@ inline MaterialBits materialBits(const fv::mat::Material& mat)
   // A surface a scatter walk passes through (shaderio.h INSTANCE_MASK_WALK). The camera's bit is the
   // material's to give and the instance's to take away (instanceMaskOf).
   bits.instanceMask = INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | (mat.walkThrough ? 0 : INSTANCE_MASK_WALK);
+  // An eye's tear film is found by itself from the iris under it (INSTANCE_MASK_TEAR_FILM)
+  if(mat.chamberIor)
+    bits.instanceMask |= INSTANCE_MASK_TEAR_FILM;
   // A surface no ray can keep (surface_opacity.h.slang: the base colour factor's alpha only ever
   // multiplies down) and that emits nothing is left out of every ray: a helper mesh at opacity 0, such
   // as a hair's face dummy, otherwise stops each ray that crosses it for an alpha test that discards

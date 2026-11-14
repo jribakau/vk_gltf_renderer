@@ -50,6 +50,9 @@ NAMESPACE_SHADERIO_BEGIN()
 #define INSTANCE_MASK_WALK 0x01
 #define INSTANCE_MASK_OTHER 0x02
 #define INSTANCE_MASK_CAMERA 0x04
+// An eye's tear film (a material with a chamber behind it, FV_materials_eye): the rays that look for
+// the film alone, from a point of the iris under it (EyeFilmMesh, eye_caustic.h.slang)
+#define INSTANCE_MASK_TEAR_FILM 0x08
 
 
 // Indices into `texturesHdr[]` (eTexturesHdr binding).
@@ -183,6 +186,7 @@ enum SceneFrameInfoFlags
   eSceneUseInfinitePlane           = 1 << 3,
   eSceneInfinitePlaneShadowCatcher = 1 << 4,
   eSceneUseNoEnvironment           = 1 << 5,  // No sky/HDR environment lighting or background
+  eSceneEyeCaustic                 = 1 << 6,  // A light sample in an eye's chamber is bent through the tear film, which focuses it (eye_caustic.h.slang); else straight
 };
 
 // Camera info

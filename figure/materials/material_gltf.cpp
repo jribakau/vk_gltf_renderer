@@ -276,10 +276,13 @@ Material fromGltf(const tinygltf::Material& g)
     }
     else if(name == kEye)
     {
-      float ior = 0;
+      float ior = 0, in = 0;
       read(v, "chamberIor", ior);
       if(ior > 0)
         m.chamberIor = ior;
+      read(v, "inChamberIor", in);
+      if(in > 0)
+        m.inChamberIor = in;
     }
     else if(name == kScatter || name == kScatterDraft)
     {
@@ -569,6 +572,8 @@ Json materialJson(const Material& m, const char* key)
     ext[kSubsurface] = {{"scatterDistance", rgbJson(*m.scatterDistance)}};
   if(m.chamberIor)
     ext[kEye] = {{"chamberIor", *m.chamberIor}};
+  else if(m.inChamberIor)
+    ext[kEye] = {{"inChamberIor", *m.inChamberIor}};
   if(m.pane)
     ext[kPane] = Json::object();
   if(m.edgeTint)

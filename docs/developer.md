@@ -710,8 +710,22 @@ BSDF, shadow rays and the medium rules. Only a path's ray entering through its f
 different direction, refracted into the chamber at `chamberIor` (`rayIntoEyeChamber()` in
 [`shaders/pathtrace_functions.h.slang`](../shaders/pathtrace_functions.h.slang)), and the clear-glass
 guides follow that ray. Rays leaving the eye go straight, so the eye needs no medium, there is no total
-internal reflection to lose light to, and a lit iris is as bright as without it; the cost is that the
-cornea focuses no caustic. A GLB export leaves it out. It has no Inspector section.
+internal reflection to lose light to, and a lit iris is as bright as without it. A GLB export leaves it
+out. It has no Inspector section.
+
+**The cornea's caustic.** The surfaces in the chamber (the iris, the white: `inChamberIor` on
+`mat::Material`, the same extension, a negative `chamberIor` in the shade material) take a lamp's or
+the sun's light sample bent through the film too, so a light from the side gathers on the far side of
+the iris and leaves the near rim in the film's shadow
+([`shaders/eye_caustic.h.slang`](../shaders/eye_caustic.h.slang), `ptEyeCaustic`). The ray from the
+shaded point through the film to the light is found by Newton's method on the film's own mesh, which a
+ray query sees alone (`INSTANCE_MASK_TEAR_FILM`, `EyeFilmMesh`); the sample then takes the direction
+the light arrives by, the light scaled by how much the film concentrates it (the beam's cross-section
+over the patch it lands on, so a flat film changes nothing), and a shadow ray from where it came
+through. Where no ray comes through, the sample gives nothing. Environment and emitter samples, and
+BSDF rays leaving the eye, still go straight. The maths is shared with
+`tests/test_eye_caustic.cpp`, which holds it to a beam traced through a sphere's cap from the light's
+side.
 
 ### `FV_materials_pane`: thin-walled glass that is a pane
 

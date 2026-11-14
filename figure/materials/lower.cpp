@@ -723,6 +723,10 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
   // refraction
   float       transmission = 0;
   std::string transmissionMap;  // Translucency Weight's map, where a skin lets light in
+  // The iris and the white behind a tear film lie in its chamber: their lamps reach them through the
+  // film (eye_caustic.h.slang). Not a cornea stacked under the film, which is looked through.
+  if(underFilm && s.kind == Kind::eEye && !opts.forFile)
+    out.inChamberIor = kEyeChamberIor;
   if(refractive)
   {
     transmission = s.refraction->weight;

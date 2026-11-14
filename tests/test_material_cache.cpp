@@ -224,6 +224,13 @@ TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
   EXPECT_FLOAT_EQ(row.scatterAnisotropy, -0.5f);
   EXPECT_EQ(row.scatterDistance, glm::vec3(0.003f, 0.002f, 0.001f));
   EXPECT_FLOAT_EQ(row.chamberIor, 1.336f);
+  {
+    // a surface in the chamber says so by the sign: the film's index is positive
+    fv::mat::Material iris;
+    iris.inChamberIor = 1.336f;
+    std::vector<shaderio::GltfTextureInfo> none;
+    EXPECT_FLOAT_EQ(nvvkgltf::MaterialCache::convertOne(iris, {}, 0, none).chamberIor, -1.336f);
+  }
   EXPECT_FLOAT_EQ(row.plate, 1.0f);
   EXPECT_FLOAT_EQ(row.detailNormalScale, 0.2f);
   EXPECT_FLOAT_EQ(row.detailWeightFactor, 0.5f);

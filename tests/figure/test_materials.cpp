@@ -703,6 +703,26 @@ TEST(Materials, OneReflectingShellPerEye)
   EXPECT_NEAR(loweredJson(glass, {}, {}).material["extensions"]["KHR_materials_ior"]["ior"].get<float>(), 1.376f, 1e-6f);
 }
 
+// The iris and the white under a film lie in its chamber, and say so: their lamps reach them through
+// the film's curve (shaders/eye_caustic.h.slang). Not the film itself, a cornea stacked under it, an
+// eye with no film over it, or a file for other tools.
+TEST(Materials, AnEyeUnderTheTearFilmLiesInItsChamber)
+{
+  const auto inChamberOf = [](const char* name, const char* channels, const fv::mat::LowerOptions& o) {
+    const auto  lowered = loweredJson(fv::dson::parseSurface(name, channelsOf(channels)), {}, o);
+    const auto& ext     = lowered.material["extensions"];
+    return ext.contains("FV_materials_eye") ? ext["FV_materials_eye"].value("inChamberIor", 0.f) : 0.f;
+  };
+  EXPECT_FLOAT_EQ(inChamberOf("Eye Left", kG9Eye, {.underTearFilm = true}), fv::mat::kEyeChamberIor);
+  EXPECT_EQ(inChamberOf("Eye Left", kG9Eye, {}), 0.f);
+  EXPECT_EQ(inChamberOf("Eye Left", kG9Eye, {.forFile = true, .underTearFilm = true}), 0.f);
+  EXPECT_EQ(inChamberOf("EyeMoisture Left", kG9Moisture, {.underTearFilm = true}), 0.f);
+  EXPECT_EQ(inChamberOf("Cornea", kG9Moisture, {.underTearFilm = true}), 0.f);
+  // and it comes back from the glTF it went into
+  const auto lowered = loweredJson(fv::dson::parseSurface("Eye Left", channelsOf(kG9Eye)), {}, {.underTearFilm = true});
+  EXPECT_FALSE(lowered.material["extensions"]["FV_materials_eye"].contains("chamberIor"));
+}
+
 // A ray entering the eye bends at the one film over it, into the chamber; only there, or a stack would
 // bend it twice. The meniscus has no chamber behind it, and a file for other tools none of ours.
 TEST(Materials, TheTearFilmBendsARayIntoTheEyesChamber)
