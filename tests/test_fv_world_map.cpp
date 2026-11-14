@@ -513,6 +513,26 @@ TEST(WorldMapBake, DISABLED_Report)
         peak = c;
     if(peak != W::CubeGrid::kNone)
       place("peak", m.grid.centre(peak), double(m.height[peak]), w.frame.site, double(m.height[peak]));
+    // each biome's place nearest the figures (all of it that biome, off the water and the heights)
+    for(size_t biome = 0; biome < w.biomes.size(); biome++)
+    {
+      glm::dvec3 best(0.0);
+      double     nearestAway = 1e30, up = 0.0;
+      for(uint32_t i = 0; i < 60000; i++)
+      {
+        const glm::dvec3 d = spread(i, 60000);
+        if(glm::distance(d, w.frame.site) >= nearestAway)
+          continue;
+        const W::Sample smp = W::sample(w, d, 30.0);
+        if(smp.elevation < 8.0 || size_t(smp.biome) != biome || smp.share[biome] < 0.97F || smp.shore < 150.0F || smp.rock > 0.1F)
+          continue;
+        nearestAway = glm::distance(d, w.frame.site);
+        best        = d;
+        up          = smp.elevation;
+      }
+      if(nearestAway < 1e30)
+        place(std::string(w.biomes[biome].name).c_str(), best, up, w.frame.site, nearestAway * w.spec.radius);
+    }
     uint32_t lakeAt = W::CubeGrid::kNone;
     for(uint32_t c = 0; c < m.grid.count(); c++)
       if(m.kind[c] == W::eMapLake && (lakeAt == W::CubeGrid::kNone || glm::distance(m.grid.centre(c), w.frame.site) < glm::distance(m.grid.centre(lakeAt), w.frame.site)))

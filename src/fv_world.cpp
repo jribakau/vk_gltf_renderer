@@ -232,8 +232,10 @@ float within(float x, float from, float to, float soft)
 }
 
 // The biome by the climate: each row's share, and the ground's colour and roughness as their blend
-void biome(const World& w, const Point&, Sample& s)
+void biome(const World& w, const Point& p, Sample& s)
 {
+  // (trees are drawn on quads up to some 8 m a vertex, fewer of them from 4: fv::world::keptOn)
+  const float canopy = w.planted ? float(smooth(4.0, 12.0, p.footprint)) : 1.0F;
   glm::vec3 colour(0.0F);
   float     rough = 0.0F, total = 0.0F, most = 0.0F;
   for(size_t i = 0; i < w.biomes.size(); i++)
@@ -241,9 +243,11 @@ void biome(const World& w, const Point&, Sample& s)
     const Biome& b     = w.biomes[i];
     const float  share = within(s.temperature, b.temperatureFrom, b.temperatureTo, kBiomeSoftTemperature)
                          * within(s.moisture, b.moistureFrom, b.moistureTo, kBiomeSoftMoisture);
-    colour += share * b.colour;
+    colour += share * (b.floor.x >= 0.0F ? glm::mix(b.floor, b.colour, canopy) : b.colour);
     rough += share * b.rough;
     total += share;
+    if(i < kMostBiomes)
+      s.share[i] = share;
     if(share > most)
     {
       most    = share;
@@ -254,6 +258,8 @@ void biome(const World& w, const Point&, Sample& s)
   {
     s.colour = colour / total;
     s.rough  = rough / total;
+    for(float& share : s.share)
+      share /= total;
   }
   // a mountain's heights are rock whatever grows under them
   s.rock = float(smooth(0.3, 0.65, double(s.mountain)));
@@ -333,13 +339,38 @@ void clearing(const World& w, const Point& p, Sample& s)
 std::vector<Biome> biomeTable()
 {
   // (above 5 degrees the rows are a ladder by how wet it is, and must leave no gap)
+  // What grows: the kit's plants are a northern meadow's and a fir wood's, so the warm, wet rows
+  // have them thickest; the dry and the cold have rocks and little else.
   return {
       {.name = "snow", .temperatureTo = -5.0F, .colour = {0.78F, 0.80F, 0.84F}, .rough = 0.5F},
-      {.name = "tundra", .temperatureFrom = -5.0F, .temperatureTo = 5.0F, .colour = {0.17F, 0.16F, 0.11F}, .rough = 1.0F},
-      {.name = "desert", .temperatureFrom = 5.0F, .moistureTo = 0.15F, .colour = {0.40F, 0.30F, 0.17F}, .rough = 0.6F},
-      {.name = "steppe", .temperatureFrom = 5.0F, .moistureFrom = 0.15F, .moistureTo = 0.36F, .colour = {0.26F, 0.21F, 0.12F}, .rough = 0.9F},
-      {.name = "grassland", .temperatureFrom = 5.0F, .moistureFrom = 0.36F, .moistureTo = 0.68F, .colour = {0.085F, 0.14F, 0.045F}, .rough = 0.8F},
-      {.name = "forest", .temperatureFrom = 5.0F, .moistureFrom = 0.68F, .colour = {0.045F, 0.085F, 0.03F}, .rough = 0.9F},
+      {.name = "tundra", .temperatureFrom = -5.0F, .temperatureTo = 5.0F, .colour = {0.17F, 0.16F, 0.11F}, .rough = 1.0F,
+       .plants = {{.role = "rock", .perSquareMetre = 0.012, .scaleMin = 0.15F, .scaleMax = 0.8F, .sink = 0.1F, .cover = 0.5F, .patch = 40.0F},
+                  {.role = "shrub", .perSquareMetre = 0.006, .scaleMin = 0.4F, .scaleMax = 0.8F, .sink = 0.03F, .cover = 0.25F, .patch = 30.0F}},
+       .grass  = Grass::eCold},
+      {.name = "desert", .temperatureFrom = 5.0F, .moistureTo = 0.15F, .colour = {0.40F, 0.30F, 0.17F}, .rough = 0.6F,
+       .plants = {{.role = "rock", .perSquareMetre = 0.008, .scaleMin = 0.2F, .scaleMax = 1.2F, .sink = 0.12F, .cover = 0.35F, .patch = 70.0F}}},
+      {.name = "steppe", .temperatureFrom = 5.0F, .moistureFrom = 0.15F, .moistureTo = 0.36F, .colour = {0.26F, 0.21F, 0.12F}, .rough = 0.9F,
+       .plants = {{.role = "shrub", .perSquareMetre = 0.01, .scaleMin = 0.5F, .scaleMax = 1.1F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
+                  {.role = "rock", .perSquareMetre = 0.005, .scaleMin = 0.2F, .scaleMax = 0.9F, .sink = 0.1F, .cover = 0.3F, .patch = 60.0F},
+                  {.role = "tree", .perSquareMetre = 0.004, .scaleMin = 0.8F, .scaleMax = 1.5F, .sink = 0.15F, .cover = 0.12F, .patch = 90.0F}},
+       .grass  = Grass::eDry},
+      {.name = "grassland", .temperatureFrom = 5.0F, .moistureFrom = 0.36F, .moistureTo = 0.68F, .colour = {0.085F, 0.14F, 0.045F}, .rough = 0.8F,
+       .plants = {{.role = "tree", .perSquareMetre = 0.02, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F, .cover = 0.3F, .patch = 80.0F},
+                  {.role = "sapling", .perSquareMetre = 0.02, .scaleMin = 0.7F, .scaleMax = 1.6F, .cover = 0.35F, .patch = 30.0F},
+                  {.role = "shrub", .perSquareMetre = 0.012, .scaleMin = 0.6F, .scaleMax = 1.3F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
+                  {.role = "rock", .perSquareMetre = 0.004, .scaleMin = 0.2F, .scaleMax = 0.8F, .sink = 0.1F, .cover = 0.3F, .patch = 60.0F}},
+       .grass  = Grass::eMeadow,
+       .drift  = "flower"},
+      {.name = "forest", .temperatureFrom = 5.0F, .moistureFrom = 0.68F, .colour = {0.045F, 0.085F, 0.03F}, .rough = 0.9F,
+       .floor  = {0.075F, 0.06F, 0.035F},
+       .plants = {{.role = "tree", .perSquareMetre = 0.026, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F, .cover = 0.9F, .patch = 60.0F},
+                  {.role = "sapling", .perSquareMetre = 0.03, .scaleMin = 0.6F, .scaleMax = 1.7F, .cover = 0.55F, .patch = 18.0F},
+                  {.role = "shrub", .perSquareMetre = 0.05, .scaleMin = 0.5F, .scaleMax = 1.2F, .sink = 0.03F, .cover = 0.45F, .patch = 22.0F},
+                  {.role = "rock", .perSquareMetre = 0.02, .scaleMin = 0.15F, .scaleMax = 0.7F, .sink = 0.08F, .cover = 0.5F, .patch = 30.0F},
+                  {.role = "stump", .perSquareMetre = 0.008, .scaleMin = 0.6F, .scaleMax = 1.2F, .sink = 0.03F},
+                  {.role = "log", .perSquareMetre = 0.012, .scaleMin = 0.7F, .scaleMax = 1.5F}},
+       .grass  = Grass::eWood,
+       .drift  = "fern"},
   };
 }
 
@@ -556,6 +587,11 @@ World make(const Spec& asked, const Making& making)
   return w;
 }
 
+double noise(const World& world, const glm::dvec3& direction, double across, uint32_t channel)
+{
+  return fbm3(direction * (world.spec.radius / std::max(across, 1e-3)), uint32_t(world.spec.seed), 1000U + 10U * channel, 2);
+}
+
 double temperatureAt(const World& world, const glm::dvec3& direction, double elevation)
 {
   // the highest land of an even relief is some 40 degrees colder than the shore under it
@@ -598,6 +634,15 @@ FacePoint locate(const glm::dvec3& d)
   out.u            = std::atan(glm::dot(d, a.s) / out_of) * (4.0 / kPi);
   out.v            = std::atan(glm::dot(d, a.t) / out_of) * (4.0 / kPi);
   return out;
+}
+
+FacePoint onFace(uint8_t face, const glm::dvec3& d)
+{
+  const Axes&  a      = axesOf(face);
+  const double out_of = glm::dot(d, a.n);
+  if(out_of <= 1e-3)
+    return {uint8_t(255), 0.0, 0.0};
+  return {face, std::atan(glm::dot(d, a.s) / out_of) * (4.0 / kPi), std::atan(glm::dot(d, a.t) / out_of) * (4.0 / kPi)};
 }
 
 bool contains(const Quad& q, const glm::dvec3& d)

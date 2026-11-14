@@ -175,6 +175,10 @@ set(TEST_SOURCES
     test_world_bodies.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_map.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_world_plants.cpp
+    # What grows on a planet: a quad's plants are its children's, none in the water or where the figures
+    # stand, more in a wood than on a steppe; the grass's tiles on the ground, none twice
+    test_fv_world_plants.cpp
     # The planet's base map: the cube's grids across their edges, water that all runs to the sea or a lake,
     # rivers that never rise, their beds under their water
     test_fv_world_map.cpp

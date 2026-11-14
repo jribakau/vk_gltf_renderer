@@ -800,7 +800,14 @@ glm::mat4 swayedPlace(const Spec& spec, Sway sway, const glm::mat4& place, glm::
 std::vector<std::string> roles(const Spec& spec)
 {
   std::set<std::string> out;
-  if(planted(spec))
+  // a planet's biomes between them plant every role (fv_world_plants.hpp); grown firs as a wood's are
+  if(isPlanet(spec))
+  {
+    out = {"fern", "flower", "grass", "log", "rock", "sapling", "shrub", "stump", "tree"};
+    if(spec.mature)
+      out.insert("grown");
+  }
+  else if(planted(spec))
   {
     for(const Layer& layer : layers(spec))
       out.insert(layer.role);

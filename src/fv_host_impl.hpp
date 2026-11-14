@@ -95,6 +95,7 @@
 #include "fv_journal.hpp"
 #include "ram_watch.hpp"
 #include "fv_backdrop_state.hpp"
+#include "fv_world_plants.hpp"
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
 #include "fv_model_material.hpp"
@@ -1650,7 +1651,9 @@ struct FvHost::Impl
     rs::MaterialId                          ground, sea;
     struct Chunk
     {
-      rs::EntityId ground, sea;  // the sea's: none where the ground is all above it
+      rs::EntityId              ground, sea;  // the sea's: none where the ground is all above it
+      std::vector<rs::EntityId> plants;       // what stands on it: an entity a variant, its places as copies
+      uint64_t                  standing = 0; // how many those are
     };
     std::map<fv::world::Quad, Chunk> shown;    // the cut that draws: the planet once over
     std::map<fv::world::Quad, Chunk> arrived;  // made and hidden, until what they take the place of can go
@@ -1659,15 +1662,35 @@ struct FvHost::Impl
     double                           eyeHeight = 0.0;
     bool                             selected  = false;
     bool                             busy      = false;  // a batch is being made
+    // Its plants (fv_world_plants.hpp), the kit's: none until the kit is read and held (plantPlanet).
+    // What has a place arrives with its quad; the grass and its drifts are tiles laid round where
+    // one looks from, a kind's all sharing one mesh, as a meadow's are.
+    bool                               planted = false;
+    double                             density = 1.0;  // the backdrop's, as planted
+    std::array<uint32_t, fv::world::kStandingRoles.size()> variants{};  // how many the kit has of each role
+    std::vector<fv::world::TileKind>   tileKinds;
+    std::vector<BackdropBuilt::Patch>  patches;  // by tile kind
+    std::map<fv::world::GrassTile, rs::EntityId> tiles;       // drawn; none for a tile left out (too steep)
+    std::map<uint8_t, std::vector<rs::EntityId>> spareTiles;  // by kind: hidden, for the next tiles of it
+    fv::world::GrassWas                grassWas;
+    glm::dvec3                         tiledFor{1.0e30};  // where the camera was when the tiles were laid
+    uint64_t                           standing = 0, tiled = 0;  // plants shown: with a place, in tiles
   };
   std::unique_ptr<PlanetBuilt> planetBuilt;
   uint64_t                     planetGeneration = 0;
+  // Set, the planet being made on a worker stops at its next step: nobody waits for it any more
+  std::shared_ptr<std::atomic<bool>> planetStop;
   // The planet the state asks for, standing or on its way: made again when its spec is another
   void standPlanet(rs::RetainedScene& scene);
   // Lets go of what a planet held besides its entities, which go with the backdrop's root
-  // Set, the planet being made on a worker stops at its next step: nobody waits for it any more
-  std::shared_ptr<std::atomic<bool>> planetStop;
   void dropPlanet();
+  // The kit's plants on the planet that stands: held, its tiles' meshes made, and its quads made again
+  // with what stands on them. Again when the backdrop's density is another.
+  void plantPlanet(rs::RetainedScene& scene);
+  // The grass's tiles for where the camera is (fv::world::grassTiles), laid
+  void tilePlanet(rs::RetainedScene& scene, const glm::dvec3& eye);
+  // Reads the kit for a planet that stands without one, on a worker: planted when it has come
+  void readPlanetKit(const std::filesystem::path& dir);
   // Every frame: the cut the camera asks for, and the next batch of quads toward it asked of the pool
   void followPlanet();
   // A batch back from the pool: its quads as hidden entities, and the cut moved on where it can

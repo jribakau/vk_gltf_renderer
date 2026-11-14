@@ -28,7 +28,8 @@
 // meshes, and the ground when its kind or its shape changed. The camera's moves lay
 // the tiles again (followBackdrop) and plant nothing.
 //
-// A planet (the `planet` kind) needs none of this: fv_host_world.cpp stands it under the same root.
+// A planet (the `planet` kind) stands without a kit (fv_host_world.cpp, under the same root) and is
+// planted with one when there is one: the same plants, held the same way, placed by its biomes.
 //
 
 #include "fv_host_impl.hpp"
@@ -789,8 +790,7 @@ void FvHost::Impl::standBackdrop(bool reread)
   }
   if(reread || (backdropKit && backdropKit->dir != dir))
   {
-    if(!planet || !planetBuilt)
-      drop();  // (a planet has nothing of the kit's)
+    drop();  // (a planet too: its plants are the kit's)
     backdropKit.reset();
     backdropRequest++;  // a read under way is of the folder as it was
     if(backdropState == "loading")
@@ -803,13 +803,17 @@ void FvHost::Impl::standBackdrop(bool reread)
     backdropWanted = spec;
     return;
   }
-  // a planet: no kit to read, and its own way of standing (fv_host_world.cpp)
+  // a planet: its own way of standing (fv_host_world.cpp), and it stands without a kit, bare. With
+  // one it is planted: read now if it has not been, and planted when it has come.
   if(planet)
   {
     if(backdropBuilt && !planetBuilt)
       drop();  // land stood
+    const bool stood = planetBuilt != nullptr;
     standPlanet(scene);
     backdropWanted = spec;
+    if(!backdropKit && !dir.empty() && (!stood || reread))
+      readPlanetKit(dir);
     return;
   }
   if(planetBuilt)

@@ -24,6 +24,8 @@
 //   `waterMesh` make a quad's triangles, with skirts down its edges: where a quad meets a coarser one
 //   their edges differ, and a ray would find the crack.
 //
+// What grows on it is a biome's too (Biome::plants, grass, drift): fv_world_plants.hpp places it.
+//
 // The figures stand where the planet's `site` is: a level place on land, found by the seed. The planet
 // is turned and set so that place is the origin with +y up (Frame); the ground is flat there for
 // kClearing metres and eases into the land over kClearingEdge more.
@@ -65,6 +67,9 @@ inline constexpr double kClearingEdge = 25.0;
 // No water: a level under any ground
 inline constexpr double kDry = -1.0e30;
 
+// How many biomes a planet has at the most (a sample keeps each one's share)
+inline constexpr size_t kMostBiomes = 8;
+
 // The inland water by a point (the base map's rivers and lakes), as the `base` stage finds it and
 // the stages after it use it. Levels in metres over the sea's.
 struct Inland
@@ -99,6 +104,7 @@ struct Sample
   float     rough       = 1.0F;  // of the ground's fine relief, its biome's
   float     rock        = 0.0F;  // the share of bare rock whatever the slope
   int       biome       = 0;     // the row of World::biomes that counts most
+  std::array<float, kMostBiomes> share{};  // each row's share of the place, summing to 1 where any counts
   glm::vec3 colour{0.2F};        // what level ground reflects here, linear
   // Inland water. `water` is its surface's level here as its mesh draws it (waterLevel): over the
   // ground where a river or a lake lies, under it by their banks, kDry with none near.
@@ -108,8 +114,30 @@ struct Sample
   Inland inland;                 // what the base map says of the water near
 };
 
-// A biome: where it is, by the climate, and what its ground is. Where two meet they blend over
-// `kBiomeSoft*`.
+// What stands on a biome's ground with a place of its own (fv_world_plants.hpp): one of the kit's roles
+struct Growth
+{
+  std::string_view role;                   // tree | grown | sapling | shrub | rock | stump | log
+  double           perSquareMetre = 0.01;  // where it stands thickest, before the planet's density
+  float            scaleMin = 0.8F, scaleMax = 1.25F;
+  float            sink = 0.0F;            // metres into the ground, times its scale
+  // In groves: the share of the ground it stands on at all, by a noise `patch` metres across
+  float cover = 1.0F;
+  float patch = 40.0F;
+};
+
+// A biome's ground cover, in tiles as a meadow's is (fv_backdrop.hpp)
+enum class Grass : uint8_t
+{
+  eNone = 0,
+  eMeadow,  // thick and green
+  eDry,     // a third as thick, in clumps, yellowed
+  eWood,    // tufts on a wood's floor
+  eCold,    // sparse and brown
+};
+
+// A biome: where it is, by the climate, what its ground is and what grows on it. Where two meet
+// they blend over `kBiomeSoft*`.
 struct Biome
 {
   std::string_view name;
@@ -117,6 +145,12 @@ struct Biome
   float            moistureFrom = -1.0F, moistureTo = 2.0F;
   glm::vec3        colour{0.2F};
   float            rough = 1.0F;
+  // What its ground is under its plants, where they are drawn (World::planted): `colour` is the
+  // biome from afar, a wood's its canopy's, and near a wood's floor is needles. Not given: `colour`.
+  glm::vec3           floor{-1.0F};
+  std::vector<Growth> plants;
+  Grass               grass = Grass::eNone;
+  std::string_view    drift;  // what stands in drifts in its grass: flower | fern | "" none
 };
 
 struct World;
@@ -161,6 +195,8 @@ struct World
   double seaSpread = 0.1;
   // What the planet reflects seen whole, linear: the sky's own ground under the air
   glm::vec3 albedo{0.1F};
+  // Its plants are drawn (fv_world_plants.hpp): the ground near is what lies under them (Biome::floor)
+  bool planted = false;
 };
 
 // The planet of a spec: its sea level found, its base map baked, its stages listed, and its site
@@ -169,6 +205,10 @@ World make(const Spec& spec, const Making& making = {});
 
 // What the point `direction` of the planet is, for something `footprint` metres across
 Sample sample(const World& world, const glm::dvec3& direction, double footprint);
+
+// A smooth noise over the planet, 0 to 1 and a half on average, its features `across` metres across:
+// what stands in groves stands where it is high. `channel`: which noise.
+double noise(const World& world, const glm::dvec3& direction, double across, uint32_t channel);
 
 // How warm a place of the planet is at `elevation` (metres over the sea), degrees C: by its latitude
 // and its height, before what the weather adds
@@ -203,6 +243,9 @@ struct FacePoint
   double  u = 0.0, v = 0.0;
 };
 FacePoint locate(const glm::dvec3& direction);
+// Where a direction is on `face`'s own grid, carried on past its edges (u or v beyond -1 to 1 for a
+// direction on a face beside it); face 255 for one behind it
+FacePoint onFace(uint8_t face, const glm::dvec3& direction);
 bool      contains(const Quad& quad, const glm::dvec3& direction);
 // A quad's four children
 std::array<Quad, 4> children(const Quad& quad);

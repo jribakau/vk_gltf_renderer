@@ -8,8 +8,9 @@
 //   groves that close into a wood round it, and wooded hills beyond.
 // - A forest: a glade a few metres across in a fir wood that runs to the horizon, with ferns in
 //   drifts, sparse grass, bushes, mossy rocks, stumps and dead wood on a floor of needles.
-// - A planet (fv_world.hpp): not land round the scene but a small world under it, bare for now. It
-//   needs no kit, and none of what follows here is its: `isPlanet`, and the spec's `radius` and `sea`.
+// - A planet (fv_world.hpp): not land round the scene but a small world under it. It needs no kit
+//   and stands bare without one; with one its biomes plant it (fv_world_plants.hpp) with the kit's
+//   plants, by `patch` and the tiles' rule here. Its own: `isPlanet`, the spec's `radius` and `sea`.
 //
 // Everything here follows from the spec alone, so a scene file keeps only the spec: the ground's height
 // (`height`), its mesh (`terrain`), and where each plant stands, by a seed. Two ways of standing:
@@ -106,7 +107,7 @@ inline bool planted(const Spec& s)
   return s.kind != "none";
 }
 
-// A small world under the scene (fv_world.hpp) and not land round it: it has no plants, and needs no kit
+// A small world under the scene (fv_world.hpp) and not land round it: it needs no kit
 inline bool isPlanet(const Spec& s)
 {
   return s.kind == "planet";

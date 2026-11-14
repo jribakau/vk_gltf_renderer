@@ -861,8 +861,8 @@ Checked: `tests/test_fv_backdrop.cpp` (the shape, and `BackdropState.*` for the 
 ### A planet
 
 The `planet` kind is not land round the scene but a small world under it (`src/fv_world.hpp`), and
-shares only the backdrop's state, root entity and renderer parameters with the two planted kinds. It
-needs no kit.
+shares the backdrop's state, root entity and renderer parameters with the two planted kinds, and
+their kit when there is one. It needs no kit: without one it stands bare.
 
 - **What it is** is a function of a point on the sphere: `fv::world::sample` runs an ordered list of
   stages over a sample (the continents and the sea's floor, mountains, hills, the climate, the biome,
@@ -896,6 +896,19 @@ needs no kit.
   A river too narrow for what draws a quad is not water there but a line of colour. The camera-medium
   probe (`ptCameraMedium`) must be off, as the app has it: its ray passes through the ground and
   meets the far side's sea from behind.
+- **What grows** (`src/fv_world_plants.hpp`) is a biome's row too: what stands on it and how
+  thickly, its grass, what drifts in its grass. With the backdrop's kit read (`readPlanetKit`,
+  `plantPlanet`) the planet is planted with the same plants a meadow and a forest are, held the same
+  way. A tree, a bush or a rock has a place that follows from the planet alone (a grid a role over a
+  cube face), so a quad's plants are among its children's: they are made with the quad's ground on
+  the pool and arrive with it, a variant an entity whose copies are its places. Far quads keep a
+  share of their trees, each grown, and further ones none: a wood is then the colour of its ground,
+  which near, where its trees are drawn, is its floor's and not its canopy's (`Biome::floor`,
+  `World::planted`). Grass and its flowers and ferns are the meadow's tiles, laid by the meadow's own
+  rule on a cube face's plane round the camera and the figures (`tilePlanet`), each leant and
+  stretched to its square of the sphere. Every plant is an instance the scene sync walks on any
+  change, and a planet's quads change as the camera moves, which is what bounds how many there are
+  (`keptOn`) and how many quads arrive at once.
 - **The sky** takes the planet's radius, its air scaled to it, and its centre (`worldRadius`,
   `worldAirScale`, `worldCentre`), and is then asked every question from a place of the planet: what
   a ray sees from inside the air or from orbit, the sun's light at a hit, the sky's light there

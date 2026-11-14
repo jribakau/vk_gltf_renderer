@@ -20,6 +20,13 @@
 // a second or two of work for 20 km of radius, more for a large one. Asked for another meanwhile (a
 // slider dragged), the one being made is told to stop.
 //
+// Its plants are the backdrop's kit's (fv_world_plants.hpp), when the app has filled one: a planet
+// stands without, bare, and is planted when the kit has been read (plantPlanet). What has a place (a
+// tree, a bush, a rock) is made with its quad's ground and shown and let go with it, a variant an
+// entity whose copies are its places; the kit's own entities are held hidden, as what the copies
+// are of. The grass and its drifts are tiles round the camera and the figures (tilePlanet), the
+// meadow's own way. Nothing sways in the wind yet.
+//
 
 #include "fv_host_impl.hpp"
 #include "fv_world_map.hpp"
@@ -32,8 +39,10 @@ namespace {
 
 namespace W = fv::world;
 
-// How many quads are made at a time: each is a BLAS to build in the frame it arrives in
-constexpr size_t kPlanetBatch = 32;
+// How many quads are made at a time: each is a BLAS to build in the frame it arrives in. Fewer of a
+// planted planet's: a quad's plants are hundreds of instances to bring into the scene in that frame.
+constexpr size_t kPlanetBatch        = 32;
+constexpr size_t kPlanetBatchPlanted = 8;
 
 W::Quad parentOf(const W::Quad& q)
 {
@@ -61,6 +70,7 @@ struct FvHost::Impl::PlanetMade
   W::Quad                     quad;
   W::ChunkMesh                ground;
   std::optional<W::ChunkMesh> sea;
+  std::vector<W::Stand>       stands;  // what stands on it, about the ground's centre
 };
 
 glm::dvec3 FvHost::Impl::planetCentre() const
@@ -78,6 +88,10 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
   if(alive && planetBuilt->asked == asked)
   {
     placeBackdrop();
+    // (planted thicker or thinner: its plants again, on the planet as it is)
+    if(planetBuilt->planted && planetBuilt->density != backdropSpec.density)
+      plantPlanet(scene);
+    planetBuilt->tiledFor = glm::dvec3(1.0e30);  // (its grass's reach may be another: laid again)
     return;  // as it stands, or as it is being made
   }
   if(backdropBuilt && scene.entity(backdropBuilt->root))
@@ -125,6 +139,8 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
            world->base ? world->base->grid.cells() : 0U, world->base ? world->base->lakes : 0U,
            world->base ? world->base->pieces.size() : size_t(0));
       planetBuilt->world = world;
+      if(backdropKit && renderer->feedsHostScene())
+        plantPlanet(renderer->hostScene());
       followPlanet();  // asks for the first cut
     });
   });
@@ -200,6 +216,11 @@ void FvHost::Impl::followPlanet()
     if(!p.shown.empty())
       resolvePlanet(scene);  // what has arrived may no longer be wanted
   }
+  // (the grass's tiles, once the camera has gone a few metres: a tile is two across at the least and
+  // stays a little past where it would be laid, and every change is a pass of the renderer over the
+  // scene's instances)
+  if(p.planted && !p.shown.empty() && glm::distance(eye, p.tiledFor) >= 3.0)
+    tilePlanet(scene, eye);
   if(p.busy)
     return;  // a batch is being made
 
@@ -233,7 +254,8 @@ void FvHost::Impl::followPlanet()
     }
     std::sort(ask.begin(), ask.end());
     ask.erase(std::unique(ask.begin(), ask.end()), ask.end());
-    if(ask.size() > kPlanetBatch)
+    const size_t batch = p.planted ? kPlanetBatchPlanted : kPlanetBatch;
+    if(ask.size() > batch)
     {
       // the nearest first
       const auto away = [&](const W::Quad& q) {
@@ -245,14 +267,15 @@ void FvHost::Impl::followPlanet()
         byDistance.emplace_back(away(q), q);
       std::sort(byDistance.begin(), byDistance.end());
       ask.clear();
-      for(size_t i = 0; i < kPlanetBatch; i++)
+      for(size_t i = 0; i < batch; i++)
         ask.push_back(byDistance[i].second);
     }
   }
   if(ask.empty())
     return;
   p.busy = true;
-  loaders.spawn([this, held = p.world, ask = std::move(ask), generation = p.generation] {
+  loaders.spawn([this, held = p.world, ask = std::move(ask), generation = p.generation, planted = p.planted, variants = p.variants,
+                 density = p.density] {
     auto made = std::make_shared<std::vector<PlanetMade>>(ask.size());
     fv::jobs::parallelFor(ask.size(), 1, [&](size_t begin, size_t end) {
       for(size_t i = begin; i < end; i++)
@@ -265,6 +288,8 @@ void FvHost::Impl::followPlanet()
           m.sea = W::waterMesh(*held, ask[i], W::kGroundCells);
         else if(m.ground.lowest < 0.0)
           m.sea = W::waterMesh(*held, ask[i]);
+        if(planted && m.ground.highest > 0.0)
+          m.stands = W::standing(*held, ask[i], m.ground.centre, variants, density);
       }
     });
     post([this, made, generation] { planetArrived(*made, generation); });
@@ -279,6 +304,7 @@ void FvHost::Impl::planetArrived(std::vector<PlanetMade>& made, uint64_t generat
   p.busy         = false;
   if(!backdropBuilt || !renderer->feedsHostScene() || !renderer->hostScene().entity(backdropBuilt->root))
     return;
+  fv::timing::Scope time("planet: quads arrived", 4);
   rs::RetainedScene& scene  = renderer->hostScene();
   const auto         entity = [&](W::ChunkMesh& m, rs::MaterialId material, const char* name) {
     rs::MeshRecord record;
@@ -305,9 +331,31 @@ void FvHost::Impl::planetArrived(std::vector<PlanetMade>& made, uint64_t generat
     if(p.arrived.count(m.quad) || p.shown.count(m.quad))
       continue;
     PlanetBuilt::Chunk chunk;
+    const glm::vec3 centre(m.ground.centre);
     chunk.ground = entity(m.ground, p.ground, "Planet ground");
     if(m.sea)
       chunk.sea = entity(*m.sea, p.sea, "Planet sea");
+    // what stands on it: each variant's places as the copies of an entity that draws the kit's mesh
+    for(W::Stand& stand : m.stands)
+    {
+      const auto found = backdropBuilt->variants.find(std::string(W::kStandingRoles[stand.role]));
+      if(found == backdropBuilt->variants.end() || stand.variant >= found->second.size())
+        continue;
+      const BackdropBuilt::Variant& variant = found->second[stand.variant];
+      const rs::Entity*             of      = scene.entity(variant.entity);
+      if(!of || !of->mesh)
+        continue;
+      rs::MeshInstance instance = *of->mesh;
+      for(glm::mat4& place : stand.places)
+        place = place * variant.base;
+      chunk.standing += stand.places.size();
+      instance.copies       = std::move(stand.places);
+      const rs::EntityId e  = scene.createEntity("Planet plants", {0, -1}, backdropBuilt->root);
+      scene.setLocal(e, {.translation = centre});
+      scene.setMeshInstance(e, std::move(instance));
+      scene.setVisible(e, false);
+      chunk.plants.push_back(e);
+    }
     p.arrived[m.quad] = chunk;
   }
   resolvePlanet(scene);
@@ -322,6 +370,9 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
     scene.setVisible(chunk.ground, true);
     if(!chunk.sea.isNone())
       scene.setVisible(chunk.sea, true);
+    for(const rs::EntityId e : chunk.plants)
+      scene.setVisible(e, true);
+    p.standing += chunk.standing;
     p.shown[q] = chunk;
   };
   const auto gone = [&](const PlanetBuilt::Chunk& chunk) {
@@ -329,6 +380,16 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
       scene.destroyEntity(chunk.ground);
     if(!chunk.sea.isNone() && scene.entity(chunk.sea))
       scene.destroyEntity(chunk.sea);
+    for(const rs::EntityId e : chunk.plants)
+      if(scene.entity(e))
+        scene.destroyEntity(e);
+  };
+  // (a shown one's plants are no longer counted)
+  const auto hide = [&](const W::Quad& q) {
+    const PlanetBuilt::Chunk chunk = p.shown.at(q);
+    p.standing -= std::min(p.standing, chunk.standing);
+    gone(chunk);
+    p.shown.erase(q);
   };
 
   if(p.shown.empty())
@@ -362,8 +423,7 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
       continue;
     for(const W::Quad& k : kids)
       show(k);
-    gone(p.shown.at(q));
-    p.shown.erase(q);
+    hide(q);
   }
   // shown quads under one the selection has whole give way to it
   std::vector<W::Quad> arrived;
@@ -380,10 +440,7 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
     if(under.empty())
       continue;
     for(const W::Quad& q : under)
-    {
-      gone(p.shown.at(q));
-      p.shown.erase(q);
-    }
+      hide(q);
     show(over);
   }
   // what has arrived and is no longer waited for: a child of a quad no longer shown or no longer
@@ -401,4 +458,174 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
     gone(it->second);
     it = p.arrived.erase(it);
   }
+}
+
+// ---- its plants ----------------------------------------------------------------------------------------
+
+void FvHost::Impl::readPlanetKit(const std::filesystem::path& dir)
+{
+  const uint64_t request = ++backdropRequest;
+  loaders.spawn([this, dir, request] {
+    std::shared_ptr<const BackdropKit> kit;
+    std::string                        error;
+    try
+    {
+      kit = readBackdropKit(dir);
+    }
+    catch(const std::exception& e)
+    {
+      error = e.what();
+    }
+    post([this, kit, error, request] {
+      LOGI("planet: its kit %s%s\n", kit ? "read" : "not read: ", kit ? (request != backdropRequest ? " (for a folder since changed)" : "") : error.c_str());
+      if(request != backdropRequest)
+        return;  // the folder is another since, or was filled: read again
+      if(!kit)
+      {
+        // a folder not filled is a planet left bare; a kit that is there and cannot be read is a fault
+        if(error.rfind("no kit.json", 0) != 0)
+          notice("The planet's plants could not be read: " + error, "error");
+        return;
+      }
+      backdropKit = kit;
+      if(planetBuilt && planetBuilt->world && backdropBuilt && renderer->feedsHostScene() && renderer->hostScene().entity(backdropBuilt->root))
+        plantPlanet(renderer->hostScene());
+    });
+  });
+}
+
+void FvHost::Impl::plantPlanet(rs::RetainedScene& scene)
+{
+  if(!planetBuilt || !planetBuilt->world || !backdropKit || !backdropBuilt || !scene.entity(backdropBuilt->root))
+    return;
+  fv::timing::Scope time("planet: planting", 20);
+  PlanetBuilt&      p = *planetBuilt;
+  // the tiles laid, and their meshes: made again below
+  for(const auto& [tile, entity] : p.tiles)
+    if(!entity.isNone() && scene.entity(entity))
+      scene.destroyEntity(entity);
+  for(const auto& [kind, spare] : p.spareTiles)
+    for(const rs::EntityId entity : spare)
+      if(scene.entity(entity))
+        scene.destroyEntity(entity);
+  for(const BackdropBuilt::Patch& patch : p.patches)
+    if(scene.entity(patch.holder))
+      scene.destroyEntity(patch.holder);
+  p.tiles.clear();
+  p.spareTiles.clear();
+  p.patches.clear();
+  p.grassWas = {};
+  p.tiledFor = glm::dvec3(1.0e30);
+  p.tiled    = 0;
+
+  // the kit's plants, held under the root and hidden: what a quad's copies and a tile's mesh are of
+  holdBackdropPlants(scene);
+  for(const auto& [role, variants] : backdropBuilt->variants)
+    for(const BackdropBuilt::Variant& v : variants)
+      if(scene.entity(v.entity))
+        scene.setVisible(v.entity, false);
+  p.variants = {};
+  for(size_t r = 0; r < W::kStandingRoles.size(); r++)
+    if(const auto found = backdropBuilt->variants.find(std::string(W::kStandingRoles[r])); found != backdropBuilt->variants.end())
+      p.variants[r] = uint32_t(found->second.size());
+  p.density   = backdropSpec.density;
+  // (the planet as one whose plants are drawn: the same, but for the ground under them)
+  if(!p.world->planted)
+  {
+    fv::world::World with = *p.world;
+    with.planted         = true;
+    p.world              = std::make_shared<const fv::world::World>(std::move(with));
+  }
+  p.tileKinds = W::tileKinds(*p.world, p.density);
+  for(const W::TileKind& kind : p.tileKinds)
+    p.patches.push_back(makeBackdropPatch(scene, kind.cover));
+  p.planted = true;
+
+  // the quads that stand have nothing on them: made again, the first cut whole before any shows.
+  // (A batch on its way was made without: it is of a planet gone, as far as its arrival can tell.)
+  const auto gone = [&](const PlanetBuilt::Chunk& chunk) {
+    for(const rs::EntityId e : {chunk.ground, chunk.sea})
+      if(!e.isNone() && scene.entity(e))
+        scene.destroyEntity(e);
+    for(const rs::EntityId e : chunk.plants)
+      if(scene.entity(e))
+        scene.destroyEntity(e);
+  };
+  for(const auto& [q, chunk] : p.shown)
+    gone(chunk);
+  for(const auto& [q, chunk] : p.arrived)
+    gone(chunk);
+  p.shown.clear();
+  p.arrived.clear();
+  p.standing   = 0;
+  p.selected   = false;
+  p.busy       = false;
+  p.generation = ++planetGeneration;
+  if(backdropState == "ready")
+  {
+    backdropState = "loading";
+    publishBackdrop();
+  }
+}
+
+void FvHost::Impl::tilePlanet(rs::RetainedScene& scene, const glm::dvec3& eye)
+{
+  fv::timing::Scope       time("planet: tiles", 4);
+  PlanetBuilt&            p     = *planetBuilt;
+  const fv::world::World& world = *p.world;
+  // thick round the figures and round the camera, as a meadow's (both in the root's frame)
+  const std::array<glm::dvec3, 2>  foci{glm::dvec3(0.0), eye};
+  const std::vector<W::GrassTile>  wanted = W::grassTiles(world, foci, p.tileKinds, p.grassWas, backdropSpec.size);
+  p.tiledFor = eye;
+  // a tile no longer asked for: hidden, and its entity the next tile's of that kind
+  for(auto it = p.tiles.begin(); it != p.tiles.end();)
+  {
+    if(std::binary_search(wanted.begin(), wanted.end(), it->first))
+    {
+      ++it;
+      continue;
+    }
+    if(!it->second.isNone())
+    {
+      scene.setVisible(it->second, false);
+      p.spareTiles[it->first.kind].push_back(it->second);
+      p.tiled -= std::min(p.tiled, p.patches[it->first.kind].plants);
+    }
+    it = p.tiles.erase(it);
+  }
+  for(const W::GrassTile& tile : wanted)
+  {
+    if(tile.kind >= p.patches.size() || p.tiles.count(tile))
+      continue;
+    const BackdropBuilt::Patch& patch = p.patches[tile.kind];
+    if(!scene.entity(patch.holder))
+      continue;  // the kit has none of its role
+    const W::GrassPlace place = W::grassPlace(world, tile, p.tileKinds[tile.kind]);
+    if(place.level < W::kGrassLevel)
+    {
+      p.tiles[tile] = rs::EntityId{};  // too steep for grass: remembered, so it is not asked again
+      continue;
+    }
+    rs::EntityId               entity;
+    std::vector<rs::EntityId>& spare = p.spareTiles[tile.kind];
+    if(!spare.empty())
+    {
+      entity = spare.back();
+      spare.pop_back();
+    }
+    else
+    {
+      entity = scene.createEntity("Planet tile", {0, -1}, backdropBuilt->root);
+      scene.setMeshInstance(entity, rs::MeshInstance(patch.instance));
+    }
+    scene.setLocal(entity, {.translation = glm::vec3(place.position), .rotation = place.rotation, .scale = place.scale});
+    scene.setVisible(entity, true);
+    p.tiles[tile] = entity;
+    p.tiled += patch.plants;
+  }
+  // the topic's count of plants, when it is off by more than a twentieth
+  backdropPlants      = p.standing + p.tiled;
+  const uint64_t said = backdropPlantsSaid;
+  if(backdropPlants > said + said / 20 || backdropPlants + said / 20 < said)
+    publishBackdrop();
 }

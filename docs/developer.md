@@ -152,6 +152,8 @@ src/
 │                               #   mountains, climate, biome, colour); a cube on the sphere as quadtrees, the
 │                               #   quads that draw for an eye, and a quad's mesh; fv_host_world.cpp stands it
 │                               #   under the backdrop's root, a batch of quads at a time (the `planet` kind)
+├── fv_world_plants.cpp/hpp     # What grows on the planet, by its biomes, with the backdrop's kit: where trees,
+│                               #   bushes and rocks stand on a quad, and the grass's tiles on the sphere
 ├── fv_world_map.cpp/hpp        # The planet's base map, baked once over a cube map: rain by the wind, hollows
 │                               #   and lakes, what the water wore away, rivers as curves; and what the stages
 │                               #   read of it (the wear, the water near a point, a river's bed and surface)
