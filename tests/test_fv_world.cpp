@@ -23,9 +23,12 @@ glm::dvec3 spread(uint32_t i, uint32_t count)
   return {r * std::cos(phi), y, r * std::sin(phi)};
 }
 
+// A small base map: a planet's own is a second or more to bake, and what is asked here holds at any size
+const W::Making kSmall{.map = 128};
+
 const W::World& planet()
 {
-  static const W::World w = W::make({});
+  static const W::World w = W::make({}, kSmall);
   return w;
 }
 
@@ -73,7 +76,7 @@ TEST(WorldCube, TwoFacesShareTheirEdgesPoints)
 
 TEST(WorldFields, ASeedsPlanetIsTheSameEveryTime)
 {
-  const W::World a = W::make({.seed = 7}), b = W::make({.seed = 7}), c = W::make({.seed = 8});
+  const W::World a = W::make({.seed = 7}, kSmall), b = W::make({.seed = 7}, kSmall), c = W::make({.seed = 8}, kSmall);
   int            differ = 0;
   for(uint32_t i = 0; i < 200; i++)
   {
@@ -89,7 +92,7 @@ TEST(WorldFields, TheSeaCoversTheShareAskedFor)
 {
   for(const double sea : {0.2, 0.55, 0.8})
   {
-    const W::World w     = W::make({.sea = sea});
+    const W::World w     = W::make({.sea = sea}, kSmall);
     int            under = 0;
     const int      n     = 4000;
     for(int i = 0; i < n; i++)
@@ -97,7 +100,7 @@ TEST(WorldFields, TheSeaCoversTheShareAskedFor)
     EXPECT_NEAR(double(under) / n, sea, 0.05) << sea;
   }
   // and none asked for is none
-  const W::World dry = W::make({.sea = 0.0});
+  const W::World dry = W::make({.sea = 0.0}, kSmall);
   for(uint32_t i = 0; i < 2000; i++)
     EXPECT_GT(W::sample(dry, spread(i, 2000), 200.0).elevation, 0.0);
 }
@@ -190,9 +193,15 @@ TEST(WorldFields, NothingFinerThanWhatDrawsIt)
   {
     const glm::dvec3 d = spread(i, 200);
     const glm::dvec3 side = glm::normalize(glm::cross(d, glm::dvec3(0.3, 0.5, 0.8)));
-    // on land, and off the mountains: a ridge's crest is a crease at any footprint
+    // on land, and off the mountains: a ridge's crest is a crease at any footprint; so is a lake's
+    // shore or a river's bank
     const W::Sample from = W::sample(w, d, footprint), to = W::sample(w, glm::normalize(d + side * (3.0 * footprint / w.spec.radius)), footprint);
     if(from.elevation < 20.0 || from.mountain > 0.0F || to.mountain > 0.0F)
+      continue;
+    bool water = false;
+    for(int k = 0; k < 48 && !water; k += 4)
+      water = W::sample(w, glm::normalize(d + side * (double(k) * footprint / 16.0 / w.spec.radius)), 1.0).inland.any();
+    if(water)
       continue;
     double           lastCoarse = 0.0, lastFine = 0.0, slopeCoarse = 0.0, slopeFine = 0.0;
     for(int k = 0; k < 48; k++)
@@ -220,7 +229,7 @@ TEST(WorldSite, TheFiguresStandOnLevelLandAtTheOrigin)
   for(const int seed : {1, 2, 3, 4, 5})
     for(const double radius : {5000.0, 20000.0, 80000.0})
     {
-      const W::World w = W::make({.seed = seed, .radius = radius});
+      const W::World w = W::make({.seed = seed, .radius = radius}, kSmall);
       EXPECT_GT(w.frame.siteElevation, 1.0) << seed << " " << radius;
       // the site is the origin, +y up
       const glm::dvec3 origin = W::toScene(w, w.frame.site, w.frame.siteElevation);
@@ -242,7 +251,7 @@ TEST(WorldSite, TheFiguresStandOnLevelLandAtTheOrigin)
 
 TEST(WorldSite, APlanetNearlyAllSeaStillHasOne)
 {
-  const W::World w = W::make({.sea = 0.9});
+  const W::World w = W::make({.sea = 0.9}, kSmall);
   EXPECT_GT(w.frame.siteElevation, 0.0);
 }
 
@@ -437,8 +446,10 @@ TEST(WorldMesh, NeighboursOfALevelMeetAlongTheirEdge)
 
 TEST(WorldMesh, TheSeaIsTheSphereAtItsLevel)
 {
-  const W::World&    w = planet();
-  const W::ChunkMesh m = W::seaMesh(w, {4, 3, 2, 5});
+  // (with no rivers or lakes on it: those are test_fv_world_map's)
+  const W::World     w = W::make({}, {.base = false});
+  const W::ChunkMesh m = W::waterMesh(w, {4, 3, 2, 5});
+  EXPECT_FALSE(m.inland);
   const uint32_t     side = W::kSeaCells + 1;
   ASSERT_EQ(m.surface, side * side);
   for(uint32_t v = 0; v < m.surface; v++)

@@ -174,6 +174,10 @@ set(TEST_SOURCES
     test_fv_world.cpp
     test_world_bodies.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_world_map.cpp
+    # The planet's base map: the cube's grids across their edges, water that all runs to the sea or a lake,
+    # rivers that never rise, their beds under their water
+    test_fv_world_map.cpp
     # Auto white balance: the light in a frame, and the white balance that makes it grey
     test_white_balance.cpp
     ${CMAKE_SOURCE_DIR}/src/white_balance.cpp

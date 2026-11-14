@@ -13,13 +13,15 @@
 //   A biome is a row of a table (World::biomes): another one is another row. Every stage takes the
 //   size of what will draw the sample (`footprint`, metres) and adds nothing finer than that can
 //   draw: detail under a mesh's vertices is drawn as triangles, not as detail.
-// - The base map (BaseMap): the fields of the whole planet as a cube map, made once a seed, for what a
-//   point alone cannot say (where the rivers run, what the rain wore away). Declared; nothing fills it
-//   yet.
+// - The base map (BaseMap, fv_world_map.hpp): the fields of the whole planet as a cube map, baked once
+//   a planet, for what a point alone cannot say: where the wind carries the sea's rain, what that rain
+//   wore away, where it gathers into rivers and stands in lakes. The stages read it: the `base` stage
+//   adds what the rain did to the land and finds the water near a point, `water` cuts the rivers'
+//   beds. A planet made without one (Making::base) is the stages' alone.
 // - The mesh: a cube laid on the sphere, each face a quadtree (Quad). `select` says which quads draw
 //   for an eye: a quad splits into four while the eye is within about twice its width of it, so the
 //   ground underfoot is a metre a vertex and the far side of the planet a kilometre. `groundMesh` and
-//   `seaMesh` make a quad's triangles, with skirts down its edges: where a quad meets a coarser one
+//   `waterMesh` make a quad's triangles, with skirts down its edges: where a quad meets a coarser one
 //   their edges differ, and a ray would find the crack.
 //
 // The figures stand where the planet's `site` is: a level place on land, found by the seed. The planet
@@ -33,6 +35,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <compare>
 #include <cstdint>
@@ -59,6 +62,26 @@ struct Spec
 inline constexpr double kClearing     = 5.0;
 inline constexpr double kClearingEdge = 25.0;
 
+// No water: a level under any ground
+inline constexpr double kDry = -1.0e30;
+
+// The inland water by a point (the base map's rivers and lakes), as the `base` stage finds it and
+// the stages after it use it. Levels in metres over the sea's.
+struct Inland
+{
+  bool   river      = false;  // a river runs within reach
+  double riverLevel = 0.0;    // its surface's level at its nearest point
+  double riverHalf  = 0.0;    // half its width there
+  double riverAway  = 0.0;    // metres from its middle line
+  double bank       = 0.0;    // metres past its edge over which its banks ease into the land
+  double lake       = 0.0;    // 0..1: how much of the ground round the point is a lake's
+  double lakeLevel  = kDry;
+  double cell       = 0.0;    // metres across a cell of the map that says so
+  bool   any() const { return river || lake > 0.0; }
+  // Metres to the nearest water's edge, negative in it; large with none near
+  double shore() const;
+};
+
 // A point of the sphere as a stage sees it
 struct Point
 {
@@ -77,6 +100,12 @@ struct Sample
   float     rock        = 0.0F;  // the share of bare rock whatever the slope
   int       biome       = 0;     // the row of World::biomes that counts most
   glm::vec3 colour{0.2F};        // what level ground reflects here, linear
+  // Inland water. `water` is its surface's level here as its mesh draws it (waterLevel): over the
+  // ground where a river or a lake lies, under it by their banks, kDry with none near.
+  double water = kDry;
+  float  shore = 1.0e9F;         // metres to the nearest inland water's edge, negative in it
+  float  painted = 0.0F;         // 0..1: a river too narrow for what draws the sample, as a share of its colour
+  Inland inland;                 // what the base map says of the water near
 };
 
 // A biome: where it is, by the climate, and what its ground is. Where two meet they blend over
@@ -97,13 +126,17 @@ struct Stage
   void (*apply)(const World&, const Point&, Sample&) = nullptr;
 };
 
-// The whole planet's fields as a cube map, `size` cells along a face's edge: each a face after another,
-// row by row. Empty until something bakes it.
-struct BaseMap
+// The whole planet's fields as a cube map: fv_world_map.hpp
+struct BaseMap;
+
+// How a planet is made
+struct Making
 {
-  uint32_t                          size = 0;
-  std::array<std::vector<float>, 6> elevation;  // metres, added to the stages'
-  std::array<std::vector<float>, 6> flow;       // how much water runs through a cell
+  bool     base = true;  // with its base map: the rain, what it wore away, rivers and lakes
+  uint32_t map  = 0;     // cells along a face of that map; 0: by the planet's size (mapCells)
+  // Set from another thread, the making stops at its next step and the planet returned is not whole:
+  // for a planet nobody waits for any more
+  const std::atomic<bool>* stop = nullptr;
 };
 
 // Where the planet stands in the scene: `site` (the planet's axes) is the origin, +y up
@@ -130,11 +163,16 @@ struct World
   glm::vec3 albedo{0.1F};
 };
 
-// The planet of a spec: its sea level found, its stages listed, and its site chosen
-World make(const Spec& spec);
+// The planet of a spec: its sea level found, its base map baked, its stages listed, and its site
+// chosen. The baking is the long part: a second or two for a planet 20 km in radius, on the pool.
+World make(const Spec& spec, const Making& making = {});
 
 // What the point `direction` of the planet is, for something `footprint` metres across
 Sample sample(const World& world, const glm::dvec3& direction, double footprint);
+
+// How warm a place of the planet is at `elevation` (metres over the sea), degrees C: by its latitude
+// and its height, before what the weather adds
+double temperatureAt(const World& world, const glm::dvec3& direction, double elevation);
 
 // What the ground reflects where it slopes (rise over run): rock shows through as it steepens
 glm::vec3 surfaceColour(const World& world, const Sample& s, float slope);
@@ -179,8 +217,12 @@ uint8_t finestLevel(const World& world);
 glm::dvec3 toScene(const World& world, const glm::dvec3& direction, double elevation);
 // And back: the planet's direction of a scene point, and its distance from the centre
 glm::dvec3 toPlanet(const World& world, const glm::dvec3& point, double* fromCentre = nullptr);
-// How high a scene point is over the ground or the sea under it
+// How high a scene point is over the ground or the water under it
 double heightOver(const World& world, const glm::dvec3& point);
+// The water's surface over the planet's point `direction`, metres over the sea's level, for something
+// `footprint` metres across: the sea's own (0), a lake's or a river's where one lies. By their banks
+// the surface goes down under the ground, which hides it.
+double waterLevel(const World& world, const glm::dvec3& direction, double footprint);
 
 // A camera's "up" at `eye` (the scene's frame). By the site it is the scene's +y, which the figures
 // stand along; away from it the planet's own vertical there, so the horizon stays level all the way
@@ -225,9 +267,12 @@ struct ChunkMesh
   std::vector<uint32_t>  indices;
   uint32_t               surface = 0;  // the first vertices are the surface's; the rest its skirts'
   double                 lowest = 0.0, highest = 0.0;  // its elevations: under 0, the sea lies on it
+  bool                   inland = false;  // a river or a lake lies on it
 };
 ChunkMesh groundMesh(const World& world, const Quad& quad);
-// The sea over a quad: the sphere at the sea's level
-ChunkMesh seaMesh(const World& world, const Quad& quad);
+// The water over a quad, `cells` along its edge: the sphere at the sea's level, and the lakes' and
+// rivers' surfaces where they lie (waterLevel). A quad with inland water on it (ChunkMesh::inland)
+// wants as many cells as its ground has, so both are cut at the same points; the sea alone needs few.
+ChunkMesh waterMesh(const World& world, const Quad& quad, uint32_t cells = kSeaCells);
 
 }  // namespace fv::world

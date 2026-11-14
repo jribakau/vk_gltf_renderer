@@ -1642,7 +1642,7 @@ struct FvHost::Impl
   struct PlanetBuilt
   {
     fv::world::Spec                         asked;       // the spec it was made for
-    std::shared_ptr<const fv::world::World> world;       // shared with the pool's jobs
+    std::shared_ptr<const fv::world::World> world;       // shared with the pool's jobs; none while it is being made
     uint64_t                                generation = 0;  // a batch made for a planet since gone is dropped
     rs::MaterialId                          ground, sea;
     struct Chunk
@@ -1662,6 +1662,8 @@ struct FvHost::Impl
   // The planet the state asks for, standing or on its way: made again when its spec is another
   void standPlanet(rs::RetainedScene& scene);
   // Lets go of what a planet held besides its entities, which go with the backdrop's root
+  // Set, the planet being made on a worker stops at its next step: nobody waits for it any more
+  std::shared_ptr<std::atomic<bool>> planetStop;
   void dropPlanet();
   // Every frame: the cut the camera asks for, and the next batch of quads toward it asked of the pool
   void followPlanet();

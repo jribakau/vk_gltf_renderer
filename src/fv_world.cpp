@@ -1,4 +1,5 @@
 #include "fv_world.hpp"
+#include "fv_world_map.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -180,17 +181,46 @@ void hills(const World& w, const Point& p, Sample& s)
   s.elevation += 2.0 * h * 0.007 * w.spec.radius * w.spec.relief * land;
 }
 
-// The climate: warm at the equator and cold at the poles and on the heights; wet by the sea and
-// where the weather has it so
+// What the base map says of the place: what the rain wore off the land or laid on it, and the water
+// near. (What it laid on the land it did not lay in the sea: a shore stays where the stages put it.)
+void base(const World& w, const Point& p, Sample& s)
+{
+  const double added = mapAdded(*w.base, p.direction, p.footprint);
+  s.elevation += std::min(added, 0.0) + std::max(added, 0.0) * smooth(0.0, 4.0, s.elevation);
+  s.inland = mapInland(*w.base, w.spec.radius, p.direction);
+  s.shore  = float(std::min(s.inland.shore(), 1.0e9));
+}
+
+// The rivers' beds and banks cut into the ground, and the water over it. After the ground's fine
+// relief: a river's bed has none of it.
+void water(const World&, const Point& p, Sample& s)
+{
+  if(!s.inland.any())
+    return;
+  // Where the ground is under the sea, a river is the sea: the map's cells are too coarse to say
+  // where a shore's pools lie, and a river a little over the sea's level would stand out of them.
+  if(s.inland.river)
+    s.inland.riverLevel *= smooth(-0.5, 1.0, s.elevation);
+  s.elevation = inlandGround(s.inland, s.elevation, p.footprint);
+  s.water     = inlandSheet(s.inland, p.footprint);
+  s.painted   = inlandPainted(s.inland, p.footprint);
+}
+
+// The climate: warm at the equator and cold at the poles and on the heights; wet where the wind
+// brings the sea's rain (the base map's; with none, by the sea and where a noise has it so) and by
+// a river or a lake
 void climate(const World& w, const Point& p, Sample& s)
 {
-  const double latitude = std::abs(p.direction.y);
-  // the highest land of an even relief is some 40 degrees colder than the shore under it
-  const double lapse = 40.0 / (0.045 * w.spec.radius);
-  const double warm  = fbm3(p.direction * 5.0, seedOf(w), kChWarm, 2, finestOf(w, p, 5.0)) - 0.5;
-  s.temperature      = float(30.0 - 48.0 * std::pow(latitude, 1.5) - lapse * std::max(s.elevation, 0.0) + 6.0 * warm);
+  const double warm = fbm3(p.direction * 5.0, seedOf(w), kChWarm, 2, finestOf(w, p, 5.0)) - 0.5;
+  s.temperature     = float(temperatureAt(w, p.direction, s.elevation) + 6.0 * warm);
   const double wet   = fbm3(p.direction * 3.1 + glm::dvec3(-4.0, 2.5, 9.0), seedOf(w), kChWet, 3, finestOf(w, p, 3.1));
-  s.moisture         = float(std::clamp(0.9 * wet - 0.05 + 0.35 * std::exp(-1.5 * std::max(s.continent, 0.0)), 0.0, 1.0));
+  if(w.base)
+  {
+    const double waterside = 1.0 - smooth(0.0, std::min(1.2 * s.inland.cell, 120.0), double(s.shore));
+    s.moisture             = float(std::clamp(double(mapRain(*w.base, p.direction)) + 0.3 * (wet - 0.5) + 0.25 * waterside, 0.0, 1.0));
+  }
+  else
+    s.moisture = float(std::clamp(0.9 * wet - 0.05 + 0.35 * std::exp(-1.5 * std::max(s.continent, 0.0)), 0.0, 1.0));
 }
 
 constexpr float kBiomeSoftTemperature = 2.5F;   // degrees either side of a boundary over which two biomes blend
@@ -254,6 +284,8 @@ void detail(const World& w, const Point& p, Sample& s)
 }
 
 const glm::vec3 kSand{0.42F, 0.36F, 0.25F};
+const glm::vec3 kGravel{0.16F, 0.145F, 0.115F};    // a river's bed, a lake's shallows
+const glm::vec3 kRiverSeen{0.03F, 0.05F, 0.06F};   // a river from too far to draw its water
 const glm::vec3 kSeaFloorDeep{0.07F, 0.08F, 0.07F};
 const glm::vec3 kRock{0.19F, 0.175F, 0.16F};
 constexpr double    kBeach = 2.5;  // metres over the sea a beach reaches
@@ -272,9 +304,21 @@ void colour(const World& w, const Point& p, Sample& s)
     s.rock   = 0.0F;
     return;
   }
+  if(s.water > s.elevation)
+  {
+    // a river's or a lake's bed: gravel in the shallows, dark mud under a few metres
+    s.colour = glm::mix(kGravel, 0.6F * kSeaFloorDeep, float(smooth(0.0, 6.0, s.water - s.elevation)));
+    s.rock   = 0.0F;
+    return;
+  }
   // a beach no narrower than what draws it
   const double top = kBeach + 0.015 * p.footprint;
   s.colour         = glm::mix(s.colour, kSand, float(1.0 - smooth(0.6 * top, top, s.elevation)));
+  // damp gravel by a river or a lake, and a river too narrow to draw as water
+  if(s.shore < 2.5F)
+    s.colour = glm::mix(s.colour, kGravel, 0.5F * float(1.0 - smooth(0.0, 2.5, double(s.shore))));
+  if(s.painted > 0.0F)
+    s.colour = glm::mix(s.colour, kRiverSeen, s.painted);
 }
 
 // Level where the figures stand, easing into the land round it
@@ -288,11 +332,14 @@ void clearing(const World& w, const Point& p, Sample& s)
 
 std::vector<Biome> biomeTable()
 {
+  // (above 5 degrees the rows are a ladder by how wet it is, and must leave no gap)
   return {
       {.name = "snow", .temperatureTo = -5.0F, .colour = {0.78F, 0.80F, 0.84F}, .rough = 0.5F},
       {.name = "tundra", .temperatureFrom = -5.0F, .temperatureTo = 5.0F, .colour = {0.17F, 0.16F, 0.11F}, .rough = 1.0F},
-      {.name = "grassland", .temperatureFrom = 5.0F, .moistureFrom = 0.33F, .colour = {0.085F, 0.14F, 0.045F}, .rough = 0.8F},
-      {.name = "steppe", .temperatureFrom = 5.0F, .moistureTo = 0.33F, .colour = {0.26F, 0.21F, 0.12F}, .rough = 0.9F},
+      {.name = "desert", .temperatureFrom = 5.0F, .moistureTo = 0.15F, .colour = {0.40F, 0.30F, 0.17F}, .rough = 0.6F},
+      {.name = "steppe", .temperatureFrom = 5.0F, .moistureFrom = 0.15F, .moistureTo = 0.36F, .colour = {0.26F, 0.21F, 0.12F}, .rough = 0.9F},
+      {.name = "grassland", .temperatureFrom = 5.0F, .moistureFrom = 0.36F, .moistureTo = 0.68F, .colour = {0.085F, 0.14F, 0.045F}, .rough = 0.8F},
+      {.name = "forest", .temperatureFrom = 5.0F, .moistureFrom = 0.68F, .colour = {0.045F, 0.085F, 0.03F}, .rough = 0.9F},
   };
 }
 
@@ -367,7 +414,7 @@ glm::dvec3 findSite(const World& w)
       top     = s.elevation;
       highest = d;
     }
-    if(s.elevation < 3.0 || s.elevation > 0.004 * R + 12.0 || s.temperature < 8.0F || std::abs(d.y) > 0.7)
+    if(s.elevation < 3.0 || s.elevation > 0.004 * R + 12.0 || s.temperature < 8.0F || std::abs(d.y) > 0.7 || s.shore < 60.0F)
       continue;
     glm::dvec3 a, b;
     tangents(d, a, b);
@@ -380,8 +427,9 @@ glm::dvec3 findSite(const World& w)
       {
         const double     angle = double(turn) * (kPi / 4.0);
         const glm::dvec3 side  = a * std::cos(angle) + b * std::sin(angle);
-        const double     e     = sampleUpTo(w, glm::normalize(d + side * (away / R)), 8.0, stages).elevation;
-        dry                    = dry && e > 1.0;
+        const Sample     there = sampleUpTo(w, glm::normalize(d + side * (away / R)), 8.0, stages);
+        const double     e     = there.elevation;
+        dry                    = dry && e > 1.0 && there.shore > 20.0F;
         if(away <= 120.0)
           slope = std::max(slope, std::abs(e - s.elevation) / away);
       }
@@ -451,7 +499,7 @@ void addGrid(ChunkMesh& m, uint32_t cells)
 
 // ---- the planet --------------------------------------------------------------------------------------
 
-World make(const Spec& asked)
+World make(const Spec& asked, const Making& making)
 {
   World w;
   w.spec        = asked;
@@ -477,8 +525,16 @@ World make(const Spec& asked)
   w.seaLevel = w.spec.sea > 0.0 ? levels[std::min(size_t(w.spec.sea * double(kPlaces)), size_t(kPlaces - 1))]
                                 : levels.front() - w.seaSpread;  // no sea: the lowest land is well over it
 
-  w.stages = {{"continents", continents}, {"mountains", mountains}, {"hills", hills}, {"climate", climate},
-              {"biome", biome},           {"detail", detail},       {"colour", colour}};
+  // The land's broad shape, then what the base map made of it (a flat planet has nothing to wear)
+  w.stages = {{"continents", continents}, {"mountains", mountains}, {"hills", hills}};
+  if(making.base && w.spec.relief > 0.0)
+    w.base = bake(w, making.map ? making.map : mapCells(w.spec.radius), making.stop);
+  if(w.base)
+    w.stages.push_back({"base", base});
+  w.stages.insert(w.stages.end(), {{"climate", climate}, {"biome", biome}, {"detail", detail}});
+  if(w.base)
+    w.stages.push_back({"water", water});
+  w.stages.push_back({"colour", colour});
 
   // where the figures stand, the origin
   w.frame.site          = findSite(w);
@@ -500,6 +556,13 @@ World make(const Spec& asked)
   return w;
 }
 
+double temperatureAt(const World& world, const glm::dvec3& direction, double elevation)
+{
+  // the highest land of an even relief is some 40 degrees colder than the shore under it
+  const double lapse = 40.0 / (0.045 * world.spec.radius);
+  return 30.0 - 48.0 * std::pow(std::abs(direction.y), 1.5) - lapse * std::max(elevation, 0.0);
+}
+
 Sample sample(const World& world, const glm::dvec3& direction, double footprint)
 {
   return sampleUpTo(world, direction, footprint, world.stages.size());
@@ -507,8 +570,8 @@ Sample sample(const World& world, const glm::dvec3& direction, double footprint)
 
 glm::vec3 surfaceColour(const World&, const Sample& s, float slope)
 {
-  // rock from where a slope is too steep for soil, to a cliff's bare face
-  const float steep = s.elevation < 0.0 ? 0.0F : float(smooth(0.45, 0.9, double(slope)));
+  // rock from where a slope is too steep for soil, to a cliff's bare face; not under water
+  const float steep = s.elevation < 0.0 || s.water > s.elevation ? 0.0F : float(smooth(0.45, 0.9, double(slope)));
   return glm::mix(s.colour, kRock, std::max(steep, s.rock));
 }
 
@@ -585,8 +648,19 @@ double heightOver(const World& world, const glm::dvec3& point)
   const glm::dvec3 d = toPlanet(world, point, &r);
   const double     over = r - world.spec.radius;
   // the ground as something that far away would see it, and then as near as it is
-  const double first = over - std::max(sample(world, d, std::max(0.05 * std::abs(over), 1.0)).elevation, 0.0);
-  return over - std::max(sample(world, d, std::max(0.05 * std::abs(first), 1.0)).elevation, 0.0);
+  const auto top = [&](double footprint) {
+    const Sample s = sample(world, d, footprint);
+    return std::max({s.elevation, s.water, 0.0});
+  };
+  const double first = over - top(std::max(0.05 * std::abs(over), 1.0));
+  return over - top(std::max(0.05 * std::abs(first), 1.0));
+}
+
+double waterLevel(const World& world, const glm::dvec3& d, double footprint)
+{
+  if(!world.base)
+    return 0.0;
+  return std::max(0.0, sample(world, d, footprint).water);
 }
 
 glm::dvec3 viewUp(const World& world, const glm::dvec3& eye)
@@ -711,6 +785,7 @@ ChunkMesh groundMesh(const World& world, const Quad& q)
       m.colors.emplace_back(glm::clamp(c, 0.0F, 1.0F), 1.0F);
       m.lowest  = std::min(m.lowest, s.elevation);
       m.highest = std::max(m.highest, s.elevation);
+      m.inland  = m.inland || s.water > s.elevation - 0.3;
     }
   m.surface = uint32_t(m.positions.size());
   addGrid(m, N);
@@ -720,19 +795,25 @@ ChunkMesh groundMesh(const World& world, const Quad& q)
   return m;
 }
 
-ChunkMesh seaMesh(const World& world, const Quad& q)
+ChunkMesh waterMesh(const World& world, const Quad& q, uint32_t cells)
 {
-  constexpr uint32_t N    = kSeaCells;
-  const double       cell = width(world, q) / double(N);
-  ChunkMesh          m;
+  const uint32_t N    = std::max(cells, 1U);
+  const double   cell = width(world, q) / double(N);
+  ChunkMesh      m;
   m.centre = toScene(world, direction(q.face, coordOf(q, q.x, 1, 2), coordOf(q, q.y, 1, 2)), 0.0);
   for(int j = 0; j <= int(N); j++)
     for(int i = 0; i <= int(N); i++)
     {
-      const glm::dvec3 p = toScene(world, direction(q.face, coordOf(q, q.x, i, N), coordOf(q, q.y, j, N)), 0.0);
+      // the sea's level, or a lake's or a river's: level water, so its normal is straight up even
+      // where its surface goes down under a bank
+      const glm::dvec3 d     = direction(q.face, coordOf(q, q.x, i, N), coordOf(q, q.y, j, N));
+      const double     level = waterLevel(world, d, cell);
+      const glm::dvec3 p     = toScene(world, d, level);
       m.positions.push_back(glm::vec3(p - m.centre));
       m.normals.push_back(glm::vec3(glm::normalize(p - world.frame.centre)));
       m.colors.emplace_back(1.0F);
+      m.highest = std::max(m.highest, level);
+      m.inland  = m.inland || level > 0.0;
     }
   m.surface = uint32_t(m.positions.size());
   addGrid(m, N);

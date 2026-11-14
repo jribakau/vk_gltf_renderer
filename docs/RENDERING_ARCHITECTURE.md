@@ -819,8 +819,18 @@ needs no kit.
 - **What it is** is a function of a point on the sphere: `fv::world::sample` runs an ordered list of
   stages over a sample (the continents and the sea's floor, mountains, hills, the climate, the biome,
   the ground's fine relief, its colour). A biome is a row of a table. Every stage takes the size of
-  what will draw the sample and adds nothing finer. A cube map of the whole planet's fields
-  (`BaseMap`) is declared for what a point alone cannot say (rivers, erosion); nothing fills it yet.
+  what will draw the sample and adds nothing finer.
+- **What a point alone cannot say** is baked once a planet over the whole of it, on a cube map
+  (`BaseMap`, `src/fv_world_map.hpp`, `bake`): the rain the wind carries in from the sea, the hollows
+  filled to where they spill (the deep ones hold lakes), what the running water wore off the land
+  (the stream power law, solved from the sea up), and the rivers, kept as curves with a level and a
+  width. Two stages read it: `base` adds the wear to the land and finds the water near a point,
+  `water` cuts the rivers' beds and says where water lies. The map's cells are tens of metres and
+  the ground is drawn to a metre, so what is drawn is never the map's cells: a lake's shore is where
+  the ground comes up through its level, a river's bed is cut from its curve. The header says what
+  that takes (a lake under its hollow's brim, rivers at the sea's level by a shore, the cube's
+  corners). The planet is made on a worker (`standPlanet`), since the bake is about a second for
+  20 km of radius and a few for the largest; a flat planet (no relief) has no map.
 - **Where the figures stand** is a level place on land the seed picks (`site`). The planet is turned
   and set so that place is the origin with +y up; its centre is `Frame::centre`, a radius below.
 - **What draws** is a cut of six quadtrees, one a cube face (`select`): a quad splits while the eye is
@@ -831,8 +841,11 @@ needs no kit.
   is. Meshes are made on the job pool a batch at a time and arrive as hidden entities, so their BLAS
   is built before they show. A quad's edges carry skirts, since neighbours of different levels don't
   meet exactly and a ray would find the crack.
-- **The sea** is a second mesh a quad, the sphere at sea level, wherever the quad's ground dips under
-  it: a transmissive volume, so the colour of the shallows is the path tracer's. The camera-medium
+- **The water** is a second mesh a quad (`waterMesh`): the sphere at sea level wherever the quad's
+  ground dips under it, and the lakes' and rivers' surfaces where they lie (`waterLevel`), cut at the
+  ground's own points so the shore is where the two cross. By a bank the surface goes down under the
+  ground, which hides it. A transmissive volume, so the colour of the shallows is the path tracer's.
+  A river too narrow for what draws a quad is not water there but a line of colour. The camera-medium
   probe (`ptCameraMedium`) must be off, as the app has it: its ray passes through the ground and
   meets the far side's sea from behind.
 - **The sky** takes the planet's radius, its air scaled to it, and its centre (`worldRadius`,

@@ -16,8 +16,15 @@
 // come back as hidden entities (their BLAS built by the time they show). The first cut is made whole
 // before any of it shows: the state is `loading` till then, as while a kit is read.
 //
+// The planet itself is made on a worker first: its base map (the rain, the wear, rivers and lakes) is
+// a second or two of work for 20 km of radius, more for a large one. Asked for another meanwhile (a
+// slider dragged), the one being made is told to stop.
+//
 
 #include "fv_host_impl.hpp"
+#include "fv_world_map.hpp"
+
+#include <chrono>
 
 #include <figure/jobs/pool.hpp>
 
@@ -58,7 +65,7 @@ struct FvHost::Impl::PlanetMade
 
 glm::dvec3 FvHost::Impl::planetCentre() const
 {
-  if(!planetBuilt)
+  if(!planetBuilt || !planetBuilt->world)
     return glm::dvec3(0.0);
   // the planet's own frame is the root's, which stands at the floor's height
   return planetBuilt->world->frame.centre + glm::dvec3(0.0, double(groundHeight()), 0.0);
@@ -73,7 +80,6 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
     placeBackdrop();
     return;  // as it stands, or as it is being made
   }
-  fv::timing::Scope time("planet: made", 20);
   if(backdropBuilt && scene.entity(backdropBuilt->root))
     scene.destroyEntity(backdropBuilt->root);
   backdropBuilt       = std::make_unique<BackdropBuilt>();
@@ -84,7 +90,6 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
   PlanetBuilt& p = *planetBuilt;
   p.asked        = asked;
   p.generation   = ++planetGeneration;
-  p.world        = std::make_shared<const fv::world::World>(fv::world::make(asked));
 
   // the ground: its vertices' colours on a rough surface
   rs::MaterialRecord ground;
@@ -108,11 +113,28 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
 
   backdropState = "loading";
   placeBackdrop();
-  followPlanet();  // asks for the first cut
+  planetStop = std::make_shared<std::atomic<bool>>(false);
+  loaders.spawn([this, asked, stop = planetStop, generation = p.generation] {
+    const auto started = std::chrono::steady_clock::now();
+    auto       world   = std::make_shared<const fv::world::World>(fv::world::make(asked, {.stop = stop.get()}));
+    const double ms    = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    post([this, world, stop, generation, ms] {
+      if(stop->load() || !planetBuilt || planetBuilt->generation != generation)
+        return;  // of a planet that has gone since
+      LOGI("planet: made in %.0f ms (%u map cells a face, %u lakes, %zu river pieces)\n", ms,
+           world->base ? world->base->grid.cells() : 0U, world->base ? world->base->lakes : 0U,
+           world->base ? world->base->pieces.size() : size_t(0));
+      planetBuilt->world = world;
+      followPlanet();  // asks for the first cut
+    });
+  });
 }
 
 void FvHost::Impl::dropPlanet()
 {
+  if(planetStop)
+    planetStop->store(true);  // one still being made is nobody's now
+  planetStop.reset();
   if(!planetBuilt)
     return;
   if(renderer->feedsHostScene())
@@ -141,7 +163,9 @@ void FvHost::Impl::followPlanet()
   rs::RetainedScene& scene = renderer->hostScene();
   if(!scene.entity(backdropBuilt->root))
     return;  // it went with a scene replaced: applyBackdrop makes it again
-  PlanetBuilt&             p     = *planetBuilt;
+  PlanetBuilt& p = *planetBuilt;
+  if(!p.world)
+    return;  // being made
   const fv::world::World& world = *p.world;
 
   // the eye, in the root's frame; with no camera, a figure's
@@ -236,8 +260,11 @@ void FvHost::Impl::followPlanet()
         PlanetMade& m = (*made)[i];
         m.quad        = ask[i];
         m.ground      = W::groundMesh(*held, ask[i]);
-        if(m.ground.lowest < 0.0)
-          m.sea = W::seaMesh(*held, ask[i]);
+        // the sea where the ground dips under it; a river's or a lake's water is cut at the ground's own points
+        if(m.ground.inland)
+          m.sea = W::waterMesh(*held, ask[i], W::kGroundCells);
+        else if(m.ground.lowest < 0.0)
+          m.sea = W::waterMesh(*held, ask[i]);
       }
     });
     post([this, made, generation] { planetArrived(*made, generation); });
