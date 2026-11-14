@@ -245,6 +245,14 @@ struct Settings
   float     atmoOzoneWidth      = 30.0f;                                     // km; full width of the tent, zero to zero
   float     atmoBottomRadius    = 6360.0f;                                   // km; planet radius
   float     atmoThickness       = 60.0f;                                     // km; atmosphere depth above the surface
+  // A small planet that stands in the scene (the backdrop's `planet`, fv_world.hpp): its radius, km,
+  // takes the atmosphere's (0: none stands); its air is the atmosphere's made `worldAirScale` times as
+  // deep and as many times as dense, so the sky overhead is the one the values above describe over a
+  // planet a few kilometres across (sky_world.hpp); and its centre, in the scene, is where the eye's
+  // height is taken from. The host's to say, and nothing a file keeps.
+  float     worldRadius   = 0.0f;
+  float     worldAirScale = 1.0f;
+  glm::vec3 worldCentre   = {0.0f, 0.0f, 0.0f};
   // Applying a preset overwrites every field above. It is an action rather than a mode: nothing
   // reads it back, and the UI works out which preset (if any) the current values match.
   int atmoPreset = 0;  // AtmospherePresetIndex

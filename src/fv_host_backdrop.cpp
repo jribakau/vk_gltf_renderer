@@ -28,6 +28,8 @@
 // meshes, and the ground when its kind or its shape changed. The camera's moves lay
 // the tiles again (followBackdrop) and plant nothing.
 //
+// A planet (the `planet` kind) needs none of this: fv_host_world.cpp stands it under the same root.
+//
 
 #include "fv_host_impl.hpp"
 
@@ -257,11 +259,13 @@ bool FvHost::Impl::backdropStands() const
 
 void FvHost::Impl::backdropParams(Json& params) const
 {
-  params.update(fv::backdrop::rendererParams(backdropSpec, backdropStands(), backdropLandAlbedo()));
+  params.update(fv::backdrop::rendererParams(backdropSpec, backdropStands(), backdropLandAlbedo(), planetCentre()));
 }
 
 glm::vec3 FvHost::Impl::backdropLandAlbedo() const
 {
+  if(planetBuilt && backdropStands())
+    return planetBuilt->world->albedo;
   if(!backdropKit || !backdropStands())
     return glm::vec3(0.0F);
   const auto found = backdropKit->ground.find(backdropSpec.kind);
@@ -649,6 +653,11 @@ std::vector<fv::backdrop::Focus> FvHost::Impl::backdropFociNow()
 
 void FvHost::Impl::followBackdrop()
 {
+  if(planetBuilt)
+  {
+    followPlanet();  // a planet's quads, not tiles of grass
+    return;
+  }
   if(!backdropBuilt || backdropState != "ready" || !renderer->feedsHostScene())
     return;
   rs::RetainedScene& scene = renderer->hostScene();
@@ -752,9 +761,11 @@ void FvHost::Impl::standBackdrop(bool reread)
   const auto                drop  = [&] {
     if(backdropBuilt && scene.entity(backdropBuilt->root))
       scene.destroyEntity(backdropBuilt->root);
+    dropPlanet();
     backdropBuilt.reset();
     backdropPlants = 0;
   };
+  const bool            planet = fv::backdrop::isPlanet(spec);
   std::filesystem::path dir;
   {
     std::lock_guard lock(settingsMutex);
@@ -762,7 +773,8 @@ void FvHost::Impl::standBackdrop(bool reread)
   }
   if(reread || (backdropKit && backdropKit->dir != dir))
   {
-    drop();
+    if(!planet || !planetBuilt)
+      drop();  // (a planet has nothing of the kit's)
     backdropKit.reset();
     backdropRequest++;  // a read under way is of the folder as it was
     if(backdropState == "loading")
@@ -775,6 +787,17 @@ void FvHost::Impl::standBackdrop(bool reread)
     backdropWanted = spec;
     return;
   }
+  // a planet: no kit to read, and its own way of standing (fv_host_world.cpp)
+  if(planet)
+  {
+    if(backdropBuilt && !planetBuilt)
+      drop();  // land stood
+    standPlanet(scene);
+    backdropWanted = spec;
+    return;
+  }
+  if(planetBuilt)
+    drop();  // a planet stood
   // what stands, planted again when the state is another
   if(backdropBuilt && scene.entity(backdropBuilt->root))
   {

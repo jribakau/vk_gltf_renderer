@@ -415,6 +415,21 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.atmoBottomRadius, Persist::eYes, 100.0F, 20000.0F);
   m_settings.add({.name = "atmoThickness", .help = "Physical sky: atmosphere depth above the surface (km)", .callbackSuccess = invalidateAtmosphere},
                  &m_resources.settings.atmoThickness, Persist::eYes, 1.0F, 500.0F);
+  // A small planet that stands in the scene (fv_world.hpp, sky_world.hpp): the host's, not kept
+  m_settings.add({.name            = "worldRadius",
+                  .help            = "Physical sky: the radius of a planet that stands in the scene (km); it takes the "
+                                     "atmosphere's own. 0: none",
+                  .callbackSuccess = invalidateAtmosphere},
+                 &m_resources.settings.worldRadius, Persist::eNo, 0.0F, 20000.0F);
+  m_settings.add({.name            = "worldAirScale",
+                  .help            = "Physical sky: how deep that planet's air is against the atmosphere's own, and as "
+                                     "many times as dense",
+                  .callbackSuccess = invalidateAtmosphere},
+                 &m_resources.settings.worldAirScale, Persist::eNo, 0.001F, 1.0F);
+  m_settings.addVector({.name            = "worldCentre",
+                        .help            = "Physical sky: that planet's centre in the scene (scene units): the eye's height is its own over it",
+                        .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                       &m_resources.settings.worldCentre, Persist::eNo);
 
   // The clouds over the physical sky. Each re-bakes the cloud image with the sky, through the same
   // preview-then-settle path; none of them touches the atmosphere's tables.

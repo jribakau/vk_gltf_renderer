@@ -169,6 +169,10 @@ set(TEST_SOURCES
     test_fv_backdrop.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_backdrop.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_backdrop_state.cpp
+    # The planet: a seed's every time, as much sea as asked for, level where the figures stand, quads that
+    # cover the sphere once from any height, meshes whose edges meet
+    test_fv_world.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_world.cpp
     # Auto white balance: the light in a frame, and the white balance that makes it grey
     test_white_balance.cpp
     ${CMAKE_SOURCE_DIR}/src/white_balance.cpp
@@ -238,6 +242,7 @@ set(TEST_SOURCES
     common/fake_host_renderer.hpp
     ${CMAKE_SOURCE_DIR}/src/fv_host.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_backdrop.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_world.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_figure.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_journal.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_journal.cpp
@@ -381,7 +386,7 @@ set_target_properties(${TEST_NAME} PROPERTIES
 )
 
 # Shader code compiled as C++ (nvshaders' BSDF, the aperture sampler, the light pick and its resampling, the ground, the thin scatter lobe, a
-# woven cutout, metallic flakes, the sky's clouds, a curved mirror's image, what a skin map means to its walk, the vertex streams' packed
+# woven cutout, metallic flakes, the sky's clouds, the sky over a small planet, a curved mirror's image, what a skin map means to its walk, the vertex streams' packed
 # normals and tangents, the Display views' colours, the roulette by contribution, the bounce cache, the DLSS jitter, the lens): its own executable, since the BSDF
 # header needs GLM's swizzles
 set(BSDF_TEST_NAME ${PROJECT_NAME}_bsdf_tests)
@@ -389,7 +394,7 @@ add_executable(${BSDF_TEST_NAME} test_bsdf_lobes.cpp test_aperture.cpp test_ligh
                test_thin_scatter.cpp test_hair_bsdf.cpp test_hdr_output.cpp test_woven_opacity.cpp test_flake_noise.cpp
                test_sky_clouds.cpp test_mirror_image.cpp test_skin_albedo.cpp test_haze.cpp test_bloom.cpp
                test_local_exposure.cpp test_unit_vector_pack.cpp test_debug_colors.cpp test_contribution_roulette.cpp test_path_roulette.cpp test_still_keep.cpp test_medium_stack.cpp
-               test_radiance_cache.cpp test_dlss_jitter.cpp test_lens.cpp ${CMAKE_SOURCE_DIR}/src/sky_ground.cpp)
+               test_radiance_cache.cpp test_dlss_jitter.cpp test_lens.cpp test_sky_world.cpp ${CMAKE_SOURCE_DIR}/src/sky_ground.cpp)
 target_link_libraries(${BSDF_TEST_NAME} PRIVATE GTest::gtest GTest::gtest_main glm)
 target_include_directories(${BSDF_TEST_NAME} PRIVATE ${NVSHADERS_DIR})
 gtest_discover_tests(${BSDF_TEST_NAME})

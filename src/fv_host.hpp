@@ -255,7 +255,8 @@
 //   export.glb      {prop, path} or {scene: true, path}   a GLB of a figure -> {job}; of a model, or of the
 //                                                whole scene, written at once -> {ok}
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
-//   backdrop.set    a merge patch of the backdrop, the land round the scene (fv_backdrop_state.hpp)
+//   backdrop.set    a merge patch of the backdrop, the land round the scene or the planet under it
+//                   (fv_backdrop_state.hpp; kind planet, radius, sea: fv_world.hpp, fv_host_world.cpp)
 //                                                -> the whole state, as the "backdrop" topic has it
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire, and a

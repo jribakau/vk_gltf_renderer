@@ -8,6 +8,8 @@
 //   groves that close into a wood round it, and wooded hills beyond.
 // - A forest: a glade a few metres across in a fir wood that runs to the horizon, with ferns in
 //   drifts, sparse grass, bushes, mossy rocks, stumps and dead wood on a floor of needles.
+// - A planet (fv_world.hpp): not land round the scene but a small world under it, bare for now. It
+//   needs no kit, and none of what follows here is its: `isPlanet`, and the spec's `radius` and `sea`.
 //
 // Everything here follows from the spec alone, so a scene file keeps only the spec: the ground's height
 // (`height`), its mesh (`terrain`), and where each plant stands, by a seed. Two ways of standing:
@@ -47,11 +49,14 @@ namespace fv::backdrop {
 
 struct Spec
 {
-  std::string kind    = "none";  // none | meadow | forest
+  std::string kind    = "none";  // none | meadow | forest | planet
   int         seed    = 1;       // which one: the hills and where everything stands
   double      size    = 60.0;    // metres across the thick grass round where one looks from; a meadow's saplings' reach
   double      density = 1.0;     // of every layer's own, 0.25 to 2
   double      relief  = 1.0;     // how hilly the ground is beyond the clearing, 0 flat to 2
+  // A planet's: its radius, km, and the share of its surface under the sea
+  double radius = 20.0;
+  double sea    = 0.55;
   // How many metres of air a metre of the land counts for between the eye and what it sees (the
   // physical sky's aerial perspective): 1 as it is. The land is some hundreds of metres to its
   // horizon, and through that much clear air a far wood is as sharp and dark as a near one; a
@@ -81,6 +86,12 @@ inline bool samePlanting(Spec a, const Spec& b)
 inline bool planted(const Spec& s)
 {
   return s.kind != "none";
+}
+
+// A small world under the scene (fv_world.hpp) and not land round it: it has no plants, and needs no kit
+inline bool isPlanet(const Spec& s)
+{
+  return s.kind == "planet";
 }
 
 // The ground stays flat (the floor's height) within this of the origin, where the figures stand, and

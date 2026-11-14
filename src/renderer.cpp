@@ -1255,10 +1255,10 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     // where the camera stands from where it was baked, and the view image while it holds the clouds
     // of the moment from near enough. It looks where it was baked, which the camera may since have
     // turned from.
-    finfo.cloudEye = glm::vec4(0.0F, 0.0F, 0.0F, m_resources.settings.atmoObserverAltitude * 0.001F);
+    finfo.cloudEye = glm::vec4(0.0F, 0.0F, 0.0F, skyObserverAltitudeKm());
     if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.viewable())
     {
-      const SkyCloudAnchor eye = cloudEyeOf(m_cameraManip->getViewMatrix(), envRot, m_resources.settings.atmoObserverAltitude * 0.001F, m_cloudDrift);
+      const SkyCloudAnchor eye = cloudEyeOf(m_cameraManip->getViewMatrix(), envRot, skyObserverAltitudeKm(), m_cloudDrift);
       const SkyCloudFollow& followed = m_skyClouds.followed();
       finfo.cloudEye                 = glm::vec4(cloudEyeFrom(followed.anchor, eye), followed.anchor.altitude);
       finfo.cloudShadowShift         = m_skyClouds.shadowShift();

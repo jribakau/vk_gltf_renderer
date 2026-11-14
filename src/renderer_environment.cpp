@@ -42,6 +42,7 @@
 #include "renderer.hpp"
 #include "night_stars.hpp"
 #include "sky_ground.hpp"
+#include "sky_world.hpp"
 
 #include <cstring>
 
@@ -852,6 +853,10 @@ shaderio::SkyAtmosphereParameters GltfRenderer::buildAtmosphereParameters() cons
   p.absorptionDensity.layers[1].linearTerm   = -slope;
   p.absorptionDensity.layers[1].constantTerm = 1.0F + s.atmoOzoneCenter * slope;
 
+  // A small planet that stands in the scene: its radius, and the air above scaled to it
+  if(s.worldRadius > 0.0F)
+    sky_world::apply(p, s.worldRadius, s.worldAirScale);
+
   return p;
 }
 
@@ -871,7 +876,7 @@ shaderio::SkyAtmosphereParameters GltfRenderer::buildAtmosphereParameters() cons
 void GltfRenderer::updateBakerParameters()
 {
   // Metres in the UI, kilometres in the model.
-  m_envBaker.setObserverAltitude(m_resources.settings.atmoObserverAltitude * 0.001F);
+  m_envBaker.setObserverAltitude(skyObserverAltitudeKm());
 
   m_envBaker.skyParams() = buildSkyOmiParameters();
   m_envBaker.setSkyType(shaderio::SkyType(bakeSkyType(m_resources.settings.envSystem)));
@@ -976,7 +981,7 @@ bool GltfRenderer::updateCloudView(VkCommandBuffer cmd)
   const glm::mat4      view           = m_cameraManip->getViewMatrix();
   const glm::mat4      projection     = m_cameraManip->getPerspectiveMatrix();
   const glm::quat      envRotation    = m_resources.settings.envRotationQuat();
-  const float          originAltitude = m_resources.settings.atmoObserverAltitude * 0.001F;
+  const float          originAltitude = skyObserverAltitudeKm();
   const glm::uvec2     frameSize(m_resources.gBuffers.getSize().width, m_resources.gBuffers.getSize().height);
   const CloudCamera    camera{view, projection, envRotation, originAltitude, frameSize};
   // At rest: the camera as it was for kCloudRest. One frame alike is not rest: a camera driven by
@@ -1123,12 +1128,27 @@ void GltfRenderer::calibrateFireflyClamp()
 // Where aerial perspective stands the eye. See the declaration for why this is not the sky's
 // observer altitude.
 //
+float GltfRenderer::skyObserverAltitudeKm() const
+{
+  const Settings& s = m_resources.settings;
+  // over a small planet the air is that much shallower, and the same place in it that much lower
+  return s.atmoObserverAltitude * 0.001F * (s.worldRadius > 0.0F ? s.worldAirScale : 1.0F);
+}
+
 float GltfRenderer::aerialPerspectiveEyeAltitudeKm() const
 {
-  const float liftKm = m_resources.settings.atmoObserverAltitude * 0.001F;
+  const float liftKm = skyObserverAltitudeKm();
 
   if(!m_resources.gpuView().hasContent() || m_cameraManip == nullptr)
     return liftKm;
+
+  // On a planet that stands in the scene the eye's height is its own over the planet's sea: the
+  // scene's lowest point is the planet's far side
+  if(m_resources.settings.worldRadius > 0.0F)
+  {
+    const glm::dvec3 fromCentre = glm::dvec3(m_cameraManip->getEye()) - glm::dvec3(m_resources.settings.worldCentre);
+    return liftKm + std::max(float(glm::length(fromCentre) * 0.001 - double(m_resources.settings.worldRadius)), 0.0F);
+  }
 
   const nvutils::Bbox bounds = m_resources.gpuView().bounds();
   if(!bounds.isEmpty())

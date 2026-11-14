@@ -45,6 +45,7 @@
 #include "fv_host.hpp"
 #include "fv_journal.hpp"
 #include "fv_protocol.hpp"
+#include "fv_world.hpp"
 #include "gizmo_pivot.hpp"
 #include "gizmo_snap.hpp"
 #include <figure/dson/dforce.hpp>
@@ -544,6 +545,117 @@ TEST(FvHost, ABackdropIsPlantedFromItsKit)
   EXPECT_FALSE(rig.cmd("backdrop.set", {{"kind", "jungle"}}).value("ok", false));
   EXPECT_EQ(state().value("kind", ""), "meadow");
   fs::remove_all(kit);
+}
+
+// A planet (fv_world.hpp): it stands with no kit, as quads of ground and sea under the backdrop's root,
+// level where the figures are; another seed is another planet in its place; land takes its place and
+// it takes land's; gone with `none`
+TEST(FvHost, APlanetStandsWithNoKit)
+{
+  HostRig            rig;
+  rs::RetainedScene& scene = rig.renderer.hostScene();
+  const auto         state = [&] { return rig.topic("backdrop"); };
+  const auto         until = [&](const std::string& wanted) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while(state().value("state", "") != wanted && std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return state().value("state", "") == wanted;
+  };
+  rig.host->onUpdate();
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "planet"}, {"radius", 5}}).value("ok", false));
+  EXPECT_EQ(state().value("state", ""), "loading") << "no kit is asked for";
+  ASSERT_TRUE(until("ready")) << state().dump();
+  EXPECT_EQ(state().value("plants", uint64_t(1)), 0u);
+  struct Stands
+  {
+    int    ground = 0, sea = 0, hidden = 0;
+    float  nearest = 1e9F;  // the ground's vertex nearest the origin
+    double area    = 0.0;   // of the ground's quads' surfaces, about
+  };
+  const auto stands = [&] {
+    Stands             out;
+    const rs::EntityId root = rootNamed(scene, "Backdrop");
+    if(root.isNone())
+      return out;
+    for(const rs::EntityId e : scene.entity(root)->children)
+    {
+      const rs::Entity* entity = scene.entity(e);
+      if(!entity->mesh)
+        continue;
+      if(!scene.shown(e))
+      {
+        out.hidden++;
+        continue;
+      }
+      const rs::MeshRecord* mesh = scene.mesh(entity->mesh->parts.at(0).mesh);
+      EXPECT_NE(mesh, nullptr);
+      if(!mesh)
+        continue;
+      EXPECT_EQ(mesh->colors.size(), mesh->positions.size());
+      EXPECT_EQ(mesh->normals.size(), mesh->positions.size());
+      if(entity->name == "Planet sea")
+      {
+        out.sea++;
+        continue;
+      }
+      out.ground++;
+      const glm::vec3 at = glm::vec3(scene.world(e)[3]);
+      for(const glm::vec3& p : mesh->positions)
+        out.nearest = std::min(out.nearest, glm::length(at + p));
+      // a quad's own surface: its first vertices, a grid
+      const uint32_t side = fv::world::kGroundCells + 1;
+      out.area += double(glm::length(mesh->positions[side - 1] - mesh->positions[0])) * double(glm::length(mesh->positions[size_t(side) * (side - 1)] - mesh->positions[0]));
+    }
+    return out;
+  };
+  const Stands first = stands();
+  EXPECT_GT(first.ground, 30);
+  EXPECT_GT(first.sea, 0);
+  EXPECT_LT(first.sea, first.ground + 1);
+  EXPECT_EQ(first.hidden, 0) << "nothing waits once the first cut shows";
+  // the figures' floor is its ground: a vertex within a metre of the origin
+  EXPECT_LT(first.nearest, 1.5F);
+  // the quads are the planet once over: their areas add up to a sphere's, about (a quad's corners'
+  // spans times each other is not quite its area)
+  const double sphere = 4.0 * 3.14159265 * 5000.0 * 5000.0;
+  EXPECT_NEAR(first.area / sphere, 1.0, 0.25);
+  // the haze fills round where the figures are, not round the planet
+  ASSERT_TRUE(rig.renderer.hazeScope.has_value());
+  EXPECT_LT(rig.renderer.hazeScope->radius(), 10.0F);
+
+  // a step of the history, and another seed is another planet in its place
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"seed", 5}}).value("ok", false));
+  EXPECT_EQ(state().value("state", ""), "loading");
+  ASSERT_TRUE(until("ready"));
+  EXPECT_GT(stands().ground, 30);
+  int roots = 0;
+  for(const rs::EntityId e : scene.roots())
+    roots += scene.entity(e)->name == "Backdrop";
+  EXPECT_EQ(roots, 1);
+  // the air and the wind are not a planet's: nothing is made again
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"air", 3}}).value("ok", false));
+  EXPECT_EQ(state().value("state", ""), "ready");
+
+  // land with no kit: missing, and the planet gone; a planet again; then none
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "meadow"}}).value("ok", false));
+  EXPECT_EQ(state().value("state", ""), "missing");
+  EXPECT_TRUE(rootNamed(scene, "Backdrop").isNone());
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "planet"}}).value("ok", false));
+  ASSERT_TRUE(until("ready"));
+  EXPECT_GT(stands().ground, 30);
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "none"}}).value("ok", false));
+  EXPECT_EQ(state().value("state", ""), "off");
+  EXPECT_TRUE(rootNamed(scene, "Backdrop").isNone());
+  // a batch on its way for the planet that went is dropped when it comes
+  for(int i = 0; i < 50; i++)
+  {
+    rig.host->onUpdate();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_TRUE(rootNamed(scene, "Backdrop").isNone());
 }
 
 // Auto white balance: the frame's light as the renderer read it, answered as the white balance that makes

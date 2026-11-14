@@ -450,6 +450,26 @@ Mars and the alien world are plausible, not authoritative: Mars uses its real ra
 distance and scale height with a dust loading in the landers' range; the alien world exists to show
 the parameters reach somewhere Earth cannot.
 
+### A small planet
+
+A planet that stands in the scene (the backdrop's `planet` kind, `src/fv_world.hpp`) is the sky's
+planet: `worldRadius` takes the atmosphere's radius, and `worldCentre` is where the eye's height is
+measured from, since the scene's lowest point is then the planet's far side. Neither is kept in a
+file; the host sets both.
+
+The atmosphere's values describe air 60 km deep over a planet thousands of kilometres across. Over
+a planet 20 km in radius that would be three times the planet, so the air is scaled with it
+(`sky_world::apply`): `worldAirScale` times as deep (a quarter of the radius, `sky_world::airScale`)
+and as many times as dense, every height in it scaled alike, the observer's too. Straight up the
+optical depth is unchanged, so the zenith is the one the values describe. What changes is what a
+small planet changes: the horizon is a few hundred metres off and the air toward it thinner, and the
+sky goes dark a few kilometres up. The tables' lowest sun (`muSMin`) follows the geometry, because
+the top of such air sees the sun far below the level.
+
+What is not right yet: the sky still puts the planet's centre straight under the camera and stops
+the eye at the top of the air, so far from the origin and from above the air it is wrong; the sun is
+one colour for the whole planet, and the far side is lit by the origin's sky.
+
 ### What to set white balance to
 
 The tonemapper's temperature names *the illuminant to neutralise* (its default, 6506 K, is the

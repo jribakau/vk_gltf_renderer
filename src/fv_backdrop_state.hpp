@@ -7,11 +7,13 @@
 // (tests/test_fv_backdrop.cpp).
 //
 //   kind none|meadow|forest (ground that rolls away from where the figures stand, planted with the
-//   kit's plants; while one stands the lighting's ground plane isn't drawn), seed (which one), size
+//   kit's plants; while one stands the lighting's ground plane isn't drawn) or planet (a small world
+//   under the scene, fv_world.hpp: bare, and it needs no kit; protocol 75), seed (which one), size
 //   (metres across what is planted underfoot), density (of every layer's own), relief (how hilly, 0
 //   flat), air (1 to 20: how many metres of air a metre of its land counts for, the distance's haze
 //   under the physical sky), mature (grown firs among the near woods), wind (km/h, 0 to 100, 0 still:
-//   the trees, saplings and bushes sway in it) and windFrom (degrees, an azimuth as the sun's).
+//   the trees, saplings and bushes sway in it) and windFrom (degrees, an azimuth as the sun's); a
+//   planet's radius (km, 2 to 100) and sea (the share of its surface under water, 0 to 0.9).
 //
 // Read-only in the topic, the host's: state (off; missing: no kit where settings.apply's backdropKit
 // says; loading; ready) and plants (how many stand).
@@ -21,6 +23,7 @@
 
 #include "fv_backdrop.hpp"
 #include "fv_events.hpp"
+#include "fv_world.hpp"
 
 namespace fv::backdrop {
 
@@ -38,6 +41,14 @@ Spec applyPatch(const Spec& s, const Json& patch);
 // has its land give way to the sky's own ground before it ends, and gives the planet past it
 // `landAlbedo`, what its kit says the land reflects from afar. With none standing the air counts once,
 // nothing fades, and the plane is the lighting's to say.
-Json rendererParams(const Spec& s, bool stands, const glm::vec3& landAlbedo);
+//
+// A planet that stands is the physical sky's planet: its radius and its air (sky_world.hpp), and its
+// centre, `planetCentre` in the scene, which the eye's height is taken from; the air counts once and
+// nothing fades. What is laid out on a level plane has no place on it yet and is off whatever the
+// lighting says: the clouds, the rain and the mist.
+Json rendererParams(const Spec& s, bool stands, const glm::vec3& landAlbedo, const glm::dvec3& planetCentre = glm::dvec3(0.0));
+
+// The planet a spec asks for
+fv::world::Spec planetSpec(const Spec& s);
 
 }  // namespace fv::backdrop

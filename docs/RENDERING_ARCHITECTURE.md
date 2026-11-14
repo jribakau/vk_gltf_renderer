@@ -805,6 +805,35 @@ not touch): the gaps between frames 18.5 ms at the median (17.3 over the bare fl
 Checked: `tests/test_fv_backdrop.cpp` (the shape, and `BackdropState.*` for the state),
 `FvLighting.TheBackdropIsNoPartOfTheLighting`, `FvHost.ABackdropIsPlantedFromItsKit`.
 
+### A planet
+
+The `planet` kind is not land round the scene but a small world under it (`src/fv_world.hpp`), and
+shares only the backdrop's state, root entity and renderer parameters with the two planted kinds. It
+needs no kit.
+
+- **What it is** is a function of a point on the sphere: `fv::world::sample` runs an ordered list of
+  stages over a sample (the continents and the sea's floor, mountains, hills, the climate, the biome,
+  the ground's fine relief, its colour). A biome is a row of a table. Every stage takes the size of
+  what will draw the sample and adds nothing finer. A cube map of the whole planet's fields
+  (`BaseMap`) is declared for what a point alone cannot say (rivers, erosion); nothing fills it yet.
+- **Where the figures stand** is a level place on land the seed picks (`site`). The planet is turned
+  and set so that place is the origin with +y up; its centre is `Frame::centre`, a radius below.
+- **What draws** is a cut of six quadtrees, one a cube face (`select`): a quad splits while the eye is
+  within about twice its width, so the ground underfoot is a metre a vertex and the far side a
+  kilometre. `FvHost::Impl::followPlanet` (`src/fv_host_world.cpp`) moves the shown cut toward the
+  selected one a step at a time, and at every step it is a whole cut: a shown quad gives way to its
+  four children only once all four are made, and shown quads give way to the one over them once it
+  is. Meshes are made on the job pool a batch at a time and arrive as hidden entities, so their BLAS
+  is built before they show. A quad's edges carry skirts, since neighbours of different levels don't
+  meet exactly and a ray would find the crack.
+- **The sea** is a second mesh a quad, the sphere at sea level, wherever the quad's ground dips under
+  it: a transmissive volume, so the colour of the shallows is the path tracer's. The camera-medium
+  probe (`ptCameraMedium`) must be off, as the app has it: its ray passes through the ground and
+  meets the far side's sea from behind.
+- **The sky** takes the planet's radius, its air scaled to it, and its centre (`worldRadius`,
+  `worldAirScale`, `worldCentre`; [sky.md](sky.md#a-small-planet)). Clouds, rain and the haze are
+  laid out on a level plane round the origin and are off while a planet stands.
+
 ## The pixel readout
 
 What is at a pixel and how bright it is (`view.inspect {x, y, w, h}`, the `inspect` topic, protocol 44;

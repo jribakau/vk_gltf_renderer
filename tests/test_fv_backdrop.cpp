@@ -983,3 +983,53 @@ TEST(BackdropState, OneThatStandsSetsTheRenderersParameters)
         EXPECT_TRUE(asked.contains(it.key())) << it.key();
   }
 }
+
+// A planet is a kind of its own: a radius and a share of sea, checked and clamped, and what a spec
+// asks of the world (fv_world.hpp) in its own units
+TEST(BackdropState, APlanetsRadiusAndSeaAreCheckedAndClamped)
+{
+  const B::Spec s = B::applyPatch({}, {{"kind", "planet"}, {"radius", 500}, {"sea", 2}, {"relief", 1.5}, {"seed", 9}});
+  EXPECT_TRUE(B::isPlanet(s));
+  EXPECT_TRUE(B::planted(s));
+  EXPECT_EQ(s.radius, 100.0);
+  EXPECT_EQ(s.sea, 0.9);
+  EXPECT_EQ(B::applyPatch(s, {{"radius", 0.5}}).radius, 2.0);
+  EXPECT_EQ(B::applyPatch(s, {{"radius", nullptr}, {"sea", nullptr}}).radius, B::Spec{}.radius);
+  EXPECT_THROW(B::applyPatch(s, {{"radius", "large"}}), std::invalid_argument);
+  // the topic replays as a patch
+  EXPECT_EQ(B::applyPatch({}, B::toJson(s)), s);
+  // another radius or sea is another planet
+  EXPECT_FALSE(B::samePlanting(B::applyPatch(s, {{"radius", 30}}), s));
+  EXPECT_FALSE(B::samePlanting(B::applyPatch(s, {{"sea", 0.2}}), s));
+  const fv::world::Spec w = B::planetSpec(s);
+  EXPECT_EQ(w.radius, 100000.0);
+  EXPECT_EQ(w.sea, 0.9);
+  EXPECT_EQ(w.relief, 1.5);
+  EXPECT_EQ(w.seed, 9);
+}
+
+// One that stands is the sky's planet: its radius, its air scaled to it, its centre; no land fades
+// into a sky's ground, the air counts once, and what is laid out on a plane is off
+TEST(BackdropState, APlanetThatStandsIsTheSkysPlanet)
+{
+  const B::Spec    s = B::applyPatch({}, {{"kind", "planet"}, {"radius", 20}, {"air", 12}});
+  const glm::dvec3 centre(0.0, -20040.0, 0.0);
+  const Json       stands = B::rendererParams(s, true, glm::vec3(0.05F), centre);
+  EXPECT_EQ(stands["useInfinitePlane"], false);
+  EXPECT_EQ(stands["worldRadius"], 20.0);
+  EXPECT_NEAR(stands["worldAirScale"].get<double>(), 5.0 / 60.0, 1e-6);
+  EXPECT_EQ(stands["worldCentre"], Json::array({0.0, -20040.0, 0.0}));
+  EXPECT_EQ(stands["atmoAerialPerspectiveScale"], 1.0);
+  EXPECT_EQ(stands["landFadeFrom"], 0.0);
+  EXPECT_EQ(stands["landFadeTo"], 0.0);
+  for(const char* off : {"cloudCoverage", "cloudMidCoverage", "cloudHighCoverage", "rainRate", "hazeVisibility"})
+    EXPECT_EQ(stands[off], 0.0) << off;
+  // none standing, or land that does: no planet, and the plane's things are the lighting's to say
+  for(const Json& other : {B::rendererParams(s, false, glm::vec3(0.05F), centre), B::rendererParams(B::applyPatch(s, {{"kind", "meadow"}}), true, glm::vec3(0.05F))})
+  {
+    EXPECT_EQ(other["worldRadius"], 0.0);
+    EXPECT_EQ(other["worldAirScale"], 1.0);
+    EXPECT_FALSE(other.contains("cloudCoverage"));
+    EXPECT_FALSE(other.contains("rainRate"));
+  }
+}

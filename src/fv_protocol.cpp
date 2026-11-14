@@ -145,7 +145,9 @@ namespace {
 // drawn over the picture. An older renderer refuses the lighting that has it.
 // 74: `offCamera` on prop.set, node.set, the scene topic's props and a "nodes/<prop>" node: hidden from
 // the camera alone (rs::Entity::offCamera). An older renderer takes the command and changes nothing.
-constexpr int kProtocolVersion = 74;
+// 75: the backdrop's `planet` kind, with `radius` and `sea`: a small world under the scene (fv_world.hpp),
+// which needs no kit. An older renderer refuses the backdrop that has it.
+constexpr int kProtocolVersion = 75;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

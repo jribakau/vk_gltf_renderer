@@ -148,6 +148,10 @@ src/
 │                               #   fv_host_backdrop.cpp plants it from a kit
 ├── fv_backdrop_state.cpp/hpp   # The backdrop's state over the protocol (backdrop.set, the backdrop topic), and
 │                               #   the renderer parameters one that stands sets over the lighting's
+├── fv_world.cpp/hpp            # A small planet, Vulkan-free: what a point of it is, by stages (land and sea,
+│                               #   mountains, climate, biome, colour); a cube on the sphere as quadtrees, the
+│                               #   quads that draw for an eye, and a quad's mesh; fv_host_world.cpp stands it
+│                               #   under the backdrop's root, a batch of quads at a time (the `planet` kind)
 ├── fv_patch.hpp                # What a merge patch's fields are checked with (lighting.set, backdrop.set), and
 │                               #   the merge patch between two states that a topic's change is published as
 │
@@ -163,6 +167,8 @@ src/
 ├── sun_position.cpp/hpp        # NOAA solar position: (place, UTC instant) -> bearing + altitude.
 ├── sky_ground.cpp/hpp          # The physical sky's ground albedo: the backdrop's land, the water's, or the setting.
 │                               #   Pure, self-contained, nothing else links against it
+├── sky_world.hpp               # The physical sky over a small planet: the atmosphere's heights and densities
+│                               #   scaled to its radius. Pure
 ├── frame_stream.cpp/hpp        # --stream: the headless run's rendered frames as MJPEG over HTTP, for a
 │                               #   host application. Paces the loop to --streamFps, except a still being
 │                               #   refined with a client connected, which runs unpaced

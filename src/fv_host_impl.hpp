@@ -1615,6 +1615,41 @@ struct FvHost::Impl
   // Its root entity (none when none stands), and the floor's height it stands at: whether that moved it
   rs::EntityId backdropRoot() const;
   bool         placeBackdrop();
+  // ---- a planet (fv_world.hpp, fv_host_world.cpp): the backdrop's `planet` kind. Under the backdrop's
+  // root, an entity a quad of its ground and of its sea; no kit. The quads shown are a cut of its
+  // quadtrees that follows the camera a step at a time.
+  struct PlanetMade;
+  struct PlanetBuilt
+  {
+    fv::world::Spec                         asked;       // the spec it was made for
+    std::shared_ptr<const fv::world::World> world;       // shared with the pool's jobs
+    uint64_t                                generation = 0;  // a batch made for a planet since gone is dropped
+    rs::MaterialId                          ground, sea;
+    struct Chunk
+    {
+      rs::EntityId ground, sea;  // the sea's: none where the ground is all above it
+    };
+    std::map<fv::world::Quad, Chunk> shown;    // the cut that draws: the planet once over
+    std::map<fv::world::Quad, Chunk> arrived;  // made and hidden, until what they take the place of can go
+    fv::world::Selection             selection;  // the cut the camera asks for
+    glm::dvec3                       selectedFor{0.0};
+    double                           eyeHeight = 0.0;
+    bool                             selected  = false;
+    bool                             busy      = false;  // a batch is being made
+  };
+  std::unique_ptr<PlanetBuilt> planetBuilt;
+  uint64_t                     planetGeneration = 0;
+  // The planet the state asks for, standing or on its way: made again when its spec is another
+  void standPlanet(rs::RetainedScene& scene);
+  // Lets go of what a planet held besides its entities, which go with the backdrop's root
+  void dropPlanet();
+  // Every frame: the cut the camera asks for, and the next batch of quads toward it asked of the pool
+  void followPlanet();
+  // A batch back from the pool: its quads as hidden entities, and the cut moved on where it can
+  void planetArrived(std::vector<PlanetMade>& made, uint64_t generation);
+  void resolvePlanet(rs::RetainedScene& scene);
+  // Its centre in the scene (the root stands at the floor's height); zero with none
+  glm::dvec3 planetCentre() const;
   // The scene's shown bounds without the backdrop: what a view frames, and what a flight's speed is by
   nvutils::Bbox contentBounds();
 

@@ -224,6 +224,9 @@ public:
   /// So the scene's lowest point is placed at the observer altitude and the eye goes wherever the
   /// camera stands above it. Y-up, like everything else the sky does.
   [[nodiscard]] float aerialPerspectiveEyeAltitudeKm() const;
+  /// The sky's observer altitude, km: the setting's, and over a small planet that stands in the
+  /// scene the same place in its shallower air (sky_world.hpp).
+  [[nodiscard]] float skyObserverAltitudeKm() const;
 
   /// Mark the baked lighting environment stale. Cheap and safe to call from a parameter callback
   /// or an ImGui handler: the bake itself runs on the application thread at the top of the next

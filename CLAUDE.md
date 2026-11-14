@@ -68,6 +68,9 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
 - `src/sky_bruneton.*` — the Bruneton precomputed-atmospheric-scattering LUTs and the six compute
   passes that build them. The only physical sky; the older MDL one was deleted from this repo (it
   stays in `nvpro_core2` for other samples).
+- `src/fv_world.*`, `src/fv_host_world.cpp`, `src/sky_world.hpp` — a small planet as the backdrop's
+  `planet` kind: its fields by stages, its quadtree meshes drawn a cut at a time, and the sky scaled
+  to it ([docs/RENDERING_ARCHITECTURE.md](docs/RENDERING_ARCHITECTURE.md#a-planet)).
 - `src/sun_position.*` — NOAA solar position.
   A pure function with no dependency on the rest of the renderer; nothing else links against it.
 - `src/sky_preset.*` — `.sky.json`: one sky as a file of its own. The text layer only; the
