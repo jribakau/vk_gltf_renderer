@@ -238,6 +238,15 @@ public:
   bool m_volumeDiffuseExit{false};  // Scatter walks gather light only where they leave the surface (ePtVolumeDiffuseExit).
   bool m_diffuseEntry{false};       // Light enters a scatter walk through a Lambertian lobe (ePtDiffuseEntry). Off: the user preferred the refraction entry's look (2026-10-26).
   int  m_fireflyClampMode{1};       // 0: the whole path; 1: each indirect contribution (ePtClampIndirect).
+  // The clamp of an accumulation's frames as set (ptFireflyClampStill; 0: the moving view's), and the
+  // user's scale on it (ptClampStillScale; 0: no clamp): setupPushConstant() writes the level the kernel
+  // reads from both (sample_schedule::stillClampLevel)
+  float m_fireflyClampStill{0.0F};
+  float m_clampStillScale{1.0F};
+  // When the last frame of this accumulation began to trace, for the seconds its frames take
+  // (Resources::stillSeconds, ptTimeLimit); not running across frames that trace nothing
+  std::chrono::steady_clock::time_point m_stillClock{};
+  bool                                  m_stillClockOn{false};
   bool m_simplifyScatter{true};     // A rough path meets a scattering medium as its thin preview (ePtSimplifyScatter).
   int  m_sampler{1};                // The accumulation's sampler: 0 PCG, 1 Owen-scrambled Sobol (ePtSobol). DLSS frames: PCG.
   int  m_fullLobeEval{3};           // 0: one random lobe per light sample; 1: every lobe, punctual lights; 2: every lobe, mixture-pdf MIS; 3: 2 while the path is direct, else 1 (ePtLobe*).

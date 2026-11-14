@@ -36,6 +36,8 @@
 // frameStartsDepth():     the frame writes the view's depth afresh, at the size it traces.
 // accumulationComplete(): the cap is reached: the samples, or the frames of a view that has none; or
 //                         the adaptive stop found nearly every pixel done.
+// timeIsUp():             a still's time limit has passed.
+// stillClampLevel():      the still's firefly clamp with the user's scale on it.
 //-------------------------------------------------------------------------------------------------------
 
 #include <algorithm>
@@ -90,6 +92,28 @@ inline bool accumulationComplete(int frameCount, int accumulated, int maxSamples
   if(accumulated > 0 && converged)
     return true;
   return accumulated > 0 ? accumulated >= maxSamples : frameCount >= maxSamples;
+}
+
+// A still's time limit (ptTimeLimit): up once the accumulation has traced for `limit` seconds (0: no
+// limit), `seconds` being the time its frames took, not the time since it began: a still left finished
+// and given a longer limit goes on for the difference. Never before the still has samples of its own.
+inline bool timeIsUp(double seconds, double limit, int accumulated)
+{
+  return limit > 0.0 && accumulated > 0 && seconds >= limit;
+}
+
+// The firefly clamp of an accumulation's frames (PathtracePushConstant::fireflyClampStill) with the
+// user's scale on it (ptClampStillScale): `still` the level set for stills (0: the moving view's,
+// `moving`). 1 leaves it as set; 0 or less is no clamp, a level no light reaches (not 0, which the
+// kernel reads as the moving view's).
+inline float stillClampLevel(float still, float moving, float scale)
+{
+  if(scale == 1.0F)
+    return still;
+  const float base = still > 0.0F ? still : moving;
+  if(base <= 0.0F)  // no clamp set at all
+    return still;
+  return scale > 0.0F ? base * scale : 1e30F;
 }
 
 // The bounces this frame's paths take: `maxDepth`, or on a DLSS frame `maxDepthDlss` when it is lower

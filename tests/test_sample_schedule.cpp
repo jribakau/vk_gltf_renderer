@@ -96,6 +96,34 @@ TEST(SampleSchedule, TheAdaptiveStopEndsAnAccumulationBeforeItsCap)
   EXPECT_FALSE(sample_schedule::accumulationComplete(3, 0, 500, true));     // DLSS frames, no samples yet
 }
 
+// A still's time limit ends it as the adaptive stop does, once it has samples; no limit never does
+TEST(SampleSchedule, ATimeLimitEndsAStillThatHasSamples)
+{
+  EXPECT_FALSE(sample_schedule::timeIsUp(29.9, 30.0, 40));
+  EXPECT_TRUE(sample_schedule::timeIsUp(30.0, 30.0, 40));
+  EXPECT_FALSE(sample_schedule::timeIsUp(1e9, 0.0, 40));  // no limit
+  EXPECT_FALSE(sample_schedule::timeIsUp(45.0, 30.0, 0)); // DLSS frames alone: nothing of the still's to show yet
+  // and it is the accumulation's end
+  EXPECT_TRUE(sample_schedule::accumulationComplete(40, 40, 500, sample_schedule::timeIsUp(31.0, 30.0, 40)));
+  EXPECT_FALSE(sample_schedule::accumulationComplete(40, 40, 500, sample_schedule::timeIsUp(31.0, 60.0, 40)));  // a longer limit: it goes on
+}
+
+// The user's scale on the still's firefly clamp: 1 is the level as set, bit for bit; 0 no clamp at all
+TEST(SampleSchedule, TheStillsClampTakesTheUsersScale)
+{
+  EXPECT_EQ(sample_schedule::stillClampLevel(64.0f, 16.0f, 1.0f), 64.0f);
+  EXPECT_EQ(sample_schedule::stillClampLevel(0.0f, 16.0f, 1.0f), 0.0f);  // still the moving view's, as the kernel reads 0
+  EXPECT_FLOAT_EQ(sample_schedule::stillClampLevel(64.0f, 16.0f, 4.0f), 256.0f);
+  EXPECT_FLOAT_EQ(sample_schedule::stillClampLevel(64.0f, 16.0f, 0.25f), 16.0f);
+  // no level for stills: the scale is on the moving view's, for the still alone
+  EXPECT_FLOAT_EQ(sample_schedule::stillClampLevel(0.0f, 16.0f, 4.0f), 64.0f);
+  // no clamp: a level no light reaches, and not 0, which would be the moving view's
+  EXPECT_GT(sample_schedule::stillClampLevel(64.0f, 16.0f, 0.0f), 1e20f);
+  EXPECT_GT(sample_schedule::stillClampLevel(0.0f, 16.0f, 0.0f), 1e20f);
+  // nothing clamps at all: nothing to scale
+  EXPECT_EQ(sample_schedule::stillClampLevel(0.0f, 0.0f, 4.0f), 0.0f);
+}
+
 TEST(SampleSchedule, DlssFramesTakeTheLowerBounceCap)
 {
   EXPECT_EQ(sample_schedule::frameMaxDepth(8, 4, true), 4);

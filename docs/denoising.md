@@ -136,7 +136,8 @@ through the `DisplayBuffer` override of the tonemapper input (`GltfRenderer::run
 DLSS-RR on for the moving view, DLSS owns frame 0 and the still's denoiser takes over from frame 1
 (`PathTracer::getEffectiveRrStillEnabled`); DLSS's last moving image stays until the first
 evaluation and blends into it (see [DLSS hand-off](#dlss-hand-off)). It also evaluates on the frame
-that completes the still, or on the idle frame after it when the adaptive stop ended it early
+that completes the still, or on the idle frame after it when the adaptive stop or the time limit
+(`ptTimeLimit`, `sample_schedule::timeIsUp`) ended it early
 (`PathTracer::onAccumulationComplete`).
 With an interval of 0 only that final image is evaluated, and the refine shows the raw
 accumulation. It is its own NGX feature, made in the moving view's NGX context

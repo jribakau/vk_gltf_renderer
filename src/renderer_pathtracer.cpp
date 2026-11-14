@@ -238,18 +238,27 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
   settings->add({.name            = "ptFireflyClamp",
                  .help            = "PathTracer: Firefly clamp threshold",
                  .callbackSuccess = [this, reset](const nvutils::ParameterBase* const p) {
-                   if(m_pushConst.fireflyClampStill <= 0.0F)
+                   if(m_fireflyClampStill <= 0.0F)
                      reset(p);
                  }},
                 &m_pushConst.fireflyClampThreshold, Persist::eYes);
   settings->add({.name            = "ptFireflyClampStill",
                  .help            = "PathTracer: Firefly clamp threshold for the frames that accumulate a still (0: ptFireflyClamp)",
                  .callbackSuccess = reset},
-                &m_pushConst.fireflyClampStill, Persist::eYes);
+                &m_fireflyClampStill, Persist::eYes);
+  // The host sets the two levels above from the exposure; this is the user's say on a still's: looser
+  // keeps more of the light rare bright bounces carry (a caustic, the sun in a rough reflection) for
+  // more fireflies, tighter the reverse
+  settings->add({.name            = "ptClampStillScale",
+                 .help            = "PathTracer: the still's firefly clamp times this (1: as set; 0: no clamp on a still)",
+                 .callbackSuccess = reset},
+                &m_clampStillScale, Persist::eNo, 0.0F, 1024.0F);
   // Not persisted: a different value only changes the noise pattern, which nobody wants carried into the next session.
-  settings->add({"ptSeed",
-                 "PathTracer: Random sequence (0 = default); another value gives statistically independent noise, "
-                 "e.g. for a reference image compared against a test render"},
+  // It starts the still over: the image is then of the new sequence alone.
+  settings->add({.name            = "ptSeed",
+                 .help            = "PathTracer: Random sequence (0 = default); another value gives statistically independent noise, "
+                                    "e.g. for a reference image compared against a test render",
+                 .callbackSuccess = reset},
                 &m_pushConst.seed, Persist::eNo);
   settings->add({.name = "ptTexGradScale", .help = "PathTracer: Ray-footprint gradient scale (0=mip0, 1=physical)", .callbackSuccess = reset},
                 &m_pushConst.texGradScale, Persist::eYes, 0.0F, 1.0F);
@@ -887,6 +896,7 @@ void PathTracer::onAccumulationComplete(VkCommandBuffer cmd, Resources& resource
   // frame's commands do, and is read when the slot comes round again (reading it here took whatever the
   // buffer held before, and cleared the flag, so the count itself was never read)
   takeHitCounts(resources);
+  m_stillClockOn = false;  // no frame of the still is tracing: its time stands (ptTimeLimit)
   // a view whose samples ended before its window did counted what it counted, and traces nothing from here
   if(m_hitFrames > 0)
     copyHitCounts(cmd, resources);
@@ -1704,8 +1714,19 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
     m_totalSamplesAccumulated    = 0;
     resources.accumulatedSamples = 0;
     resources.adaptiveDone       = false;
+    resources.stillSeconds       = 0.0;
+    m_stillClockOn               = false;
     m_accumulationId++;
   }
+  // The seconds this accumulation's frames have taken (ptTimeLimit): the last frame's, from when it
+  // began to when this one does. A frame that traced nothing in between (the still was complete, and a
+  // raised limit or cap let it go on) stopped the clock (onAccumulationComplete).
+  const auto now = std::chrono::steady_clock::now();
+  if(m_stillClockOn)
+    resources.stillSeconds += std::chrono::duration<double>(now - m_stillClock).count();
+  m_stillClock   = now;
+  m_stillClockOn = true;
+  m_pushConst.fireflyClampStill = sample_schedule::stillClampLevel(m_fireflyClampStill, m_pushConst.fireflyClampThreshold, m_clampStillScale);
 
   // Adjust focal distance if auto-focus is enabled
   if(m_autoFocus)

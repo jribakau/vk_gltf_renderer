@@ -90,7 +90,7 @@ src/
 ├── renderer_base.hpp           # BaseRenderer: abstract base of the PathTracer
 ├── renderer_pathtracer.cpp/hpp # Monte Carlo path tracer (Vulkan ray tracing + ray query)
 ├── renderer_pathtracer_shaders.cpp # Its shaders and pipelines: compiling, the SPIR-V cache, the variants
-├── sample_schedule.hpp         # Samples per frame: ending on stops (cap, --outputSamples), the Auto SPP controller
+├── sample_schedule.hpp         # Samples per frame: ending on stops (cap, --outputSamples), the Auto SPP controller, a still's time limit and clamp scale
 ├── renderer_silhouette.cpp/hpp # Selection and hover outlines (compute shader)
 ├── env_image_loader.cpp/hpp    # Decodes .hdr / .exr lat-longs to float RGBA for HdrIbl
 ├── env_texels.hpp              # An EXR's NaN, infinite and negative texels made fit to light by

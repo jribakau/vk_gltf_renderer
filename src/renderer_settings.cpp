@@ -84,6 +84,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                        &m_resources.settings.solidBackgroundColor, Persist::eYes);
   m_settings.add({"ptMaxSamples", "Path tracer: stop accumulating at this many samples per pixel"},
                  &m_resources.settings.maxSamples, Persist::eYes, 1, 1000000);
+  // No restart: a limit raised on a still that ended by it lets the still go on, as a raised ptMaxSamples does
+  m_settings.add({"ptTimeLimit", "Path tracer: stop accumulating once a still's frames have taken this many seconds, "
+                                 "whatever its samples (0: no limit). Its denoiser runs over what it has then"},
+                 &m_resources.settings.timeLimit, Persist::eNo, 0.0F, 86400.0F);
   // Persisted. Headless and scripted runs neither read nor write the ini, so they can't change what
   // the next session plays.
   m_settings.add(

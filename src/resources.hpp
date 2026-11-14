@@ -156,6 +156,7 @@ struct Settings
   bool      useSolidBackground   = false;                     // Use solid background color
   glm::vec3 solidBackgroundColor = {0.0f, 0.0f, 0.0f};        // Solid background color
   int       maxSamples           = {2000};  // Path tracer: stop accumulating at this many samples per pixel
+  float     timeLimit            = {0.0F};  // Path tracer: stop accumulating after this many seconds of tracing (0: no limit)
   // Sun position as the UI and the command line express it. Resources::sunDirection stays the
   // single source of truth; these are kept in sync with it both ways (see syncSunAngles).
   float sunAzimuth   = 180.0f;  // degrees, compass bearing: 0 = north, 90 = east (SkySun::setAngles)
@@ -525,13 +526,18 @@ struct Resources
   // and clears it as an accumulation starts)
   bool adaptiveDone{false};
 
+  // Seconds this accumulation's frames have taken (the path tracer adds each traced frame's, and starts
+  // at nothing with an accumulation): what settings.timeLimit is held against
+  double stillSeconds{0.0};
+
   // The accumulation is complete: rendering stops until the next reset (resetFrame). The path tracer
-  // stops when its image holds settings.maxSamples samples per pixel, or once its adaptive stop is
-  // done. The frame bound stops a path tracer that adds no samples (nothing to trace); a frame that
+  // stops when its image holds settings.maxSamples samples per pixel, once its adaptive stop is
+  // done, or when its time limit is up. The frame bound stops a path tracer that adds no samples (nothing to trace); a frame that
   // does render adds at least one sample, so it never cuts an accumulation short.
   bool accumulationComplete() const
   {
-    return sample_schedule::accumulationComplete(frameCount, accumulatedSamples, settings.maxSamples, adaptiveDone);
+    return sample_schedule::accumulationComplete(frameCount, accumulatedSamples, settings.maxSamples,
+                                                 adaptiveDone || sample_schedule::timeIsUp(stillSeconds, settings.timeLimit, accumulatedSamples));
   }
 
 
