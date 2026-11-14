@@ -60,6 +60,8 @@ struct Body
   std::string kind      = "rock";     // rock (plains and highlands) | gas (bands)
   bool        operator==(const Body&) const = default;
 };
+// The ripples on a planet's sea, against its waves (Spec::waves): a breeze's, under a swell at 1
+inline constexpr double kSeaRipples = 0.6;
 // How many bodies a planet's sky holds (the frame's WORLD_BODY_MAX)
 inline constexpr size_t kMostBodies = 4;
 
@@ -70,9 +72,11 @@ struct Spec
   double      size    = 60.0;    // metres across the thick grass round where one looks from; a meadow's saplings' reach
   double      density = 1.0;     // of every layer's own, 0.25 to 2
   double      relief  = 1.0;     // how hilly the ground is beyond the clearing, 0 flat to 2
-  // A planet's: its radius, km, and the share of its surface under the sea
+  // A planet's: its radius, km, the share of its surface under the sea, and how the sea runs, 0
+  // still to 1 (its swell, and the ripples on it: kSeaRipples). The waves make nothing again.
   double radius = 20.0;
   double sea    = 0.55;
+  double waves  = 0.5;
   // ... and the other bodies in its sky: one moon to begin with. Nothing is made again by them.
   std::vector<Body> bodies = {Body{}};
   // How many metres of air a metre of the land counts for between the eye and what it sees (the
@@ -99,6 +103,7 @@ inline bool samePlanting(Spec a, const Spec& b)
   a.wind     = b.wind;
   a.windFrom = b.windFrom;
   a.bodies   = b.bodies;
+  a.waves    = b.waves;
   return a == b;
 }
 

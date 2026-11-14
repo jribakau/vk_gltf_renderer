@@ -263,7 +263,8 @@
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
 //   backdrop.set    a merge patch of the backdrop, the land round the scene or the planet under it
 //                   (fv_backdrop_state.hpp; kind planet, radius, sea: fv_world.hpp, fv_host_world.cpp;
-//                   its `bodies`, the moons and planets in its sky: shaders/world_bodies.h.slang)
+//                   its `bodies`, the moons and planets in its sky: shaders/world_bodies.h.slang;
+//                   `waves`, how its sea runs, protocol 80: shaders/world_sea.h.slang)
 //                                                -> the whole state, as the "backdrop" topic has it
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire, and a

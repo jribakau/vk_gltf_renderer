@@ -285,7 +285,6 @@ double farPlane(const World& world, const glm::dvec3& eye);
 // ---- which quads draw ------------------------------------------------------------------------------
 
 inline constexpr uint32_t kGroundCells = 64;  // along a ground quad's edge
-inline constexpr uint32_t kSeaCells    = 16;  // along a sea quad's: a sphere needs fewer
 // A quad splits while the eye is within this many of its widths, and stays split a little further
 inline constexpr double kSplit     = 2.0;
 inline constexpr double kSplitHold = 1.2;
@@ -313,9 +312,14 @@ struct ChunkMesh
   bool                   inland = false;  // a river or a lake lies on it
 };
 ChunkMesh groundMesh(const World& world, const Quad& quad);
-// The water over a quad, `cells` along its edge: the sphere at the sea's level, and the lakes' and
-// rivers' surfaces where they lie (waterLevel). A quad with inland water on it (ChunkMesh::inland)
-// wants as many cells as its ground has, so both are cut at the same points; the sea alone needs few.
-ChunkMesh waterMesh(const World& world, const Quad& quad, uint32_t cells = kSeaCells);
+// The inland water over a quad, `cells` along its edge: the lakes' and rivers' surfaces where they
+// lie (waterLevel), cut at the ground's own points when it has as many cells as the ground. The sea
+// has no mesh: it is the sphere at its level, which the renderer meets by itself, waves and all
+// (shaders/world_sea.h.slang). Where a river runs out into it the mesh goes down under it
+// (kSeaUnder), and what would lie at the sea's level is left out: no triangles at all on a quad
+// without inland water (ChunkMesh::inland).
+inline constexpr double kSeaMeets = 0.05;  // water this little over the sea is the sea
+inline constexpr double kSeaUnder = 0.6;   // under its level, and under its swell's troughs
+ChunkMesh waterMesh(const World& world, const Quad& quad, uint32_t cells = kGroundCells);
 
 }  // namespace fv::world

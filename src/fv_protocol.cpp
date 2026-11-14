@@ -158,7 +158,7 @@ namespace {
 // 79: the lighting's `mix` (the light groups' mix: keep, and on, stops and tint for each of sky, sun,
 // glow, lamps, lamps2, lamps3) and a light's `group` (0 to 2) in prop.set's `light` and the scene
 // topic's. An older renderer refuses a lighting patch that has a mix.
-constexpr int kProtocolVersion = 79;
+constexpr int kProtocolVersion = 80;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

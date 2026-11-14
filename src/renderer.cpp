@@ -1245,6 +1245,11 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
       finfo.rainRate = m_rain.rate();
       finfo.rainTime = m_rainRingTime;
     }
+    // a planet's sea is the water (shaders/world_sea.h.slang), under whatever sky
+    finfo.worldSeaRadius  = m_resources.settings.worldSeaRadius;
+    finfo.worldSeaTop     = m_resources.settings.worldSeaTop;
+    finfo.worldSeaWaves   = m_resources.settings.worldSeaWaves;
+    finfo.worldSeaRipples = m_resources.settings.worldSeaRipples;
     // a planet that stands in the scene is the physical sky's: every question of the sky is asked
     // from a place of it (shaders/sky_world.h.slang)
     if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_resources.settings.worldRadius > 0.0F)

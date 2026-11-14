@@ -243,7 +243,8 @@ float3 groundWetAlbedo(float3 dry)
 // then blue, and scattered as by pure seawater, so deep water past the floor glows blue in the sun
 // and the clouds' shadows darken it (groundWaterInScatter). A path's ray refracts at the surface; a shadow ray crosses it straight, losing its
 // Fresnel share, as through clear glass, and from under it takes the caustic the surface focuses
-// there (groundWaterShadowTransmittance, groundWaterCaustic).
+// there (groundWaterShadowTransmittance, groundWaterCaustic). A planet's sea is this water on a sphere
+// (world_sea.h.slang), and takes the place of the ground's when one stands.
 
 // Seawater's phase function, per steradian: the molecules', (1 + 0.835 cos^2) normalised (Morel 1974)
 float groundWaterPhase(float cosTheta)

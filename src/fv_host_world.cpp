@@ -122,7 +122,8 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
   ground.payload.metallic  = 0.0F;
   ground.payload.roughness = 1.0F;
   p.ground                 = scene.addMaterial(std::move(ground));
-  // the sea: clear water, which takes its colour from how far light goes in it
+  // the lakes and rivers: clear water, which takes its colour from how far light goes in it (the
+  // sea is the renderer's own: shaders/world_sea.h.slang)
   rs::MaterialRecord sea;
   sea.owner                = {0, -1};
   sea.payload.name         = "Planet sea";
@@ -327,11 +328,14 @@ void FvHost::Impl::followPlanet()
         PlanetMade& m = (*made)[i];
         m.quad        = ask[i];
         m.ground      = W::groundMesh(*held, ask[i]);
-        // the sea where the ground dips under it; a river's or a lake's water is cut at the ground's own points
+        // a river's or a lake's water, cut at the ground's own points; the sea is no mesh
+        // (shaders/world_sea.h.slang)
         if(m.ground.inland)
-          m.sea = W::waterMesh(*held, ask[i], W::kGroundCells);
-        else if(m.ground.lowest < 0.0)
+        {
           m.sea = W::waterMesh(*held, ask[i]);
+          if(m.sea->indices.empty())
+            m.sea.reset();
+        }
         if(planted && m.ground.highest > 0.0)
           m.stands = W::standing(*held, ask[i], m.ground.centre, variants, density);
         if(seaMeshes && m.ground.lowest < 0.0)

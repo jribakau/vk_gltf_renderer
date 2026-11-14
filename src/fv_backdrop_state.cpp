@@ -72,7 +72,7 @@ Json toJson(const Spec& s)
     bodies.push_back(toJson(b));
   return {{"kind", s.kind},     {"seed", s.seed}, {"size", s.size},     {"density", s.density}, {"relief", s.relief},
           {"air", s.air},       {"mature", s.mature}, {"wind", s.wind}, {"windFrom", s.windFrom},
-          {"radius", s.radius}, {"sea", s.sea},   {"bodies", bodies}};
+          {"radius", s.radius}, {"sea", s.sea},   {"waves", s.waves},   {"bodies", bodies}};
 }
 
 Spec applyPatch(const Spec& s, const Json& patch)
@@ -111,6 +111,8 @@ Spec applyPatch(const Spec& s, const Json& patch)
       field(out.radius, d.radius, v, [&](const Json& x) { return kChecks.number(x, k, 2.0, 100.0); });
     else if(k == "sea")
       field(out.sea, d.sea, v, [&](const Json& x) { return kChecks.number(x, k, 0.0, 0.9); });
+    else if(k == "waves")
+      field(out.waves, d.waves, v, [&](const Json& x) { return kChecks.number(x, k, 0.0, 1.0); });
     else if(k == "bodies")
       field(out.bodies, d.bodies, v, [&](const Json& x) {
         if(!x.is_array())
@@ -147,6 +149,12 @@ Json rendererParams(const Spec& s, bool stands, const glm::vec3& landAlbedo, con
       {"worldRadius", planet ? s.radius : 0.0},
       {"worldAirScale", planet ? double(sky_world::airScale(float(s.radius))) : 1.0},
       {"worldCentre", planet ? Json::array({planetCentre.x, planetCentre.y, planetCentre.z}) : Json::array({0.0, 0.0, 0.0})},
+      // ... and its sea is the water (shaders/world_sea.h.slang): the sphere at its level, by the
+      // point of it over the centre, which is by the scene and so keeps a float's precision
+      {"worldSeaRadius", planet ? s.radius * 1000.0 : 0.0},
+      {"worldSeaTop", planet ? Json::array({planetCentre.x, planetCentre.y + s.radius * 1000.0, planetCentre.z}) : Json::array({0.0, 0.0, 0.0})},
+      {"worldSeaWaves", planet ? s.waves : 0.0},
+      {"worldSeaRipples", planet ? kSeaRipples * s.waves : 0.0},
   };
   // a backdrop's ground is the ground: the plane under it isn't drawn
   if(stands)

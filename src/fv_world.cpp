@@ -484,7 +484,8 @@ glm::dquat toUp(const glm::dvec3& from)
 }
 
 // A quad's skirt: each edge vertex again, `depth` nearer the planet's centre, and the wall between
-void addSkirts(ChunkMesh& m, const World& w, uint32_t cells, double depth)
+// `out`, when given: the surface's vertices that are no part of it; a wall between two is left out
+void addSkirts(ChunkMesh& m, const World& w, uint32_t cells, double depth, const std::vector<uint8_t>* out = nullptr)
 {
   const uint32_t side  = cells + 1;
   const auto     at    = [&](uint32_t i, uint32_t j) { return j * side + i; };
@@ -502,7 +503,7 @@ void addSkirts(ChunkMesh& m, const World& w, uint32_t cells, double depth)
     for(uint32_t k = 0; k < side; k++)
     {
       const uint32_t v = vertexAt(k), low = lower(v);
-      if(k > 0)
+      if(k > 0 && !(out && (*out)[v] && (*out)[last]))
         m.indices.insert(m.indices.end(), {last, lastLow, low, last, low, v});
       last    = v;
       lastLow = low;
@@ -514,15 +515,21 @@ void addSkirts(ChunkMesh& m, const World& w, uint32_t cells, double depth)
   edge([&](uint32_t k) { return at(0, cells - k); });
 }
 
-void addGrid(ChunkMesh& m, uint32_t cells)
+// `out`, when given: the vertices that are no part of the surface; a triangle of three is left out
+void addGrid(ChunkMesh& m, uint32_t cells, const std::vector<uint8_t>* out = nullptr)
 {
   const uint32_t side = cells + 1;
-  m.indices.reserve(size_t(cells) * cells * 6 + size_t(cells) * 24);
+  m.indices.reserve(out ? 0 : size_t(cells) * cells * 6 + size_t(cells) * 24);
+  const auto triangle = [&](uint32_t a, uint32_t b, uint32_t c) {
+    if(!(out && (*out)[a] && (*out)[b] && (*out)[c]))
+      m.indices.insert(m.indices.end(), {a, b, c});
+  };
   for(uint32_t j = 0; j < cells; j++)
     for(uint32_t i = 0; i < cells; i++)
     {
       const uint32_t a = j * side + i, b = a + 1, c = a + side, d = c + 1;
-      m.indices.insert(m.indices.end(), {a, b, d, a, d, c});
+      triangle(a, b, d);
+      triangle(a, d, c);
     }
 }
 
@@ -846,24 +853,28 @@ ChunkMesh waterMesh(const World& world, const Quad& q, uint32_t cells)
   const double   cell = width(world, q) / double(N);
   ChunkMesh      m;
   m.centre = toScene(world, direction(q.face, coordOf(q, q.x, 1, 2), coordOf(q, q.y, 1, 2)), 0.0);
+  std::vector<uint8_t> sea;  // the vertices at the sea: it is no mesh's
+  sea.reserve(size_t(N + 1) * (N + 1));
   for(int j = 0; j <= int(N); j++)
     for(int i = 0; i <= int(N); i++)
     {
-      // the sea's level, or a lake's or a river's: level water, so its normal is straight up even
-      // where its surface goes down under a bank
-      const glm::dvec3 d     = direction(q.face, coordOf(q, q.x, i, N), coordOf(q, q.y, j, N));
-      const double     level = waterLevel(world, d, cell);
-      const glm::dvec3 p     = toScene(world, d, level);
+      // a lake's level or a river's: level water, so its normal is straight up even where its
+      // surface goes down under a bank. At the sea it goes down under the sea's own surface.
+      const glm::dvec3 d      = direction(q.face, coordOf(q, q.x, i, N), coordOf(q, q.y, j, N));
+      const double     level  = waterLevel(world, d, cell);
+      const bool       atSea  = level <= kSeaMeets;
+      const glm::dvec3 p      = toScene(world, d, atSea ? -kSeaUnder : level);
       m.positions.push_back(glm::vec3(p - m.centre));
       m.normals.push_back(glm::vec3(glm::normalize(p - world.frame.centre)));
       m.colors.emplace_back(1.0F);
       m.highest = std::max(m.highest, level);
-      m.inland  = m.inland || level > 0.0;
+      m.inland  = m.inland || !atSea;
+      sea.push_back(atSea ? 1 : 0);
     }
   m.surface = uint32_t(m.positions.size());
-  addGrid(m, N);
+  addGrid(m, N, &sea);
   // two levels of one sphere differ by how far their chords sag: a cell squared over eight radii
-  addSkirts(m, world, N, 0.25 * cell + 4.0 * cell * cell / (8.0 * world.spec.radius));
+  addSkirts(m, world, N, 0.25 * cell + 4.0 * cell * cell / (8.0 * world.spec.radius), &sea);
   return m;
 }
 

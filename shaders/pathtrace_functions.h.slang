@@ -12,6 +12,7 @@
 #include "camera_ray.h.slang"
 #include "sky_background.h.slang"
 #include "ground.h.slang"
+#include "world_sea.h.slang"
 #include "light_pick.h.slang"
 #include "medium_stack.h.slang"
 
@@ -1787,10 +1788,34 @@ bool checkInfinitePlaneIntersection(RayDesc ray, inout HitPayload payload, inout
 
 // The water's surface where a path's ray meets it before anything else it hit (groundWaterCrossing):
 // the hit on the surface, its normal the waves' turned to face the ray, and which side the ray came
-// from. Checked after the floor, which lies under the water.
+// from. Checked after the floor, which lies under the water. With a planet the water is its sea
+// (world_sea.h.slang), met the same way on its sphere.
 bool checkWaterIntersection(RayDesc ray, inout HitPayload payload, inout HitState hit, SceneFrameInfo* frameInfo, out bool fromAbove)
 {
   fromAbove = false;
+  if(worldHasSea(frameInfo))
+  {
+    // the sphere itself: its waves are in the material's normal (waterSurfaceMaterial), not its shape
+    const Sea         sea      = worldSea(frameInfo);
+    const SeaCrossing crossing = seaCrossing(sea, ray.Origin, ray.Direction, payload.hitT);
+    if(crossing.t < 0.0F)
+      return false;
+    fromAbove           = crossing.fromAbove;
+    const float3 pos    = ray.Origin + ray.Direction * crossing.t;
+    const float3 up     = seaUp(sea, pos);
+    const float3 normal = fromAbove ? up : -up;
+
+    payload.hitT  = crossing.t;
+    hit.pos       = pos;
+    hit.shadowPos = pos;
+    hit.nrm       = normal;
+    hit.geonrm    = normal;
+    orthonormalBasis(normal, hit.tangent, hit.bitangent);
+    hit.frontFace = fromAbove;
+    // as the plane's below; far round the planet a float's own rounding is the larger part
+    hit.offsetDistance = 1e-4F + roundingGamma(3) * dot(abs(normal), abs(pos) + abs(pos - sea.top));
+    return true;
+  }
   if(!groundHasWater(frameInfo))
     return false;
   const float               level    = groundWaterLevel(frameInfo);
@@ -1823,18 +1848,35 @@ bool checkWaterIntersection(RayDesc ray, inout HitPayload payload, inout HitStat
 // hit's, which faces the ray.
 PbrMaterial waterSurfaceMaterial(float3 pos, float3 geometricNormal, bool fromAbove, float footprint, SceneFrameInfo* frameInfo)
 {
-  const GroundWaves waves   = groundWavesAt(pos.xz, footprint, groundWaterWaves(frameInfo));
-  const GroundSlope ripples = groundRipplesAt(pos.xz, footprint, frameInfo->groundRipples);
-  // and where it rains on it, the drops' rings
-  float3 rings = float3(0.0F);
-  if(frameInfo->rainRate > 0.0F)
-    rings = rainRingsAt(pos.xz, footprint, frameInfo->rainRate * rainExposure(pos, float3(0.0F, 1.0F, 0.0F), frameInfo), frameInfo->rainTime);
-  const float2      slope   = waves.slope.slope + ripples.slope + rings.xy;
-  const float3      up      = normalize(float3(-slope.x, 1.0F, -slope.y));
-  PbrMaterial       mat     = defaultPbrMaterial(float3(1.0F), 0.0F, 0.0F, fromAbove ? up : -up, geometricNormal);
-  mat.faceSided             = false;  // the waves are the surface, not a map over the flat plane
+  float3     up;
+  float      variance;  // per axis: the slopes the footprint averages out
+  const bool sea = worldHasSea(frameInfo);
+  if(sea)
+  {
+    // a planet's sea: its swell and ripples as a normal over the sphere (no rain falls on a planet yet)
+    const SeaSurface surface = seaSurfaceAt(worldSea(frameInfo), pos, footprint);
+    up                       = surface.up;
+    variance                 = surface.variance;
+  }
+  else
+  {
+    const GroundWaves waves   = groundWavesAt(pos.xz, footprint, groundWaterWaves(frameInfo));
+    const GroundSlope ripples = groundRipplesAt(pos.xz, footprint, frameInfo->groundRipples);
+    // and where it rains on it, the drops' rings
+    float3 rings = float3(0.0F);
+    if(frameInfo->rainRate > 0.0F)
+      rings = rainRingsAt(pos.xz, footprint, frameInfo->rainRate * rainExposure(pos, float3(0.0F, 1.0F, 0.0F), frameInfo), frameInfo->rainTime);
+    const float2 slope = waves.slope.slope + ripples.slope + rings.xy;
+    up                 = normalize(float3(-slope.x, 1.0F, -slope.y));
+    variance           = waves.slope.variance + ripples.variance + rings.z;
+  }
+  PbrMaterial mat = defaultPbrMaterial(float3(1.0F), 0.0F, 0.0F, fromAbove ? up : -up, geometricNormal);
+  // The ground's waves are the surface, not a map over the flat plane. The sea's are a map over its
+  // sphere, which is the face: a reflection that would leave under it is not taken, or the path would
+  // go on under the water believing itself in the air.
+  mat.faceSided = sea;
   // pbrMat.roughness holds alpha; the averaged-out slopes add to its square as in groundMaterial
-  const float alpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * (waves.slope.variance + ripples.variance + rings.z));
+  const float alpha = sqrt(MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 2.0F * variance);
   mat.roughness     = float2(max(alpha, MICROFACET_MIN_ROUGHNESS));
   // Those slopes are Gaussian, as a wind's ripples are (Cox and Munk 1954), and the variance above is
   // Beckmann's alpha: GGX's long tail of steep microfacets made far water reflect the sky up to 18
@@ -2197,10 +2239,12 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
 // the way down, the caustic), so the sun reaching the point is under the clouds' shadow
 // (getPunctualLightAt) and the scene's, the sky through the surface. Per unit of the path's throughput,
 // which the segment's extinction is charged to apart from this. `group`: the sampled light's.
-float3 groundWaterInScatter(IRaytracer raytracer, float3 origin, float3 dir, float length, inout uint seed, out uint group)
+// `sea`: the water is a planet's sea, whose particles scatter too (seaScattered), mostly forward, so
+// the sun draws shafts in it under the waves' caustics.
+float3 groundWaterInScatter(IRaytracer raytracer, float3 origin, float3 dir, float length, bool sea, inout uint seed, out uint group)
 {
   group = uint(LIGHT_GROUP_SKY);
-  const float3 sigmaT  = GROUND_WATER_EXTINCTION;
+  const float3 sigmaT  = sea ? SEA_EXTINCTION : GROUND_WATER_EXTINCTION;
   const float  sigmaLo = min(sigmaT.x, min(sigmaT.y, sigmaT.z));
   // the point, drawn as exp(-sigmaLo t) over [0, length): every channel's weight then at most its
   // scattering over sigmaLo
@@ -2224,7 +2268,11 @@ float3 groundWaterInScatter(IRaytracer raytracer, float3 origin, float3 dir, flo
   shadowRay.TMin      = 0.0F;
   shadowRay.TMax      = light.distance;
   const float3 shadow = raytracer.TraceShadow(shadowRay, seed, false, float3(0.0F), light.shadowMask);
-  return GROUND_WATER_SCATTERING * exp(-sigmaT * t) / pdf * groundWaterPhase(dot(dir, light.direction)) * light.radianceOverPdf * shadow;
+  // light going along `light.direction` reversed, sent on along `dir` reversed: the angle between them
+  const float cosTheta = dot(dir, light.direction);
+  if(sea)
+    return seaScattered(cosTheta) * exp(-sigmaT * t) / pdf * light.radianceOverPdf * shadow;
+  return GROUND_WATER_SCATTERING * exp(-sigmaT * t) / pdf * groundWaterPhase(cosTheta) * light.radianceOverPdf * shadow;
 }
 
 // The haze on the camera's segment (haze.h.slang), from the eye along `dir` (unit) to `tEnd`: what
@@ -2752,6 +2800,20 @@ DlssGlassPsr dlssTraceWater(PbrMaterial waterMat, HitState waterHit, float3 dir,
   DlssGlassPsr psr       = dlssTraceClearGlass(waterMat, waterHit, dir, false, 0xFFu);  // past the water is a view of its own (ptCameraView)
   const float3 N         = dot(waterMat.N, dir) < 0.0f ? waterMat.N : -waterMat.N;
   const float3 refracted = refract(dir, N, waterMat.ior1 / waterMat.ior2);
+  if(worldHasSea(frameInfo))
+  {
+    // a planet's sea: its floor is a mesh, which the chain found; the vertical is the planet's
+    if(dot(refracted, refracted) <= 0.0f)
+      return psr;
+    const float3 up = seaUp(worldSea(frameInfo), waterHit.pos);
+    if(dot(refracted, up) >= 0.0f)
+      return psr;
+    psr.through *= dlssWaterThrough(GROUND_WATER_ABSORPTION, psr.pathLength);
+    if(psr.valid)
+      psr.posDelta -= up * (dot(psr.posDelta, up)
+                            * (1.0f - dlssSeenDepthRatio(abs(dot(dir, up)), abs(dot(refracted, up)), waterMat.ior2 / waterMat.ior1)));
+    return psr;
+  }
   if(dot(refracted, refracted) <= 0.0f || refracted.y >= 0.0f)
     return psr;  // reflected whole, or up out of the water: no floor that way
   const float floorT = infinitePlaneCrossing(waterHit.pos, refracted, INFINITE, frameInfo);

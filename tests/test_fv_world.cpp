@@ -444,20 +444,12 @@ TEST(WorldMesh, NeighboursOfALevelMeetAlongTheirEdge)
   }
 }
 
-TEST(WorldMesh, TheSeaIsTheSphereAtItsLevel)
+// The sea is the renderer's own sphere (shaders/world_sea.h.slang): no mesh draws it
+TEST(WorldMesh, TheSeaHasNoMesh)
 {
   // (with no rivers or lakes on it: those are test_fv_world_map's)
   const W::World     w = W::make({}, {.base = false});
   const W::ChunkMesh m = W::waterMesh(w, {4, 3, 2, 5});
   EXPECT_FALSE(m.inland);
-  const uint32_t     side = W::kSeaCells + 1;
-  ASSERT_EQ(m.surface, side * side);
-  for(uint32_t v = 0; v < m.surface; v++)
-  {
-    const glm::dvec3 out = m.centre + glm::dvec3(m.positions[v]) - w.frame.centre;
-    EXPECT_NEAR(glm::length(out), w.spec.radius, 0.02);
-    EXPECT_NEAR(glm::dot(glm::normalize(out), glm::dvec3(m.normals[v])), 1.0, 1e-5);
-  }
-  for(size_t v = m.surface; v < m.positions.size(); v++)
-    EXPECT_LT(glm::length(m.centre + glm::dvec3(m.positions[v]) - w.frame.centre), w.spec.radius);
+  EXPECT_TRUE(m.indices.empty());
 }

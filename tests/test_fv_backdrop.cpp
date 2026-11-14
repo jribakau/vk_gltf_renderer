@@ -1001,6 +1001,11 @@ TEST(BackdropState, APlanetsRadiusAndSeaAreCheckedAndClamped)
   // another radius or sea is another planet
   EXPECT_FALSE(B::samePlanting(B::applyPatch(s, {{"radius", 30}}), s));
   EXPECT_FALSE(B::samePlanting(B::applyPatch(s, {{"sea", 0.2}}), s));
+  // the sea's waves are a number of the renderer's: nothing is made again
+  EXPECT_EQ(B::applyPatch(s, {{"waves", 3}}).waves, 1.0);
+  EXPECT_EQ(B::applyPatch(s, {{"waves", 0.25}}).waves, 0.25);
+  EXPECT_TRUE(B::samePlanting(B::applyPatch(s, {{"waves", 0.25}}), s));
+  EXPECT_EQ(B::toJson(B::applyPatch(s, {{"waves", 0.25}}))["waves"], 0.25);
   const fv::world::Spec w = B::planetSpec(s);
   EXPECT_EQ(w.radius, 100000.0);
   EXPECT_EQ(w.sea, 0.9);
@@ -1065,6 +1070,12 @@ TEST(BackdropState, APlanetThatStandsIsTheSkysPlanet)
   EXPECT_EQ(stands["worldRadius"], 20.0);
   EXPECT_NEAR(stands["worldAirScale"].get<double>(), 5.0 / 60.0, 1e-6);
   EXPECT_EQ(stands["worldCentre"], Json::array({0.0, -20040.0, 0.0}));
+  // its sea is the water: the sphere at its level, by the point of it over the centre
+  EXPECT_EQ(stands["worldSeaRadius"], 20000.0);
+  EXPECT_EQ(stands["worldSeaTop"], Json::array({0.0, -40.0, 0.0}));
+  EXPECT_EQ(stands["worldSeaWaves"], B::Spec{}.waves);
+  EXPECT_EQ(stands["worldSeaRipples"], B::kSeaRipples * B::Spec{}.waves);
+  EXPECT_EQ(B::rendererParams(B::applyPatch(s, {{"waves", 0}}), true, glm::vec3(0.05F), centre)["worldSeaRipples"], 0.0);
   EXPECT_EQ(stands["atmoAerialPerspectiveScale"], 1.0);
   EXPECT_EQ(stands["landFadeFrom"], 0.0);
   EXPECT_EQ(stands["landFadeTo"], 0.0);
@@ -1074,6 +1085,7 @@ TEST(BackdropState, APlanetThatStandsIsTheSkysPlanet)
   for(const Json& other : {B::rendererParams(s, false, glm::vec3(0.05F), centre), B::rendererParams(B::applyPatch(s, {{"kind", "meadow"}}), true, glm::vec3(0.05F))})
   {
     EXPECT_EQ(other["worldRadius"], 0.0);
+    EXPECT_EQ(other["worldSeaRadius"], 0.0);
     EXPECT_EQ(other["worldAirScale"], 1.0);
     EXPECT_FALSE(other.contains("cloudCoverage"));
     EXPECT_FALSE(other.contains("rainRate"));

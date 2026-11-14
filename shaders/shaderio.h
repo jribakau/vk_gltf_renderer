@@ -542,6 +542,15 @@ struct SceneFrameInfo
   // The light groups the scene has light in, a bit a group (the sky's always): the ones a still that
   // keeps its lights apart gives turns to (lightGroupOfSample). (Appended.)
   uint lightGroupsUsed = 0;
+  // A planet's sea (shaders/world_sea.h.slang): its radius in metres (0: no planet stands, and the
+  // water is the ground's), its swell and its ripples, 0 still to 1, and the point of its still
+  // surface straight up from its centre, world space: heights over the sea are taken from that
+  // point, which is by the scene, not from a centre tens of kilometres off. (Appended.)
+  float  worldSeaRadius  = 0.0F;
+  float  worldSeaWaves   = 0.0F;
+  float  worldSeaRipples = 0.0F;
+  float3 worldSeaTop     = {0.0F, 0.0F, 0.0F};
+  float  _worldSeaPad    = 0.0F;
 };
 
 enum PathtracerFlags

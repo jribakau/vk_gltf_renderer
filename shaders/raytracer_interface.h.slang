@@ -133,7 +133,7 @@ float3 traceShadowInline(RayDesc ray, inout uint seed, bool initialInside, float
     return float3(0., 0., 0.);
   }
 
-  return ground * groundWaterShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo) * totalTransmission
+  return ground * waterShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo) * totalTransmission
          * shadowTailTransmittance(ray, isInside, extinction, prevHitT);
 }
 
@@ -319,7 +319,7 @@ struct TraditionalRaytracer : IRaytracer
     }
     seed = shadowPayload.seed;  // any-hit consumed random numbers; propagate on every path
 
-    return ground * groundWaterShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo) * shadowPayload.totalTransmission
+    return ground * waterShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo) * shadowPayload.totalTransmission
            * shadowTailTransmittance(ray, shadowPayload.isInside, shadowPayload.extinction, shadowPayload.prevHitT);
   }
 }

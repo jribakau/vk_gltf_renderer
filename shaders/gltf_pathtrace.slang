@@ -1058,12 +1058,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       const uint leftUnlit = g_unlitLamps;
       g_unlitLamps         = 0u;  // the water takes every lamp, whatever the ray left
       uint         waterGroup = 0u;
-      const float3 waterLight = groundWaterInScatter(raytracer, ray.Origin, ray.Direction, payload.hitT, seed, waterGroup);
+      const float3 waterLight = groundWaterInScatter(raytracer, ray.Origin, ray.Direction, payload.hitT, worldHasSea(frameInfo), seed, waterGroup);
       addRadiance(pt, pt.throughput * waterLight, pt.pathRoughness > DIRECT_PATH_ROUGHNESS, waterGroup);
       g_unlitLamps = leftUnlit;  // (the sized lights this ray meets are still weighed at the surface it left)
       if(payload.hitT == INFINITE)
         return PathStepResult.eBreak;
-      pt.throughput *= exp(-GROUND_WATER_EXTINCTION * payload.hitT);
+      pt.throughput *= exp(-waterExtinction(frameInfo) * payload.hitT);
     }
 
     // Charge the in-volume segment up to this hit, or the unbounded one of a miss, before anything
@@ -2746,7 +2746,7 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
   PathTracerState pt = {};
   g_unlitLamps       = 0u;  // the camera's: no surface yet
   g_skyStars         = float2(0.0F);
-  pt.inWater         = groundUnderWater(ray.Origin, pushConst.frameInfo);
+  pt.inWater         = waterUnder(ray.Origin, pushConst.frameInfo);
 
 #if GLTF_USE_VOLUME
   // A camera path starts in the medium the camera is in (probeCameraMedium). No pointer: the scene

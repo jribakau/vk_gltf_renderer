@@ -889,13 +889,26 @@ their kit when there is one. It needs no kit: without one it stands bare.
   is. Meshes are made on the job pool a batch at a time and arrive as hidden entities, so their BLAS
   is built before they show. A quad's edges carry skirts, since neighbours of different levels don't
   meet exactly and a ray would find the crack.
-- **The water** is a second mesh a quad (`waterMesh`): the sphere at sea level wherever the quad's
-  ground dips under it, and the lakes' and rivers' surfaces where they lie (`waterLevel`), cut at the
-  ground's own points so the shore is where the two cross. By a bank the surface goes down under the
-  ground, which hides it. A transmissive volume, so the colour of the shallows is the path tracer's.
-  A river too narrow for what draws a quad is not water there but a line of colour. The camera-medium
-  probe (`ptCameraMedium`) must be off, as the app has it: its ray passes through the ground and
-  meets the far side's sea from behind.
+- **The sea** is no mesh: it is the ground's body of water (`shaders/ground.h.slang`) asked about a
+  sphere (`shaders/world_sea.h.slang`; `worldSeaRadius`, `worldSeaTop`, `worldSeaWaves`,
+  `worldSeaRipples`, the backdrop's `waves`). A path's ray meets its surface, the sphere at the
+  sea's level, after whatever mesh it hit and refracts there by a normal the waves tilt; under it
+  the path is in the water (a camera under it starts there), charged its extinction and given the
+  light it scatters, sun shafts and all; a shadow ray crosses the surface straight, with the caustic
+  the waves focus. The waves are in the normal and the caustics, not in the surface's shape: a
+  heightfield, as the ground's water is, is walked by every ray that passes it, and compiled into
+  every place a shadow ray is traced (the header has the numbers). Heights over the sea are taken
+  from the point of it over the planet's centre, which is by the scene, so they keep a float's
+  precision where the figures are. The header says what is approximate: the waves laid on the
+  sphere from three planes, the caustic worked out on a tangent plane, the particles' forward
+  scattering.
+- **Lakes and rivers** are a second mesh a quad with inland water on it (`waterMesh`): their
+  surfaces where they lie (`waterLevel`), cut at the ground's own points so the shore is where the
+  two cross. By a bank the surface goes down under the ground, which hides it, and at a river's
+  mouth under the sea. A transmissive volume, so the colour of the shallows is the path tracer's; it
+  has no waves, and a camera in it sees as in air. A river too narrow for what draws a quad is not
+  water there but a line of colour. The camera-medium probe (`ptCameraMedium`) must be off, as the
+  app has it: its ray passes through the ground and can meet a lake on the far side from behind.
 - **What grows** (`src/fv_world_plants.hpp`) is a biome's row too: what stands on it and how
   thickly, its grass, what drifts in its grass. With the backdrop's kit read (`readPlanetKit`,
   `plantPlanet`) the planet is planted with the same plants a meadow and a forest are, held the same

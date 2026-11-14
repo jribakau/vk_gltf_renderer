@@ -262,6 +262,8 @@ shaders/
 ├── world_bodies.h.slang        # The other bodies in that planet's sky as spheres: where a ray meets one, what
 │                               #   one leaves of the sun's disk, its markings and shading; C++ too (unit-tested)
 ├── water_optics.h.slang        # The ground's water as a medium (IOR, absorption, scattering) and its albedo; C++ too
+├── world_sea.h.slang           # A planet's sea: the ground's body of water on a sphere (its surface, waves,
+│                               #   caustics, the light in the water); C++ too (unit-tested with the ground's)
 ├── sky_omi_shaderio.h.slang    # SkyType + the per-type OMI_environment_sky parameter blocks
 ├── sky_gradient.h.slang        # OMI `gradient` evaluator (bands + sun), shared by bake and background
 ├── env_bake.slang              # Bakes any sky into the lat-long image + importance buffer; one

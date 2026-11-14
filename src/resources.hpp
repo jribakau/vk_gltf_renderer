@@ -255,6 +255,13 @@ struct Settings
   float     worldRadius   = 0.0f;
   float     worldAirScale = 1.0f;
   glm::vec3 worldCentre   = {0.0f, 0.0f, 0.0f};
+  // ... and its sea (shaders/world_sea.h.slang; SceneFrameInfo::worldSeaRadius): the sphere's radius,
+  // metres (0: none), the point of it straight up from its centre, in the scene, and its swell and
+  // ripples, 0 still to 1
+  float     worldSeaRadius  = 0.0f;
+  glm::vec3 worldSeaTop     = {0.0f, 0.0f, 0.0f};
+  float     worldSeaWaves   = 0.0f;
+  float     worldSeaRipples = 0.0f;
   // The other bodies in that planet's sky (the backdrop's `bodies`; shaders/world_bodies.h.slang), as
   // the frame carries them: each one's centre in the scene with its radius, and its colour with what
   // it is made of. The host's to say (GltfRenderer::setWorldBodies), and nothing a file keeps.

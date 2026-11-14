@@ -18,6 +18,7 @@ using namespace glm;
 using namespace shaderio;
 inline float saturate(float x) { return glm::clamp(x, 0.0f, 1.0f); }
 #include "../shaders/ground.h.slang"
+#include "../shaders/world_sea.h.slang"
 #include "../src/sky_ground.hpp"
 
 namespace {
@@ -577,4 +578,334 @@ TEST(GroundWaves, WhatIsUnderTheWater)
   EXPECT_FALSE(groundUnderWater(float3(p.x, 0.8f + h + 1e-3f, p.y), &lake));
   SceneFrameInfo dry = lakeAt(-0.2f, 0.0f, 1.0f);
   EXPECT_FALSE(groundUnderWater(float3(0.3f, 0.0f, 0.1f), &dry));
+}
+
+//-----------------------------------------------------------------------
+// A planet's sea (shaders/world_sea.h.slang): the water above, on a sphere
+//-----------------------------------------------------------------------
+
+namespace {
+
+// A sea 20 km in radius whose top is 12.2 m under the scene's origin, as a planet's is under its site
+Sea seaOf(float waves = 1.0f, float ripples = 1.0f, float radius = 20000.0f)
+{
+  Sea sea;
+  sea.top     = float3(0.0f, -12.2f, 0.0f);
+  sea.radius  = radius;
+  sea.waves   = waves;
+  sea.ripples = ripples;
+  return sea;
+}
+
+// A place on the sea's sphere, with the plane that touches it there: `x`, `up` and `z` in the world
+struct Spot
+{
+  float3 at, x, up, z;
+  float3 world(float3 local) const { return at + x * local.x + up * local.y + z * local.z; }
+  float3 turned(float3 local) const { return x * local.x + up * local.y + z * local.z; }
+};
+
+Spot spotOn(const Sea& sea, float3 direction)
+{
+  Spot s;
+  s.up = normalize(direction);
+  s.x  = normalize(cross(std::abs(s.up.y) < 0.9f ? float3(0, 1, 0) : float3(1, 0, 0), s.up));
+  s.z  = cross(s.up, s.x);
+  // (in doubles: the centre is 20 km off, where a float is good to two millimetres)
+  s.at = float3(dvec3(sea.top) + (dvec3(s.up) - dvec3(0.0, 1.0, 0.0)) * double(sea.radius));
+  return s;
+}
+
+// A point's height over the sea, in doubles from the centre
+double heightOver(const Sea& sea, float3 p)
+{
+  const dvec3 centre = dvec3(sea.top) - dvec3(0.0, double(sea.radius), 0.0);
+  return length(dvec3(p) - centre) - double(sea.radius);
+}
+
+}  // namespace
+
+// By the top of the sea, where the scene is, a height over it is good to a micrometre: taken from the
+// centre, 20 km off, it would be good to two millimetres, more than a ray's offset from a surface
+TEST(Sea, HeightsKeepTheirPrecisionByTheTop)
+{
+  const Sea sea = seaOf();
+  for(const float3& p : {float3(3.0f, -12.199f, 4.0f), float3(-40.0f, -12.3f, 15.0f), float3(0.2f, -11.0f, -0.7f), float3(120.0f, 3.0f, -80.0f)})
+  {
+    EXPECT_NEAR(seaHeight(sea, p), heightOver(sea, p), 2e-6) << p.x;
+    EXPECT_EQ(seaUnder(sea, p), heightOver(sea, p) < 0.0) << p.x;
+    EXPECT_NEAR(dot(seaUp(sea, p), float3(0, 1, 0)), 1.0f, 1e-4f);
+  }
+  // and anywhere on the planet as good as the point itself is
+  for(const float3& d : {float3(1, 0, 0), float3(0, -1, 0), float3(0.5f, 0.3f, -0.8f)})
+  {
+    const Spot spot = spotOn(sea, d);
+    EXPECT_NEAR(seaHeight(sea, spot.world(float3(5.0f, 1.5f, -3.0f))), heightOver(sea, spot.world(float3(5.0f, 1.5f, -3.0f))), 0.02) << d.x;
+    EXPECT_NEAR(dot(seaUp(sea, spot.at), spot.up), 1.0f, 1e-5f);
+  }
+}
+
+// Round the top the sea's waves are the plane's own, the swell SEA_SWELL_SCALE times as long;
+// everywhere they lie in the sphere's surface, and what a footprint covers of them is roughness
+TEST(Sea, ItsWavesAreThePlanesLaidOnTheSphere)
+{
+  const Sea sea = seaOf();
+  for(const float2& p : floorPoints(2000))
+  {
+    const float3      pos     = float3(p.x, sea.top.y, p.y);
+    const SeaWaves    w       = seaWavesAt(sea, pos, 0.0f, 1.0f, 0.0f, 1.0f);
+    const GroundWaves flat    = groundWavesAt(p / SEA_SWELL_SCALE, 0.0f, 1.0f);
+    const GroundSlope ripples = groundRipplesAt(p, 0.0f, 1.0f);
+    EXPECT_NEAR(w.slope.x, flat.slope.slope.x + ripples.slope.x, 2e-4f);
+    EXPECT_NEAR(w.slope.z, flat.slope.slope.y + ripples.slope.y, 2e-4f);
+    // the surface a footprint sees: its normal the sphere's, leaning against the waves' slope
+    const SeaSurface surface = seaSurfaceAt(sea, pos, 0.0f);
+    EXPECT_NEAR(surface.up.x / surface.up.y, p.x / sea.radius - w.slope.x, 2e-4f);
+    EXPECT_NEAR(surface.up.z / surface.up.y, p.y / sea.radius - w.slope.z, 2e-4f);
+  }
+  uint       state = 5u;
+  const auto next  = [&state]() {
+    state = state * 747796405u + 2891336453u;
+    return float(state >> 8) / 16777216.0f;
+  };
+  double steep = 0.0;
+  for(int i = 0; i < 20000; ++i)
+  {
+    const float3   d    = normalize(float3(next() * 2.0f - 1.0f, next() * 2.0f - 1.0f, next() * 2.0f - 1.0f) + float3(1e-3f));
+    const Spot     spot = spotOn(sea, d);
+    const SeaWaves w    = seaWavesAt(sea, spot.at, 0.0f, 1.0f, 0.0f, 1.0f);
+    EXPECT_NEAR(dot(w.slope, spot.up), 0.0f, 1e-4f) << i;
+    EXPECT_LT(length(w.slope), 0.6f) << i;
+    EXPECT_EQ(w.variance, 0.0f);
+    steep += double(dot(w.slope, w.slope));
+    // what a footprint as wide as the waves covers is in the variance, none of it in the slope
+    const SeaWaves far = seaWavesAt(sea, spot.at, 100.0f, 1.0f, 100.0f, 1.0f);
+    EXPECT_LT(length(far.slope), 1e-6f);
+    EXPECT_GT(far.variance, 0.001f);
+    EXPECT_NEAR(dot(seaSurfaceAt(sea, spot.at, 100.0f).up, spot.up), 1.0f, 1e-5f);
+  }
+  // gentle all over the sphere: an RMS slope of a few hundredths an axis, where planes blend too
+  EXPECT_GT(std::sqrt(0.5 * steep / 20000.0), 0.03);
+  EXPECT_LT(std::sqrt(0.5 * steep / 20000.0), 0.09);
+  // along an arc from the top to the side, 100 m across each place where a plane's waves come in
+  // (60 degrees off its axis): 5 cm on, the slope has moved by no more than the ripples turn it and
+  // a float's rounding 20 km from the centre allow, so no seam shows
+  for(const double across : {0.6751, 0.9851, 1.0472})
+  {
+    float3 last(0.0f);
+    for(int i = 0; i < 2000; ++i)
+    {
+      const double angle = across + (double(i) - 1000.0) * 0.05 / double(sea.radius);
+      const dvec3  d(std::sin(angle) * 0.8, std::cos(angle), std::sin(angle) * 0.6);
+      const float3 at    = float3(dvec3(sea.top) - dvec3(0.0, double(sea.radius), 0.0) + d * double(sea.radius));
+      const float3 slope = seaWavesAt(sea, at, 0.0f, 1.0f, 0.0f, 0.0f).slope;
+      if(i > 0)
+        EXPECT_LT(length(slope - last), 0.03f) << across << " " << i;
+      last = slope;
+    }
+  }
+  // a still sea is the sphere
+  const SeaWaves still = seaWavesAt(sea, float3(1.0f, sea.top.y, 2.0f), 0.0f, 0.0f, 0.0f, 0.0f);
+  EXPECT_EQ(still.slope.x, 0.0f);
+  EXPECT_EQ(still.variance, 0.0f);
+}
+
+// A ray meets the sea where its sphere is, from over it and from under it: by the top, where the
+// scene is, and anywhere round the planet
+TEST(Sea, ARayMeetsTheSurfaceWhereItIs)
+{
+  const Sea  sea   = seaOf();
+  uint       state = 99u;
+  const auto next  = [&state]() {
+    state = state * 747796405u + 2891336453u;
+    return float(state >> 8) / 16777216.0f;
+  };
+  int place = 0;
+  for(const float3& d : {float3(0, 1, 0), float3(1, 0, 0), float3(0.5f, 0.3f, -0.8f), float3(-0.6f, -0.7f, 0.4f)})
+  {
+    const Spot spot = spotOn(sea, d);
+    // by the top a height is exact; elsewhere as fine as a float 20 km from the origin
+    const float fine = place == 0 ? 2e-5f : 0.02f;
+    for(int i = 0; i < 500; ++i)
+    {
+      const bool   down      = (i & 1) == 0;
+      const float  elevation = 0.02f + next() * 1.55f;  // 1 to 90 degrees
+      const float3 direction = spot.turned(slanted(elevation, next() * 6.2831853f, down));
+      const float3 origin    = spot.world(float3(next() * 20.0f - 10.0f, down ? 0.3f + 2.0f * next() : -0.05f - 0.5f * next(), next() * 20.0f - 10.0f));
+      const SeaCrossing c = seaCrossing(sea, origin, direction, 1e30f);
+      ASSERT_GT(c.t, 0.0f) << place << " " << i;
+      EXPECT_EQ(c.fromAbove, down) << place << " " << i;
+      EXPECT_EQ(c.under, !down) << place << " " << i;
+      EXPECT_LT(std::abs(heightOver(sea, origin + direction * c.t)), double(fine) + 1e-6 * double(c.t)) << place << " " << i;
+      // short of the surface, or away from it: none
+      EXPECT_LT(seaCrossing(sea, origin, direction, 0.5f * c.t).t, 0.0f) << place << " " << i;
+      if(down)
+        EXPECT_LT(seaCrossing(sea, origin, -direction, 1e30f).t, 0.0f) << place << " " << i;
+      // a ray's offset off the surface is on the side it was put: no crossing again on the way out,
+      // and one at once on the way back
+      const float3 at    = origin + direction * c.t;
+      const float  clear = 1e-4f + 4e-7f * (std::abs(at.x) + std::abs(at.y) + std::abs(at.z));
+      EXPECT_FALSE(seaUnder(sea, at + spot.up * (2.0f * clear))) << place << " " << i;
+      EXPECT_TRUE(seaUnder(sea, at - spot.up * (2.0f * clear))) << place << " " << i;
+      EXPECT_LT(seaCrossing(sea, at + spot.up * (2.0f * clear), spot.up, 1e30f).t, 0.0f) << place << " " << i;
+      EXPECT_LT(seaCrossing(sea, at - spot.up * (2.0f * clear), spot.up, 1e30f).t, 4.0f * clear) << place << " " << i;
+      EXPECT_GT(seaCrossing(sea, at - spot.up * (2.0f * clear), spot.up, 1e30f).t, 0.0f) << place << " " << i;
+    }
+    place++;
+  }
+}
+
+// From orbit a ray straight down meets the sea at its height over it, one past the planet's edge
+// meets nothing, and one from the sea's depths comes up to the surface
+TEST(Sea, FromFarItIsTheSphere)
+{
+  const Sea         sea  = seaOf();
+  const SeaCrossing down = seaCrossing(sea, sea.top + float3(0, 5000.0f, 0), float3(0, -1, 0), 1e30f);
+  EXPECT_NEAR(down.t, 5000.0f, 0.01f);
+  EXPECT_TRUE(down.fromAbove);
+  // towards the planet's edge, 20 km off its centre and 30 km out: a ray to within the radius meets
+  // it, one outside it does not
+  const float3      out   = sea.top + float3(0, -sea.radius, 30000.0f);
+  const SeaCrossing meets = seaCrossing(sea, out, normalize(float3(25000.0f, 0, -30000.0f)), 1e30f);
+  EXPECT_GT(meets.t, 10000.0f);
+  EXPECT_TRUE(meets.fromAbove);
+  EXPECT_NEAR(heightOver(sea, out + normalize(float3(25000.0f, 0, -30000.0f)) * meets.t), 0.0, 0.05);
+  EXPECT_LT(seaCrossing(sea, out, normalize(float3(28000.0f, 0, -30000.0f)), 1e30f).t, 0.0f);
+  // something nearer than the sea hides it
+  EXPECT_LT(seaCrossing(sea, sea.top + float3(0, 5000.0f, 0), float3(0, -1, 0), 4000.0f).t, 0.0f);
+  // from 300 m down, up to the surface; and down, out of the planet's far side
+  const SeaCrossing up = seaCrossing(sea, sea.top + float3(7.0f, -300.0f, 2.0f), float3(0, 1, 0), 1e30f);
+  EXPECT_NEAR(up.t, 300.0f, 0.01f);
+  EXPECT_FALSE(up.fromAbove);
+  EXPECT_TRUE(up.under);
+  EXPECT_NEAR(seaCrossing(sea, sea.top + float3(0.0f, -300.0f, 0.0f), float3(0, -1, 0), 1e30f).t, 2.0f * sea.radius - 300.0f, 0.1f);
+  // a little way off, exactly
+  const SeaCrossing level = seaCrossing(sea, sea.top + float3(0, 2.0f, 0), normalize(float3(0.5f, -1, 0)), 1e30f);
+  EXPECT_NEAR(level.t, 2.0f * std::sqrt(1.25f), 1e-4f);
+}
+
+TEST(Sea, WhatIsUnderIt)
+{
+  const Sea sea = seaOf();
+  EXPECT_TRUE(seaUnder(sea, sea.top + float3(0.3f, -0.5f, 0.1f)));
+  EXPECT_FALSE(seaUnder(sea, sea.top + float3(0.3f, 0.5f, 0.1f)));
+  EXPECT_FALSE(seaUnder(sea, float3(0.0f, 1.6f, 0.0f)));  // a figure's eyes, on the land over it
+  // on the planet's far side down is up
+  EXPECT_TRUE(seaUnder(sea, sea.top + float3(0.0f, -2.0f * sea.radius + 3.0f, 0.0f)));
+  EXPECT_FALSE(seaUnder(sea, sea.top + float3(0.0f, -2.0f * sea.radius - 3.0f, 0.0f)));
+  // with no planet the water is the ground's
+  SceneFrameInfo lake = lakeAt(-0.2f, 1.0f, 1.0f);
+  EXPECT_FALSE(worldHasSea(&lake));
+  EXPECT_TRUE(waterUnder(float3(0.3f, 0.5f, 0.1f), &lake));
+  EXPECT_FALSE(waterUnder(float3(0.3f, 0.9f, 0.1f), &lake));
+  EXPECT_EQ(waterExtinction(&lake).x, GROUND_WATER_EXTINCTION.x);
+  // with one, its sea, whatever the ground's plane says
+  lake.worldSeaRadius = sea.radius;
+  lake.worldSeaTop    = sea.top;
+  EXPECT_TRUE(worldHasSea(&lake));
+  EXPECT_FALSE(waterUnder(float3(0.3f, 0.5f, 0.1f), &lake));
+  EXPECT_TRUE(waterUnder(float3(0.3f, -13.0f, 0.1f), &lake));
+  EXPECT_EQ(waterExtinction(&lake).x, SEA_EXTINCTION.x);
+}
+
+// A shadow ray keeps what the surface lets through and the sea does not take, along the part of it
+// under the surface, with the caustic there
+TEST(Sea, AShadowRayThroughIt)
+{
+  const Sea   sea     = seaOf(0.4f, 0.0f);
+  const float through = 1.0f - groundWaterFresnel(1.0f);
+  // by the top a depth is exact; on the planet's far side, 40 km from the origin, good to millimetres
+  float      fine  = 1e-4f;
+  const auto near3 = [&fine](float3 a, float3 b) {
+    EXPECT_NEAR(a.x, b.x, fine);
+    EXPECT_NEAR(a.y, b.y, fine);
+    EXPECT_NEAR(a.z, b.z, fine);
+  };
+  for(const float3& d : {float3(0, 1, 0), float3(0, -1, 0)})
+  {
+    const Spot   spot  = spotOn(sea, d);
+    fine               = d.y > 0.0f ? 1e-4f : 5e-3f;
+    const float3 under = spot.world(float3(0, -0.5f, 0));
+    const float  focus = seaCaustic(sea, under, spot.up);
+    // up out of half a metre of water, to the sun
+    near3(seaShadowTransmittance(sea, under, spot.up, 1e32f), through * focus * exp(-0.5f * SEA_EXTINCTION));
+    // down into it, to a light at the same point
+    near3(seaShadowTransmittance(sea, spot.world(float3(0, 2, 0)), -spot.up, 2.5f), through * exp(-0.5f * SEA_EXTINCTION));
+    // in the air, and to a light still above the water
+    near3(seaShadowTransmittance(sea, spot.world(float3(0, 2, 0)), spot.up, 1e32f), float3(1.0f));
+    near3(seaShadowTransmittance(sea, spot.world(float3(0, 2, 0)), -spot.up, 0.5f), float3(1.0f));
+    // all of it under water: absorbed only
+    near3(seaShadowTransmittance(sea, under, -spot.up, 0.25f), exp(-0.25f * SEA_EXTINCTION));
+  }
+  // red goes first
+  const float3 deep = seaShadowTransmittance(sea, sea.top + float3(0, -3.0f, 0), float3(0, 1, 0), 1e32f);
+  EXPECT_LT(deep.x, deep.y);
+  EXPECT_LT(deep.y, deep.z);
+  // light that grazes the surface is mostly reflected off it; light straight down goes in
+  const float3 low   = seaShadowTransmittance(sea, sea.top + float3(0, 1.0f, 0), normalize(float3(1, -0.1f, 0)), 12.0f);
+  const float3 steep = seaShadowTransmittance(sea, sea.top + float3(0, 1.0f, 0), float3(0, -1, 0), 1.5f);
+  EXPECT_LT(low.z, 0.6f);
+  EXPECT_GT(low.z, 0.2f);
+  EXPECT_GT(steep.z, 0.95f);
+}
+
+// Still water focuses nothing; the sea's ripples and swell make bands of light on its floor that move
+// the light about without adding to it; so deep that the water has spread it all, there are none
+TEST(Sea, ItsSurfaceFocusesTheSunIntoCaustics)
+{
+  EXPECT_EQ(seaCaustic(seaOf(0.0f, 0.0f), float3(0.3f, -13.0f, 0.7f), float3(0, 1, 0)), 1.0f);
+  const Sea sea = seaOf(0.5f, 0.3f);
+  for(const float3& d : {float3(0, 1, 0), float3(0.5f, 0.3f, -0.8f)})
+  {
+    const Spot spot = spotOn(sea, d);
+    for(const float3& sun : {float3(0, 1, 0), float3(0.6f, 0.7f, 0.2f)})
+      for(const float depth : {0.5f, 2.0f, 6.0f})
+      {
+        const int n = 120;
+        double    mean = 0, lowest = 1e9, highest = 0;
+        for(int i = 0; i < n; ++i)
+          for(int j = 0; j < n; ++j)
+          {
+            const float3 p = spot.world(float3(16.0f * (float(i) + 0.37f) / float(n), -depth, 16.0f * (float(j) + 0.61f) / float(n)));
+            const float  c = seaCaustic(sea, p, spot.turned(normalize(sun)));
+            mean += c;
+            lowest  = std::min(lowest, double(c));
+            highest = std::max(highest, double(c));
+          }
+        mean /= double(n) * double(n);
+        EXPECT_NEAR(mean, 1.0, 0.06) << depth << " " << d.x << " " << sun.x;
+        EXPECT_LE(highest, GROUND_CAUSTIC_MAX + 1e-4) << depth;
+        EXPECT_GT(lowest, 0.2) << depth;
+        if(depth <= 2.0f)
+          EXPECT_GT(highest - lowest, 0.1) << depth;  // bands, not a flat floor
+      }
+  }
+  EXPECT_EQ(seaCaustic(sea, sea.top + float3(1.0f, -2000.0f, 3.0f), float3(0, 1, 0)), 1.0f);
+}
+
+// The sea's particles send on all the light they scatter, most of it forward, so a ray towards the
+// sun through the water gathers far more than one across it; and a ray loses to the water only what
+// does not go on the way it went
+TEST(Sea, ItsWaterScattersForward)
+{
+  double total = 0.0;
+  const int n  = 20000;
+  for(int i = 0; i < n; ++i)
+  {
+    const float c = -1.0f + 2.0f * (float(i) + 0.5f) / float(n);
+    total += seaParticlePhase(c) * 2.0 * 3.14159265 * (2.0 / n);
+  }
+  EXPECT_NEAR(total, 1.0, 5e-3);
+  EXPECT_GT(seaScattered(1.0f).y, 50.0f * seaScattered(0.0f).y);
+  EXPECT_GT(seaScattered(0.0f).y, seaScattered(-1.0f).y * 0.5f);
+  // sideways and back the molecules still count: blue more than red
+  EXPECT_GT(seaScattered(-1.0f).z, seaScattered(-1.0f).x);
+  EXPECT_GT(SEA_EXTINCTION.x, GROUND_WATER_EXTINCTION.x);
+  EXPECT_LT(SEA_EXTINCTION.z, GROUND_WATER_EXTINCTION.z + SEA_PARTICLES);
+  // seen from above, deep water still sends back the open sea's blue (DeepWaterSendsBackBlue), a
+  // little less of it
+  const float3 sent = float(3.14159265) * seaScattered(-1.0f) / (2.0f * SEA_EXTINCTION);
+  EXPECT_GT(sent.z, 0.025f);
+  EXPECT_LT(sent.z, 0.05f);
+  EXPECT_GT(sent.z, 3.0f * sent.y);
 }

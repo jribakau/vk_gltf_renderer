@@ -434,6 +434,18 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                         .help            = "Physical sky: that planet's centre in the scene (scene units): the eye's height is its own over it",
                         .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                        &m_resources.settings.worldCentre, Persist::eNo);
+  // ... and its sea (shaders/world_sea.h.slang)
+  const auto seaChanged = [this](const nvutils::ParameterBase* const) { resetFrame(); };
+  m_settings.add({.name = "worldSeaRadius", .help = "A planet's sea: the radius of its sphere (scene units). 0: none", .callbackSuccess = seaChanged},
+                 &m_resources.settings.worldSeaRadius, Persist::eNo, 0.0F, 2.0e7F);
+  m_settings.addVector({.name            = "worldSeaTop",
+                        .help            = "A planet's sea: the point of its still surface straight up from its centre (scene units)",
+                        .callbackSuccess = seaChanged},
+                       &m_resources.settings.worldSeaTop, Persist::eNo);
+  m_settings.add({.name = "worldSeaWaves", .help = "A planet's sea: its swell, 0 still to 1", .callbackSuccess = seaChanged},
+                 &m_resources.settings.worldSeaWaves, Persist::eNo, 0.0F, 1.0F);
+  m_settings.add({.name = "worldSeaRipples", .help = "A planet's sea: the ripples on it, 0 still to 1", .callbackSuccess = seaChanged},
+                 &m_resources.settings.worldSeaRipples, Persist::eNo, 0.0F, 1.0F);
 
   // The clouds over the physical sky. Each re-bakes the cloud image with the sky, through the same
   // preview-then-settle path; none of them touches the atmosphere's tables.
