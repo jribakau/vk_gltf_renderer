@@ -490,7 +490,26 @@ branch on `skyHasWorld`, the other branch being the code as it was):
   the origin the day side's sky light is the night's image scaled up, the right brightness in the
   wrong pattern. The sun's own light is right everywhere.
 
-What is not there yet: clouds, rain and haze on a planet; the night's glow seen from outside the air.
+**Other bodies.** A planet's sky holds up to four moons or planets of its own (the backdrop's
+`bodies`; `shaders/world_bodies.h.slang`, which C++ tests too). They are not meshes: a body is a
+sphere where it is, tested where a ray would otherwise see the sky, and for the camera and mirrors
+before whatever the ray hit, so a body stands before the planet when the camera is beyond it. It is
+lit by the sun from where the sun is, which gives it its phase, and by nothing where the planet or
+another body stands before the sun, which is an eclipse of it. It is seen through the air like the
+stars, so by day it is pale against the sky.
+
+The sun's light at a point is what the bodies leave of its disk there (`worldSunPast`: two disks'
+overlap, a penumbra as wide as the sun), so one that passes before the sun darkens the ground under
+it. The air knows nothing of the bodies, so under such a shadow the sky a ray sees, the air before
+what the camera hit and the sky's light on the ground are all scaled by the shade of the place they
+are asked from (`worldEclipseSky`), down to a twilight at totality. That is right for a shadow
+kilometres across; the edge of the shadow is not drawn in the air.
+
+The moon of the Light tab (`evalMoonDisk`) is still its own thing beside these: it has no place, only
+a direction. Bodies give the ground no light of their own.
+
+What is not there yet: clouds, rain and haze on a planet; the night's glow seen from outside the air;
+a body's light on the ground; orbits.
 
 ### What to set white balance to
 

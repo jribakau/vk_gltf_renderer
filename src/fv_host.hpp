@@ -260,7 +260,8 @@
 //                                                whole scene, written at once -> {ok}
 //   lighting.set    a merge patch of the Light tab (fv_lighting.hpp) -> the whole state
 //   backdrop.set    a merge patch of the backdrop, the land round the scene or the planet under it
-//                   (fv_backdrop_state.hpp; kind planet, radius, sea: fv_world.hpp, fv_host_world.cpp)
+//                   (fv_backdrop_state.hpp; kind planet, radius, sea: fv_world.hpp, fv_host_world.cpp;
+//                   its `bodies`, the moons and planets in its sky: shaders/world_bodies.h.slang)
 //                                                -> the whole state, as the "backdrop" topic has it
 //   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire, and a
@@ -334,7 +335,7 @@
 // tracks, landed, runs, dripped}, for a person); a prop's topics
 // are dropped when it leaves the scene. "lighting" is the lighting.set shape, plus read-only
 // env.name, env.size, env.loading. "backdrop" is the backdrop.set shape, plus read-only state (off,
-// missing, loading, ready) and plants. "pose/<prop>" carries `eyes` (whether the figure can look at
+// missing, loading, ready), plants and latitude (where on a planet the figures stand). "pose/<prop>" carries `eyes` (whether the figure can look at
 // the camera). "morphs/<prop>" is the visible channels ({label, group, value, min, max, weight,
 // order}, and what a file says of its dial when that has been read: path, region, kind, helper, rest
 // when it isn't 0, inert when it holds nothing; reach {cm, deg, morphs, bones, scales} a little after

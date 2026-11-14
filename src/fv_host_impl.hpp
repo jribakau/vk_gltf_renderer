@@ -1507,6 +1507,9 @@ struct FvHost::Impl
   bool backdropStands() const;
   // The renderer's parameters with the backdrop's over them (fv::backdrop::rendererParams)
   void backdropParams(Json& params) const;
+  // The bodies in the sky of a planet that stands, to the renderer (none otherwise): where a figure
+  // on the floor sees them (fv::backdrop::placedBodies)
+  void applyBodies();
   // The kit as read: each plant's file with its role, and the ground's maps by the backdrop's kind
   struct BackdropKit
   {

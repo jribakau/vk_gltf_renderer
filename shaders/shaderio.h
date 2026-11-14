@@ -61,6 +61,8 @@ NAMESPACE_SHADERIO_BEGIN()
 #define INSTANCE_MASK_SHADOW_2 0x40
 #define INSTANCE_MASK_SHADOWS 0x70
 #define INSTANCE_SHADOW_SLOTS 3
+// How many other bodies the sky of a planet in the scene holds (SceneFrameInfo::worldBodyPlace)
+#define WORLD_BODY_MAX 4
 
 
 // Indices into `texturesHdr[]` (eTexturesHdr binding).
@@ -503,6 +505,14 @@ struct SceneFrameInfo
   // has no place, as before). (Appended.)
   float3 worldCentre   = {0.0F, 0.0F, 0.0F};
   float  worldRadiusKm = 0.0F;
+  // The other bodies in that planet's sky (shaders/world_bodies.h.slang): each one's centre, world
+  // space, with its radius in .w; its colour with what it is made of in .w (WORLD_BODY_ROCK,
+  // WORLD_BODY_GAS); how many there are; and the sun's light on them against the sky's light (the
+  // sun's dimmer by day, and while the moon is the sky's light the sun's many times its). (Appended.)
+  float4 worldBodyPlace[WORLD_BODY_MAX];
+  float4 worldBodyLook[WORLD_BODY_MAX];
+  int    worldBodyCount = 0;
+  float  worldBodyLight = 1.0F;
 };
 
 enum PathtracerFlags

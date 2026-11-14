@@ -37,6 +37,8 @@
 #include <chrono>
 #include <optional>
 #include <span>
+
+#include "moon.hpp"
 #include <sstream>
 #include <utility>
 #include <vulkan/vulkan_core.h>
@@ -1238,6 +1240,18 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     {
       finfo.worldCentre   = m_resources.settings.worldCentre;
       finfo.worldRadiusKm = m_resources.settings.worldRadius;
+      // ... and the other bodies in its sky (shaders/world_bodies.h.slang). The sun lights them, with
+      // the dimmer the sky's sun has; while the moon is the sky's light everything is against its
+      // light, and the sun on a body is that many times brighter.
+      finfo.worldBodyCount = m_resources.settings.worldBodyCount;
+      for(size_t i = 0; i < WORLD_BODY_MAX; i++)
+      {
+        finfo.worldBodyPlace[i] = m_resources.settings.worldBodyPlace[i];
+        finfo.worldBodyLook[i]  = m_resources.settings.worldBodyLook[i];
+      }
+      finfo.worldBodyLight = m_resources.settings.skySunScale;
+      if(m_resources.settings.skyLightIsMoon)
+        finfo.worldBodyLight = float(1.0 / std::max(fv::moon::lightShare(fv::moon::phaseAngle(m_resources.settings.skySecondDirection, m_resources.sunDirection)), 1e-9));
     }
     finfo.landFadeFrom   = m_resources.settings.landFadeFrom;
     finfo.landFadeTo     = m_resources.settings.landFadeTo;

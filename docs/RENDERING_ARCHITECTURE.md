@@ -840,6 +840,10 @@ needs no kit.
   a ray sees from inside the air or from orbit, the sun's light at a hit, the sky's light there
   ([sky.md](sky.md#a-small-planet)). Clouds, rain and the haze are laid out on a level plane round
   the origin and are off while a planet stands.
+- **Other bodies** in its sky (`bodies`, up to four: radius, distance, where the figures see them,
+  colour, rock or gas) are the frame's, not the scene's: `FvHost::Impl::applyBodies` places them
+  from the figures' floor and hands them to `GltfRenderer::setWorldBodies`, and the shaders test
+  rays against them as spheres ([sky.md](sky.md#a-small-planet)). They make no planet again.
 - **The camera** (`FvHost::Impl::followPlanet`, `applyFly`): the free view's "up" is the scene's by
   the figures and the planet's own vertical away from them (`fv::world::viewUp`), so the horizon
   stays level on the far side; a flight's speed goes with its height over the ground

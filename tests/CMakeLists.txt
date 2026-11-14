@@ -172,6 +172,7 @@ set(TEST_SOURCES
     # The planet: a seed's every time, as much sea as asked for, level where the figures stand, quads that
     # cover the sphere once from any height, meshes whose edges meet
     test_fv_world.cpp
+    test_world_bodies.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world.cpp
     # Auto white balance: the light in a frame, and the white balance that makes it grey
     test_white_balance.cpp

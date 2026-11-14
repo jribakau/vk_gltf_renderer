@@ -152,7 +152,10 @@ namespace {
 // 77: light and shadow linking: a light's `litMode` and `shadowMode` (all, only, except) with `litProps`
 // and `shadowProps` (prop ids) in prop.set's `light` and the scene topic's. An older renderer takes the
 // command and links nothing.
-constexpr int kProtocolVersion = 77;
+// 78: a planet's `bodies` in backdrop.set and the backdrop topic (moons and planets in its sky,
+// fv_backdrop_state.hpp), and the topic's read-only `latitude`. An older renderer refuses the backdrop
+// that has them.
+constexpr int kProtocolVersion = 78;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

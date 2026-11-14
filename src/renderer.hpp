@@ -461,6 +461,7 @@ public:
   void hoverEntity(rs::EntityId entity) override;
   void setHoverObserver(std::function<void(const std::optional<InstancePick>& pick)> observer) override { m_hoverObserver = std::move(observer); }
   void pivotAt(glm::vec2 uv) override;
+  void setWorldBodies(std::span<const glm::vec4> place, std::span<const glm::vec4> look) override;
   void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> observer) override
   {
     m_pivotObserver = std::move(observer);

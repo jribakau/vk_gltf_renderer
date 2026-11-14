@@ -1008,6 +1008,52 @@ TEST(BackdropState, APlanetsRadiusAndSeaAreCheckedAndClamped)
   EXPECT_EQ(w.seed, 9);
 }
 
+// The bodies in a planet's sky: a list set whole, each checked, placed where the figures see them
+TEST(BackdropState, APlanetsBodiesAreCheckedAndPlaced)
+{
+  const B::Spec d;
+  ASSERT_EQ(d.bodies.size(), 1U);  // one moon to begin with
+  const B::Spec s = B::applyPatch({}, {{"kind", "planet"},
+                                       {"bodies", Json::array({Json{{"radius", 9000}, {"distance", 3}, {"azimuth", 450}, {"elevation", 120}, {"kind", "gas"}, {"color", "#ff8000"}},
+                                                               Json::object()})}});
+  ASSERT_EQ(s.bodies.size(), 2U);
+  EXPECT_EQ(s.bodies[0].radius, 5000.0);
+  EXPECT_EQ(s.bodies[0].distance, 10000.0);  // no nearer than twice its radius
+  EXPECT_EQ(s.bodies[0].azimuth, 90.0);
+  EXPECT_EQ(s.bodies[0].elevation, 90.0);
+  EXPECT_EQ(s.bodies[0].kind, "gas");
+  EXPECT_EQ(s.bodies[1], B::Body{});  // what a body leaves out is its default
+  // the topic replays as a patch; null is the default list; an empty list is no bodies
+  EXPECT_EQ(B::applyPatch({}, B::toJson(s)), s);
+  EXPECT_EQ(B::applyPatch(s, {{"bodies", nullptr}}).bodies, d.bodies);
+  EXPECT_TRUE(B::applyPatch(s, {{"bodies", Json::array()}}).bodies.empty());
+  EXPECT_EQ(B::applyPatch(s, {{"latitude", 12.0}}), s);  // the topic's own, ignored
+  // what is refused
+  EXPECT_THROW(B::applyPatch(s, {{"bodies", 3}}), std::invalid_argument);
+  EXPECT_THROW(B::applyPatch(s, {{"bodies", Json::array({Json{{"kind", "ice"}}})}}), std::invalid_argument);
+  EXPECT_THROW(B::applyPatch(s, {{"bodies", Json::array({Json{{"color", "orange"}}})}}), std::invalid_argument);
+  EXPECT_THROW(B::applyPatch(s, {{"bodies", Json::array({Json{{"size", 2}}})}}), std::invalid_argument);
+  EXPECT_THROW(B::applyPatch(s, {{"bodies", Json::array({Json::object(), Json::object(), Json::object(), Json::object(), Json::object()})}}),
+               std::invalid_argument);
+  // bodies make no planet again
+  EXPECT_TRUE(B::samePlanting(B::applyPatch(s, {{"bodies", Json::array()}}), s));
+  EXPECT_EQ(B::planetSpec(B::applyPatch(s, {{"bodies", Json::array()}})), B::planetSpec(s));
+
+  // placed: straight up from the figures' floor, and due east on the level
+  const B::Spec two = B::applyPatch({}, {{"kind", "planet"},
+                                         {"bodies", Json::array({Json{{"radius", 2}, {"distance", 100}, {"elevation", 90}},
+                                                                 Json{{"radius", 1}, {"distance", 50}, {"azimuth", 90}, {"elevation", 0}, {"kind", "gas"}}})}});
+  const std::vector<B::PlacedBody> placed = B::placedBodies(two, glm::dvec3(0.0, 1.5, 0.0));
+  ASSERT_EQ(placed.size(), 2U);
+  EXPECT_NEAR(glm::distance(placed[0].centre, glm::dvec3(0.0, 100001.5, 0.0)), 0.0, 0.5);
+  EXPECT_EQ(placed[0].radius, 2000.0);
+  EXPECT_EQ(placed[0].kind, 0);
+  EXPECT_NEAR(glm::distance(placed[1].centre, glm::dvec3(50000.0, 1.5, 0.0)), 0.0, 0.5);
+  EXPECT_EQ(placed[1].kind, 1);
+  // none round land that isn't a planet
+  EXPECT_TRUE(B::placedBodies(B::applyPatch(two, {{"kind", "meadow"}}), glm::dvec3(0.0)).empty());
+}
+
 // One that stands is the sky's planet: its radius, its air scaled to it, its centre; no land fades
 // into a sky's ground, the air counts once, and what is laid out on a plane is off
 TEST(BackdropState, APlanetThatStandsIsTheSkysPlanet)

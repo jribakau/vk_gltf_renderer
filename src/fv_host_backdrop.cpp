@@ -229,6 +229,10 @@ Json FvHost::Impl::backdropTopic() const
   Json t      = fv::backdrop::toJson(backdropSpec);
   t["state"]  = backdropState;
   t["plants"] = backdropPlants;
+  // where on a planet the figures stand: what the app's clock moves the sun by
+  t["latitude"] = nullptr;
+  if(planetBuilt && backdropState == "ready")
+    t["latitude"] = glm::degrees(std::asin(std::clamp(planetBuilt->world->frame.site.y, -1.0, 1.0)));
   return t;
 }
 
@@ -255,6 +259,18 @@ Json FvHost::Impl::backdropSet(const Json& patch)
 bool FvHost::Impl::backdropStands() const
 {
   return backdropState == "ready" && fv::backdrop::planted(backdropSpec);
+}
+
+void FvHost::Impl::applyBodies()
+{
+  std::vector<glm::vec4> place, look;
+  if(planetBuilt && backdropStands())
+    for(const fv::backdrop::PlacedBody& b : fv::backdrop::placedBodies(backdropSpec, glm::dvec3(0.0, double(groundHeight()), 0.0)))
+    {
+      place.emplace_back(glm::vec3(b.centre), float(b.radius));
+      look.emplace_back(b.color, float(b.kind));
+    }
+  renderer->setWorldBodies(place, look);
 }
 
 void FvHost::Impl::backdropParams(Json& params) const

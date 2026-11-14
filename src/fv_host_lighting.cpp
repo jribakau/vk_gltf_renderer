@@ -122,6 +122,7 @@ void FvHost::Impl::applyLighting(bool everything)
   Json params                     = fv::lighting::rendererParams(shown, envSize, cloudReading);
   params["infinitePlaneDistance"] = lighting.ground.autoHeight ? double(autoGround) : lighting.ground.height;
   backdropParams(params);
+  applyBodies();
   if(const auto still = appliedParams.find("ptFireflyClampStill"); still != appliedParams.end() && still->is_number())
     params["ptFireflyClampStill"] = fv::lighting::stillFireflyClamp(params["ptFireflyClampStill"].get<double>(), still->get<double>());
   Json changed                    = Json::object();

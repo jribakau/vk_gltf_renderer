@@ -1128,6 +1128,25 @@ void GltfRenderer::calibrateFireflyClamp()
 // Where aerial perspective stands the eye. See the declaration for why this is not the sky's
 // observer altitude.
 //
+void GltfRenderer::setWorldBodies(std::span<const glm::vec4> place, std::span<const glm::vec4> look)
+{
+  Settings&                             s = m_resources.settings;
+  std::array<glm::vec4, WORLD_BODY_MAX> places{};
+  std::array<glm::vec4, WORLD_BODY_MAX> looks{};
+  const int                             count = int(std::min({place.size(), look.size(), size_t(WORLD_BODY_MAX)}));
+  for(int i = 0; i < count; i++)
+  {
+    places[size_t(i)] = place[size_t(i)];
+    looks[size_t(i)]  = look[size_t(i)];
+  }
+  if(count == s.worldBodyCount && places == s.worldBodyPlace && looks == s.worldBodyLook)
+    return;
+  s.worldBodyPlace = places;
+  s.worldBodyLook  = looks;
+  s.worldBodyCount = count;
+  resetFrame(/*sceneChanged=*/false);  // what the camera sees of the sky, and the sun past them
+}
+
 float GltfRenderer::skyObserverAltitudeKm() const
 {
   const Settings& s = m_resources.settings;

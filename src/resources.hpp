@@ -24,6 +24,7 @@
 
 #pragma once
 #include <algorithm>
+#include <array>
 #include <bitset>
 #include <cstdint>
 #include <memory>
@@ -253,6 +254,12 @@ struct Settings
   float     worldRadius   = 0.0f;
   float     worldAirScale = 1.0f;
   glm::vec3 worldCentre   = {0.0f, 0.0f, 0.0f};
+  // The other bodies in that planet's sky (the backdrop's `bodies`; shaders/world_bodies.h.slang), as
+  // the frame carries them: each one's centre in the scene with its radius, and its colour with what
+  // it is made of. The host's to say (GltfRenderer::setWorldBodies), and nothing a file keeps.
+  std::array<glm::vec4, WORLD_BODY_MAX> worldBodyPlace{};
+  std::array<glm::vec4, WORLD_BODY_MAX> worldBodyLook{};
+  int                                   worldBodyCount = 0;
   // Applying a preset overwrites every field above. It is an action rather than a mode: nothing
   // reads it back, and the UI works out which preset (if any) the current values match.
   int atmoPreset = 0;  // AtmospherePresetIndex

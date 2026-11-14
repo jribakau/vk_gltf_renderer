@@ -47,6 +47,21 @@
 
 namespace fv::backdrop {
 
+// Another body in a planet's sky, a moon or a planet of its own: a sphere where it is, lit by the sun
+// (shaders/world_bodies.h.slang). It stands where the figures see it, and stays there: nothing orbits yet.
+struct Body
+{
+  double      radius    = 3.5;        // km
+  double      distance  = 150.0;      // km from the figures
+  double      azimuth   = -60.0;      // where the figures see it, degrees, as the sun's (-180 to 180)
+  double      elevation = 30.0;
+  std::string color     = "#9a958e";  // what it reflects
+  std::string kind      = "rock";     // rock (plains and highlands) | gas (bands)
+  bool        operator==(const Body&) const = default;
+};
+// How many bodies a planet's sky holds (the frame's WORLD_BODY_MAX)
+inline constexpr size_t kMostBodies = 4;
+
 struct Spec
 {
   std::string kind    = "none";  // none | meadow | forest | planet
@@ -57,6 +72,8 @@ struct Spec
   // A planet's: its radius, km, and the share of its surface under the sea
   double radius = 20.0;
   double sea    = 0.55;
+  // ... and the other bodies in its sky: one moon to begin with. Nothing is made again by them.
+  std::vector<Body> bodies = {Body{}};
   // How many metres of air a metre of the land counts for between the eye and what it sees (the
   // physical sky's aerial perspective): 1 as it is. The land is some hundreds of metres to its
   // horizon, and through that much clear air a far wood is as sharp and dark as a near one; a
@@ -80,6 +97,7 @@ inline bool samePlanting(Spec a, const Spec& b)
   a.air      = b.air;
   a.wind     = b.wind;
   a.windFrom = b.windFrom;
+  a.bodies   = b.bodies;
   return a == b;
 }
 

@@ -31,6 +31,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -155,6 +156,10 @@ public:
   // or two later, `recentred` false. A double-click's recentring on a point (pickAt's `center`) says
   // where it went too, `recentred` true (none: it framed the whole scene).
   virtual void pivotAt(glm::vec2 /*uv*/) {}
+  // The other bodies in the sky of a planet that stands in the scene (fv::backdrop::placedBodies):
+  // each one's centre in the scene with its radius in .w, metres, and its linear colour with what it
+  // is made of in .w. As many of `place` as of `look`; none clears them.
+  virtual void setWorldBodies(std::span<const glm::vec4> /*place*/, std::span<const glm::vec4> /*look*/) {}
   virtual void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> /*observer*/) {}
   // The pixel readout: what is at a normalized viewport position (origin top-left) and how bright it
   // is, read a frame or two later and again while the still refines (a few times a second), so it

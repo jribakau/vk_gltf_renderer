@@ -82,6 +82,7 @@ static bool doDebug = false;
 #include "aperture.h.slang"
 #include "sky_bruneton_radiance.h.slang"
 #include "sky_world.h.slang"
+#include "world_bodies.h.slang"
 #include "sky_clouds.h.slang"
 #include "sky_clouds_air.h.slang"
 #include "sky_clouds_io.h.slang"
@@ -421,10 +422,82 @@ float3 worldSunSpaceRadiance()
   return g_atmosphere.solarIrradiance / (M_PI * g_atmosphere.sunAngularRadius * g_atmosphere.sunAngularRadius) * SUN_RADIANCE_TO_LUMINANCE;
 }
 
-// What the air leaves of the sky's light (the sun's, or the moon's) on its way to `worldPos`.
+// The nearest of the planet's other bodies (world_bodies.h.slang) a ray meets before `tMax`: which
+// (-1: none) and how far along it.
+int worldBodyAlong(float3 origin, float3 dir, float tMax, SceneFrameInfo* frameInfo, out float t)
+{
+  t       = tMax;
+  int hit = -1;
+  for(int i = 0; i < min(frameInfo->worldBodyCount, WORLD_BODY_MAX); ++i)
+  {
+    const float4 place = frameInfo->worldBodyPlace[i];
+    const float  d     = worldBodyHit(origin, dir, place.xyz, place.w);
+    if(d > 0.0F && d < t)
+    {
+      t   = d;
+      hit = i;
+    }
+  }
+  return hit;
+}
+
+// What those bodies leave of the sun's disk at `worldPos` (all but `but`, a body's own): one that
+// stands before the sun darkens the ground under it, its edge soft by the disk's width.
+float worldBodiesSunShare(float3 worldPos, float3 toSun, int but, SceneFrameInfo* frameInfo)
+{
+  float share = 1.0F;
+  for(int i = 0; i < min(frameInfo->worldBodyCount, WORLD_BODY_MAX); ++i)
+  {
+    if(i == but)
+      continue;
+    const float4 place = frameInfo->worldBodyPlace[i];
+    share *= worldSunPast(worldPos, place.xyz, place.w, toSun, frameInfo->sunDisk->angularRadius);
+  }
+  return share;
+}
+
+// What an eclipse leaves of the sky at `worldPos`: the air over a place a body shades is not lit
+// either, so the sky seen from there, the air before what the camera hit and the sky's light on the
+// ground go down with the sun, to the twilight that comes in from outside the shadow
+// (WORLD_ECLIPSE_SKY of the day's). The sky's tables know nothing of the bodies: this is the shade of
+// the place itself, taken for all the air seen from it, which a shadow kilometres across is.
+static const float WORLD_ECLIPSE_SKY = 0.003F;
+
+float worldEclipseSky(float3 worldPos, SceneFrameInfo* frameInfo)
+{
+  if(frameInfo->worldBodyCount <= 0)
+    return 1.0F;
+  return max(worldBodiesSunShare(worldPos, frameInfo->sunDirection, -1, frameInfo), WORLD_ECLIPSE_SKY);
+}
+
+// What the air leaves of the sky's light (the sun's, or the moon's) on its way to `worldPos`, and the
+// planet's other bodies of it.
 float3 worldSunThroughAt(float3 worldPos, SceneFrameInfo* frameInfo)
 {
-  return worldSunThrough(g_atmosphere, g_transmittance, skyWorldPoint(frameInfo, worldPos), frameInfo->sunDirection);
+  float3 through = worldSunThrough(g_atmosphere, g_transmittance, skyWorldPoint(frameInfo, worldPos), frameInfo->sunDirection);
+  if(frameInfo->worldBodyCount > 0)
+    through *= worldBodiesSunShare(worldPos, frameInfo->sunDirection, -1, frameInfo);
+  return through;
+}
+
+// The light of body `i` toward a ray that met it `t` along: its colour and markings, lit by the sun
+// from where the sun is (its phase), dark where the planet or another body stands before the sun (an
+// eclipse). Before `envIntensity`, in the sky's units.
+float3 worldBodyRadiance(int i, float3 origin, float3 dir, float t, SceneFrameInfo* frameInfo)
+{
+  const float4 place = frameInfo->worldBodyPlace[i];
+  const float4 look  = frameInfo->worldBodyLook[i];
+  const float3 point = origin + dir * t;
+  const float3 n     = normalize(point - place.xyz);
+  // the sun, which is the other body's direction once the moon is the sky's light
+  float3 toSun = frameInfo->sunDirection;
+  if(frameInfo->skyLightIsMoon != 0)
+    toSun = frameInfo->skySecondDirection;
+  const float  angularRadius = frameInfo->sunDisk->angularRadius;
+  const float3 sunlight      = worldSunSpaceRadiance() * (M_TWO_PI * (1.0F - cos(angularRadius)) * frameInfo->worldBodyLight);
+  const float  lit = worldSunPast(point, frameInfo->worldCentre, frameInfo->worldRadiusKm * 1000.0F, toSun, angularRadius)
+                     * worldBodiesSunShare(point, toSun, i, frameInfo);
+  return look.xyz * (worldBodyMarkings(n, int(look.w), float(i) + 1.0F) * worldBodyShade(n, -dir, toSun) * lit) * sunlight;
 }
 
 // The sky's sun as it lights `worldPos`: makeSkySunLight()'s colour through the air over the point
@@ -447,8 +520,10 @@ float3 evalWorldLightDisk(float3 origin, float3 worldDir, SceneFrameInfo* frameI
 // The sky's light at `worldPos`, from the lighting field baked at the origin (worldSkyLight).
 WorldSkyLight worldSkyLightAt(float3 worldPos, SceneFrameInfo* frameInfo)
 {
-  return worldSkyLight(g_atmosphere, g_irradiance, skyWorldPoint(frameInfo, worldPos), frameInfo->sunDisk->observerRadius,
-                       frameInfo->sunDirection, frameInfo->skySecondDirection, frameInfo->skySecondScale);
+  WorldSkyLight sky = worldSkyLight(g_atmosphere, g_irradiance, skyWorldPoint(frameInfo, worldPos), frameInfo->sunDisk->observerRadius,
+                                    frameInfo->sunDirection, frameInfo->skySecondDirection, frameInfo->skySecondScale);
+  sky.scale *= worldEclipseSky(worldPos, frameInfo);
+  return sky;
 }
 
 // What a ray from `origin` sees of the physical sky, before `envIntensity`: evalPhysicalSky from where
@@ -472,6 +547,9 @@ float3 evalWorldSky(float3 origin, float3 worldDir, SceneFrameInfo* frameInfo, b
       toward = frameInfo->skySecondDirection;
       scale  = frameInfo->skySecondScale;
     }
+    // (the sky's light's own under an eclipse, where a body shades the place)
+    if(i == 0)
+      scale = worldEclipseSky(origin, frameInfo);
     sky += scale * evalWorldSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, eye, worldDir, toward, leaves);
     if(i == 0)
       through = leaves;
@@ -486,6 +564,24 @@ float3 evalWorldSky(float3 origin, float3 worldDir, SceneFrameInfo* frameInfo, b
   }
   if(!bodies)
     return sky;
+  // One of the planet's other bodies along the ray: what is seen in place of the stars and the disks,
+  // through the air if the ray is in it by then. One nearer than the air (a camera beyond it, looking
+  // back at the planet) hides the air too.
+  if(frameInfo->worldBodyCount > 0)
+  {
+    float     tBody = INFINITE;
+    const int body  = worldBodyAlong(origin, worldDir, INFINITE, frameInfo, tBody);
+    if(body >= 0)
+    {
+      const float3      light = worldBodyRadiance(body, origin, worldDir, tBody, frameInfo);
+      const WorldAirRay air   = worldAirRay(g_atmosphere, eye, worldDir);
+      if(g_skyStars.y <= 0.0F)
+        g_skyStars = float2(0.0F, max(luminance(sky + light), 1e-30F));
+      if(air.inAir && tBody * 0.001F < air.skipped)
+        return light;
+      return sky + through * light;
+    }
+  }
   const float3 stars = evalStars(worldDir, frameInfo, true, through);
   if(g_skyStars.y <= 0.0F)
     g_skyStars = float2(luminance(stars), max(luminance(sky), 1e-30F));
@@ -971,6 +1067,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       PathStepResult volumeStep = processVolumeSegment(raytracer, payload.hitT, ray, pt, seed, freeFlight);
       if(volumeStep != PathStepResult.eOutOfVolume)
         return volumeStep;
+    }
+
+    // One of a planet's other bodies (world_bodies.h.slang) nearer than what the ray hit: the camera
+    // and a mirror see it there, as they see it in the sky, so the ray is one that met nothing.
+    if(payload.hitT != INFINITE && pt.lastSamplePdf == DIRAC && frameInfo->worldBodyCount > 0 && skyHasWorld(frameInfo))
+    {
+      float tBody = INFINITE;
+      if(worldBodyAlong(ray.Origin, ray.Direction, payload.hitT, frameInfo, tBody) >= 0)
+        payload.hitT = INFINITE;
     }
 
     //-----------------------------------------------------------------------
@@ -2750,6 +2855,15 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     AerialMarch  march =
         evalAerialPerspective(pt.firstHitPos, eye, pushConst.frameInfo, g_atmosphere, g_transmittance, g_scattering,
                               g_singleMie, g_irradiance, u);
+    // under an eclipse on a planet the air is in the body's shade with the place (worldEclipseSky)
+    if(pushConst.frameInfo->worldBodyCount > 0 && skyHasWorld(pushConst.frameInfo))
+    {
+      const float left = worldEclipseSky(eye, pushConst.frameInfo);
+      march.inScatter *= left;
+      march.sunInScatter *= left;
+      march.sunEstimate *= left;
+      march.glow *= left;
+    }
 
     // The atmosphere lights every point of the segment with the sun; the scene may not. One
     // shadow ray from a point picked in proportion to the sun's share turns that share into an

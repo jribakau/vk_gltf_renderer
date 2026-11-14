@@ -13,10 +13,14 @@
 //   flat), air (1 to 20: how many metres of air a metre of its land counts for, the distance's haze
 //   under the physical sky), mature (grown firs among the near woods), wind (km/h, 0 to 100, 0 still:
 //   the trees, saplings and bushes sway in it) and windFrom (degrees, an azimuth as the sun's); a
-//   planet's radius (km, 2 to 100) and sea (the share of its surface under water, 0 to 0.9).
+//   planet's radius (km, 2 to 100) and sea (the share of its surface under water, 0 to 0.9), and
+//   the bodies in its sky (protocol 78): `bodies`, up to four of {radius km, distance km from the
+//   figures, azimuth and elevation (degrees, where the figures see it, as the sun's), color "#rrggbb",
+//   kind rock|gas}. The list is set whole; a key a body leaves out is its default.
 //
 // Read-only in the topic, the host's: state (off; missing: no kit where settings.apply's backdropKit
-// says; loading; ready) and plants (how many stand).
+// says; loading; ready), plants (how many stand) and latitude (degrees north, where the figures stand
+// on a planet that stands; null otherwise).
 //
 // Until protocol 70 this was the lighting's `backdrop` section, set with lighting.set.
 //-------------------------------------------------------------------------------------------------------
@@ -31,8 +35,8 @@ Json toJson(const Spec& s);
 
 // `s` with an RFC 7386 merge patch applied. A null resets that key to its default. Unknown keys, wrong
 // types and bad enum values throw std::invalid_argument and leave nothing applied; numbers are clamped
-// to their ranges. The topic's read-only keys (state, plants) are accepted and ignored, so a saved
-// topic object replays as a patch.
+// to their ranges. The topic's read-only keys (state, plants, latitude) are accepted and ignored, so
+// a saved topic object replays as a patch.
 Spec applyPatch(const Spec& s, const Json& patch);
 
 // The registered renderer parameters the backdrop sets, by name, over the lighting's
@@ -50,5 +54,17 @@ Json rendererParams(const Spec& s, bool stands, const glm::vec3& landAlbedo, con
 
 // The planet a spec asks for
 fv::world::Spec planetSpec(const Spec& s);
+
+// A body as the renderer draws it: its centre in the scene and its radius, metres; its colour, linear;
+// what it is made of (WORLD_BODY_ROCK, WORLD_BODY_GAS in shaders/world_bodies.h.slang)
+struct PlacedBody
+{
+  glm::dvec3 centre{0.0};
+  double     radius = 0.0;
+  glm::vec3  color{0.5F};
+  int        kind = 0;
+};
+// A spec's bodies, standing where a figure at `origin` sees them. None unless it is a planet's.
+std::vector<PlacedBody> placedBodies(const Spec& s, const glm::dvec3& origin);
 
 }  // namespace fv::backdrop
