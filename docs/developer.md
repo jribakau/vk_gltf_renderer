@@ -726,10 +726,20 @@ shaded point through the film to the light is found by Newton's method on the fi
 ray query sees alone (`INSTANCE_MASK_TEAR_FILM`, `EyeFilmMesh`); the sample then takes the direction
 the light arrives by, the light scaled by how much the film concentrates it (the beam's cross-section
 over the patch it lands on, so a flat film changes nothing), and a shadow ray from where it came
-through. Where no ray comes through, the sample gives nothing. Environment and emitter samples, and
-BSDF rays leaving the eye, still go straight. The maths is shared with
+through. Where no ray comes through, the sample gives nothing; nor does it where the film is more
+than 6 mm above the point (`EYE_FILM_MAX_DEPTH`): that is the eye's inside seen through the pupil, where
+the film would focus a lamp on the camera's axis and turn the pupil grey under a flash. Environment and
+emitter samples, and BSDF rays leaving the eye, still go straight. The maths is shared with
 `tests/test_eye_caustic.cpp`, which holds it to a beam traced through a sphere's cap from the light's
 side.
+
+**The eye's spread.** The white of an eye, and a Genesis 9 iris in the same surface, have a scatter
+distance and no volume (`kScleraScatterDistance`): a straight light sample there looks for its shadow
+from a point moved in the tangent plane by an exponential radius of that distance, so lash shadows
+soften ([`shaders/skin_spread.h.slang`](../shaders/skin_spread.h.slang), `surfaceSpreadOffset`). The
+point is lifted off the plane by a tenth of its radius. Without the lift a surface that curves up to
+its own tangent plane shadows itself: the iris is a shallow bowl, and it lost a third of its direct
+light (half at its rim) that way.
 
 ### `FV_materials_pane`: thin-walled glass that is a pane
 

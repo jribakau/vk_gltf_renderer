@@ -14,8 +14,10 @@
 // straight one) toward `light` (from the shaded point: a direction, w 0, or a place, w 1). `up`: the
 // shaded surface's normal, unit. The walk's first ray goes along it and says whether there is a film
 // over the point at all, and at least `minDepth` above it (EyeCaustic::film); it is also what is tried
-// where the start finds no film (a light under the surface).
-EyeCaustic eyeCausticSolve(EYE_FILM film, float3 start, float3 up, float4 light, float minDepth)
+// where the start finds no film (a light under the surface). A film further than `maxDepth` is over no
+// chamber but over the eye's inside, seen through the pupil: none of the light comes to it (a film, and
+// not valid), as an eye's inside sends back none of what its pupil lets in but toward the light itself.
+EyeCaustic eyeCausticSolve(EYE_FILM film, float3 start, float3 up, float4 light, float minDepth, float maxDepth)
 {
   EyeCaustic c      = eyeNoCaustic();
   float3     w      = up;
@@ -28,6 +30,8 @@ EyeCaustic eyeCausticSolve(EYE_FILM film, float3 start, float3 up, float4 light,
       if(!centre.met || centre.distance < minDepth)
         return c;
       c.film = true;
+      if(centre.distance > maxDepth)
+        return c;
       w      = start;
       continue;
     }

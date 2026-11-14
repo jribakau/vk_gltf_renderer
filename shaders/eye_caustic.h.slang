@@ -220,10 +220,12 @@ struct EyeCaustic
   float3 toLight;  // the light's direction there, unit: the shadow ray's
   float3 normal;   // the film's there, unit, facing out of the chamber
   float  focus;    // how much the film concentrates it, against the light square to its arrival
-  // The point lies in a chamber, deep enough under its film for the film to move light (not the white
-  // of the eye, which the film lies on): else the light sample stands as it was, straight
+  // The point lies under a film, deep enough for the film to move light (not the white of the eye,
+  // which the film lies on): else the light sample stands as it was, straight
   bool film;
-  bool valid;  // with `film`: the ray was found; else the light does not reach the point through the film
+  // with `film`: the ray was found; else the light does not reach the point through the film, or the
+  // point is deeper than a chamber is (the eye's inside behind the pupil), which takes none
+  bool valid;
 };
 
 EyeCaustic eyeNoCaustic()

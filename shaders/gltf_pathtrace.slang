@@ -814,6 +814,11 @@ static const float EYE_FILM_REACH = 0.03F;  // metres: no film is further from i
 // A film nearer than this lies on the surface (the white of the eye): it focuses nothing there, and
 // the walk's steps would be finer than a position's last digits
 static const float EYE_FILM_MIN_DEPTH = 2.0e-4F;
+// A film further than this is not over a chamber but over the eye's inside, seen through the pupil (a
+// Genesis 9 pupil is a hole in the iris, a dark bowl 21 mm under the film behind it; an iris lies 1 to
+// 2.5 mm under it). The film would focus a lamp on the camera's axis there, as an eye does on its
+// retina, and the pupil turned grey under a camera flash: a lamp's light sample there gives nothing.
+static const float EYE_FILM_MAX_DEPTH = 6.0e-3F;
 struct EyeFilmMesh
 {
   float3 point;  // the shaded point
@@ -2236,7 +2241,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       film.point = hit.pos;
       const bool   lamp  = directLight.distance < INFINITE;
       const float4 light = lamp ? float4(directLight.direction * directLight.distance, 1.0F) : float4(directLight.direction, 0.0F);
-      const EyeCaustic caustic = eyeCausticSolve(film, directLight.direction, hit.geonrm, light, EYE_FILM_MIN_DEPTH);
+      const EyeCaustic caustic = eyeCausticSolve(film, directLight.direction, hit.geonrm, light, EYE_FILM_MIN_DEPTH, EYE_FILM_MAX_DEPTH);
       if(caustic.film)
       {
         if(caustic.valid && !eyeChamberBlocked(safeOffsetRay(hit.pos, hit.geonrm, hit.offsetDistance), caustic.exit))
@@ -2610,7 +2615,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // this one by an exponential radial profile of mean d (the diffusion length, averaged over
       // the channels), in the tangent plane. Thin shadows, the lashes' on the eye, blur as they do
       // in tissue; no walk, so nothing is lost in an eyeball that is not one closed medium. The tail
-      // is cut at 2.5 d, short of most lid margins. The material's thickness, not the lobe's: a walk's
+      // is cut at 2.5 d, short of most lid margins (skin_spread.h.slang). The material's thickness, not the lobe's: a walk's
       // diffuse exit shades with a thin default lobe, and measured skin's exits took the offset too, a
       // centimetre at twice the scatter distance. In a hollow (the throat, between the breasts, under the
       // collarbones) the tangent plane runs into the body, the shadow ray started inside it, and the
@@ -2620,12 +2625,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         const float3 dist = materials[materialIndex].scatterDistance;
         const float  d    = (dist.x + dist.y + dist.z) / 3.0F;
-        const float  r    = min(-d * log(max(1.0F - rand(seed), 1e-6F)), 2.5F * d);
+        const float  r    = surfaceSpreadRadius(d, rand(seed));
         const float  phi  = rand(seed) * M_TWO_PI;
         // a frame of its own: hit.bitangent carries the tangent's handedness, 0 without tangents
         float3 t, b;
         orthonormalBasis(hit.geonrm, t, b);
-        shadowOffsetBase += r * (cos(phi) * t + sin(phi) * b);
+        // (lifted off the plane: an iris is a shallow bowl, and its own surface shadowed a third of these)
+        shadowOffsetBase += surfaceSpreadOffset(shadowOffsetDir, t, b, r, phi);
       }
 #endif
       bounce.shadowRayPos      = safeOffsetRay(shadowOffsetBase, shadowOffsetDir, hit.offsetDistance);

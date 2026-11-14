@@ -527,3 +527,67 @@ TEST(SkinViewAlbedo, TheSoftenedShareSeesTheViewAtTheSmoothNormal)
   for(int c = 0; c < 3; c++)
     EXPECT_LT(std::abs(a[c] - b[c]), 0.35f * std::abs(a0[c] - b0[c])) << c;
 }
+
+// The white of an eye's spread (a scatter distance with no volume): the radius is an exponential of the
+// scatter distance's mean, cut at 2.5 of it
+TEST(SurfaceSpread, ItsRadiusIsAnExponentialCutShort)
+{
+  const float d = 0.8f;
+  double      sum = 0;
+  const int   n   = 100000;
+  for(int i = 0; i < n; i++)
+  {
+    const float r = surfaceSpreadRadius(d, (float(i) + 0.5f) / float(n));
+    EXPECT_GE(r, 0.0f);
+    EXPECT_LE(r, SURFACE_SPREAD_CUT * d);
+    sum += r;
+  }
+  // the mean of an exponential cut at c d: d (1 - e^-c)
+  EXPECT_NEAR(sum / n, d * (1.0 - std::exp(-double(SURFACE_SPREAD_CUT))), 0.005);
+}
+
+// ...and its point clears a surface that curves up to meet its own tangent plane. A Genesis 9 iris is a
+// shallow bowl, a cone that rises up to 0.07 mm a millimetre toward its rim: points moved in the tangent
+// plane alone lie under it wherever they go round the cone, their shadow rays met the iris itself, and
+// the eye's direct light fell by a third (measured on the mesh 11-14). Lifted, none does; nor inside a
+// sphere of the eyeball's radius (12 mm), nor on a flat or an outward-curved surface.
+TEST(SurfaceSpread, ItsPointClearsABowl)
+{
+  const float d = 0.8f;  // millimetres: the sclera's scatter distance
+  std::mt19937                          rng(11);
+  std::uniform_real_distribution<float> u(0.0f, 1.0f);
+  // height of a point over each surface (+ above it, on the side of the normal)
+  const float slope = 0.07f, rho0 = 2.3f;
+  const auto  cone  = [&](float3 q) { return (q.z - slope * (std::sqrt(q.x * q.x + q.y * q.y) - rho0)) / std::sqrt(1.0f + slope * slope); };
+  const float R     = 12.0f;
+  const auto  ball  = [&](float3 q) { return R - length(q - float3(0.0f, 0.0f, R)); };  // inside a sphere, its floor at the origin
+  const auto  dome  = [&](float3 q) { return length(q - float3(0.0f, 0.0f, -R)) - R; };  // outside one, its top at the origin
+
+  const float3 coneAt(rho0, 0.0f, 0.0f);
+  const float3 coneN = normalize(float3(-slope, 0.0f, 1.0f));
+  const float3 coneT(0.0f, 1.0f, 0.0f);
+  const float3 coneB = cross(coneN, coneT);
+  const float3 flatN(0.0f, 0.0f, 1.0f), flatT(1.0f, 0.0f, 0.0f), flatB(0.0f, 1.0f, 0.0f);
+
+  int buriedInPlane = 0;
+  const int n = 20000;
+  for(int i = 0; i < n; i++)
+  {
+    const float r   = surfaceSpreadRadius(d, u(rng));
+    const float phi = u(rng) * 6.2831853f;
+    if(r < 1e-3f)
+      continue;
+    const float3 onCone = coneAt + surfaceSpreadOffset(coneN, coneT, coneB, r, phi);
+    EXPECT_GT(cone(onCone), 0.02f * r) << r << " " << phi;
+    // the same point without its lift, as it was
+    if(cone(onCone - coneN * (SURFACE_SPREAD_LIFT * r)) < 0.0f)
+      buriedInPlane++;
+    const float3 off = surfaceSpreadOffset(flatN, flatT, flatB, r, phi);
+    EXPECT_GT(ball(off), 0.0f) << r;
+    EXPECT_GT(dome(off), 0.0f) << r;
+    // no further from the plane than a tenth of how far out it is
+    EXPECT_NEAR(off.z, SURFACE_SPREAD_LIFT * r, 1e-5f);
+    EXPECT_NEAR(std::sqrt(off.x * off.x + off.y * off.y), r, 1e-4f);
+  }
+  EXPECT_GT(buriedInPlane, n / 4);
+}

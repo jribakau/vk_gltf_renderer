@@ -21,7 +21,8 @@ using namespace shaderio;
 
 namespace {
 
-constexpr float kIor = 1.336f;  // the reduced eye's chamber (figure/materials/lower.hpp kEyeChamberIor)
+constexpr float kIor  = 1.336f;  // the reduced eye's chamber (figure/materials/lower.hpp kEyeChamberIor)
+constexpr float kDeep = 1.0e9f;  // no largest depth: every point under the film is in its chamber
 
 // A film that is a sphere's cap over the plane z = 0, its apex `apex` above it: Genesis 9's tear film
 // is 8.3 across its radius and 2.6 above a near-flat iris of radius 6.2 (millimetres here). Flat with
@@ -80,7 +81,7 @@ float solved(const CapFilm& shape, float3 p, float3 toLight)
 {
   CapFilm film = shape;
   film.point   = p;
-  const EyeCaustic c = eyeCausticSolve(film, toLight, float3(0.0f, 0.0f, 1.0f), float4(toLight, 0.0f), 0.0f);
+  const EyeCaustic c = eyeCausticSolve(film, toLight, float3(0.0f, 0.0f, 1.0f), float4(toLight, 0.0f), 0.0f, kDeep);
   return c.valid ? c.focus * std::max(c.arrival.z, 0.0f) : 0.0f;
 }
 
@@ -147,7 +148,7 @@ TEST(EyeCaustic, AFlatFilmBendsTheRayAndMovesNoLight)
   for(float degrees : {0.0f, 20.0f, 45.0f, 70.0f, 85.0f})
   {
     const float3     toLight = lightFrom(degrees);
-    const EyeCaustic c       = eyeCausticSolve(flat, toLight, float3(0.0f, 0.0f, 1.0f), float4(toLight, 0.0f), 0.0f);
+    const EyeCaustic c       = eyeCausticSolve(flat, toLight, float3(0.0f, 0.0f, 1.0f), float4(toLight, 0.0f), 0.0f, kDeep);
     ASSERT_TRUE(c.valid) << degrees;
     // sin(out) = n sin(in)
     const float sinIn = std::sqrt(std::max(1.0f - c.arrival.z * c.arrival.z, 0.0f));
@@ -160,16 +161,16 @@ TEST(EyeCaustic, AFlatFilmBendsTheRayAndMovesNoLight)
   }
   // from below the film's plane no ray comes through it
   const float3 under = lightFrom(100.0f);
-  const EyeCaustic dark = eyeCausticSolve(flat, under, float3(0.0f, 0.0f, 1.0f), float4(under, 0.0f), 0.0f);
+  const EyeCaustic dark = eyeCausticSolve(flat, under, float3(0.0f, 0.0f, 1.0f), float4(under, 0.0f), 0.0f, kDeep);
   EXPECT_TRUE(dark.film);
   EXPECT_FALSE(dark.valid);
   // nor is there a film to speak of where it lies on the surface (the white of the eye), or none at all:
   // the light sample stands as it was
   const float3 above = lightFrom(20.0f);
-  EXPECT_FALSE(eyeCausticSolve(flat, above, float3(0.0f, 0.0f, 1.0f), float4(above, 0.0f), 3.0f).film);
+  EXPECT_FALSE(eyeCausticSolve(flat, above, float3(0.0f, 0.0f, 1.0f), float4(above, 0.0f), 3.0f, kDeep).film);
   CapFilm none = kEye;
   none.point   = float3(0.0f, 0.0f, 30.0f);  // outside the sphere
-  EXPECT_FALSE(eyeCausticSolve(none, above, float3(0.0f, 0.0f, 1.0f), float4(above, 0.0f), 0.0f).film);
+  EXPECT_FALSE(eyeCausticSolve(none, above, float3(0.0f, 0.0f, 1.0f), float4(above, 0.0f), 0.0f, kDeep).film);
 }
 
 // On its axis a curved film is a lens: one refracting surface of radius R focuses at n R / (n - 1)
@@ -187,6 +188,40 @@ TEST(EyeCaustic, ACurvedFilmFocusesAsALensOfItsRadius)
   }
 }
 
+// The eye's inside behind the pupil (Genesis 9's is a hole in the iris: a dark bowl 21 mm under the film)
+// is not in the chamber. The film would focus a lamp on the camera's axis there several times over, and
+// the pupil turned grey under a camera flash: past the largest depth a lamp's sample gives nothing.
+TEST(EyeCaustic, APointDeepBehindThePupilTakesNoLampLight)
+{
+  const float3 up(0.0f, 0.0f, 1.0f);
+  const float  maxDepth = 6.0f;  // millimetres here (EYE_FILM_MAX_DEPTH, metres)
+  for(float degrees : {0.0f, 3.0f})
+  {
+    const float3 toLight = lightFrom(degrees);
+    CapFilm      film    = kEye;
+    // what it guards against: on the axis the film gathers the light as its lens does, and more the deeper
+    film.point = float3(0.0f, 0.0f, -6.0f);
+    const EyeCaustic focused = eyeCausticSolve(film, toLight, up, float4(toLight, 0.0f), 0.0f, kDeep);
+    ASSERT_TRUE(focused.film && focused.valid) << degrees;
+    EXPECT_GT(focused.focus, 1.5f) << degrees;
+    // with the limit the same point is under a film and takes none of the light, as does the back of an
+    // eye, 21 under it (a flat film here: the cap's sphere is smaller than an eyeball)
+    const EyeCaustic deep = eyeCausticSolve(film, toLight, up, float4(toLight, 0.0f), 0.0f, maxDepth);
+    EXPECT_TRUE(deep.film) << degrees;
+    EXPECT_FALSE(deep.valid) << degrees;
+    const CapFilm    flat{float3(0.0f, 0.0f, -18.4f), 0.0f, 2.6f, 0.0f};
+    const EyeCaustic back = eyeCausticSolve(flat, toLight, up, float4(toLight, 0.0f), 0.0f, maxDepth);
+    EXPECT_TRUE(back.film) << degrees;
+    EXPECT_FALSE(back.valid) << degrees;
+    // an iris under the same film is in the chamber (2.6 at its middle), and the answer is the unbounded walk's
+    film.point = float3(0.5f, 0.0f, 0.0f);
+    const EyeCaustic iris  = eyeCausticSolve(film, toLight, up, float4(toLight, 0.0f), 0.0f, maxDepth);
+    const EyeCaustic whole = eyeCausticSolve(film, toLight, up, float4(toLight, 0.0f), 0.0f, kDeep);
+    ASSERT_TRUE(iris.film && iris.valid) << degrees;
+    EXPECT_EQ(iris.focus, whole.focus) << degrees;
+  }
+}
+
 // A lamp far off is the same light as a direction
 TEST(EyeCaustic, AFarLampIsADirection)
 {
@@ -194,8 +229,8 @@ TEST(EyeCaustic, AFarLampIsADirection)
   film.point           = float3(2.0f, 1.0f, 0.0f);
   const float3 toLight = lightFrom(50.0f);
   const float3     up   = float3(0.0f, 0.0f, 1.0f);
-  const EyeCaustic far  = eyeCausticSolve(film, toLight, up, float4(toLight, 0.0f), 0.0f);
-  const EyeCaustic lamp = eyeCausticSolve(film, toLight, up, float4(toLight * 3000.0f, 1.0f), 0.0f);
+  const EyeCaustic far  = eyeCausticSolve(film, toLight, up, float4(toLight, 0.0f), 0.0f, kDeep);
+  const EyeCaustic lamp = eyeCausticSolve(film, toLight, up, float4(toLight * 3000.0f, 1.0f), 0.0f, kDeep);
   ASSERT_TRUE(far.valid && lamp.valid);
   EXPECT_NEAR(dot(far.arrival, lamp.arrival), 1.0f, 1e-4f);
   EXPECT_NEAR(lamp.focus, far.focus, 0.02f * far.focus);

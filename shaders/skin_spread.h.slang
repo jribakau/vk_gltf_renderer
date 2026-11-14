@@ -56,4 +56,27 @@ inline float skinSpreadUnitCdf(float a)
   return 1.0F - 0.25F * exp(-a) - 0.75F * exp(-a / 3.0F);
 }
 
+// The spread of a surface with no volume under it (FV_materials_subsurface without a thickness: the
+// white of an eye, and a Genesis 9 iris in the same surface): where a light sample there looks for its
+// shadow, from the shaded point. An exponential radius of mean `d` (the scatter distance), cut at
+// SURFACE_SPREAD_CUT d, in the tangent plane, and lifted off that plane by SURFACE_SPREAD_LIFT of the
+// radius. The lift is for a surface that curves up to meet its own tangent plane: the iris is a shallow
+// bowl (it rises 0.02 to 0.07 mm a millimetre toward its rim), the points lay microns under it, and its
+// own surface shadowed a third of its direct light. A tenth clears the inside of a sphere out to a
+// fifth of its radius (the back of an eyeball, 12 mm, to 2.4 mm), and puts a point 2 mm out 0.2 mm
+// above the white.
+static const float SURFACE_SPREAD_CUT  = 2.5F;
+static const float SURFACE_SPREAD_LIFT = 0.1F;
+
+inline float surfaceSpreadRadius(float d, float u)
+{
+  return min(-d * log(max(1.0F - u, 1e-6F)), SURFACE_SPREAD_CUT * d);
+}
+
+// `normal`: the surface's, on the light's side; `t`, `b`: two unit vectors square to it and each other
+inline float3 surfaceSpreadOffset(float3 normal, float3 t, float3 b, float radius, float phi)
+{
+  return radius * (cos(phi) * t + sin(phi) * b + SURFACE_SPREAD_LIFT * normal);
+}
+
 #endif  // SKIN_SPREAD_H_SLANG
