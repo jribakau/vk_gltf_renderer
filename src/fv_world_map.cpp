@@ -1037,13 +1037,33 @@ Inland mapInland(const BaseMap& m, double radius, const glm::dvec3& d)
     splineWeights(p.y - fj, wy);
     const size_t stride = g.stride();
     const size_t first  = g.padded(p.face, int(fi) - 1, int(fj) - 1);
+    // Two lakes may lie within the cells round a point, one at a cliff's foot and one over it: the
+    // lake is the one with the larger share there, at its own level (the higher of the two took the
+    // lower one's water up a tier's height along its near shore)
+    float  levels[3] = {};
+    double shares[3] = {};
+    int    lakes     = 0;
     for(int b = 0; b < 4; b++)
       for(int a = 0; a < 4; a++)
         if(const float level = m.lake[first + size_t(b) * stride + size_t(a)]; level > 0.5F * kDryCell)
         {
-          in.lake += wx[a] * wy[b];
-          in.lakeLevel = std::max(in.lakeLevel, double(level));
+          int k = 0;
+          while(k < lakes && levels[k] != level)
+            k++;
+          if(k == lakes)
+          {
+            if(lakes == 3)
+              continue;  // (a fourth among sixteen cells: left out)
+            levels[lakes++] = level;
+          }
+          shares[k] += wx[a] * wy[b];
         }
+    for(int k = 0; k < lakes; k++)
+      if(shares[k] > in.lake)
+      {
+        in.lake      = shares[k];
+        in.lakeLevel = double(levels[k]);
+      }
   }
   const int i = std::clamp(int(std::floor(p.x + 0.5)), 0, n - 1), j = std::clamp(int(std::floor(p.y + 0.5)), 0, n - 1);
   if(!m.reach[g.index(p.face, uint32_t(i), uint32_t(j))])

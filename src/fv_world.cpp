@@ -119,7 +119,7 @@ double ridged3(glm::dvec3 p, uint32_t seed, uint32_t channel, uint32_t octaves, 
 
 // The noise channels, ten apart: an fbm takes one an octave
 constexpr uint32_t kChContinent = 10, kChRange = 20, kChRidge = 30, kChHills = 40, kChWarm = 50, kChWet = 60, kChDetail = 70,
-                   kChShade = 90, kChPatch = 100, kChSite = 110, kChDither = 120;
+                   kChShade = 90, kChPatch = 100, kChSite = 110, kChDither = 120, kChCliff = 130;
 
 // How many of each noise's cells go across the planet's radius: the continents are the planet's
 // size, the ranges a few to a continent, a hill a few hundred metres on a planet 20 km in radius
@@ -179,6 +179,55 @@ void hills(const World& w, const Point& p, Sample& s)
   const double h    = fbm3(p.direction * kHills, seedOf(w), kChHills, 4, finestOf(w, p, kHills)) - 0.5;
   const double land = 0.15 + 0.85 * smooth(0.0, 0.5, s.continent);
   s.elevation += 2.0 * h * 0.007 * w.spec.radius * w.spec.relief * land;
+}
+
+// Cliffs: the land stands in tiers, each a step over the one below along a winding line, so a tier's
+// edge is a face of rock a few metres across however gently the land under it slopes. (Terraces cut
+// at levels of the land's own height are only as steep as that land: on a plain they are ramps.) A
+// noise over the ground, in metres: where it passes one of a few levels the land steps up, over a
+// band of the noise that is a face's width where the noise changes at its usual rate, and no narrower
+// than two cells of what draws it. The face is steepest under its crest, which is an edge, and eases
+// into the ground at its foot; a finer noise moves its line a few metres either way, so it runs in
+// buttresses and gullies, not as a bank's smooth curve.
+// By a shore the tiers come up with the land's own height, a metre for a metre: twice the land's
+// slope there, no more. (Stood straight out of the beach a tier was 30 m of wall a metre across; six
+// metres for a metre made the few centimetres two levels of quads differ by into a row of teeth.)
+constexpr double kCliffAcross = 1500.0;                 // metres across a tier's lobes
+constexpr double kCliffHeight = 15.0;                   // metres a tier stands over the one below, at relief 1
+constexpr double kCliffTiers[] = {0.56, 0.62, 0.68};    // of the noise: over a quarter of the land, a seventh, a fifteenth
+constexpr double kCliffEdge  = 0.0015;                  // of the noise, either side of a level: a face some 6 m across
+constexpr double kCliffSlope = 5.0e-4;                  // what the noise changes by a metre, about
+constexpr double kCliffJag    = 0.02;                   // of the noise: how far the finer noise moves a face's line, end to end (some 8 m either way)
+constexpr double kCliffJagAcross = 45.0;                // metres across a buttress
+constexpr double kCliffShore = 1.0;                     // metres of tier a metre of the land's own height brings, at the shore
+
+void cliffs(const World& w, const Point& p, Sample& s)
+{
+  if(w.spec.relief <= 0.0 || s.elevation <= 0.0)
+    return;
+  const double broad = fbm3(p.direction * (w.spec.radius / kCliffAcross) + glm::dvec3(5.3, -2.1, 8.8), seedOf(w), kChCliff, 3, p.footprint / kCliffAcross);
+  const double jag   = fbm3(p.direction * (w.spec.radius / kCliffJagAcross), seedOf(w), kChCliff + 8, 2, p.footprint / kCliffJagAcross) - 0.5;
+  const double tier  = broad + kCliffJag * jag;
+  const double edge  = std::max(kCliffEdge, p.footprint * kCliffSlope);
+  double       up = 0.0, face = 0.0;
+  for(const double at : kCliffTiers)
+  {
+    // across the face, foot to crest
+    const double x = std::clamp((tier - (at - edge)) / (2.0 * edge), 0.0, 1.0);
+    up += x * x;
+    face = std::max(face, 4.0 * x * (1.0 - x));
+  }
+  s.tiers            = float(up);
+  const double tiers = kCliffHeight * std::min(w.spec.relief, 1.5) * up;
+  if(tiers <= 0.0)
+    return;
+  // out of the shore, which stays where it is: all of the tiers' height by where the land's own
+  // has brought a few metres
+  const double short_ = std::exp(-kCliffShore * s.elevation / tiers);
+  s.steepened         = float(1.0 + kCliffShore * short_);
+  s.elevation += tiers * (1.0 - short_);
+  // a face wider than a cliff is high is a slope: what draws it too coarsely to stand it up has none
+  s.cliff = float(face * (1.0 - short_) * (1.0 - smooth(1.0, 4.0, edge / kCliffEdge)));
 }
 
 // What the base map says of the place: what the rain wore off the land or laid on it, and the water
@@ -261,8 +310,8 @@ void biome(const World& w, const Point& p, Sample& s)
     for(float& share : s.share)
       share /= total;
   }
-  // a mountain's heights are rock whatever grows under them
-  s.rock = float(smooth(0.3, 0.65, double(s.mountain)));
+  // a mountain's heights are rock whatever grows under them, and a cliff's face
+  s.rock = std::max(float(smooth(0.3, 0.65, double(s.mountain))), s.cliff);
 }
 
 // The ground's fine relief: bumps from a few hundred metres across down to what draws it, each as
@@ -276,7 +325,11 @@ void detail(const World& w, const Point& p, Sample& s)
 {
   if(w.spec.relief <= 0.0)
     return;
-  const double amount = kDetailHeight * double(s.rough) * std::min(w.spec.relief, 1.5) * (s.elevation < 0.0 ? 0.5 : 1.0);
+  // (the sea's floor is half as rough as the land, eased in across the shore: switched at the sea's
+  // level, the ground stepped by half a bump's height along that line, metres of wall behind a
+  // beach. Nothing that changes within a few metres may scale the bumps: they are up to 256 m across
+  // and metres high, and a cliff's face made three times as rough stepped as the shore did.)
+  const double amount = kDetailHeight * double(s.rough) * std::min(w.spec.relief, 1.5) * (0.5 + 0.5 * smooth(-3.0, 3.0, s.elevation));
   glm::dvec3   q      = p.direction * (w.spec.radius / kDetailLargest);
   uint32_t     octave = 0;
   for(double size = kDetailLargest; size >= kDetailSmallest; size *= 0.5, octave++)
@@ -460,7 +513,8 @@ glm::dvec3 findSite(const World& w)
         const glm::dvec3 side  = a * std::cos(angle) + b * std::sin(angle);
         const Sample     there = sampleUpTo(w, glm::normalize(d + side * (away / R)), 8.0, stages);
         const double     e     = there.elevation;
-        dry                    = dry && e > 1.0 && there.shore > 20.0F;
+        // (nor a cliff: all of it on the tier the place itself is on)
+        dry                    = dry && e > 1.0 && there.shore > 20.0F && std::abs(there.tiers - s.tiers) < 0.02F;
         if(away <= 120.0)
           slope = std::max(slope, std::abs(e - s.elevation) / away);
       }
@@ -564,7 +618,7 @@ World make(const Spec& asked, const Making& making)
                                 : levels.front() - w.seaSpread;  // no sea: the lowest land is well over it
 
   // The land's broad shape, then what the base map made of it (a flat planet has nothing to wear)
-  w.stages = {{"continents", continents}, {"mountains", mountains}, {"hills", hills}};
+  w.stages = {{"continents", continents}, {"mountains", mountains}, {"hills", hills}, {"cliffs", cliffs}};
   if(making.base && w.spec.relief > 0.0)
     w.base = bake(w, making.map ? making.map : mapCells(w.spec.radius), making.stop);
   if(w.base)

@@ -103,6 +103,9 @@ struct Sample
   float     moisture    = 0.5F;  // 0 dry to 1 wet
   float     rough       = 1.0F;  // of the ground's fine relief, its biome's
   float     rock        = 0.0F;  // the share of bare rock whatever the slope
+  float     cliff       = 0.0F;  // 0..1: on a cliff's face (the `cliffs` stage), 1 at its middle
+  float     steepened   = 1.0F;  // how many times as steep the tiers made the land's own slope here (by a shore)
+  float     tiers       = 0.0F;  // how many tiers the land stands on here: whole on a tier, between on a face
   int       biome       = 0;     // the row of World::biomes that counts most
   std::array<float, kMostBiomes> share{};  // each row's share of the place, summing to 1 where any counts
   glm::vec3 colour{0.2F};        // what level ground reflects here, linear

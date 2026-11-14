@@ -224,6 +224,57 @@ TEST(WorldFields, NothingFinerThanWhatDrawsIt)
   EXPECT_LT(coarse, 0.15 * fine);
 }
 
+// The land stands in tiers: along a line over it the ground steps up or down a tier within a few
+// metres here and there, a face of bare rock, with no break in it; what draws it too coarsely to
+// stand a face up has a slope there and no cliff, and a planet with no relief has none
+TEST(WorldFields, TheLandStandsInTiersWithCliffsAtTheirEdges)
+{
+  const W::World& w = planet();
+  int             faces = 0, rock = 0, crossed = 0;
+  double          steepest = 0.0, jump = 0.0;
+  for(uint32_t i = 0; i < 150; i++)
+  {
+    const glm::dvec3 d = spread(i, 150);
+    if(W::sample(w, d, 1.0).elevation < 5.0)
+      continue;
+    const glm::dvec3    side = glm::normalize(glm::cross(d, glm::dvec3(0.3, 0.5, 0.8)));
+    // (off the rivers and lakes: a river's bed is cut under its water, and steeply, by another stage)
+    std::vector<double> heights;
+    std::vector<int>    dry;  // how many steps on end have been off the water
+    bool                onFace = false;
+    for(int k = 0; k < 2000; k++)  // two kilometres, a metre a step
+    {
+      const glm::dvec3 at = glm::normalize(d + side * (double(k) / w.spec.radius));
+      const W::Sample  s  = W::sample(w, at, 1.0);
+      const bool       off = !s.inland.any() && s.elevation > 0.0;
+      dry.push_back(off ? (dry.empty() ? 1 : dry.back() + 1) : 0);
+      if(dry.back() > 1)
+        jump = std::max(jump, std::abs(s.elevation - heights.back()));
+      heights.push_back(s.elevation);
+      if(off && s.cliff > 0.9F)
+      {
+        faces++;
+        rock += s.rock > 0.5F;
+        crossed += !onFace;
+        // the same place drawn coarsely: a slope, and no cliff
+        EXPECT_EQ(W::sample(w, at, 64.0).cliff, 0.0F);
+      }
+      onFace = off && s.cliff > 0.9F;
+    }
+    for(size_t k = 12; k < heights.size(); k++)
+      if(dry[k] > 12)
+        steepest = std::max(steepest, std::abs(heights[k] - heights[k - 12]) / 12.0);
+  }
+  EXPECT_GT(crossed, 20);        // faces on the way, here and there
+  EXPECT_LT(crossed, 1500);      // and most of the land between them
+  EXPECT_EQ(rock, faces);        // each of bare rock
+  EXPECT_GT(steepest, 0.8);      // a tier's height within a dozen metres
+  EXPECT_LT(jump, 14.0);         // and nowhere a break: a metre on, the ground is within a face's rise
+  const W::World flat = W::make({.relief = 0.0}, kSmall);
+  for(uint32_t i = 0; i < 2000; i++)
+    EXPECT_EQ(W::sample(flat, spread(i, 2000), 1.0).cliff, 0.0F);
+}
+
 TEST(WorldSite, TheFiguresStandOnLevelLandAtTheOrigin)
 {
   for(const int seed : {1, 2, 3, 4, 5})

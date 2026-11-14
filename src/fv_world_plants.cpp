@@ -147,6 +147,20 @@ glm::mat4 placeOn(const World& w, const glm::dvec3& d, double elevation, const g
   return glm::scale(m, glm::vec3(scale));
 }
 
+// The ground's slope at `d`, where it is `elevation` high: its rise over a few metres two ways
+double slopeAt(const World& w, const glm::dvec3& d, double elevation, double footprint)
+{
+  const double     reach = std::max(2.0, 2.0 * footprint);
+  const glm::dvec3 a     = glm::normalize(glm::cross(d, std::abs(d.y) < 0.9 ? glm::dvec3(0.0, 1.0, 0.0) : glm::dvec3(1.0, 0.0, 0.0)));
+  const glm::dvec3 b     = glm::cross(d, a);
+  const double     da    = sample(w, glm::normalize(d + a * (reach / w.spec.radius)), footprint).elevation - elevation;
+  const double     db    = sample(w, glm::normalize(d + b * (reach / w.spec.radius)), footprint).elevation - elevation;
+  return std::sqrt(da * da + db * db) / reach;
+}
+
+// Steeper than this, a tree, a bush or a log has no footing (35 degrees)
+constexpr double kStandSlope = 0.7;
+
 }  // namespace
 
 // ---- what has a place ----------------------------------------------------------------------------------
@@ -231,6 +245,10 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
           }
         }
         if(!most || double(unit(mix(h + 2U))) >= odds * cellShare(w, q.face, u, v, cell, thickest))
+          return;
+        // nothing but rocks on a cliff's shoulders or a bluff: where the tiers stand the land up, by
+        // the ground's own slope (asked only there: two more looks at the ground)
+        if(!rock && (s.cliff > 0.02F || s.steepened > 2.0F) && slopeAt(w, d, s.elevation, footprint) > kStandSlope)
           return;
         const float scale = (most->scaleMin + (most->scaleMax - most->scaleMin) * unit(mix(h + 5U))) * kept.grow;
         placed[mix(h + 3U) % variants[r]].push_back(placeOn(w, d, s.elevation - double(most->sink * scale), centre, unit(mix(h + 4U)), scale));

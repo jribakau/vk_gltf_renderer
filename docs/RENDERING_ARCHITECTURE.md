@@ -865,9 +865,12 @@ shares the backdrop's state, root entity and renderer parameters with the two pl
 their kit when there is one. It needs no kit: without one it stands bare.
 
 - **What it is** is a function of a point on the sphere: `fv::world::sample` runs an ordered list of
-  stages over a sample (the continents and the sea's floor, mountains, hills, the climate, the biome,
-  the ground's fine relief, its colour). A biome is a row of a table. Every stage takes the size of
-  what will draw the sample and adds nothing finer.
+  stages over a sample (the continents and the sea's floor, mountains, hills, the tiers the land
+  stands in with cliffs at their edges, the climate, the biome, the ground's fine relief, its
+  colour). A biome is a row of a table. Every stage takes the size of what will draw the sample and
+  adds nothing finer. A stage may not scale or switch what another adds by anything that changes
+  within a few metres: the ground then steps along that line, which a mesh draws as a row of teeth
+  (`WorldMapBake.DISABLED_Steps` in the tests finds a step and names its stage).
 - **What a point alone cannot say** is baked once a planet over the whole of it, on a cube map
   (`BaseMap`, `src/fv_world_map.hpp`, `bake`): the rain the wind carries in from the sea, the hollows
   filled to where they spill (the deep ones hold lakes), what the running water wore off the land

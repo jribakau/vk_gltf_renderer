@@ -205,7 +205,7 @@ TEST(WorldMapBake, TheSameHoweverManyThreadsBakeIt)
   {
     // (the stages before the map, as make has them while it bakes)
     W::World first = W::make({}, {.base = false});
-    first.stages.resize(3);
+    first.stages.resize(4);
     fv::jobs::Serial serial;
     b = W::bake(first, kCells);
   }
@@ -427,6 +427,56 @@ TEST(WorldMapBake, DISABLED_Probe)
 
 // Not a test: what a bake at the planet's own size takes and makes, for whoever changes its numbers.
 //   --gtest_also_run_disabled_tests --gtest_filter=*Report*
+// A dev tool, not a test: where the ground steps within a metre round a place, and the stage that
+// makes the step (FV_WORLD_STEPS = "x y z size", the place in the scene). The steepest few, with the
+// ground's height after each stage on either side.
+TEST(WorldMapBake, DISABLED_Steps)
+{
+  const char* spec = std::getenv("FV_WORLD_STEPS");
+  if(!spec)
+    return;
+  double x = 0, y = 0, z = 0, size = 200;
+  ASSERT_EQ(std::sscanf(spec, "%lf %lf %lf %lf", &x, &y, &z, &size), 4);
+  const W::World   w  = W::make({});
+  const glm::dvec3 at(x, y, z);
+  const glm::dvec3 up = glm::normalize(at - w.frame.centre);
+  const glm::dvec3 a  = glm::normalize(glm::cross(up, glm::dvec3(0.3, 0.1, 0.9))), b = glm::cross(up, a);
+  const int        n  = int(size);
+  const auto       dirOf = [&](int i, int j) { return W::toPlanet(w, at + a * (double(i) - 0.5 * n) + b * (double(j) - 0.5 * n)); };
+  struct Step
+  {
+    double rise;
+    int    i, j, di, dj;
+  };
+  std::vector<Step>   steps;
+  std::vector<double> heights(size_t(n) * size_t(n));
+  for(int j = 0; j < n; j++)
+    for(int i = 0; i < n; i++)
+      heights[size_t(j) * n + i] = W::sample(w, dirOf(i, j), 1.0).elevation;
+  for(int j = 0; j + 1 < n; j++)
+    for(int i = 0; i + 1 < n; i++)
+    {
+      steps.push_back({std::abs(heights[size_t(j) * n + i + 1] - heights[size_t(j) * n + i]), i, j, 1, 0});
+      steps.push_back({std::abs(heights[size_t(j + 1) * n + i] - heights[size_t(j) * n + i]), i, j, 0, 1});
+    }
+  std::sort(steps.begin(), steps.end(), [](const Step& l, const Step& r) { return l.rise > r.rise; });
+  for(size_t k = 0; k < 6 && k < steps.size(); k += 1)
+  {
+    const Step& st = steps[k * 37 % std::min<size_t>(steps.size(), 200)];
+    std::printf("step of %.2f m at %d %d:\n", st.rise, st.i, st.j);
+    W::Sample      one, two;
+    const W::Point p1{dirOf(st.i, st.j), 1.0}, p2{dirOf(st.i + st.di, st.j + st.dj), 1.0};
+    for(const W::Stage& stage : w.stages)
+    {
+      stage.apply(w, p1, one);
+      stage.apply(w, p2, two);
+      std::printf("  %-10s %9.3f %9.3f  (%+.3f)\n", std::string(stage.name).c_str(), one.elevation, two.elevation, two.elevation - one.elevation);
+    }
+    std::printf("  tiers %.3f %.3f cliff %.2f %.2f steepened %.2f %.2f river %d %d lake %.2f %.2f water %.1f %.1f\n", one.tiers, two.tiers, one.cliff, two.cliff,
+                one.steepened, two.steepened, int(one.inland.river), int(two.inland.river), one.inland.lake, two.inland.lake, one.water, two.water);
+  }
+}
+
 TEST(WorldMapBake, DISABLED_Report)
 {
   for(const double radius : {5000.0, 20000.0, 60000.0})
@@ -513,6 +563,37 @@ TEST(WorldMapBake, DISABLED_Report)
         peak = c;
     if(peak != W::CubeGrid::kNone)
       place("peak", m.grid.centre(peak), double(m.height[peak]), w.frame.site, double(m.height[peak]));
+    // the cliff's face nearest the figures, and the nearest bluff by a shore
+    {
+      glm::dvec3 face(0.0), bluff(0.0);
+      double     faceAway = 1e30, bluffAway = 1e30, faceUp = 0.0, bluffUp = 0.0;
+      for(uint32_t i = 0; i < 600000; i++)
+      {
+        const glm::dvec3 d    = spread(i, 600000);
+        const double     away = glm::distance(d, w.frame.site);
+        if(away >= faceAway && away >= bluffAway)
+          continue;
+        const W::Sample smp = W::sample(w, d, 2.0);
+        if(smp.inland.any())
+          continue;
+        if(smp.cliff > 0.8F && smp.elevation > 5.0 && away < faceAway)
+        {
+          faceAway = away;
+          face     = d;
+          faceUp   = smp.elevation;
+        }
+        if(smp.steepened > 4.0F && smp.elevation > 4.0 && away < bluffAway)
+        {
+          bluffAway = away;
+          bluff     = d;
+          bluffUp   = smp.elevation;
+        }
+      }
+      if(faceAway < 1e30)
+        place("cliff", face, faceUp, w.frame.site, faceUp);
+      if(bluffAway < 1e30)
+        place("bluff", bluff, bluffUp, w.frame.site, bluffUp);
+    }
     // each biome's place nearest the figures (all of it that biome, off the water and the heights)
     for(size_t biome = 0; biome < w.biomes.size(); biome++)
     {
