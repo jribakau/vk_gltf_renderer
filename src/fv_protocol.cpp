@@ -149,7 +149,10 @@ namespace {
 // which needs no kit. An older renderer refuses the backdrop that has it.
 // 76: the renderer's `ptEyeCaustic` parameter (the cornea's caustic, eye_caustic.h.slang), which the app's
 // Render tab sends. An older renderer refuses the batch that has it.
-constexpr int kProtocolVersion = 76;
+// 77: light and shadow linking: a light's `litMode` and `shadowMode` (all, only, except) with `litProps`
+// and `shadowProps` (prop ids) in prop.set's `light` and the scene topic's. An older renderer takes the
+// command and links nothing.
+constexpr int kProtocolVersion = 77;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

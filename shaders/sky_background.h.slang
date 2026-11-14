@@ -187,7 +187,9 @@ GltfLight makeSkySunLight(SceneFrameInfo* frameInfo)
     angularRadius = frameInfo->skyOmi.gradient.sunAngularRadius;
   }
 
-  GltfLight light;
+  GltfLight light             = {};
+  light.litBit                = 0u;     // the sky's sun is not linked: it lights everything,
+  light.shadowMask            = 0xFFu;  // and everything shadows it
   light.type                  = LightType::eLightTypeDirectional;
   light.direction             = -frameInfo->sunDirection;  // the way the light travels
   light.position              = float3(0.0F);

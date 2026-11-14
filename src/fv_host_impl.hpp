@@ -359,7 +359,22 @@ struct LightProp
   double      radius    = 0.05;
   double      inner     = 0;
   double      outer     = 0.785398;
+  // Light and shadow linking: what it lights, and what casts its shadows. "all"; "only" the props
+  // listed (with what rides on them, and a group's members); or all "except" them. The id of a prop
+  // no longer in the scene stays, for the undo that brings the prop back, and counts for nothing.
+  std::string              litMode    = "all";
+  std::vector<std::string> litProps;
+  std::string              shadowMode = "all";
+  std::vector<std::string> shadowProps;
 };
+
+// A light as prop.set takes it and the scene topic, the journal and a scene file hold it
+inline Json lightJson(const LightProp& l)
+{
+  return {{"type", l.type},       {"color", l.color},       {"intensity", l.intensity},   {"radius", l.radius},           {"inner", l.inner},
+          {"outer", l.outer},     {"litMode", l.litMode},   {"litProps", l.litProps},     {"shadowMode", l.shadowMode},
+          {"shadowProps", l.shadowProps}};
+}
 
 // One thing in the scene. Its prop root (fv_compose.hpp) carries `transform` and `visible`; under
 // it is a figure, a model read from a file, a camera or a light.
@@ -1062,6 +1077,8 @@ struct FvHost::Impl
   void                    applyTransform(const Prop& p);
   // the scene shows it: it is visible, and Isolate (view.set's solo) leaves it in
   void                    applyVisible(const Prop& p);
+  // The lamps' links brought to the scene (LightProp::litMode, shadowMode); the lamps whose link found no bit left
+  std::vector<std::string> applyLightLinks();
   bool                    shownNow(const Prop& p) const;
   // view.set's solo: only these show, with what rides on them and what carries them; empty, all
   std::set<std::string>   solo;

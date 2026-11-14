@@ -45,6 +45,7 @@ struct GltfRenderNode
   int      materialID;
   int      renderPrimID;
   int      ownerID;  // the part of a prop its mesh is (renderNodeOwner): the Object view's colour
+  uint     unlit;    // light linking: the lamps that leave it dark, a bit each (GltfLight::litBit)
 };
 
 // This is all the information about a vertex buffer
@@ -153,6 +154,14 @@ struct GltfLight
   float innerAngle = radians(10.0F);             // Inner angle of the light
   float outerAngle = radians(30.0F);             // Outer angle of the light
   int   iesProfile = -1;  // EXT_lights_ies: index into GltfScene.iesProfiles (stride iesProfileSampleCount), -1 = none
+
+  // Light and shadow linking (rs::LightRecord). `litBit`: its bit among GltfRenderNode::unlit, 0 for a
+  // lamp that lights everything. `shadowMask`: the TLAS mask its shadow rays trace with, every
+  // instance's or one INSTANCE_MASK_SHADOW_* bit.
+  uint litBit     = 0;
+  uint shadowMask = 0xFF;
+  uint pad0       = 0;
+  uint pad1       = 0;
 };
 
 

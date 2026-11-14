@@ -87,9 +87,9 @@ inline MaterialBits materialBits(const fv::mat::Material& mat)
   if(mat.doubleSided || thickness > 0.0F || transmission > 0.0F || diffuseTransmission > 0.0F)
     bits.instanceFlags |= kInstanceCullDisable;
 
-  // A surface a scatter walk passes through (shaderio.h INSTANCE_MASK_WALK). The camera's bit is the
-  // material's to give and the instance's to take away (instanceMaskOf).
-  bits.instanceMask = INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | (mat.walkThrough ? 0 : INSTANCE_MASK_WALK);
+  // A surface a scatter walk passes through (shaderio.h INSTANCE_MASK_WALK). The camera's bit and the
+  // linked lamps' shadow bits are the material's to give and the instance's to take away (instanceMaskOf).
+  bits.instanceMask = INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_SHADOWS | (mat.walkThrough ? 0 : INSTANCE_MASK_WALK);
   // An eye's tear film is found by itself from the iris under it (INSTANCE_MASK_TEAR_FILM)
   if(mat.chamberIor)
     bits.instanceMask |= INSTANCE_MASK_TEAR_FILM;
@@ -112,10 +112,11 @@ inline MaterialBits materialBits(const tinygltf::Material& mat)
 }
 
 // The mask of an instance that draws with `bits`: its material's, less the camera's bit when the
-// camera looks through it (rs::Entity::offCamera). Every other ray still meets it.
-inline uint8_t instanceMaskOf(const MaterialBits& bits, bool offCamera)
+// camera looks through it (rs::Entity::offCamera) and the bits of the linked lamps it casts no
+// shadow from (`unshadowed`, rs::LightLink). Every other ray still meets it.
+inline uint8_t instanceMaskOf(const MaterialBits& bits, bool offCamera, uint8_t unshadowed = 0)
 {
-  return offCamera ? uint8_t(bits.instanceMask & ~INSTANCE_MASK_CAMERA) : bits.instanceMask;
+  return uint8_t(bits.instanceMask & ~(offCamera ? INSTANCE_MASK_CAMERA : 0) & ~(unshadowed & INSTANCE_MASK_SHADOWS));
 }
 
 // The texture indices a material samples as colour (sRGB). decides it:

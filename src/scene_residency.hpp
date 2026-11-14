@@ -325,6 +325,7 @@ public:
     glm::mat4  world        = glm::mat4(1.f);
     bool       shown        = true;
     bool       offCamera    = false;  // the camera looks through it: its TLAS mask (instanceMaskOf)
+    LightLink  link;                  // the linked lights that leave it dark (its render node) or unshadowed (its TLAS mask)
     bool       deformed     = false;  // its prim is its drawer's
   };
 

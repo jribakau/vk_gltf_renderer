@@ -862,8 +862,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // or the floor (past the floor's fade: the open sea) ends in it, with that light.
     if(pt.inWater && !ptIsInside(pt))
     {
+      const uint leftUnlit = g_unlitLamps;
+      g_unlitLamps         = 0u;  // the water takes every lamp, whatever the ray left
       addRadiance(pt, pt.throughput * groundWaterInScatter(raytracer, ray.Origin, ray.Direction, payload.hitT, seed),
                   pt.pathRoughness > DIRECT_PATH_ROUGHNESS);
+      g_unlitLamps = leftUnlit;  // (the sized lights this ray meets are still weighed at the surface it left)
       if(payload.hitT == INFINITE)
         return PathStepResult.eBreak;
       pt.throughput *= exp(-GROUND_WATER_EXTINCTION * payload.hitT);
@@ -990,6 +993,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       if(!ptIsInside(pt) && !walkExit)
         addRadiance(pt, pt.throughput * sizedLightHits(ray, payload.hitT, /*escaped=*/false, pt), pt.prefixIndirect);
     }
+    // Light linking: from here the lamps are this surface's (g_unlitLamps). The floor and the water
+    // are no mesh and take every lamp.
+    g_unlitLamps = (hitInfinitePlane || hitWater) ? 0u : renderNode.unlit;
 
     GltfShadeMaterial* materials     = pushConst.gltfScene->materials;
     GltfTextureInfo*   texInfos      = pushConst.gltfScene->textureInfos;
@@ -2410,6 +2416,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       bounce.shadowRayPos      = safeOffsetRay(shadowOffsetBase, shadowOffsetDir, hit.offsetDistance);
       bounce.shadowRayDir      = directLight.direction;
       bounce.shadowRayDist     = directLight.distance;
+      bounce.shadowRayMask     = directLight.shadowMask;
       // A light bent through an eye's film (above): from where it came through, toward the light
       const bool eyeShadow = eyeBent;
       if(eyeShadow)
@@ -2475,7 +2482,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           }
           if(dot(shadowRay.Direction, point.hit.geonrm) <= 0.0F || dot(shadowRay.Direction, point.hit.nrm) <= 0.0F)
             continue;  // the light is below this point's horizon: the terminator, not a cast shadow
-          bounce.spreadVisibility[c] = raytracer.TraceShadow(shadowRay, seed, false, float3(0.0F))[c];
+          bounce.spreadVisibility[c] = raytracer.TraceShadow(shadowRay, seed, false, float3(0.0F), directLight.shadowMask)[c];
         }
       }
 #endif
@@ -2497,6 +2504,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
 {
   PathTracerState pt = {};
+  g_unlitLamps       = 0u;  // the camera's: no surface yet
   g_skyStars         = float2(0.0F);
   pt.inWater         = groundUnderWater(ray.Origin, pushConst.frameInfo);
 
@@ -2537,7 +2545,7 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
       shadowRay.Direction = bounce.shadowRayDir;
       shadowRay.TMin      = 0.0;
       shadowRay.TMax      = bounce.shadowRayDist;
-      float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, bounce.shadowRayInside, bounce.shadowRayExtinction);
+      float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, bounce.shadowRayInside, bounce.shadowRayExtinction, bounce.shadowRayMask);
       // the spread's diffuse share by each channel's own shadow, or this one's where it found no point
       const float3 spreadShadow = lerp(shadowFactor, bounce.spreadVisibility, float3(bounce.spreadVisibility >= 0.0F));
       addRadiance(pt, bounce.contribution * shadowFactor + bounce.spreadContribution * spreadShadow, bounce.indirect);
@@ -2700,6 +2708,7 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
     const float3            toHit = pt.firstHitPos - eye;
     const float             tEnd  = pt.solid ? length(toHit) : INFINITE;
     const float3            dir   = pt.solid ? toHit / max(tEnd, 1e-20F) : pt.firstHitPos;  // a miss keeps its direction there
+    g_unlitLamps                  = 0u;  // the air takes every lamp, whatever the path ended on
     const HazeSegmentResult haze  = hazeCameraSegment(raytracer, eye, dir, tEnd, seed);
     pt.radiance                   = pt.radiance * haze.transmittance + haze.inScatter;
   }

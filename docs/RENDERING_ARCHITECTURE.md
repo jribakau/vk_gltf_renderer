@@ -32,7 +32,12 @@ instance: a render-node row and a TLAS row, whose custom index is its prim slot.
 flags are its material's (`materialBits`), less the camera's bit for an instance the camera looks
 through (`Entity::offCamera`, `instanceMaskOf`): the camera's own rays and the picks trace with that
 bit alone, every other ray with all of them, so such an instance still shades, bounces light and
-shows in mirrors. A hidden instance's row has no BLAS, so no ray meets it. A submesh drawn
+shows in mirrors. Light and shadow linking rides the same two rows (`rs::LightLink`, an entity's own
+or its nearest parent's, else the scene's): the lamps that leave an instance dark are a bit each in
+its render node (`GltfRenderNode::unlit` against `GltfLight::litBit`; the path tracer gives such a
+lamp no strength at that surface, `getPunctualLight`), and a lamp whose shadows only some instances
+cast traces its shadow rays with one `INSTANCE_MASK_SHADOW_*` bit (`GltfLight::shadowMask`), which
+an instance that casts it none has lost from its mask. A hidden instance's row has no BLAS, so no ray meets it. A submesh drawn
 somewhere is a prim: its own index buffer and BLAS over its mesh's streams, or over its drawer's
 outputs when the entity deforms it. Instance, prim and material slots come lowest-first from pools;
 a freed slot is a hole (a zeroed row, a null TLAS row) until its retire frame, and only then goes

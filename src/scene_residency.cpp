@@ -3515,6 +3515,7 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
     inst.world        = item.world;
     inst.shown        = item.shown;
     inst.offCamera    = item.offCamera;
+    inst.link         = item.link;
     m_instances[slot] = inst;
     m_slotOf[key]     = slot;
     m_dirtyNodes.insert(slot);
@@ -3751,6 +3752,13 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
       inst.offCamera = item.offCamera;
       tlasRows       = true;  // its row's mask alone: it lights and is lit as before
     }
+    if(inst.link != item.link)
+    {
+      if(inst.link.unlit != item.link.unlit)
+        nodes.push_back(slot);  // its render node
+      inst.link = item.link;
+      tlasRows  = true;  // its row's mask, and the picture starts again as for any row
+    }
     if(inst.world != item.world)
     {
       // drawn last where it was: its motion row, until the next sync brings it to rest
@@ -3865,6 +3873,7 @@ void Residency::writeRenderNodes(std::span<const uint32_t> slots)
       row.renderPrimID  = int(inst->prim);
       if(const auto mesh = m_meshes.find(inst->mesh); mesh != m_meshes.end())
         row.ownerID = renderNodeOwner(mesh->second.owner);
+      row.unlit = inst->link.unlit;
     }
     m_gpu.upload(m_renderNodes, uint64_t(first) * sizeof(shaderio::GltfRenderNode), bytesOf(rows));
   }
@@ -3928,7 +3937,7 @@ void Residency::buildTlas()
         std::memcpy(row.transform, was.transform, sizeof(row.transform));
       row.customIndex                    = inst->prim;
       const nvvkgltf::MaterialBits& bits = m_materialStates[inst->materialSlot]->bits;
-      row.mask                           = nvvkgltf::instanceMaskOf(bits, inst->offCamera);
+      row.mask                           = nvvkgltf::instanceMaskOf(bits, inst->offCamera, inst->link.unshadowed);
       row.flags                          = bits.instanceFlags;
       if(inst->shown)
         row.blas = m_prims[inst->prim]->blas;
@@ -4014,6 +4023,11 @@ void Residency::syncLights(RetainedScene& scene)
             nvvkgltf::packLight(record ? &record->payload : nullptr, item.world);
     if(!item.shown)
       light.intensity = 0.f;
+    if(record)
+    {
+      light.litBit     = record->litBit;
+      light.shadowMask = record->shadowBit ? uint32_t(record->shadowBit) : 0xFFu;
+    }
     lights.push_back(light);
   }
   const uint64_t bytes = std::span(lights).size_bytes();

@@ -67,6 +67,7 @@ struct DirectLight
   float     distance;         // Distance to the light
   float     pdf;              // Probability of sampling this light
   bool      punctual;         // A lamp or the sun (a place or a direction), not the environment or an emitting surface
+  uint      shadowMask;       // The instances that shadow it: all, or a linked lamp's own (GltfLight::shadowMask)
   LightPick pick;             // What the pick gave each light at this vertex, for the BSDF side's MIS
   // What the sample was, as a pixel's record keeps it from frame to frame (light_ris.h.slang): the
   // emissive triangle and the point's barycentrics, or the environment's direction; LIGHT_REUSE_NONE
@@ -672,6 +673,12 @@ int punctualLightCount()
   return pushConst.gltfScene.numLights + (pushConst.frameInfo->rendererSunLight != 0 ? 1 : 0);
 }
 
+// Light linking: the lamps that leave the surface now shaded dark, a bit each (GltfRenderNode::unlit
+// of the path's last hit; 0 off a mesh: the floor, the water, the air's haze, the camera). Such a lamp
+// is none to that surface: getPunctualLight gives it no strength, so the pick gives it no share, its
+// sample no light, and a ray leaving the surface meets nothing of it (sizedLightHits).
+static uint g_unlitLamps = 0u;
+
 // Index into that set. The scene's lights come first, so the sky's sun is the last one.
 GltfLight getPunctualLight(int index)
 {
@@ -680,6 +687,8 @@ GltfLight getPunctualLight(int index)
 
   GltfLight light = pushConst.gltfScene.lights[index];
   applySkySunLight(light, index, pushConst.frameInfo);  // no-op unless this is the marked sun
+  if((light.litBit & g_unlitLamps) != 0u)
+    light.intensity = 0.0F;
   return light;
 }
 
@@ -1032,6 +1041,7 @@ DirectLight noDirectLight()
   directLight.distance        = INFINITE;
   directLight.radianceOverPdf = float3(0.0f);
   directLight.punctual        = false;
+  directLight.shadowMask      = 0xFFu;
   directLight.pick            = {0.0F, 0.0F, 0.0F, float3(0.0F), float3(0.0F), false};
 #if USE_LIGHT_RIS
   directLight.reuseKind  = LIGHT_REUSE_NONE;
@@ -1392,6 +1402,7 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
   directLight.distance        = contrib.distance;
   directLight.radianceOverPdf = contrib.intensity / selectionPdf;
   directLight.punctual        = true;
+  directLight.shadowMask      = light.shadowMask;
   // A sphere's sample ends on the sphere: the cone reaches its silhouette, where the centre's
   // distance runs past the light into whatever is behind it
   if(light.type != LightType::eLightTypeDirectional && light.radius > 0.0F)
@@ -1698,7 +1709,7 @@ bool handleShadowCatcher(IRaytracer      raytracer,
     shadowRay.Direction = directLight.direction;
     shadowRay.TMin      = 0.0;
     shadowRay.TMax      = directLight.distance;  // short of the light: an emitter is no shadow on what it lights
-    const float3 shadow = raytracer.TraceShadow(shadowRay, seed);
+    const float3 shadow = raytracer.TraceShadow(shadowRay, seed, false, float3(0.0F), directLight.shadowMask);
     visibility          = (shadow.x + shadow.y + shadow.z) / 3.0F;
   }
 
@@ -2130,7 +2141,7 @@ float3 volumeScatterNEE(IRaytracer raytracer, VolumeMedium medium, float3 scatte
   shadowRay.Direction = directLight.direction;
   shadowRay.TMin      = 0.0F;
   shadowRay.TMax      = directLight.distance;
-  float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, /*initialInside=*/true, volumeExtinction(medium));
+  float3 shadowFactor = raytracer.TraceShadow(shadowRay, seed, /*initialInside=*/true, volumeExtinction(medium), directLight.shadowMask);
 
   return throughput * directLight.radianceOverPdf * misWeight * phase * shadowFactor;
 }
@@ -2169,7 +2180,7 @@ float3 groundWaterInScatter(IRaytracer raytracer, float3 origin, float3 dir, flo
   shadowRay.Direction = light.direction;
   shadowRay.TMin      = 0.0F;
   shadowRay.TMax      = light.distance;
-  const float3 shadow = raytracer.TraceShadow(shadowRay, seed);
+  const float3 shadow = raytracer.TraceShadow(shadowRay, seed, false, float3(0.0F), light.shadowMask);
   return GROUND_WATER_SCATTERING * exp(-sigmaT * t) / pdf * groundWaterPhase(dot(dir, light.direction)) * light.radianceOverPdf * shadow;
 }
 
@@ -2228,6 +2239,7 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
   float         distance  = 0.0F;
   float         phase     = 0.0F;
   float         air       = 0.0F;
+  uint          shadowMask = 0xFFu;  // the taken candidate's (DirectLight::shadowMask)
   HazeReservoir reservoir = hazeReservoir();
   // The lights are scored once at the point (lightPickScore, as sampleLights does for a volume sample)
   // and every candidate is drawn from that scoring, the c-th from the c-th of `count` equal slices of
@@ -2301,6 +2313,7 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
       distance = candidate.distance;
       phase    = candidatePhase;
       air      = candidateAir;
+      shadowMask = candidate.shadowMask;
     }
   }
   if(!(reservoir.kept > 0.0F))
@@ -2311,7 +2324,7 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
   shadowRay.Direction     = toLight;
   shadowRay.TMin          = 0.0F;
   shadowRay.TMax          = distance;
-  const float3 visibility = raytracer.TraceShadow(shadowRay, seed);
+  const float3 visibility = raytracer.TraceShadow(shadowRay, seed, false, float3(0.0F), shadowMask);
   const float scatter     = even ? hazeScatterWeight(t, sigma, seg.x, seg.y, guide)
                                  : hazeColumnScatterWeight(shape, column, eye, dir, sigma, seg.x, t, guide);
   result.inScatter        = (scatter * phase * air) * light * visibility;
@@ -2948,6 +2961,7 @@ struct BounceScratch
   float3 shadowRayPos        = float3(0.0F);
   float3 shadowRayDir        = float3(0.0F);
   float  shadowRayDist       = 0.0F;
+  uint   shadowRayMask       = 0xFFu;         // The instances that can shadow it (DirectLight::shadowMask)
   bool   shadowRayInside     = false;         // The shadow ray starts inside a medium...
   float3 shadowRayExtinction = float3(0.0F);  // ...of this extinction.
   // The thin preview's spread on skin (skin_spread.h.slang): the light sample's diffuse share, kept

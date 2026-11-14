@@ -82,7 +82,9 @@ interface IRaytracer
   // A shadow ray that starts inside a medium says so, with that medium's extinction: it attenuates
   // every segment it travels inside one, up to TMax. The floor and the water over it are analytic,
   // and charged on top (ground.h.slang).
-  float3 TraceShadow(RayDesc ray, inout uint seed, bool initialInside = false, float3 initialExtinction = float3(0.0));
+  // `instanceMask`: the instances that can shadow it. A lamp whose shadows are linked gives its own
+  // (DirectLight::shadowMask); every other ray meets them all.
+  float3 TraceShadow(RayDesc ray, inout uint seed, bool initialInside = false, float3 initialExtinction = float3(0.0), uint instanceMask = 0xFFu);
 }
 
 // A shadow ray as an inline ray query: shadowCrossSurface runs on each candidate in the calling shader, where
@@ -90,7 +92,7 @@ interface IRaytracer
 // (TraditionalRaytracer::TraceShadow under USE_INLINE_SHADOW): on Ada it took 15-18% off the moving frame's
 // path trace and 12-16% off a still's (1TEST, 7TEST, 10TEST at 1080p, 2026-11-08). The same function, so
 // both give the same light; only the order the candidates come in differs, as between any two traversals.
-float3 traceShadowInline(RayDesc ray, inout uint seed, bool initialInside, float3 initialExtinction)
+float3 traceShadowInline(RayDesc ray, inout uint seed, bool initialInside, float3 initialExtinction, uint instanceMask)
 {
   const float ground = infinitePlaneShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo);
   if(ground <= 0.0F)
@@ -106,7 +108,7 @@ float3 traceShadowInline(RayDesc ray, inout uint seed, bool initialInside, float
   // Visibility needs any occluder, not the closest one: the first committed (opaque) hit ends the
   // traversal. Transmissive surfaces are never committed -- they only scale the transmission below.
   RayQuery rayQuery;
-  rayQuery.TraceRayInline(topLevelAS, SHADOW_RAY_FLAGS, 0xFF, ray);
+  rayQuery.TraceRayInline(topLevelAS, SHADOW_RAY_FLAGS, instanceMask, ray);
 
   while(rayQuery.Proceed())
   {
@@ -207,9 +209,9 @@ struct RayQueryRaytracer : IRaytracer
     }
   }
 
-  float3 TraceShadow(RayDesc ray, inout uint seed, bool initialInside = false, float3 initialExtinction = float3(0.0))
+  float3 TraceShadow(RayDesc ray, inout uint seed, bool initialInside = false, float3 initialExtinction = float3(0.0), uint instanceMask = 0xFFu)
   {
-    return traceShadowInline(ray, seed, initialInside, initialExtinction);
+    return traceShadowInline(ray, seed, initialInside, initialExtinction, instanceMask);
   }
 }
 
@@ -280,10 +282,10 @@ struct TraditionalRaytracer : IRaytracer
   // Visibility needs any occluder, not the closest one: the first committed hit (opaque, or accepted
   // by rahitShadow once the transmission is spent) ends the traversal; transmissive surfaces are
   // ignored by rahitShadow and never committed. Inline (traceShadowInline) unless --ptInlineShadow 0.
-  float3 TraceShadow(RayDesc ray, inout uint seed, bool initialInside = false, float3 initialExtinction = float3(0.0))
+  float3 TraceShadow(RayDesc ray, inout uint seed, bool initialInside = false, float3 initialExtinction = float3(0.0), uint instanceMask = 0xFFu)
   {
     if(USE_INLINE_SHADOW == 1)
-      return traceShadowInline(ray, seed, initialInside, initialExtinction);
+      return traceShadowInline(ray, seed, initialInside, initialExtinction, instanceMask);
 
     const float ground = infinitePlaneShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo);
     if(ground <= 0.0F)
@@ -300,7 +302,7 @@ struct TraditionalRaytracer : IRaytracer
     {
       // Any-hit (rahitShadow) still runs during HitObject traversal and accumulates transmission;
       // only closest-hit/miss are deferred, so a committed hit means the ray was blocked.
-      HitObject hitObj = HitObject::TraceRay(topLevelAS, SHADOW_RAY_FLAGS, 0xFF, 1, 0, 1, ray, shadowPayload);
+      HitObject hitObj = HitObject::TraceRay(topLevelAS, SHADOW_RAY_FLAGS, instanceMask, 1, 0, 1, ray, shadowPayload);
       if(hitObj.IsHit())
       {
         shadowPayload.totalTransmission = float3(0.0);
@@ -309,7 +311,7 @@ struct TraditionalRaytracer : IRaytracer
     else
     {
       // No closest-hit shader runs; the miss shader reports a clear path instead.
-      TraceRay(topLevelAS, SHADOW_RAY_FLAGS | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xFF, 1, 0, 1, ray, shadowPayload);
+      TraceRay(topLevelAS, SHADOW_RAY_FLAGS | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, instanceMask, 1, 0, 1, ray, shadowPayload);
       if(!shadowPayload.missed)
       {
         shadowPayload.totalTransmission = float3(0.0);

@@ -4660,6 +4660,129 @@ TEST(FvHost, aDazPropsNodeStaysOffCameraAsItPoses)
 }
 
 //--------------------------------------------------------------------------------------------------
+// Light and shadow linking: a lamp's litMode/litProps and shadowMode/shadowProps (prop.set's light)
+
+namespace {
+
+// a prop's number in its entities' and records' owner tags ("p:6" is 6)
+uint32_t numberOf(const std::string& prop)
+{
+  return uint32_t(std::atoi(prop.c_str() + 2));
+}
+
+// the link of a prop's draw items, which must agree
+rs::LightLink linkOf(HostRig& rig, const std::string& prop)
+{
+  rs::RetainedScene&           scene = rig.renderer.hostScene();
+  std::optional<rs::LightLink> link;
+  for(const rs::DrawItem& item : scene.drawItems())
+  {
+    if(scene.entity(item.entity)->owner.prop != numberOf(prop))
+      continue;
+    EXPECT_TRUE(!link || *link == item.link) << prop << ": its items' links differ";
+    link = item.link;
+  }
+  EXPECT_TRUE(link.has_value()) << prop << " draws nothing";
+  return link.value_or(rs::LightLink{});
+}
+
+// a lamp prop's record in the scene
+const rs::LightRecord* lampOf(HostRig& rig, const std::string& prop)
+{
+  rs::RetainedScene& scene = rig.renderer.hostScene();
+  for(const rs::LightItem& item : scene.lightItems())
+    if(const rs::LightRecord* r = scene.light(item.light); r && !r->skySun && r->owner.prop == numberOf(prop))
+      return r;
+  return nullptr;
+}
+
+// the link of what is no prop: the sun's entity
+rs::LightLink strayLink(HostRig& rig)
+{
+  rs::RetainedScene& scene = rig.renderer.hostScene();
+  for(const rs::LightItem& item : scene.lightItems())
+    if(const rs::LightRecord* r = scene.light(item.light); r && r->skySun)
+      return scene.lightLink(item.entity);
+  ADD_FAILURE() << "no sun in the scene";
+  return {};
+}
+
+}  // namespace
+
+TEST(FvHost, aLampLightsAndIsShadowedByWhatItsLinkSays)
+{
+  Seated            s;
+  const std::string lamp = s.rig.cmd("prop.add", {{"kind", "light"}}).at("result").at("prop").get<std::string>();
+  ASSERT_TRUE(s.rig.settle());
+  ASSERT_TRUE(lampOf(s.rig, lamp));
+  EXPECT_EQ(lampOf(s.rig, lamp)->litBit, 0u);
+  EXPECT_EQ(lampOf(s.rig, lamp)->shadowBit, 0);
+  EXPECT_EQ(linkOf(s.rig, s.box), rs::LightLink{});
+  const Json fresh = s.rig.topic("scene")["props"][lamp]["light"];
+  EXPECT_EQ(fresh.value("litMode", ""), "all") << fresh.dump();
+  EXPECT_EQ(fresh.value("shadowMode", ""), "all");
+
+  // it lights the figure alone: the box is dark to it, and so is what is no prop
+  Json set = s.rig.cmd("prop.set", {{"prop", lamp}, {"light", {{"litMode", "only"}, {"litProps", {s.figure, lamp, s.figure}}}}});
+  ASSERT_TRUE(set.value("ok", false)) << set.dump();
+  const uint32_t bit = lampOf(s.rig, lamp)->litBit;
+  ASSERT_NE(bit, 0u);
+  EXPECT_EQ(linkOf(s.rig, s.box).unlit, bit);
+  EXPECT_EQ(linkOf(s.rig, s.figure).unlit, 0u);
+  EXPECT_EQ(strayLink(s.rig).unlit, bit) << "what is no prop takes an only-lamp's bit";
+  const Json linked = s.rig.topic("scene")["props"][lamp]["light"];
+  EXPECT_EQ(linked.value("litMode", ""), "only") << linked.dump();
+  EXPECT_EQ(linked["litProps"], Json::array({s.figure})) << "itself and a repeat are dropped";
+
+  // all but the figure
+  ASSERT_TRUE(s.rig.cmd("prop.set", {{"prop", lamp}, {"light", {{"litMode", "except"}}}}).value("ok", false));
+  EXPECT_EQ(linkOf(s.rig, s.box).unlit, 0u);
+  EXPECT_EQ(linkOf(s.rig, s.figure).unlit, bit);
+
+  // the box casts it no shadow: its own bit of the TLAS mask's shadow slots
+  ASSERT_TRUE(s.rig.cmd("prop.set", {{"prop", lamp}, {"light", {{"shadowMode", "except"}, {"shadowProps", {s.box}}}}}).value("ok", false));
+  const uint8_t shadow = lampOf(s.rig, lamp)->shadowBit;
+  EXPECT_NE(shadow & INSTANCE_MASK_SHADOWS, 0);
+  EXPECT_EQ(shadow & ~INSTANCE_MASK_SHADOWS, 0);
+  EXPECT_EQ(linkOf(s.rig, s.box).unshadowed, shadow);
+  EXPECT_EQ(linkOf(s.rig, s.figure).unshadowed, 0);
+
+  // a group's members are listed with it; one step of the history each
+  const Json grouped = s.rig.cmd("prop.add", {{"kind", "group"}, {"name", "Set"}, {"props", {s.box}}});
+  ASSERT_TRUE(grouped.value("ok", false)) << grouped.dump();
+  const std::string group = grouped.at("result").at("prop").get<std::string>();
+  ASSERT_TRUE(s.rig.settle());
+  ASSERT_TRUE(s.rig.cmd("prop.set", {{"prop", lamp}, {"light", {{"litMode", "only"}, {"litProps", {group}}}}}).value("ok", false));
+  EXPECT_EQ(linkOf(s.rig, s.box).unlit, 0u);
+  EXPECT_EQ(linkOf(s.rig, s.figure).unlit, lampOf(s.rig, lamp)->litBit);
+  s.rig.cmd("history.undo");
+  EXPECT_EQ(linkOf(s.rig, s.figure).unlit, lampOf(s.rig, lamp)->litBit) << "except the figure again";
+  EXPECT_EQ(linkOf(s.rig, s.box).unlit, 0u);
+  EXPECT_EQ(s.rig.topic("scene")["props"][lamp]["light"].value("litMode", ""), "except");
+
+  // a bad mode is refused whole
+  set = s.rig.cmd("prop.set", {{"prop", lamp}, {"light", {{"litMode", "some"}}}});
+  EXPECT_FALSE(set.value("ok", true));
+
+  // a fourth lamp with shadows of its own finds no bit, and shadows as every lamp does
+  std::vector<std::string> more;
+  for(int i = 0; i < INSTANCE_SHADOW_SLOTS; i++)
+  {
+    more.push_back(s.rig.cmd("prop.add", {{"kind", "light"}}).at("result").at("prop").get<std::string>());
+    ASSERT_TRUE(s.rig.settle());
+    ASSERT_TRUE(s.rig.cmd("prop.set", {{"prop", more.back()}, {"light", {{"shadowMode", "except"}, {"shadowProps", {s.box}}}}}).value("ok", false));
+  }
+  EXPECT_NE(lampOf(s.rig, more[0])->shadowBit, 0);
+  EXPECT_EQ(lampOf(s.rig, more.back())->shadowBit, 0);
+
+  // with the lamp gone its bit is no one's
+  ASSERT_TRUE(s.rig.cmd("prop.remove", {{"prop", lamp}}).value("ok", false));
+  ASSERT_TRUE(s.rig.settle());
+  EXPECT_EQ(linkOf(s.rig, s.figure).unlit, 0u);
+  EXPECT_NE(lampOf(s.rig, more.back())->shadowBit, 0) << "the freed slot goes to the lamp that waited";
+}
+
+//--------------------------------------------------------------------------------------------------
 // Several selected: select's props, add and toggle, a Ctrl+Shift+click; the gizmo moves them together as one
 // step; a group holds them, ungrouped they keep their place.
 

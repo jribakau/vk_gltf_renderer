@@ -377,8 +377,7 @@ Json FvHost::Impl::journalState(const Json& scope)
         set["camera"]["targetDistance"] = p->camera.targetDistance;
       }
       else if(field == "light")
-        set["light"] = {{"type", p->light.type},     {"color", p->light.color}, {"intensity", p->light.intensity},
-                        {"radius", p->light.radius}, {"inner", p->light.inner}, {"outer", p->light.outer}};
+        set["light"] = lightJson(p->light);
     }
     if(set.size() > 1)
       ops.push_back(op("prop.set", set));
@@ -1263,8 +1262,7 @@ Json FvHost::Impl::propRecord(const Prop& p)
     rec["camera"]["targetDistance"] = p.camera.targetDistance;
   }
   if(p.kind == PropKind::eLight)
-    rec["light"] = {{"type", p.light.type},     {"color", p.light.color}, {"intensity", p.light.intensity},
-                    {"radius", p.light.radius}, {"inner", p.light.inner}, {"outer", p.light.outer}};
+    rec["light"] = lightJson(p.light);
   // a figure's or a model's part of a scene file, for when it loads again
   if(p.figure || p.model)
     rec["state"] = sceneState({{"prop", p.id}});
@@ -1319,6 +1317,10 @@ void FvHost::Impl::placeFrom(Prop& p, const Json& rec)
     p.light.radius    = l.value("radius", p.light.radius);
     p.light.inner     = l.value("inner", p.light.inner);
     p.light.outer     = l.value("outer", p.light.outer);
+    p.light.litMode     = l.value("litMode", p.light.litMode);
+    p.light.litProps    = l.value("litProps", p.light.litProps);
+    p.light.shadowMode  = l.value("shadowMode", p.light.shadowMode);
+    p.light.shadowProps = l.value("shadowProps", p.light.shadowProps);
   }
   // its place in the scene's order
   const auto self = std::find_if(props.begin(), props.end(), [&](const auto& q) { return q.get() == &p; });

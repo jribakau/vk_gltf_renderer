@@ -369,7 +369,7 @@ HostStruct gltfRenderNode()
 {
   using Self = GltfRenderNode;
   return {"GltfRenderNode", sizeof(Self), {
-    F(objectToWorld), F(worldToObject), F(materialID), F(renderPrimID), F(ownerID)
+    F(objectToWorld), F(worldToObject), F(materialID), F(renderPrimID), F(ownerID), F(unlit)
   }};
 }
 
@@ -394,7 +394,7 @@ HostStruct gltfLight()
   using Self = GltfLight;
   return {"GltfLight", sizeof(Self), {
     F(direction), F(type), F(position), F(radius), F(color), F(intensity), F(angularSizeOrInvRange), F(innerAngle),
-    F(outerAngle), F(iesProfile)
+    F(outerAngle), F(iesProfile), F(litBit), F(shadowMask), F(pad0), F(pad1)
   }};
 }
 

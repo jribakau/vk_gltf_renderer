@@ -421,8 +421,8 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       if(const fv::mat::Material* payload = drawnPayload(scene, residency, item.material))
       {
         const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(*payload);
-        if(row.mask != nvvkgltf::instanceMaskOf(bits, item.offCamera) || row.flags != bits.instanceFlags)
-          out.push_back(at("I1", s) + "its TLAS mask or flags are not its material's (less the camera's bit off camera)");
+        if(row.mask != nvvkgltf::instanceMaskOf(bits, item.offCamera, item.link.unshadowed) || row.flags != bits.instanceFlags)
+          out.push_back(at("I1", s) + "its TLAS mask or flags are not its material's (less the camera's bit off camera, and its linked lamps' shadow bits)");
       }
     }
 
@@ -432,6 +432,8 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
       out.push_back(at("I3", s) + "its render-node row is not the instance's");
     if(const MeshRecord* mesh = scene.mesh(inst.mesh); mesh && node.ownerID != Residency::renderNodeOwner(mesh->owner))
       out.push_back(at("I3", s) + "its render-node row's owner is not its mesh's");
+    if(node.unlit != item.link.unlit)
+      out.push_back(at("I3", s) + "its render-node row's unlit lamps are not its entity's link");
   }
 
   // holes: a zeroed row and a null TLAS row
@@ -768,6 +770,11 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
             nvvkgltf::packLight(record ? &record->payload : nullptr, item.world);
     if(!item.shown)
       light.intensity = 0.f;
+    if(record)
+    {
+      light.litBit     = record->litBit;
+      light.shadowMask = record->shadowBit ? uint32_t(record->shadowBit) : 0xFFu;
+    }
     lights.push_back(light);
   }
   // EXT_lights_ies: the store's profiles' samples end to end, which the lights' iesProfile index

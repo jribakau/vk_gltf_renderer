@@ -327,6 +327,82 @@ void FvHost::Impl::applyVisible(const Prop& p)
   renderer->hostScene().setOffCamera(p.root, p.offCamera);
 }
 
+// Light and shadow linking, from the lamps' lists to the scene. Each linked lamp takes a bit: one of
+// 32 for a lamp that lights only some props, one of the TLAS mask's INSTANCE_SHADOW_SLOTS for a lamp
+// only some props shadow; a lamp past them lights, or is shadowed by, everything, and is returned.
+// Each prop's root then says which of those lamps leave it dark or unshadowed (rs::LightLink), for
+// all that is under it down to the next prop's root. What is no prop (the backdrop's land and plants)
+// takes the bits of the "only" lamps, which light and are shadowed by their listed props alone.
+std::vector<std::string> FvHost::Impl::applyLightLinks()
+{
+  std::vector<std::string> unlinked;
+  if(!renderer->feedsHostScene())
+    return unlinked;
+  rs::RetainedScene& scene = renderer->hostScene();
+  struct Linked
+  {
+    const LightProp* light;
+    uint32_t         litBit;
+    uint8_t          shadowBit;
+  };
+  std::vector<Linked> linked;
+  int                 lit = 0, shadows = 0;
+  for(const auto& p : props)
+  {
+    if(p->kind != PropKind::eLight)
+      continue;
+    Linked l{&p->light, 0, 0};
+    if(p->light.litMode != "all" && lit < 32)
+      l.litBit = 1u << lit++;
+    if(p->light.shadowMode != "all" && shadows < INSTANCE_SHADOW_SLOTS)
+      l.shadowBit = uint8_t(INSTANCE_MASK_SHADOW_0 << shadows++);
+    if((p->light.litMode != "all" && !l.litBit) || (p->light.shadowMode != "all" && !l.shadowBit))
+      unlinked.push_back(p->id);
+    if(scene.light(p->lightRecord))
+      scene.setLightLinkBits(p->lightRecord, l.litBit, l.shadowBit);
+    if(l.litBit || l.shadowBit)
+      linked.push_back(l);
+  }
+  rs::LightLink rest;
+  for(const Linked& l : linked)
+  {
+    if(l.light->litMode == "only")
+      rest.unlit |= l.litBit;
+    if(l.light->shadowMode == "only")
+      rest.unshadowed |= l.shadowBit;
+  }
+  scene.setDefaultLightLink(rest);
+  // listed itself, or what it rides on or is grouped under
+  const auto listed = [&](const Prop& p, const std::vector<std::string>& ids) {
+    if(ids.empty())
+      return false;
+    std::shared_ptr<Prop> up;
+    for(const Prop* q = &p; q; q = up.get())
+    {
+      if(std::find(ids.begin(), ids.end(), q->id) != ids.end())
+        return true;
+      up = q->parent.empty() ? nullptr : findProp(q->parent);
+    }
+    return false;
+  };
+  for(const auto& p : props)
+  {
+    if(!scene.entity(p->root))
+      continue;
+    rs::LightLink link;
+    for(const Linked& l : linked)
+    {
+      // "only": dark unless listed; "except": dark when listed
+      if(l.litBit && listed(*p, l.light->litProps) != (l.light->litMode == "only"))
+        link.unlit |= l.litBit;
+      if(l.shadowBit && listed(*p, l.light->shadowProps) != (l.light->shadowMode == "only"))
+        link.unshadowed |= l.shadowBit;
+    }
+    scene.setLightLink(p->root, link);
+  }
+  return unlinked;
+}
+
 tinygltf::Light FvHost::Impl::lightPayload(const Prop& p) const
 {
   tinygltf::Light l;
@@ -417,8 +493,7 @@ Json FvHost::Impl::propJson(const Prop& p) const
     out["camera"]            = camera;
   }
   if(p.kind == PropKind::eLight)
-    out["light"] = {{"type", p.light.type},           {"color", p.light.color}, {"intensity", p.light.intensity},
-                    {"radius", p.light.radius},       {"inner", p.light.inner}, {"outer", p.light.outer}};
+    out["light"] = lightJson(p.light);
   return out;
 }
 
@@ -921,6 +996,8 @@ void FvHost::Impl::compose()
         p->figure->fig->morphs->cageOnly = [l = p->figure.get()](int mesh) { return l->feed && l->feed->refinesOnceFed(l->fig->loaded.scene, mesh); };
     }
   }
+  // the lamps' links, over the props as they now are (new roots, new parents, props gone)
+  applyLightLinks();
   // the first composition makes the scene resident, waited for; after it each frame's sync takes the changes
   if(!renderer->drawsRetainedScene())
   {
@@ -1251,6 +1328,36 @@ Json FvHost::Impl::propSet(const Json& args)
     if(l.contains("outer"))
       p->light.outer = std::clamp(l["outer"].get<double>(), 0.0, 1.5707);
     p->light.inner = std::min(p->light.inner, p->light.outer);
+    // light and shadow linking: a mode, and the props it is about (itself is none of them)
+    const auto mode = [&](const char* key, std::string& into) {
+      if(!l.contains(key))
+        return;
+      const std::string m = l[key].get<std::string>();
+      if(m != "all" && m != "only" && m != "except")
+        throw std::runtime_error(std::string("a light's ") + key + " is all, only or except");
+      into = m;
+    };
+    const auto ids = [&](const char* key, std::vector<std::string>& into) {
+      if(!l.contains(key))
+        return;
+      std::vector<std::string> v;
+      for(const Json& id : l[key])
+        if(const std::string s = id.get<std::string>(); s != p->id && std::find(v.begin(), v.end(), s) == v.end())
+          v.push_back(s);
+      into = std::move(v);
+    };
+    mode("litMode", p->light.litMode);
+    ids("litProps", p->light.litProps);
+    mode("shadowMode", p->light.shadowMode);
+    ids("shadowProps", p->light.shadowProps);
+    if(l.contains("litMode") || l.contains("litProps") || l.contains("shadowMode") || l.contains("shadowProps"))
+    {
+      const std::vector<std::string> unlinked = applyLightLinks();
+      if(std::find(unlinked.begin(), unlinked.end(), p->id) != unlinked.end())
+        notice(p->name + ": no more than " + std::to_string(INSTANCE_SHADOW_SLOTS)
+                   + " lights can have shadows of their own at once (32 can light only some things). This one lights and is shadowed by everything.",
+               "warning");
+    }
     if(l.contains("type") && l["type"].get<std::string>() != p->light.type)
     {
       const std::string type = l["type"].get<std::string>();

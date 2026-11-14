@@ -79,7 +79,11 @@
 //                   null (with a new parent, none unless given; alone, another bone of the same figure):
 //                   it rides on the bone, posed with it, its transform relative to the bone,
 //                   order?, camera?: {focalLength, dof, fStop, focusMode,
-//                   focusDistance, locked, targetDistance}, light?: {type, color, intensity, radius, inner, outer}}
+//                   focusDistance, locked, targetDistance}, light?: {type, color, intensity, radius, inner, outer,
+//                   litMode?: all | only | except, litProps?: [prop id] (what it lights: everything, only
+//                   the props listed with what rides on them and a group's members, or all but them),
+//                   shadowMode?, shadowProps? (likewise what casts its shadows; three lights at once can
+//                   have shadows of their own, a fourth is told so in a notice)}}
 //   prop.remove     {prop}                       what rode on it stays where it was in the world
 //   prop.duplicate  {prop}                       -> {prop}, or {job} for a figure (loaded again, its state put back)
 //   prop.drop       {prop | props: [id]}?        (the selection without either) down, or up out of what it

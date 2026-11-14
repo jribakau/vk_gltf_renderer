@@ -186,6 +186,44 @@ TEST(RetainedScene, OffCameraCascadesAndLeavesItShown)
   EXPECT_TRUE(scene.offCamera(a1));
 }
 
+// A light link is the entity's own, else the nearest parent's, else the scene's
+TEST(RetainedScene, ALightLinkIsTheNearestOrTheScenes)
+{
+  rs::RetainedScene  scene;
+  const rs::EntityId a  = scene.createEntity("a", {});
+  const rs::EntityId b  = scene.createEntity("b", {});
+  const rs::EntityId a1 = scene.createEntity("a1", {}, a);
+  const rs::EntityId a2 = scene.createEntity("a2", {}, a1);
+  scene.takeChanges();
+  EXPECT_EQ(scene.lightLink(a2), rs::LightLink{});
+
+  scene.setLightLink(a, rs::LightLink{.unlit = 0b01, .unshadowed = 0x10});
+  EXPECT_EQ(scene.lightLink(a2).unlit, 0b01u);
+  EXPECT_EQ(scene.lightLink(a2).unshadowed, 0x10);
+  EXPECT_EQ(scene.lightLink(b), rs::LightLink{});
+  rs::SceneChanges changes = scene.takeChanges();
+  EXPECT_TRUE(changes.visibility.count(a) && changes.visibility.count(a2));
+  EXPECT_FALSE(changes.visibility.count(b));
+  scene.setLightLink(a, rs::LightLink{.unlit = 0b01, .unshadowed = 0x10});
+  EXPECT_TRUE(scene.takeChanges().empty());
+
+  // a child's own replaces its parent's whole, an empty one too (a prop riding on a prop)
+  scene.setLightLink(a1, rs::LightLink{});
+  EXPECT_EQ(scene.lightLink(a2), rs::LightLink{});
+  EXPECT_EQ(scene.lightLink(a).unlit, 0b01u);
+  scene.setLightLink(a1, std::nullopt);
+  EXPECT_EQ(scene.lightLink(a2).unlit, 0b01u);
+
+  // the scene's reaches what has none up to its root, and nothing else
+  scene.takeChanges();
+  scene.setDefaultLightLink(rs::LightLink{.unlit = 0b10});
+  EXPECT_EQ(scene.lightLink(b).unlit, 0b10u);
+  EXPECT_EQ(scene.lightLink(a2).unlit, 0b01u);
+  EXPECT_TRUE(scene.takeChanges().visibility.count(b));
+  scene.setDefaultLightLink(rs::LightLink{.unlit = 0b10});
+  EXPECT_TRUE(scene.takeChanges().empty());
+}
+
 TEST(RetainedScene, RecordsGoWithTheirLastReference)
 {
   rs::RetainedScene    scene;

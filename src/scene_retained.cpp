@@ -433,6 +433,17 @@ uint32_t RetainedScene::addIesProfile(IesProfileRecord profile)
   return uint32_t(m_iesProfiles.size() - 1);
 }
 
+void RetainedScene::setLightLinkBits(LightId id, uint32_t litBit, uint8_t shadowBit)
+{
+  assertOwner();
+  if(auto* r = m_lights.get(id); r && (r->value.litBit != litBit || r->value.shadowBit != shadowBit))
+  {
+    r->value.litBit    = litBit;
+    r->value.shadowBit = shadowBit;
+    m_changes.lights.insert(id);
+  }
+}
+
 void RetainedScene::setLightShown(LightId id, bool shown)
 {
   assertOwner();
@@ -570,6 +581,26 @@ void RetainedScene::setOffCamera(EntityId id, bool offCamera)
     e->offCamera = offCamera;
     markVisibilityDirty(id);  // (the bounds are of what is there, seen or not)
   }
+}
+
+void RetainedScene::setLightLink(EntityId id, std::optional<LightLink> link)
+{
+  assertOwner();
+  if(Entity* e = m_entities.get(id); e && e->link != link)
+  {
+    e->link = link;
+    markVisibilityDirty(id);
+  }
+}
+
+void RetainedScene::setDefaultLightLink(LightLink link)
+{
+  assertOwner();
+  if(m_defaultLink == link)
+    return;
+  m_defaultLink = link;
+  for(EntityId r : m_roots)
+    markVisibilityDirty(r);
 }
 
 void RetainedScene::setMeshInstance(EntityId id, std::optional<MeshInstance> instance)
@@ -792,8 +823,8 @@ void RetainedScene::updateWorld()
 {
   if(!m_anyDirty)
     return;
-  const std::function<void(EntityId, const glm::mat4&, bool, bool, bool)> walk = [&](EntityId id, const glm::mat4& parentWorld, bool parentShown,
-                                                                                     bool parentOffCamera, bool force) {
+  const std::function<void(EntityId, const glm::mat4&, bool, bool, LightLink, bool)> walk = [&](EntityId id, const glm::mat4& parentWorld, bool parentShown,
+                                                                                                bool parentOffCamera, LightLink parentLink, bool force) {
     Derived&      d    = m_derived[id.index];
     const Entity& e    = m_entities[id];
     const bool    redo = force || d.dirty;
@@ -802,13 +833,14 @@ void RetainedScene::updateWorld()
       d.world     = parentWorld * e.local.local();
       d.shown     = parentShown && e.visible;
       d.offCamera = parentOffCamera || e.offCamera;
+      d.link      = e.link.value_or(parentLink);
       d.dirty     = false;
     }
     for(EntityId c : e.children)
-      walk(c, d.world, d.shown, d.offCamera, redo);
+      walk(c, d.world, d.shown, d.offCamera, d.link, redo);
   };
   for(EntityId r : m_roots)
-    walk(r, glm::mat4(1.f), true, false, false);
+    walk(r, glm::mat4(1.f), true, false, m_defaultLink, false);
   m_anyDirty = false;
 }
 
@@ -828,6 +860,12 @@ bool RetainedScene::offCamera(EntityId id)
 {
   updateWorld();
   return m_entities.contains(id) && m_derived[id.index].offCamera;
+}
+
+LightLink RetainedScene::lightLink(EntityId id)
+{
+  updateWorld();
+  return m_entities.contains(id) ? m_derived[id.index].link : LightLink{};
 }
 
 std::vector<glm::mat4> RetainedScene::jointMatrices(EntityId id)
@@ -955,7 +993,7 @@ std::vector<DrawItem> RetainedScene::drawItems()
       const MeshPart& part = e.mesh->parts[r.part];
       const uint32_t  slot = mesh(part.mesh)->submeshes[r.submesh].material;
       DrawItem        item{.entity = id, .mesh = part.mesh, .submesh = r.submesh,
-                           .material = slot < part.materials.size() ? part.materials[slot] : MaterialId{}, .world = d.world, .shown = d.shown, .offCamera = d.offCamera};
+                           .material = slot < part.materials.size() ? part.materials[slot] : MaterialId{}, .world = d.world, .shown = d.shown, .offCamera = d.offCamera, .link = d.link};
       if(e.mesh->copies.empty())
       {
         out.push_back(item);

@@ -53,6 +53,14 @@ NAMESPACE_SHADERIO_BEGIN()
 // An eye's tear film (a material with a chamber behind it, FV_materials_eye): the rays that look for
 // the film alone, from a point of the iris under it (EyeFilmMesh, eye_caustic.h.slang)
 #define INSTANCE_MASK_TEAR_FILM 0x08
+// Shadow linking: a lamp whose shadows only some instances cast traces its shadow rays with one of
+// these bits alone (GltfLight::shadowMask), and an instance that casts it none has that bit taken
+// away (rs::LightLink::unshadowed). Every other shadow ray sees every instance. Three lamps at once.
+#define INSTANCE_MASK_SHADOW_0 0x10
+#define INSTANCE_MASK_SHADOW_1 0x20
+#define INSTANCE_MASK_SHADOW_2 0x40
+#define INSTANCE_MASK_SHADOWS 0x70
+#define INSTANCE_SHADOW_SLOTS 3
 
 
 // Indices into `texturesHdr[]` (eTexturesHdr binding).

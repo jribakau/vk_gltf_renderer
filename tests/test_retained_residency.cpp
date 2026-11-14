@@ -278,6 +278,83 @@ TEST(RetainedResidency, OffCameraClearsTheRowsCameraBitAndKeepsItsBlas)
   EXPECT_EQ(maskOf(late).mask & INSTANCE_MASK_CAMERA, 0);
 }
 
+// Light and shadow linking: an entity's link reaches its instances' render nodes (the lamps that
+// leave them dark) and TLAS masks (the lamps they cast no shadow from), a lamp's bits its row of the
+// light table; the BLASes stay
+TEST(RetainedResidency, ALightLinkReachesTheNodeTheMaskAndTheLamp)
+{
+  RetainedScene  scene;
+  const EntityId room = scene.createEntity("room", {});
+  const EntityId wall = drawn(scene, "wall", scene.addMesh(gridMesh(2, 0.f)), {material(scene, "m")});
+  const EntityId vase = drawn(scene, "vase", scene.addMesh(gridMesh(2, 1.f)), {material(scene, "n")});
+  scene.setParent(wall, room);
+  tinygltf::Light l;
+  l.type                = "point";
+  l.intensity           = 10.0;
+  const LightId  rim    = scene.addLight({.owner = {1, -1}, .payload = l});
+  const EntityId holder = scene.createEntity("rim", {});
+  scene.setEntityLight(holder, rim);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  const auto slotOf = [&](EntityId e) {
+    for(uint32_t s = 0; s < residency.instanceCapacity(); s++)
+      if(const Residency::Instance* inst = residency.instance(s); inst && inst->entity == e)
+        return s;
+    return ~0u;
+  };
+  const auto maskOf  = [&](EntityId e) { return gpu.tlas(residency.tlas())->rows[slotOf(e)].mask; };
+  const auto unlitOf = [&](EntityId e) {
+    shaderio::GltfRenderNode node;
+    std::memcpy(&node, gpu.bytesAt(gpu.bufferAddress(residency.renderNodeTable()) + uint64_t(slotOf(e)) * sizeof(node), sizeof(node)).data(), sizeof(node));
+    return node.unlit;
+  };
+  const auto lamp = [&] {
+    shaderio::GltfLight light;
+    std::memcpy(&light, gpu.bytesAt(gpu.bufferAddress(residency.lightTable()), sizeof(light)).data(), sizeof(light));
+    return light;
+  };
+  EXPECT_EQ(maskOf(wall) & INSTANCE_MASK_SHADOWS, INSTANCE_MASK_SHADOWS);
+  EXPECT_EQ(unlitOf(wall), 0u);
+  EXPECT_EQ(lamp().litBit, 0u);
+  EXPECT_EQ(lamp().shadowMask, 0xFFu);
+  const auto blas = gpu.tlas(residency.tlas())->rows[slotOf(wall)].blas;
+
+  // the lamp lights all but the room, and the room casts it no shadow
+  scene.setLightLinkBits(rim, 0b100, INSTANCE_MASK_SHADOW_1);
+  scene.setLightLink(room, LightLink{.unlit = 0b100, .unshadowed = INSTANCE_MASK_SHADOW_1});
+  gpu.beginFrame();
+  SyncResult r = residency.sync(scene);
+  EXPECT_TRUE(r.changed);  // the picture starts again
+  EXPECT_FALSE(r.drawListChanged || r.visibilityChanged);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(unlitOf(wall), 0b100u);
+  EXPECT_EQ(unlitOf(vase), 0u);
+  EXPECT_EQ(maskOf(wall) & INSTANCE_MASK_SHADOWS, INSTANCE_MASK_SHADOW_0 | INSTANCE_MASK_SHADOW_2);
+  EXPECT_NE(maskOf(wall) & INSTANCE_MASK_CAMERA, 0);
+  EXPECT_EQ(maskOf(vase) & INSTANCE_MASK_SHADOWS, INSTANCE_MASK_SHADOWS);
+  EXPECT_EQ(lamp().litBit, 0b100u);
+  EXPECT_EQ(lamp().shadowMask, uint32_t(INSTANCE_MASK_SHADOW_1));
+  EXPECT_TRUE(gpu.tlas(residency.tlas())->rows[slotOf(wall)].blas == blas);
+
+  // and back
+  scene.setLightLinkBits(rim, 0, 0);
+  scene.setLightLink(room, std::nullopt);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(unlitOf(wall), 0u);
+  EXPECT_EQ(maskOf(wall) & INSTANCE_MASK_SHADOWS, INSTANCE_MASK_SHADOWS);
+  EXPECT_EQ(lamp().shadowMask, 0xFFu);
+
+  // the scene's own link reaches what has none
+  scene.setDefaultLightLink(LightLink{.unlit = 0b1});
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu);
+  EXPECT_EQ(unlitOf(vase), 0b1u);
+}
+
 TEST(RetainedResidency, AMoveRewritesTheRowsOfWhatMoved)
 {
   RetainedScene  scene;

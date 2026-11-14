@@ -421,6 +421,20 @@ struct LightRecord
   bool                    shown  = true;
   bool                    skySun = false;
   std::optional<IesLight> ies;  // in place of the payload's light
+  // Light and shadow linking (setLightLinkBits). `litBit`: its bit among LightLink::unlit, 0 for a
+  // light that lights everything. `shadowBit`: its bit among LightLink::unshadowed, one of
+  // INSTANCE_MASK_SHADOW_*, 0 for a light every instance shadows.
+  uint32_t litBit    = 0;
+  uint8_t  shadowBit = 0;
+};
+
+// Light and shadow linking, an entity's side: the linked lights that leave it dark
+// (LightRecord::litBit of each) and those it casts no shadow from (LightRecord::shadowBit of each).
+struct LightLink
+{
+  uint32_t unlit      = 0;
+  uint8_t  unshadowed = 0;
+  bool     operator==(const LightLink&) const = default;
 };
 
 struct CameraRecord
@@ -508,6 +522,9 @@ struct Entity
   // the camera's own rays and the picks, there for every other ray, so it still shades, bounces light
   // and shows in mirrors (shaderio.h INSTANCE_MASK_CAMERA). A wall between the camera and a room.
   bool offCamera = false;
+  // Its light link and that of what is under it, down to the next entity with one of its own
+  // (lightLink() gives the nearest); none up to the root: the scene's (setDefaultLightLink).
+  std::optional<LightLink>    link;
   std::optional<MeshInstance> mesh;
   LightId                     light;
   CameraId                    camera;
@@ -526,6 +543,7 @@ struct DrawItem
   glm::mat4  world = glm::mat4(1.f);
   bool       shown = true;
   bool       offCamera = false;  // the camera looks through it (Entity::offCamera, cascaded)
+  LightLink  link;               // the linked lights that leave it dark or unshadowed (Entity::link, the nearest)
 };
 
 struct LightItem
@@ -638,6 +656,8 @@ public:
   void setLight(LightId id, const tinygltf::Light& payload);
   void setLightIes(LightId id, std::optional<IesLight> ies);
   void setLightShown(LightId id, bool shown);
+  // Light and shadow linking: the light's bits among the entities' LightLink (LightRecord::litBit, shadowBit)
+  void setLightLinkBits(LightId id, uint32_t litBit, uint8_t shadowBit);
   void setSkySun(LightId id, bool skySun);
 
   // ---- IES profiles: append-only (a scene replace starts a new store); returns the profile's index,
@@ -658,6 +678,10 @@ public:
   void setVisible(EntityId id, bool visible);
   // The camera looks through the entity and what is under it (Entity::offCamera)
   void setOffCamera(EntityId id, bool offCamera);
+  // The linked lights that leave the entity and what is under it dark or unshadowed (Entity::link);
+  // none: its parent's. And the link of every entity with none up to its root.
+  void setLightLink(EntityId id, std::optional<LightLink> link);
+  void setDefaultLightLink(LightLink link);
   // Short of GPU memory, comes down last. Nothing to draw again: read when memory is next fitted.
   void setMaterialKeepFull(MaterialId id, bool on);
   // Draws `instance` (references its meshes, materials and skin); nullopt draws nothing.
@@ -692,6 +716,7 @@ public:
   glm::mat4 world(EntityId id);
   bool      shown(EntityId id);
   bool      offCamera(EntityId id);  // its own or a parent's
+  LightLink lightLink(EntityId id);  // its own, the nearest parent's, or the scene's
   // The joint matrices of the skin an entity's mesh instance draws with, from the world matrices:
   // inverse(world(id)) * world(joint) * the joint's inverse bind matrix, as
   // skinning takes them (identity for a joint that is gone).
@@ -775,12 +800,14 @@ private:
 
   SlotMap<Entity, EntityTag> m_entities;
   std::vector<EntityId>      m_roots;
+  LightLink                  m_defaultLink;  // of every entity with no link up to its root (setDefaultLightLink)
   // per entity slot: world matrix, cascaded visibility, and whether they are stale
   struct Derived
   {
     glm::mat4 world = glm::mat4(1.f);
     bool      shown = true;
     bool      offCamera = false;
+    LightLink link;
     bool      dirty = true;
     // for jointMatrices: this entity's matrix from the anchor, and the walk that last reached it
     glm::mat4 anchored  = glm::mat4(1.f);

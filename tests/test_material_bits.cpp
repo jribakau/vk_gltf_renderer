@@ -43,7 +43,7 @@ TEST(MaterialBits, AnOpaqueSurfaceIsSolidAndSkipsAnyHit)
 {
   const auto bits = materialBits(tinygltf::Material{});
   EXPECT_EQ(bits.instanceFlags, nvvkgltf::kInstanceForceOpaque);
-  EXPECT_EQ(bits.instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA);
+  EXPECT_EQ(bits.instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_SHADOWS);
   EXPECT_TRUE(bits.solid());
   EXPECT_FALSE(bits.solidDoubleSided() || bits.blend());
 }
@@ -85,7 +85,7 @@ TEST(MaterialBits, AWalkThroughSurfaceLeavesTheWalkMask)
   tinygltf::Value::Object extras;
   extras["fvWalkThrough"] = tinygltf::Value(true);
   m.extras                = tinygltf::Value(extras);
-  EXPECT_EQ(materialBits(m).instanceMask, INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA);
+  EXPECT_EQ(materialBits(m).instanceMask, INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_SHADOWS);
 }
 
 // An eye's tear film (a chamber behind it) is found by itself: the rays from the iris under it see
@@ -96,7 +96,7 @@ TEST(MaterialBits, ATearFilmHasAMaskBitOfItsOwn)
   film.transmission = fv::mat::Transmission{.factor = 1.0f};
   film.chamberIor   = 1.336f;
   film.walkThrough  = true;
-  EXPECT_EQ(materialBits(film).instanceMask, INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_TEAR_FILM);
+  EXPECT_EQ(materialBits(film).instanceMask, INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_SHADOWS | INSTANCE_MASK_TEAR_FILM);
   // not what lies in the chamber, nor a pane of glass
   fv::mat::Material iris;
   iris.inChamberIor = 1.336f;
@@ -114,11 +114,29 @@ TEST(MaterialBits, OffCameraAnInstanceLosesTheCamerasBitAlone)
   EXPECT_EQ(nvvkgltf::instanceMaskOf(bits, false), bits.instanceMask);
   const uint8_t off = nvvkgltf::instanceMaskOf(bits, true);
   EXPECT_EQ(off & INSTANCE_MASK_CAMERA, 0);
-  EXPECT_EQ(off, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER);
+  EXPECT_EQ(off, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_SHADOWS);
   EXPECT_NE(off & 0xFF, 0);
   // what no ray keeps stays out of every ray
   nvvkgltf::MaterialBits none;
   EXPECT_EQ(nvvkgltf::instanceMaskOf(none, true), 0);
+}
+
+// Shadow linking: a lamp whose shadows are its own traces them with one bit, which every instance
+// has but those that cast it none. Every other ray (0xFF, the camera's, a walk's) meets them as before
+TEST(MaterialBits, AnInstanceThatCastsALampNoShadowLosesThatLampsBitAlone)
+{
+  const auto bits = materialBits(tinygltf::Material{});
+  EXPECT_EQ(bits.instanceMask & INSTANCE_MASK_SHADOWS, INSTANCE_MASK_SHADOWS);
+  const uint8_t m = nvvkgltf::instanceMaskOf(bits, false, INSTANCE_MASK_SHADOW_1);
+  EXPECT_EQ(m & INSTANCE_MASK_SHADOW_1, 0);
+  EXPECT_EQ(m | INSTANCE_MASK_SHADOW_1, bits.instanceMask);
+  EXPECT_NE(m & INSTANCE_MASK_SHADOW_0, 0);
+  // only the shadow slots can be taken away so
+  EXPECT_EQ(nvvkgltf::instanceMaskOf(bits, false, 0xFF), bits.instanceMask & ~INSTANCE_MASK_SHADOWS);
+  // the slots are the bits the three masks name, one each
+  EXPECT_EQ(INSTANCE_MASK_SHADOW_0 | INSTANCE_MASK_SHADOW_1 | INSTANCE_MASK_SHADOW_2, INSTANCE_MASK_SHADOWS);
+  EXPECT_EQ(INSTANCE_MASK_SHADOW_0 << (INSTANCE_SHADOW_SLOTS - 1), INSTANCE_MASK_SHADOW_2);
+  EXPECT_EQ(INSTANCE_MASK_SHADOWS & (INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_TEAR_FILM), 0);
 }
 
 TEST(MaterialBits, ASurfaceNoRayKeepsLeavesEveryRay)
@@ -140,5 +158,5 @@ TEST(MaterialBits, ASurfaceNoRayKeepsLeavesEveryRay)
 
   tinygltf::Material ghost = transparent("BLEND", 0.0);  // a ghost light: emits, never seen
   ghost.emissiveFactor     = {1.0, 1.0, 1.0};
-  EXPECT_EQ(materialBits(ghost).instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA);
+  EXPECT_EQ(materialBits(ghost).instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_SHADOWS);
 }
