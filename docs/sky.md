@@ -453,9 +453,8 @@ the parameters reach somewhere Earth cannot.
 ### A small planet
 
 A planet that stands in the scene (the backdrop's `planet` kind, `src/fv_world.hpp`) is the sky's
-planet: `worldRadius` takes the atmosphere's radius, and `worldCentre` is where the eye's height is
-measured from, since the scene's lowest point is then the planet's far side. Neither is kept in a
-file; the host sets both.
+planet: `worldRadius` takes the atmosphere's radius, and `worldCentre` is where it is. Neither is
+kept in a file; the host sets both.
 
 The atmosphere's values describe air 60 km deep over a planet thousands of kilometres across. Over
 a planet 20 km in radius that would be three times the planet, so the air is scaled with it
@@ -466,9 +465,32 @@ small planet changes: the horizon is a few hundred metres off and the air toward
 sky goes dark a few kilometres up. The tables' lowest sun (`muSMin`) follows the geometry, because
 the top of such air sees the sun far below the level.
 
-What is not right yet: the sky still puts the planet's centre straight under the camera and stops
-the eye at the top of the air, so far from the origin and from above the air it is wrong; the sun is
-one colour for the whole planet, and the far side is lit by the origin's sky.
+**The sky has a place.** Without a planet the sky has none: its planet's centre is straight under
+whoever looks, and its light is one for the whole scene, measured where the bake's observer stands.
+A planet the camera flies round is neither, so with one every question of the sky is asked from a
+point of the scene, as kilometres from the planet's centre in the world's own axes
+(`shaders/sky_world.h.slang`; the frame carries `worldCentre` and `worldRadiusKm`, and callers
+branch on `skyHasWorld`, the other branch being the code as it was):
+
+- **What a ray sees** (`evalWorldSky`): the sky from where the ray set out, in the air or outside
+  it. A camera above the air sees black space, the air as a blue rim round the planet, and on its
+  night side the sunset as a ring. The sun's and the moon's disks and the stars are dimmed by the
+  air along the ray itself and hidden by the planet where it is, not cut at the origin's horizon.
+  The background is this whatever the lighting's background mode: a blurred copy of the origin's
+  image has the origin's ground across half of it.
+- **The air before what the camera hit** is marched over the part of the segment that lies in the
+  air, about the planet's true centre, in steps as much shorter as the air is shallower.
+- **The sun on a point** is its disk above the air through the air over that point
+  (`worldSunLightColor`): it reddens toward the planet's dusk and ends at its edge, so the far side
+  is dark. A ray that reaches the disk is weighed against that light with the same value.
+- **The sky's light on a point** is still the lighting field baked at the origin (the bake is what
+  makes it cheap to sample). Elsewhere it is turned so its zenith is the point's and its sun's
+  bearing the sun's, and scaled by what the sky gives a level surface there against at the origin
+  (`worldSkyLight`). An approximation: the sun's height in it stays the origin's, and with night at
+  the origin the day side's sky light is the night's image scaled up, the right brightness in the
+  wrong pattern. The sun's own light is right everywhere.
+
+What is not there yet: clouds, rain and haze on a planet; the night's glow seen from outside the air.
 
 ### What to set white balance to
 

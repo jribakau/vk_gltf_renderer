@@ -251,6 +251,8 @@ shaders/
 ├── invalid_samples.h.slang     # A frame's block of non-finite samples and guides: counts and the first pixels
 ├── gltf_light_ies.h.slang      # EXT_lights_ies: photometric-profile falloff lookup
 ├── sky_background.h.slang      # Background (sun-bearing) field for authored skies
+├── sky_world.h.slang           # The physical sky round a planet that stands in the scene: the sky a ray sees
+│                               #   from any place, the sun's and the sky's light at a point of the planet
 ├── water_optics.h.slang        # The ground's water as a medium (IOR, absorption, scattering) and its albedo; C++ too
 ├── sky_omi_shaderio.h.slang    # SkyType + the per-type OMI_environment_sky parameter blocks
 ├── sky_gradient.h.slang        # OMI `gradient` evaluator (bands + sun), shared by bake and background

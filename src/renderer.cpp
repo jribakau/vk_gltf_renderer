@@ -1232,6 +1232,13 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
       finfo.rainRate = m_rain.rate();
       finfo.rainTime = m_rainRingTime;
     }
+    // a planet that stands in the scene is the physical sky's: every question of the sky is asked
+    // from a place of it (shaders/sky_world.h.slang)
+    if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_resources.settings.worldRadius > 0.0F)
+    {
+      finfo.worldCentre   = m_resources.settings.worldCentre;
+      finfo.worldRadiusKm = m_resources.settings.worldRadius;
+    }
     finfo.landFadeFrom   = m_resources.settings.landFadeFrom;
     finfo.landFadeTo     = m_resources.settings.landFadeTo;
     finfo.shadowRayShare = std::clamp(m_resources.settings.ptShadowShare, 0.0F, 1.0F);

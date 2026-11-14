@@ -39,6 +39,7 @@
 #include "sky_bruneton_functions.h.slang"
 #include "sky_bruneton_io.h.slang"
 #include "sky_bruneton_radiance.h.slang"  // skyEyeRadius
+#include "sky_world.h.slang"              // a planet in the scene: the segment from where it is
 
 // Cheap test the call sites use to skip the work entirely.
 //
@@ -196,20 +197,22 @@ AerialMarch marchAerialPerspective(SkyAtmosphereParameters atmosphere,
                                    float                   skyRadius,
                                    float3                  displacement,
                                    float3                  sunDirection,
-                                   float2                  u)
+                                   float2                  u,
+                                   float                   maxStepKm = 0.25F,
+                                   int                     maxSteps  = 16,
+                                   bool                    glowed    = true)
 {
-  // One step per quarter kilometre, between one and sixteen: up to 4 km a step is at most 250 m,
-  // beyond that the sixteen steps lengthen with the segment, as every step did before. The air
-  // varies over kilometres (the aerosol's scale height is about 1.2 km), and the per-step
-  // integration below is analytic rather than a Riemann sum, so a step only has to be short against
-  // that scale. A room is metres deep and gets one step.
-  const float kMaxStepKm = 0.25F;
-  const int   kMaxSteps  = 16;
-
+  // One step per quarter kilometre, between one and sixteen (`maxStepKm`, `maxSteps` for the
+  // atmosphere's own planet): up to 4 km a step is at most 250 m, beyond that the sixteen steps
+  // lengthen with the segment, as every step did before. The air varies over kilometres (the
+  // aerosol's scale height is about 1.2 km), and the per-step integration below is analytic rather
+  // than a Riemann sum, so a step only has to be short against that scale. A room is metres deep and
+  // gets one step. A small planet's air is shallower and its steps as much shorter
+  // (evalAerialPerspective). `glowed`: with hazeGlow, below.
   const float  d      = length(displacement);
   const float3 dir    = displacement / d;
   const float  nu     = dot(dir, sunDirection);
-  const int    kSteps = clamp(int(ceil(d / kMaxStepKm)), 1, kMaxSteps);
+  const int    kSteps = clamp(int(ceil(d / maxStepKm)), 1, maxSteps);
 
   // Angular terms are constant along a straight segment, so they leave the loop.
   const float rayleighPhase = RayleighPhaseFunction(nu);
@@ -285,7 +288,7 @@ AerialMarch marchAerialPerspective(SkyAtmosphereParameters atmosphere,
   // In a haze, no less than the tables' light along the ray (hazeGlow)
   float3      glow   = float3(0.0F);
   const float weight = hazeGlowWeight(atmosphere);
-  if(weight > 0.0F)
+  if(glowed && weight > 0.0F)
   {
     const float3 table = hazeGlow(atmosphere, transmittanceTexture, scatteringTexture, singleMieScatteringTexture,
                                   normalize(observer) * skyRadius, dir, sunDirection, float3(1.0F) - throughput);
@@ -330,6 +333,23 @@ AerialMarch marchAerialPerspective(SkyAtmosphereParameters atmosphere,
 // for the segment between the eye and the first surface, which is what this models, and it says
 // nothing about the air *inside* the scene between later bounces -- correct at the scale a glTF
 // asset actually occupies, and the place to look first if someone ever renders a valley.
+//
+// With a planet in the scene (sky_world.h.slang) none of that mapping is needed: the eye and the
+// surface are where they are, kilometres from its centre, in the world's axes. The part of the
+// segment that lies in the air is marched, from where a camera outside it looks in, in steps as much
+// shorter as its air is shallower, and without the haze's glow, which is read at the origin's sky.
+AerialMarch noAerialMarch()
+{
+  AerialMarch none   = {};
+  none.inScatter     = float3(0.0F);
+  none.transmittance = float3(1.0F);
+  none.sunInScatter  = float3(0.0F);
+  none.sunEstimate   = float3(0.0F);
+  none.sunPoint      = 0.0F;
+  none.glow          = float3(0.0F);
+  return none;
+}
+
 AerialMarch evalAerialPerspective(float3                  worldPos,
                                   float3                  cameraPos,
                                   SceneFrameInfo*         frameInfo,
@@ -340,31 +360,66 @@ AerialMarch evalAerialPerspective(float3                  worldPos,
                                   Sampler2D<float3>       irradianceTexture,
                                   float2                  u)
 {
+  const bool   world          = skyHasWorld(frameInfo);
   const float  kmPerSceneUnit = 0.001F * frameInfo->aerialPerspectiveScale;
-  const float3 displacement   = quatRotateInverse(frameInfo->envRotation, (worldPos - cameraPos) * kmPerSceneUnit);
+  float3       displacement   = float3(0.0F);
+  if(world)
+    displacement = (worldPos - cameraPos) * 0.001F;
+  else
+    displacement = quatRotateInverse(frameInfo->envRotation, (worldPos - cameraPos) * kmPerSceneUnit);
 
   // A surface the eye is standing on has no air in front of it, and normalize() of a zero vector
   // is a NaN that would spread across the whole pixel.
   if(dot(displacement, displacement) < 1e-16F)
-  {
-    AerialMarch none;
-    none.inScatter     = float3(0.0F);
-    none.transmittance = float3(1.0F);
-    none.sunInScatter  = float3(0.0F);
-    none.sunEstimate   = float3(0.0F);
-    none.sunPoint      = 0.0F;
-    none.glow          = float3(0.0F);
-    return none;
-  }
+    return noAerialMarch();
 
-  // Up is +Y in the environment's frame, as it is in the bake: the model only reaches the world
-  // through dot products against this vector.
-  const float3 observer = float3(0.0F, atmosphere.bottomRadius + frameInfo->observerAltitudeKm, 0.0F);
-  const float3 sunDir   = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
-  const float  skyRadius =
-      skyEyeRadius(atmosphere, frameInfo->sunDisk->observerRadius, frameInfo->observerAltitudeKm, frameInfo->aerialPerspectiveScale);
+  float3 observer  = float3(0.0F);
+  float3 sunDir    = float3(0.0F);
+  float  skyRadius = 0.0F;
+  float  maxStepKm = 0.25F;
+  int    maxSteps  = 16;
+  // the share of the segment that is marched, and where along it that begins (a planet's)
+  float from  = 0.0F;
+  float share = 1.0F;
+  if(world)
+  {
+    observer  = skyWorldPoint(frameInfo, cameraPos);
+    sunDir    = frameInfo->sunDirection;
+    skyRadius = atmosphere.bottomRadius;  // hazeGlow's, which a planet's air is not raised by
+    // what of the segment lies in the air: none of it for a ray that passes over it, and a camera
+    // above it looks through nothing until it comes to its top
+    const float  d    = length(displacement);
+    const float3 dir  = displacement / d;
+    const float  r    = length(observer);
+    const float  rmu  = dot(observer, dir);
+    const float  disc = rmu * rmu - r * r + atmosphere.topRadius * atmosphere.topRadius;
+    if(disc <= 0.0F)
+      return noAerialMarch();
+    const float root  = sqrt(disc);
+    const float enter = max(-rmu - root, 0.0F);
+    const float leave = min(-rmu + root, d);
+    if(!(leave - enter > 1e-7F))
+      return noAerialMarch();
+    observer += dir * enter;
+    displacement = dir * (leave - enter);
+    from         = enter / d;
+    share        = (leave - enter) / d;
+    // a step as short against this air's depth as a quarter kilometre is against the 60 km the
+    // atmosphere's settings are for, and twice as many: the camera may look down through all of it
+    maxStepKm = 0.25F * (atmosphere.topRadius - atmosphere.bottomRadius) / 60.0F;
+    maxSteps  = 32;
+  }
+  else
+  {
+    // Up is +Y in the environment's frame, as it is in the bake: the model only reaches the world
+    // through dot products against this vector.
+    observer  = float3(0.0F, atmosphere.bottomRadius + frameInfo->observerAltitudeKm, 0.0F);
+    sunDir    = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
+    skyRadius = skyEyeRadius(atmosphere, frameInfo->sunDisk->observerRadius, frameInfo->observerAltitudeKm, frameInfo->aerialPerspectiveScale);
+  }
   AerialMarch march = marchAerialPerspective(atmosphere, transmittanceTexture, scatteringTexture, singleMieScatteringTexture,
-                                             irradianceTexture, observer, skyRadius, displacement, sunDir, u);
+                                             irradianceTexture, observer, skyRadius, displacement, sunDir, u, maxStepKm, maxSteps, !world);
+  march.sunPoint    = from + march.sunPoint * share;
 
   // Under a cloud the air in the scene is in its shadow as well as the scene is. The sums take the
   // share at the scene's origin (SkySunDisk::cloudShadow, 1 under a clear sky); the one-sample

@@ -498,6 +498,11 @@ struct SceneFrameInfo
   // moment, as a photograph does). (Appended.)
   float rainRate = 0.0F;
   float rainTime = 0.0F;
+  // A planet that stands in the scene under the physical sky (src/fv_world.hpp,
+  // shaders/sky_world.h.slang): its centre, world space, and its radius in km (0: none, and the sky
+  // has no place, as before). (Appended.)
+  float3 worldCentre   = {0.0F, 0.0F, 0.0F};
+  float  worldRadiusKm = 0.0F;
 };
 
 enum PathtracerFlags

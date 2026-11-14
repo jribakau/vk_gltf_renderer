@@ -708,17 +708,30 @@ GltfLight getPunctualLightAt(int index, float3 pos)
 {
   GltfLight light = getPunctualLight(index);
   if(index == skySunPunctualIndex())
+  {
     light.color *= cloudSunShare(pos, pushConst.frameInfo);
+    // on a planet in the scene, through the air over the point itself (sky_world.h.slang)
+    if(skyHasWorld(pushConst.frameInfo))
+      light.color = worldSunLightColor(pos, pushConst.frameInfo);
+  }
   return light;
 }
 
-// The environment's pick estimate (light_pick.h.slang), 0 where there is none to sample.
-float environmentPickEstimate()
+// The environment's pick estimate (light_pick.h.slang) at `pos`, 0 where there is none to sample.
+// On a planet in the scene the sky's light is the place's (worldSkyLight's scale): next to nothing
+// on its night side, where the pick is the moon's and the lamps'.
+float environmentPickEstimate(float3 pos)
 {
   SceneFrameInfo* frameInfo = pushConst.frameInfo;
   if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneUseNoEnvironment))
     return 0.0F;
-  return max(frameInfo->envPickEstimate * frameInfo->envIntensity, 0.0F);
+  const float estimate = max(frameInfo->envPickEstimate * frameInfo->envIntensity, 0.0F);
+  if(estimate > 0.0F && skyHasWorld(frameInfo))
+  {
+    const float3 scale = worldSkyLightAt(pos, frameInfo).scale;
+    return estimate * max(scale.x, max(scale.y, scale.z));
+  }
+  return estimate;
 }
 
 float punctualPickEstimate(GltfLight light, float3 pos, float3 normal, bool cull)
@@ -1185,7 +1198,7 @@ LightPickSet lightPickScore(float3 pos, float3 normal, bool cull, bool draw, ino
   LightPickSet s;
   const int numPunctual = punctualLightCount();
   const int sunIndex    = skySunPunctualIndex();
-  s.envEstimate         = environmentPickEstimate();
+  s.envEstimate         = environmentPickEstimate(pos);
   s.uniform             = numPunctual > LIGHT_PICK_MAX_LIGHTS;
   s.total               = s.envEstimate;
   s.lights              = 0;
@@ -1343,6 +1356,14 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
       directLight.pdf             = set.pick.env * envPdf;  // left as 0 otherwise -> caller skips NEE
       directLight.radianceOverPdf = radiance_pdf.xyz * pushConst.frameInfo->envIntensity / directLight.pdf;
       directLight.direction       = quatRotate(pushConst.frameInfo->envRotation, directLight.direction);
+      // On a planet in the scene the field is the origin's sky: its direction as this place's, and
+      // its light scaled to the sky's here (sky_world.h.slang). A turn of the frame: the pdf stands.
+      if(skyHasWorld(pushConst.frameInfo))
+      {
+        const WorldSkyLight sky   = worldSkyLightAt(pos, pushConst.frameInfo);
+        directLight.direction     = worldSkyFromField(sky, directLight.direction);
+        directLight.radianceOverPdf *= sky.scale;
+      }
 #if USE_LIGHT_RIS
       directLight.reuseKind = LIGHT_REUSE_ENVIRONMENT;
       directLight.reuseUv   = lightReuseOctEncode(directLight.direction);
@@ -1663,9 +1684,19 @@ ReusedLight evaluateReusedLight(LightReuseRecord r, float3 pos, float3 normal, L
       return l;
     float3 envColor;
     float  envPdf;
-    sampleEnvironment(dir, pushConst.frameInfo, envColor, envPdf);
+    // on a planet in the scene, as the light sample reads the field at this place (sampleLightDraw)
+    float3 fieldDir   = dir;
+    float3 fieldScale = float3(1.0F);
+    if(skyHasWorld(pushConst.frameInfo))
+    {
+      const WorldSkyLight sky = worldSkyLightAt(pos, pushConst.frameInfo);
+      fieldDir                = worldSkyToField(sky, dir);
+      fieldScale              = sky.scale;
+    }
+    sampleEnvironment(fieldDir, pushConst.frameInfo, envColor, envPdf);
+    envColor *= fieldScale;
     if(compensatedEnv)
-      envPdf = environmentCompensatedPdfAt(dir, pushConst.frameInfo);
+      envPdf = environmentCompensatedPdfAt(fieldDir, pushConst.frameInfo);
     l.direction = dir;
     l.radiance  = envColor;
     l.pdf       = pick.env * envPdf;
@@ -3273,7 +3304,9 @@ bool tryPrimaryMissBackplate(RayDesc ray, SceneFrameInfo* frameInfo, inout PathT
     return true;
   }
 
-  if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneUseHdrEnvironment) && frameInfo->envBlur > 0)
+  // (Not with a planet in the scene: its sky is seen from where the camera is, and a blurred copy of
+  // the origin's has the origin's ground across half of it. sky_world.h.slang)
+  if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneUseHdrEnvironment) && frameInfo->envBlur > 0 && !skyHasWorld(frameInfo))
   {
     float3 dir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
     float2 uv  = getSphericalUv(dir);

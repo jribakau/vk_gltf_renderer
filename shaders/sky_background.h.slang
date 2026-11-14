@@ -151,6 +151,23 @@ float3 evalSunDiskBackground(float3 dir, SceneFrameInfo* frameInfo)
   return light + evalMoonDisk(dir, frameInfo, disk);
 }
 
+// The same bodies with a planet in the scene (sky_world.h.slang), where no horizon of the origin's cuts
+// them: the planet itself is in the way where it is. `radiance` is the sun's disk above the air and
+// `through` what the air along the ray leaves of it, from where the ray set out.
+float3 evalWorldDisks(float3 dir, SceneFrameInfo* frameInfo, float3 radiance, float3 through)
+{
+  SkySunDisk disk  = *frameInfo->sunDisk;
+  float3     light = float3(0.0F);
+  if(frameInfo->skyLightIsMoon == 0)
+  {
+    const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
+    if(dot(dir, sunDir) >= disk.cosAngularRadius)
+      light = radiance * through * frameInfo->skySunScale;
+  }
+  disk.moonRadiance = radiance * through;
+  return light + evalMoonDisk(dir, frameInfo, disk);
+}
+
 // The sky's own sun, as a light.
 //
 // The sun belongs to the sky, not to the scene. A glTF directional light is a delta light with no

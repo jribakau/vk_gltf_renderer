@@ -687,7 +687,8 @@ void FvHost::Impl::turnLook(const glm::dvec2& pixels)
 
 // Flying: while the right button is held, the movement keys move the view at a steady speed for the
 // time since the last frame: W and S along where it looks, A and D to its sides, E and Q along the
-// world's up. Once a frame, after the input.
+// view's up. Once a frame, after the input. Over a planet the speed goes with the height over its
+// ground (fv::world::flySpeed), so a flight that crosses a room in two seconds reaches orbit in twenty.
 void FvHost::Impl::applyFly()
 {
   const auto now    = std::chrono::steady_clock::now();
@@ -718,6 +719,7 @@ void FvHost::Impl::applyFly()
   // diagonally no faster than straight
   if(glm::length(direction) > 1.0)
     direction = glm::normalize(direction);
-  const glm::dvec3 step = direction * (fly.speed * fly.scale * (fly.fast ? kFlyFast : 1.0) * seconds);
+  const double     speed = planetBuilt && planetBuilt->selected ? fv::world::flySpeed(planetBuilt->eyeHeight, fly.speed) : fly.speed;
+  const glm::dvec3 step  = direction * (speed * fly.scale * (fly.fast ? kFlyFast : 1.0) * seconds);
   manip->setLookat(eye + step, center + step, up, true);
 }

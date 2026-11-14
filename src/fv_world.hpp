@@ -31,7 +31,9 @@
 // backdrop's root, whose origin is the figures' floor.
 //-------------------------------------------------------------------------------------------------------
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <compare>
 #include <cstdint>
 #include <memory>
@@ -179,6 +181,21 @@ glm::dvec3 toScene(const World& world, const glm::dvec3& direction, double eleva
 glm::dvec3 toPlanet(const World& world, const glm::dvec3& point, double* fromCentre = nullptr);
 // How high a scene point is over the ground or the sea under it
 double heightOver(const World& world, const glm::dvec3& point);
+
+// A camera's "up" at `eye` (the scene's frame). By the site it is the scene's +y, which the figures
+// stand along; away from it the planet's own vertical there, so the horizon stays level all the way
+// round. Eased from one to the other between these shares of the radius from the origin.
+inline constexpr double kUpOwnFrom = 0.01, kUpOwnTo = 0.1;
+glm::dvec3 viewUp(const World& world, const glm::dvec3& eye);
+// How fast a flight goes at `height` over the ground, scene units a second: its own height in two
+// seconds, and no slower than `slowest`, a flight's speed among the figures.
+inline constexpr double kFlyHeightsASecond = 0.5;
+inline double flySpeed(double height, double slowest)
+{
+  return std::max(slowest, kFlyHeightsASecond * std::abs(height));
+}
+// The far plane a view from `eye` needs: past the planet's far side.
+double farPlane(const World& world, const glm::dvec3& eye);
 
 // ---- which quads draw ------------------------------------------------------------------------------
 

@@ -836,8 +836,14 @@ needs no kit.
   probe (`ptCameraMedium`) must be off, as the app has it: its ray passes through the ground and
   meets the far side's sea from behind.
 - **The sky** takes the planet's radius, its air scaled to it, and its centre (`worldRadius`,
-  `worldAirScale`, `worldCentre`; [sky.md](sky.md#a-small-planet)). Clouds, rain and the haze are
-  laid out on a level plane round the origin and are off while a planet stands.
+  `worldAirScale`, `worldCentre`), and is then asked every question from a place of the planet: what
+  a ray sees from inside the air or from orbit, the sun's light at a hit, the sky's light there
+  ([sky.md](sky.md#a-small-planet)). Clouds, rain and the haze are laid out on a level plane round
+  the origin and are off while a planet stands.
+- **The camera** (`FvHost::Impl::followPlanet`, `applyFly`): the free view's "up" is the scene's by
+  the figures and the planet's own vertical away from them (`fv::world::viewUp`), so the horizon
+  stays level on the far side; a flight's speed goes with its height over the ground
+  (`fv::world::flySpeed`); the far plane is kept past the planet's far side.
 
 ## The pixel readout
 

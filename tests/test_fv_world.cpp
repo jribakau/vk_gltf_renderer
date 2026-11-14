@@ -246,6 +246,47 @@ TEST(WorldSite, APlanetNearlyAllSeaStillHasOne)
   EXPECT_GT(w.frame.siteElevation, 0.0);
 }
 
+TEST(WorldSite, UpIsTheScenesByTheFiguresAndThePlanetsFarFromThem)
+{
+  const W::World& w = planet();
+  const double    R = w.spec.radius;
+  // by the site, and well over it: the scene's +y exactly
+  for(const glm::dvec3 eye : {glm::dvec3(0.0, 1.7, 0.0), glm::dvec3(30.0, 2.0, -40.0), glm::dvec3(0.0, 0.009 * R, 0.0)})
+    EXPECT_EQ(W::viewUp(w, eye), glm::dvec3(0.0, 1.0, 0.0));
+  // straight over the site, however high: still +y, which is the planet's vertical there
+  EXPECT_NEAR(glm::distance(W::viewUp(w, glm::dvec3(0.0, 3.0 * R, 0.0)), glm::dvec3(0.0, 1.0, 0.0)), 0.0, 1e-9);
+  // a quarter round and on the far side: the planet's own vertical
+  const glm::dvec3 side = w.frame.centre + glm::dvec3(1.2 * R, 0.0, 0.0);
+  EXPECT_NEAR(glm::distance(W::viewUp(w, side), glm::dvec3(1.0, 0.0, 0.0)), 0.0, 1e-9);
+  const glm::dvec3 under = w.frame.centre - glm::dvec3(0.0, 1.5 * R, 0.0);
+  EXPECT_NEAR(glm::distance(W::viewUp(w, under), glm::dvec3(0.0, -1.0, 0.0)), 0.0, 1e-9);
+  // in between it turns without a jump, and is always a unit vector
+  glm::dvec3 was = W::viewUp(w, glm::dvec3(0.0, 2.0, 0.0));
+  for(int i = 1; i <= 400; i++)
+  {
+    const double     a   = 0.5 * double(i) / 400.0;  // radians round the planet
+    const glm::dvec3 eye = w.frame.centre + (R + 50.0) * glm::dvec3(std::sin(a), std::cos(a), 0.0);
+    const glm::dvec3 up  = W::viewUp(w, eye);
+    EXPECT_NEAR(glm::length(up), 1.0, 1e-9);
+    EXPECT_LT(glm::distance(up, was), 0.01) << i;
+    was = up;
+  }
+}
+
+TEST(WorldSite, AFlightGoesWithItsHeightAndTheFarPlaneClearsThePlanet)
+{
+  const W::World& w = planet();
+  EXPECT_DOUBLE_EQ(W::flySpeed(1.0, 3.0), 3.0);        // among the figures: as before
+  EXPECT_DOUBLE_EQ(W::flySpeed(2000.0, 3.0), 1000.0);  // two kilometres up: one a second
+  for(const double height : {2.0, 5000.0, 300000.0})
+  {
+    const glm::dvec3 eye = eyeAt(w, height);
+    // the far side's farthest point from the eye
+    const double farthest = glm::length(eye - w.frame.centre) + w.spec.radius * 1.05;
+    EXPECT_GT(W::farPlane(w, eye), farthest);
+  }
+}
+
 TEST(WorldSelect, TheQuadsCoverTheSphereOnceFromAnyHeight)
 {
   const W::World& w = planet();

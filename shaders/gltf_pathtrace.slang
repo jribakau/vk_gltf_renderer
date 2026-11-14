@@ -81,6 +81,7 @@ static bool doDebug = false;
 #include "eye_caustic.h.slang"
 #include "aperture.h.slang"
 #include "sky_bruneton_radiance.h.slang"
+#include "sky_world.h.slang"
 #include "sky_clouds.h.slang"
 #include "sky_clouds_air.h.slang"
 #include "sky_clouds_io.h.slang"
@@ -256,12 +257,14 @@ float3 evalNightSky(float3 worldDir, float eyeRadius, SceneFrameInfo* frameInfo)
 // as a pixel (or the air's arcminute of seeing), so its light lands whole whatever the jitter and
 // DLSS-RR sees a steady spot, not a point that comes and goes with the jitter (which it smeared), dimmed
 // by the air on the way. The camera's and a mirror's alone: their light is in the glow's.
-float3 evalStars(float3 worldDir, SceneFrameInfo* frameInfo)
+// With a planet in the scene (`world`; sky_world.h.slang) no horizon cuts them, and `worldThrough` is
+// what the air along the ray leaves of them (none where the planet is).
+float3 evalStars(float3 worldDir, SceneFrameInfo* frameInfo, bool world = false, float3 worldThrough = float3(1.0F))
 {
   if(!(frameInfo->nightScale > 0.0F) || frameInfo->nightStars == nullptr || frameInfo->nightStarCells == nullptr)
     return float3(0.0F);
   const float3 dir = quatRotateInverse(frameInfo->envRotation, worldDir);
-  if(dir.y <= 0.0F)
+  if(world ? !any(worldThrough > 0.0F) : dir.y <= 0.0F)
     return float3(0.0F);
   const float3 v      = float3(dot(worldDir, frameInfo->celestialX), dot(worldDir, frameInfo->celestialY), dot(worldDir, frameInfo->celestialZ));
   const float  sigma  = max(pushConst.pixelAngle, 2.9e-4F);
@@ -296,7 +299,9 @@ float3 evalStars(float3 worldDir, SceneFrameInfo* frameInfo)
     return float3(0.0F);
   // the spot's light is the star's: its peak its illuminance over the spot's solid angle
   const float  sunIlluminance = sunAboveAirRadiance() * M_PI * g_atmosphere.sunAngularRadius * g_atmosphere.sunAngularRadius;
-  const float3 through        = GetTransmittanceToSun(g_atmosphere, g_transmittance, g_atmosphere.bottomRadius + frameInfo->observerAltitudeKm, dir.y);
+  float3 through = worldThrough;
+  if(!world)
+    through = GetTransmittanceToSun(g_atmosphere, g_transmittance, g_atmosphere.bottomRadius + frameInfo->observerAltitudeKm, dir.y);
   return frameInfo->nightScale * sunIlluminance * through * sum / (M_TWO_PI * sigma * sigma);
 }
 
@@ -406,6 +411,85 @@ float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
   if(g_skyStars.y <= 0.0F)
     g_skyStars = float2(luminance(stars), max(luminance(sky), 1e-30F));
   return sky + evalSunDiskBackground(quatRotateInverse(frameInfo->envRotation, worldDir), frameInfo) * cloudsLeave + stars;
+}
+
+// ---- with a planet in the scene (sky_world.h.slang) --------------------------------------------------
+
+// The sun's disk above the air, in the sky's units: what SkySunDisk::radiance is before the air.
+float3 worldSunSpaceRadiance()
+{
+  return g_atmosphere.solarIrradiance / (M_PI * g_atmosphere.sunAngularRadius * g_atmosphere.sunAngularRadius) * SUN_RADIANCE_TO_LUMINANCE;
+}
+
+// What the air leaves of the sky's light (the sun's, or the moon's) on its way to `worldPos`.
+float3 worldSunThroughAt(float3 worldPos, SceneFrameInfo* frameInfo)
+{
+  return worldSunThrough(g_atmosphere, g_transmittance, skyWorldPoint(frameInfo, worldPos), frameInfo->sunDirection);
+}
+
+// The sky's sun as it lights `worldPos`: makeSkySunLight()'s colour through the air over the point
+// itself, not over the origin, so the light reddens toward the planet's dusk and ends at its edge.
+float3 worldSunLightColor(float3 worldPos, SceneFrameInfo* frameInfo)
+{
+  const float solidAngle = M_TWO_PI * (1.0F - cos(frameInfo->sunDisk->angularRadius));
+  return worldSunSpaceRadiance() * worldSunThroughAt(worldPos, frameInfo) * (solidAngle * frameInfo->envIntensity * frameInfo->skySunScale);
+}
+
+// That light's disk along `worldDir` as a ray from `origin` sees it, before `envIntensity`: what an
+// escaped ray is weighed with against the light sample of the vertex it left (evalSkySunDisk's).
+float3 evalWorldLightDisk(float3 origin, float3 worldDir, SceneFrameInfo* frameInfo)
+{
+  if(dot(worldDir, frameInfo->sunDirection) < frameInfo->sunDisk->cosAngularRadius)
+    return float3(0.0F);
+  return worldSunSpaceRadiance() * worldSunThroughAt(origin, frameInfo) * frameInfo->skySunScale;
+}
+
+// The sky's light at `worldPos`, from the lighting field baked at the origin (worldSkyLight).
+WorldSkyLight worldSkyLightAt(float3 worldPos, SceneFrameInfo* frameInfo)
+{
+  return worldSkyLight(g_atmosphere, g_irradiance, skyWorldPoint(frameInfo, worldPos), frameInfo->sunDisk->observerRadius,
+                       frameInfo->sunDirection, frameInfo->skySecondDirection, frameInfo->skySecondScale);
+}
+
+// What a ray from `origin` sees of the physical sky, before `envIntensity`: evalPhysicalSky from where
+// the ray is, in the air or outside it, and with `bodies` evalPhysicalSkyBackground: the disks and
+// the stars through the air along the ray itself. No clouds: a planet has none yet.
+float3 evalWorldSky(float3 origin, float3 worldDir, SceneFrameInfo* frameInfo, bool bodies)
+{
+  const float3 eye     = skyWorldPoint(frameInfo, origin);
+  float3       through = float3(1.0F);
+  float3       sky     = float3(0.0F);
+  // the sky's light's own sky, then the other body's (the moon's at twilight, the sun's twilight once
+  // the moon is the light); one loop, so the tables' reads are inlined once
+  const int lights = frameInfo->skySecondScale > 0.0F ? 2 : 1;
+  for(int i = 0; i < lights; ++i)
+  {
+    float3 leaves = float3(1.0F);
+    float3 toward = frameInfo->sunDirection;
+    float  scale  = 1.0F;
+    if(i == 1)
+    {
+      toward = frameInfo->skySecondDirection;
+      scale  = frameInfo->skySecondScale;
+    }
+    sky += scale * evalWorldSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, eye, worldDir, toward, leaves);
+    if(i == 0)
+      through = leaves;
+  }
+  // the night's: the Milky Way past the air, and from inside it the air's own glow
+  if(frameInfo->nightScale > 0.0F && any(through > 0.0F))
+  {
+    const float3 v    = float3(dot(worldDir, frameInfo->celestialX), dot(worldDir, frameInfo->celestialY), dot(worldDir, frameInfo->celestialZ));
+    const float  r    = length(eye);
+    const float  glow = r < g_atmosphere.topRadius ? NIGHT_GLOW_ZENITH * nightGlowPath(max(dot(eye, worldDir) / r, 0.0F), g_atmosphere.bottomRadius) : 0.0F;
+    sky += frameInfo->nightScale * sunAboveAirRadiance() * through * (glow * nightGlowColor() + NIGHT_GLOW_ZENITH * milkyWay(v));
+  }
+  if(!bodies)
+    return sky;
+  const float3 stars = evalStars(worldDir, frameInfo, true, through);
+  if(g_skyStars.y <= 0.0F)
+    g_skyStars = float2(luminance(stars), max(luminance(sky), 1e-30F));
+  return sky + evalWorldDisks(quatRotateInverse(frameInfo->envRotation, worldDir), frameInfo, worldSunSpaceRadiance(), through) + stars;
 }
 
 // A lobe whose pdf at the sampled direction is above this, per steradian, is narrower than about a
@@ -921,7 +1005,28 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       float3     envColor;
       float      envPdf = 0.0F;  // unread on a delta bounce: the MIS weight there is 1 whatever it is
       const bool delta  = pt.lastSamplePdf == DIRAC;
-      if(delta && hasAuthoredSkyBackground(frameInfo->envSkyType))
+      const bool world  = skyHasWorld(frameInfo);
+      if(world)
+      {
+        // A planet in the scene (sky_world.h.slang): the sky from where the ray set out. What the
+        // camera, a mirror or a narrow lobe sees is evaluated there; every other ray reads the
+        // lighting field as that place has it, weighed against the light sample that read it so.
+        const bool seen = delta || pt.lastSamplePdf > SKY_NARROW_LOBE_PDF;
+        envColor        = float3(0.0F);
+        if(seen)
+          envColor = evalWorldSky(ray.Origin, ray.Direction, frameInfo, delta) * frameInfo->envIntensity;
+        if(!delta)
+        {
+          const WorldSkyLight light    = worldSkyLightAt(ray.Origin, frameInfo);
+          const float3        fieldDir = worldSkyToField(light, ray.Direction);
+          float3              field    = float3(0.0F);
+          sampleEnvironment(fieldDir, frameInfo, field, envPdf);
+          envPdf = environmentCompensatedPdfAt(fieldDir, frameInfo);
+          if(!seen)
+            envColor = field * light.scale;
+        }
+      }
+      else if(delta && hasAuthoredSkyBackground(frameInfo->envSkyType))
       {
         const float3 bgDir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
         envColor           = evalAuthoredSkyBackground(bgDir, frameInfo) * frameInfo->envIntensity;
@@ -973,7 +1078,12 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         {
           const float3 bgDir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
           // through the clouds over where the ray set out, as the light sample it is weighed against
-          const float3 disk  = evalSkySunDisk(bgDir, frameInfo) * cloudSunShare(ray.Origin, frameInfo);
+          // (on a planet in the scene, through the air over it)
+          float3 disk = float3(0.0F);
+          if(world)
+            disk = evalWorldLightDisk(ray.Origin, ray.Direction, frameInfo);
+          else
+            disk = evalSkySunDisk(bgDir, frameInfo) * cloudSunShare(ray.Origin, frameInfo);
           if(any(disk > 0.0F))
             addRadiance(pt, pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf, pt.lightPick) * disk * frameInfo->envIntensity, indirect);
         }

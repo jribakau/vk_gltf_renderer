@@ -589,6 +589,25 @@ double heightOver(const World& world, const glm::dvec3& point)
   return over - std::max(sample(world, d, std::max(0.05 * std::abs(first), 1.0)).elevation, 0.0);
 }
 
+glm::dvec3 viewUp(const World& world, const glm::dvec3& eye)
+{
+  const glm::dvec3 own(0.0, 1.0, 0.0);
+  const glm::dvec3 fromCentre = eye - world.frame.centre;
+  const double     r          = glm::length(fromCentre);
+  if(r < 1e-6)
+    return own;
+  const double t    = std::clamp((glm::length(eye) / world.spec.radius - kUpOwnFrom) / (kUpOwnTo - kUpOwnFrom), 0.0, 1.0);
+  const double ease = t * t * (3.0 - 2.0 * t);
+  const glm::dvec3 up = glm::mix(own, fromCentre / r, ease);
+  const double     n  = glm::length(up);
+  return n > 1e-9 ? up / n : fromCentre / r;
+}
+
+double farPlane(const World& world, const glm::dvec3& eye)
+{
+  return 2.0 * (glm::length(eye - world.frame.centre) + world.spec.radius);
+}
+
 // ---- which quads draw --------------------------------------------------------------------------------
 
 namespace {

@@ -124,6 +124,14 @@ void FvHost::Impl::dropPlanet()
         scene.release(material);
   }
   planetBuilt.reset();
+  // the view's up was the planet's (followPlanet): the scene's again
+  if(const auto camera = renderer->getCameraManipulator(); camera && viewCamera.empty())
+  {
+    glm::dvec3 eye, centre, up;
+    camera->getLookat(eye, centre, up);
+    if(up != glm::dvec3(0.0, 1.0, 0.0))
+      camera->setLookat(eye, centre, glm::dvec3(0.0, 1.0, 0.0), true);
+  }
 }
 
 void FvHost::Impl::followPlanet()
@@ -137,9 +145,26 @@ void FvHost::Impl::followPlanet()
   const fv::world::World& world = *p.world;
 
   // the eye, in the root's frame; with no camera, a figure's
-  glm::dvec3 eye(0.0, 1.7, 0.0);
+  glm::dvec3       eye(0.0, 1.7, 0.0);
+  const glm::dvec3 floor(0.0, double(groundHeight()), 0.0);
   if(const auto camera = renderer->getCameraManipulator())
-    eye = glm::dvec3(camera->getEye()) - glm::dvec3(0.0, double(groundHeight()), 0.0);
+  {
+    eye = glm::dvec3(camera->getEye()) - floor;
+    // The free view's up is the planet's away from the figures (fv::world::viewUp), so the horizon
+    // stays level on its far side; a scene camera keeps its own. And its far plane clears the planet.
+    if(viewCamera.empty())
+    {
+      glm::dvec3 at, centre, up;
+      camera->getLookat(at, centre, up);
+      const glm::dvec3 wanted = fv::world::viewUp(world, eye);
+      if(glm::distance(up, wanted) > 1e-7)
+        camera->setLookat(at, centre, wanted, true);
+    }
+    const glm::dvec2 clip   = camera->getClipPlanes();
+    const double     needed = fv::world::farPlane(world, eye);
+    if(clip.y < needed)
+      camera->setClipPlanes({clip.x, 2.0 * needed});
+  }
   // selected again once it has gone a twentieth of its height over the ground: a quad's reach is
   // twice its width, and the nearest is no nearer than that height
   if(!p.selected || glm::distance(eye, p.selectedFor) > std::max(0.5, 0.05 * p.eyeHeight))
