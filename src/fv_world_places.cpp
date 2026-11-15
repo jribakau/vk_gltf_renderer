@@ -23,6 +23,16 @@ constexpr double kPi = 3.14159265358979323846;
 // catalogue has them: the limit is one against a catalogue gone wrong, not one a planet meets,
 // since the rule that is last would be the one left with nothing.)
 constexpr uint32_t kMostJoined = 500;
+// A region of more places is given spots to ask of its own, this far apart at the least, and no more
+// than so many a region
+constexpr double   kRegionSpot      = 300.0;
+constexpr uint32_t kMostRegionSpots = 20000;
+// A place the planet file names is looked for out to so many rings of so many metres round its point
+constexpr int    kNamedRings = 15;
+constexpr double kNamedStep  = 100.0;
+// A road pays this much more to cross a region with fewer places than this
+constexpr double kWildAmount = 0.35;
+constexpr double kWildCost   = 3.0;
 constexpr uint32_t kMostAlone  = 4000;
 constexpr uint32_t kMostAlong  = 20000;
 // The sites are kept by where they are, in cells at least this wide, metres, and wider than any two
@@ -448,6 +458,7 @@ struct Router
   std::vector<uint8_t>  shore;    // water in a cell beside it
   std::vector<uint8_t>  blocked;  // a place's own ground, the figures'
   std::vector<uint8_t>  shy;      // round the figures: a road may pass, and would rather not
+  std::vector<uint8_t>  wild;     // a region with few places or none: a road goes round where it can (empty: none)
   std::vector<uint8_t>  road;     // a road runs through it already
   std::set<std::pair<uint32_t, uint32_t>> runs;  // from which cell to which (the lower first)
   std::vector<int32_t>  land;     // which land it is of, -1 none
@@ -557,6 +568,8 @@ struct Router
           step *= 1.6;
         if(shy[n])
           step *= 2.5;
+        if(!wild.empty() && wild[n])
+          step *= kWildCost;
         if(road[n])
           step *= 0.4;
         if(pass[n] == eFord)
@@ -621,6 +634,12 @@ struct Settling
   uint32_t                 seed;
   double                   keep;  // metres round the figures' place that stay theirs
   std::vector<std::array<float, kMostBiomes>> like;
+  // what the planet file says of where people lived (fv_world_features.hpp); null: the rules alone.
+  // The spots asked for places with a road: spread over the sphere so many a square metre, and in a
+  // region of more places so many more each (spotsIn)
+  const Settlement*   plan = nullptr;
+  double              spread0 = 0.0;
+  std::vector<double> spotsIn;  // by region
   // the sites by where they are (kNearCell): thousands of things are stood along the roads, each
   // asked whether it is clear of the rest
   std::unordered_map<uint64_t, std::vector<uint32_t>> nearby;
@@ -647,6 +666,69 @@ struct Settling
   }
   double fromFigures(const glm::dvec3& d) const { return glm::length(d - w.frame.site) * R; }
 
+  // How many places `d` has against elsewhere, by the planet file's regions
+  double amountAt(const glm::dvec3& d) const { return plan ? settledAmount(*plan, d, R) : 1.0; }
+
+  // Whether `d` lies where a region's own spots are asked: within its width of its line
+  bool inSpots(const PlacesRegion& r, const glm::dvec3& d) const { return distanceFrom(r.shape, d, R) < r.shape.width; }
+
+  // Whether the spot `d` is asked at all: of the spots where it is, as many as the places there are
+  // to be against elsewhere's (a region's amount, of its own spots and the spread's)
+  bool spotAsked(const glm::dvec3& d, uint32_t salt) const
+  {
+    if(!plan || plan->regions.empty())
+      return true;
+    double spots = spread0;
+    for(size_t r = 0; r < plan->regions.size(); r++)
+      if(spotsIn[r] > 0.0 && inSpots(plan->regions[r], d))
+        spots += spotsIn[r];
+    return unit(hash(seed, salt, 11)) < amountAt(d) * spread0 / spots;
+  }
+
+  // A region's own spots: over the ground within its width of its line, about evenly
+  std::vector<glm::dvec3> regionSpots(size_t index, uint32_t salt)
+  {
+    const PlacesRegion& r    = plan->regions[index];
+    const double        a    = std::max(r.amount, 0.0);
+    const double        w    = r.shape.width;
+    const double        span = std::atan2(glm::length(glm::cross(r.shape.from, r.shape.to)), glm::dot(r.shape.from, r.shape.to));
+    const double        area = 2.0 * w * span * R + kPi * w * w;
+    // (no nearer than kRegionSpot, and at least as many as its amount wants of the spread's)
+    const double  wanted = std::max(1.0 / (kRegionSpot * kRegionSpot), 2.0 * (a - 1.0) * spread0);
+    const auto    count  = uint32_t(std::min(area * wanted, double(kMostRegionSpots)));
+    std::vector<glm::dvec3> out;
+    if(a <= 1.0 || count == 0)
+      return out;
+    if(span < 1e-9)
+    {
+      // a disc: a sunflower's, at the true distance out
+      glm::dvec3 ta, tb;
+      tangents(r.shape.from, ta, tb);
+      for(uint32_t i = 0; i < count; i++)
+      {
+        const double out_ = w * std::sqrt((double(i) + 0.5) / double(count)), turn = double(i) * 2.399963229728653;
+        out.push_back(glm::normalize(r.shape.from + (ta * std::cos(turn) + tb * std::sin(turn)) * std::tan(out_ / R)));
+      }
+    }
+    else
+    {
+      // along the arc and out to either side, past its ends as far: those within its width kept
+      const glm::dvec3 n = glm::normalize(glm::cross(r.shape.from, r.shape.to));
+      const double     ends = w / R / span;
+      for(uint32_t i = 0; i < count; i++)
+      {
+        const double     t  = -ends + (1.0 + 2.0 * ends) * (double(i) + 0.5) / double(count);
+        const double     u  = (2.0 * unit(hash(seed, salt, i)) - 1.0) * w / R;
+        const glm::dvec3 on = (std::sin((1.0 - t) * span) * r.shape.from + std::sin(t * span) * r.shape.to) / std::sin(span);
+        const glm::dvec3 d  = glm::normalize(glm::normalize(on) + n * std::tan(u));
+        if(inSpots(r, d))
+          out.push_back(d);
+      }
+    }
+    spotsIn[index] = double(out.size()) / area;
+    return out;
+  }
+
   // ---- the places a road is led to
   struct Candidate
   {
@@ -666,7 +748,8 @@ struct Settling
     std::vector<float> weights(cat.kinds.size(), 0.0F);
     for(size_t k = 0; k < cat.kinds.size(); k++)
       if(!cat.kinds[k].packs.empty() && (roads ? cat.kinds[k].road >= 0 : cat.kinds[k].alone > 0.0F))
-        weights[k] = (roads ? cat.kinds[k].weight : cat.kinds[k].alone) * likingAt(like[k], s);
+        weights[k] = (roads ? cat.kinds[k].weight : cat.kinds[k].alone) * likingAt(like[k], s)
+                     * (plan ? float(settledKind(*plan, cat.kinds[k].name, d, R)) : 1.0F);
     const int k = pickOf(weights, unit(hash(seed, salt, 1)));
     if(k < 0)
       return {};
@@ -680,13 +763,15 @@ struct Settling
     const Ground g = groundFor(w, d, s, cat.packs[c.pack].radius);
     c.ok           = g.ok && g.slope <= double(kind.slope) * steeper;
     c.level        = g.level;
-    c.spacing      = kind.spacing;
+    c.spacing      = float(double(kind.spacing) / std::sqrt(std::max(amountAt(d), 1.0)));  // (nearer each other where there are more)
     return c;
   }
 
   double reachOf(uint32_t pack) const { return cat.packs[pack].radius + padEdge(cat.packs[pack].radius); }
 
-  bool roomFor(const glm::dvec3& d, const Candidate& c, const std::vector<float>& spacings) const
+  // `spaced`: as far from the rest as their kinds keep; else only clear of their ground (a place the
+  // planet file names, which may stand by another it names)
+  bool roomFor(const glm::dvec3& d, const Candidate& c, const std::vector<float>& spacings, bool spaced = true) const
   {
     if(fromFigures(d) < keep + reachOf(c.pack) + 10.0)
       return false;
@@ -694,10 +779,55 @@ struct Settling
     for(size_t i = 0; i < pl.sites.size(); i++)
     {
       const double apart = glm::length(d - pl.sites[i].direction) * R;
-      if(apart < 0.5 * double(c.spacing + spacings[i]) * scale || apart < reachOf(c.pack) + reachOf(pl.sites[i].pack) + 30.0)
+      if((spaced && apart < 0.5 * double(c.spacing + spacings[i]) * scale) || apart < reachOf(c.pack) + reachOf(pl.sites[i].pack) + 30.0)
         return false;
     }
     return true;
+  }
+
+  // A place the planet file names: of its kind, on the first ground going out round its point that
+  // will have it
+  void standNamed(const NamedPlace& named, uint32_t index, std::vector<float>& spacings, std::vector<uint32_t>& ofKind)
+  {
+    int k = -1;
+    for(size_t i = 0; i < cat.kinds.size(); i++)
+      if(cat.kinds[i].name == named.kind && cat.kinds[i].road >= 0 && !cat.kinds[i].packs.empty())
+        k = int(i);
+    if(k < 0)
+    {
+      pl.unplaced.push_back(named.name + ": no kind of place with a road is called " + named.kind);
+      return;
+    }
+    const PlaceKind& kind = cat.kinds[size_t(k)];
+    const uint32_t   salt = 7500U + 16U * index;
+    Candidate        c;
+    c.picked  = true;
+    c.pack    = packOf(cat, kind, unit(hash(seed, salt, 3)));
+    c.spacing = float(double(kind.spacing) / std::sqrt(std::max(amountAt(named.at), 1.0)));
+    glm::dvec3 a, b;
+    tangents(named.at, a, b);
+    for(int ring = 0; ring <= kNamedRings; ring++)
+      for(int turn = 0; turn < (ring ? 12 : 1); turn++)
+      {
+        const double     angle = (double(turn) + 0.5 * double(ring % 2)) * (kPi / 6.0);
+        const glm::dvec3 d     = glm::normalize(named.at + (a * std::cos(angle) + b * std::sin(angle)) * (double(ring) * kNamedStep / R));
+        if(!onLand(d))
+          continue;
+        const Ground g = groundFor(w, d, sample(w, d, 8.0), cat.packs[c.pack].radius);
+        if(!g.ok || g.slope > 1.5 * double(kind.slope))
+          continue;
+        c.ok    = true;
+        c.level = g.level;
+        if(!roomFor(d, c, spacings, false))
+          continue;
+        stand(d, c, unit(hash(seed, salt, 4)) * 2.0 * kPi);
+        spacings.push_back(c.spacing);
+        ofKind[size_t(k)]++;
+        pl.names.emplace_back(uint32_t(pl.sites.size() - 1), named.name);
+        return;
+      }
+    pl.unplaced.push_back(named.name + ": no ground for a " + named.kind + " within " + std::to_string(int(kNamedRings * kNamedStep)) +
+                          " m of where it is put");
   }
 
   void stand(const glm::dvec3& d, const Candidate& c, double heading, bool level = true)
@@ -742,7 +872,8 @@ struct Settling
           const glm::dvec3 d = glm::normalize(w.frame.site + side * ((keep + reachOf(c.pack) + 15.0 + 50.0 * ring) / R));
           const Sample     s = sample(w, d, 8.0);
           const Ground     g = groundFor(w, d, s, cat.packs[c.pack].radius);
-          if(!onLand(d) || !g.ok || g.slope > 1.5 * double(cat.kinds[cat.packs[c.pack].kind].slope))
+          // (nor in a region the planet file keeps empty)
+          if(!onLand(d) || !g.ok || g.slope > 1.5 * double(cat.kinds[cat.packs[c.pack].kind].slope) || amountAt(d) < kWildAmount)
             continue;
           c.level = g.level;
           stand(d, c, unit(hash(seed, salt, 4)) * 2.0 * kPi);
@@ -753,16 +884,35 @@ struct Settling
     }
     if(stopped())
       return;
-    // the rest: places spread over the planet, each asked in parallel, taken in a fixed order while
-    // there is room
-    const uint32_t         count = uint32_t(std::clamp(4.0 * kPi * R * R / (250.0 * 250.0), 4000.0, 40000.0));
-    std::vector<Candidate> found(count);
-    fv::jobs::parallelFor(count, 64, [&](size_t begin, size_t end) {
-      for(size_t i = begin; i < end && !stopped(); i++)
-        found[i] = candidateAt(spread(uint32_t(i), count), 8000U + uint32_t(i), true);
-    });
-    std::vector<uint32_t> order(count);
+    // the places the planet file names, each where it says
+    if(plan)
+      for(uint32_t i = 0; i < plan->named.size() && pl.sites.size() < kMostJoined; i++)
+        standNamed(plan->named[i], i, spacings, ofKind);
+    if(stopped())
+      return;
+    // the rest: places spread over the planet, and more in a region of more, each asked in parallel
+    // (of a region's, its share), taken in a fixed order while there is room
+    const uint32_t          count = uint32_t(std::clamp(4.0 * kPi * R * R / (250.0 * 250.0), 4000.0, 40000.0));
+    std::vector<glm::dvec3> spots(count);
     for(uint32_t i = 0; i < count; i++)
+      spots[i] = spread(i, count);
+    spread0 = double(count) / (4.0 * kPi * R * R);
+    if(plan)
+    {
+      spotsIn.assign(plan->regions.size(), 0.0);
+      for(size_t r = 0; r < plan->regions.size(); r++)
+        for(const glm::dvec3& d : regionSpots(r, 7300U + uint32_t(r)))
+          spots.push_back(d);
+    }
+    const auto             asked = uint32_t(spots.size());
+    std::vector<Candidate> found(asked);
+    fv::jobs::parallelFor(asked, 64, [&](size_t begin, size_t end) {
+      for(size_t i = begin; i < end && !stopped(); i++)
+        if(spotAsked(spots[i], 8000U + uint32_t(i)))
+          found[i] = candidateAt(spots[i], 8000U + uint32_t(i), true);
+    });
+    std::vector<uint32_t> order(asked);
+    for(uint32_t i = 0; i < asked; i++)
       order[i] = i;
     std::sort(order.begin(), order.end(), [&](uint32_t x, uint32_t y) {
       const uint32_t hx = hash(seed, 7900, x), hy = hash(seed, 7900, y);
@@ -772,7 +922,7 @@ struct Settling
     {
       if(pl.sites.size() >= kMostJoined)
         break;
-      const glm::dvec3 d = spread(i, count);
+      const glm::dvec3 d = spots[i];
       if(!found[i].ok || full(found[i].pack) || !roomFor(d, found[i], spacings))
         continue;
       stand(d, found[i], unit(hash(seed, 8000U + i, 4)) * 2.0 * kPi);
@@ -878,6 +1028,15 @@ struct Settling
     };
     mark(r.blocked, w.frame.site, kFiguresOwn);
     mark(r.shy, w.frame.site, keep);
+    // a region with few places or none is gone round where a way round is not dear
+    if(plan && std::any_of(plan->regions.begin(), plan->regions.end(), [](const PlacesRegion& g) { return g.amount < kWildAmount; }))
+    {
+      r.wild.assign(count, 0);
+      fv::jobs::parallelFor(count, 4096, [&](size_t begin, size_t end) {
+        for(size_t c = begin; c < end && !stopped(); c++)
+          r.wild[c] = amountAt(glm::dvec3(r.centres[c])) < kWildAmount ? 1 : 0;
+      });
+    }
     // (out to a quarter of a cell past its ground: no other road passes between a place and the
     // cell its own leaves by)
     for(uint32_t i = 0; i < pl.joined; i++)
@@ -1289,7 +1448,7 @@ struct Settling
         const uint32_t salt = 9000U + uint32_t(i);
         d        = glm::normalize(d + (a * (unit(hash(seed, salt, 5)) - 0.5) + b * (unit(hash(seed, salt, 6)) - 0.5)) * (0.66 * apart));
         where[i] = d;
-        found[i] = candidateAt(d, salt, false);
+        found[i] = unit(hash(seed, salt, 11)) < std::min(amountAt(d), 1.0) ? candidateAt(d, salt, false) : Candidate{};
       }
     });
     uint32_t stood = 0;
@@ -1565,7 +1724,8 @@ double padEdge(double radius)
   return std::clamp(0.5 * radius, 6.0, 40.0);
 }
 
-std::shared_ptr<const Places> settle(const World& world, std::shared_ptr<const Catalogue> catalogue, double amount, const std::atomic<bool>* stop)
+std::shared_ptr<const Places> settle(const World& world, std::shared_ptr<const Catalogue> catalogue, double amount, const std::atomic<bool>* stop,
+                                     std::shared_ptr<const Settlement> settlement)
 {
   if(!catalogue || catalogue->packs.empty() || !(amount > 0.0))
     return nullptr;
@@ -1580,6 +1740,7 @@ std::shared_ptr<const Places> settle(const World& world, std::shared_ptr<const C
                    level + std::max(kClearingEdge, 0.5 * level), likings(world, *catalogue)};
   for(uint32_t p = 0; p < catalogue->packs.size(); p++)
     job.nearWide = std::max(job.nearWide, 2.0 * job.reachOf(p) + 60.0);
+  job.plan = settlement && !settlement->empty() ? settlement.get() : nullptr;
   job.places();
   if(job.stopped())
     return nullptr;

@@ -1,6 +1,7 @@
 // What is put on a planet by hand (src/fv_world_features.hpp): a feature's reach from its point or
 // its arc, each kind in the measure of the stage that takes it, the land they make of a seed's planet,
-// and a planet file read with its mistakes named.
+// a planet file read with its mistakes named, and what it says of where people lived: a region's
+// amount and kinds, all of them in its middle and easing to nothing at its edge.
 
 #include <cmath>
 #include <stdexcept>
@@ -297,4 +298,92 @@ TEST(WorldFeatures, APlanetFileIsReadAndItsMistakesNamed)
   EXPECT_NE(whyNot(R"({"features": [{"kind": "range", "from": [0, 0], "width": 3}]})").find("from"), std::string::npos);
   EXPECT_NE(whyNot(R"({"features": [{"kind": "range", "from": [0, 0], "to": [0, 180], "width": 3}]})").find("opposite"), std::string::npos);
   EXPECT_NE(whyNot(R"({"features": [{"kind": "land", "at": [95, 0], "width": 3}]})").find("latitude"), std::string::npos);
+}
+
+// ---- where people lived ------------------------------------------------------------------------------
+
+TEST(WorldFeatures, APlanetFileSaysWherePeopleLived)
+{
+  const W::PlanetFile p = W::parsePlanet(R"({
+    "places": [
+      {"kind": "region", "name": "the farmland", "at": [3, 9], "width": 15, "amount": 3, "kinds": {"farm": 3, "hamlet": 1}},
+      {"kind": "region", "from": [50, 0], "to": [40, 30], "width": 30, "amount": 0},
+      {"kind": "place", "name": "Kelda", "at": [4, 10], "place": "hamlet"}
+    ]})");
+  ASSERT_EQ(p.settlement.regions.size(), 2U);
+  const W::PlacesRegion& farm = p.settlement.regions[0];
+  EXPECT_EQ(farm.name, "the farmland");
+  EXPECT_EQ(farm.shape.width, 15000.0);
+  EXPECT_EQ(farm.shape.from, farm.shape.to);
+  EXPECT_NEAR(glm::distance(farm.shape.from, W::directionOf(3.0, 9.0)), 0.0, 1e-12);
+  EXPECT_EQ(farm.amount, 3.0);
+  ASSERT_EQ(farm.kinds.size(), 2U);
+  for(const auto& [name, much] : farm.kinds)
+    EXPECT_EQ(much, name == "farm" ? 3.0 : 1.0) << name;
+  const W::PlacesRegion& empty = p.settlement.regions[1];
+  EXPECT_EQ(empty.amount, 0.0);
+  EXPECT_TRUE(empty.kinds.empty());
+  EXPECT_NEAR(glm::distance(empty.shape.to, W::directionOf(40.0, 30.0)), 0.0, 1e-12);
+  ASSERT_EQ(p.settlement.named.size(), 1U);
+  EXPECT_EQ(p.settlement.named[0].name, "Kelda");
+  EXPECT_EQ(p.settlement.named[0].kind, "hamlet");
+  EXPECT_NEAR(glm::distance(p.settlement.named[0].at, W::directionOf(4.0, 10.0)), 0.0, 1e-12);
+  // (where people lived shapes no land: the features are as they were)
+  EXPECT_TRUE(p.features.list.empty());
+  EXPECT_TRUE(W::parsePlanet("{}").settlement.empty());
+
+  EXPECT_NE(whyNot(R"({"places": {}})").find("places"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"places": [{"kind": "town", "at": [0, 0], "width": 3}]})").find("places[0].kind"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"places": [{"kind": "region", "at": [0, 0]}]})").find("width"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"places": [{"kind": "region", "width": 3}]})").find("at"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"places": [{"kind": "region", "at": [0, 0], "width": 3, "amount": 20}]})").find("places[0].amount"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"places": [{"kind": "region", "at": [0, 0], "width": 3, "height": 2}]})").find("height"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"places": [{"kind": "region", "at": [0, 0], "width": 3, "kinds": []}]})").find("kinds"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"places": [{"kind": "region", "at": [0, 0], "width": 3, "kinds": {"farm": -1}}]})").find("kinds.farm"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"places": [{"kind": "place", "at": [0, 0], "place": "farm"}]})").find("name"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"places": [{"kind": "place", "name": "", "at": [0, 0], "place": "farm"}]})").find("name"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"places": [{"kind": "place", "name": "X", "at": [0, 0], "place": "farm", "width": 2}]})").find("width"), std::string::npos);
+}
+
+TEST(WorldFeatures, ARegionIsAllThereInItsMiddleAndEasesToNothingAtItsEdge)
+{
+  constexpr double kDegree = 180.0 / 3.14159265358979323846;
+  // a point `km` east of the region's middle
+  const auto east = [](double km) { return W::directionOf(0.0, km * 1000.0 / kRadius * kDegree); };
+  W::PlacesRegion more;
+  more.shape  = at(W::FeatureKind::eLand, 0.0, 0.0, 10.0);
+  more.amount = 3.0;
+  W::Settlement s;
+  s.regions = {more};
+  EXPECT_DOUBLE_EQ(W::settledAmount(s, east(0.0), kRadius), 3.0);
+  EXPECT_DOUBLE_EQ(W::settledAmount(s, east(10.0 * (1.0 - W::kRegionEdge) - 0.1), kRadius), 3.0);
+  double was = 3.0;
+  for(double km = 7.5; km < 10.0; km += 0.5)
+  {
+    const double now = W::settledAmount(s, east(km), kRadius);
+    EXPECT_LT(now, was) << km;
+    EXPECT_GT(now, 1.0) << km;
+    was = now;
+  }
+  EXPECT_DOUBLE_EQ(W::settledAmount(s, east(10.1), kRadius), 1.0);
+  EXPECT_DOUBLE_EQ(W::settledAmount({}, east(0.0), kRadius), 1.0);
+
+  // two over a point: the one of none has the last word
+  W::PlacesRegion none = more;
+  none.amount          = 0.0;
+  s.regions.push_back(none);
+  EXPECT_DOUBLE_EQ(W::settledAmount(s, east(0.0), kRadius), 0.0);
+
+  // its kinds: the named as much as it says, the rest not at all, and all as elsewhere past its edge;
+  // a region that names none leaves the kinds as they are
+  W::PlacesRegion farms = more;
+  farms.kinds           = {{"farm", 2.0}};
+  W::Settlement k;
+  k.regions = {farms, more};
+  EXPECT_DOUBLE_EQ(W::settledKind(k, "farm", east(0.0), kRadius), 2.0);
+  EXPECT_DOUBLE_EQ(W::settledKind(k, "hamlet", east(0.0), kRadius), 0.0);
+  EXPECT_GT(W::settledKind(k, "hamlet", east(9.0), kRadius), 0.0);
+  EXPECT_DOUBLE_EQ(W::settledKind(k, "hamlet", east(10.1), kRadius), 1.0);
+  k.regions = {more};
+  EXPECT_DOUBLE_EQ(W::settledKind(k, "hamlet", east(0.0), kRadius), 1.0);
 }

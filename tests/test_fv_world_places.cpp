@@ -3,7 +3,8 @@
 // that cross no lake and step nowhere; single things beside the roads and alone; and nothing of the
 // planet's planted on any of it. No two sites of a pack need be alike: each has its own share of what
 // may or may not stand there; a group by a road stands on the ground piece by piece; and a kind
-// stands no more often than its rule lets it.
+// stands no more often than its rule lets it. A planet file's say: a region with none, more, or only
+// the kinds it names, and a place by name as near its point as the ground will have it.
 
 #include <algorithm>
 #include <cmath>
@@ -945,4 +946,178 @@ TEST(WorldRoads, ARoadComesToWhereTheFiguresStand)
   const W::Site&   s    = places().sites[0];
   const W::Gate&   gate = packOf(s).gates[0];
   EXPECT_LT(roadAway(settled(), ofSite(settled(), s, gate.at.x, gate.at.y)), 0.05);
+}
+
+// ---- what a planet file says of where people lived -------------------------------------------------------
+
+namespace {
+
+const std::string& kindOf(const W::Site& s)
+{
+  return catalogue()->kinds[packOf(s).kind].name;
+}
+
+double apart(const glm::dvec3& a, const glm::dvec3& b)
+{
+  return glm::length(a - b) * bare().spec.radius;
+}
+
+// A place of these plain places as far from the figures as there is, of the kind called `kind` (any: "")
+glm::dvec3 farPlace(const std::string& kind = "")
+{
+  const W::Places& pl   = places();
+  double           most = -1.0;
+  glm::dvec3       far{0.0};
+  for(uint32_t i = 1; i < pl.joined; i++)
+    if((kind.empty() || kindOf(pl.sites[i]) == kind) && apart(pl.sites[i].direction, bare().frame.site) > most)
+    {
+      most = apart(pl.sites[i].direction, bare().frame.site);
+      far  = pl.sites[i].direction;
+    }
+  EXPECT_GT(most, 0.0) << "no place of kind " << kind;
+  return far;
+}
+
+std::shared_ptr<const W::Settlement> region(const glm::dvec3& at, double width, double amount, std::vector<std::pair<std::string, double>> kinds = {})
+{
+  auto s = std::make_shared<W::Settlement>();
+  W::PlacesRegion r;
+  r.shape.from = r.shape.to = at;
+  r.shape.width             = width;
+  r.amount                  = amount;
+  r.kinds                   = std::move(kinds);
+  s->regions.push_back(r);
+  return s;
+}
+
+std::shared_ptr<const W::Places> settledBy(std::shared_ptr<const W::Settlement> plan)
+{
+  return W::settle(bare(), catalogue(), 1.0, nullptr, std::move(plan));
+}
+
+// Of these places, the ones with a road within `within` metres of `at`, and the things alone there
+uint32_t joinedNear(const W::Places& pl, const glm::dvec3& at, double within)
+{
+  uint32_t n = 0;
+  for(uint32_t i = 0; i < pl.joined; i++)
+    n += apart(pl.sites[i].direction, at) < within ? 1 : 0;
+  return n;
+}
+uint32_t aloneNear(const W::Places& pl, const glm::dvec3& at, double within)
+{
+  uint32_t n = 0;
+  for(uint32_t i = pl.joined; i < pl.sites.size(); i++)
+    n += kindOf(pl.sites[i]) != "lamp" && apart(pl.sites[i].direction, at) < within ? 1 : 0;
+  return n;
+}
+double roadNear(const W::Places& pl, const glm::dvec3& at, double within)
+{
+  double metres = 0.0;
+  for(const W::RoadPiece& p : pl.roads)
+    metres += apart(p.b, at) < within ? double(p.length) : 0.0;
+  return metres;
+}
+
+}  // namespace
+
+TEST(WorldPlaces, ARegionOfNoneHasNoPlacesAndTheRoadsGoRoundIt)
+{
+  const glm::dvec3 at    = farPlace();
+  const double     width = 3000.0, inner = width * (1.0 - W::kRegionEdge);
+  ASSERT_GT(joinedNear(places(), at, inner), 0U);
+  const auto pl = settledBy(region(at, width, 0.0));
+  ASSERT_TRUE(pl);
+  EXPECT_EQ(joinedNear(*pl, at, inner), 0U);
+  EXPECT_EQ(aloneNear(*pl, at, inner), 0U);
+  EXPECT_LT(roadNear(*pl, at, inner), 0.5 * roadNear(places(), at, inner) + 1.0);
+  // and elsewhere there are places as there were
+  EXPECT_GT(pl->joined, places().joined / 2);
+  EXPECT_TRUE(pl->unplaced.empty());
+}
+
+TEST(WorldPlaces, ARegionOfMoreHasMoreAndNearerEachOther)
+{
+  const glm::dvec3 at    = farPlace();
+  const double     width = 4000.0, inner = width * (1.0 - W::kRegionEdge);
+  const auto       pl    = settledBy(region(at, width, 3.0));
+  ASSERT_TRUE(pl);
+  EXPECT_GT(joinedNear(*pl, at, inner), joinedNear(places(), at, inner) + 1U);
+  // (nearer than the rule keeps them elsewhere)
+  double nearest = 1e30;
+  for(uint32_t i = 0; i < pl->joined; i++)
+    for(uint32_t k = i + 1; k < pl->joined; k++)
+      if(apart(pl->sites[i].direction, at) < inner && apart(pl->sites[k].direction, at) < inner)
+        nearest = std::min(nearest, apart(pl->sites[i].direction, pl->sites[k].direction));
+  EXPECT_LT(nearest, 1499.0);
+  // the same for a seed whatever the threads
+  std::shared_ptr<const W::Places> alone;
+  {
+    const fv::jobs::Serial serial;
+    alone = settledBy(region(at, width, 3.0));
+  }
+  EXPECT_TRUE(same(*pl, *alone));
+}
+
+TEST(WorldPlaces, ARegionsKindsAreTheOnlyOnesThere)
+{
+  const glm::dvec3 at    = farPlace("yard");
+  const double     width = 4000.0, inner = width * (1.0 - W::kRegionEdge);
+  const auto       pl    = settledBy(region(at, width, 1.0, {{"stead", 1.0}}));
+  ASSERT_TRUE(pl);
+  uint32_t steads = 0;
+  for(uint32_t i = 0; i < pl->sites.size(); i++)
+    if(apart(pl->sites[i].direction, at) < inner && kindOf(pl->sites[i]) != "lamp")
+    {
+      EXPECT_EQ(kindOf(pl->sites[i]), "stead") << i;
+      steads++;
+    }
+  EXPECT_GT(steads, 0U);
+}
+
+TEST(WorldPlaces, APlaceByNameStandsAsNearItsPointAsTheGroundWillHaveIt)
+{
+  const glm::dvec3 at = farPlace("stead");
+  // a point of the sea, far from any shore
+  glm::dvec3 sea{0.0};
+  for(int lat = -60; lat <= 60 && sea == glm::dvec3(0.0); lat += 10)
+    for(int lon = -180; lon < 180 && sea == glm::dvec3(0.0); lon += 10)
+    {
+      const glm::dvec3 d   = W::directionOf(lat, lon);
+      bool             wet = W::sample(bare(), d, 50.0).elevation < -50.0;
+      for(int turn = 0; turn < 8 && wet; turn++)
+        wet = W::sample(bare(), beside(bare(), d, 1700.0, turn * kPi / 4.0), 50.0).elevation < -5.0;
+      if(wet)
+        sea = d;
+    }
+  ASSERT_NE(sea, glm::dvec3(0.0)) << "no open sea on this planet";
+
+  auto plan = std::make_shared<W::Settlement>();
+  plan->named = {{"Kelda", "stead", at}, {"Nowhere", "castle", at}, {"Atlantis", "yard", sea}};
+  const auto pl = settledBy(plan);
+  ASSERT_TRUE(pl);
+  ASSERT_EQ(pl->names.size(), 1U);
+  const auto& [site, name] = pl->names[0];
+  EXPECT_EQ(name, "Kelda");
+  ASSERT_LT(site, pl->joined) << "a place with a road";
+  EXPECT_EQ(kindOf(pl->sites[site]), "stead");
+  EXPECT_LT(apart(pl->sites[site].direction, at), 250.0);
+  // what could not stand, each said why
+  ASSERT_EQ(pl->unplaced.size(), 2U);
+  EXPECT_NE(pl->unplaced[0].find("Nowhere"), std::string::npos);
+  EXPECT_NE(pl->unplaced[0].find("castle"), std::string::npos);
+  EXPECT_NE(pl->unplaced[1].find("Atlantis"), std::string::npos);
+  EXPECT_NE(pl->unplaced[1].find("no ground"), std::string::npos);
+  // and a road is led to it
+  bool reached = false;
+  for(const W::RoadPiece& p : pl->roads)
+    reached = reached || apart(p.a, pl->sites[site].direction) < packOf(pl->sites[site]).radius + 30.0
+              || apart(p.c, pl->sites[site].direction) < packOf(pl->sites[site]).radius + 30.0;
+  EXPECT_TRUE(reached);
+  // the same every time
+  EXPECT_TRUE(same(*pl, *settledBy(plan)));
+}
+
+TEST(WorldPlaces, AnEmptyPlanAsksNothingOfTheRules)
+{
+  EXPECT_TRUE(same(places(), *settledBy(std::make_shared<W::Settlement>())));
 }

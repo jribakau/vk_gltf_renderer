@@ -231,27 +231,34 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
   // (settled as it is made, when the catalogue is read by now: its first quads are then of the
   // ground the places take)
   const std::shared_ptr<const W::Catalogue> catalogue = backdropSpec.places > 0.0 ? placesCatalogue : nullptr;
-  loaders.spawn([this, asked, stop = planetStop, generation = p.generation, catalogue, amount = backdropSpec.places] {
+  loaders.spawn([this, asked, stop = planetStop, generation = p.generation, catalogue, amount = backdropSpec.places, plan = backdropSpec.settlement] {
     const auto started = std::chrono::steady_clock::now();
     auto       world   = std::make_shared<const fv::world::World>(fv::world::make(asked, {.stop = stop.get()}));
     const double ms    = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     if(catalogue && !stop->load())
     {
-      const auto places = W::settle(*world, catalogue, amount, stop.get());
+      const auto places = W::settle(*world, catalogue, amount, stop.get(), plan);
       if(places)
         LOGI("planet: settled in %.0f ms: %u places, %zu single things, %zu pieces of road\n",
              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() - ms, places->joined,
              places->sites.size() - places->joined, places->roads.size());
       world = std::make_shared<const fv::world::World>(W::withPlaces(*world, places));
     }
-    post([this, world, stop, generation, ms, catalogue, amount] {
+    post([this, world, stop, generation, ms, catalogue, amount, plan] {
       if(stop->load() || !planetBuilt || planetBuilt->generation != generation)
         return;  // of a planet that has gone since
       planetBuilt->settledWith   = catalogue;
       planetBuilt->settledAmount = catalogue ? amount : 0.0;
+      planetBuilt->settledPlan   = plan;
+      if(world->places)
+        sayUnplaced(*world->places);
       LOGI("planet: made in %.0f ms (%u map cells a face, %u lakes, %zu river pieces)\n", ms,
            world->base ? world->base->grid.cells() : 0U, world->base ? world->base->lakes : 0U,
            world->base ? world->base->pieces.size() : size_t(0));
+      // (a planet file's site that is not dry land gives way to the seed's own: said, or its author
+      // never learns the figures stand elsewhere)
+      if(world->spec.features && world->spec.features->site && glm::length(*world->spec.features->site - world->frame.site) > 1e-9)
+        notice("The planet file's site is not on dry land: the figures stand where the planet's seed puts them");
       planetBuilt->world = world;
       if(backdropKit && renderer->feedsHostScene())
         plantPlanet(renderer->hostScene());

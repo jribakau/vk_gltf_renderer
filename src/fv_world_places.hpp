@@ -21,7 +21,10 @@
 //
 // `settle` reads the planet and a catalogue and says what stands where (Places): sites, each a pack
 // turned about the vertical of a point of the sphere, and the roads, curves as the rivers are. The
-// same for a seed whatever the threads. `withPlaces` gives the planet a stage that makes its ground
+// same for a seed whatever the threads. What a planet file says of where people lived
+// (fv_world_features.hpp: Settlement) has its say: a region has more places or fewer and only the
+// kinds it names, the roads go round one with none where they can, and a place by name stands as
+// near its point as the ground will have it. `withPlaces` gives the planet a stage that makes its ground
 // theirs: level under a place as a floor is (on the plane that touches the planet at its middle,
 // like the figures' own clearing), cut and filled to a road's level across its width and eased into
 // the land over its verges, a ford where a road meets a stream; and the ground's colour and layers
@@ -163,6 +166,8 @@ struct Places
   std::shared_ptr<const Catalogue> catalogue;
   std::vector<Site>                sites;
   uint32_t                         joined = 0;  // the first so many sites are the places a road is led to
+  std::vector<std::pair<uint32_t, std::string>> names;  // the sites the planet file names, and their names
+  std::vector<std::string>                       unplaced;  // what it asked that could not stand, and why
   std::vector<RoadPiece>           roads;
   uint32_t                         ways = 0;
 
@@ -178,9 +183,10 @@ struct Places
 double padEdge(double radius);
 
 // Settles a planet: `amount` 1 as the catalogue's rules say, more or fewer by it; none at 0 (null).
-// `world` is the planet without places (make's). Null when stopped.
+// `world` is the planet without places (make's); `settlement`, what its file says of where people
+// lived (none: the rules alone). Null when stopped.
 std::shared_ptr<const Places> settle(const World& world, std::shared_ptr<const Catalogue> catalogue, double amount = 1.0,
-                                     const std::atomic<bool>* stop = nullptr);
+                                     const std::atomic<bool>* stop = nullptr, std::shared_ptr<const Settlement> settlement = nullptr);
 
 // The planet with these places on its ground (null: with none). Nothing of it is made again.
 World withPlaces(const World& world, std::shared_ptr<const Places> places);

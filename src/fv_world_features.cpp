@@ -104,6 +104,43 @@ PlacedLand placedAt(const Features& features, const glm::dvec3& direction, doubl
   return p;
 }
 
+// ---- where people lived --------------------------------------------------------------------------------
+
+double regionReach(const PlacesRegion& region, const glm::dvec3& direction, double radius)
+{
+  if(region.shape.width <= 0.0)
+    return 0.0;
+  return smoothstep((1.0 - distanceFrom(region.shape, direction, radius) / region.shape.width) / kRegionEdge);
+}
+
+double settledAmount(const Settlement& settlement, const glm::dvec3& direction, double radius)
+{
+  double amount = 1.0;
+  for(const PlacesRegion& r : settlement.regions)
+    if(const double in = regionReach(r, direction, radius); in > 0.0)
+      amount *= 1.0 + (std::max(r.amount, 0.0) - 1.0) * in;
+  return amount;
+}
+
+double settledKind(const Settlement& settlement, const std::string& kind, const glm::dvec3& direction, double radius)
+{
+  double share = 1.0;
+  for(const PlacesRegion& r : settlement.regions)
+  {
+    if(r.kinds.empty())
+      continue;
+    const double in = regionReach(r, direction, radius);
+    if(in <= 0.0)
+      continue;
+    double named = 0.0;
+    for(const auto& [name, much] : r.kinds)
+      if(name == kind)
+        named = std::max(much, 0.0);
+    share *= 1.0 + (named - 1.0) * in;
+  }
+  return share;
+}
+
 // ---- a planet as a file --------------------------------------------------------------------------------
 
 namespace {
@@ -193,6 +230,93 @@ Feature feature(const Json& j, const std::string& where)
   return f;
 }
 
+// Its line, as a feature's: `at`, or `from` and `to`; and its width
+void shapeOf(const Json& j, const std::string& where, Feature& f)
+{
+  if(j.contains("at"))
+  {
+    if(j.contains("from") || j.contains("to"))
+      wrong(where, "`at` names a point: no `from` or `to` beside it");
+    f.from = f.to = place(j["at"], where + ".at");
+  }
+  else if(j.contains("from") && j.contains("to"))
+  {
+    f.from = place(j["from"], where + ".from");
+    f.to   = place(j["to"], where + ".to");
+    if(glm::dot(f.from, f.to) < -0.999)
+      wrong(where, "its ends are opposite each other: no one arc joins them");
+  }
+  else
+    wrong(where, "wants `at`, or `from` and `to`");
+  if(!j.contains("width"))
+    wrong(where, "no width");
+  f.width = number(j["width"], where + ".width", 0.05, 1000.0) * 1000.0;
+}
+
+std::string nameOf(const Json& j, const std::string& where)
+{
+  if(!j.is_string() || j.get<std::string>().empty())
+    wrong(where, "a name is wanted");
+  return j.get<std::string>();
+}
+
+// One of the file's `places`: a region, or a place by name
+void settlementOf(const Json& j, const std::string& where, Settlement& s)
+{
+  if(!j.is_object())
+    wrong(where, "an entry of places is an object");
+  if(!j.contains("kind") || !j["kind"].is_string())
+    wrong(where, "no kind: region or place");
+  const std::string kind = j["kind"].get<std::string>();
+  if(kind == "region")
+  {
+    PlacesRegion r;
+    shapeOf(j, where, r.shape);
+    for(const auto& [key, value] : j.items())
+    {
+      if(key == "kind" || key == "at" || key == "from" || key == "to" || key == "width")
+        continue;
+      if(key == "name")
+        r.name = nameOf(value, where + ".name");
+      else if(key == "amount")
+        r.amount = number(value, where + ".amount", 0.0, 10.0);
+      else if(key == "kinds")
+      {
+        if(!value.is_object() || value.empty())
+          wrong(where + ".kinds", "the kinds that stand there and how much of each, as { \"farm\": 2 }");
+        for(const auto& [name, much] : value.items())
+          r.kinds.emplace_back(name, number(much, where + ".kinds." + name, 0.0, 100.0));
+      }
+      else
+        wrong(where, "`" + key + "` is nothing a region has");
+    }
+    s.regions.push_back(std::move(r));
+  }
+  else if(kind == "place")
+  {
+    NamedPlace p;
+    for(const char* wanted : {"name", "at", "place"})
+      if(!j.contains(wanted))
+        wrong(where, std::string("a place wants `") + wanted + "`");
+    for(const auto& [key, value] : j.items())
+    {
+      if(key == "kind")
+        continue;
+      if(key == "name")
+        p.name = nameOf(value, where + ".name");
+      else if(key == "at")
+        p.at = place(value, where + ".at");
+      else if(key == "place")
+        p.kind = nameOf(value, where + ".place");
+      else
+        wrong(where, "`" + key + "` is nothing a place has");
+    }
+    s.named.push_back(std::move(p));
+  }
+  else
+    wrong(where + ".kind", "a kind of places is one of region, place");
+}
+
 }  // namespace
 
 PlanetFile parsePlanet(const std::string& text)
@@ -239,6 +363,13 @@ PlanetFile parsePlanet(const std::string& text)
         wrong("features", "a list is wanted");
       for(size_t i = 0; i < value.size(); i++)
         p.features.list.push_back(feature(value[i], "features[" + std::to_string(i) + "]"));
+    }
+    else if(key == "places")
+    {
+      if(!value.is_array())
+        wrong("places", "a list is wanted");
+      for(size_t i = 0; i < value.size(); i++)
+        settlementOf(value[i], "places[" + std::to_string(i) + "]", p.settlement);
     }
     else
       wrong(key, "nothing a planet has");

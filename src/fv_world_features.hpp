@@ -18,7 +18,10 @@
 // "Terrain Modelling from Feature Primitives", 2015: a terrain as primitives with skeletons, combined;
 // here each kind acts on one of the stages' own measures, so the noise still fills them in).
 //
-// A planet's description as a file is a seed's numbers and these (PlanetFile, parsePlanet).
+// A planet's description as a file is a seed's numbers and these (PlanetFile, parsePlanet), and what
+// it says of where people lived (Settlement): regions with more places or fewer, of the kinds they
+// name, and places by name. Those shape nothing of the land: the planet is settled again for them,
+// not made again.
 //
 // Vulkan-free, as the planet is.
 //-------------------------------------------------------------------------------------------------------
@@ -26,6 +29,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -90,12 +94,58 @@ double reach(const Feature& f, const glm::dvec3& direction, double radius);
 // What all of them make of a point
 PlacedLand placedAt(const Features& features, const glm::dvec3& direction, double radius);
 
-// A planet as a file: a seed's numbers, where given, and what is placed on it. JSON:
+// ---- where people lived ------------------------------------------------------------------------------
+
+// A region of the planet with more places or fewer than elsewhere (fv_world_places.hpp's settle)
+struct PlacesRegion
+{
+  std::string name;
+  Feature     shape;  // its line and how far it reaches, as a feature's (its kind is no matter)
+  // Its places against elsewhere's on the same land, at its middle: 0 none (and the roads go round
+  // it where they can), 2 twice as many and nearer each other. Toward its edge it eases to 1.
+  double amount = 1.0;
+  // The only kinds of place that stand in it, by the catalogue's names, and how much of each; none
+  // named: any, as elsewhere
+  std::vector<std::pair<std::string, double>> kinds;
+  bool                                        operator==(const PlacesRegion&) const = default;
+};
+
+// A place the author puts by name: one of a kind, on good ground as near the point as there is
+struct NamedPlace
+{
+  std::string name;
+  std::string kind;  // of the catalogue's kinds that have a road
+  glm::dvec3  at{0.0, 1.0, 0.0};
+  bool        operator==(const NamedPlace&) const = default;
+};
+
+struct Settlement
+{
+  std::vector<PlacesRegion> regions;
+  std::vector<NamedPlace>   named;
+  bool                      empty() const { return regions.empty() && named.empty(); }
+  bool                      operator==(const Settlement&) const = default;
+};
+
+// How much of a region is at a point: all of it out to kRegionEdge short of its width, easing to none there
+inline constexpr double kRegionEdge = 0.3;
+double                  regionReach(const PlacesRegion& region, const glm::dvec3& direction, double radius);
+// How many places a point has against elsewhere, by the regions over it: 1 where none is
+double settledAmount(const Settlement& settlement, const glm::dvec3& direction, double radius);
+// How much of the kind called `kind` a point has, by the regions over it that name kinds: 1 where none
+// does, 0 in the middle of one that leaves it out
+double settledKind(const Settlement& settlement, const std::string& kind, const glm::dvec3& direction, double radius);
+
+// A planet as a file: a seed's numbers, where given, what is placed on it, and where people lived. JSON:
 //
 //   { "name": "Home", "seed": 7, "radius": 100, "sea": 0.6, "relief": 1, "wild": 0.4,
 //     "site": [3, 8],
 //     "features": [ { "kind": "range", "from": [35, -20], "to": [-5, 25], "width": 18, "amount": 1 },
-//                   { "kind": "peak", "at": [5, -35], "width": 9, "height": 3500, "crater": 0.2 } ] }
+//                   { "kind": "peak", "at": [5, -35], "width": 9, "height": 3500, "crater": 0.2 } ],
+//     "places": [ { "kind": "region", "name": "the farmland", "at": [3, 9], "width": 15, "amount": 3,
+//                   "kinds": { "farm": 3, "hamlet": 1 } },
+//                 { "kind": "region", "name": "the empty north", "at": [50, 0], "width": 30, "amount": 0 },
+//                 { "kind": "place", "name": "Kelda", "at": [4, 10], "place": "hamlet" } ] }
 //
 // Places are [latitude, longitude] in degrees, widths and the radius in kilometres, heights in metres.
 struct PlanetFile
@@ -106,6 +156,7 @@ struct PlanetFile
   std::optional<double> sea;
   std::optional<double> relief;
   Features              features;
+  Settlement            settlement;
 };
 
 // Throws std::invalid_argument saying what is wrong and where

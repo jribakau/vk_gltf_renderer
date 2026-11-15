@@ -96,28 +96,38 @@ void FvHost::Impl::settlePlanet()
     return;  // (one being made is settled as it is made, or when it has come)
   PlanetBuilt& p      = *planetBuilt;
   const double amount = placesCatalogue ? backdropSpec.places : 0.0;
-  if(p.settledWith == placesCatalogue && p.settledAmount == amount)
+  if(p.settledWith == placesCatalogue && p.settledAmount == amount && p.settledPlan == backdropSpec.settlement)
     return;
   p.settledWith         = placesCatalogue;
   p.settledAmount       = amount;
+  p.settledPlan         = backdropSpec.settlement;
   const uint64_t asked = ++p.settling;
   if(!(amount > 0.0))
   {
     placePlaces(nullptr);
     return;
   }
-  loaders.spawn([this, world = p.world, catalogue = placesCatalogue, amount, stop = planetStop, generation = p.made, asked] {
+  loaders.spawn([this, world = p.world, catalogue = placesCatalogue, amount, plan = p.settledPlan, stop = planetStop, generation = p.made, asked] {
     const auto   started = std::chrono::steady_clock::now();
-    const auto   places  = W::settle(W::withPlaces(*world, nullptr), catalogue, amount, stop.get());
+    const auto   places  = W::settle(W::withPlaces(*world, nullptr), catalogue, amount, stop.get(), plan);
     const double ms      = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     post([this, places, stop, generation, asked, ms] {
       if(stop->load() || !planetBuilt || planetBuilt->made != generation || planetBuilt->settling != asked)
         return;  // of a planet gone since, or settled otherwise
       if(places)
+      {
         LOGI("planet: settled in %.0f ms: %u places, %zu single things, %zu pieces of road\n", ms, places->joined, places->sites.size() - places->joined, places->roads.size());
+        sayUnplaced(*places);
+      }
       placePlaces(places);
     });
   });
+}
+
+void FvHost::Impl::sayUnplaced(const W::Places& places)
+{
+  for(const std::string& what : places.unplaced)
+    notice("The planet file's place " + what);
 }
 
 void FvHost::Impl::placePlaces(std::shared_ptr<const W::Places> places)

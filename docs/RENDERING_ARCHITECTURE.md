@@ -983,7 +983,8 @@ their kit when there is one. It needs no kit: without one it stands bare.
   and acts on the measure of the stage that takes it (`placedAt`, read once a sample by the first
   stage), so the seed's noise still fills it in. They shape the land before the base map is baked:
   the rain falls on a placed range and rivers run off it as off the seed's own. A planet file is a
-  seed's numbers and these (`parsePlanet`). The backdrop names one (`planet`, a file's name in the
+  seed's numbers, these, and what it says of where people lived (`Settlement`, under the places
+  below) (`parsePlanet`). The backdrop names one (`planet`, a file's name in the
   folder the app gives as `planetsDir`); the host reads it at every patch (`readPlanetFile`), its
   numbers become the backdrop's and what it places a part of which planet it is, so a file changed
   since is another planet from the next patch on.
@@ -1114,6 +1115,18 @@ their kit when there is one. It needs no kit: without one it stands bare.
     The same for a seed whatever the threads. It runs on the worker that makes the planet, or on
     one of its own when the catalogue or the backdrop's `places` amount comes later; the planet
     itself is not made again.
+  - A planet file has its say (`fv::world::Settlement`, its `places` list): a *region* is a point
+    or an arc with a width, as a feature is, with an amount of places against elsewhere's (0 none,
+    2 twice as many and nearer each other) and, if it names them, the only kinds that stand in it;
+    all of it within most of its width and easing to nothing at its edge (`regionReach`,
+    `settledAmount`, `settledKind`). A region of more is given spots of its own to ask, and of all
+    the spots where a region is only its amount's share is asked, so the places' density follows
+    the amount wherever the spread's spots happen to fall. Routes pay more to cross a region of few
+    places or none, so the roads go round one where a way round is not dear. A *place by name* is
+    one of a kind with a road, stood first on the nearest ground round its point that will have
+    it; `Places::names` keeps which site has which name, and what could not stand is said in
+    `Places::unplaced`, which the host shows as notices. None of it shapes the land: a changed
+    settlement settles the planet again (the backdrop's `settlement`, outside `planetSpec`).
   - `withPlaces` adds a stage before the ground's colour: a place's floor is level on the plane
     that touches the planet at its middle and eases into the land, a road is cut and banked to its
     own level across its width (finely drawn quads only; from afar it is a share of the colour),

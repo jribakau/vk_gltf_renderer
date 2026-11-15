@@ -89,10 +89,12 @@ struct Spec
   double places = 1.0;
   // ... and which planet it is, when it is one an author made: the name of a planet file (the host's
   // settings.planetsDir has it as <name>.json; fv_world_features.hpp), "" the seed's own. Its seed,
-  // radius, sea and relief are then the file's where the file gives them, and `placed` is what the
-  // file puts on it: both the host's (backdropSet), no patch sets `placed` and no file keeps it.
-  std::string                                 planet;
-  std::shared_ptr<const fv::world::Features> placed;
+  // radius, sea and relief are then the file's where the file gives them, `placed` is what the file
+  // puts on it, and `settlement` what it says of where people lived (which settles it again, and makes
+  // nothing again): all the host's (backdropSet), no patch sets them and no file keeps them.
+  std::string                                   planet;
+  std::shared_ptr<const fv::world::Features>   placed;
+  std::shared_ptr<const fv::world::Settlement> settlement;
   // ... and the other bodies in its sky: one moon to begin with. Nothing is made again by them.
   std::vector<Body> bodies = {Body{}};
   // How many metres of air a metre of the land counts for between the eye and what it sees (the
@@ -123,8 +125,9 @@ inline bool samePlanting(Spec a, const Spec& b)
   a.wind     = b.wind;
   a.windFrom = b.windFrom;
   a.bodies   = b.bodies;
-  a.waves    = b.waves;
-  a.places   = b.places;
+  a.waves      = b.waves;
+  a.places     = b.places;
+  a.settlement = b.settlement;
   return a == b;
 }
 

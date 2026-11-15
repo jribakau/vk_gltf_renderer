@@ -1782,8 +1782,9 @@ struct FvHost::Impl
     // What people left on it (fv_world_places.hpp, fv_host_world_places.cpp). The planet is settled
     // from the catalogue the host has read, by the backdrop's `places`: again when either is another.
     uint64_t                                    made = 0;  // which planet this is, through every asking again of its quads
-    std::shared_ptr<const fv::world::Catalogue> settledWith;
-    double                                      settledAmount = 0.0;
+    std::shared_ptr<const fv::world::Catalogue>   settledWith;
+    double                                        settledAmount = 0.0;
+    std::shared_ptr<const fv::world::Settlement> settledPlan;  // what the planet file said of where people lived
     uint64_t                                    settling      = 0;  // a settling that ends after a newer one is asked is dropped
     // A pack's models, held hidden under the root: what the sites of that pack are copies of
     struct HeldModel
@@ -1829,6 +1830,7 @@ struct FvHost::Impl
   // Settles the planet that stands, if the catalogue or the backdrop's `places` is another than it
   // was settled by: on a worker, and its ground asked again when that is done
   void settlePlanet();
+  void sayUnplaced(const fv::world::Places& places);  // what the planet file asked that could not stand
   // The planet with these places (none: null): its quads again, the sites shown before gone
   void placePlaces(std::shared_ptr<const fv::world::Places> places);
   // Every frame: the sites the eye sees stood, those it has left gone, the packs' models brought in

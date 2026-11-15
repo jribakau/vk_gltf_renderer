@@ -262,6 +262,10 @@ Json FvHost::Impl::backdropTopic() const
     const glm::dvec3 at = glm::dvec3(fv::world::siteFrame(world, places.sites[nearest])[3]) + glm::dvec3(0.0, double(groundHeight()), 0.0);
     t["settled"]        = places.joined;
     t["nearest"]        = {{"at", {at.x, at.y, at.z}}, {"radius", places.catalogue->packs[places.sites[nearest].pack].radius}};
+    // (its name, when the planet file gives it one)
+    for(const auto& [site, name] : places.names)
+      if(site == nearest)
+        t["nearest"]["name"] = name;
   }
   return t;
 }
@@ -287,6 +291,7 @@ void FvHost::Impl::readPlanetFile(fv::backdrop::Spec& spec) const
   if(spec.planet.empty() || !fv::backdrop::isPlanet(spec))
   {
     spec.placed.reset();
+    spec.settlement.reset();
     return;
   }
   if(settings.planetsDir.empty())
@@ -303,6 +308,10 @@ void FvHost::Impl::readPlanetFile(fv::backdrop::Spec& spec) const
   spec.relief = file.relief.value_or(spec.relief);
   if(!spec.placed || !(*spec.placed == file.features))
     spec.placed = std::make_shared<const fv::world::Features>(file.features);
+  if(file.settlement.empty())
+    spec.settlement.reset();
+  else if(!spec.settlement || !(*spec.settlement == file.settlement))
+    spec.settlement = std::make_shared<const fv::world::Settlement>(file.settlement);
 }
 
 Json FvHost::Impl::backdropSet(const Json& patch)
