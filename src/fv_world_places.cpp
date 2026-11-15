@@ -7,6 +7,7 @@
 #include <queue>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 
 #include <figure/jobs/pool.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -18,10 +19,15 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 
 // The most places with a road a planet has, and the most single things: a large planet's are further
-// apart, not more
+// apart, not more. (Along its roads a planet 100 km in radius stands some 7,000 as the app's
+// catalogue has them: the limit is one against a catalogue gone wrong, not one a planet meets,
+// since the rule that is last would be the one left with nothing.)
 constexpr uint32_t kMostJoined = 500;
 constexpr uint32_t kMostAlone  = 4000;
-constexpr uint32_t kMostAlong  = 6000;
+constexpr uint32_t kMostAlong  = 20000;
+// The sites are kept by where they are, in cells at least this wide, metres, and wider than any two
+// of the catalogue reach between them: whoever is near a point is in its cell or one beside it
+constexpr double kNearCell = 1000.0;
 // A road is not led up ground steeper than this from one cell of the map to the next, and pays for
 // what it climbs by the square of it: the land stands in terraces whose edges are this steep
 // between two cells, and a road crosses one where it is lowest, as a ramp cut into it (kRoadGrade,
@@ -34,10 +40,18 @@ constexpr double kRoadCut = 6.0;
 // A place that reaches further than this stands in a clearing: no tree of the land's on its floor
 // (a hut or a ruin alone has the wood up to its walls)
 constexpr double kClearedFrom = 15.0;
+// A group by a road is asked the ground this far out, of its pack's reach
+constexpr double kAlongAsked = 0.6;
 // No road is led this near where the figures stand, metres
 constexpr double kFiguresOwn = 40.0;
 // A route is given up after this many cells are looked at
 constexpr size_t kRouteMost = 25000;
+// And none is looked for between two places further apart than this many cells of the map: a way
+// that long is not found within kRouteMost cells (which is a disc 180 cells across) unless a road
+// already runs most of it. Measured with the app's catalogue on a planet 20 km and one 100 km in
+// radius: nine in ten of the routes that failed were between places further apart, each costing
+// all of kRouteMost, together four fifths of the time settling took.
+constexpr double kRouteFar = 160.0;
 // How strongly a route is drawn toward its end: 1 would be the straight way's own length, which a
 // way along a road already there undercuts; less looks further afield for one
 constexpr double kRouteDrawn = 0.8;
@@ -607,6 +621,20 @@ struct Settling
   uint32_t                 seed;
   double                   keep;  // metres round the figures' place that stay theirs
   std::vector<std::array<float, kMostBiomes>> like;
+  // the sites by where they are (kNearCell): thousands of things are stood along the roads, each
+  // asked whether it is clear of the rest
+  std::unordered_map<uint64_t, std::vector<uint32_t>> nearby;
+  double                                              nearWide = kNearCell;
+
+  static uint64_t nearKey(int x, int y, int z)
+  {
+    return (uint64_t(uint32_t(x) & 0x1FFFFFU) << 42U) | (uint64_t(uint32_t(y) & 0x1FFFFFU) << 21U) | uint64_t(uint32_t(z) & 0x1FFFFFU);
+  }
+  void nearCell(const glm::dvec3& d, int cell[3]) const
+  {
+    for(int k = 0; k < 3; k++)
+      cell[k] = int(std::floor(d[k] * R / nearWide));
+  }
 
   bool stopped() const { return stop && stop->load(std::memory_order_relaxed); }
 
@@ -680,12 +708,20 @@ struct Settling
     s.heading   = heading;
     s.pack      = c.pack;
     s.level     = level;
+    int cell[3];
+    nearCell(d, cell);
+    nearby[nearKey(cell[0], cell[1], cell[2])].push_back(uint32_t(pl.sites.size()));
     pl.sites.push_back(s);
   }
 
   void places()
   {
-    std::vector<float> spacings;
+    std::vector<float>    spacings;
+    std::vector<uint32_t> ofKind(cat.kinds.size(), 0);  // how many of each kind stand
+    const auto            full = [&](uint32_t pack) {
+      const uint32_t k = cat.packs[pack].kind;
+      return cat.kinds[k].most && ofKind[k] >= cat.kinds[k].most;
+    };
     // one within a walk of the figures, outside what their own scene may level: the first that the
     // ground will have, going out and round
     {
@@ -711,6 +747,7 @@ struct Settling
           c.level = g.level;
           stand(d, c, unit(hash(seed, salt, 4)) * 2.0 * kPi);
           spacings.push_back(c.spacing);
+          ofKind[cat.packs[c.pack].kind]++;
           done = true;
         }
     }
@@ -736,10 +773,11 @@ struct Settling
       if(pl.sites.size() >= kMostJoined)
         break;
       const glm::dvec3 d = spread(i, count);
-      if(!found[i].ok || !roomFor(d, found[i], spacings))
+      if(!found[i].ok || full(found[i].pack) || !roomFor(d, found[i], spacings))
         continue;
       stand(d, found[i], unit(hash(seed, 8000U + i, 4)) * 2.0 * kPi);
       spacings.push_back(found[i].spacing);
+      ofKind[cat.packs[found[i].pack].kind]++;
     }
     pl.joined = uint32_t(pl.sites.size());
   }
@@ -975,6 +1013,8 @@ struct Settling
     {
       if(stopped())
         return;
+      if(l.apart > kRouteFar * across)
+        break;  // (nor any after it: they are in the order of how far apart)
       const uint32_t ra = root(l.a), rb = root(l.b);
       const bool     tree = ra != rb;
       // (a way round: between two that are among each other's nearest three, one time in three)
@@ -1204,10 +1244,23 @@ struct Settling
   // Whether something `reach` metres round `d` stands clear of every site's ground
   bool clearOfSites(const glm::dvec3& d, double reach, bool levelledOnly = false) const
   {
-    for(const Site& s : pl.sites)
-      if(!levelledOnly || s.level)
-        if(glm::length(d - s.direction) * R < reach + (s.level ? reachOf(s.pack) : cat.packs[s.pack].radius))
-          return false;
+    int cell[3];
+    nearCell(d, cell);
+    for(int x = -1; x <= 1; x++)
+      for(int y = -1; y <= 1; y++)
+        for(int z = -1; z <= 1; z++)
+        {
+          const auto found = nearby.find(nearKey(cell[0] + x, cell[1] + y, cell[2] + z));
+          if(found == nearby.end())
+            continue;
+          for(const uint32_t i : found->second)
+          {
+            const Site& s = pl.sites[i];
+            if(!levelledOnly || s.level)
+              if(glm::length(d - s.direction) * R < reach + (s.level ? reachOf(s.pack) : cat.packs[s.pack].radius))
+                return false;
+          }
+        }
     return true;
   }
 
@@ -1300,9 +1353,6 @@ struct Settling
           Candidate        c;
           c.pack = packOf(cat, kind, unit(hash(seed, salt, 3)));
           const double reach = cat.packs[c.pack].radius;
-          // not on a place's own ground or the figures', nor in a stream or on another road
-          if(fromFigures(d) < keep + reach || !clearOfSites(d, 0.5 * reach))
-            continue;
           if(a.within > 0.0)
           {
             bool near = false;
@@ -1311,11 +1361,30 @@ struct Settling
             if(!near)
               continue;
           }
+          // not on a place's own ground or the figures', nor in a stream or on another road
+          if(fromFigures(d) < keep + reach || !clearOfSites(d, 0.5 * reach))
+            continue;
           if(roadAway(pl, d, R, a.side + 2.0) < std::abs(a.side) - 0.5 || waysNear(pl, d, R, std::abs(a.side) + 8.0) > 1)
             continue;  // (nor by a junction, where which road it stands by is anyone's guess)
           const Sample ground = sample(w, d, 4.0);
           if(ground.elevation < 1.5 || ground.shore < 6.0F)
             continue;
+          if(a.slope > 0.0)
+          {
+            // (a group stands upright piece by piece: on a slope its bigger things would hang out
+            // of the hill or sink into it)
+            glm::dvec3 ga, gb;
+            tangents(d, ga, gb);
+            const double out   = kAlongAsked * reach;
+            bool         steep = false;
+            for(int probe = 0; probe < 4 && !steep; probe++)
+            {
+              const glm::dvec3 q = glm::normalize(d + (probe < 2 ? ga : gb) * ((probe % 2 ? out : -out) / R));
+              steep              = std::abs(sample(w, q, 4.0).elevation - ground.elevation) > a.slope * out;
+            }
+            if(steep)
+              continue;
+          }
           // its +x toward the road, and as much further as its rule turns it
           glm::dvec3 ta, tb;
           tangents(d, ta, tb);
@@ -1388,6 +1457,7 @@ std::shared_ptr<const Catalogue> readCatalogue(const nlohmann::json& j)
       kind.alone   = std::max(k.value("alone", 0.0F), 0.0F);
       kind.slope   = std::clamp(k.value("slope", 0.1F), 0.01F, 1.0F);
       kind.spacing = std::clamp(k.value("spacing", 1000.0F), 50.0F, 1.0e6F);
+      kind.most    = uint32_t(std::clamp(k.value("most", 0), 0, 1000000));
       if(const auto b = k.find("biomes"); b != k.end())
         for(const auto& [name, liking] : b->items())
           kind.biomes.emplace_back(name, std::clamp(liking.get<float>(), 0.0F, 1.0F));
@@ -1420,9 +1490,12 @@ std::shared_ptr<const Catalogue> readCatalogue(const nlohmann::json& j)
         piece.growth = q.value("growth", false);
         for(const auto& c : q.at("copies"))
         {
-          if(!c.is_array() || c.size() != 4)
-            fail("a copy of " + piece.file + " in the pack " + pack.name + " is not x, y, z and a turn");
-          piece.copies.push_back({{c[0].get<float>(), c[1].get<float>(), c[2].get<float>()}, c[3].get<float>()});
+          if(!c.is_array() || (c.size() != 4 && c.size() != 5))
+            fail("a copy of " + piece.file + " in the pack " + pack.name + " is not x, y, z and a turn, with its chance where it has one");
+          PieceCopy copy{{c[0].get<float>(), c[1].get<float>(), c[2].get<float>()}, c[3].get<float>()};
+          if(c.size() == 5)
+            copy.chance = std::clamp(c[4].get<float>(), 0.0F, 1.0F);
+          piece.copies.push_back(copy);
         }
         if(piece.file.empty() || piece.copies.empty())
           fail("a piece of the pack " + pack.name + " has no file or stands nowhere");
@@ -1473,6 +1546,7 @@ std::shared_ptr<const Catalogue> readCatalogue(const nlohmann::json& j)
       along.turn   = a.value("turn", 0.0);
       along.spin   = a.value("spin", 0.0);
       along.within = std::max(a.value("within", 0.0), 0.0);
+      along.slope  = std::max(a.value("slope", 0.0), 0.0);
       cat->along.push_back(along);
     }
   }
@@ -1503,6 +1577,8 @@ std::shared_ptr<const Places> settle(const World& world, std::shared_ptr<const C
   const World  plain = withClearing(world, kClearing);
   Settling     job{plain, *catalogue, *out, std::clamp(amount, 0.05, 4.0), stop, R, uint32_t(world.spec.seed) * 2654435761U + 77U,
                    level + std::max(kClearingEdge, 0.5 * level), likings(world, *catalogue)};
+  for(uint32_t p = 0; p < catalogue->packs.size(); p++)
+    job.nearWide = std::max(job.nearWide, 2.0 * job.reachOf(p) + 60.0);
   job.places();
   if(job.stopped())
     return nullptr;
@@ -1634,9 +1710,49 @@ glm::mat4 copyPlace(const PieceCopy& copy)
   return glm::rotate(glm::translate(glm::mat4(1.0F), copy.at), copy.yaw, glm::vec3(0.0F, 1.0F, 0.0F));
 }
 
+// Of what may or may not stand, a site has from under half to half as much again: some were
+// cleared out, some left as they were
+constexpr double kLeftLeast = 0.45, kLeftMost = 1.55;
+
+std::vector<PieceCopy> copiesAt(const World& world, uint32_t index, uint32_t piece)
+{
+  const Places&    pl   = *world.places;
+  const Site&      site = pl.sites[index];
+  const PackPiece& of   = pl.catalogue->packs[site.pack].pieces[piece];
+  // the site's own number, from where it is: the same whatever else is settled
+  const auto     part = [](double v) { return uint32_t(int32_t(v * 1073741824.0)); };
+  const uint32_t own  = hash(part(site.direction.x), part(site.direction.y), part(site.direction.z), uint32_t(world.spec.seed));
+  const double   left = kLeftLeast + (kLeftMost - kLeftLeast) * unit(hash(own, 1));
+  glm::dvec3     x, z;
+  axesOf(site, x, z);
+  double                 ground = 0.0;
+  bool                   asked  = false;
+  std::vector<PieceCopy> out;
+  out.reserve(of.copies.size());
+  for(size_t i = 0; i < of.copies.size(); i++)
+  {
+    PieceCopy copy = of.copies[i];
+    if(copy.chance < 1.0F && unit(hash(own, 2U + piece, uint32_t(i))) >= double(copy.chance) * left)
+      continue;
+    if(!site.level && (copy.at.x != 0.0F || copy.at.z != 0.0F))
+    {
+      // (the site's frame is on the ground at its middle: this one as much higher or lower as the
+      // ground under it is)
+      if(!asked)
+        ground = sample(world, site.direction, 1.0).elevation;
+      asked = true;
+      const glm::dvec3 d = glm::normalize(site.direction + (x * double(copy.at.x) + z * double(copy.at.z)) / (world.spec.radius + ground));
+      copy.at.y += float(sample(world, d, 1.0).elevation - ground);
+    }
+    out.push_back(copy);
+  }
+  return out;
+}
+
 double seenFrom(const Pack& pack)
 {
-  return std::clamp(30.0 * pack.radius, 400.0, 3000.0);
+  // (a place 100 m across is some 16 pixels of a frame from 10 km; a post by a road, a few from one)
+  return std::clamp(100.0 * pack.radius, 1200.0, 10000.0);
 }
 
 std::vector<uint32_t> sitesSeen(const World& world, const glm::dvec3& eye, std::span<const uint32_t> was)

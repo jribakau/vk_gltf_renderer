@@ -1054,8 +1054,13 @@ their kit when there is one. It needs no kit: without one it stands bare.
   - A *pack* is something laid out once: its models and where their copies stand about its middle,
     how far it reaches, its gates, and a grid of the ground it covers. A *kind* is the packs that
     are alike and the rule for where one stands (the lands it likes, the steepest ground, its
-    distance from the next, the road led to it or how many stand alone); an *along* rule stands a
-    kind beside a road.
+    distance from the next, the road led to it or how many stand alone, and the most of it a
+    planet has); an *along* rule stands a kind beside a road, or on it.
+  - No two sites of a pack need be alike. A copy can be one that may or may not stand (what was
+    left lying about), and `copiesAt` gives each site its own share of those, from where the site
+    is: the host stands, and a walker meets, only what it returns. Where the ground is not
+    levelled for a site (a group of things by a road), it also puts each copy on the ground under
+    it.
   - `fv::world::settle` reads the planet and the catalogue: places on level dry ground (one always
     a walk from the figures, outside what their scene may level), each land's places joined by the
     shortest tree of routes that can be found over the base map's cells (the cheaper where a road

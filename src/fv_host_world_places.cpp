@@ -257,8 +257,11 @@ void FvHost::Impl::standSite(rs::RetainedScene& scene, uint32_t site, bool growt
   shown.turn             = turn;
   for(size_t k = 0; k < pack.pieces.size() && k < held.models.size(); k++)
   {
-    const W::PackPiece& piece = pack.pieces[k];
-    if(piece.growth != growth)
+    if(pack.pieces[k].growth != growth)
+      continue;
+    // (what of it stands at this site, and where: a site has its own share of what was left about)
+    const std::vector<W::PieceCopy> stands = W::copiesAt(*p.world, site, uint32_t(k));
+    if(stands.empty())
       continue;
     for(const PlanetBuilt::HeldModel::Node& node : held.models[k].nodes)
     {
@@ -269,8 +272,8 @@ void FvHost::Impl::standSite(rs::RetainedScene& scene, uint32_t site, bool growt
       // (a model's own copies, a plant each, under each of its places in the site)
       const std::vector<glm::mat4> own      = instance.copies.empty() ? std::vector<glm::mat4>{glm::mat4(1.0F)} : instance.copies;
       std::vector<glm::mat4>       copies;
-      copies.reserve(piece.copies.size() * own.size());
-      for(const W::PieceCopy& copy : piece.copies)
+      copies.reserve(stands.size() * own.size());
+      for(const W::PieceCopy& copy : stands)
       {
         const glm::mat4 place = turn * W::copyPlace(copy) * node.base;
         for(const glm::mat4& m : own)
@@ -349,9 +352,11 @@ void FvHost::Impl::placeSets(const glm::dvec3& near, double within, std::vector<
         for(const PlanetBuilt::HeldModel::Node& node : nodes)
           walls.push_back(trianglesOf(scene, node.entity));
       }
+      // (the copies that stand at this site, as standSite has them)
+      const std::vector<W::PieceCopy> stands = W::copiesAt(*p.world, site, uint32_t(k));
       for(size_t n = 0; n < nodes.size(); n++)
         if(walls[n])
-          for(const W::PieceCopy& copy : pack.pieces[k].copies)
+          for(const W::PieceCopy& copy : stands)
             out.push_back({walls[n], toWorld * W::copyPlace(copy) * nodes[n].base, false});
     }
   }

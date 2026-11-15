@@ -1,7 +1,9 @@
 // What people left on a planet (src/fv_world_places.hpp): a catalogue read and checked, places on level
 // dry ground, the same for a seed whatever the threads, each on a floor of its own; roads between them
 // that cross no lake and step nowhere; single things beside the roads and alone; and nothing of the
-// planet's planted on any of it.
+// planet's planted on any of it. No two sites of a pack need be alike: each has its own share of what
+// may or may not stand there; a group by a road stands on the ground piece by piece; and a kind
+// stands no more often than its rule lets it.
 
 #include <algorithm>
 #include <cmath>
@@ -51,12 +53,24 @@ Json packJson(const std::string& name, const std::string& kind, int radius, bool
   return pack;
 }
 
+// How many things lie about the yard that may or may not be there, and at how many of its sites each is
+constexpr int    kLeft       = 120;
+constexpr double kLeftChance = 0.6;
+
 Json catalogueJson()
 {
   const Json anywhere = {{"snow", 0.3}, {"tundra", 1.0}, {"desert", 1.0}, {"steppe", 1.0}, {"grassland", 1.0}, {"forest", 1.0}};
+  // the yard: what always stands in it, and things left about it in a ring
+  Json yard = packJson("yard", "yard", 60, true, 20.0);
+  Json left = Json::array();
+  for(int i = 0; i < kLeft; i++)
+    left.push_back(Json::array({30.0 * std::cos(0.3 * i), 0.0, 30.0 * std::sin(0.3 * i), 0.1 * i, kLeftChance}));
+  yard["pieces"].push_back({{"file", "left.gltf"}, {"copies", left}});
+  // the lamp: its post, and two stones a few metres from it
+  Json lamp = packJson("lamp", "lamp", 4, false, 0.0);
+  lamp["pieces"].push_back({{"file", "stone.gltf"}, {"copies", Json::array({Json::array({3.0, 0.0, 0.5, 0.0}), Json::array({-2.0, 0.0, -3.0, 1.0})})}});
   return {{"version", 1},
-          {"packs", Json::array({packJson("yard", "yard", 60, true, 20.0), packJson("stead", "stead", 40, true, 8.0), packJson("hut", "hut", 8, false, 3.0),
-                                 packJson("lamp", "lamp", 4, false, 0.0)})},
+          {"packs", Json::array({yard, packJson("stead", "stead", 40, true, 8.0), packJson("hut", "hut", 8, false, 3.0), lamp})},
           {"rules",
            {{"kinds", Json::array({{{"kind", "yard"}, {"road", "road"}, {"weight", 1.0}, {"slope", 0.1}, {"spacing", 2500}, {"biomes", anywhere}},
                                    {{"kind", "stead"}, {"road", "track"}, {"weight", 2.0}, {"slope", 0.12}, {"spacing", 1500}, {"biomes", anywhere}},
@@ -172,8 +186,9 @@ const W::RoadPiece& openRoad()
       const glm::dvec3 d = bent(p, 0.5);
       const W::Sample  s = W::sample(bare(), d, 2.0);
       bool             clear = s.shore > 60.0F && s.elevation > 5.0 && s.cliff < 0.01F;
+      // (from what the ground is levelled for: a lamp stands by every stretch, and shapes nothing)
       for(const W::Site& site : places().sites)
-        clear = clear && glm::length(site.direction - d) * bare().spec.radius > packOf(site).radius + W::padEdge(packOf(site).radius) + 30.0;
+        clear = clear && (!site.level || glm::length(site.direction - d) * bare().spec.radius > packOf(site).radius + W::padEdge(packOf(site).radius) + 30.0);
       // (alone on its ground: no other run of road within its verges)
       for(const W::RoadPiece& q : places().roads)
         if(q.way != p.way)
@@ -217,6 +232,12 @@ TEST(WorldPlaces, ACatalogueIsReadAsItIsWritten)
   EXPECT_EQ(yard.groundAt(500.0, 0.0), 0) << "outside it";
   ASSERT_EQ(yard.gates.size(), 1u);
   EXPECT_DOUBLE_EQ(yard.gates[0].at.y, 48.0);
+  // what it is made of: a copy stands at every site unless it says at how many
+  ASSERT_EQ(yard.pieces.size(), 2u);
+  EXPECT_FLOAT_EQ(yard.pieces[0].copies[0].chance, 1.0F);
+  ASSERT_EQ(yard.pieces[1].copies.size(), size_t(kLeft));
+  EXPECT_FLOAT_EQ(yard.pieces[1].copies[7].chance, float(kLeftChance));
+  EXPECT_EQ(c.kinds[0].most, 0u) << "any number of a kind, unless its rule says";
 }
 
 TEST(WorldPlaces, ACatalogueSaysWhatIsWrongWithIt)
@@ -251,6 +272,9 @@ TEST(WorldPlaces, ACatalogueSaysWhatIsWrongWithIt)
   j["packs"][2]["pieces"][0]["copies"][0] = Json::array({1.0, 2.0});
   EXPECT_NE(wrong(j).find("hut"), std::string::npos);
   j = catalogueJson();
+  j["packs"][0]["pieces"][1]["copies"][0] = Json::array({1.0, 0.0, 2.0, 0.0, 0.5, 3.0});
+  EXPECT_NE(wrong(j).find("left.gltf"), std::string::npos) << "a place, a turn and a chance, and no more";
+  j = catalogueJson();
   j["rules"]["along"][0]["kind"] = "pylon";
   EXPECT_NE(wrong(j).find("pylon"), std::string::npos);
   j = catalogueJson();
@@ -260,6 +284,76 @@ TEST(WorldPlaces, ACatalogueSaysWhatIsWrongWithIt)
 }
 
 // ---- where places stand ----------------------------------------------------------------------------------
+
+TEST(WorldPlaces, NoMoreOfAKindStandThanItsRuleLets)
+{
+  const auto yards = [](const W::Places& pl) {
+    size_t n = 0;
+    for(uint32_t i = 0; i < pl.joined; i++)
+      n += pl.catalogue->packs[pl.sites[i].pack].name == "yard" ? 1 : 0;
+    return n;
+  };
+  ASSERT_GT(yards(places()), 3u);
+  Json j = catalogueJson();
+  j["rules"]["kinds"][0]["most"] = 2;
+  const auto few = W::settle(bare(), W::readCatalogue(j));
+  ASSERT_TRUE(few);
+  EXPECT_EQ(yards(*few), 2u);
+  EXPECT_GT(few->joined, 4u) << "the other kind stands as it did";
+}
+
+TEST(WorldPlaces, ASiteHasItsOwnShareOfWhatMayStandThere)
+{
+  const W::World&  w  = settled();
+  const W::Places& pl = places();
+  size_t           sites = 0, least = size_t(kLeft), most = 0, all = 0;
+  for(uint32_t i = 0; i < pl.joined; i++)
+  {
+    if(packOf(pl.sites[i]).name != "yard")
+      continue;
+    sites++;
+    EXPECT_EQ(W::copiesAt(w, i, 0).size(), 1u) << "what the place is always stands";
+    const std::vector<W::PieceCopy> left = W::copiesAt(w, i, 1), again = W::copiesAt(w, i, 1);
+    ASSERT_EQ(left.size(), again.size());
+    for(size_t k = 0; k < left.size(); k++)
+      EXPECT_EQ(left[k].at, again[k].at) << "the same each time it is asked";
+    for(const W::PieceCopy& copy : left)
+      EXPECT_FLOAT_EQ(copy.at.y, 0.0F) << "on its floor, where the pack has it";
+    least = std::min(least, left.size());
+    most  = std::max(most, left.size());
+    all  += left.size();
+  }
+  ASSERT_GT(sites, 3u);
+  // some sites were cleared out and some left as they were; over them all, the share the pack says
+  EXPECT_LT(double(least), 0.5 * kLeft);
+  EXPECT_GT(double(most), 0.7 * kLeft);
+  EXPECT_LT(most, size_t(kLeft)) << "none has all of it";
+  EXPECT_NEAR(double(all) / double(sites * kLeft), kLeftChance, 0.2);
+}
+
+TEST(WorldRoads, AGroupByARoadStandsOnTheGroundPieceByPiece)
+{
+  const W::World&  w  = settled();
+  const W::Places& pl = places();
+  size_t           looked = 0;
+  float            most   = 0.0F;
+  for(uint32_t i = pl.joined; i < pl.sites.size(); i++)
+  {
+    const W::Site& s = pl.sites[i];
+    if(s.level || i % 7)
+      continue;
+    looked++;
+    const glm::dmat4 frame = W::siteFrame(w, s);
+    for(const W::PieceCopy& copy : W::copiesAt(w, i, 1))
+    {
+      // (a flat frame against a planet 20 km round: under a millimetre out, 4 m from its middle)
+      EXPECT_NEAR(W::heightOver(w, glm::dvec3(frame * glm::dvec4(glm::dvec3(copy.at), 1.0))), 0.0, 0.02);
+      most = std::max(most, std::abs(copy.at.y));
+    }
+  }
+  ASSERT_GT(looked, 20u);
+  EXPECT_GT(most, 0.1F) << "the ground by a road is not all at the level of the lamp";
+}
 
 TEST(WorldPlaces, ASeedsPlacesAreTheSameHoweverManyThreadsSettleIt)
 {
@@ -778,6 +872,39 @@ TEST(WorldRoads, ThingsStandBesideItFacingIt)
     EXPECT_NEAR(W::heightOver(w, glm::dvec3(frame[3])), 0.0, 1e-3);
   }
   EXPECT_GT(lamps, 100u);
+}
+
+TEST(WorldRoads, AGroupStandsOnlyWhereTheGroundIsAsLevelAsItsRuleAsks)
+{
+  const auto beside = [](const W::Places& pl) {
+    std::vector<W::Site> out;
+    for(uint32_t i = pl.joined; i < pl.sites.size(); i++)
+      if(!pl.sites[i].level)
+        out.push_back(pl.sites[i]);
+    return out;
+  };
+  Json j = catalogueJson();
+  j["rules"]["along"][0]["slope"] = 0.03;
+  const auto level = W::settle(bare(), W::readCatalogue(j));
+  ASSERT_TRUE(level);
+  const std::vector<W::Site> all = beside(places()), some = beside(*level);
+  EXPECT_LT(some.size(), all.size()) << "not every stretch of road is on level ground";
+  ASSERT_GT(some.size(), 20u);
+  // the ground 0.6 of its reach out (2.4 m of the lamp's 4), along and across
+  const W::World& w     = bare();
+  const auto      steep = [&](const W::Site& s) {
+    const double e = W::sample(w, s.direction, 4.0).elevation;
+    double       most = 0.0;
+    for(int k = 0; k < 4; k++)
+      most = std::max(most, std::abs(W::sample(w, ::beside(w, s.direction, 2.4, 0.5 * kPi * k), 4.0).elevation - e) / 2.4);
+    return most;
+  };
+  size_t steeper = 0;
+  for(const W::Site& s : some)
+    EXPECT_LT(steep(s), 0.03 + 1e-6);
+  for(const W::Site& s : all)
+    steeper += steep(s) > 0.03 ? 1 : 0;
+  EXPECT_GT(steeper, 0u) << "without the rule's slope, some stand on steeper ground";
 }
 
 TEST(WorldPlaces, AThingAloneStandsClearOfRoadsAndPlaces)

@@ -13,7 +13,11 @@
 // - A kind (PlaceKind) is the packs that are alike and the rule for where one stands: the lands it
 //   likes, the steepest ground, how far from the next, and either the road that is led to it or how
 //   many stand alone in a square kilometre.
-// - An Along rule stands a kind beside a road every so many metres.
+// - An Along rule stands a kind beside a road every so many metres, or on it (a checkpoint): a
+//   group of things as well as one, each of them then on the ground under it.
+// - No two sites of a pack need be alike: a copy can be one that may or may not stand
+//   (PieceCopy::chance: what was left lying about), and each site has its own share of those, some
+//   most of them and some few (copiesAt).
 //
 // `settle` reads the planet and a catalogue and says what stands where (Places): sites, each a pack
 // turned about the vertical of a point of the sphere, and the roads, curves as the rivers are. The
@@ -55,7 +59,8 @@ struct Gate
 struct PieceCopy
 {
   glm::vec3 at{0.0F};
-  float     yaw = 0.0F;  // radians about +y
+  float     yaw    = 0.0F;  // radians about +y
+  float     chance = 1.0F;  // of the sites of its pack, the share it stands at; 1: at every one
 };
 
 struct PackPiece
@@ -99,6 +104,7 @@ struct PlaceKind
   float                 alone   = 0.0F;    // without one: so many a square kilometre of land it likes
   float                 slope   = 0.1F;    // the steepest ground it stands on, rise over run
   float                 spacing = 1000.0F; // metres to the next place with a road
+  uint32_t              most    = 0;       // with a road: no more of the kind than this on a planet; 0: any number
   std::vector<std::pair<std::string, float>> biomes;  // how well it likes a land, by the biome's name; unnamed: not at all
 };
 
@@ -111,6 +117,7 @@ struct Along
   double   turn   = 0.0;    // radians more than facing the road (its +x toward it)
   double   spin   = 0.0;    // and up to this either way
   double   within = 0.0;    // only this near a place that has a road; 0: anywhere
+  double   slope  = 0.0;    // only where the ground its pack reaches is no steeper, rise over run; 0: anywhere
 };
 
 struct Catalogue
@@ -185,6 +192,11 @@ void built(const World& world, const Point& point, Sample& sample);
 glm::dmat4 siteFrame(const World& world, const Site& site);
 // And a copy's place in its pack's frame
 glm::mat4 copyPlace(const PieceCopy& copy);
+// The copies of a piece of its pack that stand at a site of the places `world` has, each where it
+// stands in the pack's frame. Of those that may or may not, the site's own share: the same every
+// time it is asked, another at the next site. Where the ground is not levelled for the site (a
+// thing by a road), each stands on the ground under it.
+std::vector<PieceCopy> copiesAt(const World& world, uint32_t site, uint32_t piece);
 
 // How far a pack shows from, metres
 double seenFrom(const Pack& pack);
