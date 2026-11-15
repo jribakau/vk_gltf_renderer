@@ -1,8 +1,8 @@
 // What grows on a planet (src/fv_world_plants.hpp): a plant is the same on whichever quad holds it,
 // the larger are seen from further and those seen from one place stay under their count, what is
 // seen from a place is on the quads that draw there, none stands in the water or where the figures
-// do, each is on the ground and upright, a wood has more trees than a steppe; and the grass's tiles
-// lie on the ground, none of them twice.
+// do, each is on the ground and upright, a wood has more trees than a steppe, each biome grows its
+// own; and the grass's tiles lie on the ground, none of them twice.
 
 #include <algorithm>
 #include <cmath>
@@ -25,7 +25,7 @@ const W::World& planet()
 }
 
 // As many of each role as a kit might have
-const std::array<uint32_t, 7> kVariants = {3, 1, 2, 2, 3, 1, 1};
+const std::array<uint32_t, W::kStandingRoles.size()> kVariants = {3, 1, 2, 2, 3, 1, 1, 2, 1, 3, 4, 3};
 
 glm::dvec3 spread(uint32_t i, uint32_t count)
 {
@@ -226,9 +226,10 @@ TEST(WorldPlants, AWoodHasMoreTreesThanASteppe)
     if(quads >= 12)
       continue;
     quads++;
-    const auto places = placesOf(w, quadAt(d, level));
-    if(const auto found = places.find(0); found != places.end())
-      count += found->second.size();
+    // a wood's trees, of whatever kind (the dry land's small ones are not)
+    for(const auto& [role, places] : placesOf(w, quadAt(d, level)))
+      if(W::isTree(W::kStandingRoles[role]))
+        count += places.size();
   }
   ASSERT_GE(trees["forest"].second, 5U);
   ASSERT_GE(trees["steppe"].second, 5U);
@@ -238,6 +239,80 @@ TEST(WorldPlants, AWoodHasMoreTreesThanASteppe)
   EXPECT_GT(per("grassland"), 2.0 * per("steppe"));
   EXPECT_EQ(trees["snow"].first, 0U);
   EXPECT_EQ(trees["desert"].first, 0U);
+}
+
+TEST(WorldPlants, EachBiomeGrowsItsOwn)
+{
+  const W::World& w     = planet();
+  const uint8_t   level = W::finestLevel(w);
+  // by biome: how many of each role stand on a dozen quads well inside it
+  std::map<std::string, std::pair<std::map<std::string_view, size_t>, size_t>> grown;
+  for(uint32_t i = 0; i < 4000; i++)
+  {
+    const glm::dvec3 d = spread(i, 4000);
+    const W::Sample  s = W::sample(w, d, 30.0);
+    if(s.elevation < 10.0 || s.share[size_t(s.biome)] < 0.95F || s.rock > 0.1F)
+      continue;
+    auto& [roles, quads] = grown[std::string(w.biomes[size_t(s.biome)].name)];
+    if(quads >= 12)
+      continue;
+    quads++;
+    for(const auto& [role, places] : placesOf(w, quadAt(d, level)))
+      roles[W::kStandingRoles[role]] += places.size();
+  }
+  const auto of = [&](const char* biome, std::string_view role) { return grown[biome].first[role]; };
+  // (a quad well inside a biome reaches a little way into the next: what that grows is a few there)
+  const auto few = [&](const char* biome, std::string_view role) {
+    size_t all = 0;
+    for(const auto& [r, count] : grown[biome].first)
+      all += count;
+    return of(biome, role) <= all / 50;
+  };
+  ASSERT_GE(grown["forest"].second, 5U);
+  ASSERT_GE(grown["grassland"].second, 5U);
+  ASSERT_GE(grown["steppe"].second, 5U);
+  // a wood of firs with stands of pine, and no dry land's plants in it
+  EXPECT_GT(of("forest", "tree"), of("forest", "pine"));
+  EXPECT_GT(of("forest", "pine"), 0U);
+  for(const char* dry : {"drybush", "drytree", "boulder"})
+  {
+    EXPECT_TRUE(few("forest", dry)) << dry << ": " << of("forest", dry);
+    EXPECT_TRUE(few("grassland", dry)) << dry << ": " << of("grassland", dry);
+  }
+  // a grassland's trees are mostly leafy, a wood's mostly not
+  EXPECT_GT(of("grassland", "broadleaf"), of("grassland", "tree"));
+  EXPECT_GT(of("forest", "tree") + of("forest", "pine"), 3 * of("forest", "broadleaf"));
+  // the steppe: dry bushes, and no fir nor leafy tree
+  EXPECT_GT(of("steppe", "drybush"), 0U);
+  EXPECT_TRUE(few("steppe", "tree")) << of("steppe", "tree");
+  EXPECT_TRUE(few("steppe", "broadleaf")) << of("steppe", "broadleaf");
+  // the desert, where this planet has one: bare boulders and dry bushes, no mossy rock nor a wood's tree
+  if(grown["desert"].second >= 3)
+  {
+    EXPECT_GT(of("desert", "boulder") + of("desert", "drybush"), 0U);
+    for(const char* wet : {"rock", "tree", "pine", "broadleaf", "sapling", "shrub"})
+      EXPECT_TRUE(few("desert", wet)) << wet << ": " << of("desert", wet);
+  }
+  // nothing on the snow
+  for(const auto& [role, count] : grown["snow"].first)
+    EXPECT_EQ(count, 0U) << role;
+}
+
+TEST(WorldPlants, APlanetsKitHoldsEveryRoleItsBiomesGrow)
+{
+  // what the host holds of the kit for a planet (fv::backdrop::roles) has every role of every biome
+  fv::backdrop::Spec spec;
+  spec.kind                         = "planet";
+  const std::vector<std::string> held = fv::backdrop::roles(spec);
+  for(const W::Biome& biome : planet().biomes)
+    for(const W::Growth& g : biome.plants)
+    {
+      EXPECT_NE(std::find(held.begin(), held.end(), std::string(g.role)), held.end()) << biome.name << ": " << g.role;
+      EXPECT_NE(std::find(W::kStandingRoles.begin(), W::kStandingRoles.end(), g.role), W::kStandingRoles.end()) << biome.name << ": " << g.role;
+    }
+  for(const std::string_view role : W::kStandingRoles)
+    if(role != "grown")
+      EXPECT_NE(std::find(held.begin(), held.end(), std::string(role)), held.end()) << role;
 }
 
 TEST(WorldPlants, TheLargerAreSeenFromFurther)
@@ -256,6 +331,9 @@ TEST(WorldPlants, TheLargerAreSeenFromFurther)
   EXPECT_GT(W::reachOf("tree", 0.002).all, 2.0 * wood.all);
   EXPECT_DOUBLE_EQ(W::reachOf("tree", 1e-5).all, wood.most);
   EXPECT_GE(W::reachOf("tree", 1.0).all, 300.0);
+  // the dry land's small trees, a couple of kilometres
+  EXPECT_LE(W::reachOf("drytree", 0.0005).most, 3000.0);
+  EXPECT_GT(W::reachOf("drytree", 0.0005).most, W::reachOf("drybush", 0.0005).most);
   // the undergrowth, a hundred metres or a few
   const W::Reach bushes = W::reachOf("shrub", 0.0225);
   EXPECT_GE(bushes.all, 100.0);
@@ -279,7 +357,7 @@ TEST(WorldPlants, TheLargerAreSeenFromFurther)
   // a quad kilometres across has nothing with a place of its own, and is asked in no time
   EXPECT_TRUE(W::standing(w, {0, 2, 1, 1}, glm::dvec3(0.0), kVariants).empty());
   // no kit, or no density: nothing
-  const std::array<uint32_t, 7> none{};
+  const std::array<uint32_t, W::kStandingRoles.size()> none{};
   const W::Quad                 underfoot = quadAt(w.frame.site, W::finestLevel(w));
   EXPECT_TRUE(W::standing(w, underfoot, glm::dvec3(0.0), none).empty());
   EXPECT_TRUE(W::standing(w, underfoot, glm::dvec3(0.0), kVariants, 0.0).empty());
@@ -303,13 +381,14 @@ TEST(WorldPlants, WhatIsSeenFromAPlaceIsOnTheQuadsThatDrawThere)
       std::vector<Plant> of = plantsOf(w, q);
       for(const Plant& plant : of)
         if(glm::distance(plant.at, eye) < plant.reach)
-          (plant.role <= 1 ? trees : others)++;
+          (W::isTree(W::kStandingRoles[plant.role]) ? trees : others)++;
       drawn[q] = std::move(of);
     }
     // a wood all round: as many as a place may see, and no more
     EXPECT_GT(trees, 4000U);
     EXPECT_LT(double(trees), 1.15 * W::kTreesSeen);
-    EXPECT_LT(double(others), 1.15 * W::kUndergrowthSeen * 5.0);
+    const auto land = std::count_if(W::kStandingRoles.begin(), W::kStandingRoles.end(), [](std::string_view r) { return !W::isTree(r); });
+    EXPECT_LT(double(others), 1.15 * W::kUndergrowthSeen * double(land));
     // and every plant there is that the eye is within reach of is among them: of the finest quads
     // here and there about the eye, none is missing from the quad that draws its ground
     size_t looked = 0;

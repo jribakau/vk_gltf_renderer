@@ -1044,12 +1044,15 @@ their kit when there is one. It needs no kit: without one it stands bare.
   the ground and can meet a lake on the far side from behind.
 - **What grows** (`src/fv_world_plants.hpp`) is a biome's row too: what stands on it and how
   thickly, its grass, what drifts in its grass. With the backdrop's kit read (`readPlanetKit`,
-  `plantPlanet`) the planet is planted with the same plants a meadow and a forest are, held the same
-  way. A tree, a bush or a rock has a place that follows from the planet alone (a grid a role over a
-  cube face) and a reach, how far it is seen from, by its size among its kind's (`reachOf`): a
-  wood's largest trees for kilometres, its smallest and its undergrowth for a few hundred metres,
-  the share seen at a distance falling as its square, so those seen from one place stay about as
-  many however far the largest are seen. A quad holds the plants whose reach passes where the quad
+  `plantPlanet`) the planet is planted with the plants a meadow and a forest are and with roles of
+  its own (`kStandingRoles`: leafy trees, pines, the dry land's small trees and bushes, bare
+  boulders), each biome growing its own of them, all held the same way. A tree, a bush or a rock
+  has a place that follows from the planet alone (a grid a role over a cube face) and a reach, how
+  far it is seen from, by its size among its kind's (`reachOf`): a wood's largest trees for
+  kilometres, the dry land's small trees for a couple, a wood's smallest and its undergrowth for a
+  few hundred metres, the share seen at a distance falling as its square, so those seen from one
+  place stay about as many however far the largest are seen (a wood of several kinds of tree is
+  counted as one wood). A quad holds the plants whose reach passes where the quad
   can draw (`heldFrom`), each decided on the ground as the finest quads have it: a plant is the same
   plant, in its place and of its size, whichever quad holds it, and a quad taking another's place
   changes none. They are made with the quad's ground on the pool and arrive with it, a variant an

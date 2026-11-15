@@ -40,8 +40,26 @@ namespace fv::world {
 
 // ---- what has a place ----------------------------------------------------------------------------------
 
-// The kit's roles a planet places, in the order `standing` counts them
-inline constexpr std::array<std::string_view, 7> kStandingRoles = {"tree", "grown", "sapling", "shrub", "rock", "stump", "log"};
+// The kit's roles a planet places, in the order `standing` counts them. A biome grows its own of
+// them (World::biomes): the firs of a wood and a meadow's edge, a grassland's leafy trees, pines in
+// woods and on the steppe, the dry land's trees and bushes, its bare boulders, and mossy rocks where
+// it is wet
+inline constexpr std::array<std::string_view, 12> kStandingRoles = {"tree", "grown", "sapling", "shrub", "rock", "stump", "log",
+                                                                    "broadleaf", "pine", "drytree", "drybush", "boulder"};
+// What a role is: a tree is a wood's, seen for kilometres, and none stands on a place's floor; the
+// dry land's small trees and a sapling stand on none either; a stone stands on bare rock too
+constexpr bool isTree(std::string_view role)
+{
+  return role == "tree" || role == "grown" || role == "broadleaf" || role == "pine";
+}
+constexpr bool isTall(std::string_view role)
+{
+  return isTree(role) || role == "drytree" || role == "sapling";
+}
+constexpr bool isStone(std::string_view role)
+{
+  return role == "rock" || role == "boulder";
+}
 
 // The plants of one variant of a role on a quad: where each stands, about `centre`, and how far it is
 // seen from; the furthest seen first
@@ -58,7 +76,8 @@ struct Stand
 // the plants seen from one place are about as many however far the largest are seen). `all` follows
 // from how thickly the role grows where it grows thickest, so that those seen from one place stay
 // under the role's count (kTreesSeen; kUndergrowthSeen for what else stands on land; kOthersSeen for
-// the sea floor's): no nearer than `least`.
+// the sea floor's): no nearer than `least`. Where a biome grows several trees (firs and pines in one
+// wood), `standing` asks with all of theirs together, so the count holds for its trees.
 struct Reach
 {
   double all = 0.0, most = 0.0;

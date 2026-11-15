@@ -197,11 +197,12 @@ void standsOf(uint8_t role, std::vector<std::vector<Placed>>& placed, std::vecto
 Reach reachOf(std::string_view role, double perSquareMetre)
 {
   // Trees are seen for kilometres (a 20 m one is a pixel or two of a traced frame at 12 km), the
-  // smallest of them for a few hundred metres; the undergrowth, rocks and dead wood on land for some
-  // hundreds of metres; what grows on the sea floor, through water, a hundred metres or a few
-  const bool   tree  = role == "tree" || role == "grown";
-  const bool   land  = role == "sapling" || role == "shrub" || role == "rock" || role == "stump" || role == "log";
-  const double least = tree ? 350.0 : 120.0, most = tree ? 12000.0 : land ? 800.0 : 400.0;
+  // smallest of them for a few hundred metres; the dry land's trees of 2 to 4 m for a couple of
+  // kilometres; the undergrowth, rocks and dead wood on land for some hundreds of metres; what grows
+  // on the sea floor, through water, a hundred metres or a few
+  const bool   tree  = isTree(role), small = role == "drytree";
+  const bool   land  = !tree && std::find(kStandingRoles.begin(), kStandingRoles.end(), role) != kStandingRoles.end();
+  const double least = tree ? 350.0 : small ? 200.0 : 120.0, most = tree ? 12000.0 : small ? 2500.0 : land ? 800.0 : 400.0;
   const double seen  = tree ? kTreesSeen : land ? kUndergrowthSeen : kOthersSeen;
   // those seen from one place, with every one seen from `all`: all within it, and beyond it the share
   // (all / d)^2 of them at d, to `most`
@@ -237,22 +238,32 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
     if(variants[r] == 0)
       continue;
     // where each biome grows it, the thickest of them, and the thickest it stands over a wide ground
+    // where it grows: a tree with the other trees there, a wood's firs and pines being one wood
     std::array<const Growth*, kMostBiomes> grows{};
     double                                 thickest = 0.0, wood = 0.0;
     for(size_t b = 0; b < w.biomes.size() && b < kMostBiomes; b++)
+    {
+      double kind = 0.0;
       for(const Growth& g : w.biomes[b].plants)
+      {
         if(g.role == role)
         {
           grows[b] = &g;
           thickest = std::max(thickest, g.perSquareMetre * density);
-          wood     = std::max(wood, g.perSquareMetre * density * double(std::min(g.cover, 1.0F)));
         }
+        // (what else stands on land is counted by its role, as before there were several)
+        if(isTree(role) ? isTree(g.role) : g.role == role)
+          kind += g.perSquareMetre * density * double(std::min(g.cover, 1.0F));
+      }
+      if(grows[b])
+        wood = std::max(wood, kind);
+    }
     if(!(thickest > 0.0))
       continue;
     const Reach reach = reachOf(role, wood);
     if(reach.most < held)
       continue;  // a quad too far for any of them
-    const bool                       rock = role == "rock";
+    const bool                       rock = isStone(role);
     std::vector<std::vector<Placed>> placed(variants[r]);
     overCells(w, q, thickest, 7919U * uint32_t(r + 1), [&](double u, double v, double cell, uint32_t h) {
         // its size among its kind's, and by that how far it is seen from: the quad's, if that far
@@ -265,7 +276,7 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
         if(bare(s, rock) || cleared(w, d) || (!rock && s.rock > 0.5F) || (s.built.taken & kGroundKept))
           return;
         // (a place stands in a clearing: what is as tall as a tree is none of its floor's)
-        if((s.built.taken & kGroundOpen) && (role == "tree" || role == "grown" || role == "sapling"))
+        if((s.built.taken & kGroundOpen) && isTall(role))
           return;
         // how thickly it grows here: each biome's own by its share, in its groves
         double        odds = 0.0;

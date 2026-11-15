@@ -540,8 +540,8 @@ TEST(WorldPlaces, NothingIsPlantedWhereAPackKeepsClearNorGrassLaidWhereItCovers)
           ASSERT_EQ(taken & W::kGroundKept, 0);
           // no tree on the place's floor: bushes and rocks may be
           const std::string_view role = W::kStandingRoles[stand.role];
-          if(role == "tree" || role == "sapling" || role == "grown")
-            ASSERT_EQ(taken & W::kGroundOpen, 0);
+          if(W::isTall(role))
+            ASSERT_EQ(taken & W::kGroundOpen, 0) << role;
           else
             low += taken & W::kGroundOpen ? 1 : 0;
           plants++;

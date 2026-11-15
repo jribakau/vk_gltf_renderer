@@ -175,7 +175,7 @@ struct Sample
 // What stands on a biome's ground with a place of its own (fv_world_plants.hpp): one of the kit's roles
 struct Growth
 {
-  std::string_view role;                   // tree | grown | sapling | shrub | rock | stump | log
+  std::string_view role;                   // of fv_world_plants.hpp's kStandingRoles
   double           perSquareMetre = 0.01;  // where it stands thickest, before the planet's density
   float            scaleMin = 0.8F, scaleMax = 1.25F;
   float            sink = 0.0F;            // metres into the ground, times its scale

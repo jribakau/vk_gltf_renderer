@@ -6,7 +6,8 @@
 // textures and a kit.json that says what each is:
 //
 //   {"version": 1,
-//    "plants": [{"role": "grass" | "flower" | "fern" | "sapling" | "tree" | "grown" | "shrub" | "rock" | "stump" | "log",
+//    "plants": [{"role": "grass" | "flower" | "fern" | "sapling" | "tree" | "grown" | "shrub" | "rock" | "stump" | "log"
+//                        | a planet's own (fv::world::kStandingRoles: "broadleaf", "pine", ...),
 //                "file": "<glTF, relative>",
 //                "heaviest"?: <triangles: a variant of the file with more is left out>}, ...],
 //    "ground": {"<kind>": {"diffuse"?, "normal"?, "arm"?: "<image, relative>", "tile"?: <metres>,

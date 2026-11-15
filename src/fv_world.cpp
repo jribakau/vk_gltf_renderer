@@ -603,28 +603,38 @@ void clearing(const World& w, const Point& p, Sample& s)
 std::vector<Biome> biomeTable()
 {
   // (above 5 degrees the rows are a ladder by how wet it is, and must leave no gap)
-  // What grows: the kit's plants are a northern meadow's and a fir wood's, so the warm, wet rows
-  // have them thickest; the dry and the cold have rocks and little else.
+  // What grows: each row its own of the kit's plants (fv_world_plants.hpp). A wood is firs with
+  // stands of pine and a few leafy trees; a grassland leafy trees with firs at its edges; the steppe
+  // dry bushes, lone pines and thorn trees; the desert succulents, quiver trees and bare boulders; the
+  // tundra low bushes, stones and stunted pines at its warm edge. A fir wood's floor and a meadow's
+  // drifts are the warm, wet rows' alone.
   return {
       // (what each one's ground is drawn with: soil with grass on it wherever anything grows, a
       // wood's floor under the firs, sand in the desert; snow has no map)
       {.name = "snow", .temperatureTo = -5.0F, .colour = {0.78F, 0.80F, 0.84F}, .rough = 0.5F},
       {.name = "tundra", .temperatureFrom = -5.0F, .temperatureTo = 5.0F, .colour = {0.17F, 0.16F, 0.11F}, .rough = 1.0F,
-       .plants = {{.role = "rock", .perSquareMetre = 0.012, .scaleMin = 0.15F, .scaleMax = 0.8F, .sink = 0.1F, .cover = 0.5F, .patch = 40.0F},
-                  {.role = "shrub", .perSquareMetre = 0.006, .scaleMin = 0.4F, .scaleMax = 0.8F, .sink = 0.03F, .cover = 0.25F, .patch = 30.0F}},
+       .plants = {{.role = "rock", .perSquareMetre = 0.006, .scaleMin = 0.15F, .scaleMax = 0.8F, .sink = 0.1F, .cover = 0.5F, .patch = 40.0F},
+                  {.role = "boulder", .perSquareMetre = 0.006, .scaleMin = 0.2F, .scaleMax = 0.9F, .sink = 0.12F, .cover = 0.4F, .patch = 50.0F},
+                  {.role = "shrub", .perSquareMetre = 0.006, .scaleMin = 0.4F, .scaleMax = 0.8F, .sink = 0.03F, .cover = 0.25F, .patch = 30.0F},
+                  {.role = "pine", .perSquareMetre = 0.0008, .scaleMin = 0.45F, .scaleMax = 0.9F, .sink = 0.1F, .cover = 0.15F, .patch = 120.0F}},
        .grass  = Grass::eCold,
        .soil   = Soil::eGrass},
       {.name = "desert", .temperatureFrom = 5.0F, .moistureTo = 0.15F, .colour = {0.40F, 0.30F, 0.17F}, .rough = 0.6F,
-       .plants = {{.role = "rock", .perSquareMetre = 0.008, .scaleMin = 0.2F, .scaleMax = 1.2F, .sink = 0.12F, .cover = 0.35F, .patch = 70.0F}},
+       .plants = {{.role = "boulder", .perSquareMetre = 0.008, .scaleMin = 0.2F, .scaleMax = 1.2F, .sink = 0.12F, .cover = 0.35F, .patch = 70.0F},
+                  {.role = "drybush", .perSquareMetre = 0.006, .scaleMin = 0.6F, .scaleMax = 1.3F, .sink = 0.03F, .cover = 0.3F, .patch = 45.0F},
+                  {.role = "drytree", .perSquareMetre = 0.0012, .scaleMin = 0.8F, .scaleMax = 1.6F, .sink = 0.05F, .cover = 0.2F, .patch = 150.0F}},
        .soil   = Soil::eSand},
       {.name = "steppe", .temperatureFrom = 5.0F, .moistureFrom = 0.15F, .moistureTo = 0.36F, .colour = {0.26F, 0.21F, 0.12F}, .rough = 0.9F,
-       .plants = {{.role = "shrub", .perSquareMetre = 0.01, .scaleMin = 0.5F, .scaleMax = 1.1F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
-                  {.role = "rock", .perSquareMetre = 0.005, .scaleMin = 0.2F, .scaleMax = 0.9F, .sink = 0.1F, .cover = 0.3F, .patch = 60.0F},
-                  {.role = "tree", .perSquareMetre = 0.004, .scaleMin = 0.8F, .scaleMax = 1.5F, .sink = 0.15F, .cover = 0.12F, .patch = 90.0F}},
+       .plants = {{.role = "drybush", .perSquareMetre = 0.008, .scaleMin = 0.6F, .scaleMax = 1.2F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
+                  {.role = "shrub", .perSquareMetre = 0.003, .scaleMin = 0.5F, .scaleMax = 1.1F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
+                  {.role = "boulder", .perSquareMetre = 0.004, .scaleMin = 0.2F, .scaleMax = 0.9F, .sink = 0.1F, .cover = 0.3F, .patch = 60.0F},
+                  {.role = "pine", .perSquareMetre = 0.003, .scaleMin = 0.8F, .scaleMax = 1.5F, .sink = 0.15F, .cover = 0.15F, .patch = 90.0F},
+                  {.role = "drytree", .perSquareMetre = 0.002, .scaleMin = 0.8F, .scaleMax = 1.5F, .sink = 0.05F, .cover = 0.2F, .patch = 70.0F}},
        .grass  = Grass::eDry,
        .soil   = Soil::eGrass},
       {.name = "grassland", .temperatureFrom = 5.0F, .moistureFrom = 0.36F, .moistureTo = 0.68F, .colour = {0.085F, 0.14F, 0.045F}, .rough = 0.8F,
-       .plants = {{.role = "tree", .perSquareMetre = 0.02, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F, .cover = 0.3F, .patch = 80.0F},
+       .plants = {{.role = "broadleaf", .perSquareMetre = 0.012, .scaleMin = 1.2F, .scaleMax = 2.4F, .sink = 0.1F, .cover = 0.3F, .patch = 80.0F},
+                  {.role = "tree", .perSquareMetre = 0.008, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F, .cover = 0.25F, .patch = 110.0F},
                   {.role = "sapling", .perSquareMetre = 0.02, .scaleMin = 0.7F, .scaleMax = 1.6F, .cover = 0.35F, .patch = 30.0F},
                   {.role = "shrub", .perSquareMetre = 0.012, .scaleMin = 0.6F, .scaleMax = 1.3F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
                   {.role = "rock", .perSquareMetre = 0.004, .scaleMin = 0.2F, .scaleMax = 0.8F, .sink = 0.1F, .cover = 0.3F, .patch = 60.0F}},
@@ -633,7 +643,9 @@ std::vector<Biome> biomeTable()
        .soil   = Soil::eGrass},
       {.name = "forest", .temperatureFrom = 5.0F, .moistureFrom = 0.68F, .colour = {0.045F, 0.085F, 0.03F}, .rough = 0.9F,
        .floor  = {0.075F, 0.06F, 0.035F},
-       .plants = {{.role = "tree", .perSquareMetre = 0.026, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F, .cover = 0.9F, .patch = 60.0F},
+       .plants = {{.role = "tree", .perSquareMetre = 0.018, .scaleMin = 1.0F, .scaleMax = 2.4F, .sink = 0.2F, .cover = 0.7F, .patch = 60.0F},
+                  {.role = "pine", .perSquareMetre = 0.012, .scaleMin = 1.0F, .scaleMax = 1.8F, .sink = 0.2F, .cover = 0.55F, .patch = 90.0F},
+                  {.role = "broadleaf", .perSquareMetre = 0.003, .scaleMin = 1.3F, .scaleMax = 2.4F, .sink = 0.1F, .cover = 0.3F, .patch = 50.0F},
                   {.role = "sapling", .perSquareMetre = 0.03, .scaleMin = 0.6F, .scaleMax = 1.7F, .cover = 0.55F, .patch = 18.0F},
                   {.role = "shrub", .perSquareMetre = 0.05, .scaleMin = 0.5F, .scaleMax = 1.2F, .sink = 0.03F, .cover = 0.45F, .patch = 22.0F},
                   {.role = "rock", .perSquareMetre = 0.02, .scaleMin = 0.15F, .scaleMax = 0.7F, .sink = 0.08F, .cover = 0.5F, .patch = 30.0F},

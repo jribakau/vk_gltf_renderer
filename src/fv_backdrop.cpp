@@ -964,7 +964,7 @@ std::vector<std::string> roles(const Spec& spec)
   // a planet's biomes between them plant every role (fv_world_plants.hpp); grown firs as a wood's are
   if(isPlanet(spec))
   {
-    out = {"fern", "flower", "grass", "log", "rock", "sapling", "shrub", "stump", "tree"};
+    out = {"boulder", "broadleaf", "drybush", "drytree", "fern", "flower", "grass", "log", "pine", "rock", "sapling", "shrub", "stump", "tree"};
     if(spec.mature)
       out.insert("grown");
   }
