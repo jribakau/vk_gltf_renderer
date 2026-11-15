@@ -27,9 +27,11 @@
 // near its point as the ground will have it. `withPlaces` gives the planet a stage that makes its ground
 // theirs: level under a place as a floor is (on the plane that touches the planet at its middle,
 // like the figures' own clearing), cut and filled to a road's level across its width and eased into
-// the land over its verges, a ford where a road meets a stream; and the ground's colour and layers
-// under a road. Sample::built says what a point has of all this, which keeps the planet's plants and
-// grass off it (fv_world_plants.cpp).
+// the land over its verges, a ford where a track meets a stream; and the ground's colour and layers
+// under a road. A river too wide to ford is crossed by a bridge (Bridge): the road's level is held
+// over the water from bank to bank, the ground under it left as the river has it. Sample::built says
+// what a point has of all this, which keeps the planet's plants and grass off it (fv_world_plants.cpp).
+// What a road and a bridge are drawn with near the eye: fv_world_roads.hpp.
 //
 // Nothing here draws: the host holds the packs' models and stands the sites near the eye
 // (fv_host_world_places.cpp).
@@ -159,6 +161,16 @@ struct RoadPiece
   uint8_t    kind     = 0;      // of the catalogue's roads
 };
 
+// Where a road crosses a river it does not ford: the water it spans, along its way, where the road
+// is held level over it (its deck) and the ground under it is the river's
+struct Bridge
+{
+  uint32_t way   = 0;
+  float    from  = 0.0F, to = 0.0F;  // metres along its way, a little past each edge of the water
+  float    level = 0.0F;             // the road's over it
+  float    water = 0.0F;             // the water's surface under it
+};
+
 struct Places
 {
   explicit Places(uint32_t cells) : grid(cells) {}
@@ -170,6 +182,9 @@ struct Places
   std::vector<std::string>                       unplaced;  // what it asked that could not stand, and why
   std::vector<RoadPiece>           roads;
   uint32_t                         ways = 0;
+  std::vector<uint32_t>            wayPieces;  // a way's pieces are roads[wayPieces[w]] to roads[wayPieces[w + 1]], in their order
+  std::vector<Bridge>              bridges;    // by way, then along it
+  std::vector<uint32_t>            wayBridges; // a way's bridges are bridges[wayBridges[w]] to bridges[wayBridges[w + 1]]
 
   // What is near a point: by cell of `grid`, the sites whose ground reaches into it and the road
   // pieces whose verges do. An item with kRoadItem set is a piece.
@@ -181,6 +196,23 @@ struct Places
 
 // A levelled site's ground eases into the land over this, past its reach
 double padEdge(double radius);
+
+// A point `along` metres down a way: where it is, the way it runs there (unit, a tangent of the
+// sphere), the road's level, and its piece
+struct OnWay
+{
+  glm::dvec3       direction{0.0, 1.0, 0.0};
+  glm::dvec3       forward{1.0, 0.0, 0.0};
+  double           level = 0.0;
+  const RoadPiece* piece = nullptr;
+};
+OnWay onWay(const Places& places, uint32_t way, double along);
+// How long a way is, metres
+double wayLength(const Places& places, uint32_t way);
+// The bridge of a way at `along`, `margin` metres past its ends counting; null where it has none
+const Bridge* bridgeAt(const Places& places, uint32_t way, double along, double margin = 0.0);
+// How far a bridge's deck goes on past its water, onto the banks, metres
+inline constexpr double kBridgeEnds = 6.0;
 
 // Settles a planet: `amount` 1 as the catalogue's rules say, more or fewer by it; none at 0 (null).
 // `world` is the planet without places (make's); `settlement`, what its file says of where people

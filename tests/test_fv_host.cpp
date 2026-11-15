@@ -983,12 +983,17 @@ TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
                                                {"roads", Json::array({{{"name", "road"}, {"width", 6.0}, {"verge", 3.0}}})},
                                                {"along", Json::array({{{"kind", "post"}, {"road", "road"}, {"every", 30.0}, {"chance", 1.0}, {"side", 5.0}}})}}}}
                                             .dump();
+  // a kit of no plants, with the roads' maps (not there: their materials are what is looked at)
+  std::ofstream(dir / "kit.json") << Json{{"version", 1},
+                                          {"plants", Json::array()},
+                                          {"ground", {{"asphalt", {{"diffuse", "asphalt.png"}, {"tile", 2.5}}}, {"concrete", {{"diffuse", "concrete.png"}, {"tile", 3.0}}}}}}
+                                         .dump();
   HostRig            rig;
   rs::RetainedScene& scene = rig.renderer.hostScene();
   const auto         state = [&] { return rig.topic("backdrop").value("state", std::string()); };
   struct Stands
   {
-    int                    places = 0, copies = 0, held = 0;
+    int                    places = 0, copies = 0, held = 0, roads = 0;
     std::vector<glm::vec3> at;  // where each shown place's entity is, in the root's frame
     std::vector<glm::vec3> yards;  // those of them that are the yard's (two slabs)
   };
@@ -1015,6 +1020,18 @@ TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
         EXPECT_FALSE(scene.shown(e));
         out.held++;
       }
+      // a quad's roads: their surfaces and bridges, drawn with the planet's road materials, which
+      // have the kit's maps
+      else if(entity->name == "Planet roads" && entity->mesh && scene.shown(e))
+      {
+        out.roads++;
+        const rs::MeshPart& part = entity->mesh->parts.at(0);
+        EXPECT_EQ(part.materials.size(), 3U);
+        const rs::MaterialRecord* surface = scene.material(part.materials.at(0));
+        EXPECT_TRUE(surface && surface->payload.name == "Planet road: asphalt" && surface->textures) << (surface ? surface->payload.name : "none");
+        const rs::MeshRecord* mesh = scene.mesh(part.mesh);
+        EXPECT_TRUE(mesh && mesh->uv0.size() == mesh->positions.size() && !mesh->submeshes.empty());
+      }
     }
     return out;
   };
@@ -1028,9 +1045,10 @@ TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
     return done();
   };
   rig.host->onUpdate();
-  ASSERT_TRUE(rig.cmd("settings.apply", {{"placesDir", dir.generic_string()}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"placesDir", dir.generic_string()}, {"backdropKit", dir.generic_string()}}).value("ok", false));
   ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "planet"}, {"radius", 5}}).value("ok", false));
-  ASSERT_TRUE(until([&] { return state() == "ready" && stands().places > 0 && stands().copies >= 2; })) << state() << ", " << stands().places << " places";
+  ASSERT_TRUE(until([&] { return state() == "ready" && stands().places > 0 && stands().copies >= 2 && stands().roads > 0; }))
+      << state() << ", " << stands().places << " places, " << stands().roads << " quads of roads";
   // the yard near the figures: one entity of its two slabs (and the posts by its road, one each)
   const Stands stood = stands();
   EXPECT_GE(stood.copies, stood.places + 1) << "the yard's two slabs are one entity's copies";
@@ -1081,7 +1099,8 @@ TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
   EXPECT_TRUE(rig.cmd("backdrop.set", said).value("ok", false));
   // with fewer asked for, or none, the planet is settled again: none, and nothing of them is left
   ASSERT_TRUE(rig.cmd("backdrop.set", {{"places", 0}}).value("ok", false));
-  ASSERT_TRUE(until([&] { return state() == "ready" && stands().places == 0 && stands().held == 0; })) << stands().places << " places, " << stands().held << " held";
+  ASSERT_TRUE(until([&] { return state() == "ready" && stands().places == 0 && stands().held == 0 && stands().roads == 0; }))
+      << stands().places << " places, " << stands().held << " held, " << stands().roads << " quads of roads";
   EXPECT_EQ(rig.topic("backdrop").value("settled", -1), 0);
   EXPECT_TRUE(rig.topic("backdrop")["nearest"].is_null());
   // and asked for again, they are back where they were

@@ -1124,9 +1124,12 @@ their kit when there is one. It needs no kit: without one it stands bare.
   - `fv::world::settle` reads the planet and the catalogue: places on level dry ground (one always
     a walk from the figures, outside what their scene may level), each land's places joined by the
     shortest tree of routes that can be found over the base map's cells (the cheaper where a road
-    already runs, so they merge; fords through streams, no bridges; up a terrace of the land where
-    it is lowest, as a ramp cut into it), the routes as curves the way rivers are, then the single
-    things. A place no route reached is led to the nearest road, and from the place by the figures
+    already runs, so they merge; across a stream by a ford, a wider river by a bridge, which a
+    route pays dearly for and crosses straight; up a terrace of the land where it is lowest, as a
+    ramp cut into it), the routes as curves the way rivers are, then the single things. Where a
+    finished run of road is over a river its kind does not ford (a track fords a stream, an asphalt
+    road bridges all but the smallest), its level is held from bank to bank clear of the water
+    (`Places::bridges`, found along the run as its pieces lie, and looked up by way: `bridgeAt`). A place no route reached is led to the nearest road, and from the place by the figures
     a road comes to where they stand and ends there, so there is a way to follow from the start.
     The same for a seed whatever the threads. It runs on the worker that makes the planet, or on
     one of its own when the catalogue or the backdrop's `places` amount comes later; the planet
@@ -1146,7 +1149,8 @@ their kit when there is one. It needs no kit: without one it stands bare.
   - `withPlaces` adds a stage before the ground's colour: a place's floor is level on the plane
     that touches the planet at its middle and eases into the land, a road is cut and banked to its
     own level across its width (finely drawn quads only; from afar it is a share of the colour),
-    and `Sample::built` says what a point has of it. The planet's plants and grass read that:
+    but not over a bridge's water, where the ground stays the river's, and `Sample::built` says
+    what a point has of it. The planet's plants and grass read that:
     nothing planted where a pack keeps clear or a road runs, no tree on a place's floor. A point
     finds what is near it through lists by base-map cell, which hold every cell a place or a road
     reaches into (a cell only clipped at a corner too).
@@ -1157,6 +1161,17 @@ their kit when there is one. It needs no kit: without one it stands bare.
     held hidden: every site of a pack is copies of the same meshes, so memory goes with the packs
     held, not with the places. What grows over a place shows from nearer. In play mode a place's
     walls are met as a prop's are (`placeSets`).
+  - Roads and bridges as meshes (`src/fv_world_roads.hpp`), made with a quad's ground on the pool
+    and an entity of the quad's beside its ground: an asphalt road's surface, a ribbon draped on
+    the ground as that quad draws it (its own triangles, so the ribbon is never under them) a few
+    centimetres over it, with its edges down into the ground, and worn paint on it (a dashed middle
+    line, broken edge lines), on the quads fine enough for it, out to some 700 m; further off the
+    road is its ground's paint, and a track is always the ground's earth. A bridge, its deck under
+    the road at the road's level, parapets, piers in the water, an abutment into each bank, on the
+    quad that holds its middle at any level. A stretch of road is the quad's its middle falls in,
+    so quads of any levels side by side draw it once. Their materials are the planet's
+    (`PlanetBuilt::roadSurface`, `roadPaint`, `roadBridge`): plain colours, and the kit's asphalt
+    and concrete maps once it has them (`mapPlanetRoads`).
 - **Its map** (`src/fv_world_chart.hpp`, the `planet.map` command, the app's World › Planet › Map):
   an author's view of the planet, north up. `chartImage` draws a window of latitude and longitude as
   an image, a sample a pixel at the pixel's footprint (so the stages leave out what is finer than it):

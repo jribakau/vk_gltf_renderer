@@ -4,7 +4,9 @@
 // planet's planted on any of it. No two sites of a pack need be alike: each has its own share of what
 // may or may not stand there; a group by a road stands on the ground piece by piece; and a kind
 // stands no more often than its rule lets it. A planet file's say: a region with none, more, or only
-// the kinds it names, and a place by name as near its point as the ground will have it.
+// the kinds it names, and a place by name as near its point as the ground will have it. A river too
+// wide to ford is bridged, the road held clear over it; a road's surface lies on its ground as drawn,
+// each stretch on one quad, and a bridge on the quad that holds its middle.
 
 #include <algorithm>
 #include <cmath>
@@ -19,6 +21,7 @@
 
 #include "../src/fv_world_places.hpp"
 #include "../src/fv_world_plants.hpp"
+#include "../src/fv_world_roads.hpp"
 
 namespace {
 
@@ -385,7 +388,11 @@ TEST(WorldPlaces, MoreAreAskedForMoreStand)
   const W::World small = W::make({.seed = 7, .radius = 5000.0}, {.map = 128});
   const auto     few = W::settle(small, catalogue(), 0.3), many = W::settle(small, catalogue(), 2.0);
   EXPECT_LT(few->joined, many->joined);
-  EXPECT_LT(few->sites.size(), many->sites.size());
+  // (the places: what stands along the roads is as many as they are long, of their kind)
+  const auto placesOf = [](const W::Places& pl) {
+    return std::count_if(pl.sites.begin(), pl.sites.end(), [](const W::Site& s) { return packOf(s).name != "lamp"; });
+  };
+  EXPECT_LT(placesOf(*few), placesOf(*many));
 }
 
 TEST(WorldPlaces, EveryPlaceIsOnLevelDryLandClearOfTheOthersAndOfTheFigures)
@@ -1121,3 +1128,186 @@ TEST(WorldPlaces, AnEmptyPlanAsksNothingOfTheRules)
 {
   EXPECT_TRUE(same(places(), *settledBy(std::make_shared<W::Settlement>())));
 }
+
+namespace {
+
+// The quad of `level` a direction is on
+W::Quad quadOf(const glm::dvec3& d, uint8_t level)
+{
+  const W::FacePoint p = W::locate(d);
+  const double       n = double(uint64_t(1) << level);
+  return {p.face, level, uint32_t(std::clamp((p.u + 1.0) * 0.5 * n, 0.0, n - 1.0)), uint32_t(std::clamp((p.v + 1.0) * 0.5 * n, 0.0, n - 1.0))};
+}
+
+double areaOf(const W::RoadMesh& m)
+{
+  double area = 0.0;
+  for(size_t i = 0; i + 2 < m.indices.size(); i += 3)
+    area += 0.5 * glm::length(glm::cross(glm::dvec3(m.positions[m.indices[i + 1]] - m.positions[m.indices[i]]),
+                                         glm::dvec3(m.positions[m.indices[i + 2]] - m.positions[m.indices[i]])));
+  return area;
+}
+
+}  // namespace
+
+TEST(WorldRoads, ARiverItDoesNotFordItCrossesByABridge)
+{
+  const W::World&  w  = settled();
+  const W::Places& pl = places();
+  ASSERT_GT(pl.bridges.size(), 10U);
+  ASSERT_EQ(pl.wayBridges.size(), size_t(pl.ways) + 1);
+  size_t tracks = 0, level = 0;
+  for(const W::Bridge& b : pl.bridges)
+  {
+    ASSERT_LT(b.from, b.to);
+    const W::OnWay middle = W::onWay(pl, b.way, 0.5 * (double(b.from) + double(b.to)));
+    ASSERT_TRUE(middle.piece);
+    const bool earth = catalogue()->roads[middle.piece->kind].earth;
+    tracks += earth ? 1 : 0;
+    // a river there, wider than its kind of road fords
+    double widest = 0.0;
+    for(double s = b.from; s <= b.to; s += 1.0)
+      if(const W::Inland in = W::mapInland(*w.base, w.spec.radius, W::onWay(pl, b.way, s).direction); in.river)
+        widest = std::max(widest, in.riverHalf);
+    EXPECT_GT(widest, earth ? 5.0 : 1.0) << "a bridge of way " << b.way << " at " << b.from;
+    // the road over it clear of the water, and level from bank to bank
+    bool flat = true;
+    for(double s = b.from; s <= b.to; s += 1.0)
+    {
+      const W::OnWay on = W::onWay(pl, b.way, s);
+      EXPECT_GT(on.level, double(b.water) + 0.5) << "a bridge of way " << b.way << " at " << s;
+      flat = flat && std::abs(on.level - double(b.level)) < 0.05;
+    }
+    level += flat ? 1 : 0;
+    // the river's ground under it as it was, nothing of the road's on it, and nothing planted there
+    const W::Sample s = W::sample(w, middle.direction, 1.0), was = W::sample(bare(), middle.direction, 1.0);
+    EXPECT_NEAR(s.elevation, was.elevation, 0.01);
+    EXPECT_LT(s.built.road, 0.01F);
+    EXPECT_NE(s.built.taken & W::kGroundKept, 0);
+  }
+  EXPECT_GE(level, pl.bridges.size() * 9 / 10) << "(but one by a way's end, which the way's other run decides)";
+  // tracks ford a stream, and bridge a river; a road bridges both
+  EXPECT_GT(tracks, 0U);
+  EXPECT_LT(tracks, pl.bridges.size());
+}
+
+TEST(WorldRoads, ItsSurfaceLiesOnItsGroundAndEachStretchIsDrawnOnce)
+{
+  const W::World&  w      = settled();
+  const W::Places& pl     = places();
+  const uint8_t    finest = W::finestLevel(w);
+  // quads along roads (not tracks), a level up from the finest, so fine enough for a surface
+  std::vector<W::Quad> quads;
+  for(size_t i = 0; i < pl.roads.size() && quads.size() < 10; i += 29)
+  {
+    const W::RoadPiece& p = pl.roads[i];
+    if(!catalogue()->roads[p.kind].earth && !W::bridgeAt(pl, p.way, double(p.start) + 0.5 * double(p.length), 40.0))
+      quads.push_back(quadOf(glm::normalize(p.b), uint8_t(finest - 1)));
+  }
+  std::sort(quads.begin(), quads.end());
+  quads.erase(std::unique(quads.begin(), quads.end()), quads.end());
+  ASSERT_GE(quads.size(), 6U);
+  size_t laid = 0, near = 0;
+  for(const W::Quad& q : quads)
+  {
+    const glm::dvec3      centre = W::toScene(w, W::direction(q.face, (double(q.x) + 0.5) * 2.0 / double(1U << q.level) - 1.0, (double(q.y) + 0.5) * 2.0 / double(1U << q.level) - 1.0), 0.0);
+    const W::RoadMeshes   m      = W::roadMeshes(w, q, centre);
+    ASSERT_FALSE(m.surface.empty());
+    EXPECT_FALSE(m.marking.empty()) << "a road's middle and edges are marked";
+    EXPECT_EQ(m.surface.positions.size(), m.surface.normals.size());
+    EXPECT_EQ(m.surface.positions.size(), m.surface.uvs.size());
+    // what its four children have of it between them is what it has: each stretch is one quad's
+    double children = 0.0, paint = 0.0;
+    for(const W::Quad& c : W::children(q))
+    {
+      const W::RoadMeshes cm = W::roadMeshes(w, c, centre);
+      children += areaOf(cm.surface);
+      paint += areaOf(cm.marking);
+    }
+    EXPECT_NEAR(children, areaOf(m.surface), 0.05 * areaOf(m.surface));
+    EXPECT_NEAR(paint, areaOf(m.marking), 0.1 * areaOf(m.marking));
+    // on the ground as the quad draws it, a few centimetres over it (its points are the ground's
+    // own where the ground is level across the road, as it is but by water)
+    const double cell = W::width(w, q) / double(W::kGroundCells), lift = W::surfaceLift(cell);
+    for(size_t v = 0; v < m.surface.positions.size(); v++)
+    {
+      if(v % 7 == 0 || v % 7 == 6)
+        continue;  // (its edges, which go down into the ground)
+      double           r = 0.0;
+      const glm::dvec3 d = W::toPlanet(w, centre + glm::dvec3(m.surface.positions[v]), &r);
+      const W::Sample  s = W::sample(w, d, cell);
+      if(s.shore < 25.0F)
+        continue;
+      const double over = r - w.spec.radius - s.elevation;
+      laid++;
+      near += over > lift - 0.06 && over < lift + 0.12 ? 1 : 0;
+      EXPECT_LT(std::abs(over - lift), 0.6) << "quad " << int(q.face) << "/" << int(q.level) << "/" << q.x << "/" << q.y;
+    }
+  }
+  EXPECT_GT(near, laid * 95 / 100) << "of " << laid;
+}
+
+TEST(WorldRoads, ABridgeIsDrawnByTheQuadThatHoldsItsMiddleAtAnyLevel)
+{
+  const W::World&  w      = settled();
+  const W::Places& pl     = places();
+  const uint8_t    finest = W::finestLevel(w);
+  ASSERT_GE(pl.bridges.size(), 8U);
+  for(size_t i = 0; i < 8; i++)
+  {
+    const W::Bridge& b      = pl.bridges[i * pl.bridges.size() / 8];
+    const glm::dvec3 middle = W::onWay(pl, b.way, 0.5 * (double(b.from) + double(b.to))).direction;
+    for(const uint8_t level : {uint8_t(finest - 6), uint8_t(finest - 2), finest})
+    {
+      const W::Quad       q      = quadOf(middle, level);
+      const glm::dvec3    centre = W::toScene(w, middle, 0.0);
+      const W::RoadMeshes m      = W::roadMeshes(w, q, centre);
+      ASSERT_FALSE(m.bridge.empty()) << "bridge " << i << " at level " << int(level);
+      // from over the road (its parapets) down into the bank and the river's bed (of its own parts:
+      // a coarse quad holds others)
+      double top = -1e30, bottom = 1e30;
+      for(const glm::vec3& p : m.bridge.positions)
+      {
+        double           r  = 0.0;
+        const glm::dvec3 at = W::toPlanet(w, centre + glm::dvec3(p), &r);
+        if(glm::length(at - middle) * w.spec.radius > 0.5 * double(b.to - b.from) + W::kBridgeEnds + 15.0)
+          continue;
+        top    = std::max(top, r - w.spec.radius);
+        bottom = std::min(bottom, r - w.spec.radius);
+      }
+      EXPECT_GT(top, double(b.level) + 0.7);
+      EXPECT_LT(top, double(b.level) + 1.5);
+      EXPECT_LT(bottom, double(b.water));
+      // its parent's is all of it, and its four children have it once between them
+      const W::Quad parent{q.face, uint8_t(level - 1), q.x / 2, q.y / 2};
+      size_t        held = 0;
+      for(const W::Quad& c : W::children(parent))
+        held += W::roadMeshes(w, c, centre).bridge.indices.size();
+      EXPECT_EQ(held, W::roadMeshes(w, parent, centre).bridge.indices.size());
+    }
+  }
+}
+
+TEST(WorldRoads, ATracksSurfaceIsTheGroundsEarth)
+{
+  const W::World&  w      = settled();
+  const W::Places& pl     = places();
+  const uint8_t    finest = W::finestLevel(w);
+  size_t           asked  = 0;
+  for(size_t i = 0; i < pl.roads.size() && asked < 6; i += 13)
+  {
+    const W::RoadPiece& p = pl.roads[i];
+    if(!catalogue()->roads[p.kind].earth || W::bridgeAt(pl, p.way, double(p.start) + 0.5 * double(p.length), 300.0))
+      continue;
+    // (none of a road's near)
+    const glm::dvec3 d = glm::normalize(p.b);
+    if(std::any_of(pl.roads.begin(), pl.roads.end(), [&](const W::RoadPiece& o) { return !catalogue()->roads[o.kind].earth && glm::length(o.b - d) * w.spec.radius < 400.0; }))
+      continue;
+    asked++;
+    const W::RoadMeshes m = W::roadMeshes(w, quadOf(d, finest), W::toScene(w, d, 0.0));
+    EXPECT_TRUE(m.surface.empty());
+    EXPECT_TRUE(m.marking.empty());
+  }
+  EXPECT_GE(asked, 3U);
+}
+

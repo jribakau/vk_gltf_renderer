@@ -65,8 +65,33 @@ constexpr double kRouteFar = 160.0;
 // How strongly a route is drawn toward its end: 1 would be the straight way's own length, which a
 // way along a road already there undercuts; less looks further afield for one
 constexpr double kRouteDrawn = 0.8;
-// A stream no wider than this is forded; a wider one is not crossed (there are no bridges)
-constexpr double kFordHalf = 5.0;
+// A stream no wider than this is forded by a track; a river up to kBridgeHalf is bridged, and an
+// asphalt road bridges every stream wider than kRoadFordHalf. A bridge costs a route as much as so
+// many metres more of road: a way goes some way round to cross by one already there, or by a ford.
+constexpr double kFordHalf     = 5.0;
+constexpr double kBridgeHalf   = 30.0;
+constexpr double kRoadFordHalf = 1.0;
+constexpr double kBridgeCost   = 500.0;
+constexpr double kFordCost     = 150.0;
+// A deck stands this high over the water at the least: more over a wide river
+double clearanceOver(double half)
+{
+  return std::min(1.5 + 0.16 * half, 5.0);
+}
+// Where along a road its water is looked for, metres apart; and first, so many metres apart,
+// whether a river is near at all (its cells' reach is a cell wide at the least: none is stepped over)
+constexpr double kBridgeStep = 1.0;
+constexpr double kRiverLook  = 8.0;
+
+// Whether the base map has a river near `d` (mapInland's own first look)
+bool riverNear(const BaseMap& m, const glm::dvec3& d)
+{
+  const CubeGrid& g = m.grid;
+  const int       n = int(g.cells());
+  const MapPoint  p = g.at(d);
+  const int       i = std::clamp(int(std::floor(p.x + 0.5)), 0, n - 1), j = std::clamp(int(std::floor(p.y + 0.5)), 0, n - 1);
+  return m.reach[g.index(p.face, uint32_t(i), uint32_t(j))] != 0;
+}
 // The ground a road's level is read from: what is finer is cut through or filled. And how far apart
 // along it, metres.
 constexpr double kRoadFootprint = 12.0;
@@ -171,6 +196,7 @@ struct Nearest
 {
   double away = std::numeric_limits<double>::max();
   double level = 0.0;
+  double t     = 0.0;  // how far along the piece, 0 to 1
 };
 Nearest nearestOn(const RoadPiece& p, const glm::dvec3& d, double radius)
 {
@@ -185,7 +211,10 @@ Nearest nearestOn(const RoadPiece& p, const glm::dvec3& d, double radius)
     const double     s     = len2 > 0.0 ? std::clamp(glm::dot(d - from, along) / len2, 0.0, 1.0) : 0.0;
     const double     away  = glm::length(d - (from + along * s)) * radius;
     if(away < best.away)
-      best = {away, bent(double(p.level[0]), double(p.level[1]), double(p.level[2]), (double(k - 1) + s) / stretches)};
+    {
+      const double t = (double(k - 1) + s) / stretches;
+      best           = {away, bent(double(p.level[0]), double(p.level[1]), double(p.level[2]), t), t};
+    }
     from = to;
   }
   return best;
@@ -296,6 +325,22 @@ void binPiece(Bins& bins, const CubeGrid& g, double radius, const RoadPiece& p, 
       near.push_back(cellOf(g, glm::normalize(at + over * (double(o) * step / radius))));
   }
   binCells(bins, g, near, item, [&](const glm::dvec3& centre) { return nearestOn(p, centre, radius).away <= reach + 0.75 * across; });
+}
+
+// Where each way's pieces and bridges are: both are laid a way at a time, in the ways' order
+void wayIndex(Places& pl)
+{
+  pl.wayPieces.assign(size_t(pl.ways) + 1, 0);
+  pl.wayBridges.assign(size_t(pl.ways) + 1, 0);
+  for(const RoadPiece& p : pl.roads)
+    pl.wayPieces[p.way + 1]++;
+  for(const Bridge& b : pl.bridges)
+    pl.wayBridges[b.way + 1]++;
+  for(uint32_t w = 0; w < pl.ways; w++)
+  {
+    pl.wayPieces[w + 1] += pl.wayPieces[w];
+    pl.wayBridges[w + 1] += pl.wayBridges[w];
+  }
 }
 
 void index(Places& pl, double radius)
@@ -449,7 +494,7 @@ uint32_t packOf(const Catalogue& cat, const PlaceKind& kind, double pick)
 
 struct Router
 {
-  enum : uint8_t { eNo = 0, eLand, eFord };
+  enum : uint8_t { eNo = 0, eLand, eFord, eBridge };
 
   const CubeGrid&       g;
   double                radius;
@@ -572,8 +617,17 @@ struct Router
           step *= kWildCost;
         if(road[n])
           step *= 0.4;
-        if(pass[n] == eFord)
-          step += 150.0;
+        // across a river: by a ford, or a bridge, and straight over (never along one on a bridge);
+        // stepping between two of its cells is crossing it too
+        if(pass[n] == eBridge && pass[at] == eBridge)
+          continue;
+        const auto crossing = [&](uint32_t c) { return pass[c] == eBridge ? kBridgeCost : pass[c] == eFord ? kFordCost : 0.0; };
+        double     over     = crossing(n);
+        if(k % 2)
+          if(const uint32_t a = round[(k + 7) % 8], b = round[(k + 1) % 8]; a != CubeGrid::kNone && b != CubeGrid::kNone && pass[a] >= eFord && pass[b] >= eFord)
+            over = std::max(over, std::min(crossing(a), crossing(b)));
+        if(!road[n])
+          step += over;
         const float through = cost[at] + float(step);
         if(through < cost[n])
         {
@@ -977,7 +1031,10 @@ struct Settling
             {
               const uint32_t c = m.grid.index(face, uint32_t(i), uint32_t(j));
               if(r.pass[c] != Router::eNo)
-                r.pass[c] = m.pieces[size_t(piece)].half[1] <= float(kFordHalf) ? Router::eFord : Router::eNo;
+              {
+                const float half = m.pieces[size_t(piece)].half[1];
+                r.pass[c]        = half <= float(kFordHalf) ? Router::eFord : half <= float(kBridgeHalf) ? Router::eBridge : Router::eNo;
+              }
             }
     }
     else
@@ -1011,7 +1068,7 @@ struct Settling
           continue;
         if(water[n])
           r.pass[c] = Router::eNo;
-        else if(r.pass[n] == Router::eFord)
+        else if(r.pass[n] == Router::eFord || r.pass[n] == Router::eBridge)
           r.shore[c] = 1;
       }
     }
@@ -1255,6 +1312,10 @@ struct Settling
       {
         const glm::dvec3 d = at(nodes[k]);
         levels[k]          = roadLevel(d, sampleWithout(w, d, kRoadFootprint, "gullies").elevation);
+        // (a junction on a river's line: over its water)
+        if(w.base && nodes[k] < count && r.pass[nodes[k]] == Router::eBridge)
+          if(const Inland in = mapInland(*w.base, R, d); in.river)
+            levels[k] = std::max(levels[k], in.riverLevel + clearanceOver(in.riverHalf));
       }
     });
     std::map<uint32_t, double> level;
@@ -1356,6 +1417,28 @@ struct Settling
     }
     for(size_t j = 1; j < n; j++)
       L[j] = roadLevel(Q[j], L[j]);
+    // over a river it does not ford, level from bank to bank and clear of the water: the points about
+    // the water held at the deck's level (one more each side, so the curves between are level too)
+    std::vector<uint8_t> held(Q.size(), 0);
+    for(const Span& span : spansOf(Q, K))
+    {
+      size_t first = 0, last = n;
+      for(size_t j = 0; j <= n; j++)
+      {
+        if(span.along[j] <= span.from)
+          first = j;
+        if(span.along[j] >= span.to && last == n)
+          last = j;
+      }
+      const double bank = 0.5 * (span.bankFrom + span.bankTo);
+      const double deck = std::max(span.water + clearanceOver(span.half), bank);
+      for(size_t j = first > 0 ? first - 1 : 0; j <= std::min(last + 1, n); j++)
+        if(j >= 1 && j < n)
+        {
+          L[j]    = deck;
+          held[j] = 1;
+        }
+    }
     // and no steeper than a road is: up a bluff it is cut into the top and banked out at the foot
     // (from both ends, which stay: where they are too far apart in height for its length, it is steep)
     std::vector<double> step(n);
@@ -1365,13 +1448,16 @@ struct Settling
     for(int pass = 0; pass < 2; pass++)
     {
       for(size_t j = 1; j < n; j++)
-        L[j] = std::clamp(L[j], L[j - 1] - step[j - 1], L[j - 1] + step[j - 1]);
+        if(!held[j])
+          L[j] = std::clamp(L[j], L[j - 1] - step[j - 1], L[j - 1] + step[j - 1]);
       for(size_t j = n - 1; j >= 1; j--)
-        L[j] = std::clamp(L[j], L[j + 1] - step[j], L[j + 1] + step[j]);
+        if(!held[j])
+          L[j] = std::clamp(L[j], L[j + 1] - step[j], L[j + 1] + step[j]);
     }
     // (a long climb steeper than that is the land's: the road stays within a cutting's depth of it)
     for(size_t j = 1; j < n; j++)
-      L[j] = roadLevel(Q[j], std::clamp(L[j], ground[j] - kRoadCut, ground[j] + kRoadCut));
+      if(!held[j])
+        L[j] = roadLevel(Q[j], std::clamp(L[j], ground[j] - kRoadCut, ground[j] + kRoadCut));
 
     float      run   = 0.0F;
     const auto piece = [&](const glm::dvec3& a, const glm::dvec3& b, const glm::dvec3& c, double la, double lb, double lc, uint8_t kind) {
@@ -1397,7 +1483,164 @@ struct Settling
         piece(mid(Q, i - 1), Q[i], mid(Q, i), half(i - 1), L[i], half(i), wider(K[i - 1], K[i]));
       piece(mid(Q, n - 1), glm::normalize(mid(Q, n - 1) + Q[n]), Q[n], half(n - 1), 0.5 * (half(n - 1) + L[n]), L[n], K[n - 1]);
     }
+    bridgesOf(pl.ways);
     pl.ways++;
+  }
+
+  // Whether a road of a kind fords a river this wide, or bridges it
+  bool bridged(double half, uint8_t kind) const
+  {
+    return half > (cat.roads[kind].earth ? kFordHalf : kRoadFordHalf);
+  }
+
+  // The rivers along a line of points, each road of its kind (K, of the line from that point on),
+  // that it bridges: metres along the line, its water's surface and half its width, and the land's
+  // level a little way from each bank
+  struct Span
+  {
+    std::vector<double> along;  // of every point of the line (the same for each span)
+    double              from = 0.0, to = 0.0, water = 0.0, half = 0.0, bankFrom = 0.0, bankTo = 0.0;
+  };
+  std::vector<Span> spansOf(const std::vector<glm::dvec3>& Q, const std::vector<uint8_t>& K) const
+  {
+    std::vector<Span> out;
+    if(!w.base || Q.size() < 2)
+      return out;
+    std::vector<double> along(Q.size(), 0.0);
+    for(size_t j = 1; j < Q.size(); j++)
+      along[j] = along[j - 1] + glm::length(Q[j] - Q[j - 1]) * R;
+    const auto pointAt = [&](double s) {
+      const size_t j = std::min(size_t(std::max(std::upper_bound(along.begin(), along.end(), s) - along.begin(), ptrdiff_t(1)) - 1), Q.size() - 2);
+      const double f = std::clamp((s - along[j]) / std::max(along[j + 1] - along[j], 1e-9), 0.0, 1.0);
+      return std::make_pair(glm::normalize(Q[j] * (1.0 - f) + Q[j + 1] * f), j);
+    };
+    Span   open;
+    bool   wet  = false, near = false;
+    double next = 0.0;  // where the next look for a river near is
+    for(double s = 0.0; s <= along.back(); s += kBridgeStep)
+    {
+      if(s >= next)
+      {
+        near = riverNear(*w.base, pointAt(s).first) || riverNear(*w.base, pointAt(s + kRiverLook).first);
+        next = s + kRiverLook;
+      }
+      bool here = false;
+      size_t j  = 0;
+      Inland in;
+      if(near)
+      {
+        glm::dvec3 d;
+        std::tie(d, j) = pointAt(s);
+        in             = mapInland(*w.base, R, d);
+        here           = in.river && in.riverAway < in.riverHalf + 0.5 && bridged(in.riverHalf, K[j]);
+      }
+      if(here && !wet)
+      {
+        open      = Span{};
+        open.from = s;
+      }
+      if(here)
+      {
+        open.to    = s;
+        open.water = std::max(open.water, in.riverLevel);
+        open.half  = std::max(open.half, in.riverHalf);
+      }
+      if(wet && !here)
+      {
+        // (a river met again a few metres on is the same crossing)
+        if(!out.empty() && open.from - out.back().to < 12.0)
+        {
+          out.back().to    = open.to;
+          out.back().water = std::max(out.back().water, open.water);
+          out.back().half  = std::max(out.back().half, open.half);
+        }
+        else
+          out.push_back(open);
+      }
+      wet = here;
+    }
+    if(wet)
+      out.push_back(open);
+    for(Span& span : out)
+    {
+      span.along    = along;
+      span.bankFrom = sampleWithout(w, pointAt(std::max(span.from - 10.0, 0.0)).first, kRoadFootprint, "gullies").elevation;
+      span.bankTo   = sampleWithout(w, pointAt(std::min(span.to + 10.0, along.back())).first, kRoadFootprint, "gullies").elevation;
+    }
+    return out;
+  }
+
+  // A way's bridges, now that its pieces are laid: where its line, as the pieces have it, is over a
+  // river it does not ford with its level clear of the water
+  void bridgesOf(uint32_t way)
+  {
+    if(!w.base)
+      return;
+    size_t first = pl.roads.size();
+    while(first > 0 && pl.roads[first - 1].way == way)
+      first--;
+    Bridge open;
+    bool   wet   = false;
+    double depth = 0.0;  // how far over the water the road is, the least
+    const auto close = [&] {
+      open.from -= 1.0F;
+      open.to += 1.0F;
+      if(depth > 0.5)
+      {
+        // (a river met again a few metres on is the same bridge)
+        if(!pl.bridges.empty() && pl.bridges.back().way == way && open.from - pl.bridges.back().to < 12.0F)
+        {
+          pl.bridges.back().to    = open.to;
+          pl.bridges.back().water = std::max(pl.bridges.back().water, open.water);
+        }
+        else
+          pl.bridges.push_back(open);
+      }
+    };
+    for(size_t i = first; i < pl.roads.size(); i++)
+    {
+      const RoadPiece& p     = pl.roads[i];
+      const int        steps = std::max(1, int(std::ceil(double(p.length) / kBridgeStep)));
+      // (a piece with no river near: dry all along)
+      const int looks = std::max(1, int(std::ceil(double(p.length) / kRiverLook)));
+      bool      near  = false;
+      for(int k = 0; k <= looks && !near; k++)
+        near = riverNear(*w.base, glm::normalize(bent(p.a, p.b, p.c, double(k) / looks)));
+      if(!near)
+      {
+        if(wet)
+          close();
+        wet = false;
+        continue;
+      }
+      for(int k = 0; k < steps; k++)
+      {
+        const double     t     = (double(k) + 0.5) / steps;
+        const glm::dvec3 d     = glm::normalize(bent(p.a, p.b, p.c, t));
+        const Inland     in    = mapInland(*w.base, R, d);
+        const bool       here  = in.river && in.riverAway < in.riverHalf + 0.5 && bridged(in.riverHalf, p.kind);
+        const double     s     = double(p.start) + t * double(p.length);
+        const double     level = bent(double(p.level[0]), double(p.level[1]), double(p.level[2]), t);
+        if(here && !wet)
+        {
+          open  = Bridge{.way = way, .from = float(s), .to = float(s), .level = float(level), .water = float(in.riverLevel)};
+          depth = level - in.riverLevel;
+        }
+        if(here)
+        {
+          open.to    = float(s);
+          open.water = std::max(open.water, float(in.riverLevel));
+          depth      = std::min(depth, level - in.riverLevel);
+          // (its deck: the road's level at the middle of the water, which is held level there)
+          open.level = float(level);
+        }
+        if(wet && !here)
+          close();
+        wet = here;
+      }
+    }
+    if(wet)
+      close();
   }
 
   // ---- single things
@@ -1504,6 +1747,8 @@ struct Settling
           const RoadPiece& p = pl.roads[piece];
           if(p.kind != a.road || unit(hash(seed, salt, 1)) >= a.chance)
             continue;
+          if(bridgeAt(pl, run, s, 15.0))
+            continue;  // (nor on a bridge, nor at its ends)
           const double     t      = std::clamp((s - double(p.start)) / std::max(double(p.length), 1e-6), 0.0, 1.0);
           const glm::dvec3 on     = glm::normalize(bent(p.a, p.b, p.c, t));
           const glm::dvec3 run3   = (p.b - p.a) * (1.0 - t) + (p.c - p.b) * t;
@@ -1748,6 +1993,7 @@ std::shared_ptr<const Places> settle(const World& world, std::shared_ptr<const C
   job.roads();
   if(job.stopped())
     return nullptr;
+  wayIndex(*out);
   index(*out, R);
   job.alone();
   job.along();
@@ -1808,7 +2054,7 @@ void built(const World& w, const Point& p, Sample& s)
     else if(at < count && near.away < runs[at].near.away)
       runs[at] = {piece.way, near, &piece};
   }
-  double           weight = 0.0, level = 0.0, most = 0.0, cover = 0.0;
+  double           weight = 0.0, level = 0.0, most = 0.0, cover = 0.0, topAt = 0.0;
   const RoadPiece* top = nullptr;
   for(size_t k = 0; k < count; k++)
   {
@@ -1823,16 +2069,23 @@ void built(const World& w, const Point& p, Sample& s)
     level += share * share * near.level;
     if(share > most)
     {
-      most = share;
-      top  = &piece;
+      most  = share;
+      top   = &piece;
+      topAt = near.t;
     }
     // how much of what draws the sample is its surface: a soft edge near, a share of a wide sample
     const double across = std::max(p.footprint, 1.5);
     cover = std::max(cover, std::clamp((double(piece.half) - near.away) / across + 0.5, 0.0, 1.0) * std::min(1.0, 2.0 * double(piece.half) / across));
   }
-  if(top)
+  // over a bridge's water the ground is the river's own, and the road is the bridge's deck (drawn
+  // by fv_world_roads); nothing grows under it, out to the ends of its deck
+  const double along     = top ? double(top->start) + topAt * double(top->length) : 0.0;
+  const bool   overWater = top && bridgeAt(pl, top->way, along);
+  if(top && most > 0.3 && bridgeAt(pl, top->way, along, kBridgeEnds))
+    s.built.taken |= kGroundKept;
+  if(top && !overWater)
   {
-    // by a stream the road comes down to its bank and its bed: a ford. (Over a cove of the sea it
+    // by a stream a track comes down to its bank and its bed: a ford. (Over a cove of the sea it
     // is a causeway: no road is led across the sea, but a shore has inlets finer than its routes.)
     const double dry   = smooth(1.0, 7.0, double(s.shore));
     const double whole = 2.0 * (double(top->half) + double(top->verge));
@@ -1852,6 +2105,47 @@ void built(const World& w, const Point& p, Sample& s)
 }
 
 // ---- for what draws them -------------------------------------------------------------------------------------
+
+OnWay onWay(const Places& pl, uint32_t way, double along)
+{
+  OnWay out;
+  if(way + 1 >= pl.wayPieces.size() || pl.wayPieces[way] == pl.wayPieces[way + 1])
+    return out;
+  // its piece: the last that starts at or before it
+  const auto first = pl.roads.begin() + pl.wayPieces[way], last = pl.roads.begin() + pl.wayPieces[way + 1];
+  auto       it    = std::upper_bound(first, last, along, [](double s, const RoadPiece& p) { return s < double(p.start); });
+  if(it != first)
+    --it;
+  const RoadPiece& p   = *it;
+  const double     t   = std::clamp((along - double(p.start)) / std::max(double(p.length), 1e-6), 0.0, 1.0);
+  out.piece            = &p;
+  out.direction        = glm::normalize(bent(p.a, p.b, p.c, t));
+  glm::dvec3 run       = (p.b - p.a) * (1.0 - t) + (p.c - p.b) * t;
+  run -= out.direction * glm::dot(run, out.direction);
+  if(glm::dot(run, run) < 1e-30)
+    run = p.c - p.a;
+  out.forward = glm::normalize(run);
+  out.level   = bent(double(p.level[0]), double(p.level[1]), double(p.level[2]), t);
+  return out;
+}
+
+double wayLength(const Places& pl, uint32_t way)
+{
+  if(way + 1 >= pl.wayPieces.size() || pl.wayPieces[way] == pl.wayPieces[way + 1])
+    return 0.0;
+  const RoadPiece& p = pl.roads[pl.wayPieces[way + 1] - 1];
+  return double(p.start) + double(p.length);
+}
+
+const Bridge* bridgeAt(const Places& pl, uint32_t way, double along, double margin)
+{
+  if(way + 1 >= pl.wayBridges.size())
+    return nullptr;
+  for(uint32_t i = pl.wayBridges[way]; i < pl.wayBridges[way + 1]; i++)
+    if(along >= double(pl.bridges[i].from) - margin && along <= double(pl.bridges[i].to) + margin)
+      return &pl.bridges[i];
+  return nullptr;
+}
 
 glm::dmat4 siteFrame(const World& world, const Site& site)
 {

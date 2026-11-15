@@ -97,6 +97,7 @@
 #include "fv_backdrop_state.hpp"
 #include "fv_world_places.hpp"
 #include "fv_world_plants.hpp"
+#include "fv_world_roads.hpp"
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
 #include "fv_model_material.hpp"
@@ -1718,6 +1719,10 @@ struct FvHost::Impl
     // the kit they were made from. None without a kit, or with one that has no maps for a planet.
     rs::EntityId                       groundLayers;
     std::shared_ptr<const BackdropKit> groundKit;
+    // A road's surface, its paint and a bridge's concrete (fv_world_roads.hpp): plain colours, and
+    // the kit's asphalt and concrete maps once it has them (mapPlanetRoads), laid at the kit's tiles
+    rs::MaterialId       roadSurface, roadPaint, roadBridge;
+    fv::world::RoadTiles roadTiles;
     // Where the camera was when the renderer was last told what inland water it is in
     // (HostRenderer::setWorldWaterAtEye)
     glm::dvec3 waterAtEyeFor{1.0e30};
@@ -1729,6 +1734,7 @@ struct FvHost::Impl
     struct Chunk
     {
       rs::EntityId              ground, sea;  // the sea's: none where the ground is all above it
+      rs::EntityId              roads;        // its roads' surfaces and its bridges: none where it has none
       std::vector<rs::EntityId> plants;       // what stands on it: an entity a variant, its places as copies
       uint64_t                  standing = 0; // how many of those show
       // An entity's plants, the furthest seen first (fv::world::Stand): where each stands at its full
@@ -1888,6 +1894,9 @@ struct FvHost::Impl
   // The materials its ground's layers are drawn with, made from the kit's grounds and said to the
   // renderer (HostRenderer::setWorldGround); once a kit
   void mapPlanetGround(rs::RetainedScene& scene);
+  // And the roads' (PlanetBuilt::roadSurface, roadBridge), from the kit's asphalt and concrete
+  void mapPlanetRoads(rs::RetainedScene& scene);
+  static tinygltf::Model planetRoadModel(const BackdropKit& kit, std::vector<rs::MaterialId*>& into, PlanetBuilt& p);
   // Those materials as a glTF model, for the import to make with their textures: a triangle a layer
   // the kit has maps for. `layerOf`: which layer (fv::world::kGroundKinds) each of its materials is
   static tinygltf::Model planetGroundModel(const BackdropKit& kit, std::vector<size_t>& layerOf);

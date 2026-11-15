@@ -131,6 +131,7 @@ struct FvHost::Impl::PlanetMade
   std::optional<W::ChunkMesh> sea;
   std::vector<W::Stand>       stands;     // what stands on it, about the ground's centre: the kit's plants,
   std::vector<W::Stand>       seaStands;  // and the sea floor's
+  W::RoadMeshes               roads;      // its roads' surfaces and its bridges (fv_world_roads.hpp)
 };
 
 glm::dvec3 FvHost::Impl::planetCentre() const
@@ -203,6 +204,20 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
   p.sea                    = scene.addMaterial(std::move(sea));
   // (the path tracer meets it as the water's surface; the ground's maps come with a kit: mapPlanetGround)
   renderer->setWorldGround({.ground = p.ground, .water = p.sea});
+  // the roads: worn asphalt, its faded paint, a bridge's concrete; the kit's maps for the first and
+  // last when it has them (mapPlanetRoads)
+  const auto plain = [&](const char* name, glm::vec3 colour, float roughness) {
+    rs::MaterialRecord m;
+    m.owner             = {0, -1};
+    m.payload.name      = name;
+    m.payload.baseColor = {colour.x, colour.y, colour.z, 1.0F};
+    m.payload.metallic  = 0.0F;
+    m.payload.roughness = roughness;
+    return scene.addMaterial(std::move(m));
+  };
+  p.roadSurface = plain("Planet road", glm::vec3(0.075F, 0.074F, 0.07F), 0.9F);
+  p.roadPaint   = plain("Planet road paint", glm::vec3(0.5F, 0.49F, 0.45F), 0.75F);
+  p.roadBridge  = plain("Planet bridge", glm::vec3(0.22F, 0.21F, 0.19F), 0.9F);
   p.density                = backdropSpec.density;
 
   // the sea floor's plants: made here (the kit has none), a mesh a variant, held hidden under the
@@ -458,7 +473,7 @@ void FvHost::Impl::followPlanet()
   p.flights++;
   p.making.insert(ask.begin(), ask.end());
   loaders.spawn([this, held = p.world, ask = std::move(ask), generation = p.generation, planted = p.planted, variants = p.variants,
-                 density = p.density, seaMeshes = p.seaMeshes] {
+                 density = p.density, seaMeshes = p.seaMeshes, roadTiles = p.roadTiles] {
     auto made = std::make_shared<std::vector<PlanetMade>>(ask.size());
     fv::jobs::parallelFor(ask.size(), 1, [&](size_t begin, size_t end) {
       for(size_t i = begin; i < end; i++)
@@ -478,6 +493,8 @@ void FvHost::Impl::followPlanet()
           m.stands = W::standing(*held, ask[i], m.ground.centre, variants, density);
         if(seaMeshes && m.ground.lowest < 0.0)
           m.seaStands = W::seaStanding(*held, ask[i], m.ground.centre, *seaMeshes, density);
+        if(held->places)
+          m.roads = W::roadMeshes(*held, ask[i], m.ground.centre, roadTiles);
       }
     });
     post([this, made, generation] { planetArrived(made, generation); });
@@ -544,6 +561,37 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
     scene.setVisible(e, false);
     return e;
   };
+  // a quad's roads: a mesh of their surfaces, their paint and their bridges, each of its material
+  const auto roadEntity = [&](W::RoadMeshes& r, const glm::vec3& centre) {
+    rs::MeshRecord record;
+    record.name  = "Planet roads";
+    record.owner = {0, -1};
+    std::vector<glm::vec2>& uv0 = record.uv0.own();
+    std::vector<uint32_t>&  ix  = record.indices.own();
+    uint32_t                at  = 0;
+    for(W::RoadMesh* part : {&r.surface, &r.marking, &r.bridge})
+    {
+      const uint32_t base = uint32_t(record.positions.size()), first = uint32_t(ix.size());
+      record.positions.insert(record.positions.end(), part->positions.begin(), part->positions.end());
+      record.normals.insert(record.normals.end(), part->normals.begin(), part->normals.end());
+      uv0.insert(uv0.end(), part->uvs.begin(), part->uvs.end());
+      uv0.resize(record.positions.size(), glm::vec2(0.0F));
+      for(const uint32_t i : part->indices)
+        ix.push_back(base + i);
+      if(!part->indices.empty())
+        record.submeshes.push_back({.firstIndex = first, .indexCount = uint32_t(part->indices.size()), .material = at, .order = 0});
+      at++;
+    }
+    const rs::MeshId   mesh = scene.addMesh(std::move(record));
+    const rs::EntityId e    = scene.createEntity("Planet roads", {0, -1}, backdropBuilt->root);
+    scene.setLocal(e, {.translation = centre});
+    rs::MeshInstance instance;
+    instance.parts.push_back({.mesh = mesh, .materials = {p.roadSurface, p.roadPaint, p.roadBridge}});
+    scene.setMeshInstance(e, std::move(instance));
+    scene.release(mesh);  // the entity's now
+    scene.setVisible(e, false);
+    return e;
+  };
   size_t     landed = 0;  // instances of plants' copies
   const auto land   = [&](PlanetMade& m) {
     p.making.erase(m.quad);
@@ -554,6 +602,8 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
     chunk.ground = entity(m.ground, p.ground, "Planet ground");
     if(m.sea)
       chunk.sea = entity(*m.sea, p.sea, "Planet sea");
+    if(!m.roads.empty())
+      chunk.roads = roadEntity(m.roads, glm::vec3(m.ground.centre));
     // what stands on it: each variant's places as the copies of an entity that draws the variant's
     // mesh (`of`: the entity that holds it, hidden; `base`: its own turn and scale under each place)
     // Its copies are the plants seen from where the eye is (showPlanetPlants): one hidden until then.
@@ -754,18 +804,18 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
     const PlanetBuilt::Chunk chunk = p.arrived.at(q);
     p.arrived.erase(q);
     scene.setVisible(chunk.ground, true);
-    if(!chunk.sea.isNone())
-      scene.setVisible(chunk.sea, true);
+    for(const rs::EntityId e : {chunk.sea, chunk.roads})
+      if(!e.isNone())
+        scene.setVisible(e, true);
     for(const rs::EntityId e : chunk.plants)
       scene.setVisible(e, true);
     p.standing += chunk.standing;
     p.shown[q] = chunk;
   };
   const auto gone = [&](const PlanetBuilt::Chunk& chunk) {
-    if(scene.entity(chunk.ground))
-      scene.destroyEntity(chunk.ground);
-    if(!chunk.sea.isNone() && scene.entity(chunk.sea))
-      scene.destroyEntity(chunk.sea);
+    for(const rs::EntityId e : {chunk.ground, chunk.sea, chunk.roads})
+      if(!e.isNone() && scene.entity(e))
+        scene.destroyEntity(e);
     for(const rs::EntityId e : chunk.plants)
       if(scene.entity(e))
         scene.destroyEntity(e);
@@ -970,6 +1020,7 @@ void FvHost::Impl::plantPlanet(rs::RetainedScene& scene)
   p.tiled    = 0;
 
   mapPlanetGround(scene);
+  mapPlanetRoads(scene);
   // the kit's plants, held under the root and hidden: what a quad's copies and a tile's mesh are of
   holdBackdropPlants(scene);
   for(const auto& [role, variants] : backdropBuilt->variants)
@@ -995,9 +1046,10 @@ void FvHost::Impl::plantPlanet(rs::RetainedScene& scene)
   replantPlanet(scene);
 }
 
-tinygltf::Model FvHost::Impl::planetGroundModel(const BackdropKit& kit, std::vector<size_t>& layerOf)
+// A model's materials brought into a scene with nothing of it drawn: a small triangle a material, its
+// one entity never shown (importGltf brings in what a mesh uses)
+static void holdMaterials(tinygltf::Model& m, const char* name)
 {
-  tinygltf::Model  m;
   tinygltf::Buffer buffer;
   const auto       put = [&](const void* data, size_t bytes, int target, int componentType, size_t count, int type) {
     tinygltf::BufferView view;
@@ -1016,7 +1068,6 @@ tinygltf::Model FvHost::Impl::planetGroundModel(const BackdropKit& kit, std::vec
     m.accessors.push_back(a);
     return int(m.accessors.size()) - 1;
   };
-  // one small triangle, every layer's: nothing ever draws it
   const std::array<glm::vec3, 3> positions{glm::vec3(0.0F), glm::vec3(0.0F, 0.0F, 0.01F), glm::vec3(0.01F, 0.0F, 0.0F)};
   const std::array<glm::vec3, 3> normals{glm::vec3(0.0F, 1.0F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F)};
   const std::array<glm::vec2, 3> uvs{glm::vec2(0.0F), glm::vec2(0.0F, 1.0F), glm::vec2(1.0F, 0.0F)};
@@ -1028,8 +1079,34 @@ tinygltf::Model FvHost::Impl::planetGroundModel(const BackdropKit& kit, std::vec
   m.accessors[size_t(position)].minValues = {0.0, 0.0, 0.0};
   m.accessors[size_t(position)].maxValues = {0.01, 0.0, 0.01};
   m.buffers.push_back(std::move(buffer));
+  tinygltf::Mesh mesh;
+  mesh.name = name;
+  for(size_t k = 0; k < m.materials.size(); k++)
+  {
+    tinygltf::Primitive prim;
+    prim.mode                     = TINYGLTF_MODE_TRIANGLES;
+    prim.attributes["POSITION"]   = position;
+    prim.attributes["NORMAL"]     = normal;
+    prim.attributes["TEXCOORD_0"] = uv;
+    prim.indices                  = index;
+    prim.material                 = int(k);
+    mesh.primitives.push_back(prim);
+  }
+  m.meshes.push_back(mesh);
+  tinygltf::Node node;
+  node.name = name;
+  node.mesh = 0;
+  m.nodes.push_back(node);
+  tinygltf::Scene scene;
+  scene.nodes = {0};
+  m.scenes.push_back(scene);
+  m.defaultScene = 0;
+}
 
-  const auto texture = [&](const std::string& uri) {
+tinygltf::Model FvHost::Impl::planetRoadModel(const BackdropKit& kit, std::vector<rs::MaterialId*>& into, PlanetBuilt& p)
+{
+  tinygltf::Model m;
+  const auto      texture = [&](const std::string& uri) {
     tinygltf::Image image;
     image.uri = uri;
     m.images.push_back(image);
@@ -1038,8 +1115,72 @@ tinygltf::Model FvHost::Impl::planetGroundModel(const BackdropKit& kit, std::vec
     m.textures.push_back(tex);
     return int(m.textures.size()) - 1;
   };
-  tinygltf::Mesh mesh;
-  mesh.name = "Planet ground layers";
+  into.clear();
+  // the kit's maps as they are, their colour the map's own (a road is not the planet's colour)
+  for(const auto& [kind, slot, tile] : {std::tuple{"asphalt", &p.roadSurface, &p.roadTiles.surface}, std::tuple{"concrete", &p.roadBridge, &p.roadTiles.bridge}})
+  {
+    const auto found = kit.ground.find(kind);
+    if(found == kit.ground.end() || found->second.diffuse.empty())
+      continue;
+    const BackdropKit::Ground& g = found->second;
+    tinygltf::Material         material;
+    material.name                                        = std::string("Planet road: ") + kind;
+    material.pbrMetallicRoughness.baseColorTexture.index = texture(g.diffuse);
+    material.pbrMetallicRoughness.roughnessFactor        = 1.0;
+    material.pbrMetallicRoughness.metallicFactor         = 0.0;
+    if(!g.normal.empty())
+      material.normalTexture.index = texture(g.normal);
+    if(!g.arm.empty())
+    {
+      material.pbrMetallicRoughness.metallicRoughnessTexture.index = texture(g.arm);
+      material.pbrMetallicRoughness.metallicFactor                 = 1.0;
+    }
+    m.materials.push_back(material);
+    into.push_back(slot);
+    if(g.tile > 0.0F)
+      *tile = double(g.tile);
+  }
+  holdMaterials(m, "Planet road maps");
+  return m;
+}
+
+void FvHost::Impl::mapPlanetRoads(rs::RetainedScene& scene)
+{
+  PlanetBuilt&                 p = *planetBuilt;
+  std::vector<rs::MaterialId*> into;
+  const tinygltf::Model        model = planetRoadModel(*backdropKit, into, p);
+  if(into.empty())
+    return;  // (a kit from before roads had maps: plain colours)
+  try
+  {
+    // its materials' payloads and maps taken into the planet's own, which the quads' roads draw
+    // with; what was imported to read them goes again
+    const rs::ImportResult r = rs::importGltf(scene, model, {.prop = 0, .parent = backdropBuilt->root, .imageSearchPaths = {backdropKit->dir}});
+    for(size_t i = 0; i < into.size() && i < r.materials.size(); i++)
+      if(const rs::MaterialRecord* read = scene.material(r.materials[i]))
+        scene.setMaterial(*into[i], read->payload, read->textures);
+    for(const rs::EntityId e : r.roots)
+      if(scene.entity(e))
+        scene.destroyEntity(e);
+  }
+  catch(const std::exception& e)
+  {
+    notice("The roads' maps could not be read: " + problemOf(e));
+  }
+}
+
+tinygltf::Model FvHost::Impl::planetGroundModel(const BackdropKit& kit, std::vector<size_t>& layerOf)
+{
+  tinygltf::Model m;
+  const auto      texture = [&](const std::string& uri) {
+    tinygltf::Image image;
+    image.uri = uri;
+    m.images.push_back(image);
+    tinygltf::Texture tex;
+    tex.source = int(m.images.size()) - 1;
+    m.textures.push_back(tex);
+    return int(m.textures.size()) - 1;
+  };
   layerOf.clear();
   for(size_t layer = 0; layer < W::kGroundLayers; layer++)
   {
@@ -1063,25 +1204,9 @@ tinygltf::Model FvHost::Impl::planetGroundModel(const BackdropKit& kit, std::vec
       material.pbrMetallicRoughness.metallicFactor                 = 1.0;
     }
     m.materials.push_back(material);
-    tinygltf::Primitive prim;
-    prim.mode                     = TINYGLTF_MODE_TRIANGLES;
-    prim.attributes["POSITION"]   = position;
-    prim.attributes["NORMAL"]     = normal;
-    prim.attributes["TEXCOORD_0"] = uv;
-    prim.indices                  = index;
-    prim.material                 = int(m.materials.size()) - 1;
-    mesh.primitives.push_back(prim);
     layerOf.push_back(layer);
   }
-  m.meshes.push_back(mesh);
-  tinygltf::Node node;
-  node.name = "Planet ground layers";
-  node.mesh = 0;
-  m.nodes.push_back(node);
-  tinygltf::Scene scene;
-  scene.nodes = {0};
-  m.scenes.push_back(scene);
-  m.defaultScene = 0;
+  holdMaterials(m, "Planet ground layers");
   return m;
 }
 
@@ -1129,7 +1254,7 @@ void FvHost::Impl::replantPlanet(rs::RetainedScene& scene)
   // the quads that stand have what was on them: made again, the first cut whole before any shows.
   // (A batch on its way was made as before: it is of a planet gone, as far as its arrival can tell.)
   const auto gone = [&](const PlanetBuilt::Chunk& chunk) {
-    for(const rs::EntityId e : {chunk.ground, chunk.sea})
+    for(const rs::EntityId e : {chunk.ground, chunk.sea, chunk.roads})
       if(!e.isNone() && scene.entity(e))
         scene.destroyEntity(e);
     for(const rs::EntityId e : chunk.plants)
@@ -1165,7 +1290,7 @@ void FvHost::Impl::restreamPlanet(rs::RetainedScene& scene)
     p.stale.push_back(chunk);
   for(const auto& [q, chunk] : p.arrived)
   {
-    for(const rs::EntityId e : {chunk.ground, chunk.sea})
+    for(const rs::EntityId e : {chunk.ground, chunk.sea, chunk.roads})
       if(!e.isNone() && scene.entity(e))
         scene.destroyEntity(e);
     for(const rs::EntityId e : chunk.plants)
