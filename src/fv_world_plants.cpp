@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "fv_world_map.hpp"
+
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace fv::world {
@@ -165,6 +167,17 @@ constexpr double kStandSlope = 0.7;
 // on all of them. (Its foot is on the ground as its quad draws it.)
 constexpr double kPlantFootprint = 1.0;
 
+// What grows by water only grows on about this share of its biome's land, as far as how many trees
+// are seen from one place goes (Reach)
+constexpr double kByWaterShare = 0.1;
+
+// How thickly something that grows by water (Growth::water) grows `shore` metres from the water's
+// edge: all of it to a third of the way, none past it
+double byWater(float water, float shore)
+{
+  return water > 0.0F ? 1.0 - smooth(0.35 * double(water), double(water), double(shore)) : 1.0;
+}
+
 // The stands of a role, a variant each: the furthest seen first
 struct Placed
 {
@@ -241,6 +254,9 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
     // where it grows: a tree with the other trees there, a wood's firs and pines being one wood
     std::array<const Growth*, kMostBiomes> grows{};
     double                                 thickest = 0.0, wood = 0.0;
+    // (what grows by water only: as far from it as the furthest of them, or 0 where any grows anywhere)
+    float water = 0.0F;
+    bool  anywhere = false;
     for(size_t b = 0; b < w.biomes.size() && b < kMostBiomes; b++)
     {
       double kind = 0.0;
@@ -250,15 +266,20 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
         {
           grows[b] = &g;
           thickest = std::max(thickest, g.perSquareMetre * density);
+          water    = std::max(water, g.water);
+          anywhere = anywhere || !(g.water > 0.0F);
         }
         // (what else stands on land is counted by its role, as before there were several)
         if(isTree(role) ? isTree(g.role) : g.role == role)
-          kind += g.perSquareMetre * density * double(std::min(g.cover, 1.0F));
+          kind += g.perSquareMetre * density * double(std::min(g.cover, 1.0F)) * (g.water > 0.0F ? kByWaterShare : 1.0);
       }
       if(grows[b])
         wood = std::max(wood, kind);
     }
     if(!(thickest > 0.0))
+      continue;
+    // by water only, where there is none: no rivers nor lakes without the base map
+    if(!anywhere && !w.base)
       continue;
     const Reach reach = reachOf(role, wood);
     if(reach.most < held)
@@ -272,7 +293,10 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
         if(seen < held)
           return;
         const glm::dvec3 d = direction(q.face, u, v);
-        const Sample     s = sample(w, d, kPlantFootprint);
+        // what grows by water only, nowhere near any: one look at the base map, not the ground
+        if(!anywhere && mapInland(*w.base, w.spec.radius, d).shore() >= double(water))
+          return;
+        const Sample s = sample(w, d, kPlantFootprint);
         if(bare(s, rock) || cleared(w, d) || (!rock && s.rock > 0.5F) || (s.built.taken & kGroundKept))
           return;
         // (a place stands in a clearing: what is as tall as a tree is none of its floor's)
@@ -293,6 +317,7 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
             const double level = coverLevel(double(g->cover));
             here *= smooth(level - 0.03, level + 0.03, noise(w, d, double(g->patch), uint32_t(r * kMostBiomes + b)));
           }
+          here *= byWater(g->water, s.shore);
           odds += double(s.share[b]) * here;
           if(s.share[b] > top)
           {

@@ -1062,7 +1062,15 @@ their kit when there is one. It needs no kit: without one it stands bare.
   thickly, its grass, what drifts in its grass. With the backdrop's kit read (`readPlanetKit`,
   `plantPlanet`) the planet is planted with the plants a meadow and a forest are and with roles of
   its own (`kStandingRoles`: leafy trees, pines, the dry land's small trees and bushes, bare
-  boulders), each biome growing its own of them, all held the same way. A tree, a bush or a rock
+  boulders, and riverside trees), each biome growing its own of them, all held the same way. What
+  grows by water only (`Growth::water`: the riverside role's willows and alders) stands within so
+  many metres of a river's or a lake's edge, thickest nearest it, in a belt broken into stands: the
+  grassland's within 30 m, the wood's 20, the steppe's 35 (its only leafy trees), the desert's 15. A
+  river is known as far as its banks reach (`Inland::bank`, 20 m by a stream), so a stream's belt
+  is narrower than a wide river's; one look at the base map (`mapInland`) passes over a cell far
+  from water before the ground is sampled, and the role adds some 4% to the planting. A kit with no
+  riverside models of its own (the app's download has none) draws them with its leafy trees
+  (`drawnAs`). A tree, a bush or a rock
   has a place that follows from the planet alone (a grid a role over a cube face) and a reach, how
   far it is seen from, by its size among its kind's (`reachOf`): a wood's largest trees for
   kilometres, the dry land's small trees for a couple, a wood's smallest and its undergrowth for a

@@ -652,7 +652,9 @@ std::vector<Biome> biomeTable()
   // stands of pine and a few leafy trees; a grassland leafy trees with firs at its edges; the steppe
   // dry bushes, lone pines and thorn trees; the desert succulents, quiver trees and bare boulders; the
   // tundra low bushes, stones and stunted pines at its warm edge. A fir wood's floor and a meadow's
-  // drifts are the warm, wet rows' alone.
+  // drifts are the warm, wet rows' alone. Along rivers and round lakes, willows and alders (riverside):
+  // a belt broken into stands in the grassland and the wood, a wider one on the steppe, where they
+  // are its only leafy trees, and a few at the desert's water.
   return {
       // (what each one's ground is drawn with: soil with grass on it in the grassland, a wood's floor
       // under the trees, stony earth in the dry lands, soil and stones in the tundra, snow)
@@ -667,14 +669,16 @@ std::vector<Biome> biomeTable()
       {.name = "desert", .temperatureFrom = 5.0F, .moistureTo = 0.15F, .colour = {0.40F, 0.30F, 0.17F}, .rough = 0.6F,
        .plants = {{.role = "boulder", .perSquareMetre = 0.008, .scaleMin = 0.2F, .scaleMax = 1.2F, .sink = 0.12F, .cover = 0.35F, .patch = 70.0F},
                   {.role = "drybush", .perSquareMetre = 0.006, .scaleMin = 0.6F, .scaleMax = 1.3F, .sink = 0.03F, .cover = 0.3F, .patch = 45.0F},
-                  {.role = "drytree", .perSquareMetre = 0.0012, .scaleMin = 0.8F, .scaleMax = 1.6F, .sink = 0.05F, .cover = 0.2F, .patch = 150.0F}},
+                  {.role = "drytree", .perSquareMetre = 0.0012, .scaleMin = 0.8F, .scaleMax = 1.6F, .sink = 0.05F, .cover = 0.2F, .patch = 150.0F},
+                  {.role = "riverside", .perSquareMetre = 0.006, .scaleMin = 0.7F, .scaleMax = 1.2F, .sink = 0.1F, .cover = 0.5F, .patch = 60.0F, .water = 15.0F}},
        .soil   = Soil::eDry},
       {.name = "steppe", .temperatureFrom = 5.0F, .moistureFrom = 0.15F, .moistureTo = 0.36F, .colour = {0.26F, 0.21F, 0.12F}, .rough = 0.9F,
        .plants = {{.role = "drybush", .perSquareMetre = 0.008, .scaleMin = 0.6F, .scaleMax = 1.2F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
                   {.role = "shrub", .perSquareMetre = 0.003, .scaleMin = 0.5F, .scaleMax = 1.1F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
                   {.role = "boulder", .perSquareMetre = 0.004, .scaleMin = 0.2F, .scaleMax = 0.9F, .sink = 0.1F, .cover = 0.3F, .patch = 60.0F},
                   {.role = "pine", .perSquareMetre = 0.003, .scaleMin = 0.8F, .scaleMax = 1.5F, .sink = 0.15F, .cover = 0.15F, .patch = 90.0F},
-                  {.role = "drytree", .perSquareMetre = 0.002, .scaleMin = 0.8F, .scaleMax = 1.5F, .sink = 0.05F, .cover = 0.2F, .patch = 70.0F}},
+                  {.role = "drytree", .perSquareMetre = 0.002, .scaleMin = 0.8F, .scaleMax = 1.5F, .sink = 0.05F, .cover = 0.2F, .patch = 70.0F},
+                  {.role = "riverside", .perSquareMetre = 0.015, .scaleMin = 0.8F, .scaleMax = 1.4F, .sink = 0.1F, .cover = 0.75F, .patch = 80.0F, .water = 35.0F}},
        .grass  = Grass::eDry,
        .soil   = Soil::eDry},
       {.name = "grassland", .temperatureFrom = 5.0F, .moistureFrom = 0.36F, .moistureTo = 0.68F, .colour = {0.085F, 0.14F, 0.045F}, .rough = 0.8F,
@@ -682,7 +686,8 @@ std::vector<Biome> biomeTable()
                   {.role = "tree", .perSquareMetre = 0.008, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F, .cover = 0.25F, .patch = 110.0F},
                   {.role = "sapling", .perSquareMetre = 0.02, .scaleMin = 0.7F, .scaleMax = 1.6F, .cover = 0.35F, .patch = 30.0F},
                   {.role = "shrub", .perSquareMetre = 0.012, .scaleMin = 0.6F, .scaleMax = 1.3F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
-                  {.role = "rock", .perSquareMetre = 0.004, .scaleMin = 0.2F, .scaleMax = 0.8F, .sink = 0.1F, .cover = 0.3F, .patch = 60.0F}},
+                  {.role = "rock", .perSquareMetre = 0.004, .scaleMin = 0.2F, .scaleMax = 0.8F, .sink = 0.1F, .cover = 0.3F, .patch = 60.0F},
+                  {.role = "riverside", .perSquareMetre = 0.02, .scaleMin = 0.9F, .scaleMax = 1.6F, .sink = 0.1F, .cover = 0.7F, .patch = 70.0F, .water = 30.0F}},
        .grass  = Grass::eMeadow,
        .drift  = "flower",
        .soil   = Soil::eGrass},
@@ -695,7 +700,8 @@ std::vector<Biome> biomeTable()
                   {.role = "shrub", .perSquareMetre = 0.05, .scaleMin = 0.5F, .scaleMax = 1.2F, .sink = 0.03F, .cover = 0.45F, .patch = 22.0F},
                   {.role = "rock", .perSquareMetre = 0.02, .scaleMin = 0.15F, .scaleMax = 0.7F, .sink = 0.08F, .cover = 0.5F, .patch = 30.0F},
                   {.role = "stump", .perSquareMetre = 0.008, .scaleMin = 0.6F, .scaleMax = 1.2F, .sink = 0.03F},
-                  {.role = "log", .perSquareMetre = 0.012, .scaleMin = 0.7F, .scaleMax = 1.5F}},
+                  {.role = "log", .perSquareMetre = 0.012, .scaleMin = 0.7F, .scaleMax = 1.5F},
+                  {.role = "riverside", .perSquareMetre = 0.015, .scaleMin = 0.9F, .scaleMax = 1.5F, .sink = 0.1F, .cover = 0.7F, .patch = 60.0F, .water = 20.0F}},
        .grass  = Grass::eWood,
        .drift  = "fern",
        .soil   = Soil::eFloor},

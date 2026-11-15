@@ -189,6 +189,10 @@ struct Growth
   // In groves: the share of the ground it stands on at all, by a noise `patch` metres across
   float cover = 1.0F;
   float patch = 40.0F;
+  // By inland water only: within this many metres of a river's or a lake's edge, thickest nearest it
+  // (a river is known as far as its banks reach, Inland::bank: a stream's 20 m, a wide river's more).
+  // 0: wherever its biome is
+  float water = 0.0F;
 };
 
 // A biome's ground cover, in tiles as a meadow's is (fv_backdrop.hpp)

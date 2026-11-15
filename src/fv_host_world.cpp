@@ -110,6 +110,17 @@ bool has(const std::vector<W::Quad>& sorted, const W::Quad& q)
   return std::binary_search(sorted.begin(), sorted.end(), q);
 }
 
+// The kit models a role is drawn with: its own, or where the kit has none of them, those of the role
+// it is drawn as then (fv::world::drawnAs: a riverside tree as a leafy one)
+template <class Built>
+auto kitPlantsOf(const Built& built, std::string_view role)
+{
+  auto found = built.variants.find(std::string(role));
+  if(found == built.variants.end())
+    found = built.variants.find(std::string(W::drawnAs(role)));
+  return found;
+}
+
 }  // namespace
 
 // A quad's meshes, made: any thread
@@ -568,8 +579,7 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
     // the kit's: none where something of the scene is over the ground (fv::backdrop::Standing, on
     // the plan of the floor: only what stands near the floor's height is under it)
     for(W::Stand& s : m.stands)
-      if(const auto found = backdropBuilt->variants.find(std::string(W::kStandingRoles[s.role]));
-         found != backdropBuilt->variants.end() && s.variant < found->second.size())
+      if(const auto found = kitPlantsOf(*backdropBuilt, W::kStandingRoles[s.role]); found != backdropBuilt->variants.end() && s.variant < found->second.size())
       {
         if(!backdropStanding.empty())
         {
@@ -964,7 +974,7 @@ void FvHost::Impl::plantPlanet(rs::RetainedScene& scene)
         scene.setVisible(v.entity, false);
   p.variants = {};
   for(size_t r = 0; r < W::kStandingRoles.size(); r++)
-    if(const auto found = backdropBuilt->variants.find(std::string(W::kStandingRoles[r])); found != backdropBuilt->variants.end())
+    if(const auto found = kitPlantsOf(*backdropBuilt, W::kStandingRoles[r]); found != backdropBuilt->variants.end())
       p.variants[r] = uint32_t(found->second.size());
   p.density   = backdropSpec.density;
   // (the planet as one whose plants are drawn: the same, but for the ground under them)

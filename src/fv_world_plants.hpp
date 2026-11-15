@@ -42,15 +42,21 @@ namespace fv::world {
 
 // The kit's roles a planet places, in the order `standing` counts them. A biome grows its own of
 // them (World::biomes): the firs of a wood and a meadow's edge, a grassland's leafy trees, pines in
-// woods and on the steppe, the dry land's trees and bushes, its bare boulders, and mossy rocks where
-// it is wet
-inline constexpr std::array<std::string_view, 12> kStandingRoles = {"tree", "grown", "sapling", "shrub", "rock", "stump", "log",
-                                                                    "broadleaf", "pine", "drytree", "drybush", "boulder"};
+// woods and on the steppe, the dry land's trees and bushes, its bare boulders, mossy rocks where it
+// is wet, and willows and alders along rivers and by lakes (`riverside`, Growth::water)
+inline constexpr std::array<std::string_view, 13> kStandingRoles = {"tree",    "grown", "sapling", "shrub",   "rock",    "stump",    "log",
+                                                                    "broadleaf", "pine", "drytree", "drybush", "boulder", "riverside"};
 // What a role is: a tree is a wood's, seen for kilometres, and none stands on a place's floor; the
 // dry land's small trees and a sapling stand on none either; a stone stands on bare rock too
 constexpr bool isTree(std::string_view role)
 {
-  return role == "tree" || role == "grown" || role == "broadleaf" || role == "pine";
+  return role == "tree" || role == "grown" || role == "broadleaf" || role == "pine" || role == "riverside";
+}
+// The role whose models draw a role's plants where the kit has none of its own: a riverside tree is
+// a leafy one (the kit's own download has no willows; kit.local.json may)
+constexpr std::string_view drawnAs(std::string_view role)
+{
+  return role == "riverside" ? std::string_view("broadleaf") : role;
 }
 constexpr bool isTall(std::string_view role)
 {

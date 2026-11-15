@@ -25,7 +25,7 @@ const W::World& planet()
 }
 
 // As many of each role as a kit might have
-const std::array<uint32_t, W::kStandingRoles.size()> kVariants = {3, 1, 2, 2, 3, 1, 1, 2, 1, 3, 4, 3};
+const std::array<uint32_t, W::kStandingRoles.size()> kVariants = {3, 1, 2, 2, 3, 1, 1, 2, 1, 3, 4, 3, 2};
 
 glm::dvec3 spread(uint32_t i, uint32_t count)
 {
@@ -297,6 +297,49 @@ TEST(WorldPlants, EachBiomeGrowsItsOwn)
   // nothing on the snow
   for(const auto& [role, count] : grown["snow"].first)
     EXPECT_EQ(count, 0U) << role;
+}
+
+TEST(WorldPlants, RiversideTreesStandByTheWaterAndNowhereElse)
+{
+  const W::World& w     = planet();
+  const uint8_t   level = W::finestLevel(w);
+  const auto      riverside = uint8_t(std::find(W::kStandingRoles.begin(), W::kStandingRoles.end(), "riverside") - W::kStandingRoles.begin());
+  ASSERT_LT(riverside, W::kStandingRoles.size());
+  // the furthest from the water any biome grows them
+  float water = 0.0F;
+  for(const W::Biome& biome : w.biomes)
+    for(const W::Growth& g : biome.plants)
+      if(g.role == "riverside")
+      {
+        EXPECT_GT(g.water, 0.0F) << biome.name << ": by water only";
+        water = std::max(water, g.water);
+      }
+  ASSERT_GT(water, 0.0F);
+  // along the rivers: some of them, each near the water and out of it
+  std::vector<W::Quad> quads;
+  for(size_t k = 0; k < w.base->pieces.size(); k += 7)
+    quads.push_back(quadAt(w.base->pieces[k].b, level));
+  std::sort(quads.begin(), quads.end());
+  quads.erase(std::unique(quads.begin(), quads.end()), quads.end());
+  size_t by = 0;
+  for(const W::Quad& q : quads)
+    for(const auto& [role, places] : placesOf(w, q))
+      if(role == riverside)
+        for(const glm::dvec3& at : places)
+        {
+          by++;
+          const W::Sample s = W::sample(w, W::toPlanet(w, at), 1.0);
+          EXPECT_LT(s.shore, water + 0.5F);
+          EXPECT_GT(s.shore, 0.0F);
+          EXPECT_FALSE(s.water > s.elevation);
+        }
+  EXPECT_GT(by, 20U) << "along " << quads.size() << " quads of rivers";
+  // well inland in a wood: none
+  for(uint32_t skip = 0; skip < 6; skip++)
+    EXPECT_EQ(placesOf(w, quadAt(inAWood(w, skip), level))[riverside].size(), 0U);
+  // and a kit with no models of its own draws them as leafy trees
+  EXPECT_EQ(W::drawnAs("riverside"), "broadleaf");
+  EXPECT_EQ(W::drawnAs("pine"), "pine");
 }
 
 TEST(WorldPlants, APlanetsKitHoldsEveryRoleItsBiomesGrow)
