@@ -98,7 +98,7 @@ struct Spec
   double windFrom = 90.0;
   // How far from the origin the ground is level, metres: kClearing with nothing in the scene, and
   // as far as its props reach (`levelFor`). The host's, from the scene: no patch sets it and no file
-  // keeps it. A planet has its own (fv_world.hpp).
+  // keeps it. A planet is levelled by it too, as far as its site is good for (fv::world::mostLevel).
   double clearing = 5.0;
   bool   operator==(const Spec&) const = default;
 };

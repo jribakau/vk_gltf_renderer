@@ -36,7 +36,8 @@
 // The land keeps clear of what stands in the scene (fv::backdrop::Standing, read from the scene's
 // props by readStanding): the ground is level as far as they reach, nothing with a place stands
 // under or against one, and no tile of grass lies where a floor does. clearBackdrop follows the
-// scene: a prop put down, moved or taken away.
+// scene: a prop put down, moved or taken away. A planet's ground and plants do the same
+// (fv_host_world.cpp: clearPlanet).
 //
 // A planet (the `planet` kind) stands without a kit (fv_host_world.cpp, under the same root) and is
 // planted with one when there is one: the same plants, held the same way, placed by its biomes.
@@ -558,7 +559,7 @@ bool FvHost::Impl::readStanding(rs::RetainedScene& scene)
 
 void FvHost::Impl::clearBackdrop()
 {
-  if(!backdropBuilt || planetBuilt || backdropState != "ready" || !renderer->feedsHostScene())
+  if(!backdropBuilt || backdropState != "ready" || !renderer->feedsHostScene())
     return;
   rs::RetainedScene& scene = renderer->hostScene();
   if(!scene.entity(backdropBuilt->root))
@@ -587,6 +588,11 @@ void FvHost::Impl::clearBackdrop()
   const double level = backdropSpec.clearing;
   if(!readStanding(scene))
     return;
+  if(planetBuilt)
+  {
+    clearPlanet(scene);
+    return;
+  }
   fv::timing::Scope time("backdrop: clearing", 20);
   if(backdropSpec.clearing != level)
     plantBackdrop(scene);  // the ground too: level as far as the props now reach
@@ -1026,6 +1032,8 @@ void FvHost::Impl::standBackdrop(bool reread)
     if(backdropBuilt && !planetBuilt)
       drop();  // land stood
     const bool stood = planetBuilt != nullptr;
+    if(!stood)
+      readStanding(scene);  // made level for what stands in the scene now
     standPlanet(scene);
     backdropWanted = spec;
     if(!backdropKit && !dir.empty() && (!stood || reread))

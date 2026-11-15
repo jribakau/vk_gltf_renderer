@@ -395,13 +395,18 @@ void colour(const World& w, const Point& p, Sample& s)
     s.colour = glm::mix(s.colour, kRiverSeen, s.painted);
 }
 
-// Level where the figures stand, easing into the land round it
+// Level where the figures stand and as far as the scene's props reach, easing into the land round it.
+// Level as the scene's floor is: on the plane that touches the planet at the site, which the sphere
+// falls away from (a hand's breadth a hundred metres out on a planet 20 km in radius, and a wall
+// that stands on the floor would stand that far over the ground).
 void clearing(const World& w, const Point& p, Sample& s)
 {
-  const double away = glm::length(p.direction - w.frame.site) * w.spec.radius;
-  if(away >= kClearing + kClearingEdge)
+  const double level = std::max(w.spec.clearing, kClearing), edge = std::max(kClearingEdge, 0.5 * level);
+  const double away  = glm::length(p.direction - w.frame.site) * w.spec.radius;
+  if(away >= level + edge)
     return;
-  s.elevation = w.frame.siteElevation + (s.elevation - w.frame.siteElevation) * smooth(kClearing, kClearing + kClearingEdge, away);
+  const double flat = (w.spec.radius + w.frame.siteElevation) / std::max(glm::dot(p.direction, w.frame.site), 0.5) - w.spec.radius;
+  s.elevation       = flat + (s.elevation - flat) * smooth(level, level + edge, away);
 }
 
 std::vector<Biome> biomeTable()
@@ -631,6 +636,13 @@ void addGrid(ChunkMesh& m, uint32_t cells, const std::vector<uint8_t>* out = nul
 
 // ---- the planet --------------------------------------------------------------------------------------
 
+World withClearing(const World& world, double clearing)
+{
+  World w         = world;
+  w.spec.clearing = std::clamp(clearing, kClearing, mostLevel(w.spec.radius));
+  return w;
+}
+
 World make(const Spec& asked, const Making& making)
 {
   World w;
@@ -638,6 +650,7 @@ World make(const Spec& asked, const Making& making)
   w.spec.radius = std::clamp(asked.radius, 2000.0, 100000.0);
   w.spec.sea    = std::clamp(asked.sea, 0.0, 0.9);
   w.spec.relief = std::clamp(asked.relief, 0.0, 2.0);
+  w.spec.clearing = std::clamp(asked.clearing, kClearing, mostLevel(w.spec.radius));
   w.biomes      = biomeTable();
 
   // The sea's level: the continents' noise at the share of the sphere the sea is to cover

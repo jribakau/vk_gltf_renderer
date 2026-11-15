@@ -33,7 +33,8 @@
 //
 // The figures stand where the planet's `site` is: a level place on land, found by the seed. The planet
 // is turned and set so that place is the origin with +y up (Frame); the ground is flat there for
-// kClearing metres and eases into the land over kClearingEdge more.
+// kClearing metres, or as far as the scene's props reach (Spec::clearing), and eases into the land
+// over kClearingEdge more. Flat as a floor is, not as the sphere is: on the plane of the scene's floor.
 //
 // Vulkan-free. Doubles on the sphere: a metre underfoot and the planet's far side are told apart by
 // more digits than a float has. Distances in metres; the mesh's points are in the frame of the
@@ -62,12 +63,22 @@ struct Spec
   double radius = 20000.0;  // metres, the sea's level from its centre: 2 to 100 km
   double sea    = 0.55;     // the share of its surface under water, 0 to 0.9
   double relief = 1.0;      // how high its land stands, 0 flat to 2
+  // How far from where the figures stand the ground is level, metres: kClearing, or as far as what
+  // stands in the scene reaches (the host's, from fv::backdrop::levelFor), up to mostLevel
+  double clearing = 5.0;
   bool   operator==(const Spec&) const = default;
 };
 
-// The ground is level within this of where the figures stand, and eases into the land over the next
+// The ground is level within this of where the figures stand (Spec::clearing: further with props
+// further out), and eases into the land over the next, or half the clearing when that is more
 inline constexpr double kClearing     = 5.0;
 inline constexpr double kClearingEdge = 25.0;
+// The most a planet's ground is levelled for a scene: its site is found level and dry over a few
+// hundred metres (or a tenth of a small planet's radius), and no further
+inline double mostLevel(double radius)
+{
+  return std::max(kClearing, std::min(180.0, 0.07 * radius));
+}
 
 // What a ground is drawn with, where the backdrop's kit has its maps: grass (soil with grass on it),
 // a wood's floor, rock, sand. A place is so much of each (surfaceLayers); what they leave of it is
@@ -227,6 +238,9 @@ struct World
 // The planet of a spec: its sea level found, its base map baked, its stages listed, and its site
 // chosen. The baking is the long part: a second or two for a planet 20 km in radius, on the pool.
 World make(const Spec& spec, const Making& making = {});
+// The same planet, level another distance round its site: nothing of it is made again but what is
+// asked of its ground from then on
+World withClearing(const World& world, double clearing);
 
 // What the point `direction` of the planet is, for something `footprint` metres across
 Sample sample(const World& world, const glm::dvec3& direction, double footprint);

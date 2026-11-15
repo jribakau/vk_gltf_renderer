@@ -217,6 +217,33 @@ rs::EntityId rootNamed(rs::RetainedScene& scene, const std::string& name)
 
 }  // namespace
 
+namespace {
+
+// A glTF of a square slab lying on the floor, `half` metres either way of its middle
+void writeSlab(const fs::path& dir, float half)
+{
+  const std::array<float, 12>   corners = {-half, 0.0F, -half, half, 0.0F, -half, half, 0.0F, half, -half, 0.0F, half};
+  const std::array<uint16_t, 6> indices = {0, 2, 1, 0, 3, 2};
+  {
+    std::ofstream bin(dir / "slab.bin", std::ios::binary);
+    bin.write(reinterpret_cast<const char*>(corners.data()), sizeof corners);
+    bin.write(reinterpret_cast<const char*>(indices.data()), sizeof indices);
+  }
+  std::ofstream(dir / "slab.gltf") << Json{{"asset", {{"version", "2.0"}}},
+                                           {"scene", 0},
+                                           {"scenes", {{{"nodes", {0}}}}},
+                                           {"nodes", {{{"name", "slab"}, {"mesh", 0}}}},
+                                           {"meshes", {{{"primitives", {{{"attributes", {{"POSITION", 0}}}, {"indices", 1}}}}}}},
+                                           {"buffers", {{{"byteLength", 60}, {"uri", "slab.bin"}}}},
+                                           {"bufferViews", {{{"buffer", 0}, {"byteOffset", 0}, {"byteLength", 48}}, {{"buffer", 0}, {"byteOffset", 48}, {"byteLength", 12}}}},
+                                           {"accessors",
+                                            {{{"bufferView", 0}, {"componentType", 5126}, {"count", 4}, {"type", "VEC3"}, {"min", {-half, 0.0, -half}}, {"max", {half, 0.0, half}}},
+                                             {{"bufferView", 1}, {"componentType", 5123}, {"count", 6}, {"type", "SCALAR"}}}}}
+                                          .dump();
+}
+
+}  // namespace
+
 // The land keeps clear of what stands in the scene (fv_host_backdrop.cpp's clearBackdrop): a slab put
 // down where a tree stood has no tree on it or against it and no tile of grass over it, the ground is
 // level out to it, and with the slab gone the land is as it was
@@ -232,19 +259,7 @@ TEST(FvHost, ABackdropKeepsClearOfWhatStandsInTheScene)
                                          .dump();
   // a slab 16 m square, lying on the floor
   const float half = 8.0F;
-  {
-    const std::array<float, 12>   corners = {-half, 0.0F, -half, half, 0.0F, -half, half, 0.0F, half, -half, 0.0F, half};
-    const std::array<uint16_t, 6> indices = {0, 2, 1, 0, 3, 2};
-    std::ofstream bin(kit / "slab.bin", std::ios::binary);
-    bin.write(reinterpret_cast<const char*>(corners.data()), sizeof corners);
-    bin.write(reinterpret_cast<const char*>(indices.data()), sizeof indices);
-  }
-  std::ofstream(kit / "slab.gltf") << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"slab","mesh":0}],
-    "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],
-    "buffers":[{"byteLength":60,"uri":"slab.bin"}],
-    "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":12}],
-    "accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-8,0,-8],"max":[8,0,8]},
-                 {"bufferView":1,"componentType":5123,"count":6,"type":"SCALAR"}]})";
+  writeSlab(kit, half);
   HostRig            rig;
   rs::RetainedScene& scene = rig.renderer.hostScene();
   const auto         ready = [&] {
@@ -823,6 +838,98 @@ TEST(FvHost, APlanetStandsWithNoKit)
 // A planet's ground takes its grain from the kit's ground maps (mapPlanetGround): a material a layer
 // the kit has maps and a mean colour for, held by an entity never shown, said to the renderer with the
 // ground's own; a quad's vertices carry their shares of the layers; gone with the planet
+// A planet's ground is level as far as the scene's props reach (clearPlanet): with a slab put down
+// 80 m out the ground under it is the floor's plane, the planet stands all the while (what drew stays
+// until its quads are made again), and with the slab gone the land is as it was
+TEST(FvHost, APlanetIsLevelUnderWhatStandsInTheScene)
+{
+  const fs::path dir = fs::temp_directory_path() / ("fv-planet-clear-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fs::create_directories(dir);
+  const float half = 8.0F;
+  writeSlab(dir, half);
+  HostRig            rig;
+  rs::RetainedScene& scene = rig.renderer.hostScene();
+  const auto         state = [&] { return rig.topic("backdrop").value("state", std::string()); };
+  rig.host->onUpdate();
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "planet"}, {"radius", 5}}).value("ok", false));
+  {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while(state() != "ready" && std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+  }
+  ASSERT_EQ(state(), "ready");
+  // the ground's vertices over a square of the plan, by their height over the floor: how many lie on
+  // it, and how far the furthest of the rest is from it (a quad's skirt, far under, left out)
+  struct Lie
+  {
+    size_t on = 0, off = 0;
+    float  furthest = 0.0F;
+  };
+  const glm::vec2 at(80.0F, 0.0F);
+  const auto      lie = [&] {
+    Lie                out;
+    const rs::EntityId root = rootNamed(scene, "Backdrop");
+    for(const rs::EntityId e : scene.entity(root)->children)
+    {
+      const rs::Entity* entity = scene.entity(e);
+      if(!entity->mesh || !scene.shown(e) || entity->name != "Planet ground")
+        continue;
+      const rs::MeshRecord* mesh = scene.mesh(entity->mesh->parts.at(0).mesh);
+      const glm::vec3       centre(scene.world(e)[3]);
+      for(const glm::vec3& v : mesh->positions)
+      {
+        const glm::vec3 p = centre + v;
+        if(std::abs(p.x - at.x) > half || std::abs(p.z - at.y) > half || p.y < -6.0F)
+          continue;
+        if(std::abs(p.y) < 0.02F)
+          out.on++;
+        else
+        {
+          out.off++;
+          out.furthest = std::max(out.furthest, std::abs(p.y));
+        }
+      }
+    }
+    return out;
+  };
+  const Lie before = lie();
+  ASSERT_GT(before.on + before.off, 50u);
+  EXPECT_GT(before.off, before.on) << "the land rolls there";
+  EXPECT_GT(before.furthest, 0.1F);
+
+  ASSERT_TRUE(rig.cmd("load", {{"path", (dir / "slab.gltf").generic_string()}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  std::string slab;
+  const Json  props = rig.topic("scene").value("props", Json::object());
+  for(const auto& [id, p] : props.items())
+    if(p.value("kind", "") == "model")
+      slab = id;
+  ASSERT_FALSE(slab.empty());
+  ASSERT_TRUE(rig.cmd("prop.set", {{"prop", slab}, {"transform", {{"t", {at.x, 0.0, at.y}}}}}).value("ok", false));
+  // once it has stood still the quads are made again: the planet stands all the while
+  const auto until = [&](const auto& done) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while(!done() && std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      EXPECT_EQ(state(), "ready");
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return done();
+  };
+  ASSERT_TRUE(until([&] { return lie().off == 0; })) << lie().on << " on the floor, " << lie().off << " off it by up to " << lie().furthest;
+  EXPECT_GT(lie().on, 50u);
+  // hidden: the land as it was
+  ASSERT_TRUE(rig.cmd("prop.set", {{"prop", slab}, {"visible", false}}).value("ok", false));
+  ASSERT_TRUE(until([&] { return lie().off == before.off; })) << lie().off << " off the floor, " << before.off << " before";
+  EXPECT_FLOAT_EQ(lie().furthest, before.furthest);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
 TEST(FvHost, APlanetsGroundTakesTheKitsMaps)
 {
   const fs::path kit = fs::temp_directory_path() / ("fv-planet-kit-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));

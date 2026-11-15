@@ -1706,6 +1706,9 @@ struct FvHost::Impl
       uint64_t                  standing = 0; // how many those are
     };
     std::map<fv::world::Quad, Chunk> shown;    // the cut that draws: the planet once over
+    // What drew when its quads were asked for again (restreamPlanet): shown until the first cut of
+    // the new has come, so the land does not go for the moment that takes
+    std::vector<Chunk> stale;
     std::map<fv::world::Quad, Chunk> arrived;  // made and hidden, until what they take the place of can go
     fv::world::Selection             selection;  // the cut the camera asks for
     glm::dvec3                       selectedFor{0.0};
@@ -1739,6 +1742,11 @@ struct FvHost::Impl
   void plantPlanet(rs::RetainedScene& scene);
   // Its quads made again, the first cut whole before any shows: what stands on them is another
   void replantPlanet(rs::RetainedScene& scene);
+  // Its quads made again for what stands in the scene (fv::backdrop::Standing): the ground level as
+  // far as the props reach, no plant where one is. What draws stays until the new first cut is whole.
+  void restreamPlanet(rs::RetainedScene& scene);
+  // After what stands was read again (clearBackdrop): the planet for it
+  void clearPlanet(rs::RetainedScene& scene);
   // The materials its ground's layers are drawn with, made from the kit's grounds and said to the
   // renderer (HostRenderer::setWorldGround); once a kit
   void mapPlanetGround(rs::RetainedScene& scene);

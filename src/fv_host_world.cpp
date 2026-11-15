@@ -101,6 +101,14 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
 {
   const fv::world::Spec asked = fv::backdrop::planetSpec(backdropSpec);
   const bool            alive = planetBuilt && backdropBuilt && scene.entity(backdropBuilt->root);
+  // level another distance round its site and nothing else: the same planet, its quads made again
+  if(alive && planetBuilt->world && planetBuilt->asked != asked)
+    if(fv::world::Spec same = planetBuilt->asked; (same.clearing = asked.clearing, same == asked))
+    {
+      planetBuilt->world = std::make_shared<const fv::world::World>(fv::world::withClearing(*planetBuilt->world, asked.clearing));
+      planetBuilt->asked = asked;
+      restreamPlanet(scene);
+    }
   if(alive && planetBuilt->asked == asked)
   {
     placeBackdrop();
@@ -428,11 +436,20 @@ void FvHost::Impl::planetArrived(std::vector<PlanetMade>& made, uint64_t generat
       scene.setVisible(e, false);
       chunk.plants.push_back(e);
     };
-    // the kit's
+    // the kit's: none where something of the scene is over the ground (fv::backdrop::Standing, on
+    // the plan of the floor: only what stands near the floor's height is under it)
     for(W::Stand& s : m.stands)
       if(const auto found = backdropBuilt->variants.find(std::string(W::kStandingRoles[s.role]));
          found != backdropBuilt->variants.end() && s.variant < found->second.size())
+      {
+        if(!backdropStanding.empty())
+          std::erase_if(s.places, [&](const glm::mat4& place) {
+            const glm::vec3 at = centre + glm::vec3(place[3]);
+            return std::abs(at.y) < 2.0F * fv::backdrop::kOverhead
+                   && backdropStanding.over(at.x, at.z, fv::backdrop::kCrownShare * found->second[s.variant].halfWidth * glm::length(glm::vec3(place[0])));
+          });
         stand(found->second[s.variant].entity, found->second[s.variant].base, s.places);
+      }
     // the sea floor's
     for(W::Stand& s : m.seaStands)
       if(s.role < p.seaPlants.size() && s.variant < p.seaPlants[s.role].size())
@@ -484,6 +501,26 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
     for(const auto& [q, chunk] : p.arrived)
       gone(chunk);
     p.arrived.clear();
+    if(!p.stale.empty())
+    {
+      // made again for what stands in the scene (restreamPlanet): what drew until now goes, and the
+      // grass is laid again, a tile under a floor left out
+      for(const PlanetBuilt::Chunk& chunk : p.stale)
+        gone(chunk);
+      p.stale.clear();
+      if(p.planted)
+      {
+        for(const auto& [tile, entity] : p.tiles)
+          if(!entity.isNone())
+          {
+            scene.setVisible(entity, false);
+            p.spareTiles[tile.kind].push_back(entity);
+          }
+        p.tiles.clear();
+        p.tiled = 0;
+        tilePlanet(scene, p.selectedFor);
+      }
+    }
     backdropState = "ready";
     scopeHaze();
     publishBackdrop();
@@ -768,8 +805,11 @@ void FvHost::Impl::replantPlanet(rs::RetainedScene& scene)
     gone(chunk);
   for(const auto& [q, chunk] : p.arrived)
     gone(chunk);
+  for(const PlanetBuilt::Chunk& chunk : p.stale)
+    gone(chunk);
   p.shown.clear();
   p.arrived.clear();
+  p.stale.clear();
   p.standing   = 0;
   p.selected   = false;
   p.busy       = false;
@@ -779,6 +819,41 @@ void FvHost::Impl::replantPlanet(rs::RetainedScene& scene)
     backdropState = "loading";
     publishBackdrop();
   }
+}
+
+void FvHost::Impl::restreamPlanet(rs::RetainedScene& scene)
+{
+  PlanetBuilt& p = *planetBuilt;
+  // what draws stays, as it is, until the first cut of the new is whole (resolvePlanet); what had
+  // arrived and not shown is of the planet as it was. (A batch on its way too: another generation.)
+  for(const auto& [q, chunk] : p.shown)
+    p.stale.push_back(chunk);
+  for(const auto& [q, chunk] : p.arrived)
+  {
+    for(const rs::EntityId e : {chunk.ground, chunk.sea})
+      if(!e.isNone() && scene.entity(e))
+        scene.destroyEntity(e);
+    for(const rs::EntityId e : chunk.plants)
+      if(scene.entity(e))
+        scene.destroyEntity(e);
+  }
+  p.shown.clear();
+  p.arrived.clear();
+  p.standing   = 0;
+  p.selected   = false;
+  p.busy       = false;
+  p.generation = ++planetGeneration;
+}
+
+void FvHost::Impl::clearPlanet(rs::RetainedScene& scene)
+{
+  PlanetBuilt& p = *planetBuilt;
+  // level another distance: standPlanet makes its quads again (the planet itself, if it is still
+  // being made); as level as it was: its plants' places again, where it has plants
+  if(!p.world || p.asked != fv::backdrop::planetSpec(backdropSpec))
+    standPlanet(scene);
+  else if(p.planted)
+    restreamPlanet(scene);
 }
 
 void FvHost::Impl::tilePlanet(rs::RetainedScene& scene, const glm::dvec3& eye)
@@ -817,6 +892,17 @@ void FvHost::Impl::tilePlanet(rs::RetainedScene& scene, const glm::dvec3& eye)
     if(place.level < W::kGrassLevel)
     {
       p.tiles[tile] = rs::EntityId{};  // too steep for grass: remembered, so it is not asked again
+      continue;
+    }
+    // nor where a floor of the scene's covers the ground (fv::backdrop::Standing): the middle of the
+    // tile, as its square lies by the planet's face and not by the floor's axes
+    if(const float half = 0.35F * p.tileKinds[tile.kind].cover.tile;
+       !backdropStanding.empty() && std::abs(place.position.y) < 2.0 * double(fv::backdrop::kOverhead)
+       && backdropStanding.covered(float(place.position.x) - half, float(place.position.z) - half, float(place.position.x) + half,
+                                   float(place.position.z) + half)
+              >= fv::backdrop::kTileTaken)
+    {
+      p.tiles[tile] = rs::EntityId{};  // (until what stands is another: every tile is laid again then)
       continue;
     }
     rs::EntityId               entity;

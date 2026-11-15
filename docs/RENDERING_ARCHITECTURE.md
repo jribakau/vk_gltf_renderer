@@ -760,7 +760,13 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   meshes hashed, `standingKey`, asked a couple of times a second while the scene's bounds change),
   so a prop dragged or a ship in flight plants nothing until it rests; then the places and the tiles
   are made again, and the ground and all of it when the reach moved to another ten metres. A planet
-  keeps its own clearing and does not read it yet.
+  does the same (`clearPlanet` in `src/fv_host_world.cpp`): its ground is level as far as the props
+  reach and its site is good for (`fv::world::Spec::clearing`, `mostLevel`), on the plane of the
+  scene's floor and not on the sphere, which has fallen a hand's breadth under that plane a hundred
+  metres out; a quad's plants are left out where something is over them as it arrives, and a tile of
+  grass where a floor lies. Its quads are asked for again (`restreamPlanet`), the same planet with
+  another clearing (`withClearing`: nothing is baked again), and what drew stays until the first cut
+  of the new is whole, so the land never goes.
 - **Why tiles.** Each grass plant an instance of its own was built first, thinned by its distance
   from the camera. Following the camera then meant some 200,000 instances made again: 50 ms to
   place them and another 160 ms in the renderer's sync, a fifth of a second up to two and a half

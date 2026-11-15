@@ -339,6 +339,41 @@ TEST(WorldFields, AGroundIsSharedOutAmongItsLayers)
   (void)faces;  // (a face is a few metres wide: the tiers' own test walks onto them)
 }
 
+// With props in the scene the ground is level as far as they reach (Spec::clearing, the host's): on
+// the floor's plane, not the sphere, and the same land beyond
+TEST(WorldSite, TheGroundIsLevelAsFarAsTheScenesPropsReach)
+{
+  for(const double radius : {5000.0, 20000.0})
+  {
+    const W::World w    = W::make({.seed = 2, .radius = radius}, kSmall);
+    const W::World wide = W::withClearing(w, 120.0);
+    EXPECT_EQ(wide.spec.clearing, 120.0);
+    EXPECT_EQ(wide.frame.site, w.frame.site);
+    double rolls = 0.0;
+    for(double a = 0.0; a < 6.28; a += 0.3)
+      for(const double away : {10.0, 40.0, 80.0, 119.0})
+      {
+        const glm::dvec3 d = W::toPlanet(w, glm::dvec3(std::cos(a), 0.0, std::sin(a)) * away);
+        EXPECT_NEAR(W::toScene(wide, d, W::sample(wide, d, 1.0).elevation).y, 0.0, 1e-6) << radius << " " << away;
+        rolls = std::max(rolls, std::abs(W::toScene(w, d, W::sample(w, d, 1.0).elevation).y));
+      }
+    EXPECT_GT(rolls, 0.2) << "as it was, the land rolls there";
+    // the sphere has fallen away from the floor by then: a wall on the floor would stand over it
+    const glm::dvec3 edge = W::toPlanet(w, glm::dvec3(119.0, 0.0, 0.0));
+    EXPECT_GT(W::sample(wide, edge, 1.0).elevation - wide.frame.siteElevation, 0.5 * 119.0 * 119.0 / (2.0 * radius));
+    // past the clearing and the ground it eases into the land over, the planet is as it was
+    for(double a = 0.0; a < 6.28; a += 0.7)
+    {
+      const glm::dvec3 d = W::toPlanet(w, glm::dvec3(std::cos(a), 0.0, std::sin(a)) * 185.0);
+      EXPECT_EQ(W::sample(wide, d, 1.0).elevation, W::sample(w, d, 1.0).elevation);
+    }
+    // no further than its site is good for; and never under the figures' own clearing
+    EXPECT_EQ(W::withClearing(w, 5000.0).spec.clearing, W::mostLevel(radius));
+    EXPECT_EQ(W::withClearing(w, 0.0).spec.clearing, W::kClearing);
+    EXPECT_EQ(W::make({.seed = 2, .radius = radius, .clearing = 5000.0}, kSmall).spec.clearing, W::mostLevel(radius));
+  }
+}
+
 TEST(WorldSite, TheFiguresStandOnLevelLandAtTheOrigin)
 {
   for(const int seed : {1, 2, 3, 4, 5})
@@ -355,7 +390,9 @@ TEST(WorldSite, TheFiguresStandOnLevelLandAtTheOrigin)
       for(double a = 0.0; a < 6.28; a += 0.4)
       {
         const glm::dvec3 in = W::toPlanet(w, glm::dvec3(std::cos(a), 0.0, std::sin(a)) * (W::kClearing - 0.5));
-        EXPECT_NEAR(W::sample(w, in, 1.0).elevation, w.frame.siteElevation, 1e-6);
+        // (level as the floor is: on its plane, which the sphere falls away from by millimetres here)
+        EXPECT_NEAR(W::toScene(w, in, W::sample(w, in, 1.0).elevation).y, 0.0, 1e-6);
+        EXPECT_NEAR(W::sample(w, in, 1.0).elevation, w.frame.siteElevation, 0.01);
         const glm::dvec3 out = W::toPlanet(w, glm::dvec3(std::cos(a), 0.0, std::sin(a)) * 60.0);
         EXPECT_NEAR(W::sample(w, out, 1.0).elevation, w.frame.siteElevation, 8.0) << seed << " " << radius;
         EXPECT_GT(W::sample(w, out, 1.0).elevation, 0.0);

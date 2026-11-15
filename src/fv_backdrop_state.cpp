@@ -173,7 +173,7 @@ Json rendererParams(const Spec& s, bool stands, const glm::vec3& landAlbedo, con
 
 fv::world::Spec planetSpec(const Spec& s)
 {
-  return {.seed = s.seed, .radius = s.radius * 1000.0, .sea = s.sea, .relief = s.relief};
+  return {.seed = s.seed, .radius = s.radius * 1000.0, .sea = s.sea, .relief = s.relief, .clearing = s.clearing};
 }
 
 std::vector<PlacedBody> placedBodies(const Spec& s, const glm::dvec3& origin)
