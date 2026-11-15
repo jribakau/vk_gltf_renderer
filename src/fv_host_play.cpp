@@ -168,6 +168,7 @@ struct FvHost::Impl::PlayState
   bool               cockpit = false;
   std::string        shipId;  // the ship flown, or being got into or out of
   double             transition = 0.0;
+  double             range      = 0.0;  // what full throttle is now, m/s (the HUD's)
   game::Pose         from;  // where getting in or out began
   game::Pose         view;  // the camera last frame
   uint32_t           keys = 0;
@@ -369,6 +370,11 @@ game::World FvHost::Impl::PlayState::playWorld(Impl& s, const std::vector<Placed
       return std::nullopt;
     return game::Surface{glm::dvec3(hit->at), glm::dvec3(hit->normal)};
   };
+  // the fastest full throttle goes: a planet's radius in ten seconds, a backdrop's land in twenty
+  if(s.backdropStands())
+    w.speedCap = fv::backdrop::isPlanet(s.backdropSpec) ? 100.0 * s.backdropSpec.radius : 400.0;
+  else
+    w.speedCap = 250.0;
   return w;
 }
 
@@ -692,9 +698,10 @@ void FvHost::Impl::applyPlay()
       const game::World     its   = PlayState::playWorld(*this, own);
       const game::ShipShape shape = PlayState::shapeIn(*rig, size);
       substeps(dt, [&](double h) { game::stepShip(P.ship, shape, its, h, true); });
+      P.range = game::shipSpeedRange(P.ship, its.speedCap);
       PlayState::putShip(*this, *flown, *rig, P.ship);
       P.view = P.cockpit ? seatPose() : game::chaseView(P.chase, P.ship, rig->length * size, dt);
-      const bool canLeave = glm::length(P.ship.velocity) < kExitSpeed && P.ship.height < kExitHeight;
+      const bool canLeave = glm::length(P.ship.velocity) < kExitSpeed && P.ship.height >= 0.0 && P.ship.height < kExitHeight;
       if(canLeave)
         prompt = "F  Get out";
       if(uses > 0)
@@ -790,8 +797,9 @@ void FvHost::Impl::applyPlay()
                        {"ships", P.rigs.size()},
                        {"view", P.cockpit ? "cockpit" : "chase"},
                        {"speed", fly ? std::round(glm::length(P.ship.velocity) * 10.0) / 10.0 : 0.0},
-                       {"height", fly ? std::round(P.ship.height) : 0.0},
-                       {"throttle", fly ? std::round(P.ship.throttle / game::ShipTuning{}.cruise * 100.0) / 100.0 : 0.0},
+                       {"height", fly ? std::round(std::max(0.0, P.ship.height)) : 0.0},
+                       {"throttle", fly ? std::round(P.ship.throttle * 100.0) / 100.0 : 0.0},
+                       {"range", fly ? std::round(P.range) : 0.0},
                        {"boost", fly && (P.ship.keys & game::kFast) != 0}};
   if(state != P.published && now - P.publishedAt > std::chrono::milliseconds(100))
   {

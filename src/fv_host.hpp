@@ -120,8 +120,8 @@
 //                                                model with an fv_seat node), `ship` is loaded and put down ahead
 //   play.stop       {}                           the view free again; each ship flown stays where it was left, one
 //                                                step of the history ("Fly <name>"). The "play" topic: {active, mode
-//                                                (walk|enter|fly|exit), prompt, ship, ships, view (chase|cockpit),
-//                                                speed, height, throttle, boost}
+//                                                (walk|enter|fly|exit), prompt, ship, ships, view (chase|cockpit), range (m/s at full
+//                                                throttle here), speed, height, throttle (a share of the range), boost}
 //   pose.set        {prop, values: {"bone/kind/axis": value}, gesture?}
 //   pose.reset      {prop}
 //   pose.eyes       {prop}                       aim the eyeballs at the camera

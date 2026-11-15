@@ -72,6 +72,9 @@ struct World
   std::function<std::optional<Surface>(const glm::dvec3& from, const glm::dvec3& up, double reach)> ground;
   // The nearest surface a ray from `from` along `dir` (unit) meets within `reach`: walls, props
   std::function<std::optional<Surface>(const glm::dvec3& from, const glm::dvec3& dir, double reach)> ray;
+  // The fastest a ship's full throttle goes here, m/s, however much room it has (Shift goes past it):
+  // what crosses this world in a sensible time (the host's: a planet's radius in ten seconds)
+  double speedCap = 300.0;
 };
 
 // Where a camera is and how it is turned
@@ -124,16 +127,21 @@ Walker walkerAt(const Pose& camera, const World& world, double reach, const Walk
 
 // ---- the ship ----------------------------------------------------------------------------------------
 
+// The throttle is a share of a speed range that follows the room the ship has: its clearance (its
+// height over the ground, or what is ahead of its nose if nearer) at `perClearance` a second, no slower
+// than `cruise` and no faster than the world's speedCap. A dive at full throttle slows by itself as
+// the ground comes up; a climb speeds up but stops at the cap, so nothing runs away.
 struct ShipTuning
 {
-  double cruise = 70.0, reverse = 15.0;   // the throttle's range, m/s
-  double throttleRate = 35.0;             // m/s a second while W or S is held
-  double strafe = 20.0;                   // m/s sideways and up or down
-  double boost = 220.0;                   // m/s with Shift held near the ground ...
-  double boostPerHeight = 0.6;            // ... and this share of the height a second higher up
+  double cruise       = 70.0;  // m/s: full throttle near the ground
+  double perClearance = 0.5;   // full throttle higher up: this share of the clearance a second
+  double reverse      = 0.25;  // the throttle backs to this share of the range
+  double throttleRate = 0.6;   // share of the range a second while W or S is held
+  double boost        = 3.0;   // Shift: the range this many times over (past the cap too)
+  double strafe       = 20.0;  // m/s sideways and up or down
   double forwardTime = 0.85, strafeTime = 0.4;  // seconds to the speed asked, along the nose and across it
-  double accel = 35.0;                    // m/s² at most, cruising
-  double boostAccel = 0.9;                // and boosting: this share of the speed asked, a second (no less than accel)
+  double accel      = 35.0;  // m/s² at least ...
+  double accelShare = 1.5;   // ... and this share of the speed a second, so it slows as fast as it got going
   double turnPerPixel = 0.0016;           // radians the nose turns for a pixel of the mouse
   double aimTime      = 0.06;             // seconds the turn follows the mouse behind
   double pitchRate = 1.7, yawRate = 1.1, rollRate = 2.6;  // rad/s at most
@@ -159,20 +167,21 @@ struct Ship
   glm::dquat orientation{1.0, 0.0, 0.0, 0.0};
   glm::dvec3 velocity{0.0};          // m/s, the world's
   glm::dvec3 spin{0.0};              // rad/s: x pitch (nose up), y yaw (nose left), z roll (right wing down)
-  double     throttle   = 0.0;       // the forward speed asked, m/s
+  double     throttle   = 0.0;       // the share of the speed range asked forward: -reverse to 1
   bool       heldAtZero = false;     // S brought the throttle to 0: it stays until S is pressed again
   glm::dvec2 aim{0.0};               // the mouse's move still to turn, pixels
   uint32_t   keys       = 0;
   bool       touching   = false;     // on its pads (or its hull) this step
-  double     height     = 0.0;       // its pads' height over the ground under it (a large number with none)
+  double     height     = -1.0;      // its pads' height over the ground under it (-1 with none under it)
+  double     clearance  = 1e30;      // the room it has: that height, or what is ahead if nearer (1e30: nothing)
 };
 
 // Its axes in the world
 glm::dvec3 shipForward(const Ship& s);
 glm::dvec3 shipUp(const Ship& s);
 glm::dvec3 shipRight(const Ship& s);  // the pilot's right
-// The forward speed the throttle and Shift ask for at a height over the ground
-double shipTopSpeed(const Ship& s, const ShipTuning& t);
+// What full throttle is where it is, m/s (the range the throttle is a share of), Shift's included
+double shipSpeedRange(const Ship& s, double speedCap, const ShipTuning& t = {});
 // A step of `dt` seconds; `piloted` false is a ship with nobody in it (it settles and stops)
 void stepShip(Ship& s, const ShipShape& shape, const World& world, double dt, bool piloted, const ShipTuning& t = {});
 

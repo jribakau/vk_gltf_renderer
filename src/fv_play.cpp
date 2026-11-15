@@ -235,9 +235,10 @@ glm::dvec3 shipRight(const Ship& s)
   return glm::normalize(s.orientation * glm::dvec3(-1.0, 0.0, 0.0));
 }
 
-double shipTopSpeed(const Ship& s, const ShipTuning& t)
+double shipSpeedRange(const Ship& s, double speedCap, const ShipTuning& t)
 {
-  return (s.keys & kFast) ? std::max(t.boost, t.boostPerHeight * s.height) : s.throttle;
+  const double room = std::clamp(t.perClearance * s.clearance, t.cruise, std::max(speedCap, t.cruise));
+  return (s.keys & kFast) ? room * t.boost : room;
 }
 
 void stepShip(Ship& s, const ShipShape& shape, const World& world, double dt, bool piloted, const ShipTuning& t)
@@ -254,7 +255,7 @@ void stepShip(Ship& s, const ShipShape& shape, const World& world, double dt, bo
   if(!back)
     s.heldAtZero = false;
   if(ahead && !back)
-    s.throttle = std::min(t.cruise, s.throttle + t.throttleRate * dt);
+    s.throttle = std::min(1.0, s.throttle + t.throttleRate * dt);
   else if(back && !ahead && !s.heldAtZero)
   {
     const double next = s.throttle - t.throttleRate * dt;
@@ -269,18 +270,23 @@ void stepShip(Ship& s, const ShipShape& shape, const World& world, double dt, bo
   if(!piloted)
     s.throttle = 0.0;
 
+  // the room it has: its height over the ground (last step's), or what is ahead of its nose if nearer
+  s.clearance = s.height >= 0.0 ? s.height : 1e30;
+  if(const auto hit = world.ray(s.com, F, std::min(s.clearance, 4.0 * std::max(world.speedCap, t.cruise) / t.perClearance)))
+    s.clearance = std::min(s.clearance, glm::dot(hit->at - s.com, F));
+
   // flight assist: the velocity eased toward what the throttle and the keys ask, along the nose and
-  // across it each at its own pace, no faster than the engines push. Nobody aboard, it falls.
-  const bool   boosting = (keys & kFast) != 0;
-  const double forward  = boosting ? std::max(t.boost, t.boostPerHeight * s.height) : s.throttle;
-  const double across   = key(keys, kRight) - key(keys, kLeft);
-  const double lift     = key(keys, kUp) - key(keys, kDown);
+  // across it each at its own pace, no faster than the engines push, which grows with the speed so
+  // it slows from fast as soon as it got there. Nobody aboard, it falls.
+  const double forward = s.throttle * shipSpeedRange(Ship{.keys = keys, .clearance = s.clearance}, world.speedCap, t);
+  const double across  = key(keys, kRight) - key(keys, kLeft);
+  const double lift    = key(keys, kUp) - key(keys, kDown);
   if(piloted)
   {
     const glm::dvec3 dv    = F * forward + R * (across * t.strafe) + U * (lift * t.strafe) - s.velocity;
     const double     along = glm::dot(dv, F);
     glm::dvec3       step  = F * (along * share(dt, t.forwardTime)) + (dv - F * along) * share(dt, t.strafeTime);
-    const double     most  = (boosting ? std::max(t.accel, t.boostAccel * forward) : t.accel) * dt;
+    const double     most  = std::max(t.accel, t.accelShare * glm::length(s.velocity)) * dt;
     if(glm::length(step) > most)
       step *= most / glm::length(step);
     s.velocity += step;
@@ -380,12 +386,12 @@ void stepShip(Ship& s, const ShipShape& shape, const World& world, double dt, bo
     }
   }
 
-  // how high its pads are over the ground under it (0 when there is none to tell)
+  // how high its pads are over the ground under it (-1 when there is none to tell)
   double padsUnder = 0.0;
   for(const glm::dvec3& p : shape.pads)
     padsUnder = std::max(padsUnder, -glm::dot(turn * p, up));
   const auto g = world.ground(s.com, up, 1.0e7);
-  s.height     = g ? std::max(0.0, glm::dot(s.com - g->at, up) - padsUnder) : 0.0;
+  s.height     = g ? std::max(0.0, glm::dot(s.com - g->at, up) - padsUnder) : -1.0;
 }
 
 Pose chaseView(Chase& c, const Ship& s, double size, double dt)

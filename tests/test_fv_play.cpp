@@ -229,13 +229,14 @@ TEST(PlayWalker, ComesBackAfterFallingOutOfTheWorld)
 
 TEST(PlayShip, TheThrottleOpensClosesAndBacks)
 {
-  const World     world = flatWorld({}, false);
+  // 100 m over the floor: full throttle is the cruise there
+  const World     world = flatWorld();
   const ShipShape shape = fighter();
   Ship            s;
-  s.com  = {0.0, 100.0, 0.0};
+  s.com  = {0.0, 101.5, 0.0};
   s.keys = kForward;
   fly(s, shape, world, 3.0);
-  EXPECT_NEAR(s.throttle, ShipTuning{}.cruise, 1e-9);
+  EXPECT_NEAR(s.throttle, 1.0, 1e-9);
   fly(s, shape, world, 5.0);
   EXPECT_NEAR(glm::length(s.velocity), ShipTuning{}.cruise, 0.5);
   EXPECT_GT(s.velocity.z, 0.0);  // along its nose, +z
@@ -266,12 +267,75 @@ TEST(PlayShip, FlightAssistStopsItAndHoldsItWhereItIs)
   const ShipTuning t;
   EXPECT_NEAR(glm::dot(s.velocity, shipRight(s)), t.strafe, 0.2);
   EXPECT_NEAR(glm::dot(s.velocity, shipUp(s)), t.strafe, 0.2);
-  // no faster than its engines push: a cruise from nothing takes two seconds at least
+  // no faster than its engines push: full throttle in open space doesn't reach the cap at once
   Ship q;
   q.com      = {0.0, 100.0, 0.0};
-  q.throttle = t.cruise;
+  q.throttle = 1.0;
   fly(q, shape, world, 1.0);
-  EXPECT_LE(glm::length(q.velocity), t.accel * 1.0 + 1e-6);
+  EXPECT_LT(glm::length(q.velocity), 60.0);
+}
+
+TEST(PlayShip, FullThrottleFollowsTheRoomItHasAndStopsAtTheCap)
+{
+  World           world = flatWorld();
+  const ShipTuning t;
+  world.speedCap = 2000.0;
+  Ship s;
+  s.height    = 40.0;
+  s.clearance = 40.0;
+  EXPECT_EQ(shipSpeedRange(s, world.speedCap), t.cruise);  // near the ground: the cruise
+  s.clearance = 1000.0;
+  EXPECT_EQ(shipSpeedRange(s, world.speedCap), 500.0);  // higher: half the room a second
+  s.clearance = 1.0e6;
+  EXPECT_EQ(shipSpeedRange(s, world.speedCap), 2000.0);  // and no more than the world's cap ...
+  s.keys = kFast;
+  EXPECT_EQ(shipSpeedRange(s, world.speedCap), 6000.0);  // ... but Shift's three times that
+
+  // a climb at full throttle with Shift held: as fast as the cap lets it, never a runaway
+  const ShipShape shape = fighter();
+  Ship            up;
+  up.com         = {0.0, 51.5, 0.0};
+  up.orientation = glm::angleAxis(-std::numbers::pi / 2.0, glm::dvec3(1.0, 0.0, 0.0));  // the nose up
+  up.throttle    = 1.0;
+  up.keys        = kFast;
+  fly(up, shape, world, 60.0);
+  EXPECT_LE(glm::length(up.velocity), world.speedCap * t.boost * 1.001);
+  EXPECT_LT(up.height, world.speedCap * t.boost * 60.0);
+}
+
+TEST(PlayShip, ADiveAtFullThrottleSlowsAsTheGroundComesUp)
+{
+  World world    = flatWorld();
+  world.speedCap = 2000.0;
+  const ShipShape shape = fighter();
+  Ship            s;
+  s.com         = {0.0, 3000.0, 0.0};
+  s.orientation = glm::angleAxis(0.6, glm::dvec3(1.0, 0.0, 0.0));  // the nose 34 degrees down
+  s.throttle    = 1.0;
+  double fastest = 0.0, atTouch = -1.0;
+  for(int i = 0; i < 60 * 120 && atTouch < 0.0; i++)
+  {
+    stepShip(s, shape, world, 1.0 / 60.0, true);
+    fastest = std::max(fastest, glm::length(s.velocity));
+    if(s.touching)
+      atTouch = glm::length(s.velocity);
+  }
+  EXPECT_GT(fastest, 500.0);  // it went fast with the room it had
+  ASSERT_GE(atTouch, 0.0);    // and reached the ground
+  EXPECT_LT(atTouch, 1.5 * ShipTuning{}.cruise);
+}
+
+TEST(PlayShip, SlowsForAWallAhead)
+{
+  // open space under it, a wall 300 m ahead: full throttle near the wall is the cruise
+  World world    = flatWorld({{{-200.0, 0.0, 300.0}, {200.0, 400.0, 302.0}}}, false);
+  world.speedCap = 2000.0;
+  Ship s;
+  s.com      = {0.0, 200.0, 0.0};
+  s.throttle = 1.0;
+  stepShip(s, fighter(), world, 1.0 / 60.0, true);
+  EXPECT_NEAR(s.clearance, 300.0, 1e-6);
+  EXPECT_EQ(shipSpeedRange(s, world.speedCap), 150.0);
 }
 
 TEST(PlayShip, TheMouseTurnsItAndItLeansIntoTheTurn)
@@ -351,7 +415,7 @@ TEST(PlayShip, StopsShortOfWhatItFliesInto)
   const ShipShape shape = fighter();
   Ship            s;
   s.com      = {0.0, 10.0, 0.0};
-  s.throttle = ShipTuning{}.cruise;
+  s.throttle = 1.0;
   s.keys     = kForward;
   fly(s, shape, world, 5.0);
   EXPECT_LT(s.com.z, 40.0);
