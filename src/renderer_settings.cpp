@@ -640,6 +640,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.skySecondScale, Persist::eNo, 0.0F, 1e12F);
   m_settings.add({.name = "skyLightIsMoon", .help = "Sky: the sky's light is the moon (its disk not drawn as the sun's)", .callbackSuccess = skyBaked},
                  &m_resources.settings.skyLightIsMoon, Persist::eNo);
+  m_settings.add({.name            = "worldBodyLights",
+                  .help            = "A planet's other bodies give light: the ground, the figures, the air and the clouds, and each "
+                                     "other's dark sides (src/fv_world_light.hpp). Off: drawn, lighting nothing",
+                  .callbackSuccess = skyBaked},
+                 &m_resources.settings.worldBodyLights, Persist::eNo);
   // The night sky (fv_lighting.cpp): the stars and the Milky Way per ray, its glow in the bake too
   m_settings.addVector({.name = "skyCelestialX", .help = "Sky: where the celestial x axis (right ascension 0) points, world space", .callbackSuccess = groundChanged},
                        &m_resources.settings.skyCelestialX, Persist::eNo);

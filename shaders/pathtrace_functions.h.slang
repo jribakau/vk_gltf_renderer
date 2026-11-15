@@ -695,12 +695,80 @@ bool shadowCrossSurface(GltfRenderNode      renderNode,
 // Direct lighting and environment
 //-----------------------------------------------------------------------
 
-// Punctual lights the sampler can choose from: the scene's, plus the sky's own sun when the
-// renderer is supplying one. Every count and every index has to agree with this, or the selection
-// pdf stops matching what was actually sampled.
-int punctualLightCount()
+// ---- the other bodies of a planet's sky as lights (src/fv_world_light.hpp) --------------------------
+//
+// After the scene's lights and the sky's own sun, one a body, so the pick weighs a giant's light against
+// the sun's and the lamps' as it does theirs. Scored as the sphere it is (a sphere light's estimate: a
+// wide body half under a surface's horizon still lights it), sampled evenly over the cone it fills from
+// the point, the sample taking the face there as it is drawn (worldBodyRadiance): a crescent's light
+// comes from its lit edge and its shadows fall from there. A body the host found too dim to matter
+// (SceneFrameInfo::worldBodyShine 0) has no strength, so the pick passes it over and a ray that meets it
+// gathers nothing of it.
+
+// The first of them among the punctual lights, and how many: none without a planet's sky
+int worldBodyLightBase()
 {
   return pushConst.gltfScene.numLights + (pushConst.frameInfo->rendererSunLight != 0 ? 1 : 0);
+}
+
+int worldBodyLightCount()
+{
+  SceneFrameInfo* frameInfo = pushConst.frameInfo;
+  return (frameInfo->worldBodyCount > 0 && skyHasWorld(frameInfo)) ? min(frameInfo->worldBodyCount, WORLD_BODY_MAX) : 0;
+}
+
+// What the clouds leave of a body's light: their mean share of the sky's (no pattern of their shade)
+float worldBodyCloudShare(SceneFrameInfo* frameInfo)
+{
+  return frameInfo->sunDisk != nullptr ? frameInfo->sunDisk->cloudSkyShare : 1.0F;
+}
+
+// Body `i` as a light at `pos` for the pick: a sphere light where it stands, its strength what it gives
+// a surface facing it there (SceneFrameInfo::worldBodyShine, through the air over the point toward it
+// and the clouds' share), carried as a sphere's (an illuminance E is a sphere light's colour
+// E r^2 / (2 (1 - cos))). `at`: through the air at `pos`; without it, above the air.
+GltfLight worldBodyAsLight(int i, float3 pos, bool at)
+{
+  SceneFrameInfo* frameInfo   = pushConst.frameInfo;
+  const float4    place       = frameInfo->worldBodyPlace[i];
+  GltfLight       light       = {};
+  light.litBit                = 0u;     // the sky's: it lights everything,
+  light.shadowMask            = 0xFFu;  // and everything shadows it
+  light.group                 = uint(LIGHT_GROUP_SKY);
+  light.type                  = LightType::eLightTypePoint;
+  light.direction             = -frameInfo->worldBodyToward[i].xyz;
+  light.position              = place.xyz;
+  light.radius                = place.w;
+  light.angularSizeOrInvRange = 0.0F;  // no range
+  light.innerAngle            = 0.0F;
+  light.outerAngle            = 0.0F;
+  light.iesProfile            = -1;
+  light.intensity             = 1.0F;
+  const float3 toCentre       = place.xyz - pos;
+  const float  d              = length(toCentre);
+  float3       e              = frameInfo->worldBodyShine[i].xyz * worldBodySunlight(frameInfo) * frameInfo->envIntensity;
+  if(at)
+    e *= worldSunThrough(g_atmosphere, g_transmittance, skyWorldPoint(frameInfo, pos), toCentre / max(d, 1e-6F)) * worldBodyCloudShare(frameInfo);
+  light.color = e * (place.w * place.w / (2.0F * max(worldBodyOneMinusCos(d, place.w), 1e-12F)));
+  return light;
+}
+
+// Body `i`'s light along `dir` from `origin`, where the ray meets it `t` along: its face as drawn,
+// through the air over `origin` toward it and the clouds' share, in the scene's units. What a light
+// sample of it and a ray that meets it both take, so the two are one light.
+float3 worldBodyLightRadiance(int i, float3 origin, float3 dir, float t)
+{
+  SceneFrameInfo* frameInfo = pushConst.frameInfo;
+  return worldBodyRadiance(i, origin, dir, t, frameInfo) * frameInfo->envIntensity
+         * worldSunThrough(g_atmosphere, g_transmittance, skyWorldPoint(frameInfo, origin), dir) * worldBodyCloudShare(frameInfo);
+}
+
+// Punctual lights the sampler can choose from: the scene's, plus the sky's own sun when the
+// renderer is supplying one, plus a planet's other bodies. Every count and every index has to agree
+// with this, or the selection pdf stops matching what was actually sampled.
+int punctualLightCount()
+{
+  return worldBodyLightBase() + worldBodyLightCount();
 }
 
 // Light linking: the lamps that leave the surface now shaded dark, a bit each (GltfRenderNode::unlit
@@ -712,6 +780,8 @@ static uint g_unlitLamps = 0u;
 // Index into that set. The scene's lights come first, so the sky's sun is the last one.
 GltfLight getPunctualLight(int index)
 {
+  if(index >= worldBodyLightBase())
+    return worldBodyAsLight(index - worldBodyLightBase(), float3(0.0F), /*at=*/false);
   if(index >= pushConst.gltfScene.numLights)
     return makeSkySunLight(pushConst.frameInfo);
 
@@ -736,6 +806,8 @@ int skySunPunctualIndex()
 // pick is weighed by.
 GltfLight getPunctualLightAt(int index, float3 pos)
 {
+  if(index >= worldBodyLightBase())
+    return worldBodyAsLight(index - worldBodyLightBase(), pos, /*at=*/true);
   GltfLight light = getPunctualLight(index);
   if(index == skySunPunctualIndex())
   {
@@ -1322,6 +1394,43 @@ LightPickSet lightPickScore(float3 pos, float3 normal, bool cull, bool draw, ino
   return s;
 }
 
+// A light sample of body `i` from `pos`, picked with `selectionPdf`: a direction even over the cone the
+// body fills, its light the face's there (worldBodyLightRadiance), nothing where another body stands
+// before it or the direction is under a one-sided surface. Its pdf is the pick's over the cone's solid
+// angle, which a ray that meets the body is weighed against (sizedLightHits); at a volume scatter none
+// (DIRAC), as for every light there.
+void sampleWorldBodyLight(int i, float3 pos, float3 normal, bool bothSides, bool isVolumeSample, float selectionPdf, float2 u,
+                          inout DirectLight directLight)
+{
+  SceneFrameInfo* frameInfo = pushConst.frameInfo;
+  const float4    place     = frameInfo->worldBodyPlace[i];
+  const float3    toCentre  = place.xyz - pos;
+  const float     d         = length(toCentre);
+  const float3    w         = toCentre / max(d, 1e-6F);
+  const float     omc       = worldBodyOneMinusCos(d, place.w);
+  const float     down      = u.x * omc;  // 1 - cos, even over the cap
+  const float     sinT      = sqrt(max(down * (2.0F - down), 0.0F));
+  const float     phi       = M_TWO_PI * u.y;
+  const float3    tu        = normalize(abs(w.x) < 0.9F ? cross(w, float3(1.0F, 0.0F, 0.0F)) : cross(w, float3(0.0F, 0.0F, 1.0F)));
+  const float3    tv        = cross(w, tu);
+  const float3    dir       = normalize(tu * (sinT * cos(phi)) + tv * (sinT * sin(phi)) + w * (1.0F - down));
+  const float     solidAngle = M_TWO_PI * omc;
+  directLight.direction       = dir;
+  directLight.distance        = INFINITE;
+  directLight.punctual        = true;  // a direction: the cornea bends it as the sun's
+  directLight.group           = uint(LIGHT_GROUP_SKY);
+  directLight.shadowMask      = 0xFFu;
+  directLight.pdf             = isVolumeSample ? DIRAC : selectionPdf / solidAngle;
+  directLight.radianceOverPdf = float3(0.0F);
+  if(!bothSides && dot(dir, normal) <= 0.0F)
+    return;
+  float     t     = INFINITE;
+  const int first = worldBodyAlong(pos, dir, INFINITE, frameInfo, t);
+  if(first != i)
+    return;  // another body before it, or past its edge by a rounding
+  directLight.radianceOverPdf = worldBodyLightRadiance(i, pos, dir, t) * (solidAngle / selectionPdf);
+}
+
 // sampleLights' sample of the light `draw` landed on (lightDrawOf), from the pick `set` scored at
 // `pos`; the sample's numbers come from `xi` or `seed` as there. `directLight` is filled in from
 // noDirectLight() and set.pick. `pointOnly`: its direction, distance and pdf, not its light
@@ -1437,9 +1546,15 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
   }
   if(draw.kind != LIGHT_DRAW_PUNCTUAL)
     return;
-  const int       lightIndex   = draw.index;
-  const GltfLight light        = getPunctualLightAt(lightIndex, pos);
-  const float     selectionPdf = set.restShare * draw.share;
+  const int   lightIndex   = draw.index;
+  const float selectionPdf = set.restShare * draw.share;
+  if(lightIndex >= worldBodyLightBase())
+  {
+    sampleWorldBodyLight(lightIndex - worldBodyLightBase(), pos, normal, bothSides, isVolumeSample, selectionPdf,
+                         given ? xi.yz : float2(rand(seed), rand(seed)), directLight);
+    return;
+  }
+  const GltfLight light = getPunctualLightAt(lightIndex, pos);
 
   // singleLightContribution() drops any punctual light below the hemisphere of the normal it
   // is given. When the shading point is lit from both sides, hand it a normal pointing at the
@@ -3336,8 +3451,37 @@ float3 sizedLightHits(RayDesc ray, float tMax, bool escaped, PathTracerState pt,
   const float3 vertex   = delta ? ray.Origin : pt.lightPick.pos;
   const int    sunIndex = skySunPunctualIndex();
   float3       sum      = float3(0.0F);
+  // A planet's other bodies (after the lamps): the one a ray leaving a vertex meets on its way out, if
+  // it is one of the lights, its face as its light sample takes it; not after a delta event, as the
+  // camera and a mirror see them with the sky (evalWorldSkyBehind), weight 1
+  const int bodyBase = worldBodyLightBase();
+  float     bodyT    = INFINITE;
+  int       bodyHit  = -1;
+  if(escaped && !delta && worldBodyLightCount() > 0)
+    bodyHit = worldBodyAlong(ray.Origin, ray.Direction, INFINITE, pushConst.frameInfo, bodyT);
   for(int i = 0; i < punctualLightCount(); i++)
   {
+    if(i >= bodyBase)
+    {
+      if(i - bodyBase != bodyHit)
+        continue;
+      const GltfLight body = getPunctualLightAt(i, vertex);
+      if(!(max(body.color.x, max(body.color.y, body.color.z)) > 0.0F))
+        continue;  // none of the lights, or under the vertex's horizon past the air
+      const float3 radiance = worldBodyLightRadiance(bodyHit, ray.Origin, ray.Direction, bodyT);
+      float        w        = 1.0F;
+      if(!pt.lightPick.bsdfOnly)
+        w = misBsdfWeight(pt.lastSamplePdf, sizedLightNeePdf(pt.lightPick, body, worldBodyOneMinusCos(length(body.position - vertex), body.radius)),
+                          pushConst.frameInfo->estimator);
+      sum += w * radiance;
+      const float size = w * max(radiance.x, max(radiance.y, radiance.z));
+      if(size > most)
+      {
+        most  = size;
+        group = body.group;
+      }
+      continue;
+    }
     const GltfLight light = getPunctualLight(i);
     if(i == sunIndex || !(light.intensity > 0.0F))
       continue;

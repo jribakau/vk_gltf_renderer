@@ -588,6 +588,15 @@ struct SceneFrameInfo
   float4 cloudShadowFrame = {0.0F, 0.0F, 0.0F, 1.0F};
   float2 cloudShadowSpan  = {0.0F, 0.0F};
   float2 _cloudShadowPad  = {0.0F, 0.0F};
+  // The other bodies' light (src/fv_world_light.hpp), all 0 with SceneFrameInfo::worldBodyCount's
+  // bodies lighting nothing: each one's light at the scene's origin on a surface facing it, against the
+  // sun's above the air (0: not one of the lights, too dim beside the sun or the brightest body); its
+  // mean direction from there with that mean's length in .w (1 for a point, less the wider it comes
+  // from); and what each body and the planet give each body's dark side, [lit * WORLD_BODY_MAX +
+  // source], the planet in the lit body's own slot. (Appended.)
+  float4 worldBodyShine[WORLD_BODY_MAX];
+  float4 worldBodyToward[WORLD_BODY_MAX];
+  float4 worldBodyFill[WORLD_BODY_MAX * WORLD_BODY_MAX];
 };
 
 enum PathtracerFlags

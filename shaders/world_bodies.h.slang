@@ -118,4 +118,31 @@ inline float worldBodyShade(float3 n, float3 toEye, float3 toSun)
   return (0.6F * 2.0F * seeliger + 0.4F * cosSun) * (1.0F / 3.14159265F);
 }
 
+// How a body's surface of normal `n` is lit by another sphere (a body, or the planet) whose centre lies
+// along unit `toSource` and whose angular radius has the sine `sinRadius`, per unit of that sphere's
+// illuminance and of the body's albedo, toward any eye: Lambert's cosine over the sphere's disk, which
+// across the surface's horizon is the usual quadratic, (x + s)^2 / 4s, meeting the cosine at x = s and
+// nothing at x = -s. A wide neighbour's light rounds the terminator it draws on the body's dark side.
+inline float worldBodyFillShade(float3 n, float3 toSource, float sinRadius)
+{
+  const float x   = dot(n, toSource);
+  const float s   = max(sinRadius, 1e-4F);
+  float       lit = 0.0F;
+  if(x >= s)
+    lit = x;
+  else if(x > -s)
+    lit = (x + s) * (x + s) / (4.0F * s);
+  return lit * (1.0F / 3.14159265F);
+}
+
+// 1 - the cosine of the half angle a sphere of `radius` subtends `distance` from its centre (1 from
+// inside it), by the sine: a far sphere's cosine has no digits left. Its solid angle is 2 pi times this.
+inline float worldBodyOneMinusCos(float distance, float radius)
+{
+  if(distance <= radius)
+    return 1.0F;
+  const float sin2 = (radius * radius) / (distance * distance);
+  return sin2 / (1.0F + sqrt(1.0F - sin2));
+}
+
 #endif  // WORLD_BODIES_H_SLANG

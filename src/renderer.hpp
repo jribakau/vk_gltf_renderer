@@ -76,6 +76,7 @@
 #include "timeline_pipeline.hpp"
 #include "scene_clip_player.hpp"
 #include "host_renderer.hpp"
+#include "fv_world_light.hpp"
 #include "memory_watch.hpp"
 
 #ifdef USE_NVMCP
@@ -874,6 +875,11 @@ private:
   std::optional<glm::vec2>                                                   m_pivotDue;
   std::function<void(const std::optional<glm::vec3>& at, bool recentred)> m_pivotObserver;
   WorldGround m_worldGround;  // a planet's ground with maps, as the host said (setWorldGround)
+  // The light of the other bodies in a planet's sky (src/fv_world_light.hpp), summed again when the sun,
+  // a body or the planet moves (worldBodyLightsNow), and what it was summed for
+  fv::world_light::Lights        m_worldBodyLights;
+  std::vector<float>             m_worldBodyLightsKey;
+  const fv::world_light::Lights& worldBodyLightsNow();
   float       m_worldWaterAtEye = kNoWorldWater;  // the inland water the camera is in (setWorldWaterAtEye)
   float       m_waterTime       = 0.0F;           // the water's moment and its waves' way (setWaterMotion)
   float       m_waterHeading    = 0.52F;

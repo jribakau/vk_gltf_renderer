@@ -535,9 +535,19 @@ float3 worldSunThroughAt(float3 worldPos, SceneFrameInfo* frameInfo)
   return through;
 }
 
+// The sun's light on the bodies, above the air, before `envIntensity`: what a body's light is a share of
+// (SceneFrameInfo::worldBodyShine). With the dimmer the sky's sun has, and while the moon is the sky's
+// light as many times the sky's as the sun is the moon's (worldBodyLight).
+float3 worldBodySunlight(SceneFrameInfo* frameInfo)
+{
+  return worldSunSpaceRadiance() * (M_TWO_PI * (1.0F - cos(frameInfo->sunDisk->angularRadius)) * frameInfo->worldBodyLight);
+}
+
 // The light of body `i` toward a ray that met it `t` along: its colour and markings, lit by the sun
 // from where the sun is (its phase), dark where the planet or another body stands before the sun (an
-// eclipse). Before `envIntensity`, in the sky's units.
+// eclipse); and on its dark side what the others and the planet give it (worldBodyFill, nothing while
+// the bodies light nothing). Before `envIntensity`, in the sky's units. src/fv_world_light.cpp sums the
+// same face (faceRadiance).
 float3 worldBodyRadiance(int i, float3 origin, float3 dir, float t, SceneFrameInfo* frameInfo)
 {
   const float4 place = frameInfo->worldBodyPlace[i];
@@ -548,11 +558,28 @@ float3 worldBodyRadiance(int i, float3 origin, float3 dir, float t, SceneFrameIn
   float3 toSun = frameInfo->sunDirection;
   if(frameInfo->skyLightIsMoon != 0)
     toSun = frameInfo->skySecondDirection;
-  const float  angularRadius = frameInfo->sunDisk->angularRadius;
-  const float3 sunlight      = worldSunSpaceRadiance() * (M_TWO_PI * (1.0F - cos(angularRadius)) * frameInfo->worldBodyLight);
-  const float  lit = worldSunPast(point, frameInfo->worldCentre, frameInfo->worldRadiusKm * 1000.0F, toSun, angularRadius)
-                     * worldBodiesSunShare(point, toSun, i, frameInfo);
-  return look.xyz * (worldBodyMarkings(n, int(look.w), float(i) + 1.0F) * worldBodyShade(n, -dir, toSun) * lit) * sunlight;
+  const float angularRadius = frameInfo->sunDisk->angularRadius;
+  const float lit = worldSunPast(point, frameInfo->worldCentre, frameInfo->worldRadiusKm * 1000.0F, toSun, angularRadius)
+                    * worldBodiesSunShare(point, toSun, i, frameInfo);
+  float3 light = float3(worldBodyShade(n, -dir, toSun) * lit);
+  for(int k = 0; k < min(frameInfo->worldBodyCount, WORLD_BODY_MAX); ++k)
+  {
+    const float3 fill = frameInfo->worldBodyFill[i * WORLD_BODY_MAX + k].xyz;
+    if(!any(fill > float3(0.0F)))
+      continue;
+    // the lit body's own slot is the planet's
+    float3 centre = frameInfo->worldCentre;
+    float  radius = frameInfo->worldRadiusKm * 1000.0F;
+    if(k != i)
+    {
+      centre = frameInfo->worldBodyPlace[k].xyz;
+      radius = frameInfo->worldBodyPlace[k].w;
+    }
+    const float3 to = centre - point;
+    const float  d  = length(to);
+    light += fill * worldBodyFillShade(n, to / d, min(radius / d, 1.0F));
+  }
+  return look.xyz * worldBodyMarkings(n, int(look.w), float(i) + 1.0F) * light * worldBodySunlight(frameInfo);
 }
 
 // The sky's sun as it lights `worldPos`: makeSkySunLight()'s colour through the air over the point
@@ -1298,7 +1325,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // The partner of the last vertex's light sample, so the same class: the path before that vertex
         const bool indirect = pt.prefixIndirect;
         addRadiance(pt, pt.throughput * misWeight * envColor, indirect, uint(LIGHT_GROUP_SKY));
-        // Sized lights it meets on the way out, a sun's disc among them (not in a medium: it scatters there)
+        // Sized lights it meets on the way out, a sun's disc among them, and a planet's other bodies,
+        // which the lighting field leaves out (not in a medium: it scatters there)
         if(!ptIsInside(pt))
         {
           uint         lampGroup = 0u;

@@ -174,6 +174,9 @@ set(TEST_SOURCES
     test_fv_world.cpp
     test_world_bodies.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world.cpp
+    # The light of a planet's other bodies: faces summed against the closed forms, crescents, eclipses
+    test_fv_world_light.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_world_light.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_map.cpp
     # What is put on a planet by hand: a feature's reach from its point or its arc, each kind in its
     # stage's measure, a planet file read and its mistakes named

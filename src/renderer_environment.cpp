@@ -1158,7 +1158,50 @@ void GltfRenderer::setWorldBodies(std::span<const glm::vec4> place, std::span<co
   s.worldBodyPlace = places;
   s.worldBodyLook  = looks;
   s.worldBodyCount = count;
-  resetFrame(/*sceneChanged=*/false);  // what the camera sees of the sky, and the sun past them
+  // what the camera sees of the sky, the sun past them, and with their light the sky's own
+  resetFrame(/*sceneChanged=*/false);
+  requestEnvironmentPreview();
+}
+
+//--------------------------------------------------------------------------------------------------
+// The bodies' light as it stands (fv::world_light::sumLights at the scene's origin), summed again only
+// when the sun, a body or the planet has moved: a few milliseconds on the CPU, while the clock is
+// dragged once a frame.
+//
+const fv::world_light::Lights& GltfRenderer::worldBodyLightsNow()
+{
+  static_assert(fv::world_light::kMost == WORLD_BODY_MAX);
+  const Settings& s = m_resources.settings;
+  // the sun, which is the other body's direction once the moon is the sky's light
+  const glm::vec3    toSun = s.skyLightIsMoon ? s.skySecondDirection : m_resources.sunDirection;
+  std::vector<float> key;
+  const auto         put = [&key](const glm::vec4& v) { key.insert(key.end(), {v.x, v.y, v.z, v.w}); };
+  for(int i = 0; i < s.worldBodyCount; i++)
+  {
+    put(s.worldBodyPlace[size_t(i)]);
+    put(s.worldBodyLook[size_t(i)]);
+  }
+  put(glm::vec4(toSun, s.atmoSunAngularRadius));
+  put(glm::vec4(s.worldCentre, s.worldRadius));
+  put(glm::vec4(s.atmoLandAlbedo, float(s.worldBodyCount)));
+  if(key == m_worldBodyLightsKey)
+    return m_worldBodyLights;
+  m_worldBodyLightsKey = std::move(key);
+
+  fv::world_light::Sky sky;
+  for(int i = 0; i < s.worldBodyCount; i++)
+  {
+    const glm::vec4& place = s.worldBodyPlace[size_t(i)];
+    const glm::vec4& look  = s.worldBodyLook[size_t(i)];
+    sky.bodies.push_back({.centre = glm::dvec3(glm::vec3(place)), .radius = double(place.w), .color = glm::vec3(look), .kind = int(look.w)});
+  }
+  sky.planetCentre     = glm::dvec3(s.worldCentre);
+  sky.planetRadius     = double(s.worldRadius) * 1000.0;
+  sky.planetAlbedo     = s.atmoLandAlbedo;
+  sky.toSun            = glm::normalize(glm::dvec3(toSun));
+  sky.sunAngularRadius = double(s.atmoSunAngularRadius);
+  m_worldBodyLights    = fv::world_light::sumLights(sky, glm::dvec3(0.0));
+  return m_worldBodyLights;
 }
 
 void GltfRenderer::setWorldGround(const WorldGround& ground)

@@ -270,6 +270,10 @@ struct Settings
   // the water's surface. Off: the meshes as the clear glass their material is, as they were before
   // (no waves, nothing scattered, a camera in one sees as in air), for a timing or a look against it.
   bool worldInlandWater = true;
+  // ... and the other bodies in its sky as lights (src/fv_world_light.hpp): on the ground, the figures,
+  // the air and the clouds, and on each other's dark sides. Off: drawn, lighting nothing, as before,
+  // for a timing or a look against it.
+  bool worldBodyLights = true;
   // The other bodies in that planet's sky (the backdrop's `bodies`; shaders/world_bodies.h.slang), as
   // the frame carries them: each one's centre in the scene with its radius, and its colour with what
   // it is made of. The host's to say (GltfRenderer::setWorldBodies), and nothing a file keeps.
