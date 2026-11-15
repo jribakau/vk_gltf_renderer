@@ -217,6 +217,145 @@ rs::EntityId rootNamed(rs::RetainedScene& scene, const std::string& name)
 
 }  // namespace
 
+// The land keeps clear of what stands in the scene (fv_host_backdrop.cpp's clearBackdrop): a slab put
+// down where a tree stood has no tree on it or against it and no tile of grass over it, the ground is
+// level out to it, and with the slab gone the land is as it was
+TEST(FvHost, ABackdropKeepsClearOfWhatStandsInTheScene)
+{
+  const fs::path kit = fs::temp_directory_path() / ("fv-backdrop-clear-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fs::create_directories(kit);
+  writeTriangles(kit / "grass.gltf", 1);
+  writeTriangles(kit / "tree.gltf", 1);
+  std::ofstream(kit / "kit.json") << Json{{"version", 1},
+                                          {"plants", {{{"role", "grass"}, {"file", "grass.gltf"}}, {{"role", "tree"}, {"file", "tree.gltf"}}}},
+                                          {"ground", {{"meadow", {{"color", {0.1, 0.2, 0.05}}}}}}}
+                                         .dump();
+  // a slab 16 m square, lying on the floor
+  const float half = 8.0F;
+  {
+    const std::array<float, 12>   corners = {-half, 0.0F, -half, half, 0.0F, -half, half, 0.0F, half, -half, 0.0F, half};
+    const std::array<uint16_t, 6> indices = {0, 2, 1, 0, 3, 2};
+    std::ofstream bin(kit / "slab.bin", std::ios::binary);
+    bin.write(reinterpret_cast<const char*>(corners.data()), sizeof corners);
+    bin.write(reinterpret_cast<const char*>(indices.data()), sizeof indices);
+  }
+  std::ofstream(kit / "slab.gltf") << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"slab","mesh":0}],
+    "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],
+    "buffers":[{"byteLength":60,"uri":"slab.bin"}],
+    "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":12}],
+    "accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-8,0,-8],"max":[8,0,8]},
+                 {"bufferView":1,"componentType":5123,"count":6,"type":"SCALAR"}]})";
+  HostRig            rig;
+  rs::RetainedScene& scene = rig.renderer.hostScene();
+  const auto         ready = [&] {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while(rig.topic("backdrop").value("state", "") != "ready" && std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return rig.topic("backdrop").value("state", "") == "ready";
+  };
+  const auto frames = [&](int ms) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while(std::chrono::steady_clock::now() < until)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  };
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "meadow"}, {"size", 30}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"backdropKit", kit.generic_string()}}).value("ok", false));
+  ASSERT_TRUE(ready());
+  frames(1200);  // (and nothing in the scene to keep clear of: the land stays as planted)
+  const rs::EntityId root = rootNamed(scene, "Backdrop");
+  ASSERT_FALSE(root.isNone());
+  // where the trees stand, where the tiles lie, and the ground's vertices
+  struct Land
+  {
+    std::vector<glm::vec2> trees, tiles;
+    std::vector<glm::vec3> ground;
+  };
+  const auto land = [&] {
+    Land out;
+    for(const rs::EntityId e : scene.entity(root)->children)
+    {
+      const rs::Entity* entity = scene.entity(e);
+      if(!entity->mesh || !scene.shown(e))
+        continue;
+      if(entity->name == "Backdrop tile")
+        out.tiles.emplace_back(scene.world(e)[3].x, scene.world(e)[3].z);
+      else if(!entity->mesh->copies.empty())
+        for(const glm::mat4& m : entity->mesh->copies)
+          out.trees.emplace_back(m[3].x, m[3].z);
+      else if(const rs::MeshRecord* ground = scene.mesh(entity->mesh->parts.at(0).mesh))
+        out.ground = ground->positions;
+    }
+    return out;
+  };
+  const auto within = [](const std::vector<glm::vec2>& all, glm::vec2 at, float reach) {
+    return size_t(std::count_if(all.begin(), all.end(), [&](glm::vec2 p) { return std::abs(p.x - at.x) < reach && std::abs(p.y - at.y) < reach; }));
+  };
+  // a tree some 40 m out: the slab goes down on it, and the camera stands by it, so the grass is thick there
+  glm::vec2 at(0.0F);
+  for(const glm::vec2 p : land().trees)
+    if(std::abs(glm::length(p) - 40.0F) < std::abs(glm::length(at) - 40.0F))
+      at = p;
+  ASSERT_NEAR(glm::length(at), 40.0F, 10.0F);
+  rig.cmd("camera.goto", {{"position", {at.x + 3.0, 2.0, at.y + 3.0}}, {"target", {at.x, 0.0, at.y}}});
+  frames(200);
+  const Land before = land();
+  ASSERT_GT(before.trees.size(), 100u);
+  EXPECT_GT(within(before.tiles, at, half - 2.5F), 10u);
+  const float reach   = glm::length(at) + half;
+  const auto  rolling = [&](const Land& l) {
+    float most = 0.0F;
+    for(const glm::vec3& p : l.ground)
+      if(const float d = glm::length(glm::vec2(p.x, p.z)); d > 8.0F && d < reach)
+        most = std::max(most, std::abs(p.y));
+    return most;
+  };
+  EXPECT_GT(rolling(before), 0.3F) << "the ground rolls where the slab is to lie";
+
+  ASSERT_TRUE(rig.cmd("load", {{"path", (kit / "slab.gltf").generic_string()}}).value("ok", false));
+  ASSERT_TRUE(rig.settle());
+  std::string slab;
+  const Json props = rig.topic("scene").value("props", Json::object());
+  for(const auto& [id, p] : props.items())
+    if(p.value("kind", "") == "model")
+      slab = id;
+  ASSERT_FALSE(slab.empty()) << rig.topic("scene").dump();
+  ASSERT_TRUE(rig.cmd("prop.set", {{"prop", slab}, {"transform", {{"t", {at.x, 0.0, at.y}}}}}).value("ok", false));
+  frames(1500);  // it has stood still from one ask to the next
+  const Land with = land();
+  // no tree on the slab or against it, the trees elsewhere as they were; no tile of grass well
+  // inside it, and grass round it
+  EXPECT_EQ(within(with.trees, at, half), 0u);
+  EXPECT_GE(before.trees.size() - with.trees.size(), within(before.trees, at, half));
+  EXPECT_LE(before.trees.size() - with.trees.size(), within(before.trees, at, half + 1.0F)) << "those at its very edge too, and no other";
+  EXPECT_EQ(within(with.tiles, at, half - 2.5F), 0u);
+  EXPECT_GT(within(with.tiles, at, half + 6.0F), 20u);
+  // the ground is level out to it, and rolls on past it
+  EXPECT_EQ(rolling(with), 0.0F);
+  EXPECT_NE(with.ground, before.ground);
+
+  // the slab hidden: the land as it was
+  ASSERT_TRUE(rig.cmd("prop.set", {{"prop", slab}, {"visible", false}}).value("ok", false));
+  frames(1500);
+  const Land without = land();
+  EXPECT_EQ(without.trees.size(), before.trees.size());
+  EXPECT_EQ(without.ground, before.ground);
+  EXPECT_GT(within(without.tiles, at, half - 2.5F), 10u) << "its grass is back";
+  // and shown again, turned an eighth: cleared again, with no command of the land's
+  ASSERT_TRUE(rig.cmd("prop.set", {{"prop", slab}, {"visible", true}, {"transform", {{"e", {0.0, 45.0, 0.0}}}}}).value("ok", false));
+  frames(1500);
+  EXPECT_EQ(within(land().trees, at, 5.0F), 0u);
+  EXPECT_EQ(rig.topic("backdrop").value("state", ""), "ready");
+  EXPECT_FALSE(rig.topic("backdrop").contains("clearing"));
+  std::error_code ec;
+  fs::remove_all(kit, ec);
+}
+
 // The backdrop (`backdrop.set`, the `backdrop` topic, fv_host_backdrop.cpp): nothing stands until its
 // kit is where the settings say; then ground and plants under one root of the host's own, each variant
 // drawn at its places as copies; replanted in place by another density; back after the scene is cleared;

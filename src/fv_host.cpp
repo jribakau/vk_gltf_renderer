@@ -794,6 +794,7 @@ void FvHost::onUpdate()
   // not while a composition settles: the renderer moves the view to a scene camera for a frame or two
   if(!s.viewCamera.empty() && s.frameIn == 0)
     s.cameraFromView();
+  s.clearBackdrop();
   s.followBackdrop();
   s.swayBackdrop();
   s.applyPendingMorphs();

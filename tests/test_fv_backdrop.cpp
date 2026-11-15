@@ -1061,6 +1061,134 @@ TEST(BackdropState, APlanetsBodiesAreCheckedAndPlaced)
 
 // One that stands is the sky's planet: its radius, its air scaled to it, its centre; no land fades
 // into a sky's ground, the air counts once, and what is laid out on a plane is off
+// ---- what stands in the scene (Standing): the land keeps clear of it
+
+namespace {
+
+// A flat square of two triangles, `half` metres either way of (x, z), `y` over the floor
+void square(B::Standing& s, float x, float z, float half, float y)
+{
+  const glm::vec3 a(x - half, y, z - half), b(x + half, y, z - half), c(x + half, y, z + half), d(x - half, y, z + half);
+  s.add(a, b, c);
+  s.add(a, c, d);
+}
+
+}  // namespace
+
+TEST(BackdropStanding, AFloorCoversItsGroundAndARoofIsOnlyOverIt)
+{
+  B::Standing none;
+  EXPECT_TRUE(none.empty());
+  EXPECT_FALSE(none.over(0.0F, 0.0F, 100.0F));
+  EXPECT_EQ(none.covered(-1.0F, -1.0F, 1.0F, 1.0F), 0.0F);
+
+  // a floor ten metres square, 30 m out; and a roof as large, three metres up, 30 m the other way
+  B::Standing s({-40.0F, -10.0F}, {40.0F, 10.0F});
+  square(s, 30.0F, 0.0F, 5.0F, 0.1F);
+  square(s, -30.0F, 0.0F, 5.0F, 3.0F);
+  EXPECT_FALSE(s.empty());
+  // something is over the ground under both, and within reach of their edges, and not past it
+  for(const float x : {30.0F, -30.0F})
+  {
+    EXPECT_TRUE(s.over(x, 0.0F, 0.0F));
+    EXPECT_TRUE(s.over(x + 4.5F, 4.5F, 0.0F));
+    EXPECT_TRUE(s.over(x + 6.0F, 0.0F, 1.5F));
+    EXPECT_FALSE(s.over(x + 6.0F, 0.0F, 0.4F));
+    EXPECT_FALSE(s.over(x, 8.0F, 2.0F));
+  }
+  EXPECT_FALSE(s.over(0.0F, 0.0F, 20.0F));
+  // only the floor covers its ground: the whole of a tile on it, half of one across its edge, none
+  // of one beside it; under the roof the grass is left
+  EXPECT_FLOAT_EQ(s.covered(28.0F, -2.0F, 30.0F, 0.0F), 1.0F);
+  EXPECT_NEAR(s.covered(34.0F, 0.0F, 36.0F, 2.0F), 0.5F, 0.01F);
+  EXPECT_FLOAT_EQ(s.covered(36.0F, 0.0F, 38.0F, 2.0F), 0.0F);
+  EXPECT_FLOAT_EQ(s.covered(-32.0F, -2.0F, -30.0F, 0.0F), 0.0F);
+  EXPECT_TRUE(B::tileTaken(s, 2.0F, 14, 0));    // [28, 30) x [0, 2)
+  EXPECT_FALSE(B::tileTaken(s, 2.0F, 17, 0));   // [34, 36): half
+  EXPECT_FALSE(B::tileTaken(s, 2.0F, -16, 0));  // under the roof
+  EXPECT_TRUE(B::tileTaken(s, 4.0F, 7, 0));     // [28, 32) x [0, 4)
+  EXPECT_FALSE(B::tileTaken(s, 8.0F, 3, 0));    // [24, 32) x [0, 8): a quarter
+  // how far it reaches: the far corners of the two, to within a cell
+  EXPECT_NEAR(s.reach(), std::sqrt(35.0F * 35.0F + 5.0F * 5.0F), 1.0F);
+  // and the ground is level to a few metres past that, in tens
+  EXPECT_EQ(B::levelFor(s), 40.0);
+  EXPECT_EQ(B::levelFor(none), double(B::kClearing));
+}
+
+TEST(BackdropStanding, AWallIsOverItsLineAndCoversNothing)
+{
+  // a wall four metres high along x = 3, from z = -6 to 6; a fence round a yard is such walls
+  B::Standing     s({-10.0F, -10.0F}, {10.0F, 10.0F});
+  const glm::vec3 a(3.0F, 0.0F, -6.0F), b(3.0F, 0.0F, 6.0F), c(3.0F, 4.0F, 6.0F), d(3.0F, 4.0F, -6.0F);
+  s.add(a, b, c);
+  s.add(a, c, d);
+  for(float z = -5.5F; z < 6.0F; z += 0.25F)
+    EXPECT_TRUE(s.over(3.0F, z, 0.0F)) << z;
+  EXPECT_FALSE(s.over(1.0F, 0.0F, 1.0F));
+  EXPECT_TRUE(s.over(1.0F, 0.0F, 2.0F));
+  EXPECT_FALSE(s.over(3.0F, 8.0F, 1.0F));
+  EXPECT_EQ(s.covered(2.0F, -2.0F, 4.0F, 0.0F), 0.0F);
+  EXPECT_FALSE(B::tileTaken(s, 2.0F, 1, 0));
+  // what is under the floor, or far over anything that grows, is not there at all
+  B::Standing t({-10.0F, -10.0F}, {10.0F, 10.0F});
+  square(t, 0.0F, 0.0F, 5.0F, -0.5F);
+  square(t, 0.0F, 0.0F, 5.0F, B::kOverhead + 1.0F);
+  EXPECT_TRUE(t.empty());
+  // a prop a kilometre and a half across: larger cells, the same answers
+  B::Standing wide({-800.0F, -800.0F}, {800.0F, 800.0F});
+  square(wide, 700.0F, 700.0F, 50.0F, 0.0F);
+  EXPECT_TRUE(wide.over(700.0F, 700.0F, 0.0F));
+  EXPECT_FALSE(wide.over(600.0F, 600.0F, 10.0F));
+  EXPECT_FLOAT_EQ(wide.covered(690.0F, 690.0F, 698.0F, 698.0F), 1.0F);
+  EXPECT_NEAR(wide.reach(), 750.0F * std::sqrt(2.0F), 3.0F);
+}
+
+TEST(BackdropStanding, PlantsStandClearByTheirOwnWidth)
+{
+  B::Standing s({-20.0F, -20.0F}, {20.0F, 20.0F});
+  square(s, 10.0F, 0.0F, 2.0F, 0.0F);
+  const auto at = [](float x, float z, float scale) { return glm::scale(glm::translate(glm::mat4(1.0F), glm::vec3(x, 0.0F, z)), glm::vec3(scale)); };
+  // on it; a metre and a half from its edge at twice the size (a reach of two); as far at its own size; far off
+  const std::vector<glm::mat4> placed = {at(10.0F, 0.0F, 1.0F), at(13.5F, 0.0F, 2.0F), at(13.5F, 0.0F, 1.0F), at(-10.0F, 5.0F, 3.0F)};
+  const std::vector<glm::mat4> clear  = B::clearOf(s, placed, 1.0F);
+  ASSERT_EQ(clear.size(), 2u);
+  EXPECT_EQ(clear[0], placed[2]);
+  EXPECT_EQ(clear[1], placed[3]);
+  EXPECT_EQ(B::clearOf(B::Standing(), placed, 1.0F).size(), placed.size());
+}
+
+TEST(Backdrop, TheGroundIsLevelAsFarAsItsClearing)
+{
+  B::Spec wide = meadow();
+  wide.clearing = 120.0;
+  float rolling = 0.0F;
+  for(int i = 0; i < 400; i++)
+  {
+    const float a = float(i) * 0.37F, r = 6.0F + float(i % 100) * 1.14F;  // 6 to 119 m
+    EXPECT_EQ(B::height(wide, r * std::cos(a), r * std::sin(a)), 0.0F);
+    EXPECT_EQ(B::groundAt(wide, r * std::cos(a), r * std::sin(a)), 0.0F);
+    rolling = std::max(rolling, std::abs(B::height(meadow(), r * std::cos(a), r * std::sin(a))));
+  }
+  EXPECT_GT(rolling, 0.5F) << "with none it rolls there";
+  // past it the land rises into the same hills, over half the clearing: no bank at its edge
+  float steepest = 0.0F, far = 0.0F;
+  for(int i = 0; i < 360; i++)
+  {
+    const float a = float(i) * 0.0174533F;
+    for(float r = 120.0F; r < 180.0F; r += 1.0F)
+      steepest = std::max(steepest, std::abs(B::height(wide, (r + 1.0F) * std::cos(a), (r + 1.0F) * std::sin(a)) - B::height(wide, r * std::cos(a), r * std::sin(a))));
+    EXPECT_EQ(B::height(wide, 400.0F * std::cos(a), 400.0F * std::sin(a)), B::height(meadow(), 400.0F * std::cos(a), 400.0F * std::sin(a)));
+    far = std::max(far, std::abs(B::height(wide, 400.0F * std::cos(a), 400.0F * std::sin(a))));
+  }
+  EXPECT_LT(steepest, 0.6F) << "a metre of ground rises under 0.6 m";
+  EXPECT_GT(far, 2.0F);
+  // the clearing is the scene's, not the state's: no patch sets it, no topic says it, and a patch leaves it
+  EXPECT_FALSE(B::toJson(wide).contains("clearing"));
+  EXPECT_THROW(B::applyPatch(wide, {{"clearing", 50}}), std::exception);
+  EXPECT_EQ(B::applyPatch(wide, {{"density", 1.5}}).clearing, 120.0);
+  EXPECT_FALSE(B::samePlanting(wide, meadow()));
+}
+
 TEST(BackdropState, APlanetThatStandsIsTheSkysPlanet)
 {
   const B::Spec    s = B::applyPatch({}, {{"kind", "planet"}, {"radius", 20}, {"air", 12}});

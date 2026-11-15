@@ -13,7 +13,10 @@
 //   plants, by `patch` and the tiles' rule here. Its own: `isPlanet`, the spec's `radius` and `sea`.
 //
 // Everything here follows from the spec alone, so a scene file keeps only the spec: the ground's height
-// (`height`), its mesh (`terrain`), and where each plant stands, by a seed. Two ways of standing:
+// (`height`), its mesh (`terrain`), and where each plant stands, by a seed. But for what stands in the
+// scene (`Standing`): the ground is level as far as the props reach (the spec's `clearing`, which the
+// host sets from them), no tree, bush or rock stands where something of a prop is over it, and no
+// tile of grass lies where a floor does. Two ways of standing:
 //
 // - Trees, saplings, bushes, rocks and dead wood each have a place (`layers`, `scatter`): the host
 //   (fv_host_backdrop.cpp) draws a variant once with its places as instancing copies
@@ -93,6 +96,10 @@ struct Spec
   // Nothing is planted by it.
   double wind     = 0.0;
   double windFrom = 90.0;
+  // How far from the origin the ground is level, metres: kClearing with nothing in the scene, and
+  // as far as its props reach (`levelFor`). The host's, from the scene: no patch sets it and no file
+  // keeps it. A planet has its own (fv_world.hpp).
+  double clearing = 5.0;
   bool   operator==(const Spec&) const = default;
 };
 
@@ -118,8 +125,9 @@ inline bool isPlanet(const Spec& s)
   return s.kind == "planet";
 }
 
-// The ground stays flat (the floor's height) within this of the origin, where the figures stand, and
-// rises into its hills over kClearingEdge more
+// The ground stays flat (the floor's height) within this of the origin, where the figures stand (the
+// spec's `clearing`: further with props further out), and rises into its hills over kClearingEdge
+// more, or half the clearing when that is more
 inline constexpr float kClearing     = 5.0F;
 inline constexpr float kClearingEdge = 25.0F;
 // Where the planted land's hills have risen: the horizon of a camera on the ground
@@ -147,6 +155,63 @@ inline constexpr float kWoods = 260.0F;
 
 // The ground's height over the floor at (x, z)
 float height(const Spec& spec, float x, float z);
+
+// ---- what stands in the scene ----------------------------------------------------------------------
+//
+// The props' triangles on the plan of the ground, as a grid of cells: what the backdrop keeps clear of.
+// A fir is not to stand in a house, nor grass to come up through its floor; a fence, a pipe on
+// trestles or a ruin's walls take only the ground they are over, so a yard inside a fence keeps its
+// grass and its trees (a prop's bounds would clear the whole of it). Heights are over the floor.
+//
+// Two things are kept of a cell: whether anything is over it at all, up to kOverhead (what has a
+// place keeps clear of that: `over`, `clearOf`), and whether its middle is covered low down, under
+// kGrassBar (a floor, a slab, a car: grass keeps clear of that, a tile at a time: `covered`,
+// `tileTaken`). A wall is over its cells and covers none; a roof with no floor under it is over the
+// ground and leaves the grass.
+inline constexpr float kOverhead = 25.0F;
+inline constexpr float kGrassBar = 1.5F;
+// A tile of grass is left out when this share of it is covered: a tile is one mesh, so a tile half
+// under a wall either reaches in under the floor or leaves bare ground outside it
+inline constexpr float kTileTaken = 0.6F;
+// What has a place stands clear by this share of its own half width, a fir's lowest branches' reach
+inline constexpr float kCrownShare = 0.7F;
+
+class Standing
+{
+public:
+  Standing() = default;
+  // A grid over the plan between two corners (x, z), its cells half a metre across, or larger over
+  // more than a couple of kilometres
+  Standing(glm::vec2 lo, glm::vec2 hi);
+  // A triangle of a prop, where it is in the scene, its heights over the floor
+  void add(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c);
+  bool empty() const { return m_reach <= 0.0F; }
+  // Whether anything is over the ground within `radius` of a place
+  bool over(float x, float z, float radius) const;
+  // The share of a square of the ground that is covered low down
+  float covered(float x0, float z0, float x1, float z1) const;
+  // How far from the origin the furthest thing over the ground is
+  float reach() const { return m_reach; }
+  bool  operator==(const Standing&) const = default;
+
+private:
+  void    mark(int x, int z, uint8_t what);
+  uint8_t at(int x, int z) const { return x < 0 || z < 0 || x >= m_nx || z >= m_nz ? uint8_t(0) : m_cells[size_t(z) * size_t(m_nx) + size_t(x)]; }
+  glm::vec2            m_lo{0.0F};
+  float                m_cell = 0.5F;
+  int                  m_nx = 0, m_nz = 0;
+  float                m_reach = 0.0F;
+  std::vector<uint8_t> m_cells;  // bit 0: something over it; bit 1: its middle covered low down
+};
+
+// The spec's `clearing` for what stands: the ground level out to a few metres past the furthest of it,
+// in steps of ten metres, so a prop dragged about makes the ground again only now and then
+double levelFor(const Standing& standing);
+// The places of `placed` that stand clear: none with anything over the ground within `radius` times
+// its size (a place's scale: `scatter`) of its foot
+std::vector<glm::mat4> clearOf(const Standing& standing, std::vector<glm::mat4> placed, float radius);
+// Whether a tile `size` metres across, at cell (x, z) of its grid, is left out: kTileTaken of it covered
+bool tileTaken(const Standing& standing, float size, int32_t x, int32_t z);
 
 // The ground's height at (x, z) as its mesh draws it (`terrain`): the height at the mesh's vertices,
 // flat across each triangle between. What stands on the ground stands on this: the mesh's triangles

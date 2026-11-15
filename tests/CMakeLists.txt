@@ -297,10 +297,11 @@ set(TEST_SOURCES
 # Create test executable
 add_executable(${TEST_NAME} ${TEST_SOURCES})
 
-# The host's files hold its commands as lambdas: more sections than an object file allows by default
+# The host's files hold its commands as lambdas: more sections than an object file allows by
+# default; and so do its tests, a rig and its lambdas a test
 if(MSVC)
   file(GLOB FV_HOST_TEST_SOURCES ${CMAKE_SOURCE_DIR}/src/fv_host*.cpp)
-  set_source_files_properties(${FV_HOST_TEST_SOURCES} TARGET_DIRECTORY ${TEST_NAME} PROPERTIES COMPILE_OPTIONS /bigobj)
+  set_source_files_properties(${FV_HOST_TEST_SOURCES} test_fv_host.cpp TARGET_DIRECTORY ${TEST_NAME} PROPERTIES COMPILE_OPTIONS /bigobj)
 endif()
 # The host sets parameters through nvmcp, and includes the cpp-httplib that ships inside cpp-mcp
 target_link_libraries(${TEST_NAME} PRIVATE nvpro2::nvmcp)

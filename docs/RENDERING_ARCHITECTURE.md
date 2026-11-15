@@ -743,6 +743,24 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   A change of the state plants again in place (`plantBackdrop`: the copies and the tiles' meshes made
   again); a change of kind, seed or relief rebuilds the ground too, and another kind lets go of the
   plants only the last one used.
+- **Clear of what stands in the scene** (`fv::backdrop::Standing`; `readStanding`, `clearBackdrop` in
+  `src/fv_host_backdrop.cpp`): the land is the one part of the backdrop that does not follow from
+  the spec alone. The triangles of everything shown that is not the backdrop's own, a figure's skin
+  or a strand of hair are laid on the plan of the ground as a grid of cells (an instanced mesh's
+  copies by their boxes), and three things follow. The ground is level as far as the props reach
+  (`Spec::clearing`, which the host sets by `levelFor` and no patch or file carries), rising into
+  the same hills beyond, so a house put down forty metres out is not half in a hillside. Nothing
+  with a place stands where something is over the ground within its own width (`clearOf`): no fir
+  in a house, against a fence or under a pipe. And a tile of grass is left out where most of it is
+  covered low down (`tileTaken`): a floor, a slab, a car, but not a roof with no floor under it nor
+  a wall, which is over its line and covers nothing. A grid, not the props' bounds: a fence round a
+  yard is one mesh whose box is the yard. A tile is one mesh, so the grass ends at tiles' edges: up
+  to a tile's width of it reaches in under a floor's edge or is missing outside it. The grid is read
+  again when the scene's entities that draw have moved and then stood still (their places and
+  meshes hashed, `standingKey`, asked a couple of times a second while the scene's bounds change),
+  so a prop dragged or a ship in flight plants nothing until it rests; then the places and the tiles
+  are made again, and the ground and all of it when the reach moved to another ten metres. A planet
+  keeps its own clearing and does not read it yet.
 - **Why tiles.** Each grass plant an instance of its own was built first, thinned by its distance
   from the camera. Following the camera then meant some 200,000 instances made again: 50 ms to
   place them and another 160 ms in the renderer's sync, a fifth of a second up to two and a half

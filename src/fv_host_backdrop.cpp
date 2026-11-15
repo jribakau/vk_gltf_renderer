@@ -33,6 +33,11 @@
 // meshes, and the ground when its kind or its shape changed. The camera's moves lay
 // the tiles again (followBackdrop) and plant nothing.
 //
+// The land keeps clear of what stands in the scene (fv::backdrop::Standing, read from the scene's
+// props by readStanding): the ground is level as far as they reach, nothing with a place stands
+// under or against one, and no tile of grass lies where a floor does. clearBackdrop follows the
+// scene: a prop put down, moved or taken away.
+//
 // A planet (the `planet` kind) stands without a kit (fv_host_world.cpp, under the same root) and is
 // planted with one when there is one: the same plants, held the same way, placed by its biomes.
 //
@@ -333,7 +338,8 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
   }
   holdBackdropPlants(scene);
   // the ground, when its shape is another: made again, as its mesh may no longer hold its vertices to move
-  if(built.groundKind != spec.kind || built.groundSeed != spec.seed || built.groundRelief != spec.relief || !scene.entity(built.ground))
+  if(built.groundKind != spec.kind || built.groundSeed != spec.seed || built.groundRelief != spec.relief
+     || built.groundClearing != spec.clearing || !scene.entity(built.ground))
   {
     if(scene.entity(built.ground))
       scene.destroyEntity(built.ground);
@@ -345,10 +351,26 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
     built.groundKind   = spec.kind;
     built.groundSeed   = spec.seed;
     built.groundRelief = spec.relief;
+    built.groundClearing = spec.clearing;
   }
+  placeBackdropPlants(scene);
+
+  // the grass and its drifts: their tiles' meshes for this state, and the tiles laid
+  built.grassWas.clear();
+  for(const fv::backdrop::Cover& cover : fv::backdrop::grassCovers(spec))
+    built.grass.patches.push_back(makeBackdropPatch(scene, cover));
+  for(const fv::backdrop::Cover& cover : fv::backdrop::drifts(spec).covers)
+    built.drifts.patches.push_back(makeBackdropPatch(scene, cover));
+  tileBackdrop(scene);
+}
+
+void FvHost::Impl::placeBackdropPlants(rs::RetainedScene& scene)
+{
+  BackdropBuilt&            built = *backdropBuilt;
+  const fv::backdrop::Spec& spec  = backdropSpec;
   // each layer's plants: a variant's places as its copies; a variant with none, and a role no layer
   // plants (what stands in tiles, and what this kind has none of), hidden: no copies would draw it
-  // once, where its file has it
+  // once, where its file has it. None stands where something of the scene is over it.
   std::map<std::string, std::vector<std::vector<glm::mat4>>> byRole;
   uint64_t                                                   plants = 0;
   const auto                                                 layers = fv::backdrop::layers(spec);
@@ -361,7 +383,10 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
     std::vector<std::vector<glm::mat4>>& all    = byRole[layers[i].role];
     all.resize(placed.size());
     for(size_t v = 0; v < placed.size(); v++)
+    {
+      placed[v] = fv::backdrop::clearOf(backdropStanding, std::move(placed[v]), fv::backdrop::kCrownShare * found->second[v].halfWidth);
       all[v].insert(all[v].end(), placed[v].begin(), placed[v].end());
+    }
   }
   for(auto& [role, placed] : byRole)
   {
@@ -373,7 +398,10 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
         continue;
       scene.setVisible(variants[v].entity, !placed[v].empty());
       if(placed[v].empty())
+      {
+        built.variants.at(role)[v].places.clear();  // none for the wind to sway
         continue;
+      }
       // where it stands, for the wind (swayBackdrop), which turns each place about its base
       BackdropBuilt::Variant& standing = built.variants.at(role)[v];
       standing.places                  = placed[v];
@@ -394,14 +422,182 @@ void FvHost::Impl::plantBackdrop(rs::RetainedScene& scene)
         if(scene.entity(v.entity))
           scene.setVisible(v.entity, false);
   built.placed = plants;
+}
 
-  // the grass and its drifts: their tiles' meshes for this state, and the tiles laid
-  built.grassWas.clear();
-  for(const fv::backdrop::Cover& cover : fv::backdrop::grassCovers(spec))
-    built.grass.patches.push_back(makeBackdropPatch(scene, cover));
-  for(const fv::backdrop::Cover& cover : fv::backdrop::drifts(spec).covers)
-    built.drifts.patches.push_back(makeBackdropPatch(scene, cover));
-  tileBackdrop(scene);
+uint64_t FvHost::Impl::standingKey(rs::RetainedScene& scene)
+{
+  // FNV-1a over what the grid is read from
+  uint64_t   key = 1469598103934665603ULL;
+  const auto mix = [&](const void* data, size_t bytes) {
+    const auto* b = static_cast<const unsigned char*>(data);
+    for(size_t i = 0; i < bytes; i++)
+      key = (key ^ b[i]) * 1099511628211ULL;
+  };
+  const float floor = groundHeight();
+  mix(&floor, sizeof floor);
+  const rs::EntityId                      land = backdropRoot();
+  const std::function<void(rs::EntityId)> walk = [&](rs::EntityId id) {
+    const rs::Entity* e = scene.entity(id);
+    if(!e || id == land || !e->visible)
+      return;
+    if(e->mesh && e->mesh->skin.isNone())
+    {
+      const glm::mat4 world = scene.world(id);
+      mix(&world, sizeof world);
+      for(const rs::MeshPart& part : e->mesh->parts)
+        if(const rs::MeshRecord* m = scene.mesh(part.mesh); m && !m->positions.empty() && !m->skins())
+        {
+          const uint64_t n[3] = {m->positions.size(), m->indices.size(), uint64_t(m->contentRev)};
+          mix(n, sizeof n);
+        }
+      const uint64_t copies = e->mesh->copies.size();
+      mix(&copies, sizeof copies);
+      if(copies)
+        mix(e->mesh->copies.data(), sizeof(glm::mat4));  // the first stands for the rest
+    }
+    for(const rs::EntityId child : e->children)
+      walk(child);
+  };
+  for(const rs::EntityId id : scene.entitiesInOrder())
+    if(const rs::Entity* e = scene.entity(id); e && e->parent.isNone())
+      walk(id);
+  return key ? key : 1;
+}
+
+bool FvHost::Impl::readStanding(rs::RetainedScene& scene)
+{
+  const uint64_t key = standingKey(scene);
+  standingRevision   = scene.boundsRevision();
+  standingWaits      = false;
+  if(key == backdropStandingKey)
+    return false;
+  fv::timing::Scope time("backdrop: what stands", 20);
+  // what draws, and where: a mesh's vertices in the scene, their heights over the floor; an
+  // instanced mesh as the box of each copy, which is what a plant or a post takes of the ground
+  struct Drawn
+  {
+    std::vector<glm::vec3> positions;
+    const rs::MeshRecord*  mesh = nullptr;  // none: `positions` are boxes, eight corners each
+  };
+  std::vector<Drawn> drawn;
+  glm::vec2          lo(std::numeric_limits<float>::max()), hi(std::numeric_limits<float>::lowest());
+  const float        floor = groundHeight();
+  const auto         put   = [&](Drawn& d, const glm::mat4& to, const glm::vec3& p) {
+    const glm::vec3 q = glm::vec3(to * glm::vec4(p, 1.0F)) - glm::vec3(0.0F, floor, 0.0F);
+    d.positions.push_back(q);
+    lo = glm::min(lo, glm::vec2(q.x, q.z));
+    hi = glm::max(hi, glm::vec2(q.x, q.z));
+  };
+  const rs::EntityId                      land = backdropRoot();
+  const std::function<void(rs::EntityId)> walk = [&](rs::EntityId id) {
+    const rs::Entity* e = scene.entity(id);
+    if(!e || id == land || !e->visible)
+      return;
+    if(e->mesh && e->mesh->skin.isNone())
+    {
+      const glm::mat4 world = scene.world(id);
+      for(const rs::MeshPart& part : e->mesh->parts)
+      {
+        const rs::MeshRecord* m = scene.mesh(part.mesh);
+        if(!m || m->positions.empty() || m->skins())
+          continue;
+        Drawn d;
+        if(e->mesh->copies.empty())
+        {
+          d.mesh = m;
+          d.positions.reserve(m->positions.size());
+          for(const glm::vec3& p : m->positions)
+            put(d, world, p);
+        }
+        else
+        {
+          const std::array<glm::vec3, 2> b = m->bounds();
+          for(const glm::mat4& copy : e->mesh->copies)
+            for(int c = 0; c < 8; c++)
+              put(d, world * copy, glm::vec3(b[size_t(c & 1)].x, b[size_t((c >> 1) & 1)].y, b[size_t((c >> 2) & 1)].z));
+        }
+        drawn.push_back(std::move(d));
+      }
+    }
+    for(const rs::EntityId child : e->children)
+      walk(child);
+  };
+  for(const rs::EntityId id : scene.entitiesInOrder())
+    if(const rs::Entity* e = scene.entity(id); e && e->parent.isNone())
+      walk(id);
+  fv::backdrop::Standing standing(lo, hi);
+  for(const Drawn& d : drawn)
+  {
+    const std::vector<glm::vec3>& p = d.positions;
+    if(d.mesh)
+    {
+      for(const rs::Submesh& run : d.mesh->submeshes)
+        for(uint32_t i = 0; i + 2 < run.indexCount; i += 3)
+        {
+          const uint32_t a = d.mesh->indices[run.firstIndex + i], b = d.mesh->indices[run.firstIndex + i + 1], c = d.mesh->indices[run.firstIndex + i + 2];
+          if(a < p.size() && b < p.size() && c < p.size())
+            standing.add(p[a], p[b], p[c]);
+        }
+      continue;
+    }
+    // a box's underside (corners 0, 1, 4, 5: its lower four) and its top
+    for(size_t i = 0; i + 7 < p.size(); i += 8)
+      for(const size_t face : {size_t(0), size_t(2)})
+      {
+        standing.add(p[i + face], p[i + face + 1], p[i + face + 5]);
+        standing.add(p[i + face], p[i + face + 5], p[i + face + 4]);
+      }
+  }
+  backdropStandingKey = key;
+  if(standing == backdropStanding)
+    return false;  // read from something else, and the same: the floor moved under an empty scene
+  backdropStanding      = std::move(standing);
+  backdropSpec.clearing = fv::backdrop::levelFor(backdropStanding);
+  return true;
+}
+
+void FvHost::Impl::clearBackdrop()
+{
+  if(!backdropBuilt || planetBuilt || backdropState != "ready" || !renderer->feedsHostScene())
+    return;
+  rs::RetainedScene& scene = renderer->hostScene();
+  if(!scene.entity(backdropBuilt->root))
+    return;
+  // nothing has moved since its key was last asked, and none is waited on
+  if(scene.boundsRevision() == standingRevision && !standingWaits)
+    return;
+  const auto now = std::chrono::steady_clock::now();
+  if(now - standingAsked < std::chrono::milliseconds(400))
+    return;
+  standingAsked      = now;
+  const uint64_t key = standingKey(scene);
+  standingRevision   = scene.boundsRevision();
+  if(key == backdropStandingKey)
+  {
+    standingWaits = false;  // a figure moved, or the land's own tiles
+    return;
+  }
+  if(!standingWaits || key != standingPending)
+  {
+    // a prop moved: read once it has stood still from one ask to the next
+    standingPending = key;
+    standingWaits   = true;
+    return;
+  }
+  const double level = backdropSpec.clearing;
+  if(!readStanding(scene))
+    return;
+  fv::timing::Scope time("backdrop: clearing", 20);
+  if(backdropSpec.clearing != level)
+    plantBackdrop(scene);  // the ground too: level as far as the props now reach
+  else
+  {
+    placeBackdropPlants(scene);
+    tileBackdrop(scene);
+  }
+  backdropWanted = backdropSpec;
+  // (the land's own entities moved: its key is asked once more, and comes out the same)
+  publishBackdrop();
 }
 
 FvHost::Impl::BackdropBuilt::Patch FvHost::Impl::makeBackdropPatch(rs::RetainedScene& scene, const fv::backdrop::Cover& cover)
@@ -520,7 +716,11 @@ void FvHost::Impl::tileBackdrop(rs::RetainedScene& scene)
   const fv::backdrop::Spec&     spec  = backdropSpec;
   const std::vector<fv::backdrop::Focus> foci = backdropFociNow();
   uint64_t                      plants = built.placed;
-  const auto lay = [&](BackdropBuilt::Tiles& tiles, const std::vector<fv::backdrop::Tile>& wanted, std::span<const fv::backdrop::Cover> covers) {
+  const auto lay = [&](BackdropBuilt::Tiles& tiles, std::vector<fv::backdrop::Tile> wanted, std::span<const fv::backdrop::Cover> covers) {
+    // (none where something of the scene covers the ground: a floor, a slab)
+    std::erase_if(wanted, [&](const fv::backdrop::Tile& tile) {
+      return tile.level < covers.size() && fv::backdrop::tileTaken(backdropStanding, covers[tile.level].tile, tile.x, tile.z);
+    });
     const std::set<fv::backdrop::Tile> want(wanted.begin(), wanted.end());
     // a tile no longer asked for: hidden, and its entity the next tile's of that patch
     for(auto it = tiles.drawn.begin(); it != tiles.drawn.end();)
@@ -621,7 +821,17 @@ void FvHost::Impl::holdBackdropPlants(rs::RetainedScene& scene)
       base[3]        = glm::vec4(0.0F, 0.0F, 0.0F, 1.0F);
       scene.setParent(e, built.root);
       scene.setLocal(e, {});
-      held.variants.push_back({.entity = e, .base = base});
+      // how far from its foot it reaches on the plan: its meshes' boxes, as its node turns and sizes them
+      float halfWidth = 0.0F;
+      for(const rs::MeshPart& part : entity->mesh->parts)
+        if(const rs::MeshRecord* m = scene.mesh(part.mesh))
+          if(const std::array<glm::vec3, 2> b = m->bounds(); b[0].x <= b[1].x)
+            for(int c = 0; c < 8; c++)
+            {
+              const glm::vec3 p = glm::vec3(base * glm::vec4(b[size_t(c & 1)].x, b[size_t((c >> 1) & 1)].y, b[size_t((c >> 2) & 1)].z, 1.0F));
+              halfWidth         = std::max({halfWidth, std::abs(p.x), std::abs(p.z)});
+            }
+      held.variants.push_back({.entity = e, .base = base, .halfWidth = halfWidth});
       held.entities.push_back(e);
     }
   }
@@ -828,13 +1038,18 @@ void FvHost::Impl::standBackdrop(bool reread)
   if(backdropBuilt && scene.entity(backdropBuilt->root))
   {
     if(!fv::backdrop::samePlanting(spec, backdropWanted))
+    {
+      readStanding(scene);  // planted round what stands in the scene now
       plantBackdrop(scene);
+    }
     backdropWanted = spec;
     placeBackdrop();
     backdropState = "ready";
     return;
   }
   backdropBuilt.reset();  // its entities went with a scene replaced
+  if(backdropKit)
+    readStanding(scene);
   backdropWanted = spec;
   if(backdropKit)
   {

@@ -1562,6 +1562,7 @@ struct FvHost::Impl
     {
       rs::EntityId entity;
       glm::mat4    base{1.0F};  // its node's own turn and scale in its file, under each place
+      float        halfWidth = 0.0F;  // how far from its foot it reaches on the plan, at a scale of 1
       // Where it stands, for the wind to sway it (swayBackdrop): its places, its copies at rest (each
       // `base` under its place), which of them stand near enough to sway for a camera over
       // `nearbyFor` (ascending), and which it last drew swayed
@@ -1576,6 +1577,7 @@ struct FvHost::Impl
     std::string                                 groundKind;         // the kind and the shape it was made for
     int                                         groundSeed   = -1;
     double                                      groundRelief = -1.0;
+    double                                      groundClearing = -1.0;
     std::map<std::string, std::vector<Variant>> variants;  // by role, of the plants held
     // The kit's plants held, by their place in its list: a plant's variants, and all its file made
     // under the root. Those of the roles the kind plants (fv::backdrop::roles)
@@ -1645,6 +1647,28 @@ struct FvHost::Impl
   void feedBackdrop(rs::RetainedScene& scene);
   // What stands, planted again by the state: the ground's shape and every plant's places
   void plantBackdrop(rs::RetainedScene& scene);
+  // Its part for what has a place (trees, saplings, bushes, rocks, dead wood): each layer's places,
+  // clear of what stands in the scene, as its variants' copies
+  void placeBackdropPlants(rs::RetainedScene& scene);
+  // What stands in the scene, for the land to keep clear of (fv::backdrop::Standing): the triangles
+  // of everything shown that is not the backdrop's, a figure's skin or a strand of hair, where they
+  // are; an instanced mesh's copies by their boxes. `backdropStandingKey` is what it was read from
+  // (standingKey: every such entity's place and meshes, and the floor's height), so it is read again
+  // only when that is another.
+  fv::backdrop::Standing backdropStanding;
+  uint64_t               backdropStandingKey = 0;
+  uint64_t               standingKey(rs::RetainedScene& scene);
+  // Reads it when its key is another, and sets the spec's `clearing` by it. Whether it was read.
+  bool readStanding(rs::RetainedScene& scene);
+  // Every frame: when something in the scene has moved and then stood still for a moment, what
+  // stands is read again, and the land made for it: its plants' places and its tiles, and its ground
+  // too when the props now reach further or less far. Not while a prop is on the move (a drag, a
+  // ship in flight): its key is asked a couple of times a second and must come out the same twice.
+  void     clearBackdrop();
+  uint64_t standingRevision = ~uint64_t(0);  // the scene's bounds revision when its key was last asked
+  uint64_t standingPending  = 0;             // a key that differs from the one read, seen once
+  bool     standingWaits    = false;
+  std::chrono::steady_clock::time_point standingAsked{};
   // What the standing backdrop's land reflects from afar (its kit's `albedo`); zero with none
   glm::vec3 backdropLandAlbedo() const;
   // Brings in the kit's plants the kind plants and lets go of those it doesn't

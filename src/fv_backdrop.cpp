@@ -139,8 +139,9 @@ float height(const Spec& spec, float x, float z)
 {
   if(!planted(spec) || spec.relief <= 0.0)
     return 0.0F;
-  const float d    = std::sqrt(x * x + z * z);
-  const float rise = smoothstep(kClearing, kClearing + kClearingEdge, d);
+  const float d     = std::sqrt(x * x + z * z);
+  const float level = std::max(float(spec.clearing), kClearing);
+  const float rise  = smoothstep(level, level + std::max(kClearingEdge, 0.5F * level), d);
   if(rise <= 0.0F)
     return 0.0F;
   const uint32_t seed = uint32_t(spec.seed);
@@ -153,6 +154,147 @@ float height(const Spec& spec, float x, float z)
   // the land's end: the skyline from a rise, and the land a camera in the air looks out over
   const float ridges = d > kHorizon ? 320.0F * smoothstep(kHorizon, 5500.0F, d) * fbm(x / 2200.0F, z / 2200.0F, seed, kChannelRidge) : 0.0F;
   return float(spec.relief) * rise * (rolling + hills + ridges);
+}
+
+// ---- what stands in the scene
+
+namespace {
+
+constexpr uint8_t kOver   = 1;
+constexpr uint8_t kCovers = 2;
+// The most cells a side: past this many half metres the cells grow
+constexpr int kMostCells = 4096;
+
+}  // namespace
+
+Standing::Standing(glm::vec2 lo, glm::vec2 hi)
+{
+  if(!(lo.x <= hi.x) || !(lo.y <= hi.y))
+    return;
+  const float across = std::max(hi.x - lo.x, hi.y - lo.y);
+  m_cell             = std::max(0.5F, across / float(kMostCells - 2));
+  // a cell to spare all round: a triangle on the very edge has cells to be over
+  m_lo = lo - glm::vec2(m_cell);
+  m_nx = int(std::ceil((hi.x - lo.x) / m_cell)) + 2;
+  m_nz = int(std::ceil((hi.y - lo.y) / m_cell)) + 2;
+  m_cells.assign(size_t(m_nx) * size_t(m_nz), 0);
+}
+
+void Standing::mark(int x, int z, uint8_t what)
+{
+  if(x < 0 || z < 0 || x >= m_nx || z >= m_nz)
+    return;
+  uint8_t& cell = m_cells[size_t(z) * size_t(m_nx) + size_t(x)];
+  if(!(cell & kOver))
+  {
+    // the furthest corner of the cell from the origin
+    const glm::vec2 lo = m_lo + glm::vec2(float(x), float(z)) * m_cell, hi = lo + glm::vec2(m_cell);
+    m_reach = std::max(m_reach, glm::length(glm::max(glm::abs(lo), glm::abs(hi))));
+  }
+  cell |= what;
+}
+
+void Standing::add(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
+{
+  if(m_cells.empty())
+    return;
+  const float low = std::min({a.y, b.y, c.y}), high = std::max({a.y, b.y, c.y});
+  if(high < 0.0F || low > kOverhead)
+    return;  // under the floor, or far over anything that grows
+  // on the plan, in cells
+  const std::array<glm::vec2, 3> p = {(glm::vec2(a.x, a.z) - m_lo) / m_cell, (glm::vec2(b.x, b.z) - m_lo) / m_cell,
+                                      (glm::vec2(c.x, c.z) - m_lo) / m_cell};
+  // its edges, walked: it is over every cell one passes through (a wall is nothing but its edges here)
+  for(int e = 0; e < 3; e++)
+  {
+    const glm::vec2 from = p[size_t(e)], to = p[size_t((e + 1) % 3)];
+    const int       steps = int(std::ceil(glm::length(to - from) * 2.0F)) + 1;
+    for(int i = 0; i <= steps; i++)
+    {
+      const glm::vec2 q = glm::mix(from, to, float(i) / float(steps));
+      mark(int(std::floor(q.x)), int(std::floor(q.y)), kOver);
+    }
+  }
+  // and its inside: the cells whose middles it covers
+  const float area = (p[1].x - p[0].x) * (p[2].y - p[0].y) - (p[2].x - p[0].x) * (p[1].y - p[0].y);
+  if(std::abs(area) < 1e-6F)
+    return;
+  const uint8_t what = low < kGrassBar ? uint8_t(kOver | kCovers) : kOver;
+  const int     x0 = std::max(int(std::floor(std::min({p[0].x, p[1].x, p[2].x}))), 0);
+  const int     x1 = std::min(int(std::floor(std::max({p[0].x, p[1].x, p[2].x}))), m_nx - 1);
+  const int     z0 = std::max(int(std::floor(std::min({p[0].y, p[1].y, p[2].y}))), 0);
+  const int     z1 = std::min(int(std::floor(std::max({p[0].y, p[1].y, p[2].y}))), m_nz - 1);
+  const float   sign = area > 0.0F ? 1.0F : -1.0F;
+  const auto    side = [&](const glm::vec2& u, const glm::vec2& v, const glm::vec2& q) {
+    return sign * ((v.x - u.x) * (q.y - u.y) - (q.x - u.x) * (v.y - u.y));
+  };
+  for(int z = z0; z <= z1; z++)
+    for(int x = x0; x <= x1; x++)
+    {
+      const glm::vec2 q(float(x) + 0.5F, float(z) + 0.5F);
+      if(side(p[0], p[1], q) >= 0.0F && side(p[1], p[2], q) >= 0.0F && side(p[2], p[0], q) >= 0.0F)
+        mark(x, z, what);
+    }
+}
+
+bool Standing::over(float x, float z, float radius) const
+{
+  if(empty())
+    return false;
+  const glm::vec2 q  = (glm::vec2(x, z) - m_lo) / m_cell;
+  const float     r  = std::max(radius, 0.0F) / m_cell;
+  const int       x0 = std::max(int(std::floor(q.x - r)), 0), x1 = std::min(int(std::floor(q.x + r)), m_nx - 1);
+  const int       z0 = std::max(int(std::floor(q.y - r)), 0), z1 = std::min(int(std::floor(q.y + r)), m_nz - 1);
+  for(int cz = z0; cz <= z1; cz++)
+    for(int cx = x0; cx <= x1; cx++)
+    {
+      if(!(m_cells[size_t(cz) * size_t(m_nx) + size_t(cx)] & kOver))
+        continue;
+      // the cell's nearest point to the place
+      const glm::vec2 near = glm::clamp(q, glm::vec2(float(cx), float(cz)), glm::vec2(float(cx + 1), float(cz + 1)));
+      if(glm::length(near - q) <= r)
+        return true;
+    }
+  return false;
+}
+
+float Standing::covered(float x0, float z0, float x1, float z1) const
+{
+  if(empty() || !(x1 > x0) || !(z1 > z0))
+    return 0.0F;
+  // the cells whose middles are in the square; a square smaller than a cell, the cell its middle is in
+  const glm::vec2 lo = (glm::vec2(x0, z0) - m_lo) / m_cell, hi = (glm::vec2(x1, z1) - m_lo) / m_cell;
+  int             cx0 = int(std::ceil(lo.x - 0.5F)), cx1 = int(std::ceil(hi.x - 0.5F)) - 1;
+  int             cz0 = int(std::ceil(lo.y - 0.5F)), cz1 = int(std::ceil(hi.y - 0.5F)) - 1;
+  if(cx1 < cx0)
+    cx0 = cx1 = int(std::floor(0.5F * (lo.x + hi.x)));
+  if(cz1 < cz0)
+    cz0 = cz1 = int(std::floor(0.5F * (lo.y + hi.y)));
+  uint32_t covers = 0;
+  for(int z = cz0; z <= cz1; z++)
+    for(int x = cx0; x <= cx1; x++)
+      covers += (at(x, z) & kCovers) ? 1U : 0U;
+  return float(covers) / float((cx1 - cx0 + 1) * (cz1 - cz0 + 1));
+}
+
+double levelFor(const Standing& standing)
+{
+  if(standing.empty())
+    return double(kClearing);
+  return std::max(double(kClearing), 10.0 * std::ceil((double(standing.reach()) + 4.0) / 10.0));
+}
+
+std::vector<glm::mat4> clearOf(const Standing& standing, std::vector<glm::mat4> placed, float radius)
+{
+  if(standing.empty())
+    return placed;
+  std::erase_if(placed, [&](const glm::mat4& m) { return standing.over(m[3].x, m[3].z, radius * glm::length(glm::vec3(m[0]))); });
+  return placed;
+}
+
+bool tileTaken(const Standing& standing, float size, int32_t x, int32_t z)
+{
+  return !standing.empty() && standing.covered(float(x) * size, float(z) * size, float(x + 1) * size, float(z + 1) * size) >= kTileTaken;
 }
 
 namespace {
