@@ -279,7 +279,9 @@ void base(const World& w, const Point& p, Sample& s)
 // a crest would break the finer stripes along it.
 //
 // Each size follows the land's fall as broadly as its own lattice (BaseMap::slopes), so the widest
-// run down a mountain's flank and the finer down the spurs between them.
+// run down a mountain's flank and the finer down the spurs between them. None is steeper than the land
+// is at the finest of those slopes: a valley's floor is steep only seen as broadly as the valley, and
+// the widest gullies cut it tens of metres deep round the river on it.
 //
 // A gully's sides are a share of the slope it runs down, so it is as deep as the land is steep, and
 // only on steep land: they fade in from a gentle slope to a steep one, as running water cuts deep
@@ -296,6 +298,7 @@ constexpr double kGullyFrom     = 0.03;        // the slopes over which they fad
 constexpr double kGullyFull     = 0.25;
 constexpr double kGullySharp    = 0.6;         // crests and floors: 0 rounded, 1 creased
 constexpr double kGullyBranch   = 0.6;         // how far a gully's sides turn the finer ones into it
+constexpr double kGullyFloor    = 1.5;         // a size's slope no more than this of the finest's
 
 // A cell's own phase: one of 256 turns of the circle
 const std::array<glm::dvec2, 256>& gullyTurns()
@@ -342,18 +345,22 @@ double halfTurns(double y, double x)
   return r / kPi;
 }
 
-void gullies(const World& w, const Point& p, Sample& s)
+}  // namespace
+
+double gulliesAt(const World& w, const BaseMap& map, const glm::dvec3& direction, double footprint, const Sample& s)
 {
   const double level = 1.0 - double(s.placed.level);  // a placed plain is a plain
   if(w.spec.relief <= 0.0 || s.elevation <= 1.0 || level <= 0.0)
-    return;
+    return 0.0;
+  const Point     p{direction, footprint};
   const double    R       = w.spec.radius;
   const double    largest = kGullyLargest * R;
   const FacePoint on      = locate(p.direction);
   // the land's fall as broad as the widest gullies' cells, and finer for the finer
-  int        broad = slopeLevelFor(*w.base, R, kGullySlope * kGullyStripes * largest), read = -1;
-  glm::dvec3 land(0.0), sides(0.0);  // the land's rise, and what the gullies so far add to it
-  double     steep = 0.0;
+  int          broad = slopeLevelFor(map, R, kGullySlope * kGullyStripes * largest), read = -1;
+  glm::dvec3   land(0.0), sides(0.0);  // the land's rise, and what the gullies so far add to it
+  double       steep = 0.0;
+  const double finest = kGullyFloor * glm::length(mapSlope(map, on, p.direction, 0));
   glm::dvec3 q     = p.direction * (R / (largest * kGullyStripes));
   glm::dmat3 turned(1.0);  // the lattice's axes against the planet's
   double     sum = 0.0, most = 0.0, gain = 1.0;
@@ -367,8 +374,8 @@ void gullies(const World& w, const Point& p, Sample& s)
     if(const int from = std::max(broad, 0); from != read)
     {
       read  = from;
-      land  = mapSlope(*w.base, on, p.direction, from);
-      steep = glm::length(land);
+      land  = mapSlope(map, on, p.direction, from);
+      steep = std::min(glm::length(land), finest);
     }
     // level across the rise, in the lattice's axes
     const glm::dvec3 across = glm::cross(p.direction, land + sides);
@@ -419,9 +426,17 @@ void gullies(const World& w, const Point& p, Sample& s)
     // its sides, added to the rise the finer ones run down
     sides -= level_ * (kGullyBranch * 0.5 * kPi * side * k * sn);
   }
-  // none by the sea, whose shore stays where it is, nor by a river or a lake: their banks are theirs
-  const double dry = smooth(1.0, 1.0 + 2.0 * most, s.elevation) * smooth(0.0, 30.0 + 3.0 * most, double(s.shore));
-  s.elevation += sum * dry;
+  // none by the sea, whose shore stays where it is
+  return sum * smooth(1.0, 1.0 + 2.0 * most, s.elevation);
+}
+
+namespace {
+
+// (nor in a lake's cells, whose shore is theirs. A river's banks have them: they run into it, and its
+// level is the land's with them, BaseMap's bake)
+void gullies(const World& w, const Point& p, Sample& s)
+{
+  s.elevation += gulliesAt(w, *w.base, p.direction, p.footprint, s) * inlandRelief(s.inland, false);
 }
 
 // The rivers' beds and banks cut into the ground, and the water over it. After the ground's fine
@@ -449,7 +464,7 @@ void climate(const World& w, const Point& p, Sample& s)
   const double wet   = fbm3(p.direction * 3.1 + glm::dvec3(-4.0, 2.5, 9.0), seedOf(w), kChWet, 3, finestOf(w, p, 3.1));
   if(w.base)
   {
-    const double waterside = 1.0 - smooth(0.0, std::min(1.2 * s.inland.cell, 120.0), double(s.shore));
+    const double waterside = inlandNear(s.inland);
     s.moisture             = float(std::clamp(double(mapRain(*w.base, p.direction)) + 0.3 * (wet - 0.5) + 0.25 * waterside, 0.0, 1.0));
   }
   else
@@ -504,6 +519,7 @@ void biome(const World& w, const Point& p, Sample& s)
 constexpr double kDetailLargest = 256.0;  // metres across the largest bump
 constexpr double kDetailSmallest = 2.0;
 constexpr double kDetailHeight   = 0.03;  // a bump's height over its width, at roughness 1
+constexpr double kDetailByWater  = 0.25;  // of that, at a river's or a lake's edge
 
 void detail(const World& w, const Point& p, Sample& s)
 {
@@ -513,7 +529,8 @@ void detail(const World& w, const Point& p, Sample& s)
   // level, the ground stepped by half a bump's height along that line, metres of wall behind a
   // beach. Nothing that changes within a few metres may scale the bumps: they are up to 256 m across
   // and metres high, and a cliff's face made three times as rough stepped as the shore did.)
-  const double amount = kDetailHeight * double(s.rough) * std::min(w.spec.relief, 1.5) * (0.5 + 0.5 * smooth(-3.0, 3.0, s.elevation));
+  const double amount = kDetailHeight * double(s.rough) * std::min(w.spec.relief, 1.5) * (0.5 + 0.5 * smooth(-3.0, 3.0, s.elevation))
+                        * (kDetailByWater + (1.0 - kDetailByWater) * inlandRelief(s.inland));  // (a river's level is the land's without them)
   glm::dvec3   q      = p.direction * (w.spec.radius / kDetailLargest);
   uint32_t     octave = 0;
   for(double size = kDetailLargest; size >= kDetailSmallest; size *= 0.5, octave++)

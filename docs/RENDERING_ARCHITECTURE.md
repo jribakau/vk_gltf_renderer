@@ -973,10 +973,15 @@ their kit when there is one. It needs no kit: without one it stands bare.
   Johansen (written here from the idea, as phasor noise in space). A road's level is found without
   them (`sampleWithout`): it is cut and banked through them. The map's cells are tens of metres and
   the ground is drawn to a metre, so what is drawn is never the map's cells: a lake's shore is where
-  the ground comes up through its level, a river's bed is cut from its curve. The header says what
-  that takes (a lake under its hollow's brim, rivers at the sea's level by a shore, the cube's
-  corners). The planet is made on a worker (`standPlanet`), since the bake is about a second for
-  20 km of radius and a few for the largest; a flat planet (no relief) has no map.
+  the ground comes up through its level, a river's bed is cut from its curve. A river's level is the
+  ground's as it is drawn (the stages' land finer than the cells, the wear's, the gullies' that run
+  into it: `gulliesAt`), followed down and never up, so it cuts through what stands in its way and
+  never runs on a bank of its own; its banks are a valley's sides eased into the land, and on a
+  gentle floor its water meanders off its curve. `WorldMapRivers.DISABLED_Banks` counts how its
+  rivers lie in a planet's land. The header says what that takes (a lake under its hollow's brim,
+  rivers at the sea's level by a shore, the cube's corners). The planet is made on a worker
+  (`standPlanet`), since the bake is about a second for 20 km of radius and a few for the largest; a
+  flat planet (no relief) has no map.
 - **What is put on it by hand** (`src/fv_world_features.hpp`): a seed grows its land from noise, and
   an author who wants a particular world says where some of it is: land or sea, a mountain range
   along an arc, a peak, a basin, a plain. Each is a point or an arc of a great circle with a width,

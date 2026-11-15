@@ -41,11 +41,6 @@ glm::dvec3 spread(uint32_t i, uint32_t count)
   return {r * std::cos(phi), y, r * std::sin(phi)};
 }
 
-glm::dvec3 middleOf(const W::RiverPiece& p)
-{
-  return glm::normalize(0.25 * p.a + 0.5 * p.b + 0.25 * p.c);
-}
-
 }  // namespace
 
 TEST(WorldMapGrid, ACellsNeighboursAreBesideItAcrossTheCubesEdgesToo)
@@ -159,12 +154,14 @@ TEST(WorldMapBake, AllTheLandsWaterRunsDownToTheSeaOrALake)
 TEST(WorldMapBake, TheWearCutsValleysAndKeepsTheShore)
 {
   const W::BaseMap& m = *planet().base;
-  // against the land the stages make by themselves
-  const W::World bare = W::make({}, {.base = false});
-  uint32_t       lower = 0, land = 0;
+  // against the land the stages make by themselves (those before the map, as make has them while it
+  // bakes)
+  W::World bare = W::make({}, {.base = false});
+  bare.stages.resize(4);
+  uint32_t lower = 0, land = 0;
   for(uint32_t c = 0; c < m.grid.count(); c++)
   {
-    const double before = W::sample(bare, m.grid.centre(c), m.cell).elevation;
+    const double before = W::sample(bare, m.grid.centre(c), W::kMapLandFootprint * m.cell).elevation;  // (as the bake samples it)
     // what was sea is sea, what was land is land
     EXPECT_EQ(before <= 0.0, m.kind[c] == W::eMapSea) << c;
     if(m.kind[c] == W::eMapSea)
@@ -223,9 +220,9 @@ TEST(WorldMapBake, ARiversLevelNeverRisesOnItsWay)
   ASSERT_GT(m.pieces.size(), 50U);
   for(const W::RiverPiece& p : m.pieces)
   {
-    EXPECT_GE(p.level[0], p.level[1]);
-    EXPECT_GE(p.level[1], p.level[2]);
-    EXPECT_GE(p.level[2], 0.0F);
+    for(int k = 1; k < W::kRiverLevels; k++)
+      EXPECT_GE(p.level[k - 1], p.level[k]);
+    EXPECT_GE(p.level[W::kRiverLevels - 1], 0.0F);
     for(int k = 0; k < 3; k++)
     {
       EXPECT_GT(p.half[k], 0.0F);
@@ -277,7 +274,7 @@ TEST(WorldMapWater, ARiversBedLiesUnderItsWaterAndItsBanksOverIt)
     if(p.half[1] < 3.0F)
       continue;
     wide++;
-    const glm::dvec3 mid = middleOf(p);
+    const glm::dvec3 mid = W::riverMiddleAt(p, 0.5, w.spec.radius);  // (its water swings off its curve)
     const W::Sample  s   = W::sample(w, mid, 1.0);
     if(s.inland.lake > 0.0)
       continue;  // where a river meets a lake the lake's water is over both
@@ -302,6 +299,110 @@ TEST(WorldMapWater, ARiversBedLiesUnderItsWaterAndItsBanksOverIt)
   EXPECT_EQ(dryBanks, banks);
 }
 
+// Walking out from a river's water over its banks and past its reach, the land has no step: what the
+// river does to it, and what eases in by it (the bumps, the wet ground's biomes), ends gradually
+TEST(WorldMapWater, TheLandHasNoStepWhereARiversReachEnds)
+{
+  const W::World&   w = planet();
+  const W::BaseMap& m = *w.base;
+  const double      R = w.spec.radius;
+  int               walked = 0;
+  double            worst  = 0.0;
+  for(size_t k = 0; k < m.pieces.size(); k += 5)
+  {
+    const W::RiverPiece& p = m.pieces[k];
+    const glm::dvec3     d = W::riverMiddleAt(p, 0.5, R), side = glm::normalize(glm::cross(d, p.c - p.a));
+    if(W::riverLevelAt(p, 0.5) < 3.0 || !std::isfinite(side.x))
+      continue;
+    double last = 0.0;
+    bool   clear = true;
+    std::vector<double> steps;
+    for(double x = 0.0; x <= double(p.half[1]) + m.cell && clear; x += 0.5)
+    {
+      const W::Sample s = W::sample(w, glm::normalize(d + side * (x / R)), 0.5);
+      clear             = s.inland.lake <= 0.0 && s.elevation > 0.0;
+      if(x > 0.0)
+        steps.push_back(std::abs(s.elevation - last));
+      last = s.elevation;
+    }
+    if(!clear)
+      continue;  // (into a lake or the sea)
+    walked++;
+    for(const double step : steps)
+      worst = std::max(worst, step);
+  }
+  ASSERT_GT(walked, 30);
+  // (half a metre's walk up a cliff's face climbs a few metres; a step was the gullies' depth, tens)
+  EXPECT_LT(worst, 4.0);
+}
+
+// A river's water lies in its land: under it nowhere by more than a few metres, and seldom with the
+// land past both its banks under it (on a bank of its own, as a canal on a dyke is)
+TEST(WorldMapRivers, ARiverRunsInItsLandAndNotOnABankOfItsOwn)
+{
+  const W::World&   w = planet();
+  const W::BaseMap& m = *w.base;
+  const double      R = w.spec.radius;
+  int               looked = 0, raised = 0, onBanks = 0;
+  for(size_t k = 0; k < m.pieces.size(); k++)
+  {
+    const W::RiverPiece& p = m.pieces[k];
+    for(const double t : {0.1, 0.5, 0.9})
+    {
+      const double level = W::riverLevelAt(p, t);
+      if(level < 3.0)
+        continue;
+      const glm::dvec3 d = W::riverMiddleAt(p, t, R), way = W::riverMiddleAt(p, std::min(t + 0.05, 1.0), R) - W::riverMiddleAt(p, std::max(t - 0.05, 0.0), R);
+      const glm::dvec3 side = glm::normalize(glm::cross(d, way));
+      if(!std::isfinite(side.x) || W::sample(w, d, 1.0).inland.lake > 0.0)
+        continue;
+      looked++;
+      raised += W::sampleWithout(w, d, 1.0, "water").elevation < level - 3.0;
+      const double past = (1.2 * double(p.half[1]) + 20.0) / R;
+      onBanks += W::sample(w, glm::normalize(d + side * past), 1.0).elevation < level - 2.0 && W::sample(w, glm::normalize(d - side * past), 1.0).elevation < level - 2.0;
+    }
+  }
+  ASSERT_GT(looked, 300);
+  EXPECT_LT(raised, looked / 50) << looked;
+  EXPECT_LT(onBanks, looked / 12) << looked;
+}
+
+// On a gentle floor a river meanders: its water swings off its curve, no further than its stretch
+// lets it; a steep one runs straight
+TEST(WorldMapRivers, AGentleRiverMeandersAndASteepOneRunsStraight)
+{
+  const W::World&   w = planet();
+  const W::BaseMap& m = *w.base;
+  const double      R = w.spec.radius;
+  int               rivers = 0, meandering = 0, steep = 0;
+  double            furthest = 0.0;
+  for(const W::RiverPiece& p : m.pieces)
+  {
+    if(p.level[W::kRiverLevels - 1] < 3.0F)
+      continue;
+    rivers++;
+    const double length = glm::length(p.c - p.a) * R;
+    if(length > 1.0 && (p.level[0] - p.level[W::kRiverLevels - 1]) / length > 0.05)
+    {
+      steep++;
+      EXPECT_EQ(p.wander[1], 0.0F);
+    }
+    if(p.wander[1] <= 0.0F)
+      continue;
+    meandering++;
+    for(const double t : {0.25, 0.5, 0.75})
+    {
+      const double s = 1.0 - t, off = glm::length(W::riverMiddleAt(p, t, R) - glm::normalize(p.a * (s * s) + p.b * (2.0 * s * t) + p.c * (t * t))) * R;
+      EXPECT_LE(off, 1.1 * std::max({p.wander[0], p.wander[1], p.wander[2]}) + 0.5);
+      furthest = std::max(furthest, off);
+    }
+  }
+  ASSERT_GT(rivers, 100);
+  EXPECT_GT(steep, 0);
+  EXPECT_GT(meandering, rivers / 20) << rivers;
+  EXPECT_GT(furthest, 3.0);
+}
+
 TEST(WorldMapWater, WaterLiesOnTheGroundOnlyWhereARiverOrALakeIs)
 {
   const W::World& w = planet();
@@ -317,7 +418,9 @@ TEST(WorldMapWater, WaterLiesOnTheGroundOnlyWhereARiverOrALakeIs)
       {
         under++;
         // in the water, or within what draws the sample of its edge
-        EXPECT_LT(s.shore, 0.5F + 2.0F * float(footprint)) << i;
+        EXPECT_LT(s.shore, 0.5F + 2.0F * float(footprint)) << i << " water " << s.water << " ground " << s.elevation << " river " << s.inland.river
+                                                            << " level " << s.inland.riverLevel << " half " << s.inland.riverHalf << " bank " << s.inland.bank
+                                                            << " lake " << s.inland.lake << " lakeLevel " << s.inland.lakeLevel;
       }
     }
   }
@@ -711,12 +814,99 @@ TEST(WorldMapGullies, DISABLED_Relief)
     for(int i = 0; i < n; i++)
       std::printf(" %.1f", samples[size_t(n / 2) * n + i].elevation);
     std::printf("\n");
+    // (=2: and what the water stage was given, and the river it found, a line a pixel)
+    if(std::getenv("FV_WORLD_RELIEF_PROFILE")[0] == '2')
+      for(int i = 0; i < n; i++)
+      {
+        const double     x = (double(i) + 0.5) / n - 0.5;
+        const glm::dvec3 at = glm::normalize(d + east * x * (size / w.spec.radius));
+        const W::Sample  dry = W::sampleWithout(w, at, pixel, "water");
+        const W::Sample& s   = samples[size_t(n / 2) * n + i];
+        std::printf("at %d natural %.2f ground %.2f water %.2f river %d level %.2f away %.2f half %.2f bank %.2f lake %.2f\n", i, dry.elevation,
+                    s.elevation, s.water, int(s.inland.river), s.inland.riverLevel, s.inland.riverAway, s.inland.riverHalf, s.inland.bank, s.inland.lake);
+      }
   }
   FILE* out = std::fopen(file, "wb");
   ASSERT_NE(out, nullptr);
   std::fprintf(out, "P6\n%d %d\n255\n", n, n);
   std::fwrite(image.data(), 1, image.size(), out);
   std::fclose(out);
+}
+
+// Not a test: how a planet's rivers lie in their land (FV_WORLD_BANKS = planet file). Along each
+// river's water: how far the land stands over or under it before the water's stage cuts it, by the
+// river's width; and how often the land 20 m past both banks is under the water (the river on a bank
+// of its own, a canal on a dyke) or well over it (in a trench), and of the first how often without
+// the gullies.
+TEST(WorldMapRivers, DISABLED_Banks)
+{
+  const char* asked = std::getenv("FV_WORLD_BANKS");
+  if(!asked)
+    return;
+  W::Spec           spec;
+  std::ifstream     in(asked, std::ios::binary);
+  std::stringstream text;
+  text << in.rdbuf();
+  const W::PlanetFile planet = W::parsePlanet(text.str());
+  spec.seed     = planet.seed.value_or(spec.seed);
+  spec.radius   = planet.radius.value_or(spec.radius / 1000.0) * 1000.0;
+  spec.sea      = planet.sea.value_or(spec.sea);
+  spec.relief   = planet.relief.value_or(spec.relief);
+  spec.features = std::make_shared<const W::Features>(planet.features);
+  const W::World    w = W::make(spec);
+  const W::BaseMap& m = *w.base;
+  const double      edges[] = {-30, -10, -3, -1, 1, 3, 10, 30};
+  std::vector<std::array<double, 2>> found(m.pieces.size() * 5);
+  std::atomic<int>                   onRidges{0}, inTrenches{0}, looked{0}, ridgesBare{0};
+  fv::jobs::parallelFor(m.pieces.size(), 64, [&](size_t begin, size_t end) {
+    for(size_t k = begin; k < end; k++)
+    {
+      const W::RiverPiece& p = m.pieces[k];
+      for(int t = 0; t < 5; t++)
+      {
+        const double     u = 0.1 + 0.2 * t, s = 1.0 - u;
+        const glm::dvec3 d     = W::riverMiddleAt(p, u, w.spec.radius);
+        const double     level = W::riverLevelAt(p, u);
+        found[k * 5 + t]       = {W::sampleWithout(w, d, 1.0, "water").elevation - level, level};
+        const glm::dvec3 way   = p.a * (-2.0 * s) + p.b * (2.0 * (s - u)) + p.c * (2.0 * u);
+        if(level < 3.0 || glm::length(way) < 1e-12)
+          continue;
+        const glm::dvec3 side  = glm::normalize(glm::cross(d, way));
+        const double     reach = (1.2 * (s * s * p.half[0] + 2.0 * s * u * p.half[1] + u * u * p.half[2]) + 20.0) / w.spec.radius;
+        const glm::dvec3 l = glm::normalize(d + side * reach), r = glm::normalize(d - side * reach);
+        const double     left = W::sample(w, l, 1.0).elevation - level, right = W::sample(w, r, 1.0).elevation - level;
+        looked++;
+        inTrenches += left > 6.0 && right > 6.0;
+        if(left < -2.0 && right < -2.0)
+        {
+          onRidges++;
+          ridgesBare += W::sampleWithout(w, l, 1.0, "gullies").elevation - level < -2.0 && W::sampleWithout(w, r, 1.0, "gullies").elevation - level < -2.0;
+        }
+      }
+    }
+  });
+  std::printf("of %d points, the river on a bank of its own at %d (%d without the gullies), in a trench at %d\n", looked.load(), onRidges.load(),
+              ridgesBare.load(), inTrenches.load());
+  std::map<int, std::array<int, 9>> by;  // by width (metres, rounded down to 10)
+  for(size_t k = 0; k < m.pieces.size(); k++)
+    for(int t = 0; t < 5; t++)
+    {
+      const auto [over, level] = found[k * 5 + t];
+      if(level < 3.0)
+        continue;
+      int b = 0;
+      while(b < 8 && over >= edges[b])
+        b++;
+      by[std::min(int(2.0 * m.pieces[k].half[1]) / 10 * 10, 60)][size_t(b)]++;
+    }
+  std::printf("land over the river's water, metres:  <-30 -30..-10 -10..-3 -3..-1 -1..1 1..3 3..10 10..30 >30\n");
+  for(const auto& [width, counts] : by)
+  {
+    std::printf("wide %2d m+:", width);
+    for(const int c : counts)
+      std::printf(" %7d", c);
+    std::printf("\n");
+  }
 }
 
 // Not a test: the ground and the water round a place of the default planet, from straight above, as
@@ -899,9 +1089,9 @@ TEST(WorldMapBake, DISABLED_Report)
         widest = &p;
     }
     if(nearest)
-      place("river", nearest->b, double(nearest->level[1]), nearest->c, double(nearest->half[1]));
+      place("river", nearest->b, W::riverLevelAt(*nearest, 0.5), nearest->c, double(nearest->half[1]));
     if(widest)
-      place("widest", widest->b, double(widest->level[1]), widest->c, double(widest->half[1]));
+      place("widest", widest->b, W::riverLevelAt(*widest, 0.5), widest->c, double(widest->half[1]));
     // the widest river and the highest ground on the side the look scripts' sun lights (azimuth 120, 40 up)
     const glm::dvec3 sun(std::cos(glm::radians(40.0)) * std::sin(glm::radians(120.0)), std::sin(glm::radians(40.0)),
                          std::cos(glm::radians(40.0)) * std::cos(glm::radians(120.0)));
@@ -911,7 +1101,7 @@ TEST(WorldMapBake, DISABLED_Report)
       if(lit(p.b) && (!day || p.half[1] > day->half[1]))
         day = &p;
     if(day)
-      place("widest-lit", day->b, double(day->level[1]), day->c, double(day->half[1]));
+      place("widest-lit", day->b, W::riverLevelAt(*day, 0.5), day->c, double(day->half[1]));
     uint32_t peak = W::CubeGrid::kNone;
     for(uint32_t c = 0; c < m.grid.count(); c++)
       if(m.kind[c] == W::eMapLand && lit(m.grid.centre(c)) && (peak == W::CubeGrid::kNone || m.height[c] > m.height[peak]))

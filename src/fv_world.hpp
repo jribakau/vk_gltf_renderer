@@ -122,6 +122,7 @@ struct Inland
   double riverLevel = 0.0;    // its surface's level at its nearest point
   double riverHalf  = 0.0;    // half its width there
   double riverAway  = 0.0;    // metres from its middle line
+  double riverBend  = 0.0;    // -1..1: how far toward this side its deepest water lies (a bend's outside), of its half width
   double bank       = 0.0;    // metres past its edge over which its banks ease into the land
   double lake       = 0.0;    // 0..1: how much of the ground round the point is a lake's
   double lakeLevel  = kDry;

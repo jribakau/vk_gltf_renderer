@@ -6,7 +6,8 @@
 //
 // The bake, in order (`bake`):
 //
-// - The land as the stages before it have it, a height a cell.
+// - The land as the stages before it have it, a height a cell (as finely as a cell holds it:
+//   kMapLandFootprint).
 // - Rain. The wind blows in belts by latitude; it takes up water over the sea and lets it fall over
 //   the land, more where the land rises under it, so a range is wet on its windward side and dry
 //   behind. On a coarser grid of its own: the weather is large.
@@ -21,16 +22,22 @@
 //   branch up into the heights.
 // - Floors. A valley the wear cut is a V; what its river carries fills it flat across, deeper the more
 //   water runs in it, up to where its sides stand over the fill. Not simulated: a depth by its water.
-// - Rivers. Where enough water runs, a river: a smooth curve from cell to cell with a level that only
-//   falls and a width by its water, kept as curves so its bed is cut and its surface drawn as finely
-//   as the ground is, whatever the map's cells are. Near the sea's level a river comes down to it
-//   early, and where the ground beside it is under the sea it is the sea (a shore's pools are finer
-//   than the map's cells, and a river a little over them would stand out of them). Across the dry
-//   ground of a lake's hollow a river runs at the lake's level, cutting its way in or out.
+// - Rivers. Where enough water runs, a river: a smooth curve from cell to cell, through each cell where
+//   the ground as it is drawn lies lowest across its valley, with a width by its water, kept as curves
+//   so its bed is cut and its surface drawn as finely as the ground is, whatever the map's cells are.
+//   Its level follows that ground down (the stages' land finer than the cells, the wear's, the
+//   gullies'), a little under it and never rising, so it cuts through what stands in its way, a step
+//   of a cliff or a ridge, and never runs on a bank of its own; its banks are a valley's sides, eased
+//   into the land. On a gentle floor with room it meanders: its water swings from side to side of its
+//   curve in waves some eleven of its widths long, deeper and wider at a bend's outside, with a low
+//   bar inside. Near the sea's level a river comes down to it early, and where the ground beside it is
+//   under the sea it is the sea (a shore's pools are finer than the map's cells, and a river a little
+//   over them would stand out of them). Across the dry ground of a lake's hollow a river runs at the
+//   lake's level, cutting its way in or out.
 //
 // What is kept (BaseMap): what the wear and the floors did to the land (and that again at half the
-// cells, and half again, for what draws coarsely), the rain, the lakes' levels, the rivers' curves by
-// cell, and the worn land's broad slope.
+// cells, and half again, for what draws coarsely), the rain, the lakes' levels, the worn land's broad
+// slope (before the rivers, which follow the gullies laid by it), and the rivers' curves by cell.
 //
 // The cube's faces are grids of `cells` squares along an edge, laid as fv::world::direction lays a
 // face (even in angle). A field is kept with a gutter round each face, filled from the faces beyond,
@@ -40,6 +47,7 @@
 // Vulkan-free; the bake uses the job pool.
 //-------------------------------------------------------------------------------------------------------
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -51,6 +59,9 @@ namespace fv::world {
 
 inline constexpr int   kMapGutter = 4;
 inline constexpr float kDryCell   = -1.0e30F;  // a cell with no lake
+// The stages' land is sampled for the map at this share of a cell's footprint (at a cell's own, the
+// noises leave out what is under four of it, which the ground is drawn with)
+inline constexpr double kMapLandFootprint = 0.25;
 
 // Where a direction is on a grid: its face, and its place in cells (a cell's middle at whole numbers)
 struct MapPoint
@@ -113,14 +124,30 @@ private:
   std::vector<Edge> m_edges;  // [face][side][along]
 };
 
-// A stretch of a river: a curve from `a` to `c` bent toward `b` (directions from the planet's centre),
-// with the water's level and half its width along it, each bent the same way
+// A stretch of a river: a curve from `a` to `c` bent toward `b` (directions from the planet's centre).
+// The water's level at its ends and its quarter points, straight between (it follows the ground down,
+// which a curve would not); half its width at the ends and the middle, bent as the curve is.
+// Its water does not run down that curve but swings from side to side of it, as a river on a valley's
+// floor meanders: `wander` metres either way at its ends and middle (bent so), in waves whose phase is
+// `phase` at its ends (radians, rising upstream, the same at a joint), some kMeanderWaves widths long.
+inline constexpr int kRiverLevels = 5;
 struct RiverPiece
 {
   glm::dvec3 a{0.0}, b{0.0}, c{0.0};
-  float      level[3] = {0.0F, 0.0F, 0.0F};
-  float      half[3]  = {0.0F, 0.0F, 0.0F};
+  float      level[kRiverLevels] = {};
+  float      half[3]             = {0.0F, 0.0F, 0.0F};
+  float      wander[3]           = {0.0F, 0.0F, 0.0F};
+  float      phase[2]            = {0.0F, 0.0F};
 };
+// Where its water's middle is a share `t` of the way along it, for a planet of `radius`
+glm::dvec3 riverMiddleAt(const RiverPiece& piece, double t, double radius);
+// The water's level a share `t` of the way along a piece
+inline double riverLevelAt(const RiverPiece& p, double t)
+{
+  const double x = std::clamp(t, 0.0, 1.0) * double(kRiverLevels - 1);
+  const int    k = std::min(int(x), kRiverLevels - 2);
+  return double(p.level[k]) + (double(p.level[k + 1]) - double(p.level[k])) * (x - double(k));
+}
 
 struct BaseMap
 {
@@ -200,6 +227,10 @@ int slopeLevelFor(const BaseMap& map, double radius, double metres);
 uint32_t slopeCellsFor(uint32_t cells);
 // The inland water near
 Inland mapInland(const BaseMap& map, double radius, const glm::dvec3& direction);
+// What the `gullies` stage cuts into the land at a direction, for something `footprint` across, the
+// land being `before` (its stages' and the wear's), by `map`'s slopes: in metres, up or down
+// (fv_world.cpp). The bake asks it of the ground its rivers run on.
+double gulliesAt(const World& world, const BaseMap& map, const glm::dvec3& direction, double footprint, const Sample& before);
 
 // The water's surface for what `inland` says, as its mesh draws it; kDry with none near
 double inlandSheet(const Inland& inland, double footprint);
@@ -208,5 +239,12 @@ double inlandSheet(const Inland& inland, double footprint);
 double inlandGround(const Inland& inland, double natural, double footprint);
 // 0..1: how much of a river too narrow for `footprint` shows as colour
 float inlandPainted(const Inland& inland, double footprint);
+// 0..1: how much of the land's own fine relief (its bumps) stands there: none in the water, all of it
+// a little way past a river's bank and out of a lake's cells. It eases in, so the land has no step
+// where a river's reach ends. With `rivers` false, a lake's alone (the gullies, which run into a river).
+double inlandRelief(const Inland& inland, bool rivers = true);
+// 0..1: how near the water of a river or a lake: 1 at its edge, easing to 0 by the end of a river's
+// reach and out of a lake's cells (nothing that reads it steps there)
+double inlandNear(const Inland& inland);
 
 }  // namespace fv::world

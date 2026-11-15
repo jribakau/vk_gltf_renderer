@@ -879,7 +879,8 @@ TEST(FvHost, APlanetIsLevelUnderWhatStandsInTheScene)
   }
   ASSERT_EQ(state(), "ready");
   // the ground's vertices over a square of the plan, by their height over the floor: how many lie on
-  // it, and how far the furthest of the rest is from it (a quad's skirt, far under, left out)
+  // it, and how far the furthest of the rest is from it (a quad's skirt left out: each of its vertices
+  // is an edge's again, straight under it by a cell of the quad, which for the finest is under a metre)
   struct Lie
   {
     size_t on = 0, off = 0;
@@ -896,10 +897,16 @@ TEST(FvHost, APlanetIsLevelUnderWhatStandsInTheScene)
         continue;
       const rs::MeshRecord* mesh = scene.mesh(entity->mesh->parts.at(0).mesh);
       const glm::vec3       centre(scene.world(e)[3]);
+      const auto            skirt = [&](const glm::vec3& v) {
+        for(const glm::vec3& o : mesh->positions)
+          if(o.y > v.y + 0.1F && std::abs(o.x - v.x) < 0.05F && std::abs(o.z - v.z) < 0.05F)
+            return true;
+        return false;
+      };
       for(const glm::vec3& v : mesh->positions)
       {
         const glm::vec3 p = centre + v;
-        if(std::abs(p.x - at.x) > half || std::abs(p.z - at.y) > half || p.y < -6.0F)
+        if(std::abs(p.x - at.x) > half || std::abs(p.z - at.y) > half || p.y < -6.0F || skirt(v))
           continue;
         if(std::abs(p.y) < 0.02F)
           out.on++;

@@ -80,8 +80,21 @@ constexpr double kWearKeepLow = 0.8, kWearKeepHigh = 0.25, kWearKeepFrom = 0.1, 
 // many cells), this wide there, wider by its water to the power kRiverGrow, and no wider than this
 // share of a cell (its lookup's window is a few cells)
 constexpr double kRiverFrom = 0.035, kRiverFromCells = 40.0, kRiverNarrow = 6.0, kRiverGrow = 0.4, kRiverWide = 0.8;
-// Its banks ease into the land over this many half widths, between these (metres; shares of a cell)
-constexpr double kBankHalves = 3.0, kBankLeast = 10.0, kBankMost = 0.9;
+// What it does to the land reaches this many half widths past its edge, between these (metres; shares
+// of a cell): the side of what it cuts through eases into the land over it, and the land is wetter
+constexpr double kBankHalves = 8.0, kBankLeast = 20.0, kBankMost = 0.9;
+// Its banks: a low one, so many metres across at this rise over its run; past it the side of what it
+// cuts through, at this rise, or where the land lies under its water a bank of that height falling
+// away at this
+constexpr double kBankLip = 2.0, kBankLipRise = 0.25, kBankSide = 0.6, kBankFall = 0.5;
+// At a bend (Inland::riverBend, b): the bed deeper by this share of |b|, the low bank longer by this
+// share of -b (a bar inside the bend), the side steeper by this share of b (cut outside it)
+constexpr double kBedDeeper = 0.5, kBankBar = 1.2, kBankCut = 0.8;
+// The side of what it cuts through meets the land by this share of its reach, steeper where it must
+constexpr double kBankMeet = 0.6;
+// The land's fine bumps ease in from its edge over this many half widths and metres more (or its
+// reach, if that is less)
+constexpr double kReliefHalves = 2.0, kReliefPast = 8.0;
 // Within this many metres of the sea's level a river's own comes down to it early: the low ground
 // by a shore dips under the sea in places the map's cells do not see, and a river held a few metres
 // over them would cross them on a bank of its own
@@ -89,6 +102,29 @@ constexpr double kRiverLow = 6.0;
 // A river's point in a cell is up to this share of the cell off its middle, either way: cells in a
 // row are not a straight line of river
 constexpr double kRiverStray = 0.25;
+// Its level is found from the ground along it drawn as finely as this (metres): the stages' land is
+// finer than the cells, by tens of metres in the hills and at a cliff
+constexpr double kRiverLooksAt = 2.0;
+// Its point in a cell is the lowest ground within this share of a cell either way across its valley
+// from its stray point, looked at in so many steps a side; a point that much off counts as this many
+// metres higher (on a flat floor it stays where it strayed)
+constexpr double kRiverSeekAcross = 0.4, kRiverSeekKeep = 6.0;
+constexpr int    kRiverSeek       = 4;
+// Its meanders: waves this many of its widths long, its water's middle swinging up to this many of its
+// widths either way of its curve, or this share of a cell, and only as far as the ground there stands
+// no more than so many metres over its water. A river falling less than the first rise over its run
+// meanders all it may, one falling more than the second runs straight.
+constexpr double kMeanderWaves = 11.0, kMeanderSwing = 1.2, kMeanderMost = 0.3, kMeanderRoom = 2.0;
+constexpr double kMeanderFlat = 0.003, kMeanderSteep = 0.03;
+// A wave's length changes along a river by this share either way, its swing by this share, at these
+// rates of its phase (so no two loops are alike); its loops lean by a third wave of this share, this
+// far out of phase
+constexpr double kMeanderLonger = 0.25, kMeanderSwell = 0.25, kMeanderSwellRate = 0.29, kMeanderLongerRate = 0.23;
+constexpr double kMeanderLean = 0.1, kMeanderLeanTurn = 0.4;
+// At a bend its deepest water lies toward the outside, as a share of its half width, by this much a
+// unit of its bending times its width, up to the most; it is wider there by this share at the most.
+// Its width changes along it by this share either way, at this rate of its phase.
+constexpr double kBedBend = 1.5, kBedMost = 0.6, kMeanderWide = 0.15, kRiverVary = 0.1, kRiverVaryRate = 0.41;
 // How many cells round a point its rivers are looked for in (kMapGutter)
 constexpr int kWindow = kMapGutter;
 // A lake's water is drawn where its share of the cells round a point is at least this (a half along
@@ -177,27 +213,119 @@ double bent(const float v[3], double t)
 struct Nearest
 {
   double score = std::numeric_limits<double>::max();  // metres past the river's edge
-  double away = 0.0, level = 0.0, half = 0.0;
+  double away = 0.0, level = 0.0, half = 0.0, bend = 0.0;
 };
 
-// The piece's point nearest `d`, the curve taken as four straight stretches
-void nearestOn(const RiverPiece& p, const glm::dvec3& d, double radius, Nearest& best)
+// A meander's shape by its phase, as a share of its swing, and how that changes with the phase, once
+// and twice: a wave whose loops lean (a third wave in it, as Kinoshita's curve has)
+struct Swing
 {
-  glm::dvec3 from = p.a;
+  double at = 0.0, d1 = 0.0, d2 = 0.0;
+};
+Swing swingAt(double phase)
+{
+  const double third = 3.0 * phase + kMeanderLeanTurn;
+  return {std::sin(phase) + kMeanderLean * std::cos(third), std::cos(phase) - 3.0 * kMeanderLean * std::sin(third),
+          -std::sin(phase) - 9.0 * kMeanderLean * std::cos(third)};
+}
+
+// How far its water's middle swings either way at `t`, in metres: the piece's own, rising and falling
+// along the river so no two loops are alike
+double swingOf(const RiverPiece& p, double t, double phase)
+{
+  return bent(p.wander, t) * (1.0 - kMeanderSwell + kMeanderSwell * std::sin(kMeanderSwellRate * phase + 2.0));
+}
+
+// The curve's point nearest `d` (the best of four straight stretches, then a few of Newton's steps on
+// the curve itself), its way along there and its side (across it, to the left looking downstream)
+struct OnCurve
+{
+  double     t = 0.0;
+  glm::dvec3 at{0.0}, along{0.0}, side{0.0};
+  double     run = 0.0;  // the curve's length a unit of t, in units of the radius
+};
+OnCurve onCurve(const RiverPiece& p, const glm::dvec3& d)
+{
+  OnCurve    o;
+  double     close = std::numeric_limits<double>::max();
+  glm::dvec3 from  = p.a;
   for(int k = 1; k <= 4; k++)
   {
     const glm::dvec3 to    = bent(p.a, p.b, p.c, 0.25 * k);
     const glm::dvec3 along = to - from;
     const double     len2  = glm::dot(along, along);
     const double     s     = len2 > 0.0 ? std::clamp(glm::dot(d - from, along) / len2, 0.0, 1.0) : 0.0;
-    const double     away  = glm::length(d - (from + along * s)) * radius;
-    const double     t     = 0.25 * (double(k - 1) + s);
-    const double     half  = bent(p.half, t);
-    if(away - half < best.score)
-      best = {away - half, away, bent(p.level, t), half};
+    const glm::dvec3 off   = d - (from + along * s);
+    if(const double far = glm::dot(off, off); far < close)
+    {
+      close = far;
+      o.t   = 0.25 * (double(k - 1) + s);
+    }
     from = to;
   }
+  const glm::dvec3 twice = 2.0 * (p.a - 2.0 * p.b + p.c);  // the curve's second derivative
+  const auto       way   = [&](double t) { return 2.0 * ((1.0 - t) * (p.b - p.a) + t * (p.c - p.b)); };
+  for(int i = 0; i < 3; i++)
+  {
+    const glm::dvec3 off = bent(p.a, p.b, p.c, o.t) - d, w = way(o.t);
+    const double     g = glm::dot(off, w), slope = glm::dot(w, w) + glm::dot(off, twice);
+    if(slope <= 0.0)
+      break;
+    o.t = std::clamp(o.t - g / slope, 0.0, 1.0);
+  }
+  o.at                  = bent(p.a, p.b, p.c, o.t);
+  const glm::dvec3 w    = way(o.t);
+  o.run                 = glm::length(w);
+  o.along               = o.run > 0.0 ? w / o.run : glm::dvec3(0.0);
+  const glm::dvec3 left = glm::cross(o.at, o.along);
+  o.side                = glm::dot(left, left) > 0.0 ? glm::normalize(left) : glm::dvec3(0.0);
+  return o;
 }
+
+// The piece's water nearest `d`
+void nearestOn(const RiverPiece& p, const glm::dvec3& d, double radius, Nearest& best)
+{
+  const OnCurve    o     = onCurve(p, d);
+  const double     phase = mix(double(p.phase[0]), double(p.phase[1]), o.t);
+  const double     swing = swingOf(p, o.t, phase);
+  const glm::dvec3 off   = d - o.at;
+  double           half  = bent(p.half, o.t), away = 0.0, bend = 0.0;
+  if(swing > 0.0 && o.run > 0.0)
+  {
+    // its water's middle `mid` across the curve; the way it runs leans off the curve's by `lean` (a rise
+    // over a run) and bends by `curve` (a metre's)
+    const double along = glm::dot(off, o.along) * radius, across = glm::dot(off, o.side) * radius;
+    const double rate  = (double(p.phase[1]) - double(p.phase[0])) / (o.run * radius);  // its phase's change a metre
+    const Swing  s     = swingAt(phase);
+    const double mid = swing * s.at, lean = swing * s.d1 * rate, curve = swing * s.d2 * rate * rate;
+    const double x   = across - mid;
+    away             = std::sqrt(x * x / (1.0 + lean * lean) + along * along);
+    // its deepest water toward the outside of a bend (the side away from where it turns), and there it
+    // is wider
+    bend = std::clamp(-curve * 2.0 * half * kBedBend * (x >= 0.0 ? 1.0 : -1.0), -kBedMost, kBedMost);
+    half *= 1.0 + kMeanderWide * std::abs(bend) / kBedMost + kRiverVary * std::sin(kRiverVaryRate * phase + 1.1);
+  }
+  else
+    away = glm::length(off) * radius;
+  if(away - half < best.score)
+    best = {away - half, away, riverLevelAt(p, o.t), half, bend};
+}
+
+}  // namespace
+
+glm::dvec3 riverMiddleAt(const RiverPiece& p, double t, double radius)
+{
+  const glm::dvec3 at    = bent(p.a, p.b, p.c, t);
+  const double     phase = mix(double(p.phase[0]), double(p.phase[1]), t);
+  const double     swing = swingOf(p, t, phase);
+  const glm::dvec3 way   = 2.0 * ((1.0 - t) * (p.b - p.a) + t * (p.c - p.b));
+  const glm::dvec3 left  = glm::cross(at, way);
+  if(swing <= 0.0 || glm::dot(left, left) <= 0.0)
+    return glm::normalize(at);
+  return glm::normalize(at + glm::normalize(left) * (swing * swingAt(phase).at / radius));
+}
+
+namespace {
 
 // ---- the wind ----------------------------------------------------------------------------------------
 
@@ -386,10 +514,13 @@ std::shared_ptr<const BaseMap> bake(const World& w, uint32_t asked, const std::a
   };
 
   // ---- the land as the stages have it ----
+  // (as finely as a cell holds it: at a cell's own footprint the noises leave out what is under four
+  // of it, and the hills' finest, some 500 m across and tens of metres high on a large planet, were
+  // drawn but never worn, nor seen by a river)
   std::vector<float> first(count);
   parallelFor(count, 2048, [&](size_t begin, size_t end) {
     for(size_t c = begin; c < end; c++)
-      first[c] = float(sample(w, g.centre(uint32_t(c)), cell).elevation);
+      first[c] = float(sample(w, g.centre(uint32_t(c)), kMapLandFootprint * cell).elevation);
   });
   if(stopped())
     return nullptr;
@@ -794,220 +925,9 @@ std::shared_ptr<const BaseMap> bake(const World& w, uint32_t asked, const std::a
   if(stopped())
     return nullptr;
 
-  // ---- the rivers ----
-  // In a lake's hollow the water's way on the map is over the brim-full fill, from wherever it comes
-  // in to where the hollow spills. What is drawn is what a lake under its brim does: a river that
-  // comes in runs down the hollow's own ground into the lake, and the river that leaves starts at
-  // the lake and comes up the same kind of way to the brim, which it cuts down to the lake's level.
-  // `toLake`: each dry cell of a hollow's way down to its lake, by a flood from the lake's cells up
-  // over the hollow's bed.
-  std::vector<uint32_t> toLake(count, kNone);
-  {
-    using Entry = std::pair<float, uint32_t>;
-    std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> open;
-    std::vector<uint8_t> seen(count, 0);
-    uint32_t             nb[8];
-    for(uint32_t c = 0; c < count; c++)
-      if(kind[c] == eMapLake)
-      {
-        seen[c] = 1;
-        open.push({level[c], c});
-      }
-    while(!open.empty())
-    {
-      const auto [e, c] = open.top();
-      open.pop();
-      g.around(c, nb);
-      for(int k = 0; k < 8; k++)
-      {
-        const uint32_t x = nb[k];
-        if(x == kNone || kind[x] != eMapBasin || seen[x])
-          continue;
-        seen[x]   = 1;
-        toLake[x] = c;
-        open.push({std::max(first[x], e), x});
-      }
-    }
-  }
-  const double riverFrom = std::max(kRiverFrom * R * kRiverFrom * R, kRiverFromCells * cell * cell);
-  const auto   isRiver   = [&](uint32_t c) { return kind[c] == eMapLand && flow[c] >= riverFrom; };
-  // a river's point in its cell: off the middle, by the cell
-  const uint32_t strayBy = uint32_t(w.spec.seed) * 2246822519U + 374761393U;
-  const auto     pointOf = [&](uint32_t c) {
-    uint32_t h = (c + strayBy) * 2654435761U;
-    h ^= h >> 15;
-    h *= 2246822519U;
-    h ^= h >> 13;
-    const uint32_t face = c / nn, rem = c % nn;
-    const double   si = (double(h & 0xFFFFU) / 65535.0 - 0.5) * 2.0 * kRiverStray, sj = (double(h >> 16U) / 65535.0 - 0.5) * 2.0 * kRiverStray;
-    return direction(uint8_t(face), (double(rem % n) + 0.5 + si) * 2.0 / double(n) - 1.0, (double(rem / n) + 0.5 + sj) * 2.0 / double(n) - 1.0);
-  };
-  // the donor each river cell follows upstream: the one with the most water, a river's or a lake's
-  std::vector<uint32_t> main(count, kNone);
-  {
-    std::vector<double> most(count, 0.0);
-    for(const uint64_t item : order)
-    {
-      const uint32_t c = uint32_t(item), to = down[c];
-      if(to == kNone || kind[to] == eMapSea || !isRiver(to) || !(isRiver(c) || kind[c] == eMapLake || kind[c] == eMapBasin))
-        continue;
-      if(flow[c] > most[to])
-      {
-        most[to] = flow[c];
-        main[to] = c;
-      }
-    }
-  }
-  std::vector<int32_t> pieceOf(count, -1);
-  std::vector<float>   water(count, 0.0F), half(count, 0.0F);
-  const double         widest = kRiverWide * cell;
-  // What a river cell's water runs into: the sea (level 0), a lake, or the next cell of the river
-  struct Into
-  {
-    bool  sea = false, lake = false;
-    float level = 0.0F;
-  };
-  const auto intoOf = [&](uint32_t c) {
-    const uint32_t to = down[c];
-    Into           into;
-    into.sea   = to == kNone || kind[to] == eMapSea;
-    into.lake  = !into.sea && (kind[to] == eMapLake || kind[to] == eMapBasin);  // (a lake, or its hollow)
-    into.level = into.sea ? 0.0F : into.lake ? level[to] : water[to];
-    return into;
-  };
-  for(const uint64_t item : order)  // from the sea up: a cell's level is no lower than the next one's
-  {
-    const uint32_t c = uint32_t(item);
-    if(!isRiver(c))
-      continue;
-    half[c] = float(0.5 * std::min(kRiverNarrow * std::pow(flow[c] / riverFrom, kRiverGrow), widest));
-    // its surface a little under the valley's floor, never rising downstream; in a lake's hollow
-    // and out of it, the lake's (the river cuts the brim down to it)
-    float own = surface[c] - std::min(1.0F, 0.5F * half[c]);
-    if(const uint32_t d = main[c]; d != kNone && (kind[d] == eMapLake || kind[d] == eMapBasin))
-      own = std::min(own, level[d]);
-    // (and at the sea's level it is the sea's: a river a hand over it would draw as a step in the water)
-    own      = own * float(smooth(0.0, kRiverLow, double(own)));
-    water[c] = std::max(own < 0.3F ? 0.0F : own, intoOf(c).level);
-  }
-  for(const uint64_t item : order)  // from the sea up: a piece's downstream one is made before it
-  {
-    const uint32_t c = uint32_t(item);
-    if(!isRiver(c))
-      continue;
-    const uint32_t to     = down[c];
-    const Into     into   = intoOf(c);
-    const bool     toSea  = into.sea, toLake = into.lake;
-    const float    below  = into.level;
-
-    RiverPiece p;
-    p.b        = pointOf(c);
-    p.level[1] = water[c];
-    p.half[1]  = half[c];
-    if(const uint32_t d = main[c]; d != kNone)
-    {
-      // (out of a lake: from in its water, or from the river that comes up its hollow's ground)
-      const bool lake = kind[d] == eMapLake, hollow = lake || kind[d] == eMapBasin;
-      p.a             = lake ? g.centre(d) : glm::normalize(p.b + pointOf(d));
-      p.level[0]      = hollow ? std::max(level[d], water[c]) : 0.5F * (water[c] + std::max(water[d], water[c]));
-      p.half[0]       = hollow ? half[c] : 0.5F * (half[c] + half[d]);
-    }
-    else
-    {
-      // a river's head: it starts thin
-      p.a        = p.b;
-      p.level[0] = water[c];
-      p.half[0]  = 0.3F * half[c];
-    }
-    p.c        = to == kNone ? p.b : toSea || toLake ? g.centre(to) : pointOf(to);
-    p.level[2] = below;
-    p.half[2]  = half[c];
-    if(!toSea && !toLake)
-    {
-      if(main[to] == c)
-      {
-        p.c        = glm::normalize(p.b + p.c);
-        p.level[2] = 0.5F * (water[c] + below);
-        p.half[2]  = 0.5F * (half[c] + half[to]);
-      }
-      else if(pieceOf[to] >= 0)
-      {
-        // a tributary: into the river's own curve, at its level there
-        const RiverPiece& joined = m.pieces[size_t(pieceOf[to])];
-        p.c                      = bent(joined.a, joined.b, joined.c, 0.5);
-        p.level[2]               = std::min(float(bent(joined.level, 0.5)), water[c]);
-      }
-    }
-    // (a level is written as a float after sums of floats: never up along the way)
-    p.level[0] = std::max(p.level[0], p.level[1]);
-    p.level[2] = std::min(p.level[2], p.level[1]);
-    pieceOf[c] = int32_t(m.pieces.size());
-    m.pieces.push_back(p);
-  }
-  // Between a river and a lake, across the dry ground of the lake's hollow: from the hollow's cell
-  // `x` the river touches, down the hollow's ground to the lake, at the lake's level (it cuts its
-  // way), or as far as a river already there. For a river that comes in (`x` is where it runs to),
-  // and for the one that leaves (`x` is where its water comes from).
-  const auto cross = [&](uint32_t river, uint32_t x) {
-    uint32_t last = river;
-    while(x != kNone && kind[x] == eMapBasin && pieceOf[x] < 0)
-    {
-      const uint32_t next = toLake[x];
-      RiverPiece     p;
-      p.b = pointOf(x);
-      p.a = glm::normalize(p.b + pointOf(last));
-      p.c = next == kNone ? p.b : kind[next] == eMapLake ? g.centre(next) : glm::normalize(p.b + pointOf(next));
-      for(int k = 0; k < 3; k++)
-      {
-        p.level[k] = level[x];
-        p.half[k]  = half[river];
-      }
-      pieceOf[x] = int32_t(m.pieces.size());
-      m.pieces.push_back(p);
-      last = x;
-      x    = next;
-    }
-  };
-  for(const uint64_t item : order)
-  {
-    const uint32_t c = uint32_t(item);
-    if(!isRiver(c))
-      continue;
-    cross(c, down[c]);
-    if(main[c] != kNone)
-      cross(c, main[c]);
-  }
-  // near a corner of the cube a cell's window is not whole: the pieces there are listed
-  for(uint32_t c = 0; c < count; c++)
-    if(pieceOf[c] >= 0)
-    {
-      const uint32_t rem = c % nn;
-      if(fromCorner(int(n), int(rem % n), int(rem / n)) < 2 * kCornerLevel + kWindow)
-        m.corner[cornerOf(g.centre(c))].push_back(uint32_t(pieceOf[c]));
-    }
-  g.pad(pieceOf, m.river, false, int32_t(-1));
-  m.reach.assign(count, 0);
-  parallelFor(count, 4096, [&](size_t begin, size_t end) {
-    const int stride = int(g.stride());
-    for(size_t c = begin; c < end; c++)
-    {
-      const uint32_t face = uint32_t(c) / nn, rem = uint32_t(c) % nn;
-      const int      i = int(rem % n), j = int(rem / n);
-      if(fromCorner(int(n), i, j) < kWindow)
-      {
-        m.reach[c] = m.corner[cornerOf(g.centre(uint32_t(c)))].empty() ? 0 : 1;
-        continue;
-      }
-      const int32_t* self = m.river.data() + g.padded(uint8_t(face), i, j);
-      bool           any  = false;
-      for(int b = -kWindow; b <= kWindow && !any; b++)
-        for(int a = -kWindow; a <= kWindow && !any; a++)
-          any = self[a + b * stride] >= 0;
-      m.reach[c] = any ? 1 : 0;
-    }
-  });
-
   // ---- what is kept ----
+  // (before the rivers, whose levels are the ground's as it is drawn: the stages' and this together)
+  {
   std::vector<float> lake(count, kDryCell), added(count, 0.0F);
   m.height.resize(count);
   m.flow.resize(count);
@@ -1069,6 +989,8 @@ std::shared_ptr<const BaseMap> bake(const World& w, uint32_t asked, const std::a
       at.swap(coarse);
     }
   }
+  }
+
   // ---- the worn land's broad slope ----
   // At the corners of coarser grids, each from the plane that best fits the cells round it (the
   // nearer counting more), found in space and not on a face's own grid: a face's lines turn where
@@ -1168,6 +1090,409 @@ std::shared_ptr<const BaseMap> bake(const World& w, uint32_t asked, const std::a
         break;
     }
   }
+
+  // ---- the rivers ----
+  // In a lake's hollow the water's way on the map is over the brim-full fill, from wherever it comes
+  // in to where the hollow spills. What is drawn is what a lake under its brim does: a river that
+  // comes in runs down the hollow's own ground into the lake, and the river that leaves starts at
+  // the lake and comes up the same kind of way to the brim, which it cuts down to the lake's level.
+  // `toLake`: each dry cell of a hollow's way down to its lake, by a flood from the lake's cells up
+  // over the hollow's bed.
+  std::vector<uint32_t> toLake(count, kNone);
+  {
+    using Entry = std::pair<float, uint32_t>;
+    std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> open;
+    std::vector<uint8_t> seen(count, 0);
+    uint32_t             nb[8];
+    for(uint32_t c = 0; c < count; c++)
+      if(kind[c] == eMapLake)
+      {
+        seen[c] = 1;
+        open.push({level[c], c});
+      }
+    while(!open.empty())
+    {
+      const auto [e, c] = open.top();
+      open.pop();
+      g.around(c, nb);
+      for(int k = 0; k < 8; k++)
+      {
+        const uint32_t x = nb[k];
+        if(x == kNone || kind[x] != eMapBasin || seen[x])
+          continue;
+        seen[x]   = 1;
+        toLake[x] = c;
+        open.push({std::max(first[x], e), x});
+      }
+    }
+  }
+  const double riverFrom = std::max(kRiverFrom * R * kRiverFrom * R, kRiverFromCells * cell * cell);
+  const auto   isRiver   = [&](uint32_t c) { return kind[c] == eMapLand && flow[c] >= riverFrom; };
+  // a river's point in its cell: off the middle, by the cell
+  const uint32_t strayBy = uint32_t(w.spec.seed) * 2246822519U + 374761393U;
+  const auto     strayOf = [&](uint32_t c) {
+    uint32_t h = (c + strayBy) * 2654435761U;
+    h ^= h >> 15;
+    h *= 2246822519U;
+    h ^= h >> 13;
+    const uint32_t face = c / nn, rem = c % nn;
+    const double   si = (double(h & 0xFFFFU) / 65535.0 - 0.5) * 2.0 * kRiverStray, sj = (double(h >> 16U) / 65535.0 - 0.5) * 2.0 * kRiverStray;
+    return direction(uint8_t(face), (double(rem % n) + 0.5 + si) * 2.0 / double(n) - 1.0, (double(rem / n) + 0.5 + sj) * 2.0 / double(n) - 1.0);
+  };
+  // the donor each river cell follows upstream: the one with the most water, a river's or a lake's
+  std::vector<uint32_t> main(count, kNone);
+  {
+    std::vector<double> most(count, 0.0);
+    for(const uint64_t item : order)
+    {
+      const uint32_t c = uint32_t(item), to = down[c];
+      if(to == kNone || kind[to] == eMapSea || !isRiver(to) || !(isRiver(c) || kind[c] == eMapLake || kind[c] == eMapBasin))
+        continue;
+      if(flow[c] > most[to])
+      {
+        most[to] = flow[c];
+        main[to] = c;
+      }
+    }
+  }
+  // The ground as it is drawn: the stages' land, finer than the cells (by tens of metres in the hills
+  // and at a cliff), what the wear did to it, as the `base` stage has them, and the gullies cut into
+  // that (tens of metres too, on a steep valley's floor)
+  const BaseMap::Level& fine  = m.levels.front();
+  const auto            drawn = [&](const glm::dvec3& d) {
+    Sample       s     = sample(w, d, kRiverLooksAt);
+    const double stage = s.elevation, worn = smoothRead(fine.grid, fine.added, d);
+    s.elevation        = stage + std::min(worn, 0.0) + std::max(worn, 0.0) * smooth(0.0, 4.0, stage);
+    return s.elevation + gulliesAt(w, m, d, kRiverLooksAt, s);
+  };
+  // A river cell's point: where that ground is lowest across its valley, near its stray point (on a
+  // valley's flat floor, at it). The cells' valleys are drawn smoothed, and a stray point is up a V's
+  // side.
+  std::vector<int32_t>    riverAt(count, -1);
+  std::vector<glm::dvec3> riverPoint;
+  std::vector<uint32_t>   riverCells;
+  {
+    std::vector<uint32_t>& cells = riverCells;
+    for(uint32_t c = 0; c < count; c++)
+      if(isRiver(c))
+      {
+        riverAt[c] = int32_t(cells.size());
+        cells.push_back(c);
+      }
+    riverPoint.resize(cells.size());
+    parallelFor(cells.size(), 64, [&](size_t begin, size_t end) {
+      for(size_t i = begin; i < end; i++)
+      {
+        const uint32_t   c = cells[i], to = down[c], from = main[c];
+        const glm::dvec3 middle = g.centre(c), stray = strayOf(c);
+        glm::dvec3       along  = (to != kNone ? g.centre(to) : middle) - (from != kNone ? g.centre(from) : middle);
+        along -= middle * glm::dot(along, middle);
+        riverPoint[i] = stray;
+        if(glm::dot(along, along) < 1e-24)
+          continue;
+        const glm::dvec3 across = glm::normalize(glm::cross(middle, along));
+        double           best   = std::numeric_limits<double>::max();
+        for(int k = -kRiverSeek; k <= kRiverSeek; k++)
+        {
+          const double     off = kRiverSeekAcross * double(k) / double(kRiverSeek);  // of a cell
+          const glm::dvec3 d   = glm::normalize(stray + across * (off * cell / R));
+          if(const double score = drawn(d) + kRiverSeekKeep * std::abs(off); score < best)
+          {
+            best          = score;
+            riverPoint[i] = d;
+          }
+        }
+      }
+    });
+  }
+  const auto pointOf = [&](uint32_t c) { return riverAt[c] >= 0 ? riverPoint[size_t(riverAt[c])] : strayOf(c); };
+  std::vector<int32_t> pieceOf(count, -1);
+  std::vector<float>   half(count, 0.0F);
+  const double         widest = kRiverWide * cell;
+  // What a river cell's water runs into: the sea, a lake (or its hollow), or the next cell of the river
+  struct Into
+  {
+    bool sea = false, lake = false;
+  };
+  const auto intoOf = [&](uint32_t c) {
+    const uint32_t to = down[c];
+    Into           into;
+    into.sea  = to == kNone || kind[to] == eMapSea;
+    into.lake = !into.sea && (kind[to] == eMapLake || kind[to] == eMapBasin);
+    return into;
+  };
+  // Each river cell's stretch, from the sea up (a stretch's downstream one is laid before it): from
+  // where it meets the river above it (or its head, at its own point), by its point, to where it meets
+  // what it runs into
+  for(const uint64_t item : order)
+  {
+    const uint32_t c = uint32_t(item);
+    if(!isRiver(c))
+      continue;
+    half[c]           = float(0.5 * std::min(kRiverNarrow * std::pow(flow[c] / riverFrom, kRiverGrow), widest));
+    const uint32_t to = down[c];
+    const Into     into = intoOf(c);
+    RiverPiece     p;
+    p.b = pointOf(c);
+    p.a = p.b;
+    if(const uint32_t d = main[c]; d != kNone)
+      p.a = kind[d] == eMapLake ? g.centre(d) : glm::normalize(p.b + pointOf(d));  // (out of a lake: from in its water)
+    p.c = to == kNone ? p.b : into.sea || into.lake ? g.centre(to) : pointOf(to);
+    if(!into.sea && !into.lake)
+    {
+      if(main[to] == c)
+        p.c = glm::normalize(p.b + p.c);
+      else if(pieceOf[to] >= 0)
+      {
+        // a tributary: into the river's own curve, at its middle
+        const RiverPiece& joined = m.pieces[size_t(pieceOf[to])];
+        p.c                      = bent(joined.a, joined.b, joined.c, 0.5);
+      }
+    }
+    pieceOf[c] = int32_t(m.pieces.size());
+    m.pieces.push_back(p);
+  }
+  // The ground along each as it is drawn, at its levels' points and between them. None past the point
+  // of one that runs into the sea or a lake, where its ground goes down under that water, nor before
+  // the point of one that starts in a lake.
+  constexpr int                            kLooks = 2 * (kRiverLevels - 1);
+  std::vector<std::array<float, kLooks + 1>> ground(m.pieces.size());
+  {
+    std::vector<uint32_t> cellOf(m.pieces.size());
+    for(uint32_t c = 0; c < count; c++)
+      if(pieceOf[c] >= 0)
+        cellOf[size_t(pieceOf[c])] = c;
+    parallelFor(m.pieces.size(), 64, [&](size_t begin, size_t end) {
+      for(size_t k = begin; k < end; k++)
+      {
+        const RiverPiece& p    = m.pieces[k];
+        const Into        into     = intoOf(cellOf[k]);
+        const bool        fromLake = main[cellOf[k]] != kNone && kind[main[cellOf[k]]] == eMapLake;  // (its start is in the lake)
+        for(int t = 0; t <= kLooks; t++)
+        {
+          if(((into.sea || into.lake) && 2 * t > kLooks) || (fromLake && 2 * t < kLooks))
+          {
+            ground[k][size_t(t)] = std::numeric_limits<float>::max();
+            continue;
+          }
+          ground[k][size_t(t)] = float(drawn(glm::normalize(bent(p.a, p.b, p.c, double(t) / double(kLooks)))));
+        }
+      }
+    });
+  }
+  if(stopped())
+    return nullptr;
+  // Its water's level along it: a little under that ground, and never over what it was further up, so
+  // a river cuts its way through what stands in its way and lies on no bank of its own. A level at a
+  // point is no higher than the ground up to the next point, so it goes down before a step and not
+  // past its foot. From the heads down: a cell's donors before it, the one it follows into its start
+  // and the tributaries into its middle. (Out of a lake it starts at the lake's level, cutting its
+  // hollow's brim down to it.)
+  {
+    std::vector<float> fromSides(count, std::numeric_limits<float>::max());  // the tributaries' levels where they come in
+    for(auto it = order.rbegin(); it != order.rend(); ++it)
+    {
+      const uint32_t c = uint32_t(*it);
+      if(!isRiver(c))
+        continue;
+      const size_t k      = size_t(pieceOf[c]);
+      RiverPiece&  p      = m.pieces[k];
+      const auto&  looks  = ground[k];
+      const float  margin = std::min(1.0F, 0.5F * half[c]);
+      const uint32_t d    = main[c], to = down[c];
+      const bool   on     = to != kNone && isRiver(to) && main[to] == c;  // (the river goes on as `to`)
+      float        run    = std::numeric_limits<float>::max();
+      if(d != kNone)
+        run = kind[d] == eMapLake || kind[d] == eMapBasin ? level[d] : m.pieces[size_t(pieceOf[d])].level[kRiverLevels - 1];
+      for(int j = 0; j < kRiverLevels; j++)
+      {
+        if(const float at = looks[size_t(2 * j)]; at < std::numeric_limits<float>::max())
+          run = std::min(run, at - margin);
+        if(2 * j == kRiverLevels - 1)
+          run = std::min(run, fromSides[c]);
+        p.level[j] = run;
+      }
+      // and straight between two points, under the ground halfway too: the upper one lowered so, or
+      // where even the lower one stands over it, that and all below it
+      for(int j = 0; j + 1 < kRiverLevels; j++)
+      {
+        const float halfway = looks[size_t(2 * j + 1)];
+        if(halfway == std::numeric_limits<float>::max())
+          continue;
+        const float top = halfway - margin;
+        if(0.5F * (p.level[j] + p.level[j + 1]) <= top)
+          continue;
+        if(p.level[j + 1] >= top)
+          for(int k = j; k < kRiverLevels; k++)
+            p.level[k] = std::min(p.level[k], top);
+        else
+          p.level[j] = 2.0F * top - p.level[j + 1];
+      }
+      if(to != kNone && isRiver(to) && !on)
+        fromSides[to] = std::min(fromSides[to], p.level[kRiverLevels - 1]);
+    }
+  }
+  // Then, from the sea up, no lower than what it runs into: the sea, a lake, the river further down
+  // (where that came up to a lake's or the sea's). By the sea's level it is the sea's: a river a hand
+  // over it would draw as a step in the water.
+  for(const uint64_t item : order)
+  {
+    const uint32_t c = uint32_t(item);
+    if(!isRiver(c))
+      continue;
+    const uint32_t to   = down[c];
+    const Into     into = intoOf(c);
+    RiverPiece&    p    = m.pieces[size_t(pieceOf[c])];
+    for(float& l : p.level)
+    {
+      l = l * float(smooth(0.0, kRiverLow, double(l)));
+      l = l < 0.3F ? 0.0F : l;
+    }
+    float end = p.level[kRiverLevels - 1];
+    if(into.sea)
+      end = 0.0F;
+    else if(into.lake)
+      end = level[to];
+    else if(pieceOf[to] >= 0)
+      end = m.pieces[size_t(pieceOf[to])].level[main[to] == c ? 0 : (kRiverLevels - 1) / 2];
+    p.level[kRiverLevels - 1] = end;
+    for(float& l : p.level)
+      l = std::max(l, end);
+    // its width: from the one above's to its own, and on to the next one's
+    p.half[1] = half[c];
+    p.half[0] = main[c] == kNone ? 0.3F * half[c] : kind[main[c]] == eMapLand ? 0.5F * (half[c] + half[main[c]]) : half[c];  // (a head starts thin)
+    p.half[2] = !into.sea && !into.lake && main[to] == c ? 0.5F * (half[c] + half[to]) : half[c];
+  }
+  // Its meanders: how far each stretch's water may swing either way, by how gently it falls and how
+  // much room the ground across its middle leaves it, and its stretch's length
+  std::vector<float> swings(count, 0.0F), lengths(riverCells.size(), 0.0F);
+  parallelFor(riverCells.size(), 64, [&](size_t begin, size_t end) {
+    for(size_t i = begin; i < end; i++)
+    {
+      const uint32_t    c = riverCells[i];
+      const RiverPiece& p = m.pieces[size_t(pieceOf[c])];
+      double            length = 0.0;
+      glm::dvec3        from   = p.a;
+      for(int k = 1; k <= 8; k++)
+      {
+        const glm::dvec3 to = bent(p.a, p.b, p.c, 0.125 * k);
+        length += glm::length(to - from) * R;
+        from = to;
+      }
+      lengths[i]        = float(length);
+      const double fall = (double(p.level[0]) - double(p.level[kRiverLevels - 1])) / std::max(length, 1.0);
+      double       most = std::min(kMeanderSwing * 2.0 * double(half[c]), kMeanderMost * cell) * (1.0 - smooth(kMeanderFlat, kMeanderSteep, fall));
+      const glm::dvec3 way = p.c - p.a, left = glm::cross(p.b, way);
+      if(most < 0.5 || glm::dot(left, left) <= 0.0)
+        continue;
+      const glm::dvec3 side = glm::normalize(left), mid = bent(p.a, p.b, p.c, 0.5);
+      const double     top  = double(p.level[(kRiverLevels - 1) / 2]) + kMeanderRoom;
+      for(const double sign : {-1.0, 1.0})
+      {
+        double room = 0.0;
+        for(int k = 1; k <= 4; k++)
+        {
+          const double x = most * k / 4.0;
+          if(drawn(glm::normalize(mid + side * (sign * x / R))) > top)
+            break;
+          room = x;
+        }
+        most = std::min(most, room);
+      }
+      swings[c] = most < 0.5 ? 0.0F : float(most);
+    }
+  });
+  // and its waves, from the sea up: a stretch's phase where it ends is the next one's where that
+  // starts (a river's mouth and a tributary's start somewhere of their own), and rises upstream by its
+  // length in waves of kMeanderWaves widths. Its swing at a joint is between the two stretches'; it
+  // ends in a tributary's own curve, and none at a river's head, where it starts thin.
+  for(const uint64_t item : order)
+  {
+    const uint32_t c = uint32_t(item);
+    if(!isRiver(c))
+      continue;
+    const uint32_t to   = down[c];
+    const Into     into = intoOf(c);
+    const bool     on   = !into.sea && !into.lake && main[to] == c;
+    RiverPiece&    p    = m.pieces[size_t(pieceOf[c])];
+    uint32_t       h    = (c ^ strayBy) * 2246822519U;
+    h ^= h >> 13;
+    h *= 3266489917U;
+    h ^= h >> 16;
+    const double end  = on ? double(m.pieces[size_t(pieceOf[to])].phase[0]) : double(h & 0xFFFFU) / 65536.0 * 2.0 * kPi;
+    const double wave = kMeanderWaves * std::max(2.0 * double(half[c]), 1.0) * (1.0 + kMeanderLonger * std::sin(kMeanderLongerRate * end + 1.7));
+    p.phase[1]        = float(end);
+    p.phase[0]        = float(end + 2.0 * kPi * double(lengths[size_t(riverAt[c])]) / wave);
+    const uint32_t d  = main[c];
+    p.wander[1]       = swings[c];
+    p.wander[0]       = d == kNone ? 0.0F : kind[d] == eMapLand ? 0.5F * (swings[c] + swings[d]) : swings[c];
+    p.wander[2]       = on ? 0.5F * (swings[c] + swings[to]) : into.sea || into.lake ? swings[c] : 0.0F;
+    // (a tributary comes in where the river's water is, swung off its curve)
+    if(!into.sea && !into.lake && !on && pieceOf[to] >= 0)
+      p.c = riverMiddleAt(m.pieces[size_t(pieceOf[to])], 0.5, R);
+  }
+  // Between a river and a lake, across the dry ground of the lake's hollow: from the hollow's cell
+  // `x` the river touches, down the hollow's ground to the lake, at the lake's level (it cuts its
+  // way), or as far as a river already there. For a river that comes in (`x` is where it runs to),
+  // and for the one that leaves (`x` is where its water comes from).
+  const auto cross = [&](uint32_t river, uint32_t x) {
+    uint32_t last = river;
+    while(x != kNone && kind[x] == eMapBasin && pieceOf[x] < 0)
+    {
+      const uint32_t next = toLake[x];
+      RiverPiece     p;
+      p.b = pointOf(x);
+      p.a = glm::normalize(p.b + pointOf(last));
+      p.c = next == kNone ? p.b : kind[next] == eMapLake ? g.centre(next) : glm::normalize(p.b + pointOf(next));
+      for(float& l : p.level)
+        l = level[x];
+      for(float& h : p.half)
+        h = half[river];
+      pieceOf[x] = int32_t(m.pieces.size());
+      m.pieces.push_back(p);
+      last = x;
+      x    = next;
+    }
+  };
+  for(const uint64_t item : order)
+  {
+    const uint32_t c = uint32_t(item);
+    if(!isRiver(c))
+      continue;
+    cross(c, down[c]);
+    if(main[c] != kNone)
+      cross(c, main[c]);
+  }
+  // near a corner of the cube a cell's window is not whole: the pieces there are listed
+  for(uint32_t c = 0; c < count; c++)
+    if(pieceOf[c] >= 0)
+    {
+      const uint32_t rem = c % nn;
+      if(fromCorner(int(n), int(rem % n), int(rem / n)) < 2 * kCornerLevel + kWindow)
+        m.corner[cornerOf(g.centre(c))].push_back(uint32_t(pieceOf[c]));
+    }
+  g.pad(pieceOf, m.river, false, int32_t(-1));
+  m.reach.assign(count, 0);
+  parallelFor(count, 4096, [&](size_t begin, size_t end) {
+    const int stride = int(g.stride());
+    for(size_t c = begin; c < end; c++)
+    {
+      const uint32_t face = uint32_t(c) / nn, rem = uint32_t(c) % nn;
+      const int      i = int(rem % n), j = int(rem / n);
+      if(fromCorner(int(n), i, j) < kWindow)
+      {
+        m.reach[c] = m.corner[cornerOf(g.centre(uint32_t(c)))].empty() ? 0 : 1;
+        continue;
+      }
+      const int32_t* self = m.river.data() + g.padded(uint8_t(face), i, j);
+      bool           any  = false;
+      for(int b = -kWindow; b <= kWindow && !any; b++)
+        for(int a = -kWindow; a <= kWindow && !any; a++)
+          any = self[a + b * stride] >= 0;
+      m.reach[c] = any ? 1 : 0;
+    }
+  });
+
   m.down = std::move(down);
   m.kind = std::move(kind);
   return out;
@@ -1296,6 +1621,7 @@ Inland mapInland(const BaseMap& m, double radius, const glm::dvec3& d)
   in.riverLevel = best.level;
   in.riverHalf  = best.half;
   in.riverAway  = best.away;
+  in.riverBend  = best.bend;
   return in;
 }
 
@@ -1328,7 +1654,7 @@ double inlandSheet(const Inland& in, double footprint)
     // level to just past the water's edge, then down under the bank; and under the ground altogether
     // where the river is too narrow for what draws it
     const double past = in.riverAway - in.riverHalf;
-    const double dive = smooth(0.4, std::max(0.3 * in.bank, 1.0), past);
+    const double dive = smooth(0.4, std::max(0.9 * in.riverHalf, 1.0), past);
     sheet             = std::max(sheet, in.riverLevel - 40.0 * (1.0 - riverDrawn(in, footprint)) - 60.0 * dive - 3000.0 * smooth(0.5 * in.bank, in.bank, past));
   }
   return sheet;
@@ -1358,28 +1684,64 @@ double inlandGround(const Inland& in, double natural, double footprint)
     {
       const double width = 2.0 * in.riverHalf, past = in.riverAway - in.riverHalf;
       const double depth = std::min(0.5 + 0.12 * width, 3.5);
+      // Where the ground lies under what holds the river it is built up to it, but not out of the
+      // sea: a river's mouth has no banks.
+      const double build = smooth(0.0, 1.0, e);
       double       cut;
+      // (toward the outside of a bend, deeper water and a steeper bank; toward the inside, shallows
+      // and a low bank that runs a long way, a bar)
+      const double b = std::clamp(in.riverBend, -kBedMost, kBedMost);
       if(past <= 0.0)
       {
-        // the bed, which only ever deepens the ground (a river that runs out into the sea, or
-        // through a pool, has their bed)
-        const double x = in.riverAway / std::max(in.riverHalf, 1e-6);
-        cut            = std::min(in.riverLevel - depth * (1.0 - x * x), e);
+        // its bed, cut into the land or built up where the land dips under it; deepest where `b` is
+        const double x   = in.riverAway / std::max(in.riverHalf, 1e-6) - b;
+        const double u   = x / (x >= 0.0 ? 1.0 - b : 1.0 + b);
+        const double bed = in.riverLevel - depth * (1.0 + kBedDeeper * std::abs(b)) * (1.0 - u * u);
+        cut              = e > bed ? bed : mix(e, bed, build);
       }
       else
       {
-        // the bank: up 1 in 4 for half a metre and gently after, easing into the land. Where the
-        // ground is under the river's level it is built up to hold the river in, but not out of
-        // the sea: a river's mouth has no banks.
-        double bank = in.riverLevel + std::min(0.25 * past, 0.5 + 0.03 * past);
-        if(bank > e)
-          bank = mix(e, bank, smooth(0.0, 1.0, e));
-        cut = mix(bank, e, smooth(0.3 * in.bank, in.bank, past));
+        // its banks: a low one, then the side of what it cuts through, out to where the land is as
+        // high; where the land lies lower, a bank of the low one's height falling away to it. All of
+        // it eased into the land by the end of the river's reach.
+        // (a side steep enough to meet the land by kBankMeet of the reach: where it cuts deep, a
+        // gorge's wall, and not one where its reach ends)
+        const double run  = kBankLip * (1.0 - kBankBar * b);
+        const double lip  = kBankLipRise * kBankLip / run * std::min(past, run);
+        const double over = std::max(past - run, 0.0);
+        const double rise = std::max(kBankSide * (1.0 + kBankCut * b), (e - in.riverLevel - kBankLipRise * kBankLip) / std::max(kBankMeet * in.bank - run, 1.0));
+        const double side = in.riverLevel + lip + rise * over;
+        const double held = in.riverLevel + lip - kBankFall * over;
+        cut               = e > side ? side : e < held ? mix(e, held, build) : e;
+        cut               = mix(cut, e, smooth(0.6 * in.bank, in.bank, past));
+        // (nor through a lake's shore beside it: a river at another level would let the lake out)
+        if(in.lake > 0.0)
+          cut = std::max(cut, std::min(e, in.lakeLevel + 0.1));
       }
       e = mix(e, cut, drawn);
     }
   }
   return e;
+}
+
+double inlandRelief(const Inland& in, bool rivers)
+{
+  double relief = 1.0;
+  if(in.river && rivers)
+    relief = smooth(0.0, std::min(in.bank, kReliefHalves * in.riverHalf + kReliefPast), in.riverAway - in.riverHalf);
+  if(in.lake > 0.0)
+    relief = std::min(relief, 1.0 - smooth(0.0, kLakeSheet, in.lake));
+  return relief;
+}
+
+double inlandNear(const Inland& in)
+{
+  double near = 0.0;
+  if(in.river)
+    near = 1.0 - smooth(0.0, in.bank, in.riverAway - in.riverHalf);
+  if(in.lake > 0.0)
+    near = std::max(near, smooth(0.0, kLakeSheet, in.lake));
+  return near;
 }
 
 float inlandPainted(const Inland& in, double footprint)
