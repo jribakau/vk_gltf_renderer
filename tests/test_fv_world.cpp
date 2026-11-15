@@ -225,6 +225,40 @@ TEST(WorldFields, NothingFinerThanWhatDrawsIt)
   EXPECT_LT(coarse, 0.15 * fine);
 }
 
+// The hills' octaves are a share of the radius, and on a large planet they go on finer, as far as some
+// 100 m: there the land bends over 60 m, as it does on a small planet, where they stop as they were
+// (seen against the land drawn so coarsely that what is finer than their first four is left out)
+TEST(WorldFields, OnALargePlanetTheHillsGoOnFiner)
+{
+  const auto bend = [](double radius, double coarse) {
+    W::World w = W::make({.radius = radius}, {.base = false});
+    std::erase_if(w.stages, [](const W::Stage& s) { return s.name != "continents" && s.name != "hills"; });
+    double fine = 0.0, kept = 0.0;
+    int    n    = 0;
+    for(uint32_t i = 0; i < 4000; i++)
+    {
+      const glm::dvec3 d = spread(i, 4000), e = glm::normalize(glm::cross(d, glm::dvec3(0.0, 1.0, 0.0)));
+      if(W::sample(w, d, 1.0).elevation < 20.0 || !std::isfinite(e.x))
+        continue;  // (the land, out of the shore's)
+      const auto curve = [&](double footprint) {
+        const auto at = [&](double x) { return W::sample(w, glm::normalize(d + e * (x / radius)), footprint).elevation; };
+        return at(-60.0) - 2.0 * at(0.0) + at(60.0);
+      };
+      fine += std::abs(curve(1.0));
+      kept += std::abs(curve(coarse));
+      n++;
+    }
+    EXPECT_GT(n, 300);
+    return std::make_pair(fine / n, kept / n);
+  };
+  // (a footprint of a 32nd of the hills' cells leaves their first four whole and nothing finer)
+  const auto [small, smallKept] = bend(20000.0, 20000.0 / (32.0 * 26.0));
+  EXPECT_NEAR(small, smallKept, 1e-6);
+  const auto [large, largeKept] = bend(100000.0, 100000.0 / (32.0 * 26.0));
+  EXPECT_GT(large, 2.0 * largeKept);
+  EXPECT_GT(large, 0.5 * small);
+}
+
 // The land stands in tiers: along a line over it the ground steps up or down a tier within a few
 // metres here and there, a face of bare rock, with no break in it; what draws it too coarsely to
 // stand a face up has a slope there and no cliff, and a planet with no relief has none

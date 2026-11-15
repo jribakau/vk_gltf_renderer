@@ -853,8 +853,13 @@ TEST(WorldMapRivers, DISABLED_Banks)
   spec.sea      = planet.sea.value_or(spec.sea);
   spec.relief   = planet.relief.value_or(spec.relief);
   spec.features = std::make_shared<const W::Features>(planet.features);
-  const W::World    w = W::make(spec);
-  const W::BaseMap& m = *w.base;
+  // (FV_WORLD_MAP: the map's cells along a face, in place of the planet's own)
+  const char*       cells = std::getenv("FV_WORLD_MAP");
+  const auto        from  = std::chrono::steady_clock::now();
+  const W::World    w     = W::make(spec, {.map = cells ? uint32_t(std::atoi(cells)) : 0U});
+  const W::BaseMap& m     = *w.base;
+  std::printf("made in %.2f s, %u cells a face, %.0f m a cell, %zu river pieces\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count(),
+              m.grid.cells(), m.cell, m.pieces.size());
   const double      edges[] = {-30, -10, -3, -1, 1, 3, 10, 30};
   std::vector<std::array<double, 2>> found(m.pieces.size() * 5);
   std::atomic<int>                   onRidges{0}, inTrenches{0}, looked{0}, ridgesBare{0};

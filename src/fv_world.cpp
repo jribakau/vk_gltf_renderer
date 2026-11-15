@@ -192,12 +192,37 @@ void mountains(const World& w, const Point& p, Sample& s)
   s.elevation += 0.045 * w.spec.radius * w.spec.relief * double(s.mountain);
 }
 
-// Hills, lower toward the shore and on the sea's floor
+// Hills, lower toward the shore and on the sea's floor. Their four octaves are a share of the radius:
+// on a large planet the finest is some 500 m across (on one 20 km in radius, 100 m), and the land
+// between it and the ground's bumps was smooth. There the series goes on, each octave half as wide
+// and half as high as the last, while its cells are at least kHillsSmallest across; the four are as
+// they were.
+constexpr double   kHillsSmallest = 75.0;     // metres
+constexpr uint32_t kHillsOctaves  = 4;
+constexpr double   kHillsSum      = 0.9375;   // the four octaves' amplitudes, which fbm3 shares them by
+
 void hills(const World& w, const Point& p, Sample& s)
 {
   if(w.spec.relief <= 0.0)
     return;
-  const double h    = fbm3(p.direction * kHills, seedOf(w), kChHills, 4, finestOf(w, p, kHills)) - 0.5;
+  const double finest = finestOf(w, p, kHills);
+  double       h      = fbm3(p.direction * kHills, seedOf(w), kChHills, kHillsOctaves, finest) - 0.5;
+  {
+    glm::dvec3 q = p.direction * kHills;
+    for(uint32_t o = 0; o < kHillsOctaves; o++)
+      q = nextOctave(q);
+    double amplitude = std::ldexp(0.5, -int(kHillsOctaves)), cells = std::ldexp(1.0, -int(kHillsOctaves));
+    for(uint32_t o = kHillsOctaves; o < 10 && cells * w.spec.radius / kHills >= kHillsSmallest; o++)
+    {
+      const double k = kept(finest, cells);
+      if(k <= 0.0)
+        break;  // (nor any finer)
+      h += amplitude / kHillsSum * k * (valueNoise3(q, lattice(seedOf(w), kChHills + o)) - 0.5);
+      amplitude *= 0.5;
+      cells *= 0.5;
+      q = nextOctave(q);
+    }
+  }
   const double land = 0.15 + 0.85 * smooth(0.0, 0.5, s.continent);
   s.elevation += 2.0 * h * 0.007 * w.spec.radius * w.spec.relief * land * (1.0 - 0.85 * double(s.placed.level));
   // the placed peaks and basins
