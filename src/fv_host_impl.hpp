@@ -1708,7 +1708,23 @@ struct FvHost::Impl
     {
       rs::EntityId              ground, sea;  // the sea's: none where the ground is all above it
       std::vector<rs::EntityId> plants;       // what stands on it: an entity a variant, its places as copies
-      uint64_t                  standing = 0; // how many those are
+      uint64_t                  standing = 0; // how many of those show
+      // An entity's plants, the furthest seen first (fv::world::Stand): where each stands at its full
+      // size, how far it is seen from, and how much of its size each copy the entity has shows, in
+      // kPlantSteps (0: hidden). The entity has the first of them, as many as may be seen from where
+      // the eye is, and the rest come as it nears (showPlanetPlants).
+      struct Stood
+      {
+        std::vector<glm::mat4> places;
+        std::vector<float>     reach;
+        std::vector<uint8_t>   grown;  // one a copy the entity has
+      };
+      std::shared_ptr<std::vector<Stood>> stood;  // by entity of `plants` (shared: a chunk is handed about by value)
+      // Its ground's middle in the root's frame, which its plants' places are about, and how far its
+      // corners are from that; where the eye was when its plants were last shown by their distance
+      glm::dvec3 middle{0.0};
+      double     round = 0.0;
+      glm::dvec3 shownFrom{1.0e30};
     };
     std::map<fv::world::Quad, Chunk> shown;    // the cut that draws: the planet once over
     // What drew when its quads were asked for again (restreamPlanet): shown until the first cut of
@@ -1733,6 +1749,10 @@ struct FvHost::Impl
       size_t                                   next = 0;
     };
     std::vector<Landed> landed;
+    // What following the camera has cost (followPlanet), for a measure of a flight (backdrop.status):
+    // its frames, their time, and those of them that took over four milliseconds
+    uint64_t followFrames = 0, followSlow = 0;
+    double   followMs     = 0.0;
     // The quads no longer made or waited for (the planet's quads asked again)
     void forgetFlights()
     {
@@ -1751,6 +1771,7 @@ struct FvHost::Impl
     std::map<fv::world::GrassTile, rs::EntityId> tiles;       // drawn; none for a tile left out (too steep)
     std::map<uint8_t, std::vector<rs::EntityId>> spareTiles;  // by kind: hidden, for the next tiles of it
     fv::world::GrassWas                grassWas;
+    std::shared_ptr<const fv::world::World> grassWasOf;  // the planet its tiles' grounds were looked up on
     glm::dvec3                         tiledFor{1.0e30};  // where the camera was when the tiles were laid
     uint64_t                           standing = 0, tiled = 0;  // plants shown: with a place, in tiles
 
@@ -1854,6 +1875,11 @@ struct FvHost::Impl
   // Every frame: the quads made come into the scene, hidden, as many as a few milliseconds allow
   // (all of the first cut), and the cut that draws is resolved with them
   void landPlanet(rs::RetainedScene& scene);
+  // A chunk's plants by how far each is from the eye (fv::world::grownAt): its entities have the
+  // plants that may be seen from there, each hidden past its reach and growing in within it
+  void showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk& chunk, const glm::dvec3& eye);
+  // Every frame: that, for the shown chunks the eye has gone a few hundredths of its distance from
+  void followPlanetPlants(rs::RetainedScene& scene, const glm::dvec3& eye);
   void resolvePlanet(rs::RetainedScene& scene);
   // How its stream stands (backdrop.status): the quads the camera asks for, those drawn, and how
   // late the latest of the rest is; what is planted; what the planet is under the camera, and at

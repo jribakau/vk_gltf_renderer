@@ -1,6 +1,8 @@
-// What grows on a planet (src/fv_world_plants.hpp): a quad's plants are its children's, none stands in
-// the water or where the figures do, each is on the ground and upright, a wood has more trees than a
-// steppe; and the grass's tiles lie on the ground, none of them twice.
+// What grows on a planet (src/fv_world_plants.hpp): a plant is the same on whichever quad holds it,
+// the larger are seen from further and those seen from one place stay under their count, what is
+// seen from a place is on the quads that draw there, none stands in the water or where the figures
+// do, each is on the ground and upright, a wood has more trees than a steppe; and the grass's tiles
+// lie on the ground, none of them twice.
 
 #include <algorithm>
 #include <cmath>
@@ -52,6 +54,41 @@ std::map<uint8_t, std::vector<glm::dvec3>> placesOf(const W::World& w, const W::
   return out;
 }
 
+// Every plant of a quad: where it stands in the scene, how large it is and how far it is seen from
+struct Plant
+{
+  uint8_t    role = 0;
+  glm::dvec3 at{0.0};
+  double     scale = 1.0, reach = 0.0;
+};
+std::vector<Plant> plantsOf(const W::World& w, const W::Quad& q)
+{
+  const glm::dvec3   centre = W::toScene(w, W::direction(q.face, 0.0, 0.0), 0.0);
+  std::vector<Plant> out;
+  for(const W::Stand& s : W::standing(w, q, centre, kVariants))
+  {
+    EXPECT_EQ(s.places.size(), s.reach.size());
+    EXPECT_TRUE(std::is_sorted(s.reach.begin(), s.reach.end(), std::greater<float>())) << "the furthest seen first";
+    for(size_t i = 0; i < s.places.size(); i++)
+      out.push_back({s.role, centre + glm::dvec3(s.places[i][3]), double(glm::length(glm::vec3(s.places[i][1]))), double(s.reach[i])});
+  }
+  return out;
+}
+
+// A place in a wood, well inland
+glm::dvec3 inAWood(const W::World& w, uint32_t skip = 0)
+{
+  for(uint32_t i = 0; i < 6000; i++)
+  {
+    const glm::dvec3 d = spread(i, 6000);
+    const W::Sample  s = W::sample(w, d, 30.0);
+    if(s.elevation > 10.0 && w.biomes[size_t(s.biome)].name == "forest" && s.share[size_t(s.biome)] > 0.95F && s.shore > 500.0F && skip-- == 0)
+      return d;
+  }
+  ADD_FAILURE() << "no wood";
+  return w.frame.site;
+}
+
 // A few quads of a level with plenty growing on them
 std::vector<W::Quad> grown(const W::World& w, uint8_t level, size_t count, size_t least)
 {
@@ -74,41 +111,50 @@ std::vector<W::Quad> grown(const W::World& w, uint8_t level, size_t count, size_
 
 }  // namespace
 
-TEST(WorldPlants, AQuadsPlantsAreAmongItsChildrens)
+TEST(WorldPlants, APlantIsTheSameOnWhicheverQuadHoldsIt)
 {
   const W::World& w = planet();
-  // a level whose quads keep a share of their trees, over the finest, which keep every plant (keptOn)
-  const uint8_t level = uint8_t(W::finestLevel(w) - 1);
-  const W::Kept kept  = W::keptOn("tree", W::width(w, {0, level, 0, 0}));
-  ASSERT_GT(kept.share, 0.3F);
-  ASSERT_LT(kept.share, 1.0F);
-  ASSERT_EQ(W::keptOn("tree", W::width(w, {0, W::finestLevel(w), 0, 0})).share, 1.0F);
-  const std::vector<W::Quad> quads = grown(w, level, 4, 25);
-  ASSERT_GE(quads.size(), 2U);
-  for(const W::Quad& q : quads)
+  // two levels over the finest: a quad holds those of its children's plants that are seen from where
+  // it can draw (heldFrom), each in its place, of its size and with its reach
+  for(const int up : {1, 2})
   {
-    const auto whole = placesOf(w, q);
-    std::map<uint8_t, std::vector<glm::dvec3>> parts;
-    for(const W::Quad& child : W::children(q))
-      for(const auto& [role, places] : placesOf(w, child))
-        parts[role].insert(parts[role].end(), places.begin(), places.end());
-    // its trees (and only trees: the undergrowth is the finest quads') stand where trees of its
-    // children do, and are about that share of them
-    size_t all = 0, found = 0;
-    for(const auto& [role, places] : whole)
+    const uint8_t              level = uint8_t(W::finestLevel(w) - up);
+    const std::vector<W::Quad> quads = grown(w, level, 3, 25);
+    ASSERT_GE(quads.size(), 2U) << up;
+    for(const W::Quad& q : quads)
     {
-      EXPECT_EQ(W::kStandingRoles[role], "tree");
-      for(const glm::dvec3& p : places)
+      const double             held  = W::heldFrom(w, q);
+      const std::vector<Plant> whole = plantsOf(w, q);
+      std::vector<Plant>       parts;
+      for(const W::Quad& child : W::children(q))
       {
-        all++;
-        // (a child's ground is drawn finer, so a plant's foot may be a little higher or lower on it)
-        found += std::any_of(parts[role].begin(), parts[role].end(), [&](const glm::dvec3& o) { return glm::distance(o, p) < 2.5; });
+        EXPECT_LT(W::heldFrom(w, child), held);
+        const std::vector<Plant> of = plantsOf(w, child);
+        parts.insert(parts.end(), of.begin(), of.end());
       }
+      // (a child's ground is drawn finer, so a plant's foot may be a little higher or lower on it)
+      const auto same = [](const Plant& a, const Plant& b) {
+        return a.role == b.role && glm::distance(a.at, b.at) < 2.5 && std::abs(a.scale - b.scale) < 1e-4 && std::abs(a.reach - b.reach) < 1e-2;
+      };
+      ASSERT_GT(whole.size(), 10U);
+      size_t heldToo = 0;
+      for(const Plant& plant : whole)
+      {
+        EXPECT_GE(plant.reach, held);
+        EXPECT_TRUE(std::any_of(parts.begin(), parts.end(), [&](const Plant& o) { return same(plant, o); })) << int(plant.role);
+      }
+      for(const Plant& plant : parts)
+        if(plant.reach >= held)
+        {
+          heldToo++;
+          EXPECT_TRUE(std::any_of(whole.begin(), whole.end(), [&](const Plant& o) { return same(plant, o); })) << int(plant.role);
+        }
+      EXPECT_EQ(heldToo, whole.size());
+      EXPECT_GT(parts.size(), whole.size()) << "the children hold the smaller ones too";
     }
-    ASSERT_GT(all, 10U);
-    EXPECT_GT(double(found), 0.95 * double(all));
-    EXPECT_NEAR(double(all), double(kept.share) * double(parts[0].size()), 0.25 * double(all) + 4.0);
   }
+  // the finest hold every plant
+  EXPECT_EQ(W::heldFrom(w, {0, W::finestLevel(w), 0, 0}), 0.0);
 }
 
 TEST(WorldPlants, EachStandsOnTheGroundUprightAndOutOfTheWater)
@@ -189,21 +235,100 @@ TEST(WorldPlants, AWoodHasMoreTreesThanASteppe)
   EXPECT_EQ(trees["desert"].first, 0U);
 }
 
-TEST(WorldPlants, FarQuadsKeepFewerAndLarger)
+TEST(WorldPlants, TheLargerAreSeenFromFurther)
 {
   const W::World& w = planet();
-  EXPECT_EQ(W::keptOn("shrub", 300.0).share, 0.0F);
-  EXPECT_GT(W::keptOn("tree", 300.0).share, 0.0F);
-  EXPECT_LT(W::keptOn("tree", 500.0).share, W::keptOn("tree", 200.0).share);
-  EXPECT_GT(W::keptOn("tree", 500.0).grow, W::keptOn("tree", 200.0).grow);
-  EXPECT_EQ(W::keptOn("tree", 1000.0).share, 0.0F);
+  // a role's reach: its largest from `most`, every one from `all`, those between by their size
+  const W::Reach wood = W::reachOf("tree", 0.0234);
+  EXPECT_DOUBLE_EQ(wood.of(0.0), wood.most);
+  EXPECT_DOUBLE_EQ(wood.of(1.0), wood.all);
+  EXPECT_GT(wood.most, 3000.0);
+  EXPECT_GE(wood.all, 300.0);
+  EXPECT_LT(wood.all, 600.0);
+  for(double rank = 0.05; rank < 1.0; rank += 0.05)
+    EXPECT_GE(wood.of(rank - 0.05), wood.of(rank));
+  // thinner woods are seen whole from further, thicker ones from no nearer than a few hundred metres
+  EXPECT_GT(W::reachOf("tree", 0.002).all, 2.0 * wood.all);
+  EXPECT_DOUBLE_EQ(W::reachOf("tree", 1e-5).all, wood.most);
+  EXPECT_GE(W::reachOf("tree", 1.0).all, 300.0);
+  // the undergrowth, a hundred metres or a few
+  const W::Reach bushes = W::reachOf("shrub", 0.0225);
+  EXPECT_GE(bushes.all, 100.0);
+  EXPECT_LE(bushes.most, 500.0);
+  // a plant shows none of itself past its reach, and all of it well within
+  EXPECT_EQ(W::grownAt(1001.0, 1000.0), 0.0F);
+  EXPECT_GT(W::grownAt(990.0, 1000.0), 0.0F);
+  EXPECT_LT(W::grownAt(990.0, 1000.0), 0.2F);
+  EXPECT_EQ(W::grownAt(800.0, 1000.0), 1.0F);
+  // on a quad: among a role's plants of one biome, the further seen are the larger
+  const W::Quad      q = quadAt(inAWood(w), uint8_t(W::finestLevel(w) - 2));
+  std::vector<Plant> trees;
+  for(const Plant& plant : plantsOf(w, q))
+    if(plant.role == 0)
+      trees.push_back(plant);
+  ASSERT_GT(trees.size(), 20U);
+  std::sort(trees.begin(), trees.end(), [](const Plant& a, const Plant& b) { return a.reach > b.reach; });
+  EXPECT_GT(trees.front().scale, trees.back().scale);
   // a quad kilometres across has nothing with a place of its own, and is asked in no time
   EXPECT_TRUE(W::standing(w, {0, 2, 1, 1}, glm::dvec3(0.0), kVariants).empty());
   // no kit, or no density: nothing
   const std::array<uint32_t, 7> none{};
-  const W::Quad                 near = quadAt(w.frame.site, W::finestLevel(w));
-  EXPECT_TRUE(W::standing(w, near, glm::dvec3(0.0), none).empty());
-  EXPECT_TRUE(W::standing(w, near, glm::dvec3(0.0), kVariants, 0.0).empty());
+  const W::Quad                 underfoot = quadAt(w.frame.site, W::finestLevel(w));
+  EXPECT_TRUE(W::standing(w, underfoot, glm::dvec3(0.0), none).empty());
+  EXPECT_TRUE(W::standing(w, underfoot, glm::dvec3(0.0), kVariants, 0.0).empty());
+}
+
+TEST(WorldPlants, WhatIsSeenFromAPlaceIsOnTheQuadsThatDrawThere)
+{
+  const W::World& w = planet();
+  for(const uint32_t which : {0U, 40U})
+  {
+    const glm::dvec3   d   = inAWood(w, which);
+    const glm::dvec3   eye = W::toScene(w, d, W::sample(w, d, 1.0).elevation + 30.0);
+    const W::Selection cut = W::select(w, eye);
+    // those seen: on the quads that draw, each within its reach of the eye
+    std::map<W::Quad, std::vector<Plant>> drawn;
+    size_t                                trees = 0, others = 0;
+    for(const W::Quad& q : cut.leaves)
+    {
+      if(W::width(w, q) > 5000.0)
+        continue;  // (too far for any)
+      std::vector<Plant> of = plantsOf(w, q);
+      for(const Plant& plant : of)
+        if(glm::distance(plant.at, eye) < plant.reach)
+          (plant.role <= 1 ? trees : others)++;
+      drawn[q] = std::move(of);
+    }
+    // a wood all round: as many as a place may see, and no more
+    EXPECT_GT(trees, 4000U);
+    EXPECT_LT(double(trees), 1.15 * W::kTreesSeen);
+    EXPECT_LT(double(others), 1.15 * W::kOthersSeen * 5.0);
+    // and every plant there is that the eye is within reach of is among them: of the finest quads
+    // here and there about the eye, none is missing from the quad that draws its ground
+    size_t looked = 0;
+    for(uint32_t i = 0; i < 60; i++)
+    {
+      const double     away = 30.0 + 2800.0 * double(i) / 60.0, turn = 2.4 * double(i);
+      const glm::dvec3 at   = eye + glm::dvec3(std::cos(turn), 0.0, std::sin(turn)) * away;
+      const W::Quad    fine = quadAt(W::toPlanet(w, at), W::finestLevel(w));
+      const auto       leaf = std::find_if(cut.leaves.begin(), cut.leaves.end(), [&](const W::Quad& q) {
+        return q.face == fine.face && q.level <= fine.level && (fine.x >> (fine.level - q.level)) == q.x && (fine.y >> (fine.level - q.level)) == q.y;
+      });
+      ASSERT_NE(leaf, cut.leaves.end());
+      const std::vector<Plant>& held = drawn[*leaf];
+      for(const Plant& plant : plantsOf(w, fine))
+      {
+        if(glm::distance(plant.at, eye) >= 0.97 * plant.reach)
+          continue;
+        looked++;
+        EXPECT_TRUE(std::any_of(held.begin(), held.end(), [&](const Plant& o) {
+          return o.role == plant.role && glm::distance(o.at, plant.at) < 2.5 && std::abs(o.scale - plant.scale) < 1e-4;
+        })) << "a " << W::kStandingRoles[plant.role] << " " << glm::distance(plant.at, eye) << " m off, seen from " << plant.reach << ", on a quad "
+            << W::width(w, *leaf) << " m across";
+      }
+    }
+    EXPECT_GT(looked, 50U);
+  }
 }
 
 TEST(WorldPlants, TheGrassIsTilesOnTheGroundRoundWhereOneLooksFrom)
@@ -226,6 +351,23 @@ TEST(WorldPlants, TheGrassIsTilesOnTheGroundRoundWhereOneLooksFrom)
   const std::vector<glm::dvec3>     foci{from};
   const std::vector<W::GrassTile>   tiles = W::grassTiles(w, foci, kinds, was);
   ASSERT_GT(tiles.size(), 100U);
+  // asked again, and from a few paces on: what grows on a tile's ground is remembered, and the tiles
+  // are those a first asking finds there
+  EXPECT_GT(was.grounds.size(), tiles.size() / 2);
+  EXPECT_EQ(W::grassTiles(w, foci, kinds, was), tiles);
+  {
+    const std::vector<glm::dvec3> on{from + glm::dvec3(9.0, 0.0, 5.0)};
+    W::GrassWas                   again = was, afresh = was;
+    afresh.grounds.clear();
+    EXPECT_EQ(W::grassTiles(w, on, kinds, again), W::grassTiles(w, on, kinds, afresh));
+    // far away, and back: the tiles left behind are forgotten, and found again the same
+    const std::vector<glm::dvec3> off{W::toScene(w, -W::toPlanet(w, from), 50.0)};
+    for(int i = 0; i < 3; i++)
+      W::grassTiles(w, off, kinds, again);
+    EXPECT_LT(again.grounds.size(), 4 * tiles.size() + 1024);
+    W::GrassWas back = was;
+    EXPECT_EQ(W::grassTiles(w, foci, kinds, back), tiles);
+  }
   // no square of ground under two tiles of the grass: by a tile's reach in the finest level's cells
   std::set<std::tuple<int, int64_t, int64_t>> covered;
   size_t                                      thick = 0, level = 0;

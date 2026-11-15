@@ -68,6 +68,17 @@ constexpr double kPlanetLandMs = 2.0;
 constexpr double kEyeSpeedOver = 0.15;
 constexpr double kEyeJump      = 0.2;
 constexpr double kEyeJumpLeast = 40.0;
+// A plant grows in by this many steps of its size (fv::world::grownAt)
+constexpr int kPlantSteps = 16;
+// A chunk's entities have the plants seen from kPlantsHeld of the eye's distance to the chunk or
+// further, and are given them again when they have fewer than those seen from kPlantsHeldLeast of it
+// or more than those from kPlantsHeldMost: an entity given other copies is gone through whole
+constexpr double kPlantsHeld = 0.84, kPlantsHeldLeast = 0.93, kPlantsHeldMost = 0.72;
+// A chunk's plants are shown by their distance again once the eye has gone this share of its
+// distance to the chunk (of kPlantsNear, nearer): a step of a plant's growing in is 1 / kPlantSteps
+// of fv::world::kGrowsOver of its reach
+constexpr double kPlantsAgain = 0.02;
+constexpr double kPlantsNear  = 40.0;
 
 W::Quad parentOf(const W::Quad& q)
 {
@@ -279,6 +290,18 @@ void FvHost::Impl::followPlanet()
   if(!p.world)
     return;  // being made
   const fv::world::World& world = *p.world;
+  struct Timed
+  {
+    PlanetBuilt&                          p;
+    std::chrono::steady_clock::time_point from = std::chrono::steady_clock::now();
+    ~Timed()
+    {
+      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count();
+      p.followFrames++;
+      p.followMs += ms;
+      p.followSlow += ms > 4.0;
+    }
+  } timed{p};
 
   // the eye, in the root's frame; with no camera, a figure's
   glm::dvec3       eye(0.0, 1.7, 0.0);
@@ -340,6 +363,7 @@ void FvHost::Impl::followPlanet()
       resolvePlanet(scene);  // what has arrived may no longer be wanted
   }
   landPlanet(scene);
+  followPlanetPlants(scene, eye);
   // (the grass's tiles, once the camera has gone a few metres: a tile is two across at the least and
   // stays a little past where it would be laid, and every change is a pass of the renderer over the
   // scene's instances)
@@ -488,20 +512,25 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
       chunk.sea = entity(*m.sea, p.sea, "Planet sea");
     // what stands on it: each variant's places as the copies of an entity that draws the variant's
     // mesh (`of`: the entity that holds it, hidden; `base`: its own turn and scale under each place)
-    const auto stand = [&](rs::EntityId of, const glm::mat4& base, std::vector<glm::mat4>& places) {
+    // Its copies are the plants seen from where the eye is (showPlanetPlants): one hidden until then.
+    chunk.middle = m.ground.centre;
+    chunk.round  = 0.8 * W::width(*p.world, m.quad);
+    chunk.stood  = std::make_shared<std::vector<PlanetBuilt::Chunk::Stood>>();
+    const auto stand = [&](rs::EntityId of, const glm::mat4& base, W::Stand& s) {
       const rs::Entity* held = scene.entity(of);
-      if(!held || !held->mesh || places.empty())
+      if(!held || !held->mesh || s.places.empty())
         return;
       rs::MeshInstance instance = *held->mesh;
-      for(glm::mat4& place : places)
+      for(glm::mat4& place : s.places)
         place = place * base;
-      chunk.standing += places.size();
-      instance.copies      = std::move(places);
+      instance.copies      = {s.places.front()};
+      instance.hidden      = {1};
       const rs::EntityId e = scene.createEntity("Planet plants", {0, -1}, backdropBuilt->root);
       scene.setLocal(e, {.translation = centre});
       scene.setMeshInstance(e, std::move(instance));
       scene.setVisible(e, false);
       chunk.plants.push_back(e);
+      chunk.stood->push_back({.places = std::move(s.places), .reach = std::move(s.reach), .grown = {0}});
     };
     // the kit's: none where something of the scene is over the ground (fv::backdrop::Standing, on
     // the plan of the floor: only what stands near the floor's height is under it)
@@ -510,17 +539,27 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
          found != backdropBuilt->variants.end() && s.variant < found->second.size())
       {
         if(!backdropStanding.empty())
-          std::erase_if(s.places, [&](const glm::mat4& place) {
-            const glm::vec3 at = centre + glm::vec3(place[3]);
-            return std::abs(at.y) < 2.0F * fv::backdrop::kOverhead
-                   && backdropStanding.over(at.x, at.z, fv::backdrop::kCrownShare * found->second[s.variant].halfWidth * glm::length(glm::vec3(place[0])));
-          });
-        stand(found->second[s.variant].entity, found->second[s.variant].base, s.places);
+        {
+          size_t kept = 0;
+          for(size_t i = 0; i < s.places.size(); i++)
+          {
+            const glm::vec3 at = centre + glm::vec3(s.places[i][3]);
+            if(std::abs(at.y) < 2.0F * fv::backdrop::kOverhead
+               && backdropStanding.over(at.x, at.z, fv::backdrop::kCrownShare * found->second[s.variant].halfWidth * glm::length(glm::vec3(s.places[i][0]))))
+              continue;
+            s.places[kept]  = s.places[i];
+            s.reach[kept++] = s.reach[i];
+          }
+          s.places.resize(kept);
+          s.reach.resize(kept);
+        }
+        stand(found->second[s.variant].entity, found->second[s.variant].base, s);
       }
     // the sea floor's
     for(W::Stand& s : m.seaStands)
       if(s.role < p.seaPlants.size() && s.variant < p.seaPlants[s.role].size())
-        stand(p.seaPlants[s.role][s.variant], glm::mat4(1.0F), s.places);
+        stand(p.seaPlants[s.role][s.variant], glm::mat4(1.0F), s);
+    showPlanetPlants(scene, chunk, p.eyeWas);
     p.arrived[m.quad] = chunk;
   };
   const bool first = p.shown.empty();  // (the first cut shows whole: nothing is drawn to hitch)
@@ -535,6 +574,99 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
       break;
   }
   resolvePlanet(scene);
+}
+
+void FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk& chunk, const glm::dvec3& eye)
+{
+  chunk.shownFrom = eye;
+  if(!chunk.stood)
+    return;
+  const double away     = std::max(glm::distance(eye, chunk.middle) - chunk.round, 0.0);
+  uint64_t     standing = 0;
+  std::vector<uint32_t>  moved, shown, hidden;
+  std::vector<glm::mat4> to;
+  for(size_t k = 0; k < chunk.plants.size() && k < chunk.stood->size(); k++)
+  {
+    PlanetBuilt::Chunk::Stood& s      = (*chunk.stood)[k];
+    const rs::Entity*          entity = scene.entity(chunk.plants[k]);
+    if(!entity || !entity->mesh)
+      continue;
+    // how many of its plants are seen from `share` of the way to the chunk or further: they are the
+    // furthest seen first
+    const auto seenFrom = [&](double share) {
+      return size_t(std::partition_point(s.reach.begin(), s.reach.end(), [&](float reach) { return double(reach) >= share * away; }) - s.reach.begin());
+    };
+    // how much of its size plant `i` shows, in steps, and its copy's place at that
+    const auto step = [&](size_t i) {
+      const double off = glm::distance(eye, chunk.middle + glm::dvec3(s.places[i][3]));
+      return uint8_t(std::ceil(double(W::grownAt(off, double(s.reach[i]))) * double(kPlantSteps)));
+    };
+    const auto placed = [&](size_t i, uint8_t grown) {
+      return grown == 0 || grown == kPlantSteps ? s.places[i] : glm::scale(s.places[i], glm::vec3(float(grown) / float(kPlantSteps)));
+    };
+    if(const size_t has = s.grown.size(); has < seenFrom(kPlantsHeldLeast) || has > std::max<size_t>(seenFrom(kPlantsHeldMost), 1))
+    {
+      // other copies: the entity's instance again (the copies it keeps keep their rows)
+      rs::MeshInstance instance = *entity->mesh;
+      const size_t     count    = std::max<size_t>(seenFrom(kPlantsHeld), 1);
+      instance.copies.resize(count);
+      instance.hidden.assign(count, 0);
+      s.grown.resize(count);
+      for(size_t i = 0; i < count; i++)
+      {
+        s.grown[i]         = step(i);
+        instance.copies[i] = placed(i, s.grown[i]);
+        instance.hidden[i] = s.grown[i] == 0;
+        standing += s.grown[i] != 0;
+      }
+      scene.setMeshInstance(chunk.plants[k], std::move(instance));
+      continue;
+    }
+    moved.clear();
+    shown.clear();
+    hidden.clear();
+    to.clear();
+    for(size_t i = 0; i < s.grown.size(); i++)
+    {
+      const uint8_t grown = step(i);
+      standing += grown != 0;
+      if(grown == s.grown[i])
+        continue;
+      if(grown == 0)
+        hidden.push_back(uint32_t(i));
+      else
+      {
+        if(s.grown[i] == 0)
+          shown.push_back(uint32_t(i));
+        moved.push_back(uint32_t(i));
+        to.push_back(placed(i, grown));
+      }
+      s.grown[i] = grown;
+    }
+    if(!moved.empty())
+      scene.moveCopies(chunk.plants[k], moved, to);
+    if(!shown.empty())
+      scene.setCopiesShown(chunk.plants[k], shown, true);
+    if(!hidden.empty())
+      scene.setCopiesShown(chunk.plants[k], hidden, false);
+  }
+  chunk.standing = standing;
+}
+
+void FvHost::Impl::followPlanetPlants(rs::RetainedScene& scene, const glm::dvec3& eye)
+{
+  PlanetBuilt& p = *planetBuilt;
+  for(auto& [q, chunk] : p.shown)
+  {
+    if(!chunk.stood || chunk.stood->empty())
+      continue;
+    const double away = std::max(glm::distance(eye, chunk.middle) - chunk.round, 0.0);
+    if(glm::distance(eye, chunk.shownFrom) < kPlantsAgain * std::max(away, kPlantsNear))
+      continue;
+    const uint64_t stood = chunk.standing;
+    showPlanetPlants(scene, chunk, eye);
+    p.standing = p.standing + chunk.standing - std::min(p.standing, stood);
+  }
 }
 
 void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
@@ -697,7 +829,8 @@ Json FvHost::Impl::planetStatus(const Json& args) const
   }
   return Json{{"wanted", p.selection.leaves.size()}, {"shown", p.shown.size()}, {"arrived", p.arrived.size()}, {"waiting", waiting},
               {"late", late},                        {"busy", p.flights > 0},   {"standing", p.standing},      {"tiled", p.tiled},
-              {"eye", eye},                          {"at", at}};
+              {"eye", eye},                          {"at", at},
+              {"follow", {{"frames", p.followFrames}, {"ms", p.followMs}, {"slow", p.followSlow}}}};
 }
 
 // ---- its plants ----------------------------------------------------------------------------------------
@@ -985,6 +1118,12 @@ void FvHost::Impl::tilePlanet(rs::RetainedScene& scene, const glm::dvec3& eye)
   const fv::world::World& world = *p.world;
   // thick round the figures and round the camera, as a meadow's (both in the root's frame)
   const std::array<glm::dvec3, 2>  foci{glm::dvec3(0.0), eye};
+  // (the planet is another, levelled or settled since: what grows on a tile's ground is looked up again)
+  if(p.grassWasOf != p.world)
+  {
+    p.grassWas.grounds.clear();
+    p.grassWasOf = p.world;
+  }
   const std::vector<W::GrassTile>  wanted = W::grassTiles(world, foci, p.tileKinds, p.grassWas, backdropSpec.size);
   p.tiledFor = eye;
   // a tile no longer asked for: hidden, and its entity the next tile's of that kind

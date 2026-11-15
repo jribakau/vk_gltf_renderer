@@ -1004,18 +1004,29 @@ their kit when there is one. It needs no kit: without one it stands bare.
   thickly, its grass, what drifts in its grass. With the backdrop's kit read (`readPlanetKit`,
   `plantPlanet`) the planet is planted with the same plants a meadow and a forest are, held the same
   way. A tree, a bush or a rock has a place that follows from the planet alone (a grid a role over a
-  cube face), so a quad's plants are among its children's: they are made with the quad's ground on
-  the pool and arrive with it, a variant an entity whose copies are its places. Far quads keep a
-  share of their trees, each grown, and further ones none: a wood is then the colour of its ground,
+  cube face) and a reach, how far it is seen from, by its size among its kind's (`reachOf`): a
+  wood's largest trees for kilometres, its smallest and its undergrowth for a few hundred metres,
+  the share seen at a distance falling as its square, so those seen from one place stay about as
+  many however far the largest are seen. A quad holds the plants whose reach passes where the quad
+  can draw (`heldFrom`), each decided on the ground as the finest quads have it: a plant is the same
+  plant, in its place and of its size, whichever quad holds it, and a quad taking another's place
+  changes none. They are made with the quad's ground on the pool and arrive with it, a variant an
+  entity. The host gives the entity as copies the plants that may be seen from where the eye is and
+  shows each by its own distance (`showPlanetPlants`: hidden past its reach, by the copy's own flag,
+  and growing to its size over the last of the way in, so it comes into view small), again whenever
+  the eye has gone a few hundredths of its distance to the quad. Past the largest trees' reach a
+  wood is the colour of its ground,
   which near, where its trees are drawn, is its floor's and not its canopy's (`Biome::floor`,
   `World::planted`). Grass and its flowers and ferns are the meadow's tiles, laid by the meadow's own
   rule on a cube face's plane round the camera and the figures (`tilePlanet`), each leant and
-  stretched to its square of the sphere.
+  stretched to its square of the sphere. They are laid again every few metres the camera goes, and
+  what grows on a tile's ground is looked up on the planet once a tile, not once a laying
+  (`GrassWas::grounds`): a view that moves asks for the same few thousand tiles each time.
 - **The sea floor** has plants of its own, which need no kit (`src/fv_world_sea.hpp`): seagrass,
   kelp, corals, sponges and rocks as small meshes made from the planet's seed (the generators after
   abyssal-garden's, MIT), held hidden under the root as the kit's plants are and placed the same
   way (`seaStanding`): by the water's depth and warmth, in patches, none taller than the water over
-  it, on the finest quads only.
+  it, each with a reach as the land's undergrowth has.
 - **The sky** takes the planet's radius, its air scaled to it, and its centre (`worldRadius`,
   `worldAirScale`, `worldCentre`), and is then asked every question from a place of the planet: what
   a ray sees from inside the air or from orbit, the sun's light at a hit, the sky's light there

@@ -161,30 +161,62 @@ double slopeAt(const World& w, const glm::dvec3& d, double elevation, double foo
 // Steeper than this, a tree, a bush or a log has no footing (35 degrees)
 constexpr double kStandSlope = 0.7;
 
+// What a plant is decided by: the ground this fine, whichever quad holds it, so it is the same plant
+// on all of them. (Its foot is on the ground as its quad draws it.)
+constexpr double kPlantFootprint = 1.0;
+
+// The stands of a role, a variant each: the furthest seen first
+struct Placed
+{
+  glm::mat4 place;
+  float     reach;
+};
+void standsOf(uint8_t role, std::vector<std::vector<Placed>>& placed, std::vector<Stand>& out)
+{
+  for(uint32_t v = 0; v < placed.size(); v++)
+  {
+    if(placed[v].empty())
+      continue;
+    std::stable_sort(placed[v].begin(), placed[v].end(), [](const Placed& a, const Placed& b) { return a.reach > b.reach; });
+    Stand stand{.role = role, .variant = v};
+    stand.places.reserve(placed[v].size());
+    stand.reach.reserve(placed[v].size());
+    for(const Placed& p : placed[v])
+    {
+      stand.places.push_back(p.place);
+      stand.reach.push_back(p.reach);
+    }
+    out.push_back(std::move(stand));
+  }
+}
+
 }  // namespace
 
 // ---- what has a place ----------------------------------------------------------------------------------
 
-Kept keptOn(std::string_view role, double width)
+Reach reachOf(std::string_view role, double perSquareMetre)
 {
-  // A quad `width` across is between two and four of its widths from the eye (the finest, under
-  // two). Trees are seen for a couple of kilometres: all of them on the finest quads, then fewer and
-  // larger at each level out, as far woods are, so a wood keeps its cover with a tenth of its trees;
-  // the undergrowth and what lies on the ground only on the finest, a hundred metres or two about.
-  // Every plant is an instance the renderer's scene sync walks whenever anything in the scene
-  // changes, and a planet's quads change as the camera moves: tens of thousands is what that bears.
-  const bool tree = role == "tree" || role == "grown";
-  if(width <= 70.0)
-    return {1.0F, 1.0F};
-  if(!tree)
-    return {};
-  if(width <= 140.0)
-    return {0.6F, 1.3F};
-  if(width <= 280.0)
-    return {0.3F, 1.8F};
-  if(width <= 560.0)
-    return {0.1F, 2.6F};
-  return {};
+  // Trees are seen for kilometres, the smallest of them for a few hundred metres; the undergrowth,
+  // rocks and dead wood, and what grows on the sea floor, a hundred metres or a few about
+  const bool   tree  = role == "tree" || role == "grown";
+  const double least = tree ? 350.0 : 120.0, most = tree ? 4000.0 : 400.0, seen = tree ? kTreesSeen : kOthersSeen;
+  // those seen from one place, with every one seen from `all`: all within it, and beyond it the share
+  // (all / d)^2 of them at d, to `most`
+  const auto count = [&](double all) { return perSquareMetre * kPi * all * all * (1.0 + 2.0 * std::log(most / all)); };
+  if(!(perSquareMetre > 0.0) || count(most) <= seen)
+    return {most, most};
+  double lo = 1.0, hi = most;
+  for(int i = 0; i < 40; i++)
+  {
+    const double mid = 0.5 * (lo + hi);
+    (count(mid) < seen ? lo : hi) = mid;
+  }
+  return {std::max(lo, least), most};
+}
+
+double heldFrom(const World& w, const Quad& q)
+{
+  return q.level >= finestLevel(w) ? 0.0 : kHeldMargin * kSplit * width(w, q);
 }
 
 std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& centre, std::span<const uint32_t> variants, double density)
@@ -195,31 +227,38 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
   const double wide = width(w, q);
   // what draws the quad's ground: a plant stands on the ground as drawn
   const double footprint = wide / double(kGroundCells);
+  const double held      = heldFrom(w, q);
   for(size_t r = 0; r < kStandingRoles.size() && r < variants.size(); r++)
   {
     const std::string_view role = kStandingRoles[r];
-    const Kept             kept = keptOn(role, wide);
-    if(variants[r] == 0 || kept.share <= 0.0F)
+    if(variants[r] == 0)
       continue;
-    // where each biome grows it, and the thickest of them
+    // where each biome grows it, the thickest of them, and the thickest it stands over a wide ground
     std::array<const Growth*, kMostBiomes> grows{};
-    double                                 thickest = 0.0;
+    double                                 thickest = 0.0, wood = 0.0;
     for(size_t b = 0; b < w.biomes.size() && b < kMostBiomes; b++)
       for(const Growth& g : w.biomes[b].plants)
         if(g.role == role)
         {
           grows[b] = &g;
           thickest = std::max(thickest, g.perSquareMetre * density);
+          wood     = std::max(wood, g.perSquareMetre * density * double(std::min(g.cover, 1.0F)));
         }
     if(!(thickest > 0.0))
       continue;
-    const bool                          rock = role == "rock";
-    std::vector<std::vector<glm::mat4>> placed(variants[r]);
+    const Reach reach = reachOf(role, wood);
+    if(reach.most < held)
+      continue;  // a quad too far for any of them
+    const bool                       rock = role == "rock";
+    std::vector<std::vector<Placed>> placed(variants[r]);
     overCells(w, q, thickest, 7919U * uint32_t(r + 1), [&](double u, double v, double cell, uint32_t h) {
-        if(unit(mix(h + 6U)) >= kept.share)
+        // its size among its kind's, and by that how far it is seen from: the quad's, if that far
+        const float  size = unit(mix(h + 5U));
+        const double seen = reach.of(1.0 - double(size));
+        if(seen < held)
           return;
         const glm::dvec3 d = direction(q.face, u, v);
-        const Sample     s = sample(w, d, footprint);
+        const Sample     s = sample(w, d, kPlantFootprint);
         if(bare(s, rock) || cleared(w, d) || (!rock && s.rock > 0.5F) || (s.built.taken & kGroundKept))
           return;
         // (a place stands in a clearing: what is as tall as a tree is none of its floor's)
@@ -251,14 +290,13 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
           return;
         // nothing but rocks on a cliff's shoulders or a bluff: where the tiers stand the land up, by
         // the ground's own slope (asked only there: two more looks at the ground)
-        if(!rock && (s.cliff > 0.02F || s.steepened > 2.0F) && slopeAt(w, d, s.elevation, footprint) > kStandSlope)
+        if(!rock && (s.cliff > 0.02F || s.steepened > 2.0F) && slopeAt(w, d, s.elevation, kPlantFootprint) > kStandSlope)
           return;
-        const float scale = (most->scaleMin + (most->scaleMax - most->scaleMin) * unit(mix(h + 5U))) * kept.grow;
-        placed[mix(h + 3U) % variants[r]].push_back(placeOn(w, d, s.elevation - double(most->sink * scale), centre, unit(mix(h + 4U)), scale));
+        const float  scale  = most->scaleMin + (most->scaleMax - most->scaleMin) * size;
+        const double ground = footprint > 1.5 * kPlantFootprint ? sample(w, d, footprint).elevation : s.elevation;
+        placed[mix(h + 3U) % variants[r]].push_back({placeOn(w, d, ground - double(most->sink * scale), centre, unit(mix(h + 4U)), scale), float(seen)});
     });
-    for(uint32_t v = 0; v < placed.size(); v++)
-      if(!placed[v].empty())
-        out.push_back({uint8_t(r), v, std::move(placed[v])});
+    standsOf(uint8_t(r), placed, out);
   }
   return out;
 }
@@ -290,9 +328,10 @@ std::vector<Stand> seaStanding(const World& w, const Quad& q, const glm::dvec3& 
 {
   std::vector<Stand> out;
   const double       wide = width(w, q);
-  if(!(density > 0.0) || wide > 70.0)
+  if(!(density > 0.0))
     return out;
   const double footprint = wide / double(kGroundCells);
+  const double held      = heldFrom(w, q);
   for(size_t r = 0; r < kSeaRoles.size(); r++)
   {
     const SeaGrowth* grow = nullptr;
@@ -306,12 +345,19 @@ std::vector<Stand> seaStanding(const World& w, const Quad& q, const glm::dvec3& 
         of.push_back(&m);
     if(!grow || of.empty())
       continue;
-    const double                        thickest = grow->perSquareMetre * density;
-    const double                        level    = coverLevel(double(grow->cover));
-    std::vector<std::vector<glm::mat4>> placed(of.size());
+    const double thickest = grow->perSquareMetre * density;
+    const double level    = coverLevel(double(grow->cover));
+    const Reach  reach    = reachOf(grow->role, thickest * double(grow->cover));
+    if(reach.most < held)
+      continue;
+    std::vector<std::vector<Placed>> placed(of.size());
     overCells(w, q, thickest, 104729U * uint32_t(r + 1), [&](double u, double v, double cell, uint32_t h) {
+      const float  size = unit(mix(h + 5U));
+      const double seen = reach.of(1.0 - double(size));
+      if(seen < held)
+        return;
       const glm::dvec3 d = direction(q.face, u, v);
-      const Sample     s = sample(w, d, footprint);
+      const Sample     s = sample(w, d, kPlantFootprint);
       // the sea's own floor: not a lake's, not a river's bed where it runs out
       const double deep = -s.elevation;
       if(deep < double(grow->depthFrom) || deep > double(grow->depthTo) || s.inland.lake > 0.2 || (s.inland.river && s.inland.riverAway < s.inland.riverHalf + 1.0))
@@ -325,14 +371,13 @@ std::vector<Stand> seaStanding(const World& w, const Quad& q, const glm::dvec3& 
       // no taller than the water over it
       const uint32_t variant = mix(h + 3U) % uint32_t(of.size());
       const float    tallest = float(0.85 * deep) / std::max(of[variant]->height, 1e-3F);
-      const float    scale   = std::min(grow->scaleMin + (grow->scaleMax - grow->scaleMin) * unit(mix(h + 5U)), tallest);
+      const float    scale   = std::min(grow->scaleMin + (grow->scaleMax - grow->scaleMin) * size, tallest);
       if(scale < 0.5F * grow->scaleMin)
         return;
-      placed[variant].push_back(placeOn(w, d, s.elevation, centre, unit(mix(h + 4U)), scale));
+      const double floor = footprint > 1.5 * kPlantFootprint ? sample(w, d, footprint).elevation : s.elevation;
+      placed[variant].push_back({placeOn(w, d, floor, centre, unit(mix(h + 4U)), scale), float(seen)});
     });
-    for(uint32_t v = 0; v < placed.size(); v++)
-      if(!placed[v].empty())
-        out.push_back({uint8_t(r), v, std::move(placed[v])});
+    standsOf(uint8_t(r), placed, out);
   }
   return out;
 }
@@ -419,6 +464,8 @@ std::vector<GrassTile> grassTiles(const World& w, std::span<const glm::dvec3> fo
     ats.push_back({toPlanet(w, f), std::max(heightOver(w, f), 0.0)});
   fv::backdrop::Spec meadow = flatSpec(w, "meadow", 1.0), forest = flatSpec(w, "forest", 1.0);
   meadow.size = forest.size = size;
+  was.pass++;
+  size_t asked = 0;
   const double             reach  = double(fv::backdrop::grassReach(meadow).back()) + 16.0;
   for(uint8_t face = 0; face < 6; face++)
   {
@@ -440,7 +487,7 @@ std::vector<GrassTile> grassTiles(const World& w, std::span<const glm::dvec3> fo
     }
     // what a tile's ground is: the biome it counts as (one for all the tiles of an 8 m square, where
     // biomes meet), or none where nothing grows
-    const auto biomeAt = [&](float size, int32_t x, int32_t z) -> const Biome* {
+    const auto look = [&](float size, int32_t x, int32_t z) -> const Biome* {
       const glm::dvec2 uv = tileMiddle(w, size, x, z);
       if(std::abs(uv.x) >= 1.0 || std::abs(uv.y) >= 1.0)
         return nullptr;  // on the face beside
@@ -459,6 +506,18 @@ std::vector<GrassTile> grassTiles(const World& w, std::span<const glm::dvec3> fo
       const int32_t cx = int32_t(std::floor((double(x) + 0.5) * double(size) / 8.0)), cz = int32_t(std::floor((double(z) + 0.5) * double(size) / 8.0));
       return &w.biomes[size_t(biomeBy(w, s, unit(hash(uint32_t(w.spec.seed) + 31U, face, uint32_t(cx), uint32_t(cz)))))];
     };
+    // (as found the first time the tile was asked for: GrassWas::grounds)
+    const auto biomeAt = [&](float size, int32_t x, int32_t z) -> const Biome* {
+      asked++;
+      const auto [found, fresh] = was.grounds.try_emplace(GrassWas::Key{face, size, x, z});
+      if(fresh)
+      {
+        const Biome* b      = look(size, x, z);
+        found->second.biome = b ? int8_t(b - w.biomes.data()) : int8_t(-1);
+      }
+      found->second.asked = was.pass;
+      return found->second.biome < 0 ? nullptr : &w.biomes[size_t(found->second.biome)];
+    };
     const auto                      covers = fv::backdrop::grassCovers(meadow);
     std::vector<fv::backdrop::Tile> grass  = fv::backdrop::grassTiles(meadow, on, was.faces[face]);
     for(const fv::backdrop::Tile& t : grass)
@@ -476,6 +535,9 @@ std::vector<GrassTile> grassTiles(const World& w, std::span<const glm::dvec3> fo
             out.push_back({face, uint8_t(k), t.x, t.z});
     }
   }
+  // the tiles left behind are forgotten once they are most of what is kept
+  if(was.grounds.size() > 3 * asked + 1024)
+    std::erase_if(was.grounds, [&](const auto& ground) { return ground.second.asked != was.pass; });
   std::sort(out.begin(), out.end());
   return out;
 }

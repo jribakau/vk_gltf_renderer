@@ -1088,6 +1088,127 @@ TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
   fs::remove_all(dir, ec);
 }
 
+// A planted planet shows each plant by its own distance (showPlanetPlants): its largest trees from
+// afar and its bushes only from near; come to, a tree stands where it stood and is no smaller, and
+// the smaller ones about it have come too
+TEST(FvHost, APlanetsPlantsShowByTheirDistance)
+{
+  const fs::path kit = fs::temp_directory_path() / ("fv-planet-reach-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fs::create_directories(kit);
+  writeTriangles(kit / "grass.gltf", 2);
+  writeTriangles(kit / "tree.gltf", 1);
+  writeTriangles(kit / "shrub.gltf", 3);
+  std::ofstream(kit / "kit.json") << Json{{"version", 1},
+                                          {"plants",
+                                           {{{"role", "grass"}, {"file", "grass.gltf"}}, {{"role", "tree"}, {"file", "tree.gltf"}}, {{"role", "shrub"}, {"file", "shrub.gltf"}}}}}
+                                         .dump();
+  HostRig            rig;
+  rs::RetainedScene& scene = rig.renderer.hostScene();
+  const auto         state = [&] { return rig.topic("backdrop"); };
+  const auto         until = [&](const std::function<bool()>& done) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while(!done() && std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return done();
+  };
+  // every copy of the plants that draw: where it is, how large, whether it shows, and of which role
+  struct Copy
+  {
+    glm::vec3 at{0.0F};
+    float     scale = 1.0F;
+    bool      shown = true, tree = true;
+  };
+  const auto copies = [&] {
+    std::vector<Copy>  out;
+    const rs::EntityId root = rootNamed(scene, "Backdrop");
+    if(root.isNone())
+      return out;
+    for(const rs::EntityId e : scene.entity(root)->children)
+    {
+      const rs::Entity* entity = scene.entity(e);
+      if(entity->name != "Planet plants" || !entity->mesh || !scene.shown(e))
+        continue;
+      const rs::MeshInstance& mesh = *entity->mesh;
+      EXPECT_FALSE(mesh.copies.empty());
+      EXPECT_TRUE(mesh.hidden.empty() || mesh.hidden.size() == mesh.copies.size());
+      const rs::MeshRecord* record = scene.mesh(mesh.parts.at(0).mesh);
+      const bool            tree   = record && record->indices.size() / 3 == 1;
+      const glm::vec3       about  = glm::vec3(scene.world(e)[3]);
+      for(size_t i = 0; i < mesh.copies.size(); i++)
+        out.push_back({about + glm::vec3(mesh.copies[i][3]), glm::length(glm::vec3(mesh.copies[i][1])), mesh.hidden.empty() || !mesh.hidden[i], tree});
+    }
+    return out;
+  };
+  const auto settled = [&] {
+    const Json planet = rig.cmd("backdrop.status").value("result", Json::object()).value("planet", Json());
+    return state().value("state", "") == "ready" && planet.is_object() && planet.value("waiting", 1) == 0 && !planet.value("busy", true);
+  };
+  rig.host->onUpdate();
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"backdropKit", kit.generic_string()}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "planet"}, {"radius", 5}}).value("ok", false));
+  ASSERT_TRUE(until([&] { return settled() && state().value("plants", uint64_t(0)) > 0; })) << state().dump();
+  // from where the figures stand: trees as far as kilometres, bushes only a few hundred metres about
+  const glm::vec3   eye(0.0F, 1.7F, 0.0F);
+  std::vector<Copy> first = copies();
+  size_t            trees = 0, bushes = 0;
+  Copy              target;
+  float             furthest = 0.0F;
+  for(const Copy& c : first)
+  {
+    if(!c.shown)
+      continue;
+    const float away = glm::distance(c.at, eye);
+    (c.tree ? trees : bushes)++;
+    EXPECT_LT(away, c.tree ? 4200.0F : 450.0F);
+    if(c.tree && away > furthest)
+    {
+      furthest = away;
+      target   = c;
+    }
+  }
+  ASSERT_GT(trees, 50U);
+  ASSERT_GT(furthest, 600.0F) << "a tree seen from afar";
+  const auto about = [&](const std::vector<Copy>& all) {
+    size_t n = 0;
+    for(const Copy& c : all)
+      n += c.shown && glm::distance(c.at, target.at) < 120.0F;
+    return n;
+  };
+  const size_t was = about(first);
+  // the camera goes to it: it stands where it stood, no smaller; and more stand about it than did
+  const glm::vec3 up   = glm::normalize(target.at - glm::vec3(0.0F, -5000.0F, 0.0F));
+  const glm::vec3 from = target.at + up * 20.0F + glm::normalize(glm::cross(up, glm::vec3(0.3F, 0.1F, 0.9F))) * 30.0F;
+  rig.cmd("camera.goto", {{"position", {from.x, from.y, from.z}}, {"target", {target.at.x, target.at.y, target.at.z}}});
+  for(int i = 0; i < 20; i++)
+    rig.host->onUpdate();
+  ASSERT_TRUE(until(settled)) << rig.cmd("backdrop.status").dump();
+  for(int i = 0; i < 5; i++)
+    rig.host->onUpdate();
+  const std::vector<Copy> beside = copies();
+  bool                    found = false;
+  for(const Copy& c : beside)
+  {
+    // (its foot is on the ground as its quad draws it, finer now: higher or lower, not elsewhere)
+    const glm::vec3 off = c.at - target.at;
+    if(c.shown && c.tree && glm::length(off - up * glm::dot(off, up)) < 1.0F && std::abs(glm::dot(off, up)) < 30.0F)
+    {
+      found = true;
+      EXPECT_GE(c.scale, target.scale - 1e-4F) << "seen from afar it was growing in, or whole: never larger than it is";
+    }
+  }
+  EXPECT_TRUE(found);
+  EXPECT_GT(about(beside), was);
+  for(const Copy& c : beside)
+    if(c.shown && !c.tree)
+      EXPECT_LT(glm::distance(c.at, from), 450.0F);
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "none"}}).value("ok", false));
+  std::error_code ec;
+  fs::remove_all(kit, ec);
+}
+
 TEST(FvHost, APlanetsGroundTakesTheKitsMaps)
 {
   const fs::path kit = fs::temp_directory_path() / ("fv-planet-kit-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));

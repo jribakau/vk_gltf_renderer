@@ -7,9 +7,12 @@
 // - Trees, saplings, bushes, rocks and dead wood each have a place (`standing`): those of a quad of
 //   the planet's ground are drawn with it, a variant's as instancing copies. A place follows from the
 //   planet alone, not from the quad: each role has a grid of its own over a cube face, a plant a
-//   cell at the most, kept by how thickly the biomes there grow it, so the plants of a quad are those
-//   of its four children. Far quads keep a share of them, each grown to cover what the others did;
-//   further still they have none, and a wood is the colour of its ground.
+//   cell at the most, kept by how thickly the biomes there grow it. Each plant has a reach, how far
+//   it is seen from, by its size among its kind's: a wood's largest trees for kilometres, its
+//   smallest and its undergrowth for a few hundred metres. A quad holds the plants whose reach passes
+//   where the quad can draw, so a plant is the same plant, in its place and of its size, whichever
+//   quad holds it, and whoever draws them shows each by its own distance (`grownAt`). Past the
+//   largest trees' reach a wood is the colour of its ground.
 // - Grass, and the flowers and ferns in drifts in it, are tiles (`grassTiles`, `grassPlace`): a square
 //   of ground with its plants is one mesh, drawn wherever a square of its kind lies near where one
 //   looks from. The squares are a cube face's, laid by the meadow's own rule (fv::backdrop::
@@ -22,9 +25,11 @@
 //-------------------------------------------------------------------------------------------------------
 
 #include <array>
+#include <bit>
 #include <compare>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "fv_backdrop.hpp"
@@ -38,32 +43,51 @@ namespace fv::world {
 // The kit's roles a planet places, in the order `standing` counts them
 inline constexpr std::array<std::string_view, 7> kStandingRoles = {"tree", "grown", "sapling", "shrub", "rock", "stump", "log"};
 
-// The plants of one variant of a role on a quad: where each stands, about `centre`
+// The plants of one variant of a role on a quad: where each stands, about `centre`, and how far it is
+// seen from; the furthest seen first
 struct Stand
 {
   uint8_t                role    = 0;  // of kStandingRoles
   uint32_t               variant = 0;
   std::vector<glm::mat4> places;       // on the ground, turned about the planet's vertical there and scaled
+  std::vector<float>     reach;        // metres, one a place, falling
 };
+
+// How far a role's plants are seen from: every one from `all` metres, the largest from `most`, those
+// between by their size among their kind's, as many of them at a distance as its square allows (so
+// the plants seen from one place are about as many however far the largest are seen). `all` follows
+// from how thickly the role grows where it grows thickest, so that those seen from one place stay
+// under the role's count (kTreesSeen, kOthersSeen): no nearer than `least`.
+struct Reach
+{
+  double all = 0.0, most = 0.0;
+  // of a plant `rank` among its kind's by size: 0 the largest, toward 1 the smallest
+  double of(double rank) const { return std::min(all / std::sqrt(std::max(rank, 1e-6)), most); }
+};
+inline constexpr double kTreesSeen = 60000.0, kOthersSeen = 5000.0;
+Reach reachOf(std::string_view role, double perSquareMetre);
+// The reach a plant needs for a quad to hold it: the quad draws only while the eye is kSplit of its
+// widths away or further (less a margin: the eye's distance to a quad is to its ground as drawn),
+// and the finest quads, which draw underfoot, hold every plant
+inline constexpr double kHeldMargin = 0.85;
+double heldFrom(const World& world, const Quad& quad);
+// How much of its size a plant shows `away` metres from the eye: none past its reach, growing to all
+// of it over the last kGrowsOver of the way in, so it comes into view small
+inline constexpr double kGrowsOver = 0.15;
+inline float grownAt(double away, double reach)
+{
+  return reach > 0.0 ? float(std::clamp((1.0 - away / reach) / kGrowsOver, 0.0, 1.0)) : 0.0F;
+}
 
 // What stands on a quad's ground. `variants`: how many the kit has of each role (none: the role is
 // left out). `centre`: what the places are about, the quad's mesh's (ChunkMesh::centre). `density`:
 // of every plant's own, as the backdrop's.
 std::vector<Stand> standing(const World& world, const Quad& quad, const glm::dvec3& centre, std::span<const uint32_t> variants, double density = 1.0);
 
-// The share of a role's plants a quad `width` metres across keeps, and how much each of those grows;
-// none (0) on quads too far to show them
-struct Kept
-{
-  float share = 0.0F;
-  float grow  = 1.0F;
-};
-Kept keptOn(std::string_view role, double width);
-
 // What stands on a quad's sea floor (fv_world_sea.hpp), of `meshes`: seagrass on the shallows, kelp
 // where the water is cool and deep enough to hold it, corals where it is warm, sponges deeper, rocks
 // anywhere. Each no taller than the water over it. A Stand's `role` is of kSeaRoles and its `variant`
-// counts the role's meshes in the order they come. Only the finest quads have any: they are seen
+// counts the role's meshes in the order they come. Each with a reach, as the land's: they are seen
 // from near the water, or from in it.
 std::vector<Stand> seaStanding(const World& world, const Quad& quad, const glm::dvec3& centre, std::span<const SeaMesh> meshes, double density = 1.0);
 
@@ -95,6 +119,33 @@ struct GrassTile
 struct GrassWas
 {
   std::array<std::vector<fv::backdrop::Tile>, 6> faces;
+  // What grows on each tile's ground, as found when it was first asked for (its biome's number;
+  // none: nothing grows there), so a tile asked for again takes no look at the planet: a view that
+  // moves asks for the same few thousand tiles every time. Of one World: whoever keeps this clears
+  // `grounds` when the planet is another.
+  struct Key
+  {
+    uint8_t face = 0;
+    float   size = 0.0F;
+    int32_t x = 0, z = 0;
+    bool    operator==(const Key&) const = default;
+  };
+  struct Hash
+  {
+    size_t operator()(const Key& k) const
+    {
+      uint64_t h = (uint64_t(uint32_t(k.x)) << 32U) | uint64_t(uint32_t(k.z));
+      h ^= (uint64_t(std::bit_cast<uint32_t>(k.size)) * 31U + k.face) * 0x9E3779B97F4A7C15ULL;
+      return std::hash<uint64_t>{}(h);
+    }
+  };
+  struct Ground
+  {
+    int8_t   biome = -1;
+    uint32_t asked = 0;  // the pass it was last asked in
+  };
+  std::unordered_map<Key, Ground, Hash> grounds;
+  uint32_t                              pass = 0;
 };
 // `size`: metres across the thick grass round each focus (the backdrop's `size`).
 std::vector<GrassTile> grassTiles(const World& world, std::span<const glm::dvec3> foci, std::span<const TileKind> kinds, GrassWas& was, double size = 60.0);
