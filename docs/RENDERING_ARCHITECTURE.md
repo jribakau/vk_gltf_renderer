@@ -989,7 +989,7 @@ their kit when there is one. It needs no kit: without one it stands bare.
   that is dry land. The planet is turned
   and set so that place is the origin with +y up; its centre is `Frame::centre`, a radius below.
 - **What draws** is a cut of six quadtrees, one a cube face (`select`): a quad splits while the eye is
-  within about twice its width, so the ground underfoot is a metre a vertex and the far side a
+  within about three times its width (`kSplit`), so the ground underfoot is a metre a vertex and the far side a
   kilometre. `FvHost::Impl::followPlanet` (`src/fv_host_world.cpp`) moves the shown cut toward the
   selected one a step at a time, and at every step it is a whole cut: a shown quad gives way to its
   four children only once all four are made, and shown quads give way to the one over them once it

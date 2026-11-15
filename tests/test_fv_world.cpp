@@ -467,7 +467,8 @@ TEST(WorldSelect, TheQuadsCoverTheSphereOnceFromAnyHeight)
         n += W::contains(q, d);
       EXPECT_EQ(n, 1) << height;
     }
-    EXPECT_LT(s.leaves.size(), 700U) << height;
+    // (what kSplit costs: some 1,100 from near the ground at 3 widths, 650 at 2)
+    EXPECT_LT(s.leaves.size(), 1300U) << height;
   }
 }
 

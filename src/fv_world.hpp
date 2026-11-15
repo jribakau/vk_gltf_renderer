@@ -365,7 +365,7 @@ double farPlane(const World& world, const glm::dvec3& eye);
 
 inline constexpr uint32_t kGroundCells = 64;  // along a ground quad's edge
 // A quad splits while the eye is within this many of its widths, and stays split a little further
-inline constexpr double kSplit     = 2.0;
+inline constexpr double kSplit     = 3.0;
 inline constexpr double kSplitHold = 1.2;
 
 struct Selection
