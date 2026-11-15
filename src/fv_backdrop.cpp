@@ -262,6 +262,8 @@ float Standing::covered(float x0, float z0, float x1, float z1) const
 {
   if(empty() || !(x1 > x0) || !(z1 > z0))
     return 0.0F;
+  if(x1 < m_lo.x || z1 < m_lo.y || x0 > m_lo.x + float(m_nx) * m_cell || z0 > m_lo.y + float(m_nz) * m_cell)
+    return 0.0F;  // clear of all of it
   // the cells whose middles are in the square; a square smaller than a cell, the cell its middle is in
   const glm::vec2 lo = (glm::vec2(x0, z0) - m_lo) / m_cell, hi = (glm::vec2(x1, z1) - m_lo) / m_cell;
   int             cx0 = int(std::ceil(lo.x - 0.5F)), cx1 = int(std::ceil(hi.x - 0.5F)) - 1;
@@ -292,9 +294,9 @@ std::vector<glm::mat4> clearOf(const Standing& standing, std::vector<glm::mat4> 
   return placed;
 }
 
-bool tileTaken(const Standing& standing, float size, int32_t x, int32_t z)
+bool tileTaken(const Standing& standing, float size, int32_t x, int32_t z, float share)
 {
-  return !standing.empty() && standing.covered(float(x) * size, float(z) * size, float(x + 1) * size, float(z + 1) * size) >= kTileTaken;
+  return !standing.empty() && standing.covered(float(x) * size, float(z) * size, float(x + 1) * size, float(z + 1) * size) >= share;
 }
 
 namespace {
@@ -730,7 +732,7 @@ constexpr float kStaysSplit = 1.12F;
 
 }  // namespace
 
-std::vector<Tile> grassTiles(const Spec& spec, std::span<const Focus> foci, std::span<const Tile> was)
+std::vector<Tile> grassTiles(const Spec& spec, std::span<const Focus> foci, std::span<const Tile> was, const Standing* standing)
 {
   std::vector<Tile> out;
   if(!planted(spec))
@@ -755,7 +757,14 @@ std::vector<Tile> grassTiles(const Spec& spec, std::span<const Focus> foci, std:
   const auto splits = [&](const Tile& cell) {
     const float d = nearest(round, cellCentre(covers[cell.level].tile, cell.x, cell.z));
     const float r = reach[cell.level - 1U];
-    return d < r || (d < r * kStaysSplit && split.count(cell));
+    if(d < r || (d < r * kStaysSplit && split.count(cell)))
+      return true;
+    // something of the scene covers a part of it: its finer tiles, each left out or laid by itself
+    if(!standing || standing->empty())
+      return false;
+    const float size  = covers[cell.level].tile;
+    const float share = standing->covered(float(cell.x) * size, float(cell.z) * size, float(cell.x + 1) * size, float(cell.z + 1) * size);
+    return share > 0.03F && share < 0.97F;
   };
   // every coarse cell within reach of a focus, once
   const float     coarse = covers[2].tile;

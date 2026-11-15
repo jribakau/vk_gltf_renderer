@@ -1177,6 +1177,56 @@ TEST(BackdropStanding, AWallIsOverItsLineAndCoversNothing)
   EXPECT_NEAR(wide.reach(), 750.0F * std::sqrt(2.0F), 3.0F);
 }
 
+// A road is narrower than a coarse tile of grass: far from where one looks the tiles over it are
+// thick ones all the same, so those on it are left out and the grass ends at its edge, not over it
+TEST(BackdropStanding, GrassIsLaidInThickTilesWhereSomethingCoversAPartOfTheGround)
+{
+  const B::Spec spec  = meadow();
+  const auto    reach = B::grassReach(spec);
+  // a road 4 m wide along x, well past where the thick tiles end for a camera at the origin
+  const float far = reach[1] + 12.0F;
+  ASSERT_LT(far + 20.0F, reach[2]);
+  B::Standing road({far - 2.0F, -3.0F}, {far + 22.0F, 3.0F});
+  for(float x = far; x < far + 20.0F; x += 2.0F)
+  {
+    road.add({x, 0.05F, -2.0F}, {x + 2.0F, 0.05F, -2.0F}, {x + 2.0F, 0.05F, 2.0F});
+    road.add({x, 0.05F, -2.0F}, {x + 2.0F, 0.05F, 2.0F}, {x, 0.05F, 2.0F});
+  }
+  const B::Focus focus(0.0F, 1.7F, 0.0F);
+  const auto     over = [&](const std::vector<B::Tile>& tiles, int level) {
+    const float size = B::grassCovers(spec)[size_t(level)].tile;
+    size_t      n    = 0;
+    for(const B::Tile& t : tiles)
+      n += t.level == level && (float(t.x) + 1.0F) * size > far + 4.0F && float(t.x) * size < far + 16.0F && (float(t.z) + 1.0F) * size > -2.0F && float(t.z) * size < 2.0F ? 1 : 0;
+    return n;
+  };
+  const std::vector<B::Tile> bare = B::grassTiles(spec, {&focus, 1}), with = B::grassTiles(spec, {&focus, 1}, {}, &road);
+  EXPECT_EQ(over(bare, 0), 0u) << "none thick that far out";
+  EXPECT_GT(over(bare, 1) + over(bare, 2), 0u);
+  EXPECT_EQ(over(with, 1) + over(with, 2), 0u) << "no coarse tile lies across the road";
+  EXPECT_GE(over(with, 0), 12u);
+  // of those, the ones on the road are left out and the ones beside it are not
+  size_t on = 0, beside = 0;
+  for(const B::Tile& t : with)
+    if(t.level == 0 && float(t.x) * 2.0F >= far + 4.0F && float(t.x) * 2.0F < far + 14.0F)
+    {
+      on += (t.z == -1 || t.z == 0) && B::tileTaken(road, 2.0F, t.x, t.z) ? 1 : 0;
+      beside += (t.z == -2 || t.z == 1) && !B::tileTaken(road, 2.0F, t.x, t.z) ? 1 : 0;
+    }
+  EXPECT_GE(on, 8u);
+  EXPECT_GE(beside, 8u);
+  // no ground is covered twice or left out for it: the tiles' areas are the bare ones'
+  const auto area = [&](const std::vector<B::Tile>& tiles) {
+    double a = 0.0;
+    for(const B::Tile& t : tiles)
+      a += double(B::grassCovers(spec)[t.level].tile) * double(B::grassCovers(spec)[t.level].tile);
+    return a;
+  };
+  EXPECT_DOUBLE_EQ(area(with), area(bare));
+  // flowers are left off a road at a smaller share of their coarser tile
+  EXPECT_TRUE(B::tileTaken(road, 4.0F, int32_t(std::floor((far + 8.0F) / 4.0F)), 0, B::kDriftTaken));
+}
+
 TEST(BackdropStanding, PlantsStandClearByTheirOwnWidth)
 {
   B::Standing s({-20.0F, -20.0F}, {20.0F, 20.0F});

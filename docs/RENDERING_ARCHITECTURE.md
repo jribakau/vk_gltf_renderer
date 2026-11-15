@@ -755,7 +755,11 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   covered low down (`tileTaken`): a floor, a slab, a car, but not a roof with no floor under it nor
   a wall, which is over its line and covers nothing. A grid, not the props' bounds: a fence round a
   yard is one mesh whose box is the yard. A tile is one mesh, so the grass ends at tiles' edges: up
-  to a tile's width of it reaches in under a floor's edge or is missing outside it. The grid is read
+  to a tile's width of it reaches in under a floor's edge or is missing outside it. That width is a
+  thick tile's at any distance: a cell that something covers a part of is split down to the thick
+  tiles however far it is from where one looks (`grassTiles`' `standing`), since a road is narrower
+  than a coarse tile, none of which would be left out, and from afar the grass grew over it; what
+  stands in drifts (flowers, ferns) is left out at a smaller share (`kDriftTaken`). The grid is read
   again when the scene's entities that draw have moved and then stood still (their places and
   meshes hashed, `standingKey`, asked a couple of times a second while the scene's bounds change),
   so a prop dragged or a ship in flight plants nothing until it rests; then the places and the tiles

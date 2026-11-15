@@ -171,8 +171,11 @@ float height(const Spec& spec, float x, float z);
 inline constexpr float kOverhead = 25.0F;
 inline constexpr float kGrassBar = 1.5F;
 // A tile of grass is left out when this share of it is covered: a tile is one mesh, so a tile half
-// under a wall either reaches in under the floor or leaves bare ground outside it
-inline constexpr float kTileTaken = 0.6F;
+// under a wall either reaches in under the floor or leaves bare ground outside it. A tile of what
+// stands in drifts in the grass (flowers, ferns) at less: its grid is coarser, and flowers on a road
+// are seen.
+inline constexpr float kTileTaken  = 0.6F;
+inline constexpr float kDriftTaken = 0.25F;
 // What has a place stands clear by this share of its own half width, a fir's lowest branches' reach
 inline constexpr float kCrownShare = 0.7F;
 
@@ -210,8 +213,8 @@ double levelFor(const Standing& standing);
 // The places of `placed` that stand clear: none with anything over the ground within `radius` times
 // its size (a place's scale: `scatter`) of its foot
 std::vector<glm::mat4> clearOf(const Standing& standing, std::vector<glm::mat4> placed, float radius);
-// Whether a tile `size` metres across, at cell (x, z) of its grid, is left out: kTileTaken of it covered
-bool tileTaken(const Standing& standing, float size, int32_t x, int32_t z);
+// Whether a tile `size` metres across, at cell (x, z) of its grid, is left out: `share` of it covered
+bool tileTaken(const Standing& standing, float size, int32_t x, int32_t z, float share = kTileTaken);
 
 // The ground's height at (x, z) as its mesh draws it (`terrain`): the height at the mesh's vertices,
 // flat across each triangle between. What stands on the ground stands on this: the mesh's triangles
@@ -337,8 +340,11 @@ using Focus = glm::vec3;
 // reach of a focus is one sparse tile, or, nearer, its four cells of the middle level, each of those
 // one tile or its four thick ones. No ground is covered twice or left out. `was`, the tiles as last
 // asked for: a cell that was split stays split until a little further than where it splits, so a
-// view that hovers at a boundary changes nothing.
-std::vector<Tile> grassTiles(const Spec& spec, std::span<const Focus> foci, std::span<const Tile> was = {});
+// view that hovers at a boundary changes nothing. `standing`: a cell that something of the scene
+// covers a part of is split however far it is, down to the thick tiles, so the grass ends within a
+// thick tile's width of a road or a floor at any distance (a road is narrower than a coarse tile:
+// none of those would be left out, and from afar the grass grew over it).
+std::vector<Tile> grassTiles(const Spec& spec, std::span<const Focus> foci, std::span<const Tile> was = {}, const Standing* standing = nullptr);
 // The drifts' tiles: `level` 0 a drift's middle, 1 its edge (Drifts::covers), on the middle grid
 std::vector<Tile> driftTiles(const Spec& spec, std::span<const Focus> foci);
 

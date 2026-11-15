@@ -722,10 +722,10 @@ void FvHost::Impl::tileBackdrop(rs::RetainedScene& scene)
   const fv::backdrop::Spec&     spec  = backdropSpec;
   const std::vector<fv::backdrop::Focus> foci = backdropFociNow();
   uint64_t                      plants = built.placed;
-  const auto lay = [&](BackdropBuilt::Tiles& tiles, std::vector<fv::backdrop::Tile> wanted, std::span<const fv::backdrop::Cover> covers) {
-    // (none where something of the scene covers the ground: a floor, a slab)
+  const auto lay = [&](BackdropBuilt::Tiles& tiles, std::vector<fv::backdrop::Tile> wanted, std::span<const fv::backdrop::Cover> covers, float taken) {
+    // (none where something of the scene covers the ground: a floor, a slab, a road)
     std::erase_if(wanted, [&](const fv::backdrop::Tile& tile) {
-      return tile.level < covers.size() && fv::backdrop::tileTaken(backdropStanding, covers[tile.level].tile, tile.x, tile.z);
+      return tile.level < covers.size() && fv::backdrop::tileTaken(backdropStanding, covers[tile.level].tile, tile.x, tile.z, taken);
     });
     const std::set<fv::backdrop::Tile> want(wanted.begin(), wanted.end());
     // a tile no longer asked for: hidden, and its entity the next tile's of that patch
@@ -769,11 +769,11 @@ void FvHost::Impl::tileBackdrop(rs::RetainedScene& scene)
       tiles.drawn[tile] = entity;
     }
   };
-  std::vector<fv::backdrop::Tile> grass = fv::backdrop::grassTiles(spec, foci, built.grassWas);
+  std::vector<fv::backdrop::Tile> grass = fv::backdrop::grassTiles(spec, foci, built.grassWas, &backdropStanding);
   const auto                      grassCovers  = fv::backdrop::grassCovers(spec);
   const auto                      driftCovers  = fv::backdrop::drifts(spec).covers;
-  lay(built.grass, grass, grassCovers);
-  lay(built.drifts, fv::backdrop::driftTiles(spec, foci), driftCovers);
+  lay(built.grass, grass, grassCovers, fv::backdrop::kTileTaken);
+  lay(built.drifts, fv::backdrop::driftTiles(spec, foci), driftCovers, fv::backdrop::kDriftTaken);
   built.grassWas = std::move(grass);
   built.tiledFor = foci;
   backdropPlants = plants;
