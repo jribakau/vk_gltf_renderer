@@ -579,6 +579,50 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
   }
 }
 
+Json FvHost::Impl::planetStatus(const Json& args) const
+{
+  if(!planetBuilt || !planetBuilt->world)
+    return nullptr;
+  const PlanetBuilt&      p     = *planetBuilt;
+  const fv::world::World& world = *p.world;
+  // what the planet is at a point of the scene: its biome there, and how high the point is over
+  // its ground or its water
+  const glm::dvec3 floor(0.0, double(groundHeight()), 0.0);
+  const auto       place = [&](const glm::dvec3& point) {
+    const fv::world::Sample s = fv::world::sample(world, fv::world::toPlanet(world, point - floor), 30.0);
+    return Json{{"biome", world.biomes[size_t(s.biome)].name}, {"share", s.share[size_t(s.biome)]}, {"elevation", s.elevation},
+                {"water", s.water > s.elevation},             {"height", fv::world::heightOver(world, point - floor)}};
+  };
+  Json at = nullptr;
+  if(args.contains("at") && args["at"].is_array() && args["at"].size() == 3)
+    at = place({args["at"][0].get<double>(), args["at"][1].get<double>(), args["at"][2].get<double>()});
+  Json eye = nullptr;
+  if(const auto camera = renderer->getCameraManipulator())
+    eye = place(glm::dvec3(camera->getEye()));
+  // A leaf the cut asks for and does not draw yet was asked for when the eye came within kSplit of
+  // its parent's widths; how much of that way the eye has gone since is how late it is (0: just
+  // asked for; toward 1: the eye is at it, and the ground there is still its parent's)
+  size_t waiting = 0;
+  double late    = 0.0;
+  for(const W::Quad& q : p.selection.leaves)
+  {
+    if(p.shown.count(q))
+      continue;
+    waiting++;
+    // (one that takes the place of finer quads further off is not late: they draw until it comes)
+    if(std::any_of(p.shown.begin(), p.shown.end(), [&](const auto& s) { return isUnder(s.first, q); }))
+      continue;
+    const double span   = 2.0 / double(uint64_t(1) << q.level);
+    const double away   = glm::distance(p.selectedFor, W::toScene(world, W::direction(q.face, (double(q.x) + 0.5) * span - 1.0, (double(q.y) + 0.5) * span - 1.0), 0.0));
+    const double wide   = W::width(world, q);
+    const double asked  = W::kSplit * 2.0 * wide + 0.75 * wide;  // (to its middle)
+    late                = std::max(late, 1.0 - std::min(away / asked, 1.0));
+  }
+  return Json{{"wanted", p.selection.leaves.size()}, {"shown", p.shown.size()}, {"arrived", p.arrived.size()}, {"waiting", waiting},
+              {"late", late},                        {"busy", p.busy},          {"standing", p.standing},      {"tiled", p.tiled},
+              {"eye", eye},                          {"at", at}};
+}
+
 // ---- its plants ----------------------------------------------------------------------------------------
 
 void FvHost::Impl::readPlanetKit(const std::filesystem::path& dir)

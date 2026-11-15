@@ -1764,6 +1764,10 @@ struct FvHost::Impl
   // A batch back from the pool: its quads as hidden entities, and the cut moved on where it can
   void planetArrived(std::vector<PlanetMade>& made, uint64_t generation);
   void resolvePlanet(rs::RetainedScene& scene);
+  // How its stream stands (backdrop.status): the quads the camera asks for, those drawn, and how
+  // late the latest of the rest is; what is planted; what the planet is under the camera, and at
+  // `args.at` (a point of the scene) when given. Null with no planet.
+  Json planetStatus(const Json& args) const;
   // Its centre in the scene (the root stands at the floor's height); zero with none
   glm::dvec3 planetCentre() const;
   // The scene's shown bounds without the backdrop: what a view frames, and what a flight's speed is by

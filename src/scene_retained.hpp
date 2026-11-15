@@ -511,6 +511,9 @@ struct MeshInstance
   SkinId                 skin;
   std::vector<float>     morphWeights;  // empty: the meshes' defaults
   std::vector<glm::mat4> copies;        // EXT_mesh_gpu_instancing local matrices; empty: drawn once
+  // Which of the copies are not drawn (setCopiesShown), one a copy; empty: every one is. A copy not
+  // drawn keeps its place among them: it is there, as a hidden entity is.
+  std::vector<uint8_t> hidden;
 };
 
 struct Entity
@@ -544,7 +547,7 @@ struct DrawItem
   MaterialId material;
   uint32_t   copy  = 0;
   glm::mat4  world = glm::mat4(1.f);
-  bool       shown = true;
+  bool       shown = true;       // its entity's (cascaded), and the copy's own (MeshInstance::hidden)
   bool       offCamera = false;  // the camera looks through it (Entity::offCamera, cascaded)
   LightLink  link;               // the linked lights that leave it dark or unshadowed (Entity::link, the nearest)
 };
@@ -558,11 +561,24 @@ struct LightItem
 };
 
 // What changed since the last takeChanges(): what the residency layer has to bring to the GPU.
+// Which of an entity's instancing copies moved, or were shown or hidden
+struct CopyChanges
+{
+  bool                  all = false;  // every one may have (setCopies)
+  std::vector<uint32_t> which;        // these (moveCopies, setCopiesShown), in no order, some perhaps twice
+};
+
 struct SceneChanges
 {
   bool                 structure = false;  // entities, instances, lights or cameras came or went
+  // The entities whose mesh instance was set, replaced or dropped, those that have gone with one
+  // among them (so that what they drew can be let go of): what `structure` can mean for what is drawn
+  std::set<EntityId>   instances;
   std::set<EntityId>   transforms;         // their world matrices moved (descendants included)
   std::set<EntityId>   visibility;         // their shown or off-camera state may have changed (descendants included)
+  // Of those, the ones only some copies of which did: an entity here and moved or shown no other way
+  // is as it was but for these copies
+  std::map<EntityId, CopyChanges> copies;
   std::set<EntityId>   morphWeights;       // their mesh instance's morph weights changed
   std::set<MeshId>     meshes;             // vertices edited
   std::set<MeshId>     displacements;      // a refined mesh's displacement set, moved or dropped
@@ -700,6 +716,10 @@ public:
   // setCopies, for a few thousand of a variant's tens of thousands without handing over all of them
   // each frame. An index past its copies is passed over.
   void moveCopies(EntityId id, std::span<const uint32_t> which, std::span<const glm::mat4> to);
+  // Some of its copies shown or hidden: copy `which[k]` is drawn or not, the rest as they are. A
+  // hidden copy is there as a hidden entity is (it keeps its instance), so this is no more than a
+  // change of what shows: a wood's trees coming into sight one by one as the camera nears.
+  void setCopiesShown(EntityId id, std::span<const uint32_t> which, bool shown);
   void setMorphWeights(EntityId id, std::vector<float> weights);
   void setEntityLight(EntityId id, LightId light);    // references it
   void setEntityCamera(EntityId id, CameraId camera);  // references it
@@ -735,6 +755,49 @@ public:
   // ---- views, in document order: depth first from the roots, an entity before its children
   std::vector<EntityId>  entitiesInOrder() const;
   std::vector<DrawItem>  drawItems();
+  // Where what an entity draws stands, and whether it shows: the entity's own, and each of its
+  // copies'. As drawItems() has them, for one entity and without making the list.
+  struct Placement
+  {
+    glm::mat4                     world{1.f};
+    bool                          shown     = false;
+    bool                          offCamera = false;
+    LightLink                     link;
+    const std::vector<glm::mat4>* copies    = nullptr;  // none: drawn once
+    const std::vector<uint8_t>*   hidden    = nullptr;  // none: every copy shows
+    bool                          translate = false;    // the entity only stands somewhere: a copy is offset by it
+    uint32_t                      count() const { return copies ? uint32_t(copies->size()) : 1U; }
+    glm::mat4 worldOf(uint32_t c) const { return copies ? copyWorld(world, translate, (*copies)[c]) : world; }
+    bool      shownOf(uint32_t c) const { return shown && !(hidden && c < hidden->size() && (*hidden)[c]); }
+  };
+  // None for an entity that is gone or has no mesh instance
+  std::optional<Placement> placementOf(EntityId id);
+  // What an entity draws: its runs in their order, each as drawItems() has its first copy, and where
+  // they stand. No runs for one that draws nothing.
+  struct EntityDraws
+  {
+    std::vector<DrawItem> runs;
+    Placement             at;
+  };
+  EntityDraws drawsOf(EntityId id);
+  // Where a copy stands under an entity whose world is `world`: their product, or, for an entity
+  // that only stands somewhere (`translate`: a backdrop's root at the floor's height), the copy offset
+  // (a product of matrices for each of a forest's 190,000 copies was most of the draw list's time)
+  static bool onlyTranslates(const glm::mat4& w)
+  {
+    return w[0] == glm::vec4(1, 0, 0, 0) && w[1] == glm::vec4(0, 1, 0, 0) && w[2] == glm::vec4(0, 0, 1, 0) && w[3].w == 1.0F;
+  }
+  static glm::mat4 copyWorld(const glm::mat4& w, bool translate, const glm::mat4& copy)
+  {
+    if(!translate)
+      return w * copy;
+    glm::mat4       out = copy;
+    const glm::vec3 t(w[3]);
+    for(int k = 0; k < 4; k++)
+      if(copy[k].w != 0.0F)
+        out[k] += glm::vec4(t * copy[k].w, 0.0F);
+    return out;
+  }
   std::vector<LightItem> lightItems();
   // the drawn positions' world-space bounds; empty (min > max) when nothing is drawn
   // (of everything shown; with `except`, but for that entity and what is under it)

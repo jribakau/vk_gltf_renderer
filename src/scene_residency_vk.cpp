@@ -1356,8 +1356,7 @@ void VulkanGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow
   }
   TlasEntry& tlas = it->second;
   flushBuilds();
-  flushUploads();  // what came before, outside the timed span
-  const bool timed = beginSpan();
+  flushUploads();
   // an instancing entity's copies come one after another, on one BLAS: looked up once for the run
   uint64_t        lastBlas    = 0;
   VkDeviceAddress lastAddress = 0;
@@ -1412,6 +1411,8 @@ void VulkanGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow
   }
   m_uploadsPending = true;
   flushUploads();
+  // (the span timed is the build alone: the rows' upload, and what came before, are outside it)
+  const bool timed = beginSpan();
   // (the destination masks nvvk's helper takes)
   nvvk::accelerationStructureBarrier(m_cmd, VK_ACCESS_TRANSFER_WRITE_BIT,
                                      VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
@@ -1600,14 +1601,11 @@ void RetainedSceneVk::afterSync(RetainedScene& scene, const SyncResult& result)
     }
     m_lights.push_back(info);
   }
+  // (kept an entity at a time by the residency: a look at every instance was a few milliseconds of
+  // every frame something moved in a planted world)
   m_bounds = {};
-  for(uint32_t s = 0; s < m_residency.instanceHighWater(); s++)
-  {
-    const Residency::Instance* inst = m_residency.instance(s);
-    const Residency::Prim*     prim = inst && inst->shown ? m_residency.prim(inst->prim) : nullptr;
-    if(prim && prim->indexCount)
-      m_bounds.insert(nvutils::Bbox(prim->boundsMin, prim->boundsMax).transform(inst->world));
-  }
+  if(const std::array<glm::vec3, 2> b = m_residency.shownBounds(); b[0].x <= b[1].x)
+    m_bounds = nvutils::Bbox(b[0], b[1]);
 }
 
 VkDeviceAddress RetainedSceneVk::sceneDesc() const

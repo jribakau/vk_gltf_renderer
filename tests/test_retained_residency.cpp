@@ -466,6 +466,164 @@ TEST(RetainedResidency, CopiesMovedAsManyAsBeforeMoveTheirRowsOnly)
   EXPECT_TRUE(scene.takeChanges().structure);
 }
 
+// What a sync costs follows what changed, not how much is drawn: a few copies moved among thousands,
+// an entity made or gone among them, a frame in which nothing of the scene changed.
+TEST(RetainedResidency, ASyncLooksOnlyAtWhatChanged)
+{
+  RetainedScene    scene;
+  const MeshId     grid = scene.addMesh(gridMesh(2, 0.f, 2));  // two runs
+  const MaterialId a = material(scene, "a"), b = material(scene, "b");
+  const auto       wood = [&](const char* name, uint32_t trees, float z) {
+    const EntityId e = scene.createEntity(name, {}, {});
+    MeshInstance   instance;
+    instance.parts.push_back({grid, {a, b}});
+    for(uint32_t c = 0; c < trees; c++)
+      instance.copies.push_back(glm::translate(glm::mat4(1.f), glm::vec3(float(c % 50) * 4.f, float(c / 50) * 4.f, z)));
+    scene.setMeshInstance(e, instance);
+    return e;
+  };
+  const EntityId nearWood = wood("near", 2000, 0.f), farWood = wood("far", 3000, 50.f);
+  const EntityId one  = drawn(scene, "one", grid, {a, b});
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  ASSERT_EQ(residency.instanceHighWater(), 2u * 5001u);
+  EXPECT_EQ(residency.lastSyncWork().instances, 2u * 2u * 5001u);  // a fresh scene is all of it: made, then placed
+  expectClean(scene, residency, gpu, "fresh: ");
+  const auto sync = [&](const char* when) {
+    gpu.beginFrame();
+    const SyncResult r = residency.sync(scene);
+    expectClean(scene, residency, gpu, when);
+    return r;
+  };
+  sync("at rest: ");
+
+  // three copies of one wood swayed: theirs, in each of the two runs, and no more
+  const std::array<uint32_t, 3> which{7, 1200, 1999};
+  std::array<glm::mat4, 3>      to;
+  for(size_t k = 0; k < which.size(); k++)
+    to[k] = glm::translate(scene.entity(nearWood)->mesh->copies[which[k]], glm::vec3(0.f, 0.f, 0.25f));
+  scene.moveCopies(nearWood, which, to);
+  SyncResult r = sync("three moved: ");
+  EXPECT_TRUE(r.changed);
+  EXPECT_FALSE(r.drawListChanged);
+  EXPECT_EQ(residency.lastSyncWork().entities, 1u);
+  EXPECT_EQ(residency.lastSyncWork().instances, 6u);
+  EXPECT_EQ(residency.lastSyncWork().tlasRows, 6u);
+  // the frame after, they come to rest: nothing is looked at
+  r = sync("at rest again: ");
+  EXPECT_EQ(residency.lastSyncWork().instances, 0u);
+  EXPECT_EQ(residency.lastSyncWork().tlasRows, 0u);
+
+  // something else moves: its own two instances
+  scene.setLocal(one, {.translation = {1.f, 2.f, 3.f}});
+  sync("one moved: ");
+  EXPECT_EQ(residency.lastSyncWork().entities, 1u);
+  EXPECT_EQ(residency.lastSyncWork().instances, 2u);
+  EXPECT_EQ(residency.lastSyncWork().tlasRows, 2u);
+  sync("rest: ");
+
+  // a wood that moves whole is all of that wood, and none of the other
+  scene.setLocal(farWood, {.translation = {0.f, 0.f, 1.f}});
+  sync("a wood moved: ");
+  EXPECT_EQ(residency.lastSyncWork().instances, 6000u);
+  sync("rest: ");
+
+  // an entity made among them, and gone again: its own
+  const EntityId more = wood("more", 40, 9.f);
+  r                   = sync("one more wood: ");
+  EXPECT_TRUE(r.drawListChanged);
+  EXPECT_EQ(residency.instanceHighWater(), 2u * 5041u);
+  EXPECT_LE(residency.lastSyncWork().instances, 160u);  // made, and placed as what is new is
+  EXPECT_LE(residency.lastSyncWork().tlasRows, 80u);
+  sync("rest: ");
+  scene.destroyEntity(more);
+  r = sync("gone again: ");
+  EXPECT_TRUE(r.drawListChanged);
+  EXPECT_EQ(residency.lastSyncWork().instances, 0u);
+  EXPECT_LE(residency.lastSyncWork().tlasRows, 80u);
+  EXPECT_EQ(scene.bounds()[1].z, residency.shownBounds()[1].z);
+}
+
+// A copy hidden keeps its instance, as a hidden entity's does: its TLAS row loses its BLAS and no
+// more, and showing it again is that row once more.
+TEST(RetainedResidency, CopiesAreShownAndHiddenOneByOne)
+{
+  RetainedScene    scene;
+  const MeshId     grid = scene.addMesh(gridMesh(2, 0.f));
+  const MaterialId m    = material(scene, "m");
+  const EntityId   e    = scene.createEntity("trees", {}, {});
+  MeshInstance     instance;
+  instance.parts.push_back({grid, {m}});
+  for(float x : {0.f, 10.f, 20.f, 30.f})
+    instance.copies.push_back(glm::translate(glm::mat4(1.f), glm::vec3(x, 0.f, 0.f)));
+  scene.setMeshInstance(e, instance);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  ASSERT_EQ(residency.instanceHighWater(), 4u);
+  const auto blasOf = [&](uint32_t row) { return gpu.tlas(residency.tlas())->rows[row].blas.value != 0; };
+  EXPECT_TRUE(blasOf(2));
+
+  scene.setCopiesShown(e, std::array<uint32_t, 1>{2}, false);
+  {
+    const SceneChanges changes = scene.takeChanges();
+    EXPECT_FALSE(changes.structure);
+    EXPECT_EQ(changes.visibility.count(e), 1u);
+    ASSERT_EQ(changes.copies.count(e), 1u);
+    EXPECT_EQ(changes.copies.at(e).which, std::vector<uint32_t>{2});
+  }
+  scene.setCopiesShown(e, std::array<uint32_t, 1>{2}, true);
+  scene.setCopiesShown(e, std::array<uint32_t, 1>{2}, false);  // again, for the sync to take
+  gpu.beginFrame();
+  SyncResult r = residency.sync(scene);
+  EXPECT_TRUE(r.changed);
+  EXPECT_TRUE(r.visibilityChanged);
+  EXPECT_FALSE(r.drawListChanged);
+  EXPECT_EQ(residency.instanceHighWater(), 4u);
+  ASSERT_NE(residency.instance(2), nullptr);
+  EXPECT_FALSE(residency.instance(2)->shown);
+  EXPECT_FALSE(blasOf(2));
+  EXPECT_TRUE(blasOf(1));
+  EXPECT_EQ(residency.lastSyncWork().instances, 1u);
+  EXPECT_EQ(residency.shownBounds()[1].x, 32.f);  // (a box does not shrink for a copy: see shownBounds)
+  expectClean(scene, residency, gpu, "hidden: ");
+
+  // hidden already, and one that has none: nothing
+  scene.setCopiesShown(e, std::array<uint32_t, 2>{2, 9}, false);
+  EXPECT_TRUE(scene.takeChanges().empty());
+
+  // every one hidden, then one shown as the camera nears it
+  scene.setCopiesShown(e, std::array<uint32_t, 4>{0, 1, 2, 3}, false);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "all hidden: ");
+  for(uint32_t row = 0; row < 4; row++)
+    EXPECT_FALSE(blasOf(row));
+  scene.setCopiesShown(e, std::array<uint32_t, 1>{3}, true);
+  scene.moveCopies(e, std::array<uint32_t, 1>{3}, std::array<glm::mat4, 1>{glm::scale(instance.copies[3], glm::vec3(0.5f))});
+  gpu.beginFrame();
+  r = residency.sync(scene);
+  EXPECT_TRUE(r.visibilityChanged);
+  EXPECT_TRUE(blasOf(3));
+  EXPECT_FALSE(blasOf(0));
+  EXPECT_EQ(residency.lastSyncWork().instances, 1u);
+  EXPECT_EQ(gpu.tlas(residency.tlas())->rows[3].transform[0][0], 0.5f);
+  expectClean(scene, residency, gpu, "one shown: ");
+
+  // the entity hidden and shown again: its copies are as they were
+  scene.setVisible(e, false);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "entity hidden: ");
+  scene.setVisible(e, true);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "entity shown: ");
+  EXPECT_TRUE(blasOf(3));
+  EXPECT_FALSE(blasOf(1));
+}
+
 // A destroyed entity leaves holes; their slots come back only a frame cycle later, and the meshes and
 // prims nothing draws any more are freed then.
 TEST(RetainedResidency, ARemovalLeavesHolesThatAreReusedAfterTheirRetireFrame)
@@ -2855,7 +3013,7 @@ TEST(RetainedResidency, AnEmittersVertexWritesRebuildTheTableOnceTheyStop)
 TEST(RetainedResidency, IncrementalEqualsFresh)
 {
   uint32_t morphs = 0, skins = 0;  // the passes the seeds ran, so the fuzz is known to reach them
-  for(uint32_t seed = 1; seed <= 20; seed++)
+  for(uint32_t seed = 1; seed <= 40; seed++)
   {
     std::mt19937            rng(seed);
     RetainedScene           scene;
@@ -2899,7 +3057,15 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
 
     for(int step = 0; step < 60; step++)
     {
-      const int op = std::uniform_int_distribution<int>(0, 9)(rng);
+      const int op = std::uniform_int_distribution<int>(0, 12)(rng);
+      // the entities drawn in copies, as they are now
+      const auto copied = [&] {
+        std::vector<EntityId> out;
+        for(EntityId id : live)
+          if(const Entity* e = scene.entity(id); e && e->mesh && !e->mesh->copies.empty())
+            out.push_back(id);
+        return out;
+      };
       if(op <= 1 || live.empty())
       {
         const MeshId            mesh = pick(meshes);
@@ -2908,6 +3074,13 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
           mats.push_back(pick(materials));
         const EntityId parent = !live.empty() && rng() % 3 == 0 ? pick(live) : EntityId{};
         live.push_back(drawn(scene, "e", mesh, mats, parent));
+        if(mesh != deformingMesh && rng() % 3 == 0)  // in copies, as a wood's trees are
+        {
+          MeshInstance instance = *scene.entity(live.back())->mesh;
+          for(uint32_t c = 0, n = 2 + rng() % 4; c < n; c++)
+            instance.copies.push_back(glm::translate(glm::mat4(1.f), glm::vec3(float(c) * 3.f, 0.f, float(rng() % 4))));
+          scene.setMeshInstance(live.back(), instance);
+        }
         if(mesh == deformingMesh && rng() % 2)  // skinned too, not only morphed
         {
           MeshInstance instance = *scene.entity(live.back())->mesh;
@@ -2968,6 +3141,36 @@ TEST(RetainedResidency, IncrementalEqualsFresh)
         if(scene.material(m)->textures)
           payload.baseColorMap.index = int(rng() % 3) - 1;
         scene.setMaterial(m, payload);
+      }
+      else if(op == 10 || op == 11 || op == 12)
+      {
+        // an entity's copies: some moved, all moved, one more or fewer, some shown or hidden
+        const std::vector<EntityId> some = copied();
+        if(!some.empty())
+        {
+          const EntityId         e      = pick(some);
+          std::vector<glm::mat4> copies = scene.entity(e)->mesh->copies;
+          const uint32_t         which  = uint32_t(rng() % copies.size());
+          const glm::mat4        to     = glm::translate(glm::mat4(1.f), glm::vec3(float(rng() % 9), float(rng() % 3), 0.f));
+          if(op == 10 && rng() % 2)
+            scene.moveCopies(e, std::array<uint32_t, 1>{which}, std::array<glm::mat4, 1>{to});
+          else if(op == 10)
+          {
+            for(glm::mat4& c : copies)
+              c[3].z += 1.f;
+            if(rng() % 4 == 0)
+              copies.push_back(to);
+            else if(rng() % 4 == 0 && copies.size() > 1)
+              copies.pop_back();
+            scene.setCopies(e, copies);
+          }
+          else
+          {
+            scene.setCopiesShown(e, std::array<uint32_t, 2>{which, uint32_t(rng() % copies.size())}, op == 12);
+            if(rng() % 3 == 0)  // and one moved in the same frame
+              scene.moveCopies(e, std::array<uint32_t, 1>{which}, std::array<glm::mat4, 1>{to});
+          }
+        }
       }
       else
       {

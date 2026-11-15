@@ -273,7 +273,12 @@
 //                   its `bodies`, the moons and planets in its sky: shaders/world_bodies.h.slang;
 //                   `waves`, how its sea runs, protocol 80: shaders/world_sea.h.slang)
 //                                                -> the whole state, as the "backdrop" topic has it
-//   params.get      {names?}                     registered renderer parameters, as nvmcp reads them
+//   backdrop.status {at?: [x, y, z]}             -> {state, planet: null | {wanted, shown, arrived, waiting, late,
+//                                                busy, standing, tiled, eye, at}}: a planet's stream, its quads
+//                                                asked for and drawn and how late the latest is (0..1), its plants,
+//                                                and what it is under the camera and at `at` ({biome, share,
+//                                                elevation, water, height: the point's over its ground})
+//   params.get     {names?}                     registered renderer parameters, as nvmcp reads them
 //   params.set      {values: {name: value}}      validated as a batch, then written; callbacks fire, and a
 //                                                value the batch names holds against another's callback
 //                                                (setExposedParameters)

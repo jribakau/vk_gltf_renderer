@@ -185,11 +185,11 @@ void GltfRenderer::refreshEntityHover()
     m_hover.entity = {};  // gone with what it was in
   if(m_hover.entity.isNone() || !m_resources.retainedGpu)
     return;
-  const rs::Residency& residency = m_resources.retainedGpu->residency();
-  for(uint32_t slot = 0; slot < residency.instanceHighWater(); slot++)
-    if(const rs::Residency::Instance* inst = residency.instance(slot))
-      if(store.isWithin(inst->entity, m_hover.entity))
+  m_resources.retainedGpu->residency().eachDrawn([&](rs::EntityId entity, std::span<const uint32_t> slots) {
+    if(store.isWithin(entity, m_hover.entity))
+      for(const uint32_t slot : slots)
         m_resources.hoveredRenderNodes.insert(int(slot));
+  });
 }
 
 bool GltfRenderer::hoverDraws() const
@@ -496,11 +496,11 @@ void GltfRenderer::refreshEntitySelection()
     m_selectedEntity = {};  // gone with what it was in
   if(m_selectedEntity.isNone() || !m_resources.retainedGpu)
     return;
-  const rs::Residency& residency = m_resources.retainedGpu->residency();
-  for(uint32_t slot = 0; slot < residency.instanceHighWater(); slot++)
-    if(const rs::Residency::Instance* inst = residency.instance(slot))
-      if(store.isWithin(inst->entity, m_selectedEntity))
+  m_resources.retainedGpu->residency().eachDrawn([&](rs::EntityId entity, std::span<const uint32_t> slots) {
+    if(store.isWithin(entity, m_selectedEntity))
+      for(const uint32_t slot : slots)
         m_resources.selectedRenderNodes.insert(int(slot));
+  });
 }
 
 //--------------------------------------------------------------------------------------------------

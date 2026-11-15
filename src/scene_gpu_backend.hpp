@@ -375,8 +375,8 @@ public:
   // Every row written again
   void buildTlas(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode) { buildTlasRows(tlas, rows, mode, {}, true); }
   // `changed`, ascending: the rows that differ from the last build's, the rest as they were (unless
-  // `everyRow`, as after a build of another count): a sway of a forest's copies moves a fifth of its
-  // 190,000 rows, and writing every one again was 6 ms a frame
+  // `everyRow`, as into a new TLAS); a row past the last build's is one of them. A sway of a forest's
+  // copies moves a fifth of its 190,000 rows, and writing every one again was 6 ms a frame
   virtual void buildTlasRows(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow) = 0;
   virtual void        destroyAccel(AccelHandle accel)                                           = 0;
   // What one holds on the device: a TLAS's instances and scratch with it, a micromap's inputs until they go

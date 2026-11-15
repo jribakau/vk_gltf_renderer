@@ -608,11 +608,12 @@ void FakeGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow> 
     error("buildTlas: BLASes built or refitted with no build-to-build barrier before it");
   if(t.builds + t.updates > 0 && t.builtFrame < m_frame && !m_frameFenced)
     error("buildTlas: rebuilds a TLAS a frame in flight may still trace, with no frame-to-write barrier before");
-  // rows named as changed: the others must be the last build's (the device keeps them as written)
+  // rows named as changed: the others must be the last build's (the device keeps them as written),
+  // so a row no build has had is named
   if(!everyRow)
   {
-    if(t.builds + t.updates == 0 || rows.size() != t.rows.size())
-      error("buildTlas: changed rows only, with no build of as many rows before");
+    if(t.builds + t.updates == 0 || rows.size() < t.rows.size())
+      error("buildTlas: changed rows only, with no build before or one of more rows");
     else
     {
       size_t next = 0;
@@ -622,6 +623,11 @@ void FakeGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow> 
         {
           next++;
           continue;
+        }
+        if(i >= t.rows.size())
+        {
+          error("buildTlas: row " + std::to_string(i) + " is past the last build's and is not named as changed");
+          break;
         }
         const TlasRow& a = rows[i];
         const TlasRow& b = t.rows[i];

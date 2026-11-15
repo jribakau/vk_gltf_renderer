@@ -61,7 +61,7 @@ std::array<float, 2> ClipRecord::range() const
 
 bool SceneChanges::empty() const
 {
-  return !structure && transforms.empty() && visibility.empty() && morphWeights.empty() && meshes.empty() && displacements.empty() && hd.empty()
+  return !structure && instances.empty() && transforms.empty() && visibility.empty() && copies.empty() && morphWeights.empty() && meshes.empty() && displacements.empty() && hd.empty()
          && materials.empty() && lights.empty() && skins.empty() && !features && !iesProfiles && !water;
 }
 
@@ -511,6 +511,7 @@ void RetainedScene::destroyEntity(EntityId id)
   {
     releaseInstance(*e->mesh);
     m_boundsRevision++;
+    m_changes.instances.insert(id);  // (kept though it is gone: what it drew is let go of by it)
   }
   if(!e->light.isNone())
     release(e->light);
@@ -520,6 +521,7 @@ void RetainedScene::destroyEntity(EntityId id)
   m_entities.erase(id);
   m_changes.transforms.erase(id);
   m_changes.visibility.erase(id);
+  m_changes.copies.erase(id);
   m_changes.morphWeights.erase(id);
   m_changes.structure = true;
   m_structureRevision++;
@@ -624,6 +626,8 @@ void RetainedScene::setMeshInstance(EntityId id, std::optional<MeshInstance> ins
   if(e->mesh)
     releaseInstance(*e->mesh);
   e->mesh = std::move(instance);
+  m_changes.instances.insert(id);
+  m_changes.copies.erase(id);
   m_changes.structure = true;
   m_structureRevision++;
   m_boundsRevision++;
@@ -644,6 +648,7 @@ void RetainedScene::setCopies(EntityId id, std::vector<glm::mat4> copies)
   }
   e->mesh->copies = std::move(copies);
   m_changes.transforms.insert(id);
+  m_changes.copies[id].all = true;
 }
 
 void RetainedScene::moveCopies(EntityId id, std::span<const uint32_t> which, std::span<const glm::mat4> to)
@@ -657,6 +662,33 @@ void RetainedScene::moveCopies(EntityId id, std::span<const uint32_t> which, std
     if(which[k] < copies.size())
       copies[which[k]] = to[k];
   m_changes.transforms.insert(id);
+  if(CopyChanges& moved = m_changes.copies[id]; !moved.all)
+    moved.which.insert(moved.which.end(), which.begin(), which.begin() + std::min(which.size(), to.size()));
+}
+
+void RetainedScene::setCopiesShown(EntityId id, std::span<const uint32_t> which, bool shown)
+{
+  assertOwner();
+  Entity* e = m_entities.get(id);
+  if(!e || !e->mesh || which.empty() || e->mesh->copies.empty())
+    return;
+  std::vector<uint8_t>& hidden = e->mesh->hidden;
+  if(hidden.empty() && shown)
+    return;  // every one shows already
+  hidden.resize(e->mesh->copies.size(), 0);  // (one a copy: an instance set with more copies since has more)
+  std::vector<uint32_t> changed;
+  for(const uint32_t c : which)
+    if(c < hidden.size() && hidden[c] != uint8_t(!shown))
+    {
+      hidden[c] = uint8_t(!shown);
+      changed.push_back(c);
+    }
+  if(changed.empty())
+    return;
+  if(CopyChanges& moved = m_changes.copies[id]; !moved.all)
+    moved.which.insert(moved.which.end(), changed.begin(), changed.end());
+  m_changes.visibility.insert(id);
+  m_boundsRevision++;
 }
 
 void RetainedScene::setMorphWeights(EntityId id, std::vector<float> weights)
@@ -973,6 +1005,57 @@ std::vector<EntityId> RetainedScene::entitiesInOrder() const
   return out;
 }
 
+std::optional<RetainedScene::Placement> RetainedScene::placementOf(EntityId id)
+{
+  updateWorld();
+  const Entity* e = m_entities.get(id);
+  if(!e || !e->mesh)
+    return std::nullopt;
+  const Derived& d = m_derived[id.index];
+  Placement      at{.world = d.world, .shown = d.shown, .offCamera = d.offCamera, .link = d.link};
+  if(!e->mesh->copies.empty())
+  {
+    at.copies    = &e->mesh->copies;
+    at.hidden    = e->mesh->hidden.empty() ? nullptr : &e->mesh->hidden;
+    at.translate = onlyTranslates(d.world);
+  }
+  return at;
+}
+
+RetainedScene::EntityDraws RetainedScene::drawsOf(EntityId id)
+{
+  EntityDraws                    out;
+  const std::optional<Placement> at = placementOf(id);
+  if(!at)
+    return out;
+  out.at          = *at;
+  const Entity& e = m_entities[id];
+  // the entity's runs in their source order (a glTF mesh's primitive order)
+  struct Run
+  {
+    int32_t  order;
+    size_t   part;
+    uint32_t submesh;
+  };
+  std::vector<Run> runs;
+  for(size_t p = 0; p < e.mesh->parts.size(); p++)
+    if(const MeshRecord* m = mesh(e.mesh->parts[p].mesh))
+      for(uint32_t s = 0; s < m->submeshes.size(); s++)
+        if(m->drawsItself(s) && m->drawnRun(s).indexCount)  // a run merged into another is drawn by it
+          runs.push_back({m->submeshes[s].order, p, s});
+  std::stable_sort(runs.begin(), runs.end(), [](const Run& a, const Run& b) { return a.order < b.order; });
+  const Derived& d = m_derived[id.index];
+  out.runs.reserve(runs.size());
+  for(const Run& r : runs)
+  {
+    const MeshPart& part = e.mesh->parts[r.part];
+    const uint32_t  slot = mesh(part.mesh)->submeshes[r.submesh].material;
+    out.runs.push_back({.entity = id, .mesh = part.mesh, .submesh = r.submesh,
+                        .material = slot < part.materials.size() ? part.materials[slot] : MaterialId{}, .world = d.world, .shown = d.shown, .offCamera = d.offCamera, .link = d.link});
+  }
+  return out;
+}
+
 std::vector<DrawItem> RetainedScene::drawItems()
 {
   updateWorld();
@@ -980,53 +1063,23 @@ std::vector<DrawItem> RetainedScene::drawItems()
   out.reserve(m_drawItemsWere);  // as many as the last time, most likely: a scene of 100,000 grew the list 17 times
   for(EntityId id : entitiesInOrder())
   {
-    const Entity& e = m_entities[id];
-    if(!e.mesh)
+    if(!m_entities[id].mesh)
       continue;
-    // the entity's runs in their source order (a glTF mesh's primitive order), then each copy
-    struct Run
+    // the entity's runs, then each copy of each
+    const EntityDraws draws = drawsOf(id);
+    for(const DrawItem& run : draws.runs)
     {
-      int32_t  order;
-      size_t   part;
-      uint32_t submesh;
-    };
-    std::vector<Run> runs;
-    for(size_t p = 0; p < e.mesh->parts.size(); p++)
-      if(const MeshRecord* m = mesh(e.mesh->parts[p].mesh))
-        for(uint32_t s = 0; s < m->submeshes.size(); s++)
-          if(m->drawsItself(s) && m->drawnRun(s).indexCount)  // a run merged into another is drawn by it
-            runs.push_back({m->submeshes[s].order, p, s});
-    std::stable_sort(runs.begin(), runs.end(), [](const Run& a, const Run& b) { return a.order < b.order; });
-    const Derived& d = m_derived[id.index];
-    for(const Run& r : runs)
-    {
-      const MeshPart& part = e.mesh->parts[r.part];
-      const uint32_t  slot = mesh(part.mesh)->submeshes[r.submesh].material;
-      DrawItem        item{.entity = id, .mesh = part.mesh, .submesh = r.submesh,
-                           .material = slot < part.materials.size() ? part.materials[slot] : MaterialId{}, .world = d.world, .shown = d.shown, .offCamera = d.offCamera, .link = d.link};
-      if(e.mesh->copies.empty())
+      if(!draws.at.copies)
       {
-        out.push_back(item);
+        out.push_back(run);
         continue;
       }
-      // an entity that only stands somewhere (a backdrop's root at the floor's height) offsets each
-      // copy, a product of matrices for each of a forest's 190,000 being most of this list's time
-      const glm::mat4& w         = d.world;
-      const bool       translate = w[0] == glm::vec4(1, 0, 0, 0) && w[1] == glm::vec4(0, 1, 0, 0) && w[2] == glm::vec4(0, 0, 1, 0) && w[3].w == 1.0F;
-      for(uint32_t c = 0; c < e.mesh->copies.size(); c++)
+      DrawItem item = run;
+      for(uint32_t c = 0; c < draws.at.count(); c++)
       {
-        item.copy = c;
-        if(translate)
-        {
-          const glm::mat4& copy = e.mesh->copies[c];
-          const glm::vec3  t(w[3]);
-          item.world = copy;
-          for(int k = 0; k < 4; k++)
-            if(copy[k].w != 0.0F)
-              item.world[k] += glm::vec4(t * copy[k].w, 0.0F);
-        }
-        else
-          item.world = w * e.mesh->copies[c];
+        item.copy  = c;
+        item.world = draws.at.worldOf(c);
+        item.shown = draws.at.shownOf(c);
         out.push_back(item);
       }
     }
@@ -1089,6 +1142,7 @@ SceneChanges RetainedScene::takeChanges()
   m_changes        = {};
   std::erase_if(out.transforms, [&](EntityId id) { return !m_entities.contains(id); });
   std::erase_if(out.visibility, [&](EntityId id) { return !m_entities.contains(id); });
+  std::erase_if(out.copies, [&](const auto& moved) { return !m_entities.contains(moved.first); });
   std::erase_if(out.morphWeights, [&](EntityId id) { return !m_entities.contains(id); });
   std::erase_if(out.meshes, [&](MeshId id) { return !m_meshes.contains(id); });
   std::erase_if(out.materials, [&](MaterialId id) { return !m_materials.contains(id); });

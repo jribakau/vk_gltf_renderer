@@ -33,7 +33,10 @@
 //   one holds its micromap indices. hasOpacityMicromaps() (the path tracer's USE_OMM) is whether
 //   any prim does.
 // - A draw item (entity, mesh, submesh, instancing copy) is an instance: a render-node row and a TLAS
-//   row, the TLAS row's custom index its prim slot.
+//   row, the TLAS row's custom index its prim slot. An entity's instances are kept by entity (its
+//   runs, each as many times as it has copies), so a sync looks only at the entities the store says
+//   changed, and of one only some copies of which moved or were shown, only at those: what a sync
+//   costs follows what changed, not how much is drawn (lastSyncWork).
 // - A mesh an entity draws with a skin, or a mesh with morph targets, is deformed for that entity (a
 //   drawer): the drawer owns output positions, normals and tangents, which a morph pass and then a
 //   skin pass write from the mesh's streams, and its own prims, whose BLASes are built over the
@@ -73,6 +76,7 @@
 
 #include <cstdint>
 #include <array>
+#include <limits>
 #include <map>
 #include <optional>
 #include <memory>
@@ -462,10 +466,42 @@ public:
   uint32_t    instanceCapacity() const { return m_instanceCapacity; }
   uint32_t    instanceHighWater() const { return uint32_t(m_instances.size()); }
   uint32_t    primCapacity() const { return m_primCapacity; }
-  // live instances by how their material draws, in slot order; hidden ones included (a draw skips them)
-  const std::vector<uint32_t>& drawList(DrawList list) const { return m_drawLists[size_t(list)]; }
-  uint64_t                     drawListsRevision() const { return m_drawListsRevision; }
-  bool                         hasTransmission() const { return m_hasTransmission; }
+  // live instances by how their material draws, in slot order; hidden ones included (a draw skips them).
+  // Made when asked for: nothing of a sync reads them.
+  const std::vector<uint32_t>& drawList(DrawList list) const
+  {
+    buildDrawLists();
+    return m_drawLists[size_t(list)];
+  }
+  uint64_t drawListsRevision() const { return m_drawListsRevision; }
+  bool     hasTransmission() const
+  {
+    buildDrawLists();
+    return m_hasTransmission;
+  }
+  // What the last sync looked at: the entities whose draws it went through, the instances it made or
+  // compared with what they should be, and the TLAS rows it worked out again. A sync that moves a few
+  // copies of an entity among a hundred thousand counts those few.
+  struct SyncWork
+  {
+    uint32_t entities  = 0;
+    uint32_t instances = 0;
+    uint32_t tlasRows  = 0;
+  };
+  const SyncWork& lastSyncWork() const { return m_work; }
+  // The world-space bounds of what is shown; min over max for nothing. Kept an entity at a time: one
+  // only some copies of which moved keeps its box and grows it by those (it never shrinks for them:
+  // what such a move moves, it moves by little), until it is placed whole again.
+  std::array<glm::vec3, 2> shownBounds() const;
+  // Each entity that draws, and its instances' slots: each(entity, slots). What asks something of
+  // an entity's instances (which are in a selection) asks it once an entity, not once a copy.
+  template <class Each>
+  void eachDrawn(Each&& each) const
+  {
+    for(const EntityDraw& d : m_draws)
+      if(!d.entity.isNone())
+        each(d.entity, std::span<const uint32_t>(d.slots));
+  }
   bool                         hasOpacityMicromaps() const { return m_micromapPrims > 0; }
 
   // ---- what the oracle reads
@@ -554,7 +590,48 @@ public:
   size_t liveImages() const;  // the grace list's included
 
 private:
-  using InstanceKey = std::tuple<EntityId, MeshId, uint32_t, uint32_t>;  // entity, mesh, submesh, copy
+  // What an entity draws: a run a drawn submesh, each as many times as the entity has copies
+  struct EntityDraw
+  {
+    struct Run
+    {
+      MeshId   mesh;
+      uint32_t submesh  = 0;
+      bool     deformed = false;
+    };
+    EntityId              entity;  // none: nothing here
+    std::vector<Run>      runs;
+    uint32_t              copies = 1;
+    std::vector<uint32_t> slots;  // a run after another, in each a copy after another
+    // What its instances were last placed as (syncRows): an entity moved or shown no other way than by
+    // some of its copies is looked at for those alone
+    glm::mat4 world{0.f};
+    bool      shown = false, offCamera = false;
+    LightLink link;
+    // of its shown instances, in the world (shownBounds)
+    glm::vec3 boundsMin{std::numeric_limits<float>::max()}, boundsMax{std::numeric_limits<float>::lowest()};
+    uint32_t  slot(size_t run, uint32_t copy) const { return slots[run * copies + copy]; }
+  };
+  std::vector<EntityDraw> m_draws;  // by the entity's index
+  // The entities syncStructure left instances to: those are as they were, and where they stand now is
+  // not said by the store's moves (an instance set again with its copies elsewhere), so syncRows
+  // places each of them whole
+  std::vector<EntityId> m_restructured;
+  EntityDraw*             drawOf(EntityId id) { return id.index < m_draws.size() && m_draws[id.index].entity == id ? &m_draws[id.index] : nullptr; }
+  const EntityDraw*       drawOf(EntityId id) const { return id.index < m_draws.size() && m_draws[id.index].entity == id ? &m_draws[id.index] : nullptr; }
+  // an entity's box made again from its shown instances, and grown by one of them
+  void measure(EntityDraw& draw) const;
+  void grow(EntityDraw& draw, const Instance& inst) const;
+  // Which entities draw with a prim, and with a material slot, each counted a run: what a BLAS built
+  // again or a material that starts to emit reaches, without a look at every instance
+  std::map<std::pair<uint32_t, EntityId>, uint32_t> m_primRuns, m_materialRuns;
+  void                                              countRun(EntityId entity, uint32_t prim, uint32_t materialSlot, int delta);
+  // each instance drawn with a material slot, and each whose material emits (shown or not): each(slot, instance)
+  template <class Each>
+  void eachWithMaterial(uint32_t materialSlot, Each&& each) const;
+  template <class Each>
+  void     eachEmitter(Each&& each) const;
+  SyncWork m_work;
 
   struct MaterialSlot
   {
@@ -595,10 +672,12 @@ private:
     uint64_t since = 0;  // the frame it was written in: from the next on, a frame in flight may sample it (moveSlots)
   };
 
-  void syncStructure(RetainedScene& scene, std::vector<DrawItem>& items, SyncResult& result);
-  // what found no memory this sync parked and out of `items`; whether anything was
-  bool parkFailed(const RetainedScene& scene, std::vector<DrawItem>& items);
-  void syncRows(const std::vector<DrawItem>& items, SyncResult& result);
+  // The instances of `entities`, in document order, brought to what each draws now, less the meshes
+  // parked, arriving and in `without`; those of `gone` let go of
+  void syncStructure(RetainedScene& scene, std::span<const EntityId> entities, std::span<const EntityId> gone, const std::set<MeshId>* without, SyncResult& result);
+  // what found no memory this sync parked; whether anything was (its instances go at the next syncStructure)
+  bool parkFailed(const RetainedScene& scene);
+  void syncRows(RetainedScene& scene, const SceneChanges& changes, SyncResult& result);
   std::set<MeshId> syncVertices(RetainedScene& scene, const std::set<MeshId>& meshes, SyncResult& result);
   // the refined meshes' displacements brought up to their records; returns the meshes whose
   // displacement moved, came or went (their drawers run again)
@@ -669,7 +748,7 @@ private:
   bool     placeSpan(uint32_t count, uint32_t& start);
   void     repackSpans();
   void     freeSpan(uint32_t start, uint32_t count);
-  void     buildDrawLists();
+  void     buildDrawLists() const;
   void     syncLights(RetainedScene& scene);
   void     syncIesProfiles(const RetainedScene& scene);
   // the water table (scene_water.hpp) from every material slot's water
@@ -732,7 +811,8 @@ private:
   GpuBackend&      m_gpu;
   ResidencyOptions m_options;
   std::set<MeshId> m_parked, m_failedMeshes, m_noticedParked, m_arriving;
-  void             holdBackArrivals(const RetainedScene& scene, std::vector<DrawItem>& items);
+  // of the meshes `entities` draw (in document order) that are not resident yet, those past a sync's worth
+  void             holdBackArrivals(RetainedScene& scene, std::span<const EntityId> entities);
   // setItemDetail's, what has been asked and not reached the host, and what those asked will free
   ItemDetail            m_detail;
   std::vector<uint64_t> m_detailAsks;
@@ -774,26 +854,43 @@ private:
       const char* why   = "";
     };
     std::vector<uint64_t>                  rows;       // the BLAS each row of the last TLAS built points at (0: none)
+    std::unordered_map<uint64_t, uint32_t> pointed;    // how many of them point at each
     uint64_t                               frame = 0;  // that build's
     std::unordered_map<uint64_t, uint64_t> dropped;    // the frame of the first build without each, until it goes
     std::vector<Held>                      held;
     std::unordered_map<uint64_t, uint32_t> holds;      // how often each was held, to say so once
-    // the row of the last TLAS built that points at `blas`, if any (indexed when first asked after a build)
+    // Row `row` of the TLAS being built, in frame `built`, points at `blas` (0: at none)
+    void point(size_t row, uint64_t blas, uint64_t built)
+    {
+      if(row >= rows.size())
+        rows.resize(row + 1, 0);
+      const uint64_t was = rows[row];
+      if(was == blas)
+        return;
+      if(was)
+        if(const auto it = pointed.find(was); it != pointed.end() && --it->second == 0)
+        {
+          pointed.erase(it);
+          dropped[was] = built;
+        }
+      if(blas)
+        pointed[blas]++;
+      rows[row] = blas;
+    }
+    // a row of the last TLAS built that points at `blas`, if any (looked for only to say which)
     const uint32_t* rowOf(uint64_t blas)
     {
-      if(!indexed)
-      {
-        index.clear();
-        for(size_t r = 0; r < rows.size(); r++)
-          if(rows[r])
-            index.emplace(rows[r], uint32_t(r));
-        indexed = true;
-      }
-      const auto it = index.find(blas);
-      return it == index.end() ? nullptr : &it->second;
+      if(!pointed.count(blas))
+        return nullptr;
+      for(size_t r = 0; r < rows.size(); r++)
+        if(rows[r] == blas)
+        {
+          found = uint32_t(r);
+          return &found;
+        }
+      return nullptr;
     }
-    std::unordered_map<uint64_t, uint32_t> index;
-    bool                                   indexed = false;
+    uint32_t found = 0;
   };
   std::shared_ptr<TlasRefs> m_tlasRefs = std::make_shared<TlasRefs>();
   // the held BLASes retired again, the TLAS built since
@@ -831,12 +928,6 @@ private:
   bool m_retryHeld = false;  // the shader features changed since the held edits were last tried
   uint32_t                                      m_micromapPrims = 0;  // prims that link one
   std::vector<std::optional<Instance>> m_instances;  // by instance slot, up to the high-water mark
-  std::map<InstanceKey, uint32_t>      m_slotOf;
-  // The slot of each of the last sync's draw items, by its place in the list (syncRows): the next
-  // takes them from here while each still names the instance it is, and m_slotOf only for those that
-  // don't. A scene that moves every frame (a backdrop's trees in the wind) has some hundred thousand
-  // items, and a map lookup each was 9 ms a frame.
-  std::vector<uint32_t> m_itemSlots;
   std::map<MaterialId, MaterialSlot>   m_materials;
 
   std::map<ImageKey, ImageGpu>                               m_images;
@@ -939,9 +1030,16 @@ private:
   bool                                 m_descDirty           = false;  // a table moved or a count changed
   bool                                 m_emissiveStale       = false;  // see emissiveSettling()
   uint64_t                             m_emitterWriteFrame   = 0;      // the last frame that wrote one
-  std::array<std::vector<uint32_t>, 4> m_drawLists;
-  uint64_t                             m_drawListsRevision = 0;
-  bool                                 m_hasTransmission   = false;
+  // (made when read, buildDrawLists: stale from the sync that changed what they hold until then)
+  mutable std::array<std::vector<uint32_t>, 4> m_drawLists;
+  mutable bool                                 m_drawListsStale    = false;
+  uint64_t                                     m_drawListsRevision = 0;
+  mutable bool                                 m_hasTransmission   = false;
+  void                                         staleDrawLists()
+  {
+    m_drawListsStale = true;
+    m_drawListsRevision++;
+  }
 
   uint32_t     m_instanceCapacity = 0;
   uint32_t     m_primCapacity     = 0;
@@ -953,6 +1051,12 @@ private:
   AccelHandle          m_tlasRowsOf;
   // slots placed since the last TLAS build (a sync that stops before its build keeps them for the next)
   std::vector<uint32_t> m_tlasPlaced;
+  // Slots whose row may be another without their having moved: shown or hidden, seen by the camera
+  // or not, linked to other lights. And the prims whose BLAS is another since that build (built again,
+  // compacted, let go of): their instances' rows are found through m_primRuns.
+  std::vector<uint32_t> m_tlasTouched;
+  std::vector<uint32_t> m_primsReblased;
+  bool                  m_tlasAllRows = false;  // a material's bits changed: every row is looked at
 
   std::set<uint32_t> m_dirtyNodes;        // render-node rows to write: rebound or now holes
   bool               m_allNodes = false;  // every row, into a new table

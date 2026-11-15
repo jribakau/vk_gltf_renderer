@@ -232,7 +232,7 @@ void Residency::clear()
   // the TLAS before the BLASes it points at
   retireAccel(m_tlas);
   m_tlasRefs->rows.clear();
-  m_tlasRefs->indexed = false;
+  m_tlasRefs->pointed.clear();
   m_tlasRefs->dropped.clear();
   retireHeld();
   for(const std::optional<Prim>& p : m_prims)
@@ -291,7 +291,10 @@ void Residency::clear()
   m_meshes.clear();
   m_prims.clear();
   m_instances.clear();
-  m_slotOf.clear();
+  m_draws.clear();
+  m_restructured.clear();
+  m_primRuns.clear();
+  m_materialRuns.clear();
   m_materials.clear();
   m_images.clear();
   m_textureSlots.clear();
@@ -310,12 +313,16 @@ void Residency::clear()
   m_textureInfos.assign(1, {});
   for(auto& list : m_drawLists)
     list.clear();
+  m_drawListsStale = false;
   m_drawListsRevision++;
   m_hasTransmission = false;
   m_renderNodes = m_renderPrims = m_sceneDesc = {};
   m_tlas                                      = {};
   m_tlasRows.clear();  // the next build writes every row
   m_tlasPlaced.clear();
+  m_tlasTouched.clear();
+  m_primsReblased.clear();
+  m_tlasAllRows = false;
   m_instanceCapacity = m_primCapacity = m_tlasCapacity = 0;
   // fresh slot pools: their slots index the tables retired above, so they are never read again
   m_dirtyNodes.clear();
@@ -454,6 +461,7 @@ void Residency::build(uint32_t p)
                                                     | (compact ? eAccelAllowCompaction : 0u));
   prim.refits     = 0;
   prim.outgrown   = false;
+  m_primsReblased.push_back(p);
   if(compact)
     m_compacting.insert(p);
 }
@@ -476,6 +484,7 @@ void Residency::refit(uint32_t p)
   prim.refittable    = true;
   prim.compacting    = compact;
   prim.compacted     = false;
+  m_primsReblased.push_back(p);
   if(compact)
     m_compacting.insert(p);
 }
@@ -506,6 +515,7 @@ bool Residency::takeCompacted()
     prim.blas      = copy;
     prim.compacted = true;
     any            = true;
+    m_primsReblased.push_back(p);
   }
   return any;
 }
@@ -1471,10 +1481,21 @@ std::set<Residency::ImageKey> Residency::pinnedImages(const RetainedScene& scene
 
 std::vector<std::pair<MeshId, uint64_t>> Residency::hiddenMeshes() const
 {
+  // (by entity and run: a run shows with its first shown copy, and most show their first)
   std::map<MeshId, bool> shown;
-  for(const auto& instance : m_instances)
-    if(instance)
-      shown[instance->mesh] = shown[instance->mesh] || instance->shown;
+  for(const EntityDraw& d : m_draws)
+  {
+    if(d.entity.isNone())
+      continue;
+    for(size_t r = 0; r < d.runs.size(); r++)
+    {
+      bool any = false;
+      for(uint32_t copy = 0; d.shown && !any && copy < d.copies; copy++)
+        any = m_instances[d.slot(r, copy)]->shown;
+      bool& mesh = shown[d.runs[r].mesh];
+      mesh       = mesh || any;
+    }
+  }
   const MemoryLedger                       ledger = this->ledger();
   std::vector<std::pair<MeshId, uint64_t>> out;
   for(const MemoryLedger::Mesh& m : ledger.meshes)
@@ -2582,8 +2603,10 @@ void Residency::freeSpan(uint32_t start, uint32_t count)
 }
 
 // The raster lists from the live instances' materials, in slot order
-void Residency::buildDrawLists()
+void Residency::buildDrawLists() const
 {
+  if(!std::exchange(m_drawListsStale, false))
+    return;
   for(auto& list : m_drawLists)
     list.clear();
   m_hasTransmission = false;
@@ -2602,7 +2625,74 @@ void Residency::buildDrawLists()
     m_drawLists[size_t(DrawList::eAll)].push_back(s);
     m_hasTransmission |= bits.transmission;
   }
-  m_drawListsRevision++;
+}
+
+// ---------- An entity's draws ----------
+
+void Residency::countRun(EntityId entity, uint32_t prim, uint32_t materialSlot, int delta)
+{
+  const auto count = [&](std::map<std::pair<uint32_t, EntityId>, uint32_t>& runs, uint32_t key) {
+    if(delta > 0)
+      runs[{key, entity}]++;
+    else if(const auto it = runs.find({key, entity}); it != runs.end() && --it->second == 0)
+      runs.erase(it);
+  };
+  count(m_primRuns, prim);
+  count(m_materialRuns, materialSlot);
+}
+
+template <class Each>
+void Residency::eachWithMaterial(uint32_t materialSlot, Each&& each) const
+{
+  for(auto it = m_materialRuns.lower_bound({materialSlot, EntityId{0, 0}}); it != m_materialRuns.end() && it->first.first == materialSlot; ++it)
+    if(const EntityDraw* d = drawOf(it->first.second))
+      for(size_t r = 0; r < d->runs.size(); r++)
+        if(m_instances[d->slot(r, 0)]->materialSlot == materialSlot)
+          for(uint32_t copy = 0; copy < d->copies; copy++)
+            each(d->slot(r, copy), *m_instances[d->slot(r, copy)]);
+}
+
+template <class Each>
+void Residency::eachEmitter(Each&& each) const
+{
+  for(uint32_t m = 0; m < m_shadeMaterials.size(); m++)
+    if(nvvkgltf::emissiveLuminance(nvvkgltf::emitterSelectionRadiance(m_shadeMaterials[m])) > 0.f)
+      eachWithMaterial(m, each);
+}
+
+void Residency::grow(EntityDraw& draw, const Instance& inst) const
+{
+  const Prim& prim = *m_prims[inst.prim];
+  if(!inst.shown || !prim.indexCount)
+    return;
+  for(int corner = 0; corner < 8; corner++)
+  {
+    const glm::vec3 at(corner & 4 ? prim.boundsMax.x : prim.boundsMin.x, corner & 2 ? prim.boundsMax.y : prim.boundsMin.y,
+                       corner & 1 ? prim.boundsMax.z : prim.boundsMin.z);
+    const glm::vec3 w = glm::vec3(inst.world * glm::vec4(at, 1.f));
+    draw.boundsMin    = glm::min(draw.boundsMin, w);
+    draw.boundsMax    = glm::max(draw.boundsMax, w);
+  }
+}
+
+void Residency::measure(EntityDraw& draw) const
+{
+  draw.boundsMin = glm::vec3(std::numeric_limits<float>::max());
+  draw.boundsMax = glm::vec3(std::numeric_limits<float>::lowest());
+  for(const uint32_t slot : draw.slots)
+    grow(draw, *m_instances[slot]);
+}
+
+std::array<glm::vec3, 2> Residency::shownBounds() const
+{
+  std::array<glm::vec3, 2> b{glm::vec3(std::numeric_limits<float>::max()), glm::vec3(std::numeric_limits<float>::lowest())};
+  for(const EntityDraw& d : m_draws)
+    if(!d.entity.isNone() && d.boundsMin.x <= d.boundsMax.x)
+    {
+      b[0] = glm::min(b[0], d.boundsMin);
+      b[1] = glm::max(b[1], d.boundsMax);
+    }
+  return b;
 }
 
 // ---------- The sync ----------
@@ -3140,27 +3230,31 @@ const glm::mat4* Residency::prevWorld(uint32_t slot) const
   return slot < m_prevWorlds.size() && slot < m_instances.size() && m_instances[slot] ? &m_prevWorlds[slot] : nullptr;
 }
 
-void Residency::holdBackArrivals(const RetainedScene& scene, std::vector<DrawItem>& items)
+void Residency::holdBackArrivals(RetainedScene& scene, std::span<const EntityId> entities)
 {
   m_arriving.clear();
   std::set<MeshId> coming;
   uint64_t         triangles = 0;
-  for(const DrawItem& item : items)
+  for(const EntityId id : entities)
   {
-    if(m_meshes.count(item.mesh) || coming.count(item.mesh) || m_arriving.count(item.mesh))
+    const Entity* e = scene.entity(id);
+    if(!e || !e->mesh)
       continue;
-    const MeshRecord* record = scene.mesh(item.mesh);
-    const uint64_t    more   = record ? record->indices.size() / 3 : 0;
-    if(triangles > 0 && triangles + more > m_options.arrivalTriangles)
-      m_arriving.insert(item.mesh);
-    else
+    for(const DrawItem& run : scene.drawsOf(id).runs)
     {
-      coming.insert(item.mesh);
-      triangles += more;
+      if(m_parked.count(run.mesh) || m_meshes.count(run.mesh) || coming.count(run.mesh) || m_arriving.count(run.mesh))
+        continue;
+      const MeshRecord* record = scene.mesh(run.mesh);
+      const uint64_t    more   = record ? record->indices.size() / 3 : 0;
+      if(triangles > 0 && triangles + more > m_options.arrivalTriangles)
+        m_arriving.insert(run.mesh);
+      else
+      {
+        coming.insert(run.mesh);
+        triangles += more;
+      }
     }
   }
-  if(!m_arriving.empty())
-    std::erase_if(items, [&](const DrawItem& item) { return m_arriving.count(item.mesh) > 0; });
 }
 
 void Residency::setParked(MeshId mesh, bool parked)
@@ -3177,7 +3271,7 @@ void Residency::retryParked()
   m_parkedChanged = true;
 }
 
-bool Residency::parkFailed(const RetainedScene& scene, std::vector<DrawItem>& items)
+bool Residency::parkFailed(const RetainedScene& scene)
 {
   if(m_failedMeshes.empty())
     return false;
@@ -3191,7 +3285,6 @@ bool Residency::parkFailed(const RetainedScene& scene, std::vector<DrawItem>& it
   m_failedMeshes.clear();
   if(!names.empty())
     m_userNotices.push_back("GPU and system memory are both full, so these aren't drawn for now: " + names + ".");
-  std::erase_if(items, [&](const DrawItem& item) { return m_parked.count(item.mesh) > 0; });
   return true;
 }
 
@@ -3209,6 +3302,7 @@ SyncResult Residency::sync(RetainedScene& scene)
 {
   SyncResult         result;
   const SceneChanges changes = scene.takeChanges();
+  m_work                     = {};
   const bool         fresh   = !m_renderNodes;
   // an emitter's vertex writes have stopped long enough: the table takes the areas they left
   const bool emissiveSettled = m_emissiveStale && m_gpu.frame() >= m_emitterWriteFrame + m_options.emissiveSettleFrames;
@@ -3264,31 +3358,66 @@ SyncResult Residency::sync(RetainedScene& scene)
   m_movedLast.clear();
   snapshotPrevPositions();
 
-  std::vector<DrawItem> items = scene.drawItems();
-  // what was let go of while hidden comes back with its first shown draw
+  // What is drawn. An entity's instances are others than they were when its mesh instance was set or
+  // dropped, or it went; and for every entity when it is a mesh's own state that says what is drawn
+  // (parked, let go of while hidden, arriving a few a sync, brought back). Each entity's draws are
+  // diffed against what it draws now, so that costs the entities looked at, never their copies.
   bool cameBack = false;
   if(!m_letGoHidden.empty())
-    for(const DrawItem& item : items)
-      if(item.shown && m_letGoHidden.erase(item.mesh))
-      {
-        m_parked.erase(item.mesh);
-        cameBack = true;
-      }
-  std::erase_if(items, [&](const DrawItem& item) { return m_parked.count(item.mesh) > 0; });
-  if(fresh || changes.structure || parkedChanged || cameBack || !m_arriving.empty())
   {
-    holdBackArrivals(scene, items);
+    // what was let go of while hidden comes back with its first shown draw: only what was shown, or
+    // made, since the last sync can have one
+    const auto shows = [&](EntityId id) {
+      const Entity* e = scene.entity(id);
+      if(!e || !e->mesh || !scene.shown(id))
+        return;
+      if(const std::vector<uint8_t>& hidden = e->mesh->hidden; !hidden.empty() && std::find(hidden.begin(), hidden.end(), uint8_t(0)) == hidden.end())
+        return;  // none of its copies
+      for(const MeshPart& part : e->mesh->parts)
+        if(m_letGoHidden.erase(part.mesh))
+        {
+          m_parked.erase(part.mesh);
+          cameBack = true;
+        }
+    };
+    for(const EntityId id : changes.visibility)
+      shows(id);
+    for(const EntityId id : changes.instances)
+      shows(id);
+  }
+  const bool everything = fresh || parkedChanged || cameBack || !m_arriving.empty();
+  if(everything || !changes.instances.empty())
+  {
+    std::vector<EntityId> entities, gone;
+    for(const EntityId id : changes.instances)
+      if(!scene.entity(id))
+        gone.push_back(id);
+    if(everything)
+      entities = scene.entitiesInOrder();
+    else if(changes.instances.size() == gone.size() + 1)
+    {
+      for(const EntityId id : changes.instances)
+        if(scene.entity(id))
+          entities.push_back(id);
+    }
+    else if(changes.instances.size() > gone.size())
+    {
+      // in document order: what is new takes its slots, and its turn to arrive, in that order
+      for(const EntityId id : scene.entitiesInOrder())
+        if(changes.instances.count(id))
+          entities.push_back(id);
+    }
+    holdBackArrivals(scene, entities);
     // what is brought back goes and comes in one sync: its old memory is still held when the new is asked for
     if(!m_bringBack.empty())
     {
-      std::vector<DrawItem> without = items;
-      std::erase_if(without, [&](const DrawItem& item) { return m_bringBack.count(item.mesh) > 0; });
-      syncStructure(scene, without, result);
+      syncStructure(scene, entities, gone, &m_bringBack, result);
       m_bringBack.clear();
+      gone.clear();
     }
-    syncStructure(scene, items, result);
-    if(parkFailed(scene, items))
-      syncStructure(scene, items, result);
+    syncStructure(scene, entities, gone, nullptr, result);
+    if(parkFailed(scene))
+      syncStructure(scene, scene.entitiesInOrder(), {}, nullptr, result);
   }
   std::set<MaterialId> edited = changes.materials;
   if(retryHeld)
@@ -3344,19 +3473,20 @@ SyncResult Residency::sync(RetainedScene& scene)
     result.buffersChanged = true;
   if(result.drawListChanged || m_bitsChanged)
   {
-    buildDrawLists();
+    staleDrawLists();
     result.drawListChanged = true;
+    m_tlasAllRows |= m_bitsChanged;  // its bits are in every row drawn with it
   }
   // (an edit held until now and written on its retry counts: it may emit, or stop)
   const bool materialsWritten = m_tablesMoved || result.drawListChanged || !edited.empty();
-  syncRows(items, result);
+  syncRows(scene, changes, result);
   // what couldn't be built goes, and the rest is drawn
-  if(parkFailed(scene, items))
+  if(parkFailed(scene))
   {
-    syncStructure(scene, items, result);
-    buildDrawLists();
+    syncStructure(scene, scene.entitiesInOrder(), {}, nullptr, result);
+    staleDrawLists();
     result.drawListChanged = true;
-    syncRows(items, result);
+    syncRows(scene, changes, result);
   }
   writeMotionTables(result);
   if(fresh || changes.iesProfiles)
@@ -3371,7 +3501,15 @@ SyncResult Residency::sync(RetainedScene& scene)
   }
   if(fresh || changes.structure || !changes.lights.empty() || !changes.transforms.empty() || !changes.visibility.empty())
   {
-    syncLights(scene);
+    // (of what moved or was shown, only an entity with a light moves one or shows it)
+    const auto lit = [&](const std::set<EntityId>& ids) {
+      return std::any_of(ids.begin(), ids.end(), [&](EntityId id) {
+        const Entity* e = scene.entity(id);
+        return e && !e->light.isNone();
+      });
+    };
+    if(fresh || changes.structure || !changes.lights.empty() || lit(changes.transforms) || lit(changes.visibility))
+      syncLights(scene);
     result.changed = true;
   }
   // the emissive table: its emitters came, went, moved, were shown or hidden, or their materials
@@ -3381,16 +3519,14 @@ SyncResult Residency::sync(RetainedScene& scene)
   // instance whose material's weight moved (a texture landed with its mean; it may start or stop
   // emitting) counts too: the table holds the weights both sides of the MIS read.
   bool emitterMoved = false, emitterWritten = false, emitterRelit = false;
-  for(const std::optional<Instance>& inst : m_instances)
-  {
-    if(inst && inst->shown && m_relitSlots.count(inst->materialSlot))
-      emitterRelit = true;
-    if(inst && emits(*inst))
-    {
-      emitterMoved |= changes.transforms.count(inst->entity) > 0;
-      emitterWritten |= written.count(inst->mesh) > 0;
-    }
-  }
+  for(const uint32_t relit : m_relitSlots)
+    eachWithMaterial(relit, [&](uint32_t, const Instance& inst) { emitterRelit |= inst.shown; });
+  eachEmitter([&](uint32_t, const Instance& inst) {
+    if(!inst.shown)
+      return;
+    emitterMoved |= changes.transforms.count(inst.entity) > 0;
+    emitterWritten |= written.count(inst.mesh) > 0;
+  });
   m_relitSlots.clear();
   // a textured emitter's own triangles weighed, now that their texels are averaged
   const bool texelsLanded = takeTexelAverages();
@@ -3426,38 +3562,40 @@ SyncResult Residency::sync(RetainedScene& scene)
   return result;
 }
 
-// Instances for the draw items that are new, holes for the ones that went, and the prims, meshes
-// and material slots that follow them.
-void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items, SyncResult& result)
+// Instances for what the entities draw that is new, holes for what they no longer do, and the prims,
+// meshes and material slots that follow them. An entity's runs are matched with the ones it had by
+// their mesh and submesh, and of a run that stays the copies it had stay: those keep their slots.
+void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> entities, std::span<const EntityId> gone, const std::set<MeshId>* without, SyncResult& result)
 {
-  // each draw item, and whether its entity draws its mesh deformed
-  std::map<InstanceKey, bool> drawn;
-  for(const DrawItem& item : items)
-    drawn.try_emplace({item.entity, item.mesh, item.submesh, item.copy}, deforms(scene, item.entity, item.mesh));
-
-  // gone first, so a prim or a material an instance moves to is not retired under it; an instance
-  // that now draws deformed, or no longer does, goes and comes back on the other prim
-  for(auto it = m_slotOf.begin(); it != m_slotOf.end();)
+  struct Wanted
   {
-    const auto      wanted = drawn.find(it->first);
-    const Instance& kept   = *m_instances[it->second];
-    // a drawer runs the passes it was made for: one that should run others is made again
-    const auto sameDrawer = [&] {
-      const DrawerGpu* d = kept.deformed ? &m_drawers.at({kept.entity, kept.mesh}) : nullptr;
-      if(!d)
-        return true;
-      const MeshRecord* r = scene.mesh(kept.mesh);
-      const Entity*     e = scene.entity(kept.entity);
-      const bool        skin = r && e && e->mesh && scene.skin(e->mesh->skin) && r->skins();
-      return r && d->morph == !r->targets.empty() && d->skin == skin;
-    };
-    if(wanted != drawn.end() && wanted->second == kept.deformed && sameDrawer())
-    {
-      ++it;
-      continue;
-    }
-    const uint32_t slot = it->second;
-    Instance&      inst = *m_instances[slot];
+    RetainedScene::EntityDraws draws;     // what it draws now, less the runs of the meshes left out
+    std::vector<uint8_t>       deformed;  // per run: whether its entity draws its mesh deformed
+    std::vector<int32_t>       from;      // per run: the run it had that this is, -1 for a new one
+  };
+  std::vector<Wanted> wanted(entities.size());
+  for(size_t i = 0; i < entities.size(); i++)
+  {
+    Wanted& w = wanted[i];
+    w.draws   = scene.drawsOf(entities[i]);
+    std::vector<DrawItem>& runs = w.draws.runs;
+    std::erase_if(runs, [&](const DrawItem& run) {
+      return m_parked.count(run.mesh) > 0 || m_arriving.count(run.mesh) > 0 || (without && without->count(run.mesh) > 0);
+    });
+    // (a submesh an entity names twice is drawn once)
+    for(size_t r = 1; r < runs.size();)
+      if(std::any_of(runs.begin(), runs.begin() + ptrdiff_t(r), [&](const DrawItem& o) { return o.mesh == runs[r].mesh && o.submesh == runs[r].submesh; }))
+        runs.erase(runs.begin() + ptrdiff_t(r));
+      else
+        r++;
+    for(const DrawItem& run : runs)
+      w.deformed.push_back(deforms(scene, run.entity, run.mesh));
+    w.from.assign(runs.size(), -1);
+    m_work.entities++;
+  }
+
+  const auto letGo = [&](uint32_t slot) {
+    Instance& inst = *m_instances[slot];
     releasePrim(inst.prim);
     if(inst.deformed)
       releaseDrawer({inst.entity, inst.mesh});
@@ -3468,63 +3606,161 @@ void Residency::syncStructure(RetainedScene& scene, std::vector<DrawItem>& items
     m_instances[slot].reset();
     m_gpu.retire([pool = m_instancePool, slot] { pool->destroyID(slot); });
     m_dirtyNodes.insert(slot);  // a hole: its row zeroed; the slot goes back to the pool at its retire frame
-    it                     = m_slotOf.erase(it);
     result.drawListChanged = true;
+  };
+  const auto uncount = [&](const EntityDraw& d, size_t run) {
+    const Instance& first = *m_instances[d.slot(run, 0)];
+    countRun(d.entity, first.prim, first.materialSlot, -1);
+  };
+
+  // gone first, so a prim or a material an instance moves to is not retired under it; an instance
+  // that now draws deformed, or no longer does, goes and comes back on the other prim
+  for(const EntityId id : gone)
+    if(EntityDraw* d = drawOf(id))
+    {
+      for(size_t r = 0; r < d->runs.size(); r++)
+        uncount(*d, r);
+      for(const uint32_t slot : d->slots)
+        letGo(slot);
+      *d = {};
+    }
+  for(size_t i = 0; i < entities.size(); i++)
+  {
+    EntityDraw* d = drawOf(entities[i]);
+    if(!d)
+      continue;
+    Wanted&        w      = wanted[i];
+    const uint32_t copies = w.draws.runs.empty() ? 0 : w.draws.at.count();
+    for(size_t was = 0; was < d->runs.size(); was++)
+    {
+      const EntityDraw::Run& run  = d->runs[was];
+      const Instance&        kept = *m_instances[d->slot(was, 0)];
+      int32_t                now  = -1;
+      for(size_t k = 0; k < w.draws.runs.size() && now < 0; k++)
+        if(w.from[k] < 0 && w.draws.runs[k].mesh == run.mesh && w.draws.runs[k].submesh == run.submesh)
+          now = int32_t(k);
+      // a drawer runs the passes it was made for: one that should run others is made again
+      const auto sameDrawer = [&] {
+        const DrawerGpu* drawer = kept.deformed ? &m_drawers.at({kept.entity, kept.mesh}) : nullptr;
+        if(!drawer)
+          return true;
+        const MeshRecord* r    = scene.mesh(kept.mesh);
+        const Entity*     e    = scene.entity(kept.entity);
+        const bool        skin = r && e && e->mesh && scene.skin(e->mesh->skin) && r->skins();
+        return r && drawer->morph == !r->targets.empty() && drawer->skin == skin;
+      };
+      const bool stays = now >= 0 && bool(w.deformed[size_t(now)]) == kept.deformed && sameDrawer();
+      if(stays)
+        w.from[size_t(now)] = int32_t(was);
+      else
+        uncount(*d, was);
+      for(uint32_t copy = stays ? copies : 0; copy < d->copies; copy++)
+        letGo(d->slot(was, copy));
+    }
   }
 
-  for(const DrawItem& item : items)
+  for(size_t i = 0; i < entities.size(); i++)
   {
-    const InstanceKey key{item.entity, item.mesh, item.submesh, item.copy};
-    auto              found = m_slotOf.find(key);
-    if(found != m_slotOf.end())
+    const EntityId entity = entities[i];
+    Wanted&        w      = wanted[i];
+    EntityDraw*    d      = drawOf(entity);
+    if(w.draws.runs.empty())
     {
-      // its material slot follows a new material binding
-      Instance& inst = *m_instances[found->second];
-      if(inst.material != item.material)
-      {
-        const uint32_t materialSlot = acquireMaterial(scene, item.material);
-        releaseMaterial(inst.material);
-        inst.material     = item.material;
-        inst.materialSlot = materialSlot;
-        m_dirtyNodes.insert(found->second);
-        // its raster list and its emitters follow the material, which may be drawn already (so
-        // nothing is converted that would say so)
-        result.drawListChanged = true;
-      }
+      if(d)
+        *d = {};  // (all it had were let go of above)
       continue;
     }
-    uint32_t   slot = 0;
-    const bool ok   = m_instancePool->createID(slot);
-    assert(ok && "out of instance slots");
-    (void)ok;
-    if(slot >= m_instances.size())
-      m_instances.resize(size_t(slot) + 1);
-    Instance inst;
-    inst.entity   = item.entity;
-    inst.mesh     = item.mesh;
-    inst.submesh  = item.submesh;
-    inst.copy     = item.copy;
-    inst.deformed = drawn.at(key);
-    if(inst.deformed)
-      acquireDrawer(scene, item.entity, item.mesh).users++;
-    inst.prim         = acquirePrim(scene, item.mesh, item.submesh, inst.deformed ? item.entity : EntityId{});
-    if(m_gpu.takeAllocationFailed())
-      m_failedMeshes.insert(item.mesh);
-    inst.material     = item.material;
-    inst.materialSlot = acquireMaterial(scene, item.material);
-    inst.world        = item.world;
-    inst.shown        = item.shown;
-    inst.offCamera    = item.offCamera;
-    inst.link         = item.link;
-    m_instances[slot] = inst;
-    m_slotOf[key]     = slot;
-    m_dirtyNodes.insert(slot);
-    // a new slot starts where it is: no motion, never the motion of what had the slot before
-    if(slot >= m_prevWorlds.size())
-      m_prevWorlds.resize(size_t(slot) + 1, glm::mat4(0.f));
-    m_prevWorlds[slot] = item.world;
-    m_dirtyPrevNodes.push_back(slot);
-    result.drawListChanged = true;
+    const RetainedScene::Placement& at     = w.draws.at;
+    const uint32_t                  copies = at.count();
+    EntityDraw                      draw;
+    draw.entity = entity;
+    draw.copies = copies;
+    draw.slots.resize(w.draws.runs.size() * copies);
+    for(size_t r = 0; r < w.draws.runs.size(); r++)
+    {
+      const DrawItem& run = w.draws.runs[r];
+      draw.runs.push_back({run.mesh, run.submesh, bool(w.deformed[r])});
+      const int32_t was = w.from[r];
+      for(uint32_t copy = 0; copy < copies; copy++)
+      {
+        uint32_t& slot = draw.slots[r * copies + copy];
+        m_work.instances++;
+        if(was >= 0 && copy < d->copies)
+        {
+          // its material slot follows a new material binding
+          slot           = d->slot(size_t(was), copy);
+          Instance& inst = *m_instances[slot];
+          if(inst.material != run.material)
+          {
+            if(copy == 0)
+              countRun(entity, inst.prim, inst.materialSlot, -1);
+            const uint32_t materialSlot = acquireMaterial(scene, run.material);
+            releaseMaterial(inst.material);
+            inst.material     = run.material;
+            inst.materialSlot = materialSlot;
+            m_dirtyNodes.insert(slot);
+            if(copy == 0)
+              countRun(entity, inst.prim, inst.materialSlot, 1);
+            // its raster list and its emitters follow the material, which may be drawn already (so
+            // nothing is converted that would say so)
+            result.drawListChanged = true;
+          }
+          continue;
+        }
+        const bool ok = m_instancePool->createID(slot);
+        assert(ok && "out of instance slots");
+        (void)ok;
+        if(slot >= m_instances.size())
+          m_instances.resize(size_t(slot) + 1);
+        Instance inst;
+        inst.entity   = entity;
+        inst.mesh     = run.mesh;
+        inst.submesh  = run.submesh;
+        inst.copy     = copy;
+        inst.deformed = bool(w.deformed[r]);
+        if(inst.deformed)
+          acquireDrawer(scene, entity, run.mesh).users++;
+        inst.prim = acquirePrim(scene, run.mesh, run.submesh, inst.deformed ? entity : EntityId{});
+        if(m_gpu.takeAllocationFailed())
+          m_failedMeshes.insert(run.mesh);
+        inst.material     = run.material;
+        inst.materialSlot = acquireMaterial(scene, run.material);
+        inst.world        = at.worldOf(copy);
+        inst.shown        = at.shownOf(copy);
+        inst.offCamera    = at.offCamera;
+        inst.link         = at.link;
+        m_instances[slot] = inst;
+        m_dirtyNodes.insert(slot);
+        // a new slot starts where it is: no motion, never the motion of what had the slot before
+        if(slot >= m_prevWorlds.size())
+          m_prevWorlds.resize(size_t(slot) + 1, glm::mat4(0.f));
+        m_prevWorlds[slot] = inst.world;
+        m_dirtyPrevNodes.push_back(slot);
+        result.drawListChanged = true;
+        if(copy == 0)
+          countRun(entity, inst.prim, inst.materialSlot, 1);  // (a run that stays has its first copy)
+      }
+    }
+    // placed as it was, for what it had (syncRows places them again); as it is, when new
+    if(d)
+    {
+      m_restructured.push_back(entity);
+      draw.world     = d->world;
+      draw.shown     = d->shown;
+      draw.offCamera = d->offCamera;
+      draw.link      = d->link;
+    }
+    else
+    {
+      draw.world     = at.world;
+      draw.shown     = at.shown;
+      draw.offCamera = at.offCamera;
+      draw.link      = at.link;
+    }
+    measure(draw);
+    if(entity.index >= m_draws.size())
+      m_draws.resize(size_t(entity.index) + 1);
+    m_draws[entity.index] = std::move(draw);
   }
   if(result.drawListChanged)
     result.changed = true;
@@ -3660,6 +3896,7 @@ std::set<MeshId> Residency::syncVertices(RetainedScene& scene, const std::set<Me
       {
         retireAccel(prim.blas, "its mesh's buffers moved");
         prim.blas = {};  // built with the others in syncRows
+        m_primsReblased.push_back(uint32_t(p));
       }
       else
         refits.push_back(uint32_t(p));
@@ -3717,59 +3954,98 @@ void Residency::ensureCapacity(SyncResult& result)
   }
 }
 
-// The rows that differ from what is drawn, then the BLASes still to build, then the TLAS.
-void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
+// The rows that differ from what is drawn, then the BLASes still to build, then the TLAS. Of the
+// entities the store says moved or were shown, hidden or linked: each instance of one, or, of one
+// only some copies of which did, those copies'.
+void Residency::syncRows(RetainedScene& scene, const SceneChanges& changes, SyncResult& result)
 {
   std::vector<uint32_t> nodes(m_dirtyNodes.begin(), m_dirtyNodes.end());
   m_dirtyNodes.clear();
   if(m_allNodes)
     for(uint32_t s = 0; s < m_instances.size(); s++)
       nodes.push_back(s);
-  m_allNodes = false;
-  // (a BLAS held for the TLAS that pointed at it: one built without it, so that it can go)
-  bool tlasRows = !nodes.empty() || !m_tlasRefs->held.empty();
-  m_itemSlots.resize(items.size(), ~0U);
-  for(size_t i = 0; i < items.size(); i++)
-  {
-    const DrawItem& item = items[i];
-    uint32_t        slot = m_itemSlots[i];
-    const auto      same = [&](uint32_t s) {
-      if(s >= m_instances.size() || !m_instances[s])
-        return false;
-      const Instance& o = *m_instances[s];
-      return o.entity == item.entity && o.mesh == item.mesh && o.submesh == item.submesh && o.copy == item.copy;
+  m_allNodes       = false;
+  const auto place = [&](EntityId id, bool all) {
+    EntityDraw* d = drawOf(id);
+    if(!d)
+      return;
+    const std::optional<RetainedScene::Placement> found = scene.placementOf(id);
+    if(!found || found->count() != d->copies)
+      return;  // (not as it is drawn)
+    const RetainedScene::Placement& at = *found;
+    m_work.entities++;
+    const auto moved = changes.copies.find(id);
+    const bool whole = all || moved == changes.copies.end() || moved->second.all || at.world != d->world || at.shown != d->shown
+                       || at.offCamera != d->offCamera || at.link != d->link;
+    const auto copy = [&](uint32_t c) {
+      const glm::mat4 world = at.worldOf(c);
+      const bool      shown = at.shownOf(c);
+      for(size_t r = 0; r < d->runs.size(); r++)
+      {
+        const uint32_t slot = d->slot(r, c);
+        Instance&      inst = *m_instances[slot];
+        bool           row  = false;
+        m_work.instances++;
+        if(inst.shown != shown)
+        {
+          inst.shown               = shown;
+          result.visibilityChanged = row = true;  // the TLAS row, not the render node
+        }
+        if(inst.offCamera != at.offCamera)
+        {
+          inst.offCamera = at.offCamera;
+          row            = true;  // its row's mask alone: it lights and is lit as before
+        }
+        if(inst.link != at.link)
+        {
+          if(inst.link.unlit != at.link.unlit)
+            nodes.push_back(slot);  // its render node
+          inst.link = at.link;
+          row       = true;  // its row's mask, and the picture starts again as for any row
+        }
+        if(inst.world != world)
+        {
+          // drawn last where it was: its motion row, until the next sync brings it to rest
+          m_prevWorlds[slot] = inst.world;
+          m_dirtyPrevNodes.push_back(slot);
+          m_movedLast.push_back(slot);
+          inst.world = world;
+          nodes.push_back(slot);
+        }
+        if(row)
+          m_tlasTouched.push_back(slot);
+        if(!whole)
+          grow(*d, inst);
+      }
     };
-    if(!same(slot))
-      slot = m_itemSlots[i] = m_slotOf.at({item.entity, item.mesh, item.submesh, item.copy});
-    Instance& inst = *m_instances[slot];
-    if(inst.shown != item.shown)
+    if(whole)
     {
-      inst.shown               = item.shown;
-      result.visibilityChanged = tlasRows = true;  // the TLAS row, not the render node
+      for(uint32_t c = 0; c < d->copies; c++)
+        copy(c);
+      d->world     = at.world;
+      d->shown     = at.shown;
+      d->offCamera = at.offCamera;
+      d->link      = at.link;
+      measure(*d);
     }
-    if(inst.offCamera != item.offCamera)
+    else
     {
-      inst.offCamera = item.offCamera;
-      tlasRows       = true;  // its row's mask alone: it lights and is lit as before
+      std::vector<uint32_t> which = moved->second.which;  // (some perhaps twice)
+      sortUnique(which);
+      for(const uint32_t c : which)
+        if(c < d->copies)
+          copy(c);
     }
-    if(inst.link != item.link)
-    {
-      if(inst.link.unlit != item.link.unlit)
-        nodes.push_back(slot);  // its render node
-      inst.link = item.link;
-      tlasRows  = true;  // its row's mask, and the picture starts again as for any row
-    }
-    if(inst.world != item.world)
-    {
-      // drawn last where it was: its motion row, until the next sync brings it to rest
-      m_prevWorlds[slot] = inst.world;
-      m_dirtyPrevNodes.push_back(slot);
-      m_movedLast.push_back(slot);
-      inst.world = item.world;
-      nodes.push_back(slot);
-      tlasRows = true;
-    }
-  }
+  };
+  for(const EntityId id : std::exchange(m_restructured, {}))
+    place(id, true);
+  for(const EntityId id : changes.transforms)
+    place(id, false);
+  for(const EntityId id : changes.visibility)
+    if(!changes.transforms.count(id))
+      place(id, false);
+  // (a BLAS held for the TLAS that pointed at it: one built without it, so that it can go)
+  bool tlasRows = !nodes.empty() || !m_tlasTouched.empty() || !m_tlasRefs->held.empty();
 
   sortUnique(nodes);  // the rows written in runs
 
@@ -3820,6 +4096,7 @@ void Residency::syncRows(const std::vector<DrawItem>& items, SyncResult& result)
     }
     retireAccel(prim.blas, "settled: built again to be compacted");
     prim.blas       = built;
+    m_primsReblased.push_back(p);
     prim.refittable = false;
     prim.compacting = true;
     prim.compacted  = false;
@@ -3907,28 +4184,37 @@ void Residency::writeRenderPrims(const std::set<uint32_t>& slots)
 }
 
 // Rows up to the high-water mark: a live instance's, a hidden one's without its BLAS, a hole's null.
-// Kept from build to build (m_tlasRows): a row's transform is made again only for a slot placed since, and
-// only the rows that differ go to the device. Its BLAS, mask and flags are looked at for every row, which
-// is cheap: a BLAS built again, compacted or let go of, or a material's bits, change without a move.
+// Kept from build to build (m_tlasRows), and only what may be another is worked out again: a slot
+// placed since (its transform), one shown, hidden or linked since, the instances of a prim whose BLAS
+// is another, a row no build has had; every one only for a new TLAS or when a material's bits
+// changed. Of those, only the rows that differ go to the device.
 void Residency::buildTlas()
 {
-  std::vector<uint32_t> placed;
+  std::vector<uint32_t> placed, touched;
   placed.swap(m_tlasPlaced);
+  touched.swap(m_tlasTouched);
   sortUnique(placed);
+  for(const uint32_t p : std::exchange(m_primsReblased, {}))
+    for(auto it = m_primRuns.lower_bound({p, EntityId{0, 0}}); it != m_primRuns.end() && it->first.first == p; ++it)
+      if(const EntityDraw* d = drawOf(it->first.second))
+        for(size_t r = 0; r < d->runs.size(); r++)
+          if(m_instances[d->slot(r, 0)]->prim == p)
+            touched.insert(touched.end(), d->slots.begin() + ptrdiff_t(r * d->copies), d->slots.begin() + ptrdiff_t((r + 1) * d->copies));
   const size_t n     = m_instances.size();
-  const bool   every = m_tlasRows.size() != n || m_tlasRowsOf != m_tlas;  // another count, or a new TLAS
+  const bool   every = m_tlasRowsOf != m_tlas;  // a new TLAS: it holds nothing
+  const bool   bits  = std::exchange(m_tlasAllRows, false);
+  const bool   all   = every || bits;
+  for(size_t s = m_tlasRows.size(); s < n; s++)
+    touched.push_back(uint32_t(s));
   m_tlasRows.resize(n);
   m_tlasRowsOf = m_tlas;
   std::vector<uint32_t> changed;
-  size_t                next = 0;
-  for(size_t s = 0; s < n; s++)
-  {
-    while(next < placed.size() && placed[next] < s)
-      next++;
-    const bool                     moved = every || (next < placed.size() && placed[next] == s);
-    const std::optional<Instance>& inst  = m_instances[s];
-    TlasRow&                       was   = m_tlasRows[s];
+  const uint64_t        frame  = m_gpu.frame();
+  const auto            derive = [&](size_t s, bool moved) {
+    const std::optional<Instance>& inst = m_instances[s];
+    TlasRow&                       was  = m_tlasRows[s];
     TlasRow                        row;  // a hole's: null
+    m_work.tlasRows++;
     if(inst)
     {
       if(moved)
@@ -3944,27 +4230,39 @@ void Residency::buildTlas()
     }
     if(every || moved || row.customIndex != was.customIndex || row.mask != was.mask || row.flags != was.flags || row.blas != was.blas)
     {
+      // what it points at now, and since when what it pointed at before no longer is pointed at by any
+      m_tlasRefs->point(s, row.blas.value, frame);
       was = row;
       if(!every)
         changed.push_back(uint32_t(s));
     }
-  }
-  const std::vector<TlasRow>& rows = m_tlasRows;
-  m_gpu.buildTlasRows(m_tlas, rows, TlasMode::eBuild, changed, every);
-  // what it points at now, and since when each it pointed at before no longer is (a drag's builds point at the same)
-  std::vector<uint64_t> now(rows.size());
-  for(size_t s = 0; s < rows.size(); s++)
-    now[s] = rows[s].blas.value;
-  if(now != m_tlasRefs->rows)
+  };
+  if(all)
   {
-    const std::unordered_set<uint64_t> kept(now.begin(), now.end());
-    for(uint64_t blas : m_tlasRefs->rows)
-      if(blas && !kept.count(blas))
-        m_tlasRefs->dropped[blas] = m_gpu.frame();
-    m_tlasRefs->rows    = std::move(now);
-    m_tlasRefs->indexed = false;
+    size_t next = 0;
+    for(size_t s = 0; s < n; s++)
+    {
+      while(next < placed.size() && placed[next] < s)
+        next++;
+      derive(s, every || (next < placed.size() && placed[next] == s));
+    }
   }
-  m_tlasRefs->frame = m_gpu.frame();
+  else
+  {
+    touched.insert(touched.end(), placed.begin(), placed.end());
+    sortUnique(touched);
+    size_t next = 0;
+    for(const uint32_t s : touched)
+    {
+      if(s >= n)
+        break;
+      while(next < placed.size() && placed[next] < s)
+        next++;
+      derive(s, next < placed.size() && placed[next] == s);
+    }
+  }
+  m_gpu.buildTlasRows(m_tlas, m_tlasRows, TlasMode::eBuild, changed, every);
+  m_tlasRefs->frame = frame;
   retireHeld();
 }
 
@@ -4182,8 +4480,15 @@ void Residency::syncEmissive(const RetainedScene& scene)
   std::vector<std::vector<float>>             lums;  // what each emitter's triangleLuminance views
   std::vector<shaderio::TexelTriangle>        ask;
   std::vector<std::pair<TexelKey, uint32_t>>  asked;
-  lums.reserve(m_instances.size());
-  for(uint32_t s = 0; s < m_instances.size(); s++)
+  // (found by their materials, then in slot order, as the table has them)
+  std::vector<uint32_t> emitting;
+  eachEmitter([&](uint32_t slot, const Instance& inst) {
+    if(inst.shown)
+      emitting.push_back(slot);
+  });
+  sortUnique(emitting);
+  lums.reserve(emitting.size());
+  for(const uint32_t s : emitting)
   {
     const std::optional<Instance>& inst = m_instances[s];
     if(!inst || !inst->shown || inst->materialSlot >= m_shadeMaterials.size())

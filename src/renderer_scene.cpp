@@ -591,8 +591,11 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
     constexpr uint64_t kFramesToComplete = 8;
     if(m_blasTimedFrame && m_trailFrames >= *m_blasTimedFrame + kFramesToComplete)
     {
-      if(const std::optional<rs::BuildTimes> times = m_resources.retainedGpu->buildTimes(); times && times->blasSpans && fv::timing::enabled())
-        fv::timing::line(fmt::format("GPU BLAS frame: {:.3f} ms in {} flushes; TLAS {:.3f} ms", times->blasMs, times->blasSpans, times->tlasMs));
+      // (a frame that only moved instances has no BLAS work, and its TLAS build is the number asked for)
+      if(const std::optional<rs::BuildTimes> times = m_resources.retainedGpu->buildTimes();
+         times && (times->blasSpans || times->tlasSpans) && fv::timing::enabled())
+        fv::timing::line(fmt::format("GPU BLAS frame: {:.3f} ms in {} flushes; TLAS {:.3f} ms over {} rows", times->blasMs, times->blasSpans,
+                                     times->tlasMs, m_resources.retainedGpu->residency().instanceHighWater()));
       m_blasTimedFrame.reset();
     }
     if(!m_blasTimedFrame)

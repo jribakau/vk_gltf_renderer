@@ -27,6 +27,25 @@ GltfScene tables the shaders read      BLAS per drawn submesh, TLAS over capacit
 morph targets, is deformed for that entity: its own prims, over output streams the morph and skin
 passes write and refit.
 
+**What a sync looks at.** A sync costs what changed, not what is drawn: a world of a few hundred
+thousand instancing copies moves a ship, shows a tree or takes in a quad of ground for the price of
+those. The store says which entities had their mesh instance set or dropped
+(`SceneChanges::instances`), which moved or were shown (`transforms`, `visibility`, descendants
+included) and, of an entity only some copies of which did, which copies (`SceneChanges::copies`:
+`moveCopies`, `setCopiesShown`). The residency keeps each entity's instances by entity
+(`Residency::EntityDraw`: its runs, each as many times as it has copies) and goes through those
+entities alone: the structure pass diffs an entity's runs against the ones it had (a run that stays
+keeps its copies' slots), the row pass places the instances of the entities that moved, or only the
+copies named. Every entity is gone through only when a mesh's own state says what is drawn (parked,
+arriving a few a sync, brought back, a fresh scene), which costs the entities, not their copies.
+The TLAS rows are worked out again only for slots placed, shown or linked since the last build and
+for the instances of a prim whose BLAS is another (found by `m_primRuns`); the emissive table finds
+its emitters by their materials (`m_materialRuns`); the scene's bounds are kept a box an entity; the
+raster lists are made when read. `Residency::lastSyncWork` counts what a sync looked at, and
+the tests hold it to the change (`RetainedResidency.ASyncLooksOnlyAtWhatChanged`). A copy can be
+hidden by itself (`MeshInstance::hidden`): it keeps its instance and its slot, its TLAS row without
+its BLAS, as a hidden entity's.
+
 **Slots and side tables.** An entity's draw item (entity, mesh, submesh, instancing copy) is an
 instance: a render-node row and a TLAS row, whose custom index is its prim slot. The row's mask and
 flags are its material's (`materialBits`), less the camera's bit for an instance the camera looks
@@ -68,7 +87,10 @@ memory pressure still builds a quiet mesh's BVH again static and compacted, the 
 The TLAS is built again over capacity whenever a row changes, keeping its handle until capacity
 grows. Its rows are kept between builds (`Residency::buildTlas`): a row's transform is made again only for
 a slot moved or rebound since the last build, and only the rows that differ are written to the device
-(`GpuBackend::buildTlasRows`; every row after a build of another count or into a new TLAS).
+(`GpuBackend::buildTlasRows`; every row into a new TLAS). Which BLASes its rows point at is counted
+a BLAS (`TlasRefs`), so one let go of is kept exactly until a TLAS is built without it. The build
+itself is the device's, over every row: 0.4 to 1.4 ms at 130 to 170 thousand rows on an RTX 4080
+(`blasTimeBuilds` logs it for a frame that only moved instances too).
 
 **Sync order** (`rs::Residency::sync`, once a frame before the passes): a frame-to-write barrier
 (nothing below overwrites what a frame in flight reads before it); last sync's moved worlds and
@@ -806,9 +828,8 @@ for which the ripples drift as one field and the frame carries the step from the
 
 Measured (2026-11-12, RTX 4080, 1080p, the moving view at rest on the ground, 40 km/h): the meadow
 17.5 ms between frames, as calm; the forest 21.5 against 17.5, path tracing unchanged (11.1 ms). The
-forest's is the sync's CPU, which a change anywhere in a scene of its size pays. The row a draw item
-had is kept by its place in the list (`Residency::m_itemSlots`): a map lookup each had been 9 ms a
-frame. Before the bushes and saplings had a reach of their own, 15,000 copies swayed there and the
+forest's is the sync's CPU, which a change anywhere in a scene of its size paid then (since
+2026-11-15 a sync looks only at what changed: "What a sync looks at", above). Before the bushes and saplings had a reach of their own, 15,000 copies swayed there and the
 frames came every 33 ms. The user's forest (size 200, density 2, Mature woods) draws 190,000
 instances and sways 40,000 of them: the sync took 25 ms a frame and the host's sway 3.6, frames every
 44 ms. The TLAS rows are kept from build to build and only the moved or changed ones written
@@ -985,9 +1006,7 @@ their kit when there is one. It needs no kit: without one it stands bare.
   which near, where its trees are drawn, is its floor's and not its canopy's (`Biome::floor`,
   `World::planted`). Grass and its flowers and ferns are the meadow's tiles, laid by the meadow's own
   rule on a cube face's plane round the camera and the figures (`tilePlanet`), each leant and
-  stretched to its square of the sphere. Every plant is an instance the scene sync walks on any
-  change, and a planet's quads change as the camera moves, which is what bounds how many there are
-  (`keptOn`) and how many quads arrive at once.
+  stretched to its square of the sphere.
 - **The sea floor** has plants of its own, which need no kit (`src/fv_world_sea.hpp`): seagrass,
   kelp, corals, sponges and rocks as small meshes made from the planet's seed (the generators after
   abyssal-garden's, MIT), held hidden under the root as the kit's plants are and placed the same

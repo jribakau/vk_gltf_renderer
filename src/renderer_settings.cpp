@@ -569,7 +569,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                       }},
                  &m_resources.settings.blasCompactDeforming, Persist::eNo);
   m_settings.add({.name = "blasTimeBuilds",
-                  .help = "Retained scene (debug): a timing line with the GPU time of a frame's BLAS builds and refits, one frame in a few"},
+                  .help = "Retained scene (debug): a timing line with the GPU time of a frame's BLAS builds and refits and of its TLAS build, one frame in a few"},
                  &m_resources.settings.blasTimeBuilds, Persist::eNo);
   // Debug, live (read at the next scene replace): every composition then retires the old scene's
   // slots and reallocates, so holes, slot reuse, capacity growth and deferred frees run on the GPU
