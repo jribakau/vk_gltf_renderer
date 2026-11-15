@@ -60,6 +60,7 @@ struct Feature
   double amount = 1.0;
   double height = 0.0;  // peak: metres at its top. basin: metres deep at its middle.
   double crater = 0.0;  // peak: its crater's width against the peak's own, 0 none
+  std::string name;     // what its author calls it (a map's label), "" none
   bool   operator==(const Feature&) const = default;
 };
 

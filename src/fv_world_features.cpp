@@ -181,55 +181,6 @@ FeatureKind kindOf(const Json& j, const std::string& where)
   wrong(where, "a kind is one of land, sea, range, peak, basin, plain");
 }
 
-Feature feature(const Json& j, const std::string& where)
-{
-  if(!j.is_object())
-    wrong(where, "a feature is an object");
-  Feature f;
-  if(!j.contains("kind"))
-    wrong(where, "no kind");
-  f.kind = kindOf(j["kind"], where + ".kind");
-  // a point (`at`) or an arc (`from`, `to`)
-  if(j.contains("at"))
-  {
-    if(j.contains("from") || j.contains("to"))
-      wrong(where, "`at` names a point: no `from` or `to` beside it");
-    f.from = f.to = place(j["at"], where + ".at");
-  }
-  else if(j.contains("from") && j.contains("to"))
-  {
-    f.from = place(j["from"], where + ".from");
-    f.to   = place(j["to"], where + ".to");
-    if(glm::dot(f.from, f.to) < -0.999)
-      wrong(where, "its ends are opposite each other: no one arc joins them");
-  }
-  else
-    wrong(where, "wants `at`, or `from` and `to`");
-  if(!j.contains("width"))
-    wrong(where, "no width");
-  f.width = number(j["width"], where + ".width", 0.05, 1000.0) * 1000.0;
-  for(const auto& [key, value] : j.items())
-  {
-    if(key == "kind" || key == "at" || key == "from" || key == "to" || key == "width" || key == "name")
-      continue;
-    if(key == "amount")
-      f.amount = number(value, where + ".amount", 0.0, 10.0);
-    else if(key == "height" && f.kind == FeatureKind::ePeak)
-      f.height = number(value, where + ".height", 0.0, 20000.0);
-    else if(key == "depth" && f.kind == FeatureKind::eBasin)
-      f.height = number(value, where + ".depth", 0.0, 20000.0);
-    else if(key == "crater" && f.kind == FeatureKind::ePeak)
-      f.crater = number(value, where + ".crater", 0.0, 0.9);
-    else
-      wrong(where, "`" + key + "` is nothing a " + j["kind"].get<std::string>() + " has");
-  }
-  if(f.kind == FeatureKind::ePeak && !j.contains("height"))
-    wrong(where, "a peak wants a height");
-  if(f.kind == FeatureKind::eBasin && !j.contains("depth"))
-    wrong(where, "a basin wants a depth");
-  return f;
-}
-
 // Its line, as a feature's: `at`, or `from` and `to`; and its width
 void shapeOf(const Json& j, const std::string& where, Feature& f)
 {
@@ -258,6 +209,40 @@ std::string nameOf(const Json& j, const std::string& where)
   if(!j.is_string() || j.get<std::string>().empty())
     wrong(where, "a name is wanted");
   return j.get<std::string>();
+}
+
+Feature feature(const Json& j, const std::string& where)
+{
+  if(!j.is_object())
+    wrong(where, "a feature is an object");
+  Feature f;
+  if(!j.contains("kind"))
+    wrong(where, "no kind");
+  f.kind = kindOf(j["kind"], where + ".kind");
+  // a point (`at`) or an arc (`from`, `to`), and its width
+  shapeOf(j, where, f);
+  for(const auto& [key, value] : j.items())
+  {
+    if(key == "kind" || key == "at" || key == "from" || key == "to" || key == "width")
+      continue;
+    if(key == "name")
+      f.name = nameOf(value, where + ".name");
+    else if(key == "amount")
+      f.amount = number(value, where + ".amount", 0.0, 10.0);
+    else if(key == "height" && f.kind == FeatureKind::ePeak)
+      f.height = number(value, where + ".height", 0.0, 20000.0);
+    else if(key == "depth" && f.kind == FeatureKind::eBasin)
+      f.height = number(value, where + ".depth", 0.0, 20000.0);
+    else if(key == "crater" && f.kind == FeatureKind::ePeak)
+      f.crater = number(value, where + ".crater", 0.0, 0.9);
+    else
+      wrong(where, "`" + key + "` is nothing a " + j["kind"].get<std::string>() + " has");
+  }
+  if(f.kind == FeatureKind::ePeak && !j.contains("height"))
+    wrong(where, "a peak wants a height");
+  if(f.kind == FeatureKind::eBasin && !j.contains("depth"))
+    wrong(where, "a basin wants a depth");
+  return f;
 }
 
 // One of the file's `places`: a region, or a place by name

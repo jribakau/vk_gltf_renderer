@@ -45,12 +45,14 @@
 //
 
 #include "fv_host_impl.hpp"
+#include "fv_world_chart.hpp"
 #include "fv_world_map.hpp"
 #include "scene_import_gltf.hpp"
 
 #include <chrono>
 
 #include <figure/jobs/pool.hpp>
+#include <stb/stb_image_write.h>
 
 namespace {
 
@@ -1252,4 +1254,162 @@ void FvHost::Impl::tilePlanet(rs::RetainedScene& scene, const glm::dvec3& eye)
   const uint64_t said = backdropPlantsSaid;
   if(backdropPlants > said + said / 20 || backdropPlants + said / 20 < said)
     publishBackdrop();
+}
+
+// ---- the planet's map (planet.map) ----------------------------------------------------------------------
+
+namespace {
+
+std::string base64(const std::vector<uint8_t>& bytes)
+{
+  static const char kDigits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string       out;
+  out.reserve((bytes.size() + 2) / 3 * 4);
+  for(size_t i = 0; i < bytes.size(); i += 3)
+  {
+    const uint32_t n = uint32_t(bytes[i]) << 16 | (i + 1 < bytes.size() ? uint32_t(bytes[i + 1]) << 8 : 0U)
+                       | (i + 2 < bytes.size() ? uint32_t(bytes[i + 2]) : 0U);
+    out += kDigits[(n >> 18) & 63];
+    out += kDigits[(n >> 12) & 63];
+    out += i + 1 < bytes.size() ? kDigits[(n >> 6) & 63] : '=';
+    out += i + 2 < bytes.size() ? kDigits[n & 63] : '=';
+  }
+  return out;
+}
+
+Json latitudeLongitude(const glm::dvec3& d)
+{
+  const glm::dvec2 ll = W::latitudeLongitudeOf(d);
+  return {ll.x, ll.y};
+}
+
+const char* featureName(W::FeatureKind k)
+{
+  switch(k)
+  {
+    case W::FeatureKind::eLand:
+      return "land";
+    case W::FeatureKind::eSea:
+      return "sea";
+    case W::FeatureKind::eRange:
+      return "range";
+    case W::FeatureKind::ePeak:
+      return "peak";
+    case W::FeatureKind::eBasin:
+      return "basin";
+    case W::FeatureKind::ePlain:
+      return "plain";
+  }
+  return "land";
+}
+
+}  // namespace
+
+Json FvHost::Impl::planetMap(const Json& args)
+{
+  W::ChartView v;
+  const auto   number = [&](const char* key, double& out, double lo, double hi) {
+    if(args.contains(key))
+    {
+      if(!args[key].is_number())
+        throw std::invalid_argument(std::string("planet.map: ") + key + " is a number");
+      out = args[key].get<double>();
+    }
+    if(!(out >= lo && out <= hi))
+      throw std::invalid_argument(std::string("planet.map: ") + key + " is out of range");
+  };
+  number("west", v.west, -540.0, 540.0);
+  number("east", v.east, -540.0, 540.0);
+  number("south", v.south, -90.0, 90.0);
+  number("north", v.north, -90.0, 90.0);
+  if(!(v.west < v.east && v.east - v.west <= 360.0 + 1e-9 && v.south < v.north))
+    throw std::invalid_argument("planet.map: the window runs west to east and south to north, at most once round");
+  double width = v.width, height = v.height;
+  number("width", width, 16.0, 4096.0);
+  number("height", height, 16.0, 4096.0);
+  v.width  = int(width);
+  v.height = int(height);
+  v.rivers = args.value("rivers", true);
+  v.roads  = args.value("roads", true);
+
+  // the planet as it stands and what its file says of where people lived (the application thread's)
+  struct Standing
+  {
+    std::shared_ptr<const W::World>      world;
+    std::shared_ptr<const W::Settlement> plan;
+  };
+  const Standing got = onApp([this] {
+    Standing s;
+    if(planetBuilt && planetBuilt->world && fv::backdrop::isPlanet(backdropSpec))
+    {
+      s.world = planetBuilt->world;
+      s.plan  = backdropSpec.settlement;
+    }
+    return s;
+  });
+  if(!got.world)
+    throw std::runtime_error("no planet stands: World > Planet");
+  const W::World& w = *got.world;
+
+  const auto                 started = std::chrono::steady_clock::now();
+  const std::vector<uint8_t> rgb     = W::chartImage(w, v);
+  std::vector<uint8_t>       png;
+  stbi_write_png_to_func(
+      [](void* context, void* data, int size) {
+        auto* out = static_cast<std::vector<uint8_t>*>(context);
+        out->insert(out->end(), static_cast<uint8_t*>(data), static_cast<uint8_t*>(data) + size);
+      },
+      &png, v.width, v.height, 3, rgb.data(), v.width * 3);
+
+  Json features = Json::array();
+  if(w.spec.features)
+    for(const W::Feature& f : w.spec.features->list)
+      features.push_back({{"kind", featureName(f.kind)},
+                          {"name", f.name},
+                          {"from", latitudeLongitude(f.from)},
+                          {"to", latitudeLongitude(f.to)},
+                          {"width", f.width / 1000.0}});
+  Json regions = Json::array();
+  if(got.plan)
+    for(const W::PlacesRegion& r : got.plan->regions)
+    {
+      Json kinds = Json::object();
+      for(const auto& [name, much] : r.kinds)
+        kinds[name] = much;
+      regions.push_back({{"name", r.name},
+                         {"from", latitudeLongitude(r.shape.from)},
+                         {"to", latitudeLongitude(r.shape.to)},
+                         {"width", r.shape.width / 1000.0},
+                         {"amount", r.amount},
+                         {"kinds", kinds}});
+    }
+  Json places   = Json::array();
+  Json unplaced = Json::array();
+  if(w.places && w.places->catalogue)
+  {
+    const W::Places& pl = *w.places;
+    for(uint32_t i = 0; i < pl.joined; i++)
+    {
+      const W::Site& s = pl.sites[i];
+      Json           p = {{"at", latitudeLongitude(s.direction)}, {"kind", pl.catalogue->kinds[pl.catalogue->packs[s.pack].kind].name}};
+      for(const auto& [site, name] : pl.names)
+        if(site == i)
+          p["name"] = name;
+      places.push_back(std::move(p));
+    }
+    for(const std::string& u : pl.unplaced)
+      unplaced.push_back(u);
+  }
+  LOGI("planet: a map of %d x %d in %.0f ms\n", v.width, v.height,
+       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+  return {{"image", base64(png)},
+          {"width", v.width},
+          {"height", v.height},
+          {"metres", W::chartPixel(w, v)},
+          {"radius", w.spec.radius / 1000.0},
+          {"site", latitudeLongitude(w.frame.site)},
+          {"features", features},
+          {"regions", regions},
+          {"places", places},
+          {"unplaced", unplaced}};
 }

@@ -163,6 +163,9 @@ src/
 │                               #   places stand, the roads routed between them, things by the roads and alone,
 │                               #   and the stage that levels the ground under them; fv_host_world_places.cpp
 │                               #   reads the catalogue, holds the packs' models and stands the sites near the eye
+├── fv_world_chart.cpp/hpp      # A map of the planet: a window of latitude and longitude as an image, the ground
+│                               #   in its own colours, shaded, the sea by its depth, rivers and roads over it;
+│                               #   planet.map (fv_host_world.cpp) sends it with what stands on the planet
 ├── fv_play.cpp/hpp             # Play mode's controllers, Vulkan-free: someone on foot (collide and slide,
 │                               #   steps, gravity) and a ship on a throttle with flight assist that lands on
 │                               #   its pads, with a chase camera; fv_host_play.cpp drives them from the app's

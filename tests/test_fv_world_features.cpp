@@ -272,6 +272,8 @@ TEST(WorldFeatures, APlanetFileIsReadAndItsMistakesNamed)
   EXPECT_NEAR(glm::distance(*p.features.site, W::directionOf(3.0, 8.0)), 0.0, 1e-12);
   ASSERT_EQ(p.features.list.size(), 4U);
   EXPECT_EQ(p.features.list[0].kind, W::FeatureKind::eRange);
+  EXPECT_EQ(p.features.list[0].name, "the spine");
+  EXPECT_EQ(p.features.list[1].name, "");
   EXPECT_EQ(p.features.list[0].width, 18000.0);
   EXPECT_NEAR(glm::distance(p.features.list[0].to, W::directionOf(-5.0, 25.0)), 0.0, 1e-12);
   EXPECT_EQ(p.features.list[1].height, 3500.0);
@@ -298,6 +300,7 @@ TEST(WorldFeatures, APlanetFileIsReadAndItsMistakesNamed)
   EXPECT_NE(whyNot(R"({"features": [{"kind": "range", "from": [0, 0], "width": 3}]})").find("from"), std::string::npos);
   EXPECT_NE(whyNot(R"({"features": [{"kind": "range", "from": [0, 0], "to": [0, 180], "width": 3}]})").find("opposite"), std::string::npos);
   EXPECT_NE(whyNot(R"({"features": [{"kind": "land", "at": [95, 0], "width": 3}]})").find("latitude"), std::string::npos);
+  EXPECT_NE(whyNot(R"({"features": [{"kind": "land", "name": 3, "at": [0, 0], "width": 3}]})").find("features[0].name"), std::string::npos);
 }
 
 // ---- where people lived ------------------------------------------------------------------------------

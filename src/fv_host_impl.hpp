@@ -1906,6 +1906,10 @@ struct FvHost::Impl
   // late the latest of the rest is; what is planted; what the planet is under the camera, and at
   // `args.at` (a point of the scene) when given. Null with no planet.
   Json planetStatus(const Json& args) const;
+  // planet.map: a map of the planet as it stands, a window of latitude and longitude (fv_world_chart.hpp),
+  // and what stands on it and what its file says of it. Off the application thread: the image is made
+  // on the caller's.
+  Json planetMap(const Json& args);
   // Its centre in the scene (the root stands at the floor's height); zero with none
   glm::dvec3 planetCentre() const;
   // The scene's shown bounds without the backdrop: what a view frames, and what a flight's speed is by

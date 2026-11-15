@@ -171,7 +171,9 @@ namespace {
 // renderer refuses the backdrop that has it.
 // 84: the exposure adapting to the view: the lighting's tonemap.adapt (src/exposure_adapt.hpp). An older
 // renderer refuses the lighting patch that has it.
-constexpr int kProtocolVersion = 84;
+// 85: a planet's map: planet.map (fv_world_chart.hpp, fv_host_world.cpp). An older renderer has no such
+// command.
+constexpr int kProtocolVersion = 85;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

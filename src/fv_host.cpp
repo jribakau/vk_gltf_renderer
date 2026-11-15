@@ -498,6 +498,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   cmds.add("lighting.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("lighting.set", args); }); });
   // the land round the scene (fv_backdrop_state.hpp): a state of its own, and a step of the history
   cmds.add("backdrop.set", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->edit("backdrop.set", args); }); });
+  // a map of the planet: an image of a window of latitude and longitude, made on this thread (a few
+  // hundred milliseconds), and what stands on it (fv_host_world.cpp)
+  cmds.add("planet.map", [impl](const Json& args) { return impl->planetMap(args); });
   // how a planet's stream stands, for a measure of a flight (scripts/world-flight.py)
   cmds.add("backdrop.status", [impl](const Json& args) {
     return impl->onApp([impl, args] { return Json{{"state", impl->backdropState}, {"planet", impl->planetStatus(args)}}; });

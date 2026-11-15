@@ -185,6 +185,9 @@ set(TEST_SOURCES
     # whatever the threads, roads between them that cross no lake and step nowhere, nothing planted on them
     test_fv_world_places.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_places.cpp
+    # A map of a planet: a pixel where its latitude and longitude are, the sea as sea, the rivers and roads over it
+    test_fv_world_chart.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_world_chart.cpp
     # What grows on a planet: a quad's plants are its children's, none in the water or where the figures
     # stand, more in a wood than on a steppe; the grass's tiles on the ground, none twice
     test_fv_world_plants.cpp

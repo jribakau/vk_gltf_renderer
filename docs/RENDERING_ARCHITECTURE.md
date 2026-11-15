@@ -1149,6 +1149,15 @@ their kit when there is one. It needs no kit: without one it stands bare.
     held hidden: every site of a pack is copies of the same meshes, so memory goes with the packs
     held, not with the places. What grows over a place shows from nearer. In play mode a place's
     walls are met as a prop's are (`placeSets`).
+- **Its map** (`src/fv_world_chart.hpp`, the `planet.map` command, the app's World › Planet › Map):
+  an author's view of the planet, north up. `chartImage` draws a window of latitude and longitude as
+  an image, a sample a pixel at the pixel's footprint (so the stages leave out what is finer than it):
+  the ground in `surfaceColour`'s colours shaded by its slope, the sea darker the deeper it is, lakes,
+  and the base map's rivers and the settled roads drawn over it as lines a pixel wide at the least.
+  `planet.map` makes it on the command's own thread from the planet as it stands, and sends it as a
+  PNG with what goes over it as data: where the figures stand, the planet file's features and regions,
+  the places a road leads to (by name where the file names them), and what could not stand. The app
+  draws those, the grid and the outlines on the sphere, and asks again for each view it is moved to.
 - **The camera** (`FvHost::Impl::followPlanet`, `applyFly`): the free view's "up" is the scene's by
   the figures and the planet's own vertical away from them (`fv::world::viewUp`), so the horizon
   stays level on the far side; a flight's speed goes with its height over the ground

@@ -6298,3 +6298,37 @@ TEST(FvHost, aVamClipHoldsTheRagdollInPhysicsMode)
   EXPECT_NE(r.rig.topic("notices").dump().find("has no clip Nope"), std::string::npos) << r.rig.topic("notices").dump();
   fs::remove_all(dir);
 }
+
+// A planet's map (planet.map, fv_world_chart.hpp): a PNG of the window asked for, the figures' place in
+// it, and none while no planet stands or for a window that is not one
+TEST(FvHost, APlanetHasAMapOfTheWindowAsked)
+{
+  HostRig rig;
+  rig.host->onUpdate();
+  const Json none = rig.cmd("planet.map", {{"width", 64}, {"height", 32}});
+  EXPECT_FALSE(none.value("ok", true));
+  EXPECT_NE(none.value("error", "").find("no planet"), std::string::npos) << none.dump();
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "planet"}, {"radius", 5}}).value("ok", false));
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+  while(rig.topic("backdrop").value("state", "") != "ready" && std::chrono::steady_clock::now() < end)
+  {
+    rig.host->onUpdate();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_EQ(rig.topic("backdrop").value("state", ""), "ready");
+  const Json answer = rig.cmd("planet.map", {{"west", -180}, {"east", 180}, {"south", -90}, {"north", 90}, {"width", 128}, {"height", 64}});
+  ASSERT_TRUE(answer.value("ok", false)) << answer.dump().substr(0, 400);
+  const Json& map = answer["result"];
+  EXPECT_EQ(map.value("width", 0), 128);
+  EXPECT_EQ(map.value("height", 0), 64);
+  EXPECT_EQ(map.value("radius", 0.0), 5.0);
+  // a PNG, in base64: its signature's first bytes
+  EXPECT_EQ(map.value("image", "").substr(0, 8), "iVBORw0K");
+  EXPECT_GT(map.value("image", "").size(), size_t(1000));
+  // where the figures stand, as latitude and longitude
+  ASSERT_TRUE(map["site"].is_array());
+  EXPECT_LE(std::abs(map["site"][0].get<double>()), 90.0);
+  EXPECT_TRUE(map["features"].is_array() && map["regions"].is_array() && map["places"].is_array());
+  EXPECT_FALSE(rig.cmd("planet.map", {{"west", 20}, {"east", 10}}).value("ok", true)) << "west of east";
+  EXPECT_FALSE(rig.cmd("planet.map", {{"width", 100000}}).value("ok", true)) << "too wide";
+}

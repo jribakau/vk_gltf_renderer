@@ -80,6 +80,7 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   from a seed (`src/fv_world_sea.*`), what people left on it from a catalogue of packs and rules
   (`src/fv_world_places.*`, `src/fv_host_world_places.cpp`: places on levelled ground, roads routed
   between them, things by the roads; a planet file's regions with more or fewer, and places by name),
+  its map for an author (`src/fv_world_chart.*`, `planet.map`: an image of a window of latitude and longitude),
   its quadtree meshes drawn a cut at a time, its ground's maps from the kit (a material a layer,
   one picked a hit), its sea (no mesh: the ground's body of water on a
   sphere, seen from over it and from in it; its lakes and rivers are meshes met as that water's

@@ -280,6 +280,14 @@
 //                   are then the file's, and its land has what the file puts on it. A name no file
 //                   has, or a file with a mistake, is refused with what is wrong)
 //                                                -> the whole state, as the "backdrop" topic has it
+//   planet.map      {west, east, south, north, width, height, rivers?, roads?}  protocol 85: a map of the
+//                                                planet that stands (fv_world_chart.hpp), degrees and pixels ->
+//                                                {image: a PNG in base64, width, height, metres (a pixel, north to
+//                                                south), radius (km), site: [latitude, longitude] where the figures
+//                                                stand, features and regions as its file has them (from, to,
+//                                                width in km, name), places: [{at, kind, name?}] those a road is
+//                                                led to, unplaced: what the file asked that could not stand}.
+//                                                No planet: an error
 //   backdrop.status {at?: [x, y, z]}             -> {state, planet: null | {wanted, shown, arrived, waiting, late,
 //                                                busy, standing, tiled, eye, at, follow}}: a planet's stream, its quads
 //                                                asked for and drawn and how late the latest is (0..1), its plants,
