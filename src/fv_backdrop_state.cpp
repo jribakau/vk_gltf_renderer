@@ -159,12 +159,10 @@ Json rendererParams(const Spec& s, bool stands, const glm::vec3& landAlbedo, con
   // a backdrop's ground is the ground: the plane under it isn't drawn
   if(stands)
     params["useInfinitePlane"] = false;
-  // what is laid out on a level plane round the origin has no place on a planet yet
+  // what is laid out on a level plane round the origin has no place on a planet yet (its clouds
+  // have: shaders/sky_clouds.h.slang, "on a planet")
   if(planet)
   {
-    params["cloudCoverage"]     = 0.0;
-    params["cloudMidCoverage"]  = 0.0;
-    params["cloudHighCoverage"] = 0.0;
     params["rainRate"]          = 0.0;
     params["hazeVisibility"]    = 0.0;
   }

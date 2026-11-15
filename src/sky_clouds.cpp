@@ -213,8 +213,47 @@ shaderio::SkyCloudsParameters cloudBakeParameters(const SkyCloudsSettings& setti
   const glm::vec2 offset = cloudSeedOffsetKm(settings.seed);
   p.weatherOffset        = offset;
   p.shapeOffset          = glm::fract(glm::vec3(offset.x, 0.0F, offset.y) / shaderio::CLOUD_SHAPE_PERIOD);
+  // a planet's are a model's, and lie round it
+  if(settings.worldRadiusKm > 0.0F)
+  {
+    p            = shaderio::cloudScaled(p, settings.scale);
+    p.worldScale = settings.scale;
+  }
   return p;
 }
+
+namespace {
+
+// What a bake from `anchor` pushes of its place: its height, the land it stands on (a level land's),
+// the march's frame (a planet's), and the sun in that frame
+struct Placed
+{
+  float     altitude;
+  glm::vec2 land;
+  glm::vec4 frame;
+  glm::vec3 sun;
+};
+
+Placed placed(const SkyCloudAnchor& anchor, const SkyCloudsSettings& settings, const glm::vec3& sun, const glm::quat& turn)
+{
+  if(settings.worldRadiusKm <= 0.0F)
+    return {anchor.altitude, anchor.land, glm::vec4(0.0F, 0.0F, 0.0F, 1.0F), sun};
+  // the anchor is a point among the clouds, and the sun stands where it does among them as turned
+  const glm::quat frame = cloudAnchorFrame(anchor, settings.worldRadiusKm);
+  return {cloudAnchorHeight(anchor, settings.worldRadiusKm), glm::vec2(0.0F), glm::vec4(frame.x, frame.y, frame.z, frame.w),
+          glm::conjugate(frame) * (glm::conjugate(turn) * sun)};
+}
+
+// The scene's origin, `altitudeKm` above the surface, under the clouds as the wind has carried them
+// (`driftKm` over a level land, `turn` round a planet).
+SkyCloudAnchor originUnder(const SkyCloudsSettings& settings, const glm::vec2& driftKm, const glm::quat& turn, float altitudeKm)
+{
+  if(settings.worldRadiusKm <= 0.0F)
+    return {.land = -driftKm, .altitude = altitudeKm};
+  return cloudAnchorAt(glm::conjugate(turn) * glm::vec3(0.0F, settings.worldRadiusKm + altitudeKm, 0.0F), settings.worldRadiusKm);
+}
+
+}  // namespace
 
 void SkyClouds::init(Resources& res, const Shaders& shaders, VkDescriptorSetLayout brunetonSetLayout, VkDescriptorSet brunetonSet)
 {
@@ -501,9 +540,10 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
     m_bakedBaseKm   = m_bakedClouds ? cloudBakeParameters(m_settings, false).minHeight : 0.0F;
     // the readers take the sky image again, from the scene's origin, whatever followed the camera:
     // where the origin is under the clouds as they have drifted
-    m_follow.reset({.land = -m_drift, .altitude = observerAltitudeKm});
+    m_follow.reset(originUnder(m_settings, m_drift, m_turn, observerAltitudeKm));
   }
   m_shadowDrift = m_drift;
+  m_shadowTurn  = m_turn;
   if(!hasClouds())
   {
     clearImage(cmd, m_cloudImage);
@@ -522,16 +562,19 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
                            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
 
     const VkExtent2D                      size = preview ? kCloudPreviewSize : kCloudImageSize;
+    // (the scene's origin: on a planet its frame is the planet's own)
+    const Placed at = placed(originUnder(m_settings, m_drift, m_turn, observerAltitudeKm), m_settings, sunDirection, m_turn);
     const shaderio::SkyCloudsPushConstant push{
         .imageSize        = {size.width, size.height},
-        .observerAltitude = observerAltitudeKm,
+        .observerAltitude = at.altitude,
         .sunlitAir        = cloudSunlitGround(m_settings),
-        .sunDirection     = sunDirection,
+        .sunDirection     = at.sun,
         .texelAngle       = 6.2831853F / float(size.width),
-        .land             = -m_drift,
+        .land             = at.land,
         .writeDepth       = preview ? 0 : 1,
         .shaftsAltitude   = observerAltitudeKm,
         .shaftsLand       = -m_drift,
+        .frame            = at.frame,
     };
     const std::array<VkDescriptorSet, 2> sets{m_bakePack.getSet(preview ? 1 : 0), m_brunetonSet};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bakeLayout, 0, uint32_t(sets.size()), sets.data(), 0, nullptr);
@@ -604,7 +647,31 @@ void SkyClouds::recordDepth(VkCommandBuffer cmd)
 bool SkyClouds::followBakes(const SkyCloudAnchor& eye) const
 {
   SkyCloudFollow probe = m_follow;
-  return cloudFollowStep(probe, eye, kCloudImageSize.height, CLOUD_WORKGROUP_SIZE, amongClouds(eye)).bake;
+  return cloudFollowStep(probe, eye, kCloudImageSize.height, CLOUD_WORKGROUP_SIZE, amongClouds(eye), m_bakedSettings.worldRadiusKm > 0.0F).bake;
+}
+
+float SkyClouds::shadowDriftKm() const
+{
+  if(m_bakedSettings.worldRadiusKm <= 0.0F)
+    return glm::length(shadowShift());
+  const glm::quat since = m_turn * glm::conjugate(m_shadowTurn);
+  return 2.0F * std::acos(std::min(std::abs(since.w), 1.0F)) * m_bakedSettings.worldRadiusKm;
+}
+
+bool SkyClouds::homeIsOrigin() const
+{
+  if(m_bakedSettings.worldRadiusKm <= 0.0F)
+    return m_drift == -m_follow.home.land;
+  const float R = m_bakedSettings.worldRadiusKm;
+  return glm::distance(cloudAnchorPoint(originUnder(m_bakedSettings, m_drift, m_turn, m_bakedAltitude), R), cloudAnchorPoint(m_follow.home, R)) < 1e-4F;
+}
+
+glm::vec2 SkyClouds::shadowSpanKm() const
+{
+  if(!m_bakedClouds)
+    return glm::vec2(0.0F);
+  const shaderio::SkyCloudsParameters p = cloudBakeParameters(m_bakedSettings, false);
+  return {p.minHeight, p.shadowTopHeight};
 }
 
 // Image 0 is never a whole one: it is the sky bake's, which the environment bake reads as well.
@@ -612,20 +679,21 @@ float SkyClouds::followedWholeBaseKm() const
 {
   if(m_follow.front == 0 || !m_bakedClouds)
     return 0.0F;
-  return shaderio::cloudImageWhole(m_follow.anchor.altitude, m_bakedBaseKm) ? m_bakedBaseKm : 0.0F;
+  return shaderio::cloudImageWhole(cloudAnchorHeight(m_follow.anchor, m_bakedSettings.worldRadiusKm), m_bakedBaseKm) ? m_bakedBaseKm : 0.0F;
 }
 
 // Above the baked clouds' bases: where an image baked from there would be a whole one.
 bool SkyClouds::amongClouds(const SkyCloudAnchor& eye) const
 {
-  return m_bakedClouds && shaderio::cloudImageWhole(eye.altitude, m_bakedBaseKm);
+  return m_bakedClouds && shaderio::cloudImageWhole(cloudAnchorHeight(eye, m_bakedSettings.worldRadiusKm), m_bakedBaseKm);
 }
 
 bool SkyClouds::follow(VkCommandBuffer cmd, const SkyCloudAnchor& eye)
 {
   assert(m_initialized && "init must be called first");
   assert(viewable() && "a follow image repeats a full bake's clouds");
-  const SkyCloudFollowStep step = cloudFollowStep(m_follow, eye, kCloudImageSize.height, CLOUD_WORKGROUP_SIZE, amongClouds(eye));
+  const SkyCloudFollowStep step =
+      cloudFollowStep(m_follow, eye, kCloudImageSize.height, CLOUD_WORKGROUP_SIZE, amongClouds(eye), m_bakedSettings.worldRadiusKm > 0.0F);
   if(step.bake)
     recordFollow(cmd, step);
   return step.frontChanged;
@@ -644,18 +712,20 @@ void SkyClouds::recordFollow(VkCommandBuffer cmd, const SkyCloudFollowStep& step
                          VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                          VK_ACCESS_2_UNIFORM_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
+  const Placed                          at = placed(step.from, m_bakedSettings, m_bakedSun, m_turn);
   const shaderio::SkyCloudsPushConstant push{
       .imageSize        = {kCloudImageSize.width, kCloudImageSize.height},
-      .observerAltitude = step.from.altitude,
+      .observerAltitude = at.altitude,
       .sunlitAir        = cloudSunlitGround(m_bakedSettings),
-      .sunDirection     = m_bakedSun,
+      .sunDirection     = at.sun,
       .texelAngle       = 6.2831853F / float(kCloudImageSize.width),
-      .land             = step.from.land,
+      .land             = at.land,
       .firstRow         = step.firstRow,
       .writeDepth       = 1,
-      .whole            = shaderio::cloudImageWhole(step.from.altitude, params.minHeight) ? 1 : 0,
+      .whole            = shaderio::cloudImageWhole(at.altitude, params.minHeight) ? 1 : 0,
       .shaftsAltitude   = m_bakedAltitude,
       .shaftsLand       = -m_shadowDrift,
+      .frame            = at.frame,
   };
   const std::array<VkDescriptorSet, 2> sets{m_bakePack.getSet(kFollowSet + uint32_t(step.target - 1)), m_brunetonSet};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bakeLayout, 0, uint32_t(sets.size()), sets.data(), 0, nullptr);
@@ -688,13 +758,15 @@ void SkyClouds::recordShadow(VkCommandBuffer cmd)
   vkCmdUpdateBuffer(cmd, m_paramsBuf.buffer, 0, sizeof(params), &params);
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
+  const Placed at = placed(originUnder(m_bakedSettings, m_drift, m_turn, m_bakedAltitude), m_bakedSettings, m_bakedSun, m_turn);
   const shaderio::SkyCloudsPushConstant push{
       .imageSize        = {kCloudImageSize.width, kCloudImageSize.height},
-      .observerAltitude = m_bakedAltitude,
+      .observerAltitude = at.altitude,
       .sunlitAir        = cloudSunlitGround(m_bakedSettings),
-      .sunDirection     = m_bakedSun,
+      .sunDirection     = at.sun,
       .texelAngle       = 6.2831853F / float(kCloudImageSize.width),
-      .land             = -m_drift,
+      .land             = at.land,
+      .frame            = at.frame,
   };
   const std::array<VkDescriptorSet, 2> sets{m_bakePack.getSet(0), m_brunetonSet};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bakeLayout, 0, uint32_t(sets.size()), sets.data(), 0, nullptr);
@@ -703,6 +775,7 @@ void SkyClouds::recordShadow(VkCommandBuffer cmd)
   vkCmdDispatch(cmd, groups(CLOUD_SHADOW_SIZE, CLOUD_WORKGROUP_SIZE), groups(CLOUD_SHADOW_SIZE, CLOUD_WORKGROUP_SIZE), 1);
   recordShafts(cmd);
   m_shadowDrift = m_drift;
+  m_shadowTurn  = m_turn;
   // For the frames that read it, and a follow's or a view's bake after it in this frame, which writes
   // the parameters again.
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -746,6 +819,7 @@ void SkyClouds::recordView(VkCommandBuffer cmd, const SkyCloudView& view)
       .land             = view.eye.land,
       .shaftsAltitude   = m_bakedAltitude,
       .shaftsLand       = -m_shadowDrift,
+      .frame            = glm::vec4(0.0F, 0.0F, 0.0F, 1.0F),  // (no view image on a planet yet: updateCloudView)
   };
   const std::array<VkDescriptorSet, 2> sets{m_bakePack.getSet(2), m_brunetonSet};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bakeLayout, 0, uint32_t(sets.size()), sets.data(), 0, nullptr);

@@ -1321,12 +1321,28 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     // where the camera stands from where it was baked, and the view image while it holds the clouds
     // of the moment from near enough. It looks where it was baked, which the camera may since have
     // turned from.
-    finfo.cloudEye = glm::vec4(0.0F, 0.0F, 0.0F, skyObserverAltitudeKm());
+    finfo.cloudEye   = glm::vec4(0.0F, 0.0F, 0.0F, skyObserverAltitudeKm());
+    finfo.cloudFrame = {envRot.x, envRot.y, envRot.z, envRot.w};
     if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.viewable())
     {
-      const SkyCloudAnchor eye = cloudEyeOf(m_cameraManip->getViewMatrix(), envRot, skyObserverAltitudeKm(), m_cloudDrift);
+      // (round a planet the images are in the frame of the place they were baked from: cloudFrame)
+      const float          worldRadius = m_resources.settings.worldRadius;
+      const SkyCloudAnchor eye =
+          cloudEyeOf(m_cameraManip->getViewMatrix(), envRot, skyObserverAltitudeKm(), m_cloudDrift, worldRadius, m_cloudTurn);
       const SkyCloudFollow& followed = m_skyClouds.followed();
       finfo.cloudEye                 = glm::vec4(cloudEyeFrom(followed.anchor, eye), followed.anchor.altitude);
+      if(worldRadius > 0.0F)
+      {
+        // the anchors are points among the clouds, which the wind has turned (cloudTurn)
+        const glm::quat among  = cloudAnchorFrame(followed.anchor, worldRadius);
+        const glm::quat frame  = m_cloudTurn * among;
+        const glm::quat shadow = m_skyClouds.shadowFrame();
+        finfo.cloudEye         = glm::vec4(glm::conjugate(among) * cloudEyeFrom(followed.anchor, eye), cloudAnchorHeight(followed.anchor, worldRadius));
+        finfo.cloudFrame       = {frame.x, frame.y, frame.z, frame.w};
+        finfo.cloudTurn        = {m_cloudTurn.x, m_cloudTurn.y, m_cloudTurn.z, m_cloudTurn.w};
+        finfo.cloudShadowFrame = {shadow.x, shadow.y, shadow.z, shadow.w};
+        finfo.cloudShadowSpan  = m_skyClouds.shadowSpanKm();
+      }
       finfo.cloudShadowShift         = m_skyClouds.shadowShift();
       finfo.cloudFront               = followed.front;
       finfo.cloudImageBase           = m_skyClouds.followedWholeBaseKm();

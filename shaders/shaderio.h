@@ -572,6 +572,19 @@ struct SceneFrameInfo
   float  waterHeading     = 0.52F;
   float  waterStep        = 0.0F;  // seconds since the frame before's moment (DLSS's motion of the ripples)
   float  _waterPad        = 0.0F;
+  // The frame the cloud images the frame takes are in (cloudFront, cloudEye), a unit quaternion
+  // (x, y, z, w) to the world: the environment's, or round a planet that of the place they were baked
+  // from, its +y that place's up (shaders/sky_clouds.h.slang, "on a planet"). (Appended.)
+  float4 cloudFrame = {0.0F, 0.0F, 0.0F, 1.0F};
+  // Round a planet, for the clouds' shadow on it (cloudSunShare in gltf_pathtrace.slang): how the
+  // wind has turned the clouds about its centre, a unit quaternion from their frame to the world
+  // (cloudTurnStep in src/sky_cloud_view.hpp); the frame the shadow image was baked in, +y the up of
+  // the scene's origin among the clouds then, to the clouds' frame; and the heights, km, between
+  // which the layers that shade the ground lie (a place above them is in the sun). (Appended.)
+  float4 cloudTurn        = {0.0F, 0.0F, 0.0F, 1.0F};
+  float4 cloudShadowFrame = {0.0F, 0.0F, 0.0F, 1.0F};
+  float2 cloudShadowSpan  = {0.0F, 0.0F};
+  float2 _cloudShadowPad  = {0.0F, 0.0F};
 };
 
 enum PathtracerFlags

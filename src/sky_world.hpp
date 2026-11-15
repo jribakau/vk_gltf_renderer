@@ -26,6 +26,15 @@ inline float airScale(float radiusKm, float thicknessKm = 60.0F)
   return std::clamp(0.25F * radiusKm / std::max(thicknessKm, 1e-3F), 1e-3F, 1.0F);
 }
 
+// How many times life size a planet's clouds are (shaders/sky_clouds.h.slang, "on a planet"): a
+// model's, as its air is. Whole, heights and breadth alike, so from the ground they look as they do
+// over a level land; small enough that the highest of them, cirrus at 8 km, stand 0.6 of the way up
+// the planet's air. Life size once the air is deep enough for that.
+inline float cloudScale(float airScale, float thicknessKm = 60.0F)
+{
+  return std::clamp(0.6F * thicknessKm * airScale / 8.0F, 0.2F, 1.0F);
+}
+
 // The lowest sun the tables cover, as the cosine of its angle from straight up: the sun that grazes
 // the ground as the top of the air sees it, and a little past. Earth's -0.5 where that is enough,
 // which it is for any planet much larger than its air is deep.

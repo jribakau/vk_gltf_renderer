@@ -160,12 +160,39 @@ float cloudSunShare(float3 worldPos, SceneFrameInfo* frameInfo)
 {
   if(frameInfo->sunDisk == nullptr || !(frameInfo->sunDisk->cloudTop > 0.0F))
     return 1.0F;
-  const float3 p      = quatRotateInverse(frameInfo->envRotation, worldPos) * 0.001F;
-  const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
-  const float2 uv     = cloudShadowUv(p, sunDir, frameInfo->cloudShadowShift);
-  const float2 far    = cloudShaftsUv(p, sunDir, frameInfo->cloudShadowShift);
-  const float  coarse = lerp(frameInfo->sunDisk->sunlitGround, g_cloudShafts.SampleLevel(far, 0.0F), cloudShadowWeight(far));
-  return lerp(coarse, g_cloudShadow.SampleLevel(uv, 0.0F), cloudShadowWeight(uv));
+  // Where the two images are read, how much the wider one counts, and how far above the layers that
+  // shade the ground the place is. Each image is read once, a level land's or a planet's: this is
+  // inlined wherever the sun's light is taken, and a read apiece for each kind of land was the
+  // kernel's build time.
+  float2 uv        = float2(0.0F);
+  float2 far       = float2(0.0F);
+  float  farWeight = 1.0F;
+  float  above     = 0.0F;
+  if(frameInfo->worldRadiusKm > 0.0F)
+  {
+    // Round a planet: the planet's own image where the sun's ray through the place meets its sphere,
+    // among the clouds as the wind has turned them, and round the scene's origin the finer one
+    // (cloudGlobeUv, cloudShadowUvOn). A place above the layers that shade the ground is in the sun.
+    const float  R    = frameInfo->worldRadiusKm;
+    const float3 p    = quatRotateInverse(frameInfo->cloudTurn, (worldPos - frameInfo->worldCentre) * 0.001F);
+    const float3 sun  = quatRotateInverse(frameInfo->cloudTurn, frameInfo->sunDirection);
+    const float3 up   = cloudSunGroundOn(p, sun, R) / R;
+    const float2 span = frameInfo->cloudShadowSpan;
+    uv                = cloudShadowUvOn(quatRotateInverse(frameInfo->cloudShadowFrame, up), R);
+    far               = cloudGlobeUv(up);
+    above             = clamp((length(p) - R - span.x) / max(span.y - span.x, 1e-3F), 0.0F, 1.0F);
+  }
+  else
+  {
+    const float3 p      = quatRotateInverse(frameInfo->envRotation, worldPos) * 0.001F;
+    const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
+    uv                  = cloudShadowUv(p, sunDir, frameInfo->cloudShadowShift);
+    far                 = cloudShaftsUv(p, sunDir, frameInfo->cloudShadowShift);
+    farWeight           = cloudShadowWeight(far);
+  }
+  const float coarse = lerp(frameInfo->sunDisk->sunlitGround, g_cloudShafts.SampleLevel(far, 0.0F), farWeight);
+  const float below  = lerp(coarse, g_cloudShadow.SampleLevel(uv, 0.0F), cloudShadowWeight(uv));
+  return lerp(below, 1.0F, above);
 }
 
 // The horizon of the place the cloud images the frame takes were baked from, where their rows begin
@@ -317,7 +344,7 @@ float3 evalStars(float3 worldDir, SceneFrameInfo* frameInfo, bool world = false,
 // The stars' share of what the first sky a path sees holds (luminance: the stars, the sky without
 // them), for the sky's albedo guide: DLSS-RR took a star on the flat 0.5 of the sky's albedo for noise
 // and smeared a field of them into blobs; marked there, it is detail it keeps. Set by the path's first
-// evalPhysicalSkyBackground, which is the camera ray's when it met nothing.
+// evalPhysicalSkyBehind, which is the camera ray's when it met nothing.
 static float2 g_skyStars = float2(0.0F);
 
 // The sky's albedo guide where the camera ray met nothing: 0.5 (NVIDIA's RR guide: 0 boils at the
@@ -327,9 +354,11 @@ float skyGuideAlbedo()
   return 0.5F + 0.5F * saturate(g_skyStars.x / max(g_skyStars.x + g_skyStars.y, 1e-30F));
 }
 
-float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo, out float cloudsLeave)
+// In parts, for a caller that reads the clouds once for whichever sky it has (the escaped ray's):
+// evalPhysicalSkyUnder is the sky under the clouds, `clouded` whether they lie over it along the ray;
+// skyUnderClouds lays them over it; evalPhysicalSkyBehind adds what is past them.
+float3 evalPhysicalSkyUnder(float3 worldDir, SceneFrameInfo* frameInfo, out bool clouded)
 {
-  cloudsLeave         = 1.0F;
   const float3 dir    = quatRotateInverse(frameInfo->envRotation, worldDir);
   const float3 sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
   // The observer is the camera at its own height, not the bake's fixed one: a camera that climbs
@@ -363,21 +392,31 @@ float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo, out float clo
   // horizon: the eye's, and that of the place the cloud images were baked from, where their rows
   // begin. A camera above the bases has clouds beside it and under it, and its image is a whole one
   // (cloudImageIsWhole): they are laid over the planet's ground as over the sky. The disk goes on
-  // top, dimmed by the clouds in front of it (evalPhysicalSkyBackground).
-  if(cloudImageIsWhole(frameInfo) || dir.y > max(horizonMu, cloudImageHorizonMu(frameInfo)))
-  {
-    float        depth;
-    const float4 clouds = cloudsAlong(dir, frameInfo, depth);
-    sky                 = composeClouds(sky, clouds);
-    cloudsLeave         = clamp(clouds.w, 0.0F, 1.0F);
-  }
+  // top, dimmed by the clouds in front of it (evalPhysicalSkyBehind).
+  clouded = cloudImageIsWhole(frameInfo) || dir.y > max(horizonMu, cloudImageHorizonMu(frameInfo));
   return sky;
+}
+
+// `sky` with the clouds along `dir` over it (the cloud images' frame: cloudsAlong), and what they
+// leave of what is behind them.
+float3 skyUnderClouds(float3 sky, float3 dir, SceneFrameInfo* frameInfo, out float cloudsLeave)
+{
+  float        depth;
+  const float4 clouds = cloudsAlong(dir, frameInfo, depth);
+  cloudsLeave         = clamp(clouds.w, 0.0F, 1.0F);
+  return composeClouds(sky, clouds);
 }
 
 float3 evalPhysicalSky(float3 worldDir, SceneFrameInfo* frameInfo)
 {
-  float unused;
-  return evalPhysicalSky(worldDir, frameInfo, unused);
+  bool   clouded;
+  float3 sky = evalPhysicalSkyUnder(worldDir, frameInfo, clouded);
+  if(clouded)
+  {
+    float cloudsLeave;
+    sky = skyUnderClouds(sky, quatRotateInverse(frameInfo->envRotation, worldDir), frameInfo, cloudsLeave);
+  }
+  return sky;
 }
 
 // The clouds between the camera and a point it sees, `toPoint` from it in the world (scene units,
@@ -391,7 +430,8 @@ float4 cloudsInFrontOf(float3 toPoint, SceneFrameInfo* frameInfo)
   const float distanceKm = length(toPoint) * 0.001F;
   if(!(distanceKm > 0.0F))
     return none;
-  const float3 dir = quatRotateInverse(frameInfo->envRotation, toPoint) * (0.001F / distanceKm);
+  // (the images' frame: the environment's, or round a planet that of the place they were baked from)
+  const float3 dir = quatRotateInverse(frameInfo->cloudFrame, toPoint) * (0.001F / distanceKm);
   float  depth;
   float4 clouds = cloudsAlong(dir, frameInfo, depth);
   // Above its horizon an image's texel takes the clouds' shade off the clear sky seen through it
@@ -400,22 +440,29 @@ float4 cloudsInFrontOf(float3 toPoint, SceneFrameInfo* frameInfo)
   if(dir.y > cloudImageHorizonMu(frameInfo))
   {
     const SkySunDisk disk   = *frameInfo->sunDisk;
-    const float3     sunDir = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
+    const float3     sunDir = quatRotateInverse(frameInfo->cloudFrame, frameInfo->sunDirection);
     const float      radius = g_atmosphere.bottomRadius + frameInfo->cloudEye.w;
     const float3     air    = evalBrunetonSkyInScatter(g_atmosphere, g_transmittance, g_scattering, g_singleMie, radius, dir, sunDir);
     clouds.xyz += clouds.w * cloudShadeOfClearSky(g_atmosphere, g_transmittance, g_irradiance, radius, dir, sunDir, disk.cloudTop,
                                                   disk.sunlitGround, disk.cloudSkyShare, air);
   }
-  const float altitude = frameInfo->cloudEye.w + frameInfo->cloudEye.y + dir.y * distanceKm;
+  float altitude = frameInfo->cloudEye.w + frameInfo->cloudEye.y + dir.y * distanceKm;
+  // (round a planet a point's height is its distance from the centre, the image's place being
+  // straight up from it in the image's frame)
+  if(frameInfo->worldRadiusKm > 0.0F)
+  {
+    const float  R  = g_atmosphere.bottomRadius;
+    const float3 at = float3(0.0F, R + frameInfo->cloudEye.w, 0.0F) + frameInfo->cloudEye.xyz + dir * distanceKm;
+    altitude        = length(at) - R;
+  }
   return lerp(none, clouds, cloudShareInFront(distanceKm, depth, altitude, frameInfo->cloudImageBase));
 }
 
-// What a camera ray or a mirror bounce sees of the physical sky: the sky per ray, plus the solar disk
-// through the clouds drawn in front of it, pixel by pixel, so a cloud's edge crosses the disk.
-float3 evalPhysicalSkyBackground(float3 worldDir, SceneFrameInfo* frameInfo)
+// What a camera ray or a mirror bounce sees of the physical sky: the sky per ray (`sky`, with the
+// clouds over it, which leave `cloudsLeave` of what is behind them), plus the solar disk through the
+// clouds drawn in front of it, pixel by pixel, so a cloud's edge crosses the disk, and the stars.
+float3 evalPhysicalSkyBehind(float3 worldDir, SceneFrameInfo* frameInfo, float3 sky, float cloudsLeave)
 {
-  float        cloudsLeave;
-  const float3 sky   = evalPhysicalSky(worldDir, frameInfo, cloudsLeave);
   const float3 stars = evalStars(worldDir, frameInfo) * cloudsLeave;
   if(g_skyStars.y <= 0.0F)
     g_skyStars = float2(luminance(stars), max(luminance(sky), 1e-30F));
@@ -534,14 +581,17 @@ WorldSkyLight worldSkyLightAt(float3 worldPos, SceneFrameInfo* frameInfo)
   return sky;
 }
 
-// What a ray from `origin` sees of the physical sky, before `envIntensity`: evalPhysicalSky from where
-// the ray is, in the air or outside it, and with `bodies` evalPhysicalSkyBackground: the disks and
-// the stars through the air along the ray itself. No clouds: a planet has none yet.
-float3 evalWorldSky(float3 origin, float3 worldDir, SceneFrameInfo* frameInfo, bool bodies)
+// What a ray from `origin` sees of the physical sky, before `envIntensity`, in the parts
+// evalPhysicalSky comes in: evalWorldSkyUnder is the sky from where the ray is, in the air or outside
+// it, under the clouds; `through` what the air along the ray leaves of what is past it. The clouds
+// over it are the cloud images', which are the camera's: `cloudDir` is the ray in the frame of the
+// place they were baked from (SceneFrameInfo::cloudFrame) and `clouded` whether they lie along it.
+// evalWorldSkyBehind adds the other bodies, the disks and the stars through the air along the ray.
+float3 evalWorldSkyUnder(float3 origin, float3 worldDir, SceneFrameInfo* frameInfo, out float3 through, out float3 cloudDir, out bool clouded)
 {
-  const float3 eye     = skyWorldPoint(frameInfo, origin);
-  float3       through = float3(1.0F);
-  float3       sky     = float3(0.0F);
+  const float3 eye = skyWorldPoint(frameInfo, origin);
+  float3       sky = float3(0.0F);
+  through          = float3(1.0F);
   // the sky's light's own sky, then the other body's (the moon's at twilight, the sun's twilight once
   // the moon is the light); one loop, so the tables' reads are inlined once
   const int lights = frameInfo->skySecondScale > 0.0F ? 2 : 1;
@@ -570,8 +620,17 @@ float3 evalWorldSky(float3 origin, float3 worldDir, SceneFrameInfo* frameInfo, b
     const float  glow = r < g_atmosphere.topRadius ? NIGHT_GLOW_ZENITH * nightGlowPath(max(dot(eye, worldDir) / r, 0.0F), g_atmosphere.bottomRadius) : 0.0F;
     sky += frameInfo->nightScale * sunAboveAirRadiance() * through * (glow * nightGlowColor() + NIGHT_GLOW_ZENITH * milkyWay(v));
   }
-  if(!bodies)
-    return sky;
+  // The clouds lie over it as the images hold them for the camera (cloudsAlong): above the horizon
+  // of the place they were baked from, or all round it when that is above their bases. What they
+  // leave of what is behind them dims the bodies, the disks and the stars.
+  cloudDir = quatRotateInverse(frameInfo->cloudFrame, worldDir);
+  clouded  = frameInfo->sunDisk->cloudTop > 0.0F && (cloudImageIsWhole(frameInfo) || cloudDir.y > cloudImageHorizonMu(frameInfo));
+  return sky;
+}
+
+float3 evalWorldSkyBehind(float3 origin, float3 worldDir, SceneFrameInfo* frameInfo, float3 sky, float3 through)
+{
+  const float3 eye = skyWorldPoint(frameInfo, origin);
   // One of the planet's other bodies along the ray: what is seen in place of the stars and the disks,
   // through the air if the ray is in it by then. One nearer than the air (a camera beyond it, looking
   // back at the planet) hides the air too.
@@ -1144,19 +1203,30 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // not depend on the bake resolution. The physical sky's is its per-ray radiance plus the disk
       // (sunDisk is non-null for that sky alone); the lighting field it replaces is the same
       // function, baked, so the two agree everywhere but in sharpness.
-      float3     envColor;
-      float      envPdf = 0.0F;  // unread on a delta bounce: the MIS weight there is 1 whatever it is
-      const bool delta  = pt.lastSamplePdf == DIRAC;
-      const bool world  = skyHasWorld(frameInfo);
+      float3     envColor = float3(0.0F);
+      float      envPdf   = 0.0F;  // unread on a delta bounce: the MIS weight there is 1 whatever it is
+      const bool delta    = pt.lastSamplePdf == DIRAC;
+      const bool world    = skyHasWorld(frameInfo);
+      // The physical sky seen per ray comes in parts: the sky under the clouds (`under`), the clouds
+      // over it, and for the camera and a mirror what is past them. The clouds are read once,
+      // whichever sky it is, a planet's or not: the read is the heavy part, and every place it
+      // stands is another copy of it in the kernel (three of them cost its build half as long again).
+      bool   perRay   = false;
+      bool   clouded  = false;
+      float3 under    = float3(0.0F);
+      float3 through  = float3(1.0F);
+      float3 cloudDir = ray.Direction;
       if(world)
       {
         // A planet in the scene (sky_world.h.slang): the sky from where the ray set out. What the
         // camera, a mirror or a narrow lobe sees is evaluated there; every other ray reads the
         // lighting field as that place has it, weighed against the light sample that read it so.
         const bool seen = delta || pt.lastSamplePdf > SKY_NARROW_LOBE_PDF;
-        envColor        = float3(0.0F);
         if(seen)
-          envColor = evalWorldSky(ray.Origin, ray.Direction, frameInfo, delta) * frameInfo->envIntensity;
+        {
+          under  = evalWorldSkyUnder(ray.Origin, ray.Direction, frameInfo, through, cloudDir, clouded);
+          perRay = true;
+        }
         if(!delta)
         {
           const WorldSkyLight light    = worldSkyLightAt(ray.Origin, frameInfo);
@@ -1173,24 +1243,42 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         const float3 bgDir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
         envColor           = evalAuthoredSkyBackground(bgDir, frameInfo) * frameInfo->envIntensity;
       }
-      else if(delta && frameInfo->sunDisk != nullptr)
-      {
-        envColor = evalPhysicalSkyBackground(ray.Direction, frameInfo) * frameInfo->envIntensity;
-      }
       else
       {
-        // The lighting field: the baked image for a sky, the file for an HDR.
-        sampleEnvironment(ray.Direction, frameInfo, envColor, envPdf);
-        // The vertex this ray left drew its environment sample from the compensated table: it
-        // traced this ray (sampleLights' `compensatedEnv`)
-        envPdf = environmentCompensatedPdfAt(ray.Direction, frameInfo);
-        // A lobe narrower than the field resolves (SKY_NARROW_LOBE_PDF) reflects the physical sky per
-        // ray, as sharp as the camera sees it: still water read the field's blurred clouds under the
-        // sky's sharp ones. The disk is not in it: it comes below, weighed against its light sample,
-        // and so does this against the environment's, a sample of the field that agrees with it but
-        // in sharpness.
-        if(frameInfo->sunDisk != nullptr && pt.lastSamplePdf > SKY_NARROW_LOBE_PDF)
-          envColor = evalPhysicalSky(ray.Direction, frameInfo) * frameInfo->envIntensity;
+        const bool physical = frameInfo->sunDisk != nullptr;
+        if(!(delta && physical))
+        {
+          // The lighting field: the baked image for a sky, the file for an HDR.
+          sampleEnvironment(ray.Direction, frameInfo, envColor, envPdf);
+          // The vertex this ray left drew its environment sample from the compensated table: it
+          // traced this ray (sampleLights' `compensatedEnv`)
+          envPdf = environmentCompensatedPdfAt(ray.Direction, frameInfo);
+        }
+        // The camera and a mirror see the physical sky per ray, and so does a lobe narrower than the
+        // field resolves (SKY_NARROW_LOBE_PDF), as sharp as the camera sees it: still water read the
+        // field's blurred clouds under the sky's sharp ones. For the lobe the disk is not in it: it
+        // comes below, weighed against its light sample, and so does this against the environment's,
+        // a sample of the field that agrees with it but in sharpness.
+        if(physical && (delta || pt.lastSamplePdf > SKY_NARROW_LOBE_PDF))
+        {
+          under    = evalPhysicalSkyUnder(ray.Direction, frameInfo, clouded);
+          cloudDir = quatRotateInverse(frameInfo->envRotation, ray.Direction);
+          perRay   = true;
+        }
+      }
+      if(perRay)
+      {
+        float cloudsLeave = 1.0F;
+        if(clouded)
+          under = skyUnderClouds(under, cloudDir, frameInfo, cloudsLeave);
+        if(delta)
+        {
+          if(world)
+            under = evalWorldSkyBehind(ray.Origin, ray.Direction, frameInfo, under, through * cloudsLeave);
+          else
+            under = evalPhysicalSkyBehind(ray.Direction, frameInfo, under, cloudsLeave);
+        }
+        envColor = under * frameInfo->envIntensity;
       }
 
       // We may hit the environment twice: once via sampleLights() and once when hitting the sky while probing
@@ -1229,7 +1317,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           if(world)
             disk = evalWorldLightDisk(ray.Origin, ray.Direction, frameInfo);
           else
-            disk = evalSkySunDisk(bgDir, frameInfo) * cloudSunShare(ray.Origin, frameInfo);
+            disk = evalSkySunDisk(bgDir, frameInfo);
+          disk *= cloudSunShare(ray.Origin, frameInfo);
           if(any(disk > 0.0F))
             addRadiance(pt, pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf, pt.lightPick) * disk * frameInfo->envIntensity, indirect,
                         uint(LIGHT_GROUP_SUN));

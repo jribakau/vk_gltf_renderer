@@ -544,6 +544,7 @@ private:
   // How far the wind has carried the clouds, km in the environment's frame (cloudDriftStep), and
   // when it last did; whether they drifted in the last frame. Not saved: a restart has them back.
   glm::vec2                             m_cloudDrift{0.0F};
+  glm::quat                             m_cloudTurn{1.0F, 0.0F, 0.0F, 0.0F};  // ... round a planet (cloudTurnStep)
   std::chrono::steady_clock::time_point m_cloudDriftAt{};
   bool                                  m_cloudDrifting{false};
   // What the clouds' images depend on of the camera and the frame; the last frame's, to tell a camera

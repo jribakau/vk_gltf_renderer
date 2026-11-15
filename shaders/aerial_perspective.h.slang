@@ -428,8 +428,9 @@ AerialMarch evalAerialPerspective(float3                  worldPos,
   // A haze's glow is the sun's light scattered many times over kilometres of it, and under the clouds
   // takes the share of the distant haze the sun still reaches (sunlitGround), as the sky below the
   // horizon does: the origin's own shade left a misted wood black under a cloud against a lit sky.
-  const float cloudShadow = frameInfo->sunDisk->cloudShadow;
+  // (round a planet the air seen is not the origin's: the land's mean share, as the estimate takes)
   const float glowShare   = frameInfo->sunDisk->sunlitGround;
+  const float cloudShadow = frameInfo->worldRadiusKm > 0.0F ? glowShare : frameInfo->sunDisk->cloudShadow;
   march.inScatter -= march.sunInScatter * (1.0F - cloudShadow) + march.glow * (1.0F - glowShare);
   march.sunInScatter *= cloudShadow;
   march.glow *= glowShare;

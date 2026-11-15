@@ -472,7 +472,7 @@ point of the scene, as kilometres from the planet's centre in the world's own ax
 (`shaders/sky_world.h.slang`; the frame carries `worldCentre` and `worldRadiusKm`, and callers
 branch on `skyHasWorld`, the other branch being the code as it was):
 
-- **What a ray sees** (`evalWorldSky`): the sky from where the ray set out, in the air or outside
+- **What a ray sees** (`evalWorldSkyUnder`, `evalWorldSkyBehind`): the sky from where the ray set out, in the air or outside
   it. A camera above the air sees black space, the air as a blue rim round the planet, and on its
   night side the sunset as a ring. The sun's and the moon's disks and the stars are dimmed by the
   air along the ray itself and hidden by the planet where it is, not cut at the origin's horizon.
@@ -508,7 +508,9 @@ kilometres across; the edge of the shadow is not drawn in the air.
 The moon of the Light tab (`evalMoonDisk`) is still its own thing beside these: it has no place, only
 a direction. Bodies give the ground no light of their own.
 
-What is not there yet: clouds, rain and haze on a planet; the night's glow seen from outside the air;
+The clouds lie round the planet, scaled to it as its air is: see [Round a planet](#round-a-planet).
+
+What is not there yet: rain and haze on a planet; the night's glow seen from outside the air;
 a body's light on the ground; orbits.
 
 ### What to set white balance to
@@ -623,7 +625,7 @@ which is a scene edit and is recorded like any other transform.
   replaced. The one exception is what the path tracer's camera rays and mirror bounces see of the
   physical sky: that is evaluated per ray from the LUTs, so the horizon stays sharp at any bake
   resolution. Rough bounces and next-event estimation still read the image; see
-  `evalPhysicalSkyBackground` in `shaders/gltf_pathtrace.slang`.
+  `evalPhysicalSkyUnder` in `shaders/gltf_pathtrace.slang`.
 - **Per commit:** the bake (with the clouds' pass ahead of it -- see [Clouds](#clouds)), plus the
   alias table and PDF. The alias table is built on the CPU, but
   over a fixed coarse sampling grid rather than the bake's texels, so it costs about as much as the
@@ -746,7 +748,7 @@ test worth running: put the sun in frame and check where the disk lands.
 
 ## What a reflection sees
 
-A camera ray and a mirror's (a delta lobe) see the physical sky per ray (`evalPhysicalSkyBackground`);
+A camera ray and a mirror's (a delta lobe) see the physical sky per ray (`evalPhysicalSkyUnder`, the clouds over it and `evalPhysicalSkyBehind`);
 any other bounce reads the lighting field, the baked image at 1024 x 512, 0.35 degrees a texel, its
 clouds two mips down. For a lobe narrower than about three of those texels that is a visible blur:
 still water showed the field's soft clouds under the sky's sharp ones. So a ray whose sampled pdf is
@@ -866,7 +868,7 @@ cover goes to zero, and the pass does not run.
 
 It is read twice, through `SkyClouds`' runtime set: by the environment bake, which composes it into
 the **lighting field** two mips down, at its own resolution, so an overcast sky lights the scene grey
-and the alias table follows; and by the path tracer's `evalPhysicalSkyBackground`, for what the
+and the alias table follows; and by the path tracer's `skyUnderClouds`, for what the
 camera and mirrors see. Its columns run round the horizon as the lat-long's do, its rows from the
 horizon to the zenith on a square root, so they crowd where the clouds do. What the camera sees of
 the clouds outside the view image (below) is this image, at its sharpness, or the copy of it that follows the camera.
@@ -1020,7 +1022,7 @@ part of the sky the camera looks at is baked a second time at the screen's resol
   the sky moves `SkyClouds`' generation on; the still restarts. A drag's preview
   turns it off. While the camera moves the view image keeps serving the directions it covers,
   shifted by the clouds' distance from where it was baked, until the camera is
-  `kCloudFollowDistance` from there; `evalPhysicalSkyBackground` blends to the sky image over the
+  `kCloudFollowDistance` from there; `cloudsAlong` blends to the sky image over the
   outer 6% of its half-extent (`cloudViewShare`), outside the frame until the camera has turned;
   the two hold the same clouds, so a blend of them is too. `SceneFrameInfo::cloudView*` say where
   it looks, from where (`cloudViewEye`), and whether it holds the clouds of the moment.
@@ -1199,6 +1201,52 @@ Not done: the sky below the horizon, read per ray (`evalPhysicalSky`), keeps the
 lighting field does; a whole image's clouds in front of a point get the mean shade back
 (`cloudsInFrontOf`), not the shafts'.
 
+### Round a planet
+
+With a planet standing in the scene ([A small planet](#a-small-planet)) the camera flies round the
+clouds and, from far enough, sees all of them at once. The march was already a sphere's in its
+heights and its light; what was a level land's is not there (`shaders/sky_clouds.h.slang`, "on a
+planet"; the bake branches on `SkyCloudsParameters::worldScale`, and with no planet runs as it did):
+
+- **Where the weather is.** A point's weather is read by its place on the planet, on the plane of
+  the axis that place faces most squarely (`cloudPlanes`, `cloudPlaneLand`): no pole, and each plane
+  and each side of it on a stretch of the map's tiling of its own. Where two axes are near alike the
+  two planes' maps are mixed before the cover cuts them into clouds (`cloudAt` in
+  `sky_clouds_bake.slang`), keeping the map's spread about its mean, so the band holds whole clouds
+  of a weather between the two. Mixed after the cut it held both planes' clouds at half their
+  density, a gauze over twice the land. The billows are each plane's own, by its share.
+- **Which way is up.** An image is baked in the frame of the place it is baked from, +y that place's
+  up (`cloudAnchorFrame`, `SkyCloudsPushConstant::frame`), and a reader takes a direction into the
+  frame of the image it reads (`SceneFrameInfo::cloudFrame`). An anchor is then a point of space
+  among the clouds, not a place on the land and a height (`cloudAnchorPoint`).
+- **Their size.** A planet's clouds are a model's, as its air is: every height and length of them by
+  one scale (`sky_world::cloudScale`, `cloudScaled`) and the medium as many times as dense, so from
+  the ground they look as they do over a level land and the highest tier still stands inside the
+  planet's air. The noise is read in the clouds' own kilometres.
+- **The march from far above.** Looking down on the layers from orbit the way through them is a few
+  kilometres however far off they are, and a step sized by the distance was longer than a cloud is
+  deep: the planet came out dotted. No step there is longer than a share of the way through
+  (`marchClouds`' `reach`), and none in cloud than half that (`fine`): a cloud's top is lit by how
+  deep the first step lands in it, and with longer ones each texel's jitter chose its brightness.
+- **Their shadow.** The shafts image holds the whole planet's: the sun's transmittance from each
+  point of its sphere, laid out by the point's direction as an octahedron unfolded (`cloudGlobeUv`).
+  The shadow image is still the land round the scene's origin, finer. A point is read where the
+  sun's ray through it meets the sphere (`cloudSunGroundOn`), and one above the layers that shade
+  the ground is in the sun (`SceneFrameInfo::cloudShadowSpan`). `cloudSunShare` reads each image
+  once, a level land's or a planet's, and the escaped ray reads the clouds once whichever sky it has
+  (`skyUnderClouds`): both are inlined wherever they stand, and a read apiece for each kind of land
+  took the path tracer's cold build from 60 s to 81-91.
+- **The wind** turns the clouds about the planet's centre, all as one (`cloudTurnStep`): over the
+  scene's origin they go as the wind blows there. The anchors and the two shadow images are in the
+  clouds' frame, so as on a level land clouds that drift are a camera that goes the other way among
+  them, and a reader turns its point into that frame first (`SceneFrameInfo::cloudTurn`). The turn
+  is kept free of twist about the origin's up, so the sky image, which the environment bake reads,
+  stays in the scene's own frame.
+
+Not there round a planet: the view image (the sky images draw the clouds at their own sharpness),
+light shafts in the air (the march takes the land's mean share), and the lighting field's clouds
+anywhere but at the origin: the field is the origin's, turned to each place.
+
 ### What it leaves out
 
 - Clouds that change as they drift: the wind carries the field whole (above), and no cloud builds
@@ -1242,7 +1290,7 @@ The settle pays it once, as a hitch of that length, and the view image when the 
 follow image is a quarter of it by its marches, spread over `kCloudFollowFrames` frames; the preview image has a sixteenth of the texels,
 one march each, at the low preset, so a drag's cloud pass is under a millisecond by that count (not
 measured on its own). Per frame the clouds cost one texture read in
-`evalPhysicalSkyBackground` and nothing in the lighting field, which is baked.
+`cloudsAlong` and nothing in the lighting field, which is baked.
 
 Memory: the shadow image half a megabyte, the noise about 4 MB with its mips, the cloud image 43 MB with its chain, the raw image the
 filter reads 32 MB, the view image 32 MB, the preview 2 MB, the two follow images 32 MB each, the

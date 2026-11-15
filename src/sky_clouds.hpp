@@ -50,6 +50,10 @@ struct SkyCloudsSettings
   int      type{0};             // the low tier's kind, CLOUD_TYPE_* below CLOUD_LOW_TYPE_COUNT
   float    midCoverage{0.0F};   // the mid tier, altocumulus: the share of the land it shades
   float    highCoverage{0.0F};  // the high tier, cirrus: the share of the sky it veils
+  // A planet that stands in the scene (shaders/sky_clouds.h.slang, "on a planet"): its radius, km
+  // (0: none, a level land), and how many times life size its clouds are (sky_world::cloudScale)
+  float worldRadiusKm{0.0F};
+  float scale{1.0F};
 
   bool operator==(const SkyCloudsSettings&) const = default;
 };
@@ -120,7 +124,22 @@ public:
   glm::vec2 shadowShift() const { return m_drift - m_shadowDrift; }
   // Whether the clouds have gone far enough that the shadow image is baked again (kCloudShadowDrift),
   // by recordShadow, behind recordWait.
-  bool shadowDue() const { return viewable() && glm::length(shadowShift()) > kCloudShadowDrift; }
+  bool shadowDue() const { return viewable() && shadowDriftKm() > kCloudShadowDrift; }
+  // Round a planet the wind turns the clouds about its centre instead (cloudTurnStep in
+  // sky_cloud_view.hpp): the rotation from their frame to the planet's axes. The anchors are points
+  // among the clouds, in their frame, and the shadow images lie in it.
+  void             setTurn(const glm::quat& turn) { m_turn = turn; }
+  const glm::quat& turn() const { return m_turn; }
+  // How far the clouds have gone over the scene's origin since the shadow image was baked, km.
+  float shadowDriftKm() const;
+  // The frame the shadow image was baked in, to the clouds' frame: +y the up of the scene's origin
+  // among the clouds then (SceneFrameInfo::cloudShadowFrame).
+  glm::quat shadowFrame() const { return glm::conjugate(m_shadowTurn); }
+  // The heights between which the baked layers that shade the ground lie, km (0 and 0 with none).
+  glm::vec2 shadowSpanKm() const;
+  // Whether the sky image is still of the clouds over the scene's origin: false once the wind has
+  // carried them on from where it was baked.
+  bool homeIsOrigin() const;
   void recordShadow(VkCommandBuffer cmd);
 
   // Bake the clouds for this sun (toward it, the environment's frame) and observer, into the
@@ -209,6 +228,8 @@ private:
   SkyCloudFollow    m_follow{};  // the sky image the readers take, and the bake of the next one
   glm::vec2         m_drift{0.0F};        // how far the wind has carried the clouds, km (setDrift)
   glm::vec2         m_shadowDrift{0.0F};  // ... when the shadow image was baked
+  glm::quat         m_turn{1.0F, 0.0F, 0.0F, 0.0F};        // how the wind has turned a planet's clouds (setTurn)
+  glm::quat         m_shadowTurn{1.0F, 0.0F, 0.0F, 0.0F};  // ... when the shadow image was baked
   uint32_t          m_imageMips{1};
   uint32_t          m_weatherMips{1};
   uint32_t          m_shapeMips{1};

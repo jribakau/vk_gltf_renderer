@@ -109,6 +109,60 @@ inline float cloudShellDistance(float r0, float mu, float rShell)
   return t >= 0.0F ? t : CLOUD_NO_DEPTH;
 }
 
+// ---- on a planet ------------------------------------------------------------------------------------
+//
+// A planet that stands in the scene (src/fv_world.hpp) is round under the clouds: a camera flies
+// round it, and from far enough sees the whole of it. Two things about the clouds were a level
+// land's, and are a sphere's there:
+//
+//  - where the weather is. Flat, it is read by a point's x and z from the scene's origin. On a planet
+//    it is read by the point's place on the planet, on the plane of the axis that place faces most
+//    squarely (its other two coordinates), and across the band where two axes are near alike on both
+//    planes, cross-faded (cloudPlanes): no pole, and no seam but a band a few degrees wide where two
+//    weathers show through each other. Each plane and each side of it has a stretch of the weather's
+//    tiling of its own.
+//  - which way is up. An image is baked from a place, and its rows run from that place's horizon to
+//    its zenith: the march's frame has the place's up as +y (SkyCloudsPushConstant::frame), and a
+//    reader takes a direction into the frame of the image it reads (SceneFrameInfo::cloudFrame).
+//
+// And the clouds are a model's, as the planet's air is (sky_world.hpp): scaled whole to fit under it.
+
+// `v` turned by the unit quaternion `q` (x, y, z, w)
+inline float3 cloudRotate(float4 q, float3 v)
+{
+  const float3 u = float3(q.x, q.y, q.z);
+  return v + 2.0F * cross(u, cross(u, v) + q.w * v);
+}
+
+// ... and back
+inline float3 cloudRotateBack(float4 q, float3 v)
+{
+  return cloudRotate(float4(-q.x, -q.y, -q.z, q.w), v);
+}
+
+// How much an axis has to lead the next for its plane to hold the weather alone, as a share of the
+// direction's length: the cross-fade's band is where two are nearer than this
+static const float CLOUD_PLANE_BAND = 0.1F;
+
+// The weights of the three axis planes (x's, y's, z's) at a place of the planet, `up` its unit
+// direction from the centre: summing to 1, one of them 1 away from the bands
+inline float3 cloudPlanes(float3 up)
+{
+  const float3 a    = abs(up);
+  const float  most = max(a.x, max(a.y, a.z));
+  const float3 w    = clamp((a - float3(most - CLOUD_PLANE_BAND)) / CLOUD_PLANE_BAND, float3(0.0F), float3(1.0F));
+  return w / (w.x + w.y + w.z);
+}
+
+// Where a point `p` of the planet (from its centre, its axes) is on plane `plane`'s land: its two
+// other coordinates, moved to that plane's own stretch of the weather, another on each side of it
+inline float2 cloudPlaneLand(float3 p, int plane)
+{
+  const float2 land  = plane == 0 ? float2(p.y, p.z) : (plane == 1 ? float2(p.x, p.z) : float2(p.x, p.y));
+  const float  along = plane == 0 ? p.x : (plane == 1 ? p.y : p.z);
+  return land + float2(311.0F * float(plane), along < 0.0F ? 173.0F : 0.0F);
+}
+
 // An image of the clouds is baked from one place, its anchor. A camera that stands `eye` from the
 // anchor (km, the environment's frame) and looks along `dir` at a cloud `depth` km along that ray
 // sees what the anchor saw in this direction: the cloud is a point in the world, and the image holds
@@ -199,6 +253,66 @@ inline float cloudShadowWeight(float2 uv)
 {
   const float2 e = abs(uv - float2(0.5F)) * 2.0F;
   return clamp((1.0F - max(e.x, e.y)) * 10.0F, 0.0F, 1.0F);
+}
+
+// ---- their shadow round a planet ------------------------------------------------------------------
+//
+// Round a planet that stands in the scene the two images hold the same thing another way. The shafts
+// image is the whole planet's: the sun's transmittance from each point of its sphere, laid out by the
+// point's direction from the centre among the clouds (the clouds' frame: the planet's axes, turned as
+// the wind has turned the clouds, SceneFrameInfo::cloudTurn), as an octahedron unfolded, the scene's
+// origin's side in its middle. The shadow image is the land round the scene's origin, finer, laid out
+// from that point's own up (SceneFrameInfo::cloudShadowFrame). A point is read where the sun's ray
+// through it meets the planet's sphere.
+
+// Where a unit direction from the planet's centre is in the planet's image, 0..1 each way
+inline float2 cloudGlobeUv(float3 up)
+{
+  const float3 n = up / (abs(up.x) + abs(up.y) + abs(up.z));
+  float2       e = float2(n.x, n.z);
+  if(n.y < 0.0F)
+    e = float2((1.0F - abs(n.z)) * (n.x >= 0.0F ? 1.0F : -1.0F), (1.0F - abs(n.x)) * (n.z >= 0.0F ? 1.0F : -1.0F));
+  return e * 0.5F + float2(0.5F);
+}
+
+// ... and the direction of a place in it
+inline float3 cloudGlobeUp(float2 uv)
+{
+  const float2 f = uv * 2.0F - float2(1.0F);
+  float3       n = float3(f.x, 1.0F - abs(f.x) - abs(f.y), f.y);
+  const float  t = max(-n.y, 0.0F);
+  n.x += n.x >= 0.0F ? -t : t;
+  n.z += n.z >= 0.0F ? -t : t;
+  return normalize(n);
+}
+
+// The point of the planet's sphere, `radius` km, that the sun's ray through `p` meets (`p` from the
+// planet's centre, km): where the ray came up from for a point above the sphere, where it goes out
+// for one under it (a sea's floor). The clouds are above both, so they are in the same shadow. A low
+// sun carries a point no further than CLOUD_SHADOW_MIN_SUN allows, and a point the planet itself
+// shades, where the ray meets no ground behind it, is read straight under itself.
+inline float3 cloudSunGroundOn(float3 p, float3 sunDir, float radius)
+{
+  const float r      = length(p);
+  const float b      = dot(p, sunDir);
+  const float c      = r * r - radius * radius;
+  const float disc   = b * b - c;
+  const float3 under = p * (radius / max(r, 1e-6F));
+  if(disc <= 0.0F || (c > 0.0F && b <= 0.0F))
+    return under;
+  const float reach = abs(r - radius) / CLOUD_SHADOW_MIN_SUN;
+  const float t     = clamp(b - sqrt(disc), -reach, reach);
+  return normalize(p - sunDir * t) * radius;
+}
+
+// Where the shadow image is read for a direction from the planet's centre, in the image's own frame
+// (+y the up of the place it was baked round): as shadowMain lays its points, on the plane that
+// touches the sphere there. Off the image for a direction far round the planet from it.
+inline float2 cloudShadowUvOn(float3 up, float radius)
+{
+  if(up.y < 0.5F)
+    return float2(-1.0F);
+  return float2(up.x, up.z) * (radius / up.y) / CLOUD_SHADOW_EXTENT + float2(0.5F);
 }
 
 // Whether a height falls in one of the gaps between layers, which the march steps over.
@@ -516,7 +630,7 @@ inline SkyCloudsParameters cloudNoLayers()
   p.absorption        = 0.0F;
   p.skyLightScale     = 1.0F;
   p.groundBounceScale = 1.0F;
-  p._pad3             = 0.0F;
+  p.worldScale        = 0.0F;
   p.powderExponent    = 0.15F;  // 150 m
   p._pad1             = 0.0F;
   // Takram averages the march's jitter over frames; a bake is one frame, so it averages it over
@@ -751,6 +865,28 @@ inline SkyCloudsParameters cloudSkyParameters(float lowCover, float lowThickness
 }
 
 static const float CLOUD_DEFAULT_THICKNESS = 1.45F;  // cumulus's (cloudDefaultThickness)
+
+// The clouds `scale` times life size, a planet's (sky_world::cloudScale): every height and length
+// of them by it, and as many times as dense, so a cloud is as thick to the light as it was. What the
+// noise is read by stays in the clouds' own kilometres (the bake divides a point's place by the scale).
+inline SkyCloudsParameters cloudScaled(SkyCloudsParameters p, float scale)
+{
+  p.minLayerHeights *= scale;
+  p.maxLayerHeights *= scale;
+  p.minIntervalHeights *= scale;
+  p.maxIntervalHeights *= scale;
+  p.minHeight *= scale;
+  p.maxHeight *= scale;
+  p.shadowTopHeight *= scale;
+  p.scattering /= scale;
+  p.absorption /= scale;
+  p.minExtinction /= scale;
+  p.minStepSize *= scale;
+  p.maxStepSize *= scale;
+  p.minSecondaryStepSize *= scale;
+  p.powderExponent *= scale;
+  return p;
+}
 
 // A drag's preview at takram's 'low' preset: shorter and coarser marches, no detail, turbulence or
 // ground bounce. The octaves stay, since fewer darken the clouds (takram's own note).

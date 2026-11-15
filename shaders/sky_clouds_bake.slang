@@ -72,6 +72,17 @@
 
 static const float kInvFourPi = 0.0795774715F;
 
+// How many times life size the clouds are: a planet's (SkyCloudsParameters::worldScale), or 1.
+// Their heights, steps and densities come scaled in the parameters; where the weather and the noise
+// are read, and how fine, goes by a point's place in the clouds' own kilometres.
+float cloudUnit()
+{
+  return g_params.worldScale > 0.0F ? g_params.worldScale : 1.0F;
+}
+
+// On a planet: which of its axis planes the weather is being read on (cloudPlanes), set by cloudAt.
+static int s_plane = 1;
+
 // The shares of the air's light the clouds leave, the sun's and the sky's (sky_clouds_air.h.slang):
 // what airMain measured, for the march that reads them. Each entry point sets it first.
 static float2 s_air = float2(1.0F, 1.0F);
@@ -81,7 +92,7 @@ static float2 s_air = float2(1.0F, 1.0F);
 // distance, where a texel covers more than either resolves.
 float mipLevelAt(float distance)
 {
-  return log2(max(1.0F, 1.0F + distance * 0.01F));
+  return log2(max(1.0F, 1.0F + distance / cloudUnit() * 0.01F));
 }
 
 // The level of a noise volume to read at a distance: where one texel of the cloud image covers
@@ -90,7 +101,7 @@ float mipLevelAt(float distance)
 // to grain. `texelKm` is one of the volume's texels, in km.
 float noiseLod(float distance, float texelKm)
 {
-  return log2(max(1.0F, distance * pc.texelAngle / texelKm));
+  return log2(max(1.0F, distance / cloudUnit() * pc.texelAngle / texelKm));
 }
 
 static const float kShapeTexelKm  = CLOUD_SHAPE_PERIOD / float(CLOUD_SHAPE_NOISE_SIZE);
@@ -99,8 +110,12 @@ static const float kDetailTexelKm = CLOUD_DETAIL_PERIOD / float(CLOUD_DETAIL_NOI
 // Where a point of a march is on the land, km: the march's observer is on the +Y axis, and stands
 // pc.land from the scene's origin (the camera a bake follows). Everything the clouds are cut from is read
 // here, so the same cloud is over the same ground whoever looks at it.
+// On a planet: the point's place on the planet, on the plane being read (s_plane), in the clouds'
+// kilometres.
 float2 landXz(float3 position)
 {
+  if(g_params.worldScale > 0.0F)
+    return cloudPlaneLand(cloudRotate(pc.frame, position) / g_params.worldScale, s_plane);
   return float2(position.x, position.z) + pc.land;
 }
 
@@ -143,7 +158,7 @@ CloudMedia mediaAt(float3 position, float height, CloudWeather weather, float mi
 {
   // the billows read where the land's variety bends them to (cloudVariety)
   const float2 land = landXz(position);
-  float3       q    = float3(land.x + weather.variety.z, height, land.y + weather.variety.w);
+  float3       q    = float3(land.x + weather.variety.z, height / cloudUnit(), land.y + weather.variety.w);
   if(g_params.turbulence != 0 && !far)
   {
     const float2 uv = weatherUv(position) * (CLOUD_WEATHER_PERIOD / CLOUD_TURBULENCE_PERIOD);
@@ -178,6 +193,76 @@ CloudMedia mediaAt(float3 position, float height, CloudWeather weather, float mi
   return cloudSampleMedia(g_params, weather, shape, detail, withDetail);
 }
 
+// The medium at a point of a march: the weather there and what it is cut into (weatherAt, mediaAt),
+// `any` false where the weather allows no cloud. On a planet the weather lies on the planes of its
+// axes (cloudPlanes): one of them away from the bands where two meet, and in a band a mix of both,
+// so one weather gives way to the other with no edge.
+CloudMedia cloudAt(float3 position, float height, float mipLevel, float distance, float jitter, bool far, out bool any)
+{
+  CloudMedia media;
+  media.weight     = float4(0.0F);
+  media.scattering = 0.0F;
+  media.extinction = 0.0F;
+  any              = false;
+  if(g_params.worldScale <= 0.0F)
+  {
+    const CloudWeather weather = weatherAt(position, height, mipLevel);
+    any                        = cloudWeatherHasDensity(g_params, weather);
+    if(any)
+      media = mediaAt(position, height, weather, mipLevel, distance, jitter, far);
+    return media;
+  }
+  // In a band the planes' maps are mixed before the cover cuts the weather into clouds, so the band
+  // holds whole clouds of a weather between the two: mixed after, it held each plane's clouds at a
+  // share of their density, a gauze over twice the land. Two maps averaged vary less than one, and
+  // the cover would cut less cloud from them, so the mix keeps the map's spread about its mean (the
+  // map's last level): the shares over the root of their squares' sum.
+  const float3 planes = cloudPlanes(normalize(cloudRotate(pc.frame, position)));
+  const bool   alone  = max(planes.x, max(planes.y, planes.z)) >= 1.0F;
+  const float4 mean   = alone ? float4(0.0F) : g_weather.SampleLevel(float2(0.5F), 16.0F);
+  float4       texel  = float4(0.0F);
+  float        norm   = 0.0F;
+  CloudVariety mixed  = cloudNoVariety();
+  mixed.density       = 0.0F;
+  mixed.detail        = 0.0F;
+  float2 bends[3]     = {float2(0.0F), float2(0.0F), float2(0.0F)};
+  [loop]
+  for(int plane = 0; plane < 3; ++plane)
+  {
+    const float share = planes[plane];
+    if(share <= 0.0F)
+      continue;
+    s_plane              = plane;
+    const CloudVariety v = varietyAt(position);
+    const float2       uv = weatherUv(position) + v.weatherWarp / CLOUD_WEATHER_PERIOD;
+    texel += share * (g_weather.SampleLevel(uv, mipLevel) - mean);
+    norm += share * share;
+    mixed.density += share * v.density;
+    mixed.detail += share * v.detail;
+    bends[plane] = v.shapeWarp;
+  }
+  CloudWeather weather = cloudSampleVariedWeather(g_params, clamp(mean + texel / sqrt(norm), float4(0.0F), float4(1.0F)), height, mixed);
+  any                  = cloudWeatherHasDensity(g_params, weather);
+  if(!any)
+    return media;
+  // ... and the billows that cut it are each plane's own, by its share
+  [loop]
+  for(int plane = 0; plane < 3; ++plane)
+  {
+    const float share = planes[plane];
+    if(share <= 0.0F)
+      continue;
+    s_plane              = plane;
+    weather.variety.z    = bends[plane].x;
+    weather.variety.w    = bends[plane].y;
+    const CloudMedia one = mediaAt(position, height, weather, mipLevel, distance, jitter, far);
+    media.weight += share * one.weight;
+    media.scattering += share * one.scattering;
+    media.extinction += share * one.extinction;
+  }
+  return media;
+}
+
 // The optical depth from `origin` along `dir`, a few short steps that lengthen (marchOpticalDepth):
 // the shadow's edge, which the long march is too coarse for. Fewer steps with distance; with none,
 // takram's fudge of half an optical depth. `rayDistance` is where it stopped.
@@ -195,9 +280,10 @@ float marchOpticalDepth(float3 origin, float3 dir, int maxIterations, float mipL
     rayDistance                = nextDistance;
     const float3       p       = origin + dir * rayDistance;
     const float        height  = length(p) - g_atmosphere.bottomRadius;
-    const CloudWeather weather = weatherAt(p, height, mipLevel);
-    if(cloudWeatherHasDensity(g_params, weather))
-      opticalDepth += mediaAt(p, height, weather, mipLevel, distance, jitter, false).extinction * stepSize;
+    bool             any;
+    const CloudMedia media = cloudAt(p, height, mipLevel, distance, jitter, false, any);
+    if(any)
+      opticalDepth += media.extinction * stepSize;
     nextDistance += stepSize;
     stepSize *= g_params.secondaryStepScale;
   }
@@ -219,7 +305,7 @@ static const float kFarSunOpaque   = 200.0F;
 float farSunOpticalDepth(float3 origin, float3 dir, float start, float distance)
 {
   float t            = start;
-  float stepSize     = 0.2F;
+  float stepSize     = 0.2F * cloudUnit();
   float opticalDepth = 0.0F;
   for(int i = 0; i < g_params.farSunIterations && opticalDepth < kFarSunOpaque; ++i)
   {
@@ -229,12 +315,13 @@ float farSunOpticalDepth(float3 origin, float3 dir, float start, float distance)
       break;  // above every layer: nothing more toward the sun
     if(!cloudInsideIntervals(g_params, height))
     {
-      const CloudWeather weather = weatherAt(p, height, 1.0F);
-      if(cloudWeatherHasDensity(g_params, weather))
-        opticalDepth += mediaAt(p, height, weather, 1.0F, distance, 0.5F, true).extinction * stepSize;
+      bool             any;
+      const CloudMedia media = cloudAt(p, height, 1.0F, distance, 0.5F, true, any);
+      if(any)
+        opticalDepth += media.extinction * stepSize;
     }
     t += stepSize;
-    stepSize = min(stepSize * 2.0F, kFarSunMaxStep);
+    stepSize = min(stepSize * 2.0F, kFarSunMaxStep * cloudUnit());
   }
   return opticalDepth;
 }
@@ -260,9 +347,10 @@ float skyVisibility(float3 position, float3 up, float distance)
       break;
     if(!cloudInsideIntervals(g_params, height))
     {
-      const CloudWeather weather = weatherAt(p, height, 1.0F);
-      if(cloudWeatherHasDensity(g_params, weather))
-        opticalDepth += mediaAt(p, height, weather, 1.0F, distance, 0.5F, true).extinction * stepSize;
+      bool             any;
+      const CloudMedia media = cloudAt(p, height, 1.0F, distance, 0.5F, true, any);
+      if(any)
+        opticalDepth += media.extinction * stepSize;
     }
     t += stepSize;
     stepSize *= 2.0F;
@@ -335,6 +423,10 @@ float shaftsAt(float2 uv)
 // share goes to 1 at their top.
 float shaftSunShare(float3 p)
 {
+  // (round a planet the shafts image is the whole planet's shadow, cloudGlobeUv, and no march reads
+  // it yet: the land's mean share)
+  if(g_params.worldScale > 0.0F)
+    return s_air.x;
   const float  height = length(p) - g_atmosphere.bottomRadius;
   const float2 land   = landXz(p) - pc.shaftsLand;
   const float2 uv     = cloudShaftsUv(float3(land.x, height - pc.shaftsAltitude, land.y), pc.sunDirection);
@@ -399,7 +491,18 @@ float4 marchClouds(float r0, float3 dir, float jitter, out float depth)
   float  weightedDistanceSum   = 0.0F;
   float  transmittanceSum      = 0.0F;
 
-  float stepSize    = g_params.minStepSize + (g_params.perspectiveStepScale - 1.0F) * rayNear;
+  // Round a planet the layers are also looked down on from far above, where the way through them is
+  // a few kilometres however far off they are: a step by the distance alone, and the long step over
+  // clear weather, are then longer than a cloud is deep, and the march met it or missed it by its
+  // jitter (a planet from orbit was dotted). No step there is longer than a 64th of the way through,
+  // and none in cloud than a 128th: a cloud's top seen from above is lit by how deep the first step
+  // lands in it, and with steps as long as the light gets in, each texel's jitter chose its
+  // brightness (the tops wore the jitter's weave).
+  const bool  world = g_params.worldScale > 0.0F;
+  const float reach = world ? max(g_params.minStepSize, span / 64.0F) : 1e30F;
+  const float fine  = world ? max(g_params.minStepSize, span / 128.0F) : 1e30F;
+
+  float stepSize    = min(g_params.minStepSize + (g_params.perspectiveStepScale - 1.0F) * rayNear, fine);
   float rayDistance = stepSize * jitter * 2.0F;  // takram doubles the jitter against spatial aliasing
 
   for(int i = 0; i < g_params.maxIterations; ++i)
@@ -415,19 +518,19 @@ float4 marchClouds(float r0, float3 dir, float jitter, out float depth)
     // Between layers, and where the weather allows no cloud, step longer.
     if(cloudInsideIntervals(g_params, height))
     {
-      stepSize *= g_params.perspectiveStepScale;
-      rayDistance += lerp(stepSize, g_params.maxStepSize, min(1.0F, mipLevel));
+      stepSize = min(stepSize * g_params.perspectiveStepScale, fine);
+      rayDistance += min(lerp(stepSize, g_params.maxStepSize, min(1.0F, mipLevel)), reach);
       continue;
     }
-    const CloudWeather weather = weatherAt(position, height, mipLevel);
-    if(!cloudWeatherHasDensity(g_params, weather))
+    bool             any;
+    const CloudMedia media = cloudAt(position, height, mipLevel, distance, jitter, false, any);
+    if(!any)
     {
-      stepSize *= g_params.perspectiveStepScale;
-      rayDistance += lerp(stepSize, g_params.maxStepSize, min(1.0F, mipLevel));
+      stepSize = min(stepSize * g_params.perspectiveStepScale, fine);
+      rayDistance += min(lerp(stepSize, g_params.maxStepSize, min(1.0F, mipLevel)), reach);
       continue;
     }
 
-    const CloudMedia media = mediaAt(position, height, weather, mipLevel, distance, jitter, false);
     if(media.extinction > g_params.minExtinction)
     {
       const float  r      = length(position);
@@ -473,7 +576,7 @@ float4 marchClouds(float r0, float3 dir, float jitter, out float depth)
       break;
 
     // Shorter steps once inside the clouds
-    stepSize *= g_params.perspectiveStepScale;
+    stepSize = min(stepSize * g_params.perspectiveStepScale, fine);
     rayDistance += stepSize;
   }
 
@@ -614,9 +717,10 @@ float sunTransmittanceFrom(float3 origin, float jitter, int kSteps)
     const float  height = length(p) - R;
     if(cloudInsideIntervals(g_params, height))
       continue;
-    const CloudWeather weather = weatherAt(p, height, 1.0F);
-    if(cloudWeatherHasDensity(g_params, weather))
-      depth += mediaAt(p, height, weather, 1.0F, t, jitter, true).extinction * step;
+    bool             any;
+    const CloudMedia media = cloudAt(p, height, 1.0F, t, jitter, true, any);
+    if(any)
+      depth += media.extinction * step;
   }
   return exp(-depth);
 }
@@ -809,6 +913,7 @@ void shadowMain(uint3 id: SV_DispatchThreadID)
 }
 
 // The same march over the shafts image's wider square (CLOUD_SHAFTS_EXTENT), for the light shafts.
+// Round a planet the image is its whole sphere instead, the clouds' shadow anywhere on it.
 [shader("compute")]
 [numthreads(CLOUD_WORKGROUP_SIZE, CLOUD_WORKGROUP_SIZE, 1)]
 void shaftsMain(uint3 id: SV_DispatchThreadID)
@@ -817,7 +922,11 @@ void shaftsMain(uint3 id: SV_DispatchThreadID)
     return;
   s_air               = float2(pc.sunlitAir, 1.0F);
   const float  r0     = g_atmosphere.bottomRadius + pc.observerAltitude;
-  const float2 ground = cloudShaftsGround((float2(id.xy) + 0.5F) / float(CLOUD_SHAFTS_SIZE));
-  const float3 origin = normalize(float3(ground.x, r0, ground.y)) * r0;
-  g_shafts[id.xy]     = sunTransmittanceFrom(origin, 0.5F, 64);
+  const float2 uv     = (float2(id.xy) + 0.5F) / float(CLOUD_SHAFTS_SIZE);
+  const float2 ground = cloudShaftsGround(uv);
+  float3       origin = normalize(float3(ground.x, r0, ground.y)) * r0;
+  // round a planet: the whole of its sphere, by a point's direction among the clouds (cloudGlobeUv)
+  if(g_params.worldScale > 0.0F)
+    origin = cloudRotateBack(pc.frame, cloudGlobeUp(uv)) * r0;
+  g_shafts[id.xy] = sunTransmittanceFrom(origin, 0.5F, 64);
 }

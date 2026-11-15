@@ -738,10 +738,11 @@ GltfLight getPunctualLightAt(int index, float3 pos)
   GltfLight light = getPunctualLight(index);
   if(index == skySunPunctualIndex())
   {
-    light.color *= cloudSunShare(pos, pushConst.frameInfo);
+    const float share = cloudSunShare(pos, pushConst.frameInfo);
+    light.color *= share;
     // on a planet in the scene, through the air over the point itself (sky_world.h.slang)
     if(skyHasWorld(pushConst.frameInfo))
-      light.color = worldSunLightColor(pos, pushConst.frameInfo);
+      light.color = worldSunLightColor(pos, pushConst.frameInfo) * share;
   }
   return light;
 }

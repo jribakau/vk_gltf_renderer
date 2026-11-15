@@ -1176,7 +1176,7 @@ The environment is **two** fields, and which one a ray reads is the part that ha
   what keeps a half-degree sun disk sharp, which no practical bake resolution could. The authored
   sky types evaluate it in [`shaders/sky_background.h.slang`](../shaders/sky_background.h.slang).
   The physical sky's background is evaluated per ray in the path tracer too
-  (`evalPhysicalSkyBackground` in `shaders/gltf_pathtrace.slang`), through the same function the
+  (`evalPhysicalSkyUnder` in `shaders/gltf_pathtrace.slang`), through the same function the
   bake uses (`shaders/sky_bruneton_radiance.h.slang`), plus the half-degree disk
   (`evalSunDiskBackground` in the same header, fed by a radiance the bake publishes), with the
   clouds composed over it from their own image ([sky.md § Clouds](sky.md#clouds)). What the

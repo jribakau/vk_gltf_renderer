@@ -96,7 +96,8 @@ enum SkyCloudsNoiseBindings
 #define CLOUD_SHADOW_SIZE 512
 // ... and the same over a square twelve times as wide, coarser (CLOUD_SHAFTS_EXTENT): what lights the
 // air far under the clouds, their light shafts, and the land past the shadow image's edge.
-// Sampler2D<float>, clamped.
+// Round a planet that stands in the scene it is the whole of the planet's sphere (cloudGlobeUv in
+// sky_clouds.h.slang). Sampler2D<float>, clamped.
 #define CLOUD_SHAFTS_BINDING 6
 #define CLOUD_SHAFTS_SIZE 1024
 // The settled bake's raw march is an image of the sky image's size (SkyClouds::m_rawImage); a view
@@ -142,7 +143,10 @@ struct SkyCloudsParameters
   float  absorption;  // 1/km at density 1
   float  skyLightScale;
   float  groundBounceScale;
-  float  _pad3;
+  // Round a planet that stands in the scene: how many times life size the clouds are (their heights,
+  // steps and densities come scaled, cloudScaled; what the noise is read by is not), and the weather
+  // lies on the planet's axis planes (cloudPlanes). 0: no planet, a level land.
+  float  worldScale;
   float  powderExponent;  // km
   float  _pad1;
   int    samples;  // marches per texel, each at another jitter and spot in it, averaged
@@ -201,6 +205,11 @@ struct SkyCloudsPushConstant
   // centre is on, as `land` is. A march reads it there (shaftSunShare in sky_clouds_bake.slang).
   float  shaftsAltitude;
   float2 shaftsLand;
+  // Round a planet that stands in the scene (SkyCloudsParameters::worldScale): the march's frame,
+  // whose +y is the observer's own up, as a unit quaternion (x, y, z, w) to the clouds' frame (the
+  // planet's axes, turned as the wind has turned the clouds), where the weather is laid (cloudPlanes
+  // in sky_clouds.h.slang; `land` is then not read).
+  float4 frame;
 };
 
 NAMESPACE_SHADERIO_END()

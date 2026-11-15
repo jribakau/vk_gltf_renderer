@@ -1291,15 +1291,16 @@ TEST(BackdropState, APlanetThatStandsIsTheSkysPlanet)
   EXPECT_EQ(stands["atmoAerialPerspectiveScale"], 1.0);
   EXPECT_EQ(stands["landFadeFrom"], 0.0);
   EXPECT_EQ(stands["landFadeTo"], 0.0);
-  for(const char* off : {"cloudCoverage", "cloudMidCoverage", "cloudHighCoverage", "rainRate", "hazeVisibility"})
+  for(const char* off : {"rainRate", "hazeVisibility"})
     EXPECT_EQ(stands[off], 0.0) << off;
+  // its clouds are the lighting's to say, as over a level land (they lie round it)
+  EXPECT_FALSE(stands.contains("cloudCoverage"));
   // none standing, or land that does: no planet, and the plane's things are the lighting's to say
   for(const Json& other : {B::rendererParams(s, false, glm::vec3(0.05F), centre), B::rendererParams(B::applyPatch(s, {{"kind", "meadow"}}), true, glm::vec3(0.05F))})
   {
     EXPECT_EQ(other["worldRadius"], 0.0);
     EXPECT_EQ(other["worldSeaRadius"], 0.0);
     EXPECT_EQ(other["worldAirScale"], 1.0);
-    EXPECT_FALSE(other.contains("cloudCoverage"));
     EXPECT_FALSE(other.contains("rainRate"));
   }
 }

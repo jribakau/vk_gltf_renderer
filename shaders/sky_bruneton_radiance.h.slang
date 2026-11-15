@@ -21,7 +21,7 @@
 // The physical sky's radiance toward a direction, sun excluded -- one function for the two places
 // that need it: the bake (env_bake.slang), which writes it into the lighting environment, and the
 // path tracer, which evaluates it per ray for what the camera and mirrors see
-// (evalPhysicalSkyBackground in gltf_pathtrace.slang). Sharing it is what keeps the lit scene and
+// (evalPhysicalSkyUnder in gltf_pathtrace.slang). Sharing it is what keeps the lit scene and
 // the visible sky the same sky; a second copy would drift silently.
 //
 // The observer is a point on the +Y axis, `observerRadius` km from the planet's centre. The bake's

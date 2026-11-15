@@ -63,6 +63,67 @@ inline float cloudAnchorDistance(const SkyCloudAnchor& a, const SkyCloudAnchor& 
   return glm::length(cloudEyeFrom(a, b));
 }
 
+// ---- on a planet ------------------------------------------------------------------------------------
+//
+// With a planet standing in the scene (`radiusKm` > 0, the settings' worldRadius) the same numbers are
+// a point of space: `land` and `altitude` are its x, z and y from the point of the planet's sphere
+// straight under the scene's origin, so the planet's centre lies `radiusKm` under that. By the origin
+// that is what they were; round the planet's side `altitude` is no height, and the height is the
+// point's distance from the centre less the radius. cloudEyeFrom is the vector between two such
+// points either way. The space is the clouds': the planet's axes (the scene's) until a wind turns the
+// clouds about the planet's centre, and turned with them from then on (cloudTurnStep).
+
+// An anchor's point from the planet's centre, km
+inline glm::vec3 cloudAnchorPoint(const SkyCloudAnchor& a, float radiusKm)
+{
+  return {a.land.x, a.altitude + radiusKm, a.land.y};
+}
+
+// How high an anchor is above the planet's surface, km
+inline float cloudAnchorHeight(const SkyCloudAnchor& a, float radiusKm)
+{
+  return radiusKm > 0.0F ? glm::length(cloudAnchorPoint(a, radiusKm)) - radiusKm : a.altitude;
+}
+
+// The rotation that takes +y to the unit direction `up` the short way
+inline glm::quat cloudArcFromUp(const glm::vec3& up)
+{
+  const float w = 1.0F + up.y;
+  if(w < 1e-6F)
+    return glm::quat(0.0F, 1.0F, 0.0F, 0.0F);  // straight under the planet: half a turn
+  return glm::normalize(glm::quat(w, glm::cross(glm::vec3(0.0F, 1.0F, 0.0F), up)));
+}
+
+// The frame an image baked from an anchor is in: its +y the anchor's own up, turned from the
+// planet's +y the short way (so by the origin it is the planet's own). As a rotation from it to the
+// planet's axes; the identity with no planet.
+inline glm::quat cloudAnchorFrame(const SkyCloudAnchor& a, float radiusKm)
+{
+  if(radiusKm <= 0.0F)
+    return glm::quat(1.0F, 0.0F, 0.0F, 0.0F);
+  return cloudArcFromUp(glm::normalize(cloudAnchorPoint(a, radiusKm)));
+}
+
+// The anchor that is a point from the planet's centre (cloudAnchorPoint's inverse)
+inline SkyCloudAnchor cloudAnchorAt(const glm::vec3& point, float radiusKm)
+{
+  return {.land = glm::vec2(point.x, point.z), .altitude = point.y - radiusKm};
+}
+
+// The wind turns a planet's clouds about its centre, all of them as one: over the scene's origin
+// they go as the wind blows there, and round the planet as a turning sphere takes them. `turn` is
+// the rotation from the clouds' frame to the planet's axes, and an anchor is a point among the
+// clouds, in their frame: as on a level land, clouds that drift are a camera that goes the other way
+// among them. The turn is kept free of twist about the origin's up (the short way from where that up
+// is among the clouds), so the sky image, baked from the origin, is always in the scene's own frame.
+inline glm::quat cloudTurnStep(const glm::quat& turn, const glm::vec2& velocity, float seconds, float radiusKm)
+{
+  const glm::quat back = glm::conjugate(turn);
+  const float     step = std::clamp(seconds, 0.0F, 0.1F) / radiusKm;  // (kCloudDriftLongestFrame, as cloudDriftStep)
+  const glm::vec3 up   = back * glm::vec3(0.0F, 1.0F, 0.0F) - back * glm::vec3(velocity.x, 0.0F, velocity.y) * step;
+  return glm::conjugate(cloudArcFromUp(glm::normalize(up)));
+}
+
 // The lowest a camera stands above the planet's surface, km: one under the floor of its scene still
 // looks at the clouds from above ground.
 constexpr float kCloudViewMinAltitude = 0.001F;
@@ -72,8 +133,26 @@ constexpr float kCloudViewMinAltitude = 0.001F;
 // bake's observer). Over the clouds, which the wind has carried `driftKm` (cloudDriftStep): an anchor
 // is a place under the clouds as they are, so a camera at rest under drifting clouds goes the other
 // way among them, and the follow carries them past it as it carries a camera that flies.
-inline SkyCloudAnchor cloudEyeOf(const glm::mat4& view, const glm::quat& envRotation, float originAltitudeKm, const glm::vec2& driftKm = glm::vec2(0.0F))
+// On a planet (`worldRadiusKm` > 0) the camera's point among the clouds, which the wind has turned by
+// `turn` (cloudTurnStep): the planet's axes are the scene's, and the environment's orientation is not
+// asked.
+inline SkyCloudAnchor cloudEyeOf(const glm::mat4&  view,
+                                 const glm::quat&  envRotation,
+                                 float             originAltitudeKm,
+                                 const glm::vec2&  driftKm       = glm::vec2(0.0F),
+                                 float             worldRadiusKm = 0.0F,
+                                 const glm::quat&  turn          = glm::quat(1.0F, 0.0F, 0.0F, 0.0F))
 {
+  if(worldRadiusKm > 0.0F)
+  {
+    const glm::vec3 eyeKm = glm::vec3(glm::inverse(view)[3]) * 0.001F;
+    glm::vec3       point = glm::conjugate(turn) * glm::vec3(eyeKm.x, originAltitudeKm + eyeKm.y + worldRadiusKm, eyeKm.z);
+    // (one under the ground looks from just over it, along its own up)
+    const float r = glm::length(point);
+    if(r < worldRadiusKm + kCloudViewMinAltitude && r > 0.0F)
+      point *= (worldRadiusKm + kCloudViewMinAltitude) / r;
+    return cloudAnchorAt(point, worldRadiusKm);
+  }
   const glm::vec3 eyeKm = glm::conjugate(glm::normalize(envRotation)) * glm::vec3(glm::inverse(view)[3]) * 0.001F;
   return {.land = glm::vec2(eyeKm.x, eyeKm.z) - driftKm, .altitude = std::max(originAltitudeKm + eyeKm.y, kCloudViewMinAltitude)};
 }
@@ -192,8 +271,9 @@ struct SkyCloudFollowStep
 //  - Past kCloudFollowJump from the front image's anchor the rest of the bake goes in this frame.
 //
 // `among`: the camera is among the clouds, and the follow keeps the shorter distance and count
-// (kCloudFollowDistanceAmong, kCloudFollowFramesAmong).
-inline SkyCloudFollowStep cloudFollowStep(SkyCloudFollow& f, const SkyCloudAnchor& eye, uint32_t imageRows, uint32_t band, bool among = false)
+// (kCloudFollowDistanceAmong, kCloudFollowFramesAmong). `world`: the anchors are points of space
+// round a planet, whose `altitude` is no height to keep above the ground.
+inline SkyCloudFollowStep cloudFollowStep(SkyCloudFollow& f, const SkyCloudAnchor& eye, uint32_t imageRows, uint32_t band, bool among = false, bool world = false)
 {
   const float        distance = among ? kCloudFollowDistanceAmong : kCloudFollowDistance;
   const uint32_t     frames   = among ? kCloudFollowFramesAmong : kCloudFollowFrames;
@@ -213,7 +293,8 @@ inline SkyCloudFollowStep cloudFollowStep(SkyCloudFollow& f, const SkyCloudAncho
       return from;
     const float past  = std::max(0.5F * flight, std::min(kCloudFollowPast * distance + 2.0F * pace, flight));
     const glm::vec3 lead = f.pace * (std::min(flight + past, kCloudFollowLeadMost) / pace);
-    return SkyCloudAnchor{.land = from.land + glm::vec2(lead.x, lead.z), .altitude = std::max(from.altitude + lead.y, kCloudViewMinAltitude)};
+    const float altitude = from.altitude + lead.y;
+    return SkyCloudAnchor{.land = from.land + glm::vec2(lead.x, lead.z), .altitude = world ? altitude : std::max(altitude, kCloudViewMinAltitude)};
   };
   if(cloudAnchorDistance(f.home, eye) <= kCloudFollowDistance)
   {

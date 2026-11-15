@@ -600,6 +600,184 @@ TEST(SkyClouds, DriftingCloudsPassOverACameraAtRest)
   EXPECT_GT(f.bakingFrom.land.x, kCloudFollowDistance);  // east of the origin among clouds gone west
 }
 
+// Round a planet the weather lies on the planes of its axes: one plane's away from where two axes are
+// near alike, both there by shares that run from one to the other with no step, and each plane and
+// each side of it on a stretch of the weather's tiling of its own.
+TEST(SkyClouds, APlanetsWeatherLiesOnItsAxisPlanes)
+{
+  EXPECT_EQ(cloudPlanes(float3(0.0F, 1.0F, 0.0F)), float3(0.0F, 1.0F, 0.0F));
+  EXPECT_EQ(cloudPlanes(float3(-1.0F, 0.0F, 0.0F)), float3(1.0F, 0.0F, 0.0F));
+  EXPECT_EQ(cloudPlanes(normalize(float3(0.3F, 0.2F, -1.0F))), float3(0.0F, 0.0F, 1.0F));
+  const float3 edge = cloudPlanes(normalize(float3(1.0F, 1.0F, 0.0F)));
+  EXPECT_NEAR(edge.x, 0.5F, 1e-5F);
+  EXPECT_NEAR(edge.y, 0.5F, 1e-5F);
+  EXPECT_EQ(edge.z, 0.0F);
+  const float3 corner = cloudPlanes(normalize(float3(1.0F, -1.0F, 1.0F)));
+  EXPECT_NEAR(corner.x, 1.0F / 3.0F, 1e-5F);
+  EXPECT_NEAR(corner.z, 1.0F / 3.0F, 1e-5F);
+
+  // all the way round a great circle through two axes and past the corners: the shares sum to 1 and
+  // change by little from one step of a twentieth of a degree to the next
+  float3 was = cloudPlanes(float3(0.0F, 1.0F, 0.0F));
+  for(int i = 1; i <= 7200; ++i)
+  {
+    const float  a  = glm::radians(0.05F * float(i));
+    const float3 up = normalize(float3(std::sin(a), std::cos(a), 0.4F * std::sin(3.0F * a)));
+    const float3 w  = cloudPlanes(up);
+    EXPECT_NEAR(w.x + w.y + w.z, 1.0F, 1e-5F);
+    EXPECT_LT(length(w - was), 0.02F) << i;
+    was = w;
+  }
+
+  // a plane's land is the point's other two coordinates, moved to its own stretch: another on each
+  // plane, and on each side of one
+  const float3 p(3.0F, 20.0F, -5.0F);
+  EXPECT_EQ(cloudPlaneLand(p, 1), float2(3.0F, -5.0F) + float2(311.0F, 0.0F));
+  EXPECT_NE(cloudPlaneLand(p, 1), cloudPlaneLand(float3(3.0F, -20.0F, -5.0F), 1));
+  EXPECT_NE(cloudPlaneLand(float3(1.0F, 2.0F, 2.0F), 0), cloudPlaneLand(float3(2.0F, 1.0F, 2.0F), 1));
+  // ... and along a plane it moves as the point does, a kilometre a kilometre
+  EXPECT_EQ(cloudPlaneLand(p + float3(0.25F, 0.0F, 0.5F), 1) - cloudPlaneLand(p, 1), float2(0.25F, 0.5F));
+}
+
+// An image is baked from a place in that place's own frame, +y its up; a planet's clouds are a
+// model's, as thick to the light as life-size ones.
+TEST(SkyClouds, APlanetsImagesAreInTheFrameOfThePlaceTheyWereBakedFrom)
+{
+  const float R = 20.0F;
+  const SkyCloudAnchor origin{.land = {0.0F, 0.0F}, .altitude = 0.002F};
+  const glm::quat      home = cloudAnchorFrame(origin, R);
+  EXPECT_NEAR(std::abs(home.w), 1.0F, 1e-6F);  // the planet's own, by the origin
+  EXPECT_EQ(cloudAnchorFrame(SkyCloudAnchor{.land = {5.0F, 3.0F}, .altitude = 1.0F}, 0.0F), glm::quat(1.0F, 0.0F, 0.0F, 0.0F));
+  EXPECT_NEAR(cloudAnchorHeight(origin, R), 0.002F, 1e-6F);
+
+  // a quarter of the way round, 300 m up: no height in its y, and its frame's +y is its up
+  const SkyCloudAnchor side = cloudAnchorAt(glm::vec3(R + 0.3F, 0.0F, 0.0F), R);
+  EXPECT_NEAR(side.altitude, -R, 1e-5F);
+  EXPECT_NEAR(cloudAnchorHeight(side, R), 0.3F, 1e-5F);
+  EXPECT_NEAR(glm::distance(cloudAnchorPoint(side, R), glm::vec3(R + 0.3F, 0.0F, 0.0F)), 0.0F, 1e-5F);
+  const glm::quat frame = cloudAnchorFrame(side, R);
+  EXPECT_NEAR(glm::distance(frame * glm::vec3(0.0F, 1.0F, 0.0F), glm::vec3(1.0F, 0.0F, 0.0F)), 0.0F, 1e-6F);
+  // straight under the planet too
+  const glm::quat under = cloudAnchorFrame(cloudAnchorAt(glm::vec3(0.0F, -R - 1.0F, 0.0F), R), R);
+  EXPECT_NEAR(glm::distance(under * glm::vec3(0.0F, 1.0F, 0.0F), glm::vec3(0.0F, -1.0F, 0.0F)), 0.0F, 1e-6F);
+
+  // the shaders turn by the same quaternion, (x, y, z, w)
+  const float4    q(frame.x, frame.y, frame.z, frame.w);
+  const glm::vec3 v(0.3F, -1.2F, 0.7F);
+  EXPECT_NEAR(glm::distance(glm::vec3(cloudRotate(q, v)), frame * v), 0.0F, 1e-6F);
+  EXPECT_NEAR(glm::distance(glm::vec3(cloudRotateBack(q, cloudRotate(q, v))), v), 0.0F, 1e-6F);
+
+  // a camera the far side of the planet stands where it is, and one under the ground just over it
+  const glm::mat4 view = glm::lookAt(glm::vec3(0.0F, -2.0F * R * 1000.0F - 500.0F, 0.0F), glm::vec3(100.0F, -2.0F * R * 1000.0F - 500.0F, 0.0F),
+                                     glm::vec3(0.0F, -1.0F, 0.0F));
+  const glm::quat none(1.0F, 0.0F, 0.0F, 0.0F);
+  const SkyCloudAnchor far = cloudEyeOf(view, none, 0.0F, glm::vec2(0.0F), R);
+  EXPECT_NEAR(cloudAnchorHeight(far, R), 0.5F, 1e-3F);
+  EXPECT_NEAR(cloudAnchorPoint(far, R).y, -R - 0.5F, 1e-3F);
+  const glm::mat4      buried = glm::lookAt(glm::vec3(0.0F, -300.0F, 0.0F), glm::vec3(1.0F, -300.0F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F));
+  EXPECT_NEAR(cloudAnchorHeight(cloudEyeOf(buried, none, 0.0F, glm::vec2(0.0F), R), R), kCloudViewMinAltitude, 1e-5F);
+
+  // scaled, every height by the scale and the medium as many times as dense
+  const SkyCloudsParameters life  = cloudWithQuality(cloudSkyParameters(0.4F, CLOUD_DEFAULT_THICKNESS, 0, 0.2F, 0.2F), false);
+  const SkyCloudsParameters model = cloudScaled(life, 0.375F);
+  EXPECT_NEAR(model.minHeight, 0.375F * life.minHeight, 1e-6F);
+  EXPECT_NEAR(model.maxHeight, 0.375F * life.maxHeight, 1e-6F);
+  EXPECT_NEAR(model.shadowTopHeight, 0.375F * life.shadowTopHeight, 1e-6F);
+  EXPECT_NEAR(model.maxLayerHeights.x - model.minLayerHeights.x, 0.375F * (life.maxLayerHeights.x - life.minLayerHeights.x), 1e-6F);
+  EXPECT_NEAR(model.scattering * (model.maxLayerHeights.x - model.minLayerHeights.x),
+              life.scattering * (life.maxLayerHeights.x - life.minLayerHeights.x), 1e-4F);
+  EXPECT_NEAR(model.minStepSize, 0.375F * life.minStepSize, 1e-7F);
+}
+
+// A planet's shadow image is the whole of its sphere, an octahedron unfolded with the scene's origin
+// in the middle; a place is read where the sun's ray through it meets the sphere; and round the
+// origin the finer image lies on the plane that touches the sphere there.
+TEST(SkyClouds, APlanetsShadowIsReadWhereTheSunsRayMeetsItsSphere)
+{
+  EXPECT_EQ(cloudGlobeUv(float3(0.0F, 1.0F, 0.0F)), float2(0.5F));
+  EXPECT_EQ(cloudGlobeUv(float3(1.0F, 0.0F, 0.0F)), float2(1.0F, 0.5F));
+  std::mt19937                          rng(7);
+  std::uniform_real_distribution<float> u(-1.0F, 1.0F);
+  for(int i = 0; i < 2000; ++i)
+  {
+    const float3 d = float3(u(rng), u(rng), u(rng));
+    if(length(d) < 0.1F)
+      continue;
+    const float3 up = normalize(d);
+    const float2 uv = cloudGlobeUv(up);
+    EXPECT_GE(std::min(uv.x, uv.y), 0.0F);
+    EXPECT_LE(std::max(uv.x, uv.y), 1.0F);
+    EXPECT_NEAR(length(cloudGlobeUp(uv) - up), 0.0F, 1e-4F);
+  }
+
+  const float  R = 20.0F;
+  const float3 high(0.0F, R + 0.5F, 0.0F);
+  // the sun overhead: straight under the place
+  EXPECT_NEAR(length(cloudSunGroundOn(high, float3(0.0F, 1.0F, 0.0F), R) - float3(0.0F, R, 0.0F)), 0.0F, 1e-5F);
+  // 45 degrees up in the east: about as far west as the place is high, on the sphere
+  const float3 east   = normalize(float3(1.0F, 1.0F, 0.0F));
+  const float3 ground = cloudSunGroundOn(high, east, R);
+  EXPECT_NEAR(length(ground), R, 1e-4F);
+  EXPECT_NEAR(ground.x, -0.5F, 0.02F);
+  // ... and on the sun's ray through the place
+  EXPECT_NEAR(length(cross(normalize(high - ground), east)), 0.0F, 1e-4F);
+  // a sea's floor 200 m down is read where the ray leaves the sphere, sunward
+  const float3 floor = cloudSunGroundOn(float3(0.0F, R - 0.2F, 0.0F), east, R);
+  EXPECT_NEAR(length(floor), R, 1e-4F);
+  EXPECT_NEAR(floor.x, 0.2F, 0.01F);
+  // a low sun carries a place no further than CLOUD_SHADOW_MIN_SUN allows
+  const float3 low = cloudSunGroundOn(high, normalize(float3(1.0F, 0.01F, 0.0F)), R);
+  EXPECT_LT(length(low - float3(0.0F, R, 0.0F)), 0.5F / CLOUD_SHADOW_MIN_SUN + 0.5F);
+  // the night side, and a place in space whose ray misses the planet: straight under itself
+  const float3 night(0.0F, -R - 1.0F, 0.0F);
+  EXPECT_NEAR(length(cloudSunGroundOn(night, float3(0.0F, 1.0F, 0.0F), R) - float3(0.0F, -R, 0.0F)), 0.0F, 1e-5F);
+  EXPECT_NEAR(length(cloudSunGroundOn(float3(3.0F * R, 0.0F, 0.0F), float3(0.0F, 1.0F, 0.0F), R) - float3(R, 0.0F, 0.0F)), 0.0F, 1e-5F);
+
+  // the finer image, as shadowMain lays it: its middle straight up, a point of its plane where the
+  // line from the centre through it goes, and nothing far round the planet
+  EXPECT_EQ(cloudShadowUvOn(float3(0.0F, 1.0F, 0.0F), R), float2(0.5F));
+  const float2 g(2.0F, -1.0F);
+  const float2 uv = cloudShadowUvOn(normalize(float3(g.x, R, g.y)), R);
+  EXPECT_NEAR(length(cloudShadowGround(uv) - g), 0.0F, 1e-4F);
+  EXPECT_EQ(cloudShadowWeight(cloudShadowUvOn(float3(1.0F, 0.0F, 0.0F), R)), 0.0F);
+  EXPECT_EQ(cloudShadowWeight(cloudShadowUvOn(float3(0.0F, -1.0F, 0.0F), R)), 0.0F);
+}
+
+// The wind turns a planet's clouds about its centre: over the origin they go as the wind blows, the
+// origin goes the other way among them, and the turn never twists about the origin's up, so the frame
+// of an image baked from the origin stays the scene's own.
+TEST(SkyClouds, TheWindTurnsAPlanetsCloudsAboutItsCentre)
+{
+  const float     R = 20.0F;
+  const glm::vec2 v = cloudDriftVelocity(360.0F, 90.0F);  // from +x: 0.1 km a second toward -x
+  glm::quat       turn(1.0F, 0.0F, 0.0F, 0.0F);
+  for(int i = 0; i < 100; ++i)
+    turn = cloudTurnStep(turn, v, 0.05F, R);  // 5 seconds: half a kilometre
+  // a cloud that stood over the origin is half a kilometre west of it
+  const glm::vec3 cloud = turn * glm::vec3(0.0F, R, 0.0F);
+  EXPECT_NEAR(cloud.x, -R * std::sin(0.5F / R), 1e-3F);
+  EXPECT_NEAR(cloud.z, 0.0F, 1e-4F);
+  // a stall moves them no further than a frame at 10 a second would
+  const glm::quat one = cloudTurnStep(glm::quat(1.0F, 0.0F, 0.0F, 0.0F), v, 0.1F, R);
+  const glm::quat stalled = cloudTurnStep(glm::quat(1.0F, 0.0F, 0.0F, 0.0F), v, 30.0F, R);
+  EXPECT_NEAR(std::abs(glm::dot(one, stalled)), 1.0F, 1e-6F);
+  EXPECT_GT(glm::length(glm::vec3(one.x, one.y, one.z)), 1e-4F);  // and it did move them
+
+  // the wind veers: still no twist. The origin's frame among the clouds, turned back, is the scene's
+  const glm::vec2 north = cloudDriftVelocity(360.0F, 0.0F);
+  for(int i = 0; i < 400; ++i)
+    turn = cloudTurnStep(turn, i < 200 ? north : v, 0.05F, R);
+  const glm::mat4      view = glm::lookAt(glm::vec3(0.0F, 2.0F, 0.0F), glm::vec3(1.0F, 2.0F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F));
+  const SkyCloudAnchor eye  = cloudEyeOf(view, glm::quat(1.0F, 0.0F, 0.0F, 0.0F), 0.0F, glm::vec2(0.0F), R, turn);
+  EXPECT_NEAR(cloudAnchorHeight(eye, R), 0.002F, 1e-5F);
+  const glm::quat frame = turn * cloudAnchorFrame(cloudAnchorAt(glm::conjugate(turn) * glm::vec3(0.0F, R, 0.0F), R), R);
+  EXPECT_NEAR(std::abs(frame.w), 1.0F, 1e-5F);
+  // ... and the camera at rest has gone the other way among them: east and south of where it was
+  const glm::vec3 among = cloudAnchorPoint(eye, R);
+  EXPECT_GT(among.x, 0.5F);
+  EXPECT_GT(among.z, 0.5F);
+}
+
 // Among the clouds they are tens of metres from the camera: the image is baked again after fewer
 // metres and over fewer frames, and what the camera has gone meanwhile never turns a near cloud
 // through more than a few degrees (it smeared across the frame).

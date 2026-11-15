@@ -896,7 +896,10 @@ void GltfRenderer::updateBakerParameters()
                          .seed        = uint32_t(std::max(s.cloudSeed, 0)),
                          .type        = s.cloudType,
                          .midCoverage  = s.cloudMidCoverage,
-                         .highCoverage = s.cloudHighCoverage});
+                         .highCoverage = s.cloudHighCoverage,
+                         // (round a planet that stands: sky_clouds.h.slang, "on a planet")
+                         .worldRadiusKm = s.worldRadius,
+                         .scale         = s.worldRadius > 0.0F ? sky_world::cloudScale(s.worldAirScale) : 1.0F});
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -962,18 +965,25 @@ bool GltfRenderer::updateCloudView(VkCommandBuffer cmd)
   const auto                          now = std::chrono::steady_clock::now();
   // The wind first, whatever the frame draws of the sky: under a drag's preview too, so the clouds
   // don't stop while a slider moves.
-  const bool drifting = m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.hasClouds()
-                        && m_resources.settings.cloudDrift > 0.0F;
+  // Round a planet it turns them about the planet's centre (cloudTurnStep).
+  const float worldRadius = m_resources.settings.envSystem == shaderio::EnvSystem::eSky ? m_resources.settings.worldRadius : 0.0F;
+  const bool  drifting    = m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_skyClouds.hasClouds()
+                            && m_resources.settings.cloudDrift > 0.0F;
   if(drifting && m_cloudDrifting)
   {
-    const float seconds = std::chrono::duration<float>(now - m_cloudDriftAt).count();
-    m_cloudDrift = cloudDriftStep(m_cloudDrift, cloudDriftVelocity(m_resources.settings.cloudDrift, m_resources.settings.cloudDriftFrom), seconds);
+    const float     seconds  = std::chrono::duration<float>(now - m_cloudDriftAt).count();
+    const glm::vec2 velocity = cloudDriftVelocity(m_resources.settings.cloudDrift, m_resources.settings.cloudDriftFrom);
+    if(worldRadius > 0.0F)
+      m_cloudTurn = cloudTurnStep(m_cloudTurn, velocity, seconds, worldRadius);
+    else
+      m_cloudDrift = cloudDriftStep(m_cloudDrift, velocity, seconds);
   }
-  if(m_cloudDrifting && !drifting && m_skyClouds.drift() != -m_skyClouds.followed().home.land)
+  m_cloudDriftAt = now;
+  m_skyClouds.setDrift(m_cloudDrift);
+  m_skyClouds.setTurn(m_cloudTurn);
+  if(m_cloudDrifting && !drifting && !m_skyClouds.homeIsOrigin())
     m_envCommitOwed = true;  // the wind dropped: the environment from where it took the clouds
   m_cloudDrifting = drifting;
-  m_cloudDriftAt  = now;
-  m_skyClouds.setDrift(m_cloudDrift);
 
   if(m_resources.settings.envSystem != shaderio::EnvSystem::eSky || m_resources.settings.useSolidBackground || !m_skyClouds.viewable())
   {
@@ -993,9 +1003,11 @@ bool GltfRenderer::updateCloudView(VkCommandBuffer cmd)
     m_cloudCameraSince = now;
   m_lastCloudCamera  = camera;
   const bool settled = now - m_cloudCameraSince >= kCloudRest;
-  const SkyCloudAnchor eye     = cloudEyeOf(view, envRotation, originAltitude, m_cloudDrift);
+  const SkyCloudAnchor eye     = cloudEyeOf(view, envRotation, originAltitude, m_cloudDrift, worldRadius, m_cloudTurn);
 
-  const std::optional<SkyCloudView> wanted = cloudViewFor(view, projection, envRotation, frameSize, originAltitude, m_cloudDrift);
+  // (no view image round a planet yet: its map is the environment's frame's)
+  const std::optional<SkyCloudView> wanted =
+      worldRadius > 0.0F ? std::nullopt : cloudViewFor(view, projection, envRotation, frameSize, originAltitude, m_cloudDrift);
   if(!wanted.has_value() || drifting)
     m_skyClouds.dropView();  // a camera the view image does not serve, or clouds it would not keep up with
   const bool viewDue   = wanted.has_value() && !drifting && settled && !m_skyClouds.viewHolds(*wanted);

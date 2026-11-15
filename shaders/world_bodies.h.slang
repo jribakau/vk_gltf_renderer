@@ -5,7 +5,7 @@
 
 // Other bodies round a planet that stands in the scene (the backdrop's `bodies`, src/fv_backdrop.hpp):
 // moons and planets as spheres where they are, lit by the sun. Not meshes: a ray is tested against
-// them where it would otherwise see the sky (evalWorldSky in gltf_pathtrace.slang), and the sun's
+// them where it would otherwise see the sky (evalWorldSkyBehind in gltf_pathtrace.slang), and the sun's
 // light at a point is what they leave of its disk. So a body has its phase from where the sun and the
 // eye stand, goes dark in the planet's shadow, and darkens the ground it passes in front of the sun
 // for. Slang and plain C++ (glm, no swizzles): tests/test_world_bodies.cpp tests what is here.
