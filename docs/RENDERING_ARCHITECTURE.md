@@ -1051,9 +1051,10 @@ their kit when there is one. It needs no kit: without one it stands bare.
     already runs, so they merge; fords through streams, no bridges; up a terrace of the land where
     it is lowest, as a ramp cut into it), the routes as curves the way rivers are, then the single
     things. A place no route reached is led to the nearest road, and from the place by the figures
-    a road comes to where they stand and ends there, so there is a way to follow from the start. The same for a seed whatever the threads. It runs on the
-    worker that makes the planet, or on one of its own when the catalogue or the backdrop's
-    `places` amount comes later; the planet itself is not made again.
+    a road comes to where they stand and ends there, so there is a way to follow from the start.
+    The same for a seed whatever the threads. It runs on the worker that makes the planet, or on
+    one of its own when the catalogue or the backdrop's `places` amount comes later; the planet
+    itself is not made again.
   - `withPlaces` adds a stage before the ground's colour: a place's floor is level on the plane
     that touches the planet at its middle and eases into the land, a road is cut and banked to its
     own level across its width (finely drawn quads only; from afar it is a share of the colour),
