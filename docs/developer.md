@@ -195,6 +195,8 @@ src/
 ├── hdr_output.cpp/hpp          # The frame an HDR display is shown (scRGB), and EXR exports' linear image
 ├── white_balance.cpp/hpp       # Auto white balance: the frame's light, and the white balance that makes it grey
 ├── lens.cpp/hpp                # A cheap wide lens on the tone mapper's input: barrel distortion and colour fringing
+├── exposure_adapt.hpp          # The exposure adapting to the view: its meter's reading, curve and easing (unit-tested)
+├── exposure_adapt_vk.cpp/hpp   # Its frame part: the tone mapper's histogram read back, the factor on the exposure
 ├── rain.cpp/hpp                # Rain in the air: drops culled, lit and drawn as streaks over the tone mapper's input
 ├── rain_cells.hpp              # The rain's cells a frame draws (plain C++, tested)
 ├── sample_map.cpp/hpp          # Display › Samples: each pixel of a still by the samples it took, in place of the tone mapper

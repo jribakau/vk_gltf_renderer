@@ -136,6 +136,7 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_lens.registerParameters(&m_settings);
   m_bloom.registerParameters(&m_settings);
   m_localExposure.registerParameters(&m_settings);
+  m_exposureAdapt.registerParameters(&m_settings);
   m_settings.add({"tmDither", "Tonemapper: Dither [Off:0, On:1]"}, &m_resources.tonemapperData.dither, Persist::eYes, 0, 1);
   // White balance
   m_settings.add({"tmTemperature", "Tonemapper: White balance temperature (Kelvin)"},

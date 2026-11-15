@@ -169,7 +169,9 @@ namespace {
 // 83: a planet an author made: the backdrop's `planet`, the name of a planet file ("" the seed's own),
 // and settings.apply's planetsDir, the folder it is read from (fv_world_features.hpp). An older
 // renderer refuses the backdrop that has it.
-constexpr int kProtocolVersion = 83;
+// 84: the exposure adapting to the view: the lighting's tonemap.adapt (src/exposure_adapt.hpp). An older
+// renderer refuses the lighting patch that has it.
+constexpr int kProtocolVersion = 84;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -77,7 +77,9 @@
 //            toe and shoulder (0 to 1 each, the Shaped curve's handles: how deep its shadows go, and
 //            how early and gently its highlights roll off; nvshaders tonemapShaped), protocol 43;
 //            highlightsToWhite (0 to 1, 0.5 Khronos's own: how fast Neutral's and Shaped's compressed
-//            colours go white; nvshaders highlightDesaturation), protocol 63
+//            colours go white; nvshaders highlightDesaturation), protocol 63; adapt (whether the
+//            exposure adapts to the view, metered from the frame and eased as an eye takes to a dark
+//            room, on top of `exposure`; src/exposure_adapt.hpp), protocol 84
 //
 // The backdrop (the land round the scene) was a section here until protocol 70: it is a state of its
 // own now (fv_backdrop_state.hpp, `backdrop.set`).
@@ -269,6 +271,7 @@ struct Tonemap
   double              toe             = 0.5;  // the Shaped curve's handles (protocol 43; tonemapShaped)
   double              shoulder        = 0.5;
   double              highlightsToWhite = 0.5;  // Neutral's and Shaped's (protocol 63; highlightDesaturation)
+  bool                adapt             = false;  // the exposure adapts to the view (protocol 84; src/exposure_adapt.hpp)
 };
 
 // What the tone mapper grades with: the panel's sliders with the look over them at its strength, each

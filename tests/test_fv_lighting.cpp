@@ -671,6 +671,24 @@ TEST(FvLighting, HighlightsToWhiteGoesToTheRenderer)
   EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"highlightsToWhite", "lots"}}}}), std::invalid_argument);
 }
 
+// The exposure adapting to the view goes to the renderer, off by default (protocol 84)
+TEST(FvLighting, AdaptingToTheViewGoesToTheRenderer)
+{
+  const L::State none;
+  EXPECT_EQ(L::toJson(none)["tonemap"]["adapt"], false);
+  EXPECT_EQ(L::rendererParams(none, {})["tmAdapt"], 0);
+  const L::State s = L::applyPatch(L::State{}, {{"tonemap", {{"adapt", true}}}});
+  EXPECT_TRUE(s.tonemap.adapt);
+  const Json topic = L::toJson(s);
+  EXPECT_EQ(topic["tonemap"]["adapt"], true);
+  EXPECT_EQ(L::toJson(L::applyPatch(L::State{}, topic)), topic);
+  EXPECT_EQ(L::rendererParams(s, {})["tmAdapt"], 1);
+  EXPECT_DOUBLE_EQ(L::rendererParams(s, {})["tmExposure"].get<double>(), L::rendererParams(none, {})["tmExposure"].get<double>())
+      << "the exposure the host sends is the one it is adapted from";
+  EXPECT_FALSE(L::applyPatch(s, {{"tonemap", {{"adapt", nullptr}}}}).tonemap.adapt);
+  EXPECT_THROW(L::applyPatch(L::State{}, {{"tonemap", {{"adapt", 1.5}}}}), std::invalid_argument);
+}
+
 // Local exposure's two amounts go to the renderer, off by default (protocol 41)
 TEST(FvLighting, LocalExposureGoesToTheRenderer)
 {

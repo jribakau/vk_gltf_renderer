@@ -1123,6 +1123,8 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   if(updateCloudView(cmd))
     resetFrame(/*sceneChanged=*/false);  // the sky the still is of changed: what the camera sees of it, not its light
   refreshSampleTargets();                    // --outputSamples: the stops this frame may end on
+  // the exposure as far as it has adapted to the view, before the trace reads it (its stop, its clamps)
+  m_exposureAdapt.update(m_resources);
   bool frameChanged = updateFrameCounter();  // Check if the frame counter has changed
   // A shader variant built off the frame is taken in by the frame that traces, or here when none does
   // (the still is complete, or paused): left waiting, the edits it holds back would wait for an
@@ -1623,6 +1625,9 @@ bool GltfRenderer::runTonemapPass(VkCommandBuffer cmd)
                                        m_profilerGpuTimer);
   }
   const VkDescriptorImageInfo unbloomed = inputBuffer;
+  // the view metered for the exposure adapting to it: the light, before the lens and what follows
+  if(picture && m_exposureAdapt.on())
+    m_exposureAdapt.cmdMeter(cmd, m_resources, unbloomed, m_resources.gBuffers.getColorStorageImageInfo(Resources::eImgTonemapped), gbufSize);
   const float exposure = tonemapperData.autoExposure ? 1.0F : tonemapperData.exposure;
   if(picture && m_lens.active())
   {
@@ -2095,6 +2100,7 @@ void GltfRenderer::destroyResources()
   m_lens.deinit(m_resources);
   m_bloom.deinit(m_resources);
   m_localExposure.deinit(m_resources);
+  m_exposureAdapt.deinit(m_resources);
   m_sampleMap.deinit(m_resources);
   if(m_wipeFrame.image)
     m_resources.allocator.destroyImage(m_wipeFrame);

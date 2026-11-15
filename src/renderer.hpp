@@ -62,6 +62,7 @@
 #include "rain.hpp"
 #include "sample_map.hpp"
 #include "local_exposure.hpp"
+#include "exposure_adapt_vk.hpp"
 #include "hdr_output.hpp"
 #include "env_baker.hpp"
 #include "env_image_loader.hpp"
@@ -722,6 +723,7 @@ private:
   Lens          m_lens;           // A cheap wide lens's distortion and fringing on the image the tone mapper takes, before the bloom
   Bloom         m_bloom;          // The glow and the star on the image the tone mapper takes
   LocalExposure m_localExposure;  // Shadows lifted and highlights held, region by region, after the bloom
+  ExposureAdapt m_exposureAdapt;  // The exposure adapting to the view, metered from the frame (tmAdapt)
   SampleMap     m_sampleMap;      // The Samples view, in place of the tone mapper's picture on a still
   // What the last frame's tonemapper took: an .exr export is made from it (saveExr)
   struct TonemapInput

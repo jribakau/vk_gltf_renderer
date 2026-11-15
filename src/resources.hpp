@@ -511,13 +511,18 @@ struct Resources
   nvshaders::Tonemapper                       tonemapper{};                       // Tonemapper
   shaderio::TonemapperData                    tonemapperData{.autoExposure = 1};  // Tonemapper data
   // The tone mapper's data for the image the path tracer writes, pre-exposed (Settings::ptOutputScale):
-  // its exposure that much less, so the picture is the light times the exposure the host set
-  shaderio::TonemapperData shownTonemapper() const
+  // its exposure that much less, so the picture is the light times the exposure the host set; and,
+  // `adapted`, opened up or closed down as far as it has adapted to the view (exposureAdapt,
+  // src/exposure_adapt_vk.hpp)
+  shaderio::TonemapperData shownTonemapper(bool adapted = true) const
   {
     shaderio::TonemapperData t = tonemapperData;
     t.exposure /= std::max(settings.ptOutputScale, 1e-30F);
+    if(adapted)
+      t.exposure *= exposureAdapt;
     return t;
   }
+  float exposureAdapt{1.0F};  // the factor the exposure adapting to the view puts on the host's (1: none)
   std::shared_ptr<nvutils::CameraManipulator> cameraManip;         // Camera manipulator (owned by GltfRenderer)
   std::filesystem::path                       headlessOutputPath;  // --output: override for headless image save path
   int accumulatedSamples{0};     // Path tracer: samples per pixel in eImgRendered as of the last recorded frame

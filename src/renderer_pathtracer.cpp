@@ -1888,6 +1888,10 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
   // The frame's first sample; onRender pushes the later ones' (cmdTraceFrameSamples)
   shaderio::PathtracePushConstant pushConst = m_pushConst;
   pushConst.frameSample                     = 0;
+  // The clamps are set for the host's exposure (kFireflyClamp over it, fv_lighting.cpp): where the
+  // exposure has opened up for a dark view, they hold back as much of what is shown as they would have
+  pushConst.fireflyClampThreshold /= std::max(resources.exposureAdapt, 1e-6F);
+  pushConst.fireflyClampStill /= std::max(resources.exposureAdapt, 1e-6F);
   vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_ALL, 0, sizeof(shaderio::PathtracePushConstant), &pushConst);
   return pushConst;
 }
