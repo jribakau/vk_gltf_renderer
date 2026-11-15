@@ -424,8 +424,8 @@ TEST(WorldPlaces, NothingIsPlantedWhereAPackKeepsClearNorGrassLaidWhereItCovers)
   for(double x = -pack.radius; x <= pack.radius; x += 3.7)
     for(double z = -pack.radius; z <= pack.radius; z += 3.7)
       if(x * x + z * z < 0.9 * pack.radius * pack.radius)
-        if(const W::Sample on = W::sample(w, ofSite(w, s, x, z), 1.0); on.built.road == 0.0F)  // (but where the land's road comes in to its gate)
-          ASSERT_EQ(on.built.taken & 3, pack.groundAt(x, z)) << x << ", " << z;
+        if(const glm::dvec3 d = ofSite(w, s, x, z); roadAway(w, d) > 12.0)  // (but where the land's road comes in to its gate, and along its verges)
+          ASSERT_EQ(W::sample(w, d, 1.0).built.taken & 3, pack.groundAt(x, z)) << x << ", " << z;
   // the finest quads over it: none of their plants on kept ground, and some on the rest of the floor
   const uint8_t         finest = W::finestLevel(w);
   const W::FacePoint    at     = W::locate(s.direction);
@@ -540,7 +540,8 @@ TEST(WorldRoads, ARoadLeavesAPlaceByItsGateAndLeadsToAnother)
   uint32_t lonely = 0;
   for(const auto& [g, count] : together)
     lonely += count == 1 ? 1 : 0;
-  EXPECT_LE(lonely, pl.joined - gated);
+  // (but the one by the figures, when it is alone on its land: its road leads to them)
+  EXPECT_LE(lonely, pl.joined - gated + 1);
 }
 
 TEST(WorldRoads, ItMeetsAGateOnThePlacesFloorAndRunsStraightOutOfIt)
@@ -800,4 +801,21 @@ TEST(WorldPlaces, AThingAloneStandsClearOfRoadsAndPlaces)
   // about three in ten square kilometres of land that will have one (some is too steep, or wet)
   EXPECT_GT(huts, 100u);
   EXPECT_LT(huts, 1600u);
+}
+
+// Whoever stands where the figures do has a way to follow: a road from the place nearest them comes
+// to within a stone's throw and ends there, clear of where they stand
+TEST(WorldRoads, ARoadComesToWhereTheFiguresStand)
+{
+  const W::World& w = bare();
+  double          nearest = 1e30;
+  for(const W::RoadPiece& p : places().roads)
+    for(int k = 0; k <= 4; k++)
+      nearest = std::min(nearest, glm::length(bent(p, k / 4.0) - w.frame.site) * w.spec.radius);
+  EXPECT_LT(nearest, 250.0);
+  EXPECT_GT(nearest, 39.0);
+  // and it is the first place's: one end of a run is its gate
+  const W::Site&   s    = places().sites[0];
+  const W::Gate&   gate = packOf(s).gates[0];
+  EXPECT_LT(roadAway(settled(), ofSite(settled(), s, gate.at.x, gate.at.y)), 0.05);
 }

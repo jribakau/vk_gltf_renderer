@@ -1048,8 +1048,10 @@ their kit when there is one. It needs no kit: without one it stands bare.
   - `fv::world::settle` reads the planet and the catalogue: places on level dry ground (one always
     a walk from the figures, outside what their scene may level), each land's places joined by the
     shortest tree of routes that can be found over the base map's cells (the cheaper where a road
-    already runs, so they merge; fords through streams, no bridges), the routes as curves the way
-    rivers are, then the single things. The same for a seed whatever the threads. It runs on the
+    already runs, so they merge; fords through streams, no bridges; up a terrace of the land where
+    it is lowest, as a ramp cut into it), the routes as curves the way rivers are, then the single
+    things. A place no route reached is led to the nearest road, and from the place by the figures
+    a road comes to where they stand and ends there, so there is a way to follow from the start. The same for a seed whatever the threads. It runs on the
     worker that makes the planet, or on one of its own when the catalogue or the backdrop's
     `places` amount comes later; the planet itself is not made again.
   - `withPlaces` adds a stage before the ground's colour: a place's floor is level on the plane

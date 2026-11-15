@@ -22,8 +22,11 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr uint32_t kMostJoined = 500;
 constexpr uint32_t kMostAlone  = 4000;
 constexpr uint32_t kMostAlong  = 6000;
-// A road is not led up ground steeper than this, and pays for what it climbs
-constexpr double kRoadSteepest = 0.2;
+// A road is not led up ground steeper than this from one cell of the map to the next, and pays for
+// what it climbs by the square of it: the land stands in terraces whose edges are this steep
+// between two cells, and a road crosses one where it is lowest, as a ramp cut into it (kRoadGrade,
+// kRoadCut)
+constexpr double kRoadSteepest = 0.45;
 constexpr double kRoadEasy     = 0.06;
 // It is cut into the land or banked over it by this much at the most, metres: past that it is as
 // steep as the land
@@ -31,6 +34,8 @@ constexpr double kRoadCut = 6.0;
 // A place that reaches further than this stands in a clearing: no tree of the land's on its floor
 // (a hut or a ruin alone has the wood up to its walls)
 constexpr double kClearedFrom = 15.0;
+// No road is led this near where the figures stand, metres
+constexpr double kFiguresOwn = 40.0;
 // A route is given up after this many cells are looked at
 constexpr size_t kRouteMost = 25000;
 // How strongly a route is drawn toward its end: 1 would be the straight way's own length, which a
@@ -309,6 +314,25 @@ double roadAway(const Places& pl, const glm::dvec3& d, double radius, double rea
   return best;
 }
 
+// How many runs of road pass within `reach` of a point
+size_t waysNear(const Places& pl, const glm::dvec3& d, double radius, double reach)
+{
+  glm::dvec3 a, b;
+  tangents(d, a, b);
+  std::vector<uint32_t> ways;
+  for(int probe = 0; probe < 5; probe++)
+  {
+    const glm::dvec3 q = probe == 0 ? d : glm::normalize(d + (probe < 3 ? a : b) * ((probe % 2 ? reach : -reach) / radius));
+    const uint32_t   c = cellOf(pl.grid, q);
+    for(uint32_t k = pl.first[c]; k < pl.first[c + 1]; k++)
+      if(pl.items[k] & Places::kRoadItem)
+        if(const RoadPiece& piece = pl.roads[pl.items[k] & ~Places::kRoadItem]; nearestOn(piece, d, radius).away < reach)
+          ways.push_back(piece.way);
+  }
+  std::sort(ways.begin(), ways.end());
+  return size_t(std::unique(ways.begin(), ways.end()) - ways.begin());
+}
+
 // ---- where a place can stand -----------------------------------------------------------------------------
 
 struct Ground
@@ -409,6 +433,7 @@ struct Router
   std::vector<uint8_t>  pass;     // by cell
   std::vector<uint8_t>  shore;    // water in a cell beside it
   std::vector<uint8_t>  blocked;  // a place's own ground, the figures'
+  std::vector<uint8_t>  shy;      // round the figures: a road may pass, and would rather not
   std::vector<uint8_t>  road;     // a road runs through it already
   std::set<std::pair<uint32_t, uint32_t>> runs;  // from which cell to which (the lower first)
   std::vector<int32_t>  land;     // which land it is of, -1 none
@@ -456,9 +481,13 @@ struct Router
     }
   }
 
-  // The cheapest way from cell `a` to cell `b`, both ends in it; false when there is none
+  // The cheapest way from cell `a` to cell `b`, both ends in it; false when there is none. With
+  // kNone for `b`: to the nearest cell a road runs through already.
   bool route(uint32_t a, uint32_t b, std::vector<uint32_t>& path)
   {
+    const bool toRoad = b == CubeGrid::kNone;
+    if(toRoad && road[a])
+      return false;  // (on one: nothing to lead)
     if(cost.empty())
     {
       cost.assign(g.count(), std::numeric_limits<float>::max());
@@ -470,7 +499,8 @@ struct Router
       came[c] = CubeGrid::kNone;
     }
     touched.clear();
-    const glm::vec3 goal = centres[b];
+    const glm::vec3 goal  = toRoad ? glm::vec3(0.0F) : centres[b];
+    const auto      ahead = [&](const glm::vec3& from) { return toRoad ? 0.0F : float(kRouteDrawn * double(glm::length(from - goal)) * radius); };
     using Entry = std::pair<float, uint32_t>;
     std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> queue;
     cost[a] = 0.0F;
@@ -482,13 +512,14 @@ struct Router
     {
       const auto [f, at] = queue.top();
       queue.pop();
-      if(at == b)
+      if(toRoad ? road[at] != 0 : at == b)
       {
         found = true;
+        b     = at;
         break;
       }
       const glm::vec3 here = centres[at];
-      if(f > cost[at] + float(kRouteDrawn * double(glm::length(here - goal)) * radius) + 1.0F)
+      if(f > cost[at] + ahead(here) + 1.0F)
         continue;  // an older entry
       uint32_t round[8];
       g.around(at, round);
@@ -510,6 +541,8 @@ struct Router
         double step = len * (1.0 + 0.5 * (slope / kRoadEasy) * (slope / kRoadEasy));
         if(shore[n])
           step *= 1.6;
+        if(shy[n])
+          step *= 2.5;
         if(road[n])
           step *= 0.4;
         if(pass[n] == eFord)
@@ -521,7 +554,7 @@ struct Router
             touched.push_back(n);
           cost[n] = through;
           came[n] = at;
-          queue.emplace(through + float(kRouteDrawn * double(glm::length(there - goal)) * radius), n);
+          queue.emplace(through + ahead(there), n);
         }
       }
     }
@@ -725,6 +758,7 @@ struct Settling
     r.pass.assign(count, Router::eLand);
     r.shore.assign(count, 0);
     r.blocked.assign(count, 0);
+    r.shy.assign(count, 0);
     r.road.assign(count, 0);
     r.centres.resize(count);
     fv::jobs::parallelFor(count, 8192, [&](size_t begin, size_t end) {
@@ -794,17 +828,22 @@ struct Settling
       }
     }
     r.lands();
-    // nothing is led across a place's own ground, or the figures'
-    const auto block = [&](const glm::dvec3& d, double reach) {
+    // nothing is led across a place's own ground, nor where the figures stand; round them, as far
+    // as their scene may level the ground, a road may pass (a floor has it as paint) and would
+    // rather go round
+    const auto mark = [&](std::vector<uint8_t>& cells, const glm::dvec3& d, double reach) {
       Bins bins;
       binDisc(bins, pl.grid, R, d, reach, 0);
       for(const auto& [cell, item] : bins)
         if(glm::length(pl.grid.centre(cell) - d) * R < reach)
-          r.blocked[cell] = 1;
+          cells[cell] = 1;
     };
-    block(w.frame.site, keep + 10.0);
+    mark(r.blocked, w.frame.site, kFiguresOwn);
+    mark(r.shy, w.frame.site, keep);
+    // (out to a quarter of a cell past its ground: no other road passes between a place and the
+    // cell its own leaves by)
     for(uint32_t i = 0; i < pl.joined; i++)
-      block(pl.sites[i].direction, reachOf(pl.sites[i].pack) + 5.0);
+      mark(r.blocked, pl.sites[i].direction, reachOf(pl.sites[i].pack) + 0.25 * cellAcross(pl.grid, R));
   }
 
   // A cell a road can start in, at `d` or beside it; kNone when all round is water or someone's ground
@@ -830,7 +869,7 @@ struct Settling
   void roads()
   {
     const uint32_t n = pl.joined;
-    if(n < 2 || cat.roads.empty())
+    if(n < 1 || cat.roads.empty())
       return;
     Router r(pl.grid, R);
     router(r);
@@ -876,9 +915,22 @@ struct Settling
         const Gate&      gate   = pack.gates.front();
         s.heading = std::atan2(glm::dot(toward, b), glm::dot(toward, a)) - std::atan2(-gate.heading.y, gate.heading.x);
       }
-    // where each one's road leaves it: its gate, and straight out of its ground from there. Where
-    // that comes out in water or on another's ground, the place is turned a little further until it
-    // does not.
+    // the place a walk from the figures (the first, when the land had one): alone on its land, it
+    // faces them
+    const bool byFigures = fromFigures(pl.sites[0].direction) < keep + 800.0 && roadOf(pl.sites[0]) && !cat.packs[pl.sites[0].pack].gates.empty();
+    if(byFigures && !faced[0])
+    {
+      Site&      s = pl.sites[0];
+      glm::dvec3 a, b;
+      tangents(s.direction, a, b);
+      const glm::dvec3 toward = w.frame.site - s.direction;
+      const Gate&      gate   = cat.packs[s.pack].gates.front();
+      s.heading = std::atan2(glm::dot(toward, b), glm::dot(toward, a)) - std::atan2(-gate.heading.y, gate.heading.x);
+      faced[0]  = 1;
+    }
+    // where each one's road leaves it: its gate, straight out to the rim of its floor, and from
+    // there to a cell of the map just clear of its ground. Where that cell is water or another's
+    // ground, the place is turned a little further until it is not.
     const uint32_t          count  = pl.grid.count();
     const double            across = cellAcross(pl.grid, R);
     std::vector<glm::dvec3> extra(size_t(2) * n);
@@ -889,18 +941,18 @@ struct Settling
       const Pack& pack = cat.packs[s.pack];
       if(pack.gates.empty() || !faced[i])
         continue;
-      const Gate&  gate = pack.gates.front();
-      const double out  = pack.radius + padEdge(pack.radius) + 0.75 * across;
-      // |at + t heading| = out
+      const Gate& gate = pack.gates.front();
+      // (how far along the gate's way out a point is `from` the place's middle)
       const double along = glm::dot(gate.at, gate.heading), gone = glm::dot(gate.at, gate.at);
-      const double t     = -along + std::sqrt(std::max(along * along - gone + out * out, 0.0));
+      const auto   out   = [&](double from) { return -along + std::sqrt(std::max(along * along - gone + from * from, 0.0)); };
+      const double rim = out(pack.radius + 0.5 * padEdge(pack.radius)), clear = out(reachOf(s.pack) + across);
       const double first = s.heading;
       for(int turn = 0; turn < 12 && start[i] == CubeGrid::kNone; turn++)
       {
         s.heading                = first + double((turn + 1) / 2) * (turn % 2 ? 1.0 : -1.0) * (kPi / 6.0);
         extra[size_t(2) * i]     = fromSite(w, s, gate.at.x, gate.at.y);
-        extra[size_t(2) * i + 1] = fromSite(w, s, gate.at.x + gate.heading.x * t, gate.at.y + gate.heading.y * t);
-        start[i]                 = openBy(r, extra[size_t(2) * i + 1]);
+        extra[size_t(2) * i + 1] = fromSite(w, s, gate.at.x + gate.heading.x * rim, gate.at.y + gate.heading.y * rim);
+        start[i]                 = openBy(r, fromSite(w, s, gate.at.x + gate.heading.x * clear, gate.at.y + gate.heading.y * clear));
       }
       if(start[i] == CubeGrid::kNone)
         s.heading = first;
@@ -918,6 +970,7 @@ struct Settling
     Graph                 graph;
     std::vector<uint32_t> path;
     std::vector<uint32_t> nearer(n, 0), failed(n, 0);
+    std::vector<uint8_t>  linked(n, 0);
     for(const Link& l : pairs)
     {
       if(stopped())
@@ -950,6 +1003,42 @@ struct Settling
       nodes.insert(nodes.end(), {count + 2U * l.b + 1U, count + 2U * l.b});
       for(size_t k = 0; k + 1 < nodes.size(); k++)
         graph.join(nodes[k], nodes[k + 1], kind, cat);
+      linked[l.a] = linked[l.b] = 1;
+    }
+    // a place no way was found from to another is led to the nearest road there is: it joins that
+    // road where it meets it
+    for(uint32_t i = 0; i < n && !graph.next.empty(); i++)
+    {
+      if(stopped())
+        return;
+      if(linked[i] || start[i] == CubeGrid::kNone || !r.route(start[i], CubeGrid::kNone, path))
+        continue;
+      const uint8_t         kind = uint8_t(roadOf(pl.sites[i]) - cat.roads.data());
+      std::vector<uint32_t> nodes{count + 2U * i, count + 2U * i + 1U};
+      for(size_t k = 0; k < path.size(); k++)
+      {
+        nodes.push_back(path[k]);
+        r.road[path[k]] = 1;
+        if(k)
+          r.runs.insert({std::min(path[k - 1], path[k]), std::max(path[k - 1], path[k])});
+      }
+      for(size_t k = 0; k + 1 < nodes.size(); k++)
+        graph.join(nodes[k], nodes[k + 1], kind, cat);
+    }
+    // and from the place by the figures a road comes to where they stand, and ends there: whoever
+    // stands there has a way to follow, to that place and by its roads to the others
+    if(byFigures && start[0] != CubeGrid::kNone)
+    {
+      const glm::dvec3 toward = glm::normalize(pl.sites[0].direction - w.frame.site);
+      const uint32_t   end    = openBy(r, glm::normalize(w.frame.site + toward * ((kFiguresOwn + across) / R)));
+      if(end != CubeGrid::kNone && r.route(start[0], end, path))
+      {
+        const uint8_t         kind = uint8_t(roadOf(pl.sites[0]) - cat.roads.data());
+        std::vector<uint32_t> nodes{count, count + 1U};
+        nodes.insert(nodes.end(), path.begin(), path.end());
+        for(size_t k = 0; k + 1 < nodes.size(); k++)
+          graph.join(nodes[k], nodes[k + 1], kind, cat);
+      }
     }
     if(graph.next.empty())
       return;
@@ -1222,8 +1311,8 @@ struct Settling
             if(!near)
               continue;
           }
-          if(roadAway(pl, d, R, a.side + 2.0) < std::abs(a.side) - 0.5)
-            continue;
+          if(roadAway(pl, d, R, a.side + 2.0) < std::abs(a.side) - 0.5 || waysNear(pl, d, R, std::abs(a.side) + 8.0) > 1)
+            continue;  // (nor by a junction, where which road it stands by is anyone's guess)
           const Sample ground = sample(w, d, 4.0);
           if(ground.elevation < 1.5 || ground.shore < 6.0F)
             continue;
@@ -1409,7 +1498,10 @@ std::shared_ptr<const Places> settle(const World& world, std::shared_ptr<const C
   auto         out   = std::make_shared<Places>(world.base ? world.base->grid.cells() : std::min(mapCells(R), 256U));
   out->catalogue     = catalogue;
   const double level = mostLevel(R);
-  Settling     job{world, *catalogue, *out, std::clamp(amount, 0.05, 4.0), stop, R, uint32_t(world.spec.seed) * 2654435761U + 77U,
+  // (the planet as it is with nothing in the scene: a road may pass where a scene levels the ground,
+  // and what is settled is the same whatever stands there)
+  const World  plain = withClearing(world, kClearing);
+  Settling     job{plain, *catalogue, *out, std::clamp(amount, 0.05, 4.0), stop, R, uint32_t(world.spec.seed) * 2654435761U + 77U,
                    level + std::max(kClearingEdge, 0.5 * level), likings(world, *catalogue)};
   job.places();
   if(job.stopped())
