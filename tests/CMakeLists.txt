@@ -261,6 +261,7 @@ set(TEST_SOURCES
     test_fv_host_timing.cpp
     test_fv_host_params.cpp
     test_fv_host_morph_list.cpp
+    test_fv_host_kit.cpp
     common/fake_host_renderer.hpp
     ${CMAKE_SOURCE_DIR}/src/fv_host.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_backdrop.cpp

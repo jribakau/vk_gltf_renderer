@@ -774,7 +774,10 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   reflect, which a vertex colour would not do.
 - **The planting** (`src/fv_host_backdrop.cpp`): the plants are files in a kit folder the app fills
   (`settings.apply {backdropKit}`), listed by its `kit.json` with a role each (`readBackdropKit`, read
-  on a loader thread). Under one host-owned root entity each plant file is imported once and each of
+  on a loader thread), and by a `kit.local.json` beside it when there is one: plants of the user's own
+  that may not be passed on with the app (BlenderKit trees made by the app's
+  `scripts/blender/blenderkit_trees.py`), which the app's download leaves alone and which stand beside
+  the kit's of their roles (`fvhost::kitPlants` reads either list). Under one host-owned root entity each plant file is imported once and each of
   its mesh nodes is a variant. Only the files of the roles the kind plants are in the scene
   (`fv::backdrop::roles`, `holdBackdropPlants`): a model's maps are held uncompressed, some 17 MB
   a file, so a meadow doesn't hold the ferns and stumps nor a forest the flowers. A tree's variant

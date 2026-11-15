@@ -20,6 +20,11 @@
 //                          colour of the ground past the land's end under the physical sky,
 //                          "mean"?: [r, g, b] linear, what the diffuse map reflects on average}}}
 //
+// Beside it a kit.local.json may list plants of the user's own the same way ({"plants": [...]}, its
+// files under the same folder): models made on this machine that may not be passed on with the app (a
+// BlenderKit tree, scripts/blender/blenderkit_trees.py). The app's download neither writes it nor
+// removes what it lists, and its plants stand beside the kit's of their roles.
+//
 // A kind is a backdrop's (its ground's maps) or one of a planet's grounds (fv::world::kGroundKinds:
 // rock, sand, snow and the rest beside the meadow's and the forest's), which takes a map's grain and
 // not its colour: fv_host_world.cpp.
@@ -66,6 +71,25 @@ uint64_t trianglesOf(const tinygltf::Model& model, const tinygltf::Mesh& mesh)
 }
 
 }  // namespace
+
+namespace fvhost {
+
+std::vector<KitPlant> kitPlants(const Json& kit, const std::filesystem::path& dir, const std::string& name)
+{
+  if(!kit.is_object() || !kit.contains("plants") || !kit["plants"].is_array())
+    throw std::runtime_error(name + " lists no plants");
+  std::vector<KitPlant> out;
+  for(const Json& p : kit["plants"])
+  {
+    if(!p.is_object() || !p.contains("role") || !p["role"].is_string() || !p.contains("file") || !p["file"].is_string())
+      throw std::runtime_error(name + ": a plant needs a role and a file");
+    const uint64_t heaviest = p.contains("heaviest") && p["heaviest"].is_number_unsigned() ? p["heaviest"].get<uint64_t>() : 0;
+    out.push_back({.role = p["role"].get<std::string>(), .file = dir / pathOf(p["file"].get<std::string>()), .heaviest = heaviest});
+  }
+  return out;
+}
+
+}  // namespace fvhost
 
 tinygltf::Model FvHost::Impl::backdropTerrainModel(const fv::backdrop::Terrain& t, const BackdropKit::Ground& g)
 {
@@ -167,23 +191,24 @@ std::shared_ptr<const FvHost::Impl::BackdropKit> FvHost::Impl::readBackdropKit(c
   if(!in)
     throw std::runtime_error("no kit.json in " + utf8Of(dir));
   const Json j = Json::parse(in, nullptr, false);
-  if(!j.is_object() || !j.contains("plants") || !j["plants"].is_array())
-    throw std::runtime_error("kit.json lists no plants");
+  std::vector<fvhost::KitPlant> listed = fvhost::kitPlants(j, dir, "kit.json");
+  // and the user's own beside them
+  if(std::ifstream local(dir / "kit.local.json", std::ios::binary); local)
+    for(fvhost::KitPlant& p : fvhost::kitPlants(Json::parse(local, nullptr, false), dir, "kit.local.json"))
+      listed.push_back(std::move(p));
   auto kit = std::make_shared<Kit>();
   kit->dir = dir;
-  for(const Json& p : j["plants"])
+  for(const fvhost::KitPlant& p : listed)
   {
-    if(!p.is_object() || !p.contains("role") || !p["role"].is_string() || !p.contains("file") || !p["file"].is_string())
-      throw std::runtime_error("kit.json: a plant needs a role and a file");
-    Kit::Plant plant{.role = p["role"].get<std::string>(), .file = dir / pathOf(p["file"].get<std::string>())};
+    Kit::Plant  plant{.role = p.role, .file = p.file};
     auto        model = std::make_shared<tinygltf::Model>();
     std::string error;
     if(!fv::composer::readModelFile(plant.file, *model, error))
       throw std::runtime_error(utf8Of(plant.file.filename()) + ": " + error);
     // a variant too heavy for a backdrop draws nothing: with no primitives the import makes no mesh of it
-    if(const uint64_t heaviest = p.value("heaviest", uint64_t(0)); heaviest > 0)
+    if(p.heaviest > 0)
       for(tinygltf::Mesh& mesh : model->meshes)
-        if(trianglesOf(*model, mesh) > heaviest)
+        if(trianglesOf(*model, mesh) > p.heaviest)
           mesh.primitives.clear();
     plant.model = std::move(model);
     kit->plants.push_back(std::move(plant));

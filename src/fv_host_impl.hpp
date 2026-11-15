@@ -746,6 +746,18 @@ const fv::WornItem* wornItem(const fv::Figure& fig, int id);
 // A dForce mode by its name; "gpu" needs the build to have the GPU solver.
 fv::physics::ClothMode dforceMode(const std::string& name);
 
+// A plant a backdrop kit lists (fv_host_backdrop.cpp): its role, its file under the kit's folder, and
+// the most triangles a variant of it may have (0: any)
+struct KitPlant
+{
+  std::string           role;
+  std::filesystem::path file;
+  uint64_t              heaviest = 0;
+};
+// The plants of a kit file (`name`: kit.json, or kit.local.json beside it), their files under `dir`.
+// Throws saying what is wrong, and in which file.
+std::vector<KitPlant> kitPlants(const Json& kit, const std::filesystem::path& dir, const std::string& name);
+
 }  // namespace fvhost
 
 using namespace fvhost;
