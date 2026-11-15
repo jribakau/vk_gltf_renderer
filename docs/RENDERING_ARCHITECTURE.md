@@ -962,8 +962,10 @@ their kit when there is one. It needs no kit: without one it stands bare.
 - **What a point alone cannot say** is baked once a planet over the whole of it, on a cube map
   (`BaseMap`, `src/fv_world_map.hpp`, `bake`): the rain the wind carries in from the sea, the hollows
   filled to where they spill (the deep ones hold lakes), what the running water wore off the land
-  (the stream power law, solved from the sea up), and the rivers, kept as curves with a level and a
-  width. Three stages read it: `base` adds the wear to the land and finds the water near a point,
+  (the stream power law, solved from the sea up), the valleys' floors filled flat across by a depth
+  that grows with a river's water (no simulation; none by the sea, none over a lake's brim), and the
+  rivers, kept as curves with a level and a width. Three stages read it: `base` adds the wear to
+  the land and finds the water near a point,
   `gullies` furrows the steep slopes finer than the map's cells, `water` cuts the rivers' beds and
   says where water lies. The gullies are no simulation: stripes laid down the land's fall as the map
   has it (`BaseMap::slopes`, the worn land's slope at a few breadths), each size steered by the sides

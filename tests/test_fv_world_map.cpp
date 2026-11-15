@@ -177,6 +177,46 @@ TEST(WorldMapBake, TheWearCutsValleysAndKeepsTheShore)
   EXPECT_GT(lower, land / 10);
 }
 
+// A valley's floor is filled where its river runs: the land only rises for it, and what rises is the
+// low, level ground of the valleys' bottoms; by the sea a river's floor comes down to it. (That all of
+// it still drains, AllTheLandsWaterRunsDownToTheSeaOrALake says of the planet with its floors.)
+TEST(WorldMapBake, AValleysFloorIsFilledFlat)
+{
+  const W::BaseMap& with = *planet().base;
+  const W::World    bare = W::make({}, {.map = kCells, .floors = false});
+  const W::BaseMap& wear = *bare.base;
+  ASSERT_EQ(with.grid.count(), wear.grid.count());
+  uint32_t land = 0, raised = 0;
+  double   slopeAll = 0.0, slopeRaised = 0.0;
+  for(uint32_t c = 0; c < with.grid.count(); c++)
+  {
+    EXPECT_EQ(with.kind[c], wear.kind[c]) << c;
+    if(with.kind[c] != W::eMapLand)
+      continue;
+    land++;
+    const double up = double(with.height[c]) - double(wear.height[c]);
+    EXPECT_GE(up, 0.0) << c;
+    // (the wear's way down: the floors were laid along it)
+    const uint32_t to = wear.down[c];
+    if(to != W::CubeGrid::kNone && wear.kind[to] == W::eMapSea)
+      EXPECT_LE(up, 0.5 * double(wear.height[c]) + 1e-3) << c;
+    const uint32_t next = with.down[c];
+    if(next == W::CubeGrid::kNone || with.kind[next] != W::eMapLand)
+      continue;
+    const double slope = std::max(double(with.height[c] - with.height[next]), 0.0) / with.cell;
+    slopeAll += slope;
+    if(up > 1.0)
+    {
+      raised++;
+      slopeRaised += slope;
+    }
+  }
+  ASSERT_GT(land, 1000U);
+  EXPECT_GT(raised, land / 100);
+  EXPECT_LT(raised, land / 3);
+  EXPECT_LT(slopeRaised / double(raised), 0.5 * slopeAll / double(land));
+}
+
 TEST(WorldMapBake, ARiversLevelNeverRisesOnItsWay)
 {
   const W::BaseMap& m = *planet().base;
@@ -638,21 +678,40 @@ TEST(WorldMapGullies, DISABLED_Relief)
   std::vector<unsigned char> image(samples.size() * 3);
   double                     lowest = 1e30, highest = -1e30;
   const auto                 at = [&](int i, int j) { return samples[size_t(std::clamp(j, 0, n - 1)) * n + std::clamp(i, 0, n - 1)].elevation; };
+  for(const W::Sample& s : samples)
+  {
+    lowest  = std::min(lowest, s.elevation);
+    highest = std::max(highest, s.elevation);
+  }
+  // FV_WORLD_RELIEF_TINT=1: coloured by height over the image's own range, low green to high white
+  const bool tint = std::getenv("FV_WORLD_RELIEF_TINT") != nullptr;
+  const auto tinted = [&](double e) {
+    const glm::dvec3 ramp[] = {{0.10, 0.25, 0.08}, {0.45, 0.45, 0.15}, {0.40, 0.25, 0.12}, {0.55, 0.50, 0.48}, {0.95, 0.95, 0.95}};
+    const double     t = std::clamp((e - std::max(lowest, 0.0)) / std::max(highest - std::max(lowest, 0.0), 1e-6), 0.0, 1.0) * 4.0;
+    const int        k = std::min(int(t), 3);
+    return glm::mix(ramp[k], ramp[k + 1], t - double(k));
+  };
   for(int j = 0; j < n; j++)
     for(int i = 0; i < n; i++)
     {
       const W::Sample& s = samples[size_t(j) * n + i];
-      lowest             = std::min(lowest, s.elevation);
-      highest            = std::max(highest, s.elevation);
       const glm::dvec3 normal = glm::normalize(glm::dvec3(-(at(i + 1, j) - at(i - 1, j)) / (2.0 * pixel), (at(i, j + 1) - at(i, j - 1)) / (2.0 * pixel), 1.0));
       const double     lit    = 0.25 + 1.1 * std::max(glm::dot(normal, light), 0.0);
-      glm::dvec3       c      = glm::dvec3(W::surfaceColour(w, s, float(std::sqrt(1.0 - normal.z * normal.z) / normal.z))) * lit * 2.5;
+      glm::dvec3       c      = (tint ? tinted(s.elevation) * 0.5 : glm::dvec3(W::surfaceColour(w, s, float(std::sqrt(1.0 - normal.z * normal.z) / normal.z)))) * lit * 2.5;
       if(s.elevation < 0.0 || s.water > s.elevation)
         c = glm::dvec3(0.02, 0.07, 0.16) * (s.elevation < 0.0 ? 1.0 : 2.0);
       for(int k = 0; k < 3; k++)
         image[(size_t(j) * n + i) * 3 + k] = (unsigned char)(255.0 * std::pow(std::clamp(c[k], 0.0, 1.0), 1.0 / 2.2));
     }
   std::printf("%d x %d, %.1f m a pixel, land from %.0f to %.0f m%s\n", n, n, pixel, lowest, highest, sited ? " (the file gives a site)" : "");
+  // and the image's middle row west to east, a height a pixel (FV_WORLD_RELIEF_PROFILE=1)
+  if(std::getenv("FV_WORLD_RELIEF_PROFILE"))
+  {
+    std::printf("profile");
+    for(int i = 0; i < n; i++)
+      std::printf(" %.1f", samples[size_t(n / 2) * n + i].elevation);
+    std::printf("\n");
+  }
   FILE* out = std::fopen(file, "wb");
   ASSERT_NE(out, nullptr);
   std::fprintf(out, "P6\n%d %d\n255\n", n, n);

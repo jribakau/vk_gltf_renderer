@@ -229,6 +229,7 @@ struct Making
 {
   bool     base = true;  // with its base map: the rain, what it wore away, rivers and lakes
   uint32_t map  = 0;     // cells along a face of that map; 0: by the planet's size (mapCells)
+  bool     floors = true;  // its valleys' floors filled flat (BaseMap's bake); else as the wear cut them
   // Set from another thread, the making stops at its next step and the planet returned is not whole:
   // for a planet nobody waits for any more
   const std::atomic<bool>* stop = nullptr;

@@ -876,7 +876,7 @@ World make(const Spec& asked, const Making& making)
   // The land's broad shape, then what the base map made of it (a flat planet has nothing to wear)
   w.stages = {{"continents", continents}, {"mountains", mountains}, {"hills", hills}, {"cliffs", cliffs}};
   if(making.base && w.spec.relief > 0.0)
-    w.base = bake(w, making.map ? making.map : mapCells(w.spec.radius), making.stop);
+    w.base = bake(w, making.map ? making.map : mapCells(w.spec.radius), making.stop, making.floors);
   if(w.base)
     w.stages.insert(w.stages.end(), {{"base", base}, {"gullies", gullies}});
   w.stages.insert(w.stages.end(), {{"climate", climate}, {"biome", biome}, {"detail", detail}});

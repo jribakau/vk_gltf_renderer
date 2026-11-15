@@ -19,6 +19,8 @@
 //   implicitly from the sea up: Braun and Willett 2013), against a land that rises where it stood
 //   high. No slope stays steeper than loose ground holds. A few tens of rounds leave valleys that
 //   branch up into the heights.
+// - Floors. A valley the wear cut is a V; what its river carries fills it flat across, deeper the more
+//   water runs in it, up to where its sides stand over the fill. Not simulated: a depth by its water.
 // - Rivers. Where enough water runs, a river: a smooth curve from cell to cell with a level that only
 //   falls and a width by its water, kept as curves so its bed is cut and its surface drawn as finely
 //   as the ground is, whatever the map's cells are. Near the sea's level a river comes down to it
@@ -26,9 +28,9 @@
 //   than the map's cells, and a river a little over them would stand out of them). Across the dry
 //   ground of a lake's hollow a river runs at the lake's level, cutting its way in or out.
 //
-// What is kept (BaseMap): what the wear added to the land (and that again at half the cells, and half
-// again, for what draws coarsely), the rain, the lakes' levels, the rivers' curves by cell, and the
-// worn land's broad slope.
+// What is kept (BaseMap): what the wear and the floors did to the land (and that again at half the
+// cells, and half again, for what draws coarsely), the rain, the lakes' levels, the rivers' curves by
+// cell, and the worn land's broad slope.
 //
 // The cube's faces are grids of `cells` squares along an edge, laid as fv::world::direction lays a
 // face (even in angle). A field is kept with a gutter round each face, filled from the faces beyond,
@@ -176,8 +178,9 @@ enum MapCell : uint8_t
 // The cells along a face for a planet of `radius`: about 60 m a cell, between 64 and 1024
 uint32_t mapCells(double radius);
 
-// Bakes the map of `world`, whose stages are those that come before it. Null when stopped.
-std::shared_ptr<const BaseMap> bake(const World& world, uint32_t cells, const std::atomic<bool>* stop = nullptr);
+// Bakes the map of `world`, whose stages are those that come before it. Null when stopped. `floors`:
+// the valleys' floors filled (else they are as the wear cut them).
+std::shared_ptr<const BaseMap> bake(const World& world, uint32_t cells, const std::atomic<bool>* stop = nullptr, bool floors = true);
 
 // What the wear added at a direction, for something `footprint` metres across
 double mapAdded(const BaseMap& map, const glm::dvec3& direction, double footprint);

@@ -7,6 +7,7 @@
 #include <queue>
 #include <unordered_map>
 
+
 #include <figure/jobs/pool.hpp>
 
 namespace fv::world {
@@ -64,6 +65,12 @@ constexpr double   kWear       = 0.125;
 constexpr uint32_t kWearRounds = 24;
 // No slope steeper than loose ground holds
 constexpr double kTalus = 0.8;
+// A valley's floor: where the wet ground upstream is at least kFloorFrom of a river's, its floor stands
+// over its bed by up to kFloorMost of the heights the land is measured by, the whole of it by
+// kFloorDoublings doublings of that water, and none where it runs steeper than twice kFloorSteep
+constexpr double kFloorFrom = 0.1, kFloorMost = 0.08, kFloorDoublings = 4.0, kFloorSteep = 0.3;
+// and no deeper than this share of its height over the water it ends in (the sea, a lake)
+constexpr double kFloorOver = 0.5;
 // Nowhere is worn to under a share of the height it had: most of it on low land (a plain by the sea
 // stays a plain over it), little in the heights, where valleys cut deep. Between these shares of
 // kHeights.
@@ -340,7 +347,7 @@ uint32_t mapCells(double radius)
 
 // ---- the bake ----------------------------------------------------------------------------------------
 
-std::shared_ptr<const BaseMap> bake(const World& w, uint32_t asked, const std::atomic<bool>* stop)
+std::shared_ptr<const BaseMap> bake(const World& w, uint32_t asked, const std::atomic<bool>* stop, bool floors)
 {
   using fv::jobs::parallelFor;
   // a power of two, so the rain's grid and the coarser levels divide it
@@ -718,6 +725,71 @@ std::shared_ptr<const BaseMap> bake(const World& w, uint32_t asked, const std::a
         surface[c]       = h;
       }
     }
+  route();
+
+  // ---- the valleys' floors ----
+  // What a river carries down it lays in its valley where it runs slower, and a valley's floor is
+  // level across: the wear cuts a V, and a river of any size runs in a V of its own. Not simulated:
+  // each river's floor stands over its bed by a depth that grows with its water (kFloor*), less where
+  // it runs steep, never under the floor below it, and the ground that drains to it is filled to that
+  // floor where it lies under it. So a valley is flat across as far as it is lower than its floor, and
+  // its sides are as the wear left them. A river by the sea or a lake comes down to it: its floor is no
+  // deeper than kFloorOver of its height over the water its own ends in (filled where it was largest,
+  // the land by the sea stood up out of it in a wall). (Laying what the wear takes off, after Yuan et al. 2019, was
+  // tried: in this bake, whose rise holds the land up to the stages' height, it lifted whole valleys,
+  // still Vs, and filled the smaller ones to their ridges.)
+  if(floors && w.spec.relief > 0.0)
+  {
+    const double floorFrom = kFloorFrom * std::max(kRiverFrom * R * kRiverFrom * R, kRiverFromCells * cell * cell);
+    std::vector<float>    floorOf(count, 0.0F);  // a channel's floor; what drains to it, the floor it is filled to
+    std::vector<uint32_t> channel(count, kNone);
+    std::vector<float>    ends(count, 0.0F);  // the level of the water a cell's own ends in: the sea's, a lake's
+    // from the sea up: a cell after the one its water runs to
+    for(const uint64_t item : order)
+    {
+      const uint32_t c = uint32_t(item);
+      if(kind[c] != eMapLand || down[c] == kNone)
+        continue;
+      const uint32_t r    = down[c];
+      const bool     onTo = kind[r] == eMapLand && channel[r] != kNone;
+      ends[c]             = kind[r] == eMapSea ? 0.0F : kind[r] == eMapLand ? ends[r] : level[r];
+      if(flow[c] >= floorFrom)
+      {
+        const float  to    = kind[r] == eMapSea ? 0.0F : surface[r];
+        const double steep = std::max(double(surface[c] - to), 0.0) / double(downStep[c]);
+        const double depth = std::min(kFloorMost * heights * smooth(0.0, 1.0, std::log2(flow[c] / floorFrom) / kFloorDoublings)
+                                          * (1.0 - smooth(kFloorSteep, 2.0 * kFloorSteep, steep)),
+                                      kFloorOver * std::max(double(surface[c] - ends[c]), 0.0));
+        double floor_ = double(surface[c]) + depth;
+        // on down the valley: no lower than the floor it runs on to
+        if(onTo && channel[r] == r)
+          floor_ = std::max(floor_, double(floorOf[r]) + kFillSlope * double(downStep[c]));
+        floorOf[c] = float(floor_);
+        channel[c] = c;
+      }
+      else if(onTo)
+      {
+        // what drains to a river is filled to its floor, a little over it the further it is
+        channel[c] = channel[r];
+        floorOf[c] = floorOf[r] + float(kFillSlope) * downStep[c];
+      }
+    }
+    // and nothing a lake's hollow spills to over its brim, nor the river from there on over that: the
+    // lake would have no way out
+    std::vector<float> under(count, std::numeric_limits<float>::max());
+    for(uint32_t x = 0; x < count; x++)
+      if((kind[x] == eMapLake || kind[x] == eMapBasin) && down[x] != kNone && kind[down[x]] == eMapLand)
+        under[down[x]] = std::min(under[down[x]], surface[x] - float(kFillSlope) * downStep[x]);
+    for(size_t at = order.size(); at-- > 0;)
+    {
+      const uint32_t c = uint32_t(order[at]);
+      if(kind[c] == eMapLand && down[c] != kNone && kind[down[c]] == eMapLand && under[c] < std::numeric_limits<float>::max())
+        under[down[c]] = std::min(under[down[c]], under[c] - float(kFillSlope) * downStep[c]);
+    }
+    for(uint32_t c = 0; c < count; c++)
+      if(channel[c] != kNone)
+        surface[c] = std::max(surface[c], std::min(floorOf[c], under[c]));
+  }
   route();
   if(stopped())
     return nullptr;
