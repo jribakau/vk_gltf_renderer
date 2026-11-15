@@ -1,15 +1,19 @@
 //
 // Play mode's controllers (fv_play.hpp) on a made-up world: a floor at y = 0 and boxes on it. Someone
 // on foot walks at the speed asked, turns the way the mouse goes, jumps and lands, stops at a wall and
-// slides along one, climbs a step but not a crate; the ship's throttle and flight assist, its turn and
-// bank, its landing on its pads; the chase camera behind it.
+// slides along one, climbs a step but not a crate, keeps clear of a rock beside its way; the ship's
+// throttle and flight assist, its turn and bank, its wingtips stopping at what they meet, its landing on
+// its pads; the chase camera behind it; the torch in hand; a tree's trunk found among its leaves.
 //
 
+#include <algorithm>
 #include <cmath>
+#include <map>
 #include <numbers>
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <gtest/gtest.h>
 
 #include "../src/fv_play.hpp"
@@ -227,6 +231,25 @@ TEST(PlayWalker, ComesBackAfterFallingOutOfTheWorld)
   EXPECT_GT(w.feet.y, 0.0);
 }
 
+TEST(PlayWalker, KeepsClearOfALowRockBesideItsWay)
+{
+  // a rock 0.8 m high (over a step, under the chest) beside the way: the body is 0.3 m round its middle
+  const Box   rock{{0.2, 0.0, -5.2}, {0.6, 0.8, -4.8}};
+  const World world = flatWorld({rock});
+  Walker      w     = walkerAt({{0.0, 1.65, 0.0}, {0.0, 0.0, -1.0}, {0.0, 1.0, 0.0}}, world, 10.0);
+  w.keys            = kForward;
+  double nearest    = 1e30;
+  for(double t = 0.0; t < 2.5; t += 1.0 / 60.0)
+  {
+    stepWalker(w, world, 1.0 / 60.0);
+    const glm::dvec2 at(w.feet.x, w.feet.z);
+    const glm::dvec2 on(std::clamp(at.x, rock.lo.x, rock.hi.x), std::clamp(at.y, rock.lo.z, rock.hi.z));
+    nearest = std::min(nearest, glm::distance(at, on));
+  }
+  EXPECT_GT(nearest, WalkerTuning{}.radius - 0.08);
+  EXPECT_LT(w.feet.z, -7.0);  // and past it
+}
+
 TEST(PlayShip, TheThrottleOpensClosesAndBacks)
 {
   // 100 m over the floor: full throttle is the cruise there
@@ -422,6 +445,20 @@ TEST(PlayShip, StopsShortOfWhatItFliesInto)
   EXPECT_LT(s.velocity.z, 1.0);
 }
 
+TEST(PlayShip, AWingtipStopsAtWhatItMeets)
+{
+  // a pillar in the right wingtip's way (x 4.1), clear of the centre's
+  const World     world = flatWorld({{{3.5, 0.0, 20.0}, {5.0, 30.0, 21.0}}}, false);
+  const ShipShape shape = fighter();
+  Ship            s;
+  s.com      = {0.0, 10.0, 0.0};
+  s.throttle = 0.3;
+  s.keys     = kForward;
+  fly(s, shape, world, 5.0);
+  EXPECT_LT(s.com.z - 2.0, 20.0);  // the wingtip, 2 m behind the centre
+  EXPECT_GT(s.com.z, 15.0);
+}
+
 TEST(PlayShip, NobodyAboardItFallsAndStops)
 {
   const World     world = flatWorld();
@@ -467,6 +504,150 @@ TEST(PlayCamera, ABlendEndsWhereItSaysAndKeepsAnUpright)
   EXPECT_NEAR(glm::length(mid.forward), 1.0, 1e-9);
   EXPECT_NEAR(glm::dot(mid.forward, mid.up), 0.0, 1e-9);
   EXPECT_NEAR(mid.up.y, 1.0, 1e-9);
+}
+
+TEST(PlayTorch, InTheRightHandShiningWhereTheViewLooks)
+{
+  Torch      t;
+  const Pose view{{0.0, 1.65, 0.0}, {0.0, 0.0, -1.0}, {0.0, 1.0, 0.0}};
+  const Pose p = torchView(t, view, 1.0 / 60.0);
+  EXPECT_GT(p.eye.x, 0.1);   // right of the eye
+  EXPECT_LT(p.eye.y, 1.45);  // and under it
+  EXPECT_NEAR(glm::length(p.forward), 1.0, 1e-9);
+  EXPECT_NEAR(glm::dot(p.forward, p.up), 0.0, 1e-9);
+  // its beam crosses the view's line a few metres ahead
+  const glm::dvec3 ahead = view.eye + view.forward * 8.0;
+  const glm::dvec3 off   = ahead - p.eye;
+  EXPECT_LT(glm::length(off - p.forward * glm::dot(off, p.forward)), 0.05);
+}
+
+TEST(PlayTorch, ItsAimFollowsATurnAMomentLate)
+{
+  Torch      t;
+  const Pose before{{0.0, 1.65, 0.0}, {0.0, 0.0, -1.0}, {0.0, 1.0, 0.0}};
+  const Pose after{{0.0, 1.65, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}};
+  torchView(t, before, 1.0 / 60.0);
+  const Pose first = torchView(t, after, 1.0 / 60.0);
+  EXPECT_LT(glm::dot(first.forward, after.forward), 0.7);  // still turning
+  for(int i = 0; i < 60; i++)
+    torchView(t, after, 1.0 / 60.0);
+  EXPECT_GT(glm::dot(torchView(t, after, 1.0 / 60.0).forward, after.forward), 0.99);
+}
+
+// A tree: a trunk of `radius` round `centre` up to 3 m (a plain column of ten sides, or rings of
+// vertices every 10 cm as a scanned one has), a crown of leaves over it and a few twigs low down beside it
+struct TreeMesh
+{
+  std::vector<float>    xyz;
+  std::vector<uint32_t> tris;
+};
+TreeMesh treeMesh(glm::dvec2 centre, double radius, bool dense)
+{
+  TreeMesh   m;
+  const auto put = [&](const glm::dvec3& p) {
+    m.xyz.insert(m.xyz.end(), {float(p.x), float(p.y), float(p.z)});
+    return uint32_t(m.xyz.size() / 3 - 1);
+  };
+  if(!dense)
+  {
+    auto [xyz, tris] = columnMesh({centre, radius, 0.0, 3.0}, glm::dmat4(1.0), 10);
+    m.xyz            = std::move(xyz);
+    m.tris           = std::move(tris);
+  }
+  else
+  {
+    for(int row = 0; row <= 30; row++)
+      for(int k = 0; k < 24; k++)
+      {
+        const double a = 2.0 * std::numbers::pi * k / 24.0;
+        put({centre.x + radius * std::cos(a), 0.1 * row, centre.y + radius * std::sin(a)});
+      }
+    for(uint32_t row = 0; row < 30; row++)
+      for(uint32_t k = 0; k < 24; k++)
+      {
+        const uint32_t a = row * 24 + k, b = row * 24 + (k + 1) % 24, c = a + 24, d = b + 24;
+        m.tris.insert(m.tris.end(), {a, b, c, c, b, d});
+      }
+  }
+  uint32_t   seed = 7;
+  const auto next = [&] {
+    seed = seed * 1664525u + 1013904223u;
+    return double(seed >> 8) / double(1u << 24);
+  };
+  const auto triangle = [&](const glm::dvec3& p, const glm::dvec3& u, const glm::dvec3& v) {
+    const uint32_t a = put(p), b = put(p + u), c = put(p + v);
+    m.tris.insert(m.tris.end(), {a, b, c});
+  };
+  for(int i = 0; i < 2000; i++)  // leaves
+    triangle({centre.x + 4.0 * (next() - 0.5), 3.0 + 3.0 * next(), centre.y + 4.0 * (next() - 0.5)}, {0.1, 0.05, 0.0}, {0.0, 0.1, 0.08});
+  for(int i = 0; i < 30; i++)  // twigs low down, out to a metre past the bark, half a metre tall
+  {
+    const double a = 2.0 * std::numbers::pi * next(), d = radius + 0.1 + 0.8 * next();
+    triangle({centre.x + d * std::cos(a), 0.8 + 0.3 * next(), centre.y + d * std::sin(a)}, {0.02, 0.5, 0.0}, {0.3, 0.25, 0.02});
+  }
+  return m;
+}
+
+TEST(PlayTrunk, FoundAmongItsLeavesAndTwigs)
+{
+  for(const bool dense : {false, true})
+  {
+    const TreeMesh m = treeMesh({0.3, -0.1}, 0.25, dense);
+    const auto     c = trunkOf(m.xyz, m.tris, glm::dmat4(1.0));
+    ASSERT_TRUE(c) << (dense ? "dense" : "plain");
+    EXPECT_NEAR(c->centre.x, 0.3, 0.03) << (dense ? "dense" : "plain");
+    EXPECT_NEAR(c->centre.y, -0.1, 0.03) << (dense ? "dense" : "plain");
+    EXPECT_NEAR(c->radius, 0.25, 0.03) << (dense ? "dense" : "plain");
+    EXPECT_LT(c->bottom, 0.0);
+    EXPECT_GT(c->top, 2.0);
+  }
+}
+
+TEST(PlayTrunk, OfAModelLyingInItsFileAsAnotherProgramMadeIt)
+{
+  // the same tree with +z up in its file, stood up by its node's turn (z up to y up)
+  TreeMesh m = treeMesh({0.0, 0.0}, 0.2, false);
+  for(size_t i = 0; i < m.xyz.size(); i += 3)
+  {
+    const float y = m.xyz[i + 1], z = m.xyz[i + 2];
+    m.xyz[i + 1]  = -z;
+    m.xyz[i + 2]  = y;
+  }
+  const glm::dmat4 upright = glm::rotate(glm::dmat4(1.0), -std::numbers::pi / 2.0, glm::dvec3(1.0, 0.0, 0.0));
+  const auto       c       = trunkOf(m.xyz, m.tris, upright);
+  ASSERT_TRUE(c);
+  EXPECT_NEAR(c->radius, 0.2, 0.03);
+  EXPECT_NEAR(glm::length(c->centre), 0.0, 0.03);
+}
+
+TEST(PlayTrunk, NoneForAFlatMesh)
+{
+  EXPECT_FALSE(trunkOf({0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 1.f, 0.f, 1.f}, {0, 1, 2, 2, 1, 3}, glm::dmat4(1.0)));
+  EXPECT_FALSE(trunkOf({}, {}, glm::dmat4(1.0)));
+}
+
+TEST(PlayTrunk, TheColumnIsClosedAndAsWideAsTheTrunk)
+{
+  const Column     c{{1.0, 2.0}, 0.3, -0.5, 4.0};
+  const glm::dmat4 back = glm::translate(glm::dmat4(1.0), glm::dvec3(0.0, 10.0, 0.0));
+  const auto [xyz, tris] = columnMesh(c, back, 12);
+  ASSERT_EQ(xyz.size(), size_t(3 * (2 * 12 + 2)));
+  ASSERT_EQ(tris.size(), size_t(12 * 12));
+  for(size_t i = 0; i < 24; i++)
+  {
+    EXPECT_NEAR(std::hypot(xyz[i * 3] - 1.0, xyz[i * 3 + 2] - 2.0), 0.3, 1e-5);
+    EXPECT_TRUE(std::abs(xyz[i * 3 + 1] - 9.5) < 1e-5 || std::abs(xyz[i * 3 + 1] - 14.0) < 1e-5);
+  }
+  // closed: every edge is two triangles'
+  std::map<std::pair<uint32_t, uint32_t>, int> edges;
+  for(size_t t = 0; t < tris.size(); t += 3)
+    for(int e = 0; e < 3; e++)
+    {
+      const uint32_t a = tris[t + size_t(e)], b = tris[t + size_t((e + 1) % 3)];
+      edges[{std::min(a, b), std::max(a, b)}]++;
+    }
+  for(const auto& [edge, n] : edges)
+    EXPECT_EQ(n, 2);
 }
 
 }  // namespace

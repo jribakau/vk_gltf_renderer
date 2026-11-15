@@ -173,7 +173,11 @@ namespace {
 // renderer refuses the lighting patch that has it.
 // 85: a planet's map: planet.map (fv_world_chart.hpp, fv_host_world.cpp). An older renderer has no such
 // command.
-constexpr int kProtocolVersion = 85;
+// 86: play mode puts no ship down at play.start: B (the `play` event's kShipHere bit) puts one ahead,
+// the scene's nearest or play.start's `ship`; L (kTorch) the torch on or off, the topic's `torch`; and
+// lighting.set takes a `gesture`, one step of the history however long it runs (play mode's clock).
+// An older renderer puts the ship down at play.start and refuses a lighting patch with a gesture.
+constexpr int kProtocolVersion = 86;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

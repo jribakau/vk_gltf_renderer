@@ -1372,6 +1372,10 @@ struct FvHost::Impl
   };
   std::unordered_map<std::string, ContactSeen>                                                             contactSeen;
   std::map<std::pair<const tinygltf::Model*, int>, std::shared_ptr<const fv::physics::SharedTriangles>> contactMeshes;
+  // A tree's trunk as a column (fv::play::trunkOf) in its mesh's space, the mesh stood up by `upright`
+  // (its node's turn and scale): made once a mesh, its triangles read on the pool when first met
+  std::shared_ptr<const fv::physics::SharedTriangles> trunkMesh(const std::shared_ptr<const tinygltf::Model>& model, int mesh, const glm::mat4& upright);
+  std::map<std::pair<const tinygltf::Model*, int>, std::shared_ptr<const fv::physics::SharedTriangles>> trunkMeshes;
   void showItem(const Loaded& f, const std::vector<std::pair<int, std::string>>& objects, bool visible);
   void publishDforce(Loaded& f, bool force);
   Json dforceCommand(const std::string& cmd, const Json& args);
@@ -1581,6 +1585,9 @@ struct FvHost::Impl
       rs::EntityId entity;
       glm::mat4    base{1.0F};  // its node's own turn and scale in its file, under each place
       float        halfWidth = 0.0F;  // how far from its foot it reaches on the plan, at a scale of 1
+      // the file and its mesh it draws, for what someone on foot meets of it (fv_host_play.cpp)
+      std::shared_ptr<const tinygltf::Model> model;
+      int                                    mesh = -1;
       // Where it stands, for the wind to sway it (swayBackdrop): its places, its copies at rest (each
       // `base` under its place), which of them stand near enough to sway for a camera over
       // `nearbyFor` (ascending), and which it last drew swayed
@@ -1734,6 +1741,8 @@ struct FvHost::Impl
         std::vector<float>     reach;
         std::vector<uint8_t>   grown;  // one a copy the entity has
         uint32_t               whole = 0;  // the first of them known to show whole: not looked at again while they must
+        int16_t                role    = -1;  // of fv::world::kStandingRoles: the kit's variant it is; -1 the sea floor's
+        uint32_t               variant = 0;
       };
       std::shared_ptr<std::vector<Stood>> stood;  // by entity of `plants` (shared: a chunk is handed about by value)
       // Its ground's middle in the root's frame, which its plants' places are about, and how far its

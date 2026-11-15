@@ -161,22 +161,23 @@ void stepWalker(Walker& w, const World& world, double dt, const WalkerTuning& t)
     onLevel -= n * std::min(0.0, glm::dot(onLevel, n));
   }
 
-  // what it stands in after all (a corner's second wall, something that moved into it): out to a
-  // radius from it, at the chest
-  for(int k = 0; k < 8; k++)
-  {
-    const double     a    = k * std::numbers::pi / 4.0;
-    const glm::dvec3 dir  = w.facing * std::cos(a) + right * std::sin(a);
-    const glm::dvec3 from = w.feet + up * 1.0;
-    if(const auto hit = world.ray(from, dir, t.radius))
-      if(const glm::dvec3 l = level(hit->normal, up); glm::length(l) > 1e-6)
-      {
-        const glm::dvec3 n     = glm::normalize(l);
-        const double     apart = -glm::dot(hit->at - from, n);  // square to it
-        if(apart < t.radius)
-          w.feet += n * (t.radius - apart);
-      }
-  }
+  // what it stands in after all (a corner's second wall, a post or a trunk beside the way it went,
+  // something that moved into it): out to a radius from it, at the knee, the chest and the head
+  for(const double h : {t.stepHeight + 0.15, 1.0, t.eyeHeight - 0.2})
+    for(int k = 0; k < 8; k++)
+    {
+      const double     a    = k * std::numbers::pi / 4.0;
+      const glm::dvec3 dir  = w.facing * std::cos(a) + right * std::sin(a);
+      const glm::dvec3 from = w.feet + up * h;
+      if(const auto hit = world.ray(from, dir, t.radius))
+        if(const glm::dvec3 l = level(hit->normal, up); glm::length(l) > 1e-6)
+        {
+          const glm::dvec3 n     = glm::normalize(l);
+          const double     apart = -glm::dot(hit->at - from, n);  // square to it
+          if(apart < t.radius)
+            w.feet += n * (t.radius - apart);
+        }
+    }
 
   // up and down, then the ground under the feet: stood on when they reach it, stepped up onto when it
   // is within a step over them, kept to down a step or a slope while on it
@@ -216,6 +217,179 @@ Pose walkerView(const Walker& w, const World& world, const WalkerTuning& t)
   const glm::dvec3 right   = glm::normalize(glm::cross(facing, up));
   const glm::dvec3 forward = facing * std::cos(w.pitch) + up * std::sin(w.pitch);
   return {w.feet + up * (t.eyeHeight + w.eyeLag), forward, glm::normalize(glm::cross(right, forward))};
+}
+
+Pose torchView(Torch& t, const Pose& view, double dt)
+{
+  constexpr double kRight = 0.22, kDown = 0.3, kAhead = 0.25;  // metres from the eye: a hand at the hip
+  constexpr double kAimAt = 8.0;                               // metres ahead the beam crosses the view's line
+  constexpr double kLag   = 0.07;                              // seconds the aim follows the view behind
+  const glm::dvec3 forward = glm::normalize(view.forward);
+  const glm::dvec3 right   = glm::normalize(glm::cross(forward, view.up));
+  const glm::dvec3 up      = glm::cross(right, forward);
+  const glm::dquat want    = glm::quatLookAt(forward, up);
+  if(!t.placed)
+  {
+    t.aim    = want;
+    t.placed = true;
+  }
+  t.aim = glm::normalize(glm::slerp(t.aim, want, share(dt, kLag)));
+  // the hand goes with the aim, as an arm does
+  const glm::dvec3 ahead  = t.aim * glm::dvec3(0.0, 0.0, -1.0);
+  const glm::dvec3 aimUp  = t.aim * glm::dvec3(0.0, 1.0, 0.0);
+  const glm::dvec3 aside  = glm::normalize(glm::cross(ahead, aimUp));
+  const glm::dvec3 at     = view.eye + aside * kRight - aimUp * kDown + ahead * kAhead;
+  const glm::dvec3 shine  = glm::normalize(view.eye + ahead * kAimAt - at);
+  const glm::dvec3 across = glm::normalize(glm::cross(shine, aimUp));
+  return {at, shine, glm::cross(across, shine)};
+}
+
+// ---- what stands in a world -------------------------------------------------------------------------
+
+std::optional<Column> trunkOf(const std::vector<float>& xyz, const std::vector<uint32_t>& tris, const glm::dmat4& upright)
+{
+  const size_t n = xyz.size() / 3;
+  if(n < 3 || tris.size() < 3)
+    return std::nullopt;
+  const auto at = [&](uint32_t i) {
+    return glm::dvec3(upright * glm::dvec4(double(xyz[i * 3ull]), double(xyz[i * 3ull + 1]), double(xyz[i * 3ull + 2]), 1.0));
+  };
+  // the heights first, which is all most triangles need
+  std::vector<float> ys(n);
+  double             lo = 1e30, hi = -1e30;
+  for(size_t i = 0; i < n; i++)
+  {
+    const double y = at(uint32_t(i)).y;
+    ys[i]          = float(y);
+    lo             = std::min(lo, y);
+    hi             = std::max(hi, y);
+  }
+  const double height = hi - lo;
+  if(!(height > 0.3))
+    return std::nullopt;
+  // cut at three heights from over the foot's roots to a man's (a share of that on something small):
+  // where the triangles' edges cross each is the outline of what stands there, trunk and leaves
+  const double from = lo + std::min(0.3, 0.15 * height), to = lo + std::min(1.6, 0.6 * height);
+  const double cuts[3] = {from + 0.2 * (to - from), 0.5 * (from + to), from + 0.8 * (to - from)};
+  std::vector<glm::dvec2> section;
+  for(size_t t = 0; t + 2 < tris.size(); t += 3)
+  {
+    const uint32_t v[3] = {tris[t], tris[t + 1], tris[t + 2]};
+    if(v[0] >= n || v[1] >= n || v[2] >= n)
+      continue;
+    const double y0 = ys[v[0]], y1 = ys[v[1]], y2 = ys[v[2]];
+    if(std::max({y0, y1, y2}) < cuts[0] || std::min({y0, y1, y2}) > cuts[2])
+      continue;
+    for(const double h : cuts)
+      for(int e = 0; e < 3; e++)
+      {
+        const uint32_t a = v[e], b = v[(e + 1) % 3];
+        const double   ya = ys[a], yb = ys[b];
+        if((ya - h) * (yb - h) >= 0.0 || ya == yb)
+          continue;
+        const glm::dvec3 pa = at(a), pb = at(b);
+        const glm::dvec3 p  = glm::mix(pa, pb, (h - pa.y) / (pb.y - pa.y));
+        section.emplace_back(p.x, p.z);
+      }
+  }
+  if(section.size() < 6)
+    return std::nullopt;
+  // the trunk is the inner ring of the section: in each direction from its middle, the nearest point.
+  // The middle starts as the median on each axis and moves to the middle of the circle through those
+  // nearest points (a least-squares fit, Kasa's), a few times over, so a branch to one side doesn't
+  // pull it off the trunk.
+  const auto median = [](std::vector<double> v) {
+    std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(v.size() / 2), v.end());
+    return v[v.size() / 2];
+  };
+  std::vector<double> xs(section.size()), zs(section.size());
+  for(size_t i = 0; i < section.size(); i++)
+  {
+    xs[i] = section[i].x;
+    zs[i] = section[i].y;
+  }
+  glm::dvec2       centre(median(std::move(xs)), median(std::move(zs)));
+  constexpr int    kSectors = 16;
+  std::vector<int> nearest(kSectors);
+  std::vector<double> reach(kSectors);
+  for(int round = 0; round < 4; round++)
+  {
+    std::fill(nearest.begin(), nearest.end(), -1);
+    std::fill(reach.begin(), reach.end(), 1e30);
+    for(size_t i = 0; i < section.size(); i++)
+    {
+      const glm::dvec2 d = section[i] - centre;
+      const double     r = glm::length(d);
+      const int        k = std::clamp(int(std::floor((std::atan2(d.y, d.x) + std::numbers::pi) / (2.0 * std::numbers::pi) * kSectors)), 0, kSectors - 1);
+      if(r < reach[size_t(k)])
+      {
+        reach[size_t(k)]   = r;
+        nearest[size_t(k)] = int(i);
+      }
+    }
+    // x^2 + y^2 + D x + E y + F = 0 through them, about the middle as it is: the circle's middle is
+    // (-D/2, -E/2) from there
+    glm::dmat3 normal(0.0);
+    glm::dvec3 right(0.0);
+    glm::dvec2 sum(0.0);
+    int        count = 0;
+    for(const int i : nearest)
+      if(i >= 0)
+      {
+        const glm::dvec2 q = section[size_t(i)] - centre;
+        const glm::dvec3 row(q.x, q.y, 1.0);
+        normal += glm::outerProduct(row, row);
+        right += row * -(q.x * q.x + q.y * q.y);
+        sum += section[size_t(i)];
+        count++;
+      }
+    if(count < 3)
+      return std::nullopt;
+    if(std::abs(glm::determinant(normal)) > 1e-18)
+    {
+      const glm::dvec3 fit = glm::inverse(normal) * right;
+      centre += glm::dvec2(-0.5 * fit.x, -0.5 * fit.y);
+    }
+    else
+      centre = sum / double(count);  // on a line: no circle to fit
+  }
+  std::vector<double> rings;
+  for(size_t k = 0; k < size_t(kSectors); k++)
+    if(nearest[k] >= 0)
+      rings.push_back(glm::distance(section[size_t(nearest[k])], centre));
+  Column c;
+  c.centre = centre;
+  c.radius = std::clamp(median(std::move(rings)), 0.03, 0.8);
+  c.bottom = lo - 0.5;  // into the ground, which a slope may lift on one side
+  c.top    = lo + std::min(height, 8.0);
+  return c;
+}
+
+std::pair<std::vector<float>, std::vector<uint32_t>> columnMesh(const Column& c, const glm::dmat4& back, int sides)
+{
+  sides = std::max(3, sides);
+  std::vector<float>    xyz;
+  std::vector<uint32_t> tris;
+  const auto            put = [&](double x, double y, double z) {
+    const glm::dvec3 p = glm::dvec3(back * glm::dvec4(x, y, z, 1.0));
+    xyz.insert(xyz.end(), {float(p.x), float(p.y), float(p.z)});
+  };
+  for(int k = 0; k < sides; k++)
+  {
+    const double a = 2.0 * std::numbers::pi * k / sides;
+    const double x = c.centre.x + c.radius * std::cos(a), z = c.centre.y + c.radius * std::sin(a);
+    put(x, c.bottom, z);  // 2k
+    put(x, c.top, z);     // 2k + 1
+  }
+  const uint32_t below = uint32_t(2 * sides), above = below + 1;
+  put(c.centre.x, c.bottom, c.centre.y);
+  put(c.centre.x, c.top, c.centre.y);
+  for(int k = 0; k < sides; k++)
+  {
+    const uint32_t a0 = uint32_t(2 * k), a1 = a0 + 1, b0 = uint32_t(2 * ((k + 1) % sides)), b1 = b0 + 1;
+    tris.insert(tris.end(), {a0, b0, a1, a1, b0, b1, below, b0, a0, above, a1, b1});
+  }
+  return {std::move(xyz), std::move(tris)};
 }
 
 // ---- the ship ----------------------------------------------------------------------------------------
@@ -327,23 +501,34 @@ void stepShip(Ship& s, const ShipShape& shape, const World& world, double dt, bo
   s.orientation = glm::normalize(glm::angleAxis(s.spin.x * dt, R) * glm::angleAxis(s.spin.y * dt, unbanked)
                                  * glm::angleAxis(s.spin.z * dt, F) * s.orientation);
 
-  // what it flies into: the move stops short of it, and its speed into it goes
+  // what it flies into: the move stops short of what its centre, its nose, its tail or a wingtip would
+  // meet on the way, and its speed into that goes. (A turn is not swept: a wingtip turned into
+  // something turns out of it again.)
+  const glm::dmat3 turn = glm::mat3_cast(s.orientation);
   if(const double speed = glm::length(s.velocity); speed > 1e-6)
   {
-    const glm::dvec3 dir  = s.velocity / speed;
-    const double     keep = 0.5 * shape.radius;
-    if(const auto hit = world.ray(s.com, dir, keep + speed * dt))
-    {
-      const double d = glm::dot(hit->at - s.com, dir);
-      s.com += dir * std::max(0.0, d - keep);
-      s.velocity -= hit->normal * std::min(0.0, glm::dot(s.velocity, hit->normal));
-    }
-    else
-      s.com += s.velocity * dt;
+    constexpr double          kHullKeep = 0.25;  // metres a far point stops short
+    const glm::dvec3          dir       = s.velocity / speed;
+    const double              step      = speed * dt;
+    double                    go        = step;
+    std::optional<glm::dvec3> into;
+    const auto                meet = [&](const glm::dvec3& from, double keep) {
+      if(const auto hit = world.ray(from, dir, keep + step))
+        if(const double d = std::max(0.0, glm::dot(hit->at - from, dir) - keep); d < go)
+        {
+          go   = d;
+          into = hit->normal;
+        }
+    };
+    meet(s.com, 0.5 * shape.radius);
+    for(const glm::dvec3& local : shape.hull)
+      meet(s.com + turn * local, kHullKeep);
+    s.com += dir * go;
+    if(into)
+      s.velocity -= *into * std::min(0.0, glm::dot(s.velocity, *into));
   }
 
   // what it rests on: its pads and its hull pushed up out of the ground, its fall stopped there
-  const glm::dmat3 turn    = glm::mat3_cast(s.orientation);
   double           deepest = 0.0;
   bool             onPads  = false;
   const auto       touch   = [&](const glm::dvec3& local, bool pad) {

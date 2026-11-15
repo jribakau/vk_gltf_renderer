@@ -167,9 +167,11 @@ src/
 │                               #   in its own colours, shaded, the sea by its depth, rivers and roads over it;
 │                               #   planet.map (fv_host_world.cpp) sends it with what stands on the planet
 ├── fv_play.cpp/hpp             # Play mode's controllers, Vulkan-free: someone on foot (collide and slide,
-│                               #   steps, gravity) and a ship on a throttle with flight assist that lands on
-│                               #   its pads, with a chase camera; fv_host_play.cpp drives them from the app's
-│                               #   keys, finds ships by their glTF markers (fv_seat) and moves their parts
+│                               #   steps, gravity) with a torch in hand, and a ship on a throttle with flight
+│                               #   assist that lands on its pads, with a chase camera; a tree's trunk found
+│                               #   from its mesh (trunkOf); fv_host_play.cpp drives them from the app's keys,
+│                               #   finds ships by their glTF markers (fv_seat) and moves their parts, and
+│                               #   gives them the props, places and backdrop trees and stones to meet
 ├── fv_patch.hpp                # What a merge patch's fields are checked with (lighting.set, backdrop.set), and
 │                               #   the merge patch between two states that a topic's change is published as
 │

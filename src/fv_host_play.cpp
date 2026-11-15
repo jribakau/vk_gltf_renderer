@@ -22,7 +22,10 @@
 // fv_play.hpp's). The app holds the keys and the mouse (pointer lock) and sends them as `play` input
 // events; each frame here steps the controller in charge, moves the ship it flies, opens its canopy,
 // folds its gear and lights its engines, and puts the camera where the walker, the pilot or the chase
-// camera looks from.
+// camera looks from. On foot the torch (L) is a spot light the host keeps in the walker's hand, and B
+// puts a ship down ahead: the nearest in the scene, else the app's own (play.start's `ship`). What the
+// walker and the ship meet are the props' triangles, the planet's places, and the backdrop's trees
+// (their trunks, found from each tree's mesh) and stones (their own triangles) near them.
 //
 // A ship is any glTF model with a node named fv_seat (the pilot's eye). Its other markers are optional:
 // fv_board (where one climbs in), fv_exit (where one stands after getting out), fv_com (what it turns
@@ -40,6 +43,7 @@
 #include "fv_backdrop.hpp"
 #include "fv_play.hpp"
 #include "fv_world.hpp"
+#include "fv_world_plants.hpp"
 
 namespace game = fv::play;
 using Clock    = std::chrono::steady_clock;
@@ -61,6 +65,15 @@ constexpr double kStepLongest   = 1.0 / 60.0;
 constexpr double kLensWalk = 18.0, kLensFly = 20.0;  // focal lengths, mm: a game's wide view
 constexpr double kSpawnAhead = 16.0;                 // metres ahead of the camera a ship is put down
 constexpr double kNoticeSeconds = 2.5;
+constexpr double kSolidsNear    = 14.0;  // metres round the walker that the backdrop's trees and stones are met
+constexpr double kShipWaits     = 4.0;   // seconds B waits for a ship it asked to load before asking again
+// The torch: a bright LED torch's beam, some 11,000 cd in its middle (a spot light's units: 20 lights
+// a figure 2.5 m away about as the built-in studio does), a little warmer than white, from a reflector
+// a couple of centimetres across
+constexpr double kTorchStrength = 0.6;
+constexpr double kTorchInner    = 0.12;  // radians from its axis: full strength inside
+constexpr double kTorchOuter    = 0.45;  // and none outside
+constexpr double kTorchRadius   = 0.015;
 
 // A model's node in the model's frame (its scene's root), its parents' turns and moves with it
 glm::dmat4 nodeMatrix(const tinygltf::Model& model, int node)
@@ -133,6 +146,22 @@ double toward(double value, double target, double rate, double dt)
   return value < target ? std::min(target, value + rate * dt) : std::max(target, value - rate * dt);
 }
 
+// The torch as a light: a spot shining along its -Z
+tinygltf::Light torchPayload()
+{
+  tinygltf::Light light;
+  light.name                = "Torch";
+  light.type                = "spot";
+  light.color               = {1.0, 0.96, 0.9};
+  light.intensity           = kTorchStrength;
+  light.spot.innerConeAngle = kTorchInner;
+  light.spot.outerConeAngle = kTorchOuter;
+  tinygltf::Value::Object extras;
+  extras["radius"] = tinygltf::Value(kTorchRadius);
+  light.extras     = tinygltf::Value(extras);
+  return light;
+}
+
 }  // namespace
 
 struct FvHost::Impl::PlayState
@@ -186,13 +215,25 @@ struct FvHost::Impl::PlayState
   Json               published;
   Clock::time_point  publishedAt{};
   std::set<const fv::physics::SharedTriangles*> indexing;
+  std::string        shipPath;     // the GLB B puts down when the scene has no ship (play.start's `ship`)
+  Clock::time_point  shipAsked{};  // when B last asked for it to load
+  int                torches = 0, brings = 0;  // presses of L and B not yet taken
+  game::Torch        torch;
+  rs::EntityId       torchEntity;
+  rs::LightId        torchLight;
+  bool               torchShown = false;
+  rs::Transform      torchAt;
 
   // What play asks of the host, as static members: they name the host's own types
   static std::optional<Rig>             rigOf(const tinygltf::Model& model);
   static glm::dvec3                     upAt(const Impl& s, const glm::dvec3& p);
   static std::optional<game::Surface>   groundUnder(Impl& s, const std::vector<PlacedSet>& sets, const glm::dvec3& from,
                                                     const glm::dvec3& up, double reach);
-  static std::vector<PlacedSet>         playSets(Impl& s, const std::string& skip);
+  static std::vector<PlacedSet>         playSets(Impl& s, const std::string& skip, const glm::dvec3& around, double within = kSolidsNear);
+  static void                           plantSets(Impl& s, const glm::dvec3& around, double within, std::vector<PlacedSet>& out);
+  static std::string                    bringShip(Impl& s, PlayState& P, const Clock::time_point& now);
+  static void                           showTorch(Impl& s, PlayState& P, bool on, double dt);
+  static void                           dropTorch(Impl& s, PlayState& P);
   static game::World                    playWorld(Impl& s, const std::vector<PlacedSet>& sets);
   static game::Ship                     shipOf(const Impl& s, const Prop& p, const Rig& rig);
   static void                           putShip(Impl& s, Prop& p, const Rig& rig, const game::Ship& ship);
@@ -282,6 +323,108 @@ std::optional<FvHost::Impl::PlayState::Rig> FvHost::Impl::PlayState::rigOf(const
 }
 
 
+// B: a ship down on the ground ahead, its side (the way in) turned to the walker: the nearest the scene
+// has, which comes down onto its pads there, else the app's own, loaded. What went wrong, to say.
+std::string FvHost::Impl::PlayState::bringShip(Impl& s, PlayState& P, const Clock::time_point& now)
+{
+  const glm::dvec3 eye   = P.view.eye;
+  const glm::dvec3 up    = upAt(s, eye);
+  glm::dvec3       ahead = P.view.forward - up * glm::dot(P.view.forward, up);
+  ahead                  = glm::length(ahead) > 1e-6 ? glm::normalize(ahead) : glm::dvec3(0.0, 0.0, -1.0);
+  std::shared_ptr<Prop> ship;
+  double                nearest = 1e300;
+  for(const auto& [id, rig] : P.rigs)
+    if(const auto p = s.findProp(id); p && s.shown(*p))
+      if(const double d = glm::distance(eye, glm::dvec3(glm::dmat4(s.worldOf(*p))[3])); d < nearest)
+      {
+        nearest = d;
+        ship    = p;
+      }
+  if(!ship && P.shipPath.empty())
+    return "No ship to put down";
+  if(!ship && now - P.shipAsked < std::chrono::milliseconds(int(kShipWaits * 1000.0)))
+    return "";  // the one asked for is on its way
+  const double size   = ship ? scaleOf(glm::dmat4(s.worldOf(*ship))) : 1.0;
+  const double length = ship ? P.rigs.at(ship->id).length * size : 0.0;
+  glm::dvec3   at     = eye + ahead * std::max(kSpawnAhead, 1.2 * length);
+  const auto   sets   = playSets(s, ship ? ship->id : std::string(), at, 20.0);
+  if(const auto g = groundUnder(s, sets, at + up * 50.0, up, 2000.0))
+    at = g->at;
+  else
+    at -= up * game::WalkerTuning{}.eyeHeight;
+  const glm::dvec3 x = -ahead, z = glm::cross(x, up);
+  const glm::dmat3 turn(x, up, z);
+  if(ship)
+  {
+    // a little over the ground, to come down onto its pads however the ground lies
+    Rig&       rig = P.rigs.at(ship->id);
+    game::Ship put;
+    put.orientation = glm::normalize(glm::quat_cast(turn));
+    put.com         = at + up * 0.3 + turn * (rig.com * size);
+    putShip(s, *ship, rig, put);
+    rig.loose    = put;
+    rig.settling = true;
+    return "";
+  }
+  P.shipAsked     = now;
+  const glm::quat q = glm::quat_cast(glm::mat3(turn));
+  s.importModel(P.shipPath,
+                [&s](std::shared_ptr<Prop> p) {
+                  s.recordAdded(p, "Add " + p->name);
+                  if(s.view)
+                    s.view->deselect(p->id);
+                  s.renderer->selectEntity(rs::EntityId{});
+                },
+                {}, {{"transform", {{"t", {at.x, at.y, at.z}}, {"r", {q.x, q.y, q.z, q.w}}}}});
+  return "";
+}
+
+// The torch in hand where the view is, or put away
+void FvHost::Impl::PlayState::showTorch(Impl& s, PlayState& P, bool on, double dt)
+{
+  if(!s.renderer->feedsHostScene())
+    return;
+  rs::RetainedScene& scene = s.renderer->hostScene();
+  const bool         have  = scene.entity(P.torchEntity) && scene.light(P.torchLight);
+  if(!on)
+  {
+    if(have && P.torchShown)
+      scene.setLightShown(P.torchLight, false);
+    P.torchShown   = false;
+    P.torch.placed = false;  // taken out again it is in hand at once, not swinging in from where it was
+    return;
+  }
+  const game::Pose    pose = game::torchView(P.torch, P.view, dt);
+  const rs::Transform local{.translation = glm::vec3(pose.eye), .rotation = glm::quat(glm::quatLookAt(pose.forward, pose.up))};
+  if(!have)
+  {
+    P.torchEntity = scene.createEntity("Torch", {0, -1});
+    scene.setLocal(P.torchEntity, local);
+    P.torchLight = scene.addLight({.owner = {0, -1}, .payload = torchPayload()});
+    scene.setEntityLight(P.torchEntity, P.torchLight);
+    scene.release(P.torchLight);
+  }
+  else
+  {
+    if(!P.torchShown)
+      scene.setLightShown(P.torchLight, true);
+    if(!(P.torchAt == local))
+      scene.setLocal(P.torchEntity, local);
+  }
+  P.torchShown = true;
+  P.torchAt    = local;
+}
+
+void FvHost::Impl::PlayState::dropTorch(Impl& s, PlayState& P)
+{
+  if(s.renderer->feedsHostScene() && s.renderer->hostScene().entity(P.torchEntity))
+    s.renderer->hostScene().destroyEntity(P.torchEntity);
+  P.torchEntity  = {};
+  P.torchLight   = {};
+  P.torchShown   = false;
+  P.torch.placed = false;
+}
+
 bool FvHost::Impl::playing() const
 {
   return play && play->active;
@@ -333,39 +476,95 @@ std::optional<game::Surface> FvHost::Impl::PlayState::groundUnder(Impl& s, const
 }
 
 // What the controllers collide with: every shown prop's surfaces but `skip`'s (a ship doesn't meet
-// itself) and people's, whose poses move under them. A set not indexed yet is indexed on the pool and
-// met once it is.
-std::vector<FvHost::Impl::PlacedSet> FvHost::Impl::PlayState::playSets(Impl& s, const std::string& skip)
+// itself) and people's, whose poses move under them; the planet's places round `around` (their walls
+// are met as a prop's are), and the backdrop's trees and stones within `within` of it. A set not
+// indexed yet is indexed on the pool and met once it is.
+std::vector<FvHost::Impl::PlacedSet> FvHost::Impl::PlayState::playSets(Impl& s, const std::string& skip, const glm::dvec3& around, double within)
 {
-  std::vector<PlacedSet>                                           out;
-  std::vector<std::shared_ptr<const fv::physics::SharedTriangles>> unmade;
+  std::vector<PlacedSet> out;
   for(const auto& q : s.props)
   {
     if(!s.shown(*q) || q->kind == PropKind::eCharacter || q->kind == PropKind::eCreature
        || (!skip.empty() && (q->id == skip || s.ridesOn(*q, skip))))
       continue;
     for(PlacedSet& set : s.placedSets(*q))
-    {
-      if(!set.set->made() && s.play->indexing.insert(set.set.get()).second)
-        unmade.push_back(set.set);
       out.push_back(std::move(set));
-    }
   }
-  // and the planet's own places round where one is: their walls are met as a prop's are
-  if(const auto camera = s.renderer->getCameraManipulator())
-  {
-    const size_t props = out.size();
-    s.placeSets(glm::dvec3(camera->getEye()), 60.0, out);
-    for(size_t k = props; k < out.size(); k++)
-      if(!out[k].set->made() && s.play->indexing.insert(out[k].set.get()).second)
-        unmade.push_back(out[k].set);
-  }
+  s.placeSets(around, 60.0, out);
+  plantSets(s, around, within, out);
+  std::vector<std::shared_ptr<const fv::physics::SharedTriangles>> unmade;
+  for(const PlacedSet& set : out)
+    if(!set.set->made() && s.play->indexing.insert(set.set.get()).second)
+      unmade.push_back(set.set);
   if(!unmade.empty())
     s.loaders.spawn([unmade] {
       for(const auto& set : unmade)
         set->get();
     });
   return out;
+}
+
+// The backdrop's plants that stand within `within` of `around` and are met: a tree (and what else grows
+// tall) by its trunk, a stone, a stump or a log by its own triangles; shrubs, grass and the sea
+// floor's are walked through. A flat backdrop's where its variants have them; a planet's in each quad
+// drawn near.
+void FvHost::Impl::PlayState::plantSets(Impl& s, const glm::dvec3& around, double within, std::vector<PlacedSet>& out)
+{
+  if(!s.backdropBuilt || !s.backdropStands() || !s.renderer->feedsHostScene())
+    return;
+  rs::RetainedScene&   scene = s.renderer->hostScene();
+  const BackdropBuilt& built = *s.backdropBuilt;
+  if(!scene.entity(built.root))
+    return;
+  const glm::mat4 root  = scene.world(built.root);
+  const glm::vec3 at    = glm::vec3(glm::inverse(root) * glm::vec4(glm::vec3(around), 1.0F));  // in the root's frame
+  const auto      solid = [&](std::string_view role, const BackdropBuilt::Variant& v) -> std::shared_ptr<const fv::physics::SharedTriangles> {
+    if(!v.model || v.mesh < 0)
+      return nullptr;
+    if(fv::world::isTall(role))
+      return s.trunkMesh(v.model, v.mesh, v.base);
+    if(role == "rock" || role == "boulder" || role == "stump" || role == "log")
+      return s.contactMesh(v.model, v.mesh);
+    return nullptr;
+  };
+  // each copy's place (its variant's own turn and scale under where it stands), about `about`
+  const auto meet = [&](const std::shared_ptr<const fv::physics::SharedTriangles>& set, const glm::mat4& toRoot, const glm::vec3& about,
+                        const std::vector<glm::mat4>& places) {
+    for(const glm::mat4& place : places)
+      if(glm::distance(about + glm::vec3(place[3]), at) <= float(within))
+        out.push_back({set, toRoot * place});
+  };
+  if(fv::backdrop::isPlanet(s.backdropSpec))
+  {
+    if(!s.planetBuilt)
+      return;
+    for(const auto& [quad, chunk] : s.planetBuilt->shown)
+    {
+      if(!chunk.stood || glm::distance(glm::vec3(chunk.middle), at) > float(chunk.round + within))
+        continue;
+      const glm::mat4 toRoot = root * glm::translate(glm::mat4(1.0F), glm::vec3(chunk.middle));
+      for(const PlanetBuilt::Chunk::Stood& stood : *chunk.stood)
+      {
+        if(stood.role < 0 || size_t(stood.role) >= fv::world::kStandingRoles.size())
+          continue;
+        // its own models, or where the kit has none, those it is drawn with (a riverside tree, a leafy one)
+        const std::string_view role  = fv::world::kStandingRoles[size_t(stood.role)];
+        auto                   found = built.variants.find(std::string(role));
+        if(found == built.variants.end())
+          found = built.variants.find(std::string(fv::world::drawnAs(role)));
+        if(found == built.variants.end() || stood.variant >= found->second.size())
+          continue;
+        if(const auto set = solid(role, found->second[stood.variant]))
+          meet(set, toRoot, glm::vec3(chunk.middle), stood.places);
+      }
+    }
+    return;
+  }
+  for(const auto& [role, variants] : built.variants)
+    for(const BackdropBuilt::Variant& v : variants)
+      if(!v.resting.empty())
+        if(const auto set = solid(role, v))
+          meet(set, root, glm::vec3(0.0F), v.resting);
 }
 
 game::World FvHost::Impl::PlayState::playWorld(Impl& s, const std::vector<PlacedSet>& sets)
@@ -506,39 +705,15 @@ Json FvHost::Impl::playStart(const Json& args)
     }
     glm::dvec3 eye, center, up;
     manip->getLookat(eye, center, up);
-    const auto sets  = PlayState::playSets(*this, "");
+    const auto sets  = PlayState::playSets(*this, "", eye);
     const auto world = PlayState::playWorld(*this, sets);
     const glm::dvec3 ahead = glm::length(center - eye) > 1e-9 ? glm::normalize(center - eye) : glm::dvec3(0.0, 0.0, -1.0);
     P.walker               = game::walkerAt({eye, ahead, up}, world, 2000.0);
     P.view                 = game::walkerView(P.walker, world);
   }
   PlayState::findRigs(*this, P);
-  // a ship to fly, when the scene has none: down on the ground ahead, its side (the way in) turned to
-  // the camera
-  const std::string path = args.value("ship", std::string());
-  if(P.rigs.empty() && !path.empty())
-  {
-    const auto       sets  = PlayState::playSets(*this, "");
-    const glm::dvec3 eye   = P.view.eye;
-    const glm::dvec3 up    = PlayState::upAt(*this, eye);
-    glm::dvec3       ahead = P.view.forward - up * glm::dot(P.view.forward, up);
-    ahead                  = glm::length(ahead) > 1e-6 ? glm::normalize(ahead) : glm::dvec3(0.0, 0.0, -1.0);
-    glm::dvec3 at          = eye + ahead * kSpawnAhead;
-    if(const auto g = PlayState::groundUnder(*this, sets, at + up * 50.0, up, 2000.0))
-      at = g->at;
-    else
-      at -= up * game::WalkerTuning{}.eyeHeight;
-    const glm::dvec3 x = -ahead, z = glm::cross(x, up);
-    const glm::quat  q = glm::quat_cast(glm::mat3(glm::dmat3(x, up, z)));
-    importModel(path,
-                [this](std::shared_ptr<Prop> p) {
-                  recordAdded(p, "Add " + p->name);
-                  if(view)
-                    view->deselect(p->id);
-                  renderer->selectEntity(rs::EntityId{});
-                },
-                {}, {{"transform", {{"t", {at.x, at.y, at.z}}, {"r", {q.x, q.y, q.z, q.w}}}}});
-  }
+  // the ship B puts down when the scene has none
+  P.shipPath = args.value("ship", std::string());
   publishPlay(true);
   return {{"ok", true}};
 }
@@ -549,6 +724,7 @@ Json FvHost::Impl::playStop()
     return {{"ok", true}};
   PlayState& P = *play;
   P.active     = false;
+  PlayState::dropTorch(*this, P);
   // the ships stay where they were left, a step of the history each, and their parts as their files have them
   for(auto& [id, rig] : P.rigs)
     if(const auto p = findProp(id))
@@ -604,6 +780,8 @@ void FvHost::Impl::playInput(const Json& e)
   P.uses += (pressed & game::kUse) ? 1 : 0;
   P.views += (pressed & game::kView) ? 1 : 0;
   P.jumps += (pressed & game::kUp) ? 1 : 0;
+  P.torches += (pressed & game::kTorch) ? 1 : 0;
+  P.brings += (pressed & game::kShipHere) ? 1 : 0;
   P.look += glm::dvec2(e.value("dx", 0.0), e.value("dy", 0.0));
   if(const double wheel = e.value("wheel", 0.0); wheel != 0.0)
     P.chase.zoom = std::clamp(P.chase.zoom * std::exp(wheel * 0.001), 0.5, 3.0);
@@ -624,11 +802,14 @@ void FvHost::Impl::applyPlay()
   if(now - P.heard > std::chrono::milliseconds(500))
     P.keys = 0;
   const int        uses = std::exchange(P.uses, 0), views = std::exchange(P.views, 0), jumps = std::exchange(P.jumps, 0);
+  const int        torches = std::exchange(P.torches, 0), brings = std::exchange(P.brings, 0);
   const glm::dvec2 look = std::exchange(P.look, glm::dvec2(0.0));
 
   PlayState::findRigs(*this, P);
-  const auto       sets  = PlayState::playSets(*this, "");
-  const game::World world = PlayState::playWorld(*this, sets);
+  // what is met near whoever is in charge: on foot, or in the ship
+  const bool        aboard = P.mode == PlayState::Mode::eFly || P.mode == PlayState::Mode::eEnter;
+  const auto        sets   = PlayState::playSets(*this, "", aboard ? P.ship.com : P.walker.feet);
+  const game::World world  = PlayState::playWorld(*this, sets);
   std::shared_ptr<Prop> flown = P.shipId.empty() ? nullptr : findProp(P.shipId);
   PlayState::Rig*       rig   = flown && P.rigs.count(P.shipId) ? &P.rigs.at(P.shipId) : nullptr;
   if(P.mode != PlayState::Mode::eWalk && !rig)
@@ -666,6 +847,9 @@ void FvHost::Impl::applyPlay()
           }
       if(!closest.empty())
         prompt = "F  Get in";
+      if(brings > 0)
+        if(const std::string why = PlayState::bringShip(*this, P, now); !why.empty())
+          say(why);
       if(uses > 0 && !closest.empty())
       {
         P.shipId     = closest;
@@ -703,9 +887,9 @@ void FvHost::Impl::applyPlay()
         P.cockpit = !P.cockpit;
       P.ship.keys = P.keys;
       P.ship.aim += look;
-      const auto            own   = PlayState::playSets(*this, P.shipId);
-      const game::World     its   = PlayState::playWorld(*this, own);
       const game::ShipShape shape = PlayState::shapeIn(*rig, size);
+      const auto            own   = PlayState::playSets(*this, P.shipId, P.ship.com, kSolidsNear + 2.0 * shape.radius + 0.5 * glm::length(P.ship.velocity));
+      const game::World     its   = PlayState::playWorld(*this, own);
       substeps(dt, [&](double h) { game::stepShip(P.ship, shape, its, h, true); });
       P.range = game::shipSpeedRange(P.ship, its.speedCap);
       PlayState::putShip(*this, *flown, *rig, P.ship);
@@ -766,9 +950,9 @@ void FvHost::Impl::applyPlay()
     if(r.settling && !flying)
     {
       const double          sz    = scaleOf(glm::dmat4(worldOf(*p)));
-      const auto            own   = PlayState::playSets(*this, id);
-      const game::World     its   = PlayState::playWorld(*this, own);
       const game::ShipShape shape = PlayState::shapeIn(r, sz);
+      const auto            own   = PlayState::playSets(*this, id, r.loose.com, kSolidsNear + 2.0 * shape.radius);
+      const game::World     its   = PlayState::playWorld(*this, own);
       substeps(dt, [&](double h) { game::stepShip(r.loose, shape, its, h, false); });
       PlayState::putShip(*this, *p, r, r.loose);
       if(r.loose.touching && glm::length(r.loose.velocity) < 0.02)
@@ -787,6 +971,11 @@ void FvHost::Impl::applyPlay()
     r.gearAngle   = toward(r.gearAngle, gearUp ? kGearFold : 0.0, kGearFold / kGearSeconds, dt);
     PlayState::poseRig(*this, *p, r);
   }
+
+  // the torch, in hand on foot (L): put away in the ship, out again on getting out if it was
+  if(torches % 2 == 1)
+    P.torch.on = !P.torch.on;
+  PlayState::showTorch(*this, P, P.torch.on && (P.mode == PlayState::Mode::eWalk || P.mode == PlayState::Mode::eExit), dt);
 
   // the camera: a near plane close enough for the cockpit, the far one the scene's
   const glm::dvec2 clip = manip->getClipPlanes();
@@ -809,7 +998,8 @@ void FvHost::Impl::applyPlay()
                        {"height", fly ? std::round(std::max(0.0, P.ship.height)) : 0.0},
                        {"throttle", fly ? std::round(P.ship.throttle * 100.0) / 100.0 : 0.0},
                        {"range", fly ? std::round(P.range) : 0.0},
-                       {"boost", fly && (P.ship.keys & game::kFast) != 0}};
+                       {"boost", fly && (P.ship.keys & game::kFast) != 0},
+                       {"torch", P.torch.on}};
   if(state != P.published && now - P.publishedAt > std::chrono::milliseconds(100))
   {
     P.published   = state;
@@ -822,7 +1012,7 @@ void FvHost::Impl::publishPlay(bool force)
 {
   if(playing() && !force)
     return;
-  Json state = playing() ? Json{{"active", true}, {"mode", "walk"}, {"prompt", ""}, {"ships", play->rigs.size()}} : Json{{"active", false}};
+  Json state = playing() ? Json{{"active", true}, {"mode", "walk"}, {"prompt", ""}, {"ships", play->rigs.size()}, {"torch", play->torch.on}} : Json{{"active", false}};
   if(play)
   {
     play->published   = state;

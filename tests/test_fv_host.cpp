@@ -44,6 +44,7 @@
 #include "fv_backdrop.hpp"
 #include "fv_host.hpp"
 #include "fv_journal.hpp"
+#include "fv_play.hpp"
 #include "fv_protocol.hpp"
 #include "fv_world.hpp"
 #include "gizmo_pivot.hpp"
@@ -1937,6 +1938,26 @@ TEST(FvHost, ALookPreviewedLeavesNoStepAndAChosenOneUndoes)
   historyStep(rig, "history.redo");
   EXPECT_EQ(rig.topic("lighting").at("tonemap").at("look").value("name", ""), "Noir");
   EXPECT_EQ(rig.topic("lighting").at("tonemap").value("lookStrength", 0.0), 0.8);
+}
+
+// lighting.set with a gesture (play mode's clock moving the sun): one step under the gesture's label
+// however many sets it took, which undoes back to before the first
+TEST(FvHost, ALightingGestureIsOneStepThatUndoesWhole)
+{
+  HostRig    rig;
+  const Json before  = rig.topic("lighting");
+  const Json gesture = {{"id", "clock:1"}, {"label", "Time passes"}};
+  for(const double elevation : {20.0, 21.0, 22.5})
+  {
+    const Json answer = rig.cmd("lighting.set", {{"sun", {{"elevation", elevation}}}, {"gesture", gesture}});
+    ASSERT_TRUE(answer.value("ok", false)) << answer.dump();
+  }
+  EXPECT_NEAR(rig.topic("lighting").at("sun").value("elevation", 0.0), 22.5, 1e-9);
+  EXPECT_EQ(rig.topic("history").at("undo"), Json({"Time passes"}));
+  historyStep(rig, "history.undo");
+  EXPECT_EQ(differ(before, rig.topic("lighting")), "");
+  historyStep(rig, "history.redo");
+  EXPECT_NEAR(rig.topic("lighting").at("sun").value("elevation", 0.0), 22.5, 1e-9);
 }
 
 // The round-trip oracle over seeded random sequences of edits, with undos and redos among them: the
@@ -6331,4 +6352,155 @@ TEST(FvHost, APlanetHasAMapOfTheWindowAsked)
   EXPECT_TRUE(map["features"].is_array() && map["regions"].is_array() && map["places"].is_array());
   EXPECT_FALSE(rig.cmd("planet.map", {{"west", 20}, {"east", 10}}).value("ok", true)) << "west of east";
   EXPECT_FALSE(rig.cmd("planet.map", {{"width", 100000}}).value("ok", true)) << "too wide";
+}
+
+namespace {
+
+// A glTF of a tree for the backdrop's kit: a trunk `radius` round from its foot to 3 m (play's own
+// column) under a crown of leaves from 3 to 5.5 m, 2.5 m round, its node scaled by `scale`
+void writeTree(const fs::path& dir, double radius, double scale)
+{
+  auto [xyz, tris] = fv::play::columnMesh({{0.0, 0.0}, radius, 0.0, 3.0}, glm::dmat4(1.0), 12);
+  const uint32_t first = uint32_t(xyz.size() / 3);
+  for(int k = 0; k < 24; k++)
+  {
+    const double a = 2.0 * 3.14159265358979 * k / 24.0;
+    xyz.insert(xyz.end(), {float(2.5 * std::cos(a)), float(3.0 + 2.0 * (k % 2)), float(2.5 * std::sin(a))});
+  }
+  const uint32_t apex = uint32_t(xyz.size() / 3);
+  xyz.insert(xyz.end(), {0.0F, 5.5F, 0.0F});
+  for(uint32_t k = 0; k < 24; k++)
+    tris.insert(tris.end(), {first + k, first + (k + 1) % 24, apex});
+  glm::vec3 lo(1e30F), hi(-1e30F);
+  for(size_t i = 0; i < xyz.size(); i += 3)
+  {
+    lo = glm::min(lo, glm::vec3(xyz[i], xyz[i + 1], xyz[i + 2]));
+    hi = glm::max(hi, glm::vec3(xyz[i], xyz[i + 1], xyz[i + 2]));
+  }
+  const size_t positions = xyz.size() * sizeof(float), indices = tris.size() * sizeof(uint32_t);
+  {
+    std::ofstream bin(dir / "tree.bin", std::ios::binary);
+    bin.write(reinterpret_cast<const char*>(xyz.data()), std::streamsize(positions));
+    bin.write(reinterpret_cast<const char*>(tris.data()), std::streamsize(indices));
+  }
+  std::ofstream(dir / "tree.gltf") << Json{{"asset", {{"version", "2.0"}}},
+                                           {"scene", 0},
+                                           {"scenes", {{{"nodes", {0}}}}},
+                                           {"nodes", {{{"name", "tree"}, {"mesh", 0}, {"scale", {scale, scale, scale}}}}},
+                                           {"meshes", {{{"primitives", {{{"attributes", {{"POSITION", 0}}}, {"indices", 1}}}}}}},
+                                           {"buffers", {{{"byteLength", positions + indices}, {"uri", "tree.bin"}}}},
+                                           {"bufferViews",
+                                            {{{"buffer", 0}, {"byteOffset", 0}, {"byteLength", positions}},
+                                             {{"buffer", 0}, {"byteOffset", positions}, {"byteLength", indices}}}},
+                                           {"accessors",
+                                            {{{"bufferView", 0}, {"componentType", 5126}, {"count", xyz.size() / 3}, {"type", "VEC3"}, {"min", {lo.x, lo.y, lo.z}}, {"max", {hi.x, hi.y, hi.z}}},
+                                             {{"bufferView", 1}, {"componentType", 5125}, {"count", tris.size()}, {"type", "SCALAR"}}}}}
+                                          .dump();
+}
+
+}  // namespace
+
+// Play mode on a meadow (fv_host_play.cpp): someone walking at a tree stops at its bark, its crown
+// left out of what they meet; the torch (L) is a light in the scene while it is on and goes with play;
+// B with no ship in the scene and none to load says so
+TEST(FvHost, PlayWalksUpToATreesTrunkAndCarriesATorch)
+{
+  const fs::path kit = fs::temp_directory_path() / ("fv-play-tree-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fs::create_directories(kit);
+  writeTriangles(kit / "grass.gltf", 1);
+  constexpr double kTrunk = 0.2, kNodeScale = 1.5;
+  writeTree(kit, kTrunk, kNodeScale);
+  std::ofstream(kit / "kit.json") << Json{{"version", 1},
+                                          {"plants", {{{"role", "grass"}, {"file", "grass.gltf"}}, {{"role", "tree"}, {"file", "tree.gltf"}}}},
+                                          {"ground", {{"meadow", {{"color", {0.1, 0.2, 0.05}}}}}}}
+                                         .dump();
+  HostRig            rig;
+  rs::RetainedScene& scene  = rig.renderer.hostScene();
+  const auto         frames = [&](int ms) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while(std::chrono::steady_clock::now() < until)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  };
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "meadow"}, {"size", 30}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"backdropKit", kit.generic_string()}}).value("ok", false));
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while(rig.topic("backdrop").value("state", "") != "ready" && std::chrono::steady_clock::now() < end)
+    frames(10);
+  ASSERT_EQ(rig.topic("backdrop").value("state", ""), "ready");
+  frames(300);
+  const rs::EntityId root = rootNamed(scene, "Backdrop");
+  ASSERT_FALSE(root.isNone());
+  // the trees in the world: where each stands, and its trunk's radius there (its copy's scale is its
+  // place's times its node's)
+  struct Tree
+  {
+    glm::vec3 at;
+    float     radius;
+  };
+  std::vector<Tree> trees;
+  for(const rs::EntityId e : scene.entity(root)->children)
+    if(const rs::Entity* entity = scene.entity(e); entity->mesh && scene.shown(e) && entity->name != "Backdrop tile")
+      for(const glm::mat4& m : entity->mesh->copies)
+        trees.push_back({glm::vec3(scene.world(root) * m[3]), float(kTrunk) * glm::length(glm::vec3(m[0]))});
+  ASSERT_GT(trees.size(), 10u);
+  // one with room round it, near the middle
+  const auto flat = [](const glm::vec3& a, const glm::vec3& b) { return glm::length(glm::vec2(a.x - b.x, a.z - b.z)); };
+  const Tree* target = nullptr;
+  for(const Tree& t : trees)
+  {
+    const bool alone = std::none_of(trees.begin(), trees.end(), [&](const Tree& o) { return &o != &t && flat(o.at, t.at) < 7.0F; });
+    if(alone && (!target || glm::length(glm::vec2(t.at.x, t.at.z)) < glm::length(glm::vec2(target->at.x, target->at.z))))
+      target = &t;
+  }
+  ASSERT_NE(target, nullptr);
+  // 4 m off it, looking at it, then on foot and walking at it
+  rig.renderer.getCameraManipulator()->setLookat(glm::dvec3(target->at) + glm::dvec3(4.0, 2.0, 0.0), glm::dvec3(target->at) + glm::dvec3(0.0, 1.6, 0.0),
+                                                 glm::dvec3(0.0, 1.0, 0.0), true);
+  frames(50);
+  ASSERT_TRUE(rig.cmd("play.start").value("ok", false));
+  // where the eye has been, a frame at a time
+  std::vector<glm::dvec3> path;
+  const auto              hold = [&](uint32_t keys, int ms) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while(std::chrono::steady_clock::now() < until)
+    {
+      rig.input({{{"t", "play"}, {"k", keys}, {"dx", 0}, {"dy", 0}, {"wheel", 0}}});
+      glm::dvec3 eye, center, up;
+      rig.renderer.getCameraManipulator()->getLookat(eye, center, up);
+      path.push_back(eye);
+      frames(20);
+    }
+  };
+  hold(fv::play::kForward, 2500);
+  hold(0, 100);
+  // up against its bark on the way, a round trunk slid off and walked past, never in one
+  constexpr double kBody   = 0.3;  // the walker's radius
+  double           closest = 1e30;
+  for(const glm::dvec3& at : path)
+  {
+    closest = std::min(closest, double(flat(glm::vec3(at), target->at)));
+    for(const Tree& t : trees)
+      ASSERT_GT(flat(glm::vec3(at), t.at) - t.radius, kBody - 0.06) << "in a trunk at " << at.x << ", " << at.z;
+  }
+  EXPECT_LT(closest, target->radius + kBody + 0.1) << "walked up to the tree";
+  const glm::dvec3 eye = path.back();
+  // the torch: a light while it is on
+  hold(fv::play::kTorch, 100);
+  hold(0, 100);
+  EXPECT_TRUE(rig.topic("play").value("torch", false));
+  const rs::EntityId torch = rootNamed(scene, "Torch");
+  ASSERT_FALSE(torch.isNone());
+  EXPECT_FALSE(scene.entity(torch)->light.isNone());
+  EXPECT_LT(glm::distance(glm::dvec3(scene.world(torch)[3]), eye), 0.6);
+  // B with nothing to put down
+  hold(fv::play::kShipHere, 100);
+  EXPECT_EQ(rig.topic("play").value("prompt", ""), "No ship to put down");
+  ASSERT_TRUE(rig.cmd("play.stop").value("ok", false));
+  frames(50);
+  EXPECT_TRUE(rootNamed(scene, "Torch").isNone());
+  std::error_code ec;
+  fs::remove_all(kit, ec);
 }

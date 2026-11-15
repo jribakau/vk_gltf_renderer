@@ -9,6 +9,8 @@
 #include <figure/physics/collide/triangle_set.hpp>
 #include <figure/physics/flesh/follow.hpp>
 
+#include "fv_play.hpp"
+
 namespace {
 
 fv::Mat4 toMat4(const glm::mat4& m)
@@ -127,6 +129,32 @@ std::shared_ptr<const fv::physics::SharedTriangles> FvHost::Impl::contactMesh(co
     return it->second;
   auto set = std::make_shared<const fv::physics::SharedTriangles>([model, mesh] { return meshTriangles(*model, mesh); }, meshBounds(*model, mesh));
   contactMeshes.emplace(key, set);
+  return set;
+}
+
+std::shared_ptr<const fv::physics::SharedTriangles> FvHost::Impl::trunkMesh(const std::shared_ptr<const tinygltf::Model>& model, int mesh, const glm::mat4& upright)
+{
+  const auto key = std::make_pair(model.get(), mesh);
+  if(const auto it = trunkMeshes.find(key); it != trunkMeshes.end())
+    return it->second;
+  auto set = std::make_shared<const fv::physics::SharedTriangles>(
+      [model, mesh, upright = glm::dmat4(upright)] {
+        std::vector<float>    xyz;
+        std::vector<uint32_t> all;
+        for(const auto& [positions, tris] : meshTriangles(*model, mesh))
+        {
+          const uint32_t offset = uint32_t(xyz.size() / 3);
+          xyz.insert(xyz.end(), positions.begin(), positions.end());
+          for(const uint32_t i : tris)
+            all.push_back(i + offset);
+        }
+        std::vector<std::pair<std::vector<float>, std::vector<uint32_t>>> out;
+        if(const auto column = fv::play::trunkOf(xyz, all, upright))
+          out.push_back(fv::play::columnMesh(*column, glm::inverse(upright)));
+        return out;
+      },
+      meshBounds(*model, mesh));
+  trunkMeshes.emplace(key, set);
   return set;
 }
 

@@ -73,6 +73,13 @@ Json FvHost::Impl::lightingSet(const Json& patch)
     backdropSet(patch["backdrop"].is_null() ? fv::backdrop::toJson({}) : patch["backdrop"]);
     return lightingSet(rest);
   }
+  // a gesture is the history's (a clock running in play mode: one step however long it runs)
+  if(patch.is_object() && patch.contains("gesture"))
+  {
+    Json rest = patch;
+    rest.erase("gesture");
+    return lightingSet(rest);
+  }
   fv::lighting::State next = fv::lighting::applyPatch(lighting, patch);  // throws, leaving everything as it was
   if(next.env.source == "hdr" && next.env.path.empty())
     throw std::invalid_argument("lighting: env.path is required for an hdr environment");

@@ -899,9 +899,10 @@ void FvHost::Impl::holdBackdropPlants(rs::RetainedScene& scene)
     held.entities             = r.roots;
     // every node that draws is a variant: straight under the root, its own turn and scale kept for
     // its copies and its place in its file (a row for show) dropped
-    for(const rs::EntityId e : r.entities)
+    for(size_t node = 0; node < r.entities.size(); node++)
     {
-      const rs::Entity* entity = e.isNone() ? nullptr : scene.entity(e);
+      const rs::EntityId e      = r.entities[node];
+      const rs::Entity*  entity = e.isNone() ? nullptr : scene.entity(e);
       if(!entity || !entity->mesh)
         continue;
       glm::mat4 base = scene.world(e);
@@ -918,7 +919,8 @@ void FvHost::Impl::holdBackdropPlants(rs::RetainedScene& scene)
               const glm::vec3 p = glm::vec3(base * glm::vec4(b[size_t(c & 1)].x, b[size_t((c >> 1) & 1)].y, b[size_t((c >> 2) & 1)].z, 1.0F));
               halfWidth         = std::max({halfWidth, std::abs(p.x), std::abs(p.z)});
             }
-      held.variants.push_back({.entity = e, .base = base, .halfWidth = halfWidth});
+      const int mesh = node < plant.model->nodes.size() ? plant.model->nodes[node].mesh : -1;
+      held.variants.push_back({.entity = e, .base = base, .halfWidth = halfWidth, .model = plant.model, .mesh = mesh});
       held.entities.push_back(e);
     }
   }

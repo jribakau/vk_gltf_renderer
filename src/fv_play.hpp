@@ -23,9 +23,11 @@
 // Play mode's two controllers, as pure functions of their state, the keys held and a world they ask
 // about (fv_host_play.cpp gives them the scene's): someone on foot who walks, runs and jumps, collides
 // with what stands and climbs steps (collide and slide: rays against the props, the ground under the
-// feet); and a small ship that flies on a throttle with flight assist (its velocity eased toward what
-// the keys ask, its turn toward what the mouse asks, levelled into a bank), rests on its landing pads,
-// and a camera that follows it. No Vulkan, no host: the unit tests drive them on made-up worlds.
+// feet), with a torch in hand; and a small ship that flies on a throttle with flight assist (its
+// velocity eased toward what the keys ask, its turn toward what the mouse asks, levelled into a bank),
+// stops short of what its nose, tail or wingtips would meet, rests on its landing pads, and a camera
+// that follows it. A tree's trunk is found from its mesh (trunkOf) for the host to collide with.
+// No Vulkan, no host: the unit tests drive them on made-up worlds.
 //
 // The ship's own axes are glTF's: forward +z, up +y, so the pilot's right is -x.
 //
@@ -55,6 +57,8 @@ enum Key : uint32_t
   kRollRight = 1u << 8,   // E
   kUse       = 1u << 9,   // F: get in, get out
   kView      = 1u << 10,  // V: the cockpit's view or the chase camera's
+  kTorch     = 1u << 11,  // L: the torch on or off
+  kShipHere  = 1u << 12,  // B: a ship put down ahead
 };
 
 struct Surface
@@ -124,6 +128,37 @@ Pose walkerView(const Walker& w, const World& world, const WalkerTuning& t = {})
 // Someone standing where a camera is, looking where it looks: dropped onto the ground under it when
 // there is one within `reach`
 Walker walkerAt(const Pose& camera, const World& world, double reach, const WalkerTuning& t = {});
+
+// A torch held in the right hand: beside and under the eye, shining at what the view looks at a few
+// metres ahead, its aim a moment behind the view's, so it sways after a turn
+struct Torch
+{
+  bool       on = false;
+  glm::dquat aim{1.0, 0.0, 0.0, 0.0};
+  bool       placed = false;
+};
+// Where it is and where it shines (`forward`) for the view as it is now, after `dt` seconds
+Pose torchView(Torch& t, const Pose& view, double dt);
+
+// ---- what stands in a world -------------------------------------------------------------------------
+
+// A tree's trunk as a column standing up `upright`'s +y: its middle on the plan, its radius, and how far
+// down and up it goes. What someone walks into among a tree's triangles, its leaves and twigs left out.
+struct Column
+{
+  glm::dvec2 centre{0.0};  // x and z
+  double     radius = 0.0;
+  double     bottom = 0.0, top = 0.0;
+};
+// The trunk of a tree whose vertices are `xyz` (three a vertex) and triangles `tris` (three indices a
+// triangle), taken by `upright` to a frame with +y up: its triangles cut at a few heights between its
+// foot and a man's height, and the column the inner ring of that section (the nearest point in each
+// direction from its middle), so leaves and twigs further out leave it as it is. None for a mesh too
+// flat or with too little there to tell.
+std::optional<Column> trunkOf(const std::vector<float>& xyz, const std::vector<uint32_t>& tris, const glm::dmat4& upright);
+// The column as a closed mesh of `sides` sides with its caps, in the frame `back` takes the upright
+// one to (its vertices three a vertex, its triangles three indices a triangle)
+std::pair<std::vector<float>, std::vector<uint32_t>> columnMesh(const Column& c, const glm::dmat4& back, int sides = 10);
 
 // ---- the ship ----------------------------------------------------------------------------------------
 

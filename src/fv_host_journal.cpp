@@ -280,7 +280,13 @@ Json FvHost::Impl::journalScope(const std::string& cmd, const Json& args) const
     return {{"kind", cmd == "wardrobe.collision" ? "collision" : "dforce"}, {"prop", p->id}};
   }
   if(cmd == "lighting.set")
-    return {{"kind", "lighting"}, {"shape", shapeOf(args)}};
+  {
+    // what it changes, not the gesture it is a part of (the history's own)
+    Json shape = shapeOf(args);
+    if(shape.is_object())
+      shape.erase("gesture");
+    return {{"kind", "lighting"}, {"shape", shape}};
+  }
   if(cmd == "backdrop.set")
     return {{"kind", "backdrop"}, {"shape", shapeOf(args)}};
   if(cmd == "scene.order")

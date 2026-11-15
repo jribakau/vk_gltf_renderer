@@ -560,7 +560,7 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
     chunk.middle = m.ground.centre;
     chunk.round  = 0.8 * W::width(*p.world, m.quad);
     chunk.stood  = std::make_shared<std::vector<PlanetBuilt::Chunk::Stood>>();
-    const auto stand = [&](rs::EntityId of, const glm::mat4& base, W::Stand& s) {
+    const auto stand = [&](rs::EntityId of, const glm::mat4& base, W::Stand& s, bool kit) {
       const rs::Entity* held = scene.entity(of);
       if(!held || !held->mesh || s.places.empty())
         return;
@@ -574,7 +574,11 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
       scene.setMeshInstance(e, std::move(instance));
       scene.setVisible(e, false);
       chunk.plants.push_back(e);
-      chunk.stood->push_back({.places = std::move(s.places), .reach = std::move(s.reach), .grown = {0}});
+      chunk.stood->push_back({.places  = std::move(s.places),
+                              .reach   = std::move(s.reach),
+                              .grown   = {0},
+                              .role    = int16_t(kit ? int(s.role) : -1),
+                              .variant = s.variant});
     };
     // the kit's: none where something of the scene is over the ground (fv::backdrop::Standing, on
     // the plan of the floor: only what stands near the floor's height is under it)
@@ -596,12 +600,12 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
           s.places.resize(kept);
           s.reach.resize(kept);
         }
-        stand(found->second[s.variant].entity, found->second[s.variant].base, s);
+        stand(found->second[s.variant].entity, found->second[s.variant].base, s, true);
       }
     // the sea floor's
     for(W::Stand& s : m.seaStands)
       if(s.role < p.seaPlants.size() && s.variant < p.seaPlants[s.role].size())
-        stand(p.seaPlants[s.role][s.variant], glm::mat4(1.0F), s);
+        stand(p.seaPlants[s.role][s.variant], glm::mat4(1.0F), s, false);
     showPlanetPlants(scene, chunk, p.eyeWas);
     for(size_t k = 0; k < chunk.plants.size(); k++)
       if(const rs::Entity* e = scene.entity(chunk.plants[k]); e && e->mesh)
