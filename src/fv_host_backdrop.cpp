@@ -246,6 +246,22 @@ Json FvHost::Impl::backdropTopic() const
   t["latitude"] = nullptr;
   if(planetBuilt && backdropState == "ready")
     t["latitude"] = glm::degrees(std::asin(std::clamp(planetBuilt->world->frame.site.y, -1.0, 1.0)));
+  // what people left on a planet: how many places it has, and where the one nearest the figures
+  // stands (its middle, in the scene, and how far it reaches)
+  t["settled"] = 0;
+  t["nearest"] = nullptr;
+  if(planetBuilt && planetBuilt->world && planetBuilt->world->places && planetBuilt->world->places->joined > 0)
+  {
+    const fv::world::World&  world  = *planetBuilt->world;
+    const fv::world::Places& places = *world.places;
+    uint32_t                 nearest = 0;
+    for(uint32_t i = 1; i < places.joined; i++)
+      if(glm::distance(places.sites[i].direction, world.frame.site) < glm::distance(places.sites[nearest].direction, world.frame.site))
+        nearest = i;
+    const glm::dvec3 at = glm::dvec3(fv::world::siteFrame(world, places.sites[nearest])[3]) + glm::dvec3(0.0, double(groundHeight()), 0.0);
+    t["settled"]        = places.joined;
+    t["nearest"]        = {{"at", {at.x, at.y, at.z}}, {"radius", places.catalogue->packs[places.sites[nearest].pack].radius}};
+  }
   return t;
 }
 

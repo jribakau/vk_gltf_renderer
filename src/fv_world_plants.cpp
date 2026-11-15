@@ -220,7 +220,10 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
           return;
         const glm::dvec3 d = direction(q.face, u, v);
         const Sample     s = sample(w, d, footprint);
-        if(bare(s, rock) || cleared(w, d) || (!rock && s.rock > 0.5F))
+        if(bare(s, rock) || cleared(w, d) || (!rock && s.rock > 0.5F) || (s.built.taken & kGroundKept))
+          return;
+        // (a place stands in a clearing: what is as tall as a tree is none of its floor's)
+        if((s.built.taken & kGroundOpen) && (role == "tree" || role == "grown" || role == "sapling"))
           return;
         // how thickly it grows here: each biome's own by its share, in its groves
         double        odds = 0.0;
@@ -443,8 +446,16 @@ std::vector<GrassTile> grassTiles(const World& w, std::span<const glm::dvec3> fo
         return nullptr;  // on the face beside
       const glm::dvec3 d = direction(face, uv.x, uv.y);
       const Sample     s = sample(w, d, 2.0);
-      if(bare(s, true) || s.elevation < 2.5 || s.rock > 0.5F)
+      if(bare(s, true) || s.elevation < 2.5 || s.rock > 0.5F || (s.built.taken & kGroundCovered))
         return nullptr;
+      // (a road is narrower than a coarse tile, whose middle may be off it: none of a tile lies on one)
+      if(w.places && size > 2.0F)
+        for(int corner = 0; corner < 4; corner++)
+        {
+          const double q = 0.25 * double(size) / tilePlaneHalf(w);
+          if(sample(w, direction(face, uv.x + (corner & 1 ? q : -q), uv.y + (corner & 2 ? q : -q)), 2.0).built.taken & kGroundCovered)
+            return nullptr;
+        }
       const int32_t cx = int32_t(std::floor((double(x) + 0.5) * double(size) / 8.0)), cz = int32_t(std::floor((double(z) + 0.5) * double(size) / 8.0));
       return &w.biomes[size_t(biomeBy(w, s, unit(hash(uint32_t(w.spec.seed) + 31U, face, uint32_t(cx), uint32_t(cz)))))];
     };

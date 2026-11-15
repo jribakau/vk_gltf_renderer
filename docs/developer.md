@@ -159,6 +159,10 @@ src/
 ├── fv_world_map.cpp/hpp        # The planet's base map, baked once over a cube map: rain by the wind, hollows
 │                               #   and lakes, what the water wore away, rivers as curves; and what the stages
 │                               #   read of it (the wear, the water near a point, a river's bed and surface)
+├── fv_world_places.cpp/hpp     # What people left on the planet, from a catalogue of packs and rules: where
+│                               #   places stand, the roads routed between them, things by the roads and alone,
+│                               #   and the stage that levels the ground under them; fv_host_world_places.cpp
+│                               #   reads the catalogue, holds the packs' models and stands the sites near the eye
 ├── fv_play.cpp/hpp             # Play mode's controllers, Vulkan-free: someone on foot (collide and slide,
 │                               #   steps, gravity) and a ship on a throttle with flight assist that lands on
 │                               #   its pads, with a chase camera; fv_host_play.cpp drives them from the app's

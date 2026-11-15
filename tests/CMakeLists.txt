@@ -177,6 +177,10 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_world_map.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_plants.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_sea.cpp
+    # What people left on a planet: a catalogue read, places on level dry ground the same for a seed
+    # whatever the threads, roads between them that cross no lake and step nowhere, nothing planted on them
+    test_fv_world_places.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_world_places.cpp
     # What grows on a planet: a quad's plants are its children's, none in the water or where the figures
     # stand, more in a wood than on a steppe; the grass's tiles on the ground, none twice
     test_fv_world_plants.cpp
@@ -257,6 +261,7 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_host.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_backdrop.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_world.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_host_world_places.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_figure.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_host_journal.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_journal.cpp

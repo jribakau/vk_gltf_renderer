@@ -947,6 +947,147 @@ TEST(FvHost, APlanetIsLevelUnderWhatStandsInTheScene)
   fs::remove_all(dir, ec);
 }
 
+// A planet settles itself from the catalogue the settings name (fv_host_world_places.cpp): the place
+// a walk from the figures stands on its ground as copies of its pack's model, which is held once;
+// none of it is the scene's; and with no places asked for it is gone
+TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
+{
+  const fs::path dir = fs::temp_directory_path() / ("fv-planet-places-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fs::create_directories(dir);
+  writeSlab(dir, 4.0F);
+  // a yard 30 m round, two slabs in it, a gate on its south side; and a post that stands along roads
+  const auto pack = [](const std::string& name, const std::string& kind, int radius, Json copies, bool gate) {
+    Json p = {{"name", name},
+              {"kind", kind},
+              {"radius", radius},
+              {"pieces", Json::array({{{"file", "slab.gltf"}, {"copies", copies}}})},
+              {"clear", {{"cell", 1.0}, {"n", 2 * radius}, {"rows", std::vector<std::string>(size_t(2 * radius), std::string(size_t(2 * radius), '3'))}}}};
+    if(gate)
+      p["gates"] = Json::array({{{"at", {0.0, 0.8 * radius}}, {"heading", {0.0, 1.0}}}});
+    return p;
+  };
+  const Json anywhere = {{"snow", 1.0}, {"tundra", 1.0}, {"desert", 1.0}, {"steppe", 1.0}, {"grassland", 1.0}, {"forest", 1.0}};
+  std::ofstream(dir / "places.json") << Json{{"version", 1},
+                                             {"packs", Json::array({pack("yard", "yard", 30, Json::array({Json::array({0.0, 0.0, 0.0, 0.0}), Json::array({10.0, 0.0, 5.0, 1.0})}), true),
+                                                                    pack("post", "post", 3, Json::array({Json::array({0.0, 0.0, 0.0, 0.0})}), false)})},
+                                             {"rules",
+                                              {{"kinds", Json::array({{{"kind", "yard"}, {"road", "road"}, {"slope", 0.2}, {"spacing", 500}, {"biomes", anywhere}}})},
+                                               {"roads", Json::array({{{"name", "road"}, {"width", 6.0}, {"verge", 3.0}}})},
+                                               {"along", Json::array({{{"kind", "post"}, {"road", "road"}, {"every", 30.0}, {"chance", 1.0}, {"side", 5.0}}})}}}}
+                                            .dump();
+  HostRig            rig;
+  rs::RetainedScene& scene = rig.renderer.hostScene();
+  const auto         state = [&] { return rig.topic("backdrop").value("state", std::string()); };
+  struct Stands
+  {
+    int                    places = 0, copies = 0, held = 0;
+    std::vector<glm::vec3> at;  // where each shown place's entity is, in the root's frame
+    std::vector<glm::vec3> yards;  // those of them that are the yard's (two slabs)
+  };
+  const auto stands = [&] {
+    Stands             out;
+    const rs::EntityId root = rootNamed(scene, "Backdrop");
+    if(root.isNone())
+      return out;
+    for(const rs::EntityId e : scene.entity(root)->children)
+    {
+      const rs::Entity* entity = scene.entity(e);
+      if(entity->name == "Place" && entity->mesh)
+      {
+        EXPECT_TRUE(scene.shown(e));
+        out.places++;
+        out.copies += int(entity->mesh->copies.size());
+        out.at.push_back(entity->local.translation);
+        if(entity->mesh->copies.size() == 2)
+          out.yards.push_back(entity->local.translation);
+      }
+      // (a pack's model, held hidden: the slab's node under the root)
+      else if(entity->name == "slab")
+      {
+        EXPECT_FALSE(scene.shown(e));
+        out.held++;
+      }
+    }
+    return out;
+  };
+  const auto until = [&](const auto& done) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while(!done() && std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return done();
+  };
+  rig.host->onUpdate();
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"placesDir", dir.generic_string()}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "planet"}, {"radius", 5}}).value("ok", false));
+  ASSERT_TRUE(until([&] { return state() == "ready" && stands().places > 0 && stands().copies >= 2; })) << state() << ", " << stands().places << " places";
+  // the yard near the figures: one entity of its two slabs (and the posts by its road, one each)
+  const Stands stood = stands();
+  EXPECT_GE(stood.copies, stood.places + 1) << "the yard's two slabs are one entity's copies";
+  EXPECT_EQ(stood.held, 2) << "a pack's model once, however many places are of it";
+  // the yard stands on the planet's ground, level for it: a vertex of that within a few paces, at
+  // its height (a post by the road stands on the road's bank, which far quads draw coarsely)
+  ASSERT_FALSE(stood.yards.empty());
+  for(const glm::vec3& at : stood.yards)
+  {
+    float      nearest = 1e9F, height = 0.0F;
+    const rs::EntityId root = rootNamed(scene, "Backdrop");
+    for(const rs::EntityId e : scene.entity(root)->children)
+    {
+      const rs::Entity* entity = scene.entity(e);
+      if(entity->name != "Planet ground" || !scene.shown(e))
+        continue;
+      const rs::MeshRecord* mesh = scene.mesh(entity->mesh->parts.at(0).mesh);
+      for(const glm::vec3& v : mesh->positions)
+      {
+        const glm::vec3 p = entity->local.translation + v;
+        if(const float away = glm::length(glm::vec2(p.x - at.x, p.z - at.z)); away < nearest)
+        {
+          nearest = away;
+          height  = p.y;
+        }
+      }
+    }
+    EXPECT_LT(nearest, 3.0F);
+    EXPECT_NEAR(height, at.y, 0.35F) << "at " << at.x << ", " << at.z;
+    EXPECT_GT(glm::length(glm::vec2(at.x, at.z)), 100.0F) << "not where the figures stand";
+  }
+  // none of it is the scene's: no prop, nothing selected
+  EXPECT_TRUE(rig.topic("scene").value("props", Json::object()).empty());
+  // the topic says how many places there are, and where the nearest is: the yard
+  const Json said = rig.topic("backdrop");
+  EXPECT_GT(said.value("settled", 0), 10);
+  ASSERT_TRUE(said.contains("nearest") && said["nearest"].is_object()) << said.dump();
+  EXPECT_EQ(said["nearest"].value("radius", 0.0), 30.0);
+  const glm::vec3 nearest(said["nearest"]["at"][0].get<float>(), said["nearest"]["at"][1].get<float>(), said["nearest"]["at"][2].get<float>());
+  EXPECT_TRUE(std::any_of(stood.yards.begin(), stood.yards.end(), [&](const glm::vec3& at) { return glm::distance(at, nearest) < 0.01F; }));
+  // (and takes it back as a patch: what the host says of it is not the panel's to set)
+  EXPECT_TRUE(rig.cmd("backdrop.set", said).value("ok", false));
+  // with fewer asked for, or none, the planet is settled again: none, and nothing of them is left
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"places", 0}}).value("ok", false));
+  ASSERT_TRUE(until([&] { return state() == "ready" && stands().places == 0 && stands().held == 0; })) << stands().places << " places, " << stands().held << " held";
+  EXPECT_EQ(rig.topic("backdrop").value("settled", -1), 0);
+  EXPECT_TRUE(rig.topic("backdrop")["nearest"].is_null());
+  // and asked for again, they are back where they were
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"places", 1}}).value("ok", false));
+  ASSERT_TRUE(until([&] { return state() == "ready" && stands().places == stood.places; })) << stands().places << " places";
+  const Stands again = stands();
+  ASSERT_EQ(again.at.size(), stood.at.size());
+  std::vector<float> was, now;
+  for(size_t i = 0; i < stood.at.size(); i++)
+  {
+    was.push_back(stood.at[i].x);
+    now.push_back(again.at[i].x);
+  }
+  std::sort(was.begin(), was.end());
+  std::sort(now.begin(), now.end());
+  EXPECT_EQ(was, now);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
 TEST(FvHost, APlanetsGroundTakesTheKitsMaps)
 {
   const fs::path kit = fs::temp_directory_path() / ("fv-planet-kit-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));

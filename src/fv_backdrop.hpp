@@ -80,6 +80,10 @@ struct Spec
   double radius = 20.0;
   double sea    = 0.55;
   double waves  = 0.5;
+  // ... what people left on it (fv_world_places.hpp: places, the roads between them, things by the
+  // roads and alone): 1 as the catalogue's rules have it, more or fewer by it, none at 0. The planet
+  // itself is not made again by it; its ground is asked again where they stand.
+  double places = 1.0;
   // ... and the other bodies in its sky: one moon to begin with. Nothing is made again by them.
   std::vector<Body> bodies = {Body{}};
   // How many metres of air a metre of the land counts for between the eye and what it sees (the
@@ -111,6 +115,7 @@ inline bool samePlanting(Spec a, const Spec& b)
   a.windFrom = b.windFrom;
   a.bodies   = b.bodies;
   a.waves    = b.waves;
+  a.places   = b.places;
   return a == b;
 }
 

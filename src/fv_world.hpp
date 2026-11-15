@@ -25,6 +25,8 @@
 //   their edges differ, and a ray would find the crack.
 //
 // What grows on it is a biome's too (Biome::plants, grass, drift): fv_world_plants.hpp places it.
+// What people left on it (places, the roads between them) is a catalogue's: fv_world_places.hpp
+// settles it and adds a stage that makes the ground theirs (World::places, Sample::built).
 //
 // The ground's colour is the fields' (Sample::colour, a vertex's colour). Its grain is a map's, where
 // the backdrop's kit has maps: a place is so much grass, so much of a wood's floor, of rock and of
@@ -118,6 +120,19 @@ struct Inland
   double shore() const;
 };
 
+// What is built at a point (fv_world_places.hpp): a road's surface, a place's ground
+inline constexpr uint8_t kGroundCovered = 1;  // something lies on it: no grass grows through
+inline constexpr uint8_t kGroundKept    = 2;  // nothing of the land's is planted on it (a yard, a verge)
+inline constexpr uint8_t kGroundOpen    = 4;  // a place's own floor: no tree of the land's stands on it (a place stands in a clearing)
+struct Built
+{
+  float     road = 0.0F;    // 0..1: how much of what draws the sample is a road's surface
+  glm::vec3 colour{0.0F};   // that surface's
+  bool      earth = false;  // a track: drawn as the ground's sand is; else bare of the ground's layers
+  uint8_t   taken = 0;      // kGroundCovered | kGroundKept | kGroundOpen
+  int32_t   site  = -1;     // the site whose pack says so
+};
+
 // A point of the sphere as a stage sees it
 struct Point
 {
@@ -147,6 +162,7 @@ struct Sample
   float  shore = 1.0e9F;         // metres to the nearest inland water's edge, negative in it
   float  painted = 0.0F;         // 0..1: a river too narrow for what draws the sample, as a share of its colour
   Inland inland;                 // what the base map says of the water near
+  Built  built;                  // what is built here
 };
 
 // What stands on a biome's ground with a place of its own (fv_world_plants.hpp): one of the kit's roles
@@ -198,6 +214,8 @@ struct Stage
 
 // The whole planet's fields as a cube map: fv_world_map.hpp
 struct BaseMap;
+// What stands on it and the roads between: fv_world_places.hpp
+struct Places;
 
 // How a planet is made
 struct Making
@@ -233,6 +251,8 @@ struct World
   glm::vec3 albedo{0.1F};
   // Its plants are drawn (fv_world_plants.hpp): the ground near is what lies under them (Biome::floor)
   bool planted = false;
+  // What people left on it, with the stage that makes the ground theirs (withPlaces); none: null
+  std::shared_ptr<const Places> places;
 };
 
 // The planet of a spec: its sea level found, its base map baked, its stages listed, and its site

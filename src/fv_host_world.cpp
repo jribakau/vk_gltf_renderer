@@ -132,6 +132,7 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
         replantPlanet(scene);
     }
     planetBuilt->tiledFor = glm::dvec3(1.0e30);  // (its grass's reach may be another: laid again)
+    settlePlanet();  // (with more places or fewer)
     return;  // as it stands, or as it is being made
   }
   if(backdropBuilt && scene.entity(backdropBuilt->root))
@@ -144,6 +145,7 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
   PlanetBuilt& p = *planetBuilt;
   p.asked        = asked;
   p.generation   = ++planetGeneration;
+  p.made         = p.generation;
 
   // the ground: its vertices' colours on a rough surface
   rs::MaterialRecord ground;
@@ -205,19 +207,34 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
   backdropState = "loading";
   placeBackdrop();
   planetStop = std::make_shared<std::atomic<bool>>(false);
-  loaders.spawn([this, asked, stop = planetStop, generation = p.generation] {
+  // (settled as it is made, when the catalogue is read by now: its first quads are then of the
+  // ground the places take)
+  const std::shared_ptr<const W::Catalogue> catalogue = backdropSpec.places > 0.0 ? placesCatalogue : nullptr;
+  loaders.spawn([this, asked, stop = planetStop, generation = p.generation, catalogue, amount = backdropSpec.places] {
     const auto started = std::chrono::steady_clock::now();
     auto       world   = std::make_shared<const fv::world::World>(fv::world::make(asked, {.stop = stop.get()}));
     const double ms    = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-    post([this, world, stop, generation, ms] {
+    if(catalogue && !stop->load())
+    {
+      const auto places = W::settle(*world, catalogue, amount, stop.get());
+      if(places)
+        LOGI("planet: settled in %.0f ms: %u places, %zu single things, %zu pieces of road\n",
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() - ms, places->joined,
+             places->sites.size() - places->joined, places->roads.size());
+      world = std::make_shared<const fv::world::World>(W::withPlaces(*world, places));
+    }
+    post([this, world, stop, generation, ms, catalogue, amount] {
       if(stop->load() || !planetBuilt || planetBuilt->generation != generation)
         return;  // of a planet that has gone since
+      planetBuilt->settledWith   = catalogue;
+      planetBuilt->settledAmount = catalogue ? amount : 0.0;
       LOGI("planet: made in %.0f ms (%u map cells a face, %u lakes, %zu river pieces)\n", ms,
            world->base ? world->base->grid.cells() : 0U, world->base ? world->base->lakes : 0U,
            world->base ? world->base->pieces.size() : size_t(0));
       planetBuilt->world = world;
       if(backdropKit && renderer->feedsHostScene())
         plantPlanet(renderer->hostScene());
+      settlePlanet();  // (the catalogue came while it was made, or the amount is another)
       followPlanet();  // asks for the first cut
     });
   });
@@ -328,6 +345,8 @@ void FvHost::Impl::followPlanet()
   // scene's instances)
   if(p.planted && !p.shown.empty() && glm::distance(eye, p.tiledFor) >= 3.0)
     tilePlanet(scene, eye);
+  // what people left on it: the places near stood, a pack's models a few a frame
+  followPlaces(scene, eye);
   // what to make next: the whole first cut at once; then, a few batches at a time, the children of
   // shown quads the selection has split and the quads it has whole over shown ones
   const auto asked = [&](const W::Quad& q) { return p.arrived.count(q) || p.making.count(q); };

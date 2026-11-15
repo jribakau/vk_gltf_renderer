@@ -72,7 +72,7 @@ Json toJson(const Spec& s)
     bodies.push_back(toJson(b));
   return {{"kind", s.kind},     {"seed", s.seed}, {"size", s.size},     {"density", s.density}, {"relief", s.relief},
           {"air", s.air},       {"mature", s.mature}, {"wind", s.wind}, {"windFrom", s.windFrom},
-          {"radius", s.radius}, {"sea", s.sea},   {"waves", s.waves},   {"bodies", bodies}};
+          {"radius", s.radius}, {"sea", s.sea},   {"waves", s.waves},   {"places", s.places}, {"bodies", bodies}};
 }
 
 Spec applyPatch(const Spec& s, const Json& patch)
@@ -113,6 +113,8 @@ Spec applyPatch(const Spec& s, const Json& patch)
       field(out.sea, d.sea, v, [&](const Json& x) { return kChecks.number(x, k, 0.0, 0.9); });
     else if(k == "waves")
       field(out.waves, d.waves, v, [&](const Json& x) { return kChecks.number(x, k, 0.0, 1.0); });
+    else if(k == "places")
+      field(out.places, d.places, v, [&](const Json& x) { return kChecks.number(x, k, 0.0, 2.0); });
     else if(k == "bodies")
       field(out.bodies, d.bodies, v, [&](const Json& x) {
         if(!x.is_array())
@@ -124,7 +126,7 @@ Spec applyPatch(const Spec& s, const Json& patch)
           bodies.push_back(body(x[i], k + "[" + std::to_string(i) + "]"));
         return bodies;
       });
-    else if(k == "state" || k == "plants" || k == "latitude")
+    else if(k == "state" || k == "plants" || k == "latitude" || k == "settled" || k == "nearest")
       continue;  // read-only, the host's
     else
       kChecks.reject("unknown key " + k);

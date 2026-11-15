@@ -351,6 +351,15 @@ std::vector<FvHost::Impl::PlacedSet> FvHost::Impl::PlayState::playSets(Impl& s, 
       out.push_back(std::move(set));
     }
   }
+  // and the planet's own places round where one is: their walls are met as a prop's are
+  if(const auto camera = s.renderer->getCameraManipulator())
+  {
+    const size_t props = out.size();
+    s.placeSets(glm::dvec3(camera->getEye()), 60.0, out);
+    for(size_t k = props; k < out.size(); k++)
+      if(!out[k].set->made() && s.play->indexing.insert(out[k].set.get()).second)
+        unmade.push_back(out[k].set);
+  }
   if(!unmade.empty())
     s.loaders.spawn([unmade] {
       for(const auto& set : unmade)

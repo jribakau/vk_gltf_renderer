@@ -74,7 +74,9 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   `planet` kind: its fields by
   stages, its base map (`src/fv_world_map.*`: rain, erosion, lakes and rivers, baked once a planet),
   its plants by biome from the backdrop's kit (`src/fv_world_plants.*`) and its sea floor's, made
-  from a seed (`src/fv_world_sea.*`),
+  from a seed (`src/fv_world_sea.*`), what people left on it from a catalogue of packs and rules
+  (`src/fv_world_places.*`, `src/fv_host_world_places.cpp`: places on levelled ground, roads routed
+  between them, things by the roads),
   its quadtree meshes drawn a cut at a time, its ground's maps from the kit (a material a layer,
   one picked a hit), its sea (no mesh: the ground's body of water on a
   sphere, seen from over it and from in it; its lakes and rivers are meshes met as that water's

@@ -39,7 +39,9 @@
 // Commands (args):
 //   settings.apply  {libraryRoots: [dir], rootId, texServer, maxTextureSize, subdivision, originalTextures,
 //                    backdropKit?: dir, backdropKitChanged?}   (the backdrop's plants, fv_host_backdrop.cpp:
-//                    another folder, or the same one filled since, is read again)
+//                    another folder, or the same one filled since, is read again),
+//                    placesDir?: dir   (the catalogue a planet is settled from: its places.json,
+//                    fv_host_world_places.cpp)
 //   load            {path} or {rel}, prop?, as?, kind?   -> {job}; a DAZ object or a model becomes a new prop
 //                                                (the job's end state has its {prop}). A DAZ object's kind
 //                                                (FvHost::Impl::classifyDaz): a character (its bones name a

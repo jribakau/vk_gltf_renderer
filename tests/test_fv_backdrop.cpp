@@ -1048,6 +1048,23 @@ TEST(BackdropState, APlanetsRadiusAndSeaAreCheckedAndClamped)
 }
 
 // The bodies in a planet's sky: a list set whole, each checked, placed where the figures see them
+// What people left on a planet is an amount from none: it makes no planet again (its ground is
+// asked again where they stand: the host's), and plants nothing on the land
+TEST(BackdropState, PlacesIsAnAmountFromNone)
+{
+  const B::Spec s = B::applyPatch({}, {{"kind", "planet"}});
+  EXPECT_EQ(s.places, 1.0) << "as the catalogue has it";
+  EXPECT_EQ(B::applyPatch(s, {{"places", 0}}).places, 0.0);
+  EXPECT_EQ(B::applyPatch(s, {{"places", 7}}).places, 2.0);
+  EXPECT_EQ(B::applyPatch(B::applyPatch(s, {{"places", 0.5}}), {{"places", nullptr}}).places, 1.0);
+  EXPECT_THROW(B::applyPatch(s, {{"places", "many"}}), std::invalid_argument);
+  const B::Spec fewer = B::applyPatch(s, {{"places", 0.5}});
+  EXPECT_EQ(B::toJson(fewer)["places"], 0.5);
+  EXPECT_EQ(B::applyPatch({}, B::toJson(fewer)), fewer);
+  EXPECT_EQ(B::planetSpec(fewer), B::planetSpec(s)) << "the same planet";
+  EXPECT_TRUE(B::samePlanting(fewer, s));
+}
+
 TEST(BackdropState, APlanetsBodiesAreCheckedAndPlaced)
 {
   const B::Spec d;

@@ -16,11 +16,14 @@
 //   planet's radius (km, 2 to 100) and sea (the share of its surface under water, 0 to 0.9), and
 //   the bodies in its sky (protocol 78): `bodies`, up to four of {radius km, distance km from the
 //   figures, azimuth and elevation (degrees, where the figures see it, as the sun's), color "#rrggbb",
-//   kind rock|gas}. The list is set whole; a key a body leaves out is its default.
+//   kind rock|gas}. The list is set whole; a key a body leaves out is its default. And what
+//   people left on a planet (protocol 82): `places`, 0 none to 2, 1 as the catalogue has it
+//   (settings.apply's placesDir).
 //
 // Read-only in the topic, the host's: state (off; missing: no kit where settings.apply's backdropKit
 // says; loading; ready), plants (how many stand) and latitude (degrees north, where the figures stand
-// on a planet that stands; null otherwise).
+// on a planet that stands; null otherwise); settled (how many places a planet has) and nearest (the
+// one nearest the figures: {at: [x, y, z] in the scene, radius}, null with none).
 //
 // Until protocol 70 this was the lighting's `backdrop` section, set with lighting.set.
 //-------------------------------------------------------------------------------------------------------

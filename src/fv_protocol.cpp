@@ -163,7 +163,10 @@ namespace {
 // 81: play mode: play.start {ship?} and play.stop, the /input event `play` ({k, dx, dy, wheel}: the keys
 // held as fv::play::Key bits, the mouse's move), and the `play` topic (fv_host_play.cpp). An older
 // renderer refuses the commands.
-constexpr int kProtocolVersion = 81;
+// 82: what people left on a planet: the backdrop's `places` (0 none to 2) and settings.apply's
+// placesDir, the folder of the catalogue it is settled from (fv_world_places.hpp). An older renderer
+// refuses the backdrop that has it.
+constexpr int kProtocolVersion = 82;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

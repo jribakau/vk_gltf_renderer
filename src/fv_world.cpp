@@ -393,6 +393,13 @@ void colour(const World& w, const Point& p, Sample& s)
   }
   if(s.painted > 0.0F)
     s.colour = glm::mix(s.colour, kRiverSeen, s.painted);
+  // a road's surface, in the patches it was laid and mended in; a track's is earth, drawn as sand is
+  if(s.built.road > 0.0F)
+  {
+    s.colour = glm::mix(s.colour, s.built.colour * float(0.86 + 0.28 * shade), s.built.road);
+    if(s.built.earth)
+      s.sand = std::max(s.sand, s.built.road);
+  }
 }
 
 // Level where the figures stand and as far as the scene's props reach, easing into the land round it.
@@ -748,6 +755,10 @@ std::array<float, kGroundLayers> surfaceLayers(const World& world, const Sample&
     layer *= (1.0F - sand) * (1.0F - rock);
   layers[size_t(Soil::eSand)] += sand * (1.0F - rock);
   layers[size_t(Soil::eRock)] += rock;
+  // asphalt is none of them: the ground's own material in the road's colour
+  if(s.built.road > 0.0F && !s.built.earth)
+    for(float& layer : layers)
+      layer *= 1.0F - std::clamp(s.built.road, 0.0F, 1.0F);
   return layers;
 }
 

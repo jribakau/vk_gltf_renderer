@@ -94,6 +94,13 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
           impl->applyLighting(false);
         });
     }
+    // the catalogue a planet is settled from: read when its folder is given, or is another
+    if(args.contains("placesDir") && args["placesDir"].is_string())
+      if(const std::filesystem::path dir = pathOf(args["placesDir"].get<std::string>()); dir != st.placesDir)
+      {
+        st.placesDir = dir;
+        impl->post([impl] { impl->readPlaces(); });
+      }
     return Json{{"ok", true}};
   });
   // load works out on a worker what the file is, and comes to the application thread for the rest

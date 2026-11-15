@@ -1025,6 +1025,36 @@ their kit when there is one. It needs no kit: without one it stands bare.
   colour, rock or gas) are the frame's, not the scene's: `FvHost::Impl::applyBodies` places them
   from the figures' floor and hands them to `GltfRenderer::setWorldBodies`, and the shaders test
   rays against them as spheres ([sky.md](sky.md#a-small-planet)). They make no planet again.
+- **What people left on it** (`src/fv_world_places.hpp`, `src/fv_host_world_places.cpp`): places,
+  the roads between them, single things by the roads and alone. The planet decides where and shapes
+  its ground; what they are is data, a catalogue the app's tools write (a folder named by
+  `settings.apply`'s `placesDir`), so another kind of place is an entry there and no code here.
+  - A *pack* is something laid out once: its models and where their copies stand about its middle,
+    how far it reaches, its gates, and a grid of the ground it covers. A *kind* is the packs that
+    are alike and the rule for where one stands (the lands it likes, the steepest ground, its
+    distance from the next, the road led to it or how many stand alone); an *along* rule stands a
+    kind beside a road.
+  - `fv::world::settle` reads the planet and the catalogue: places on level dry ground (one always
+    a walk from the figures, outside what their scene may level), each land's places joined by the
+    shortest tree of routes that can be found over the base map's cells (the cheaper where a road
+    already runs, so they merge; fords through streams, no bridges), the routes as curves the way
+    rivers are, then the single things. The same for a seed whatever the threads. It runs on the
+    worker that makes the planet, or on one of its own when the catalogue or the backdrop's
+    `places` amount comes later; the planet itself is not made again.
+  - `withPlaces` adds a stage before the ground's colour: a place's floor is level on the plane
+    that touches the planet at its middle and eases into the land, a road is cut and banked to its
+    own level across its width (finely drawn quads only; from afar it is a share of the colour),
+    and `Sample::built` says what a point has of it. The planet's plants and grass read that:
+    nothing planted where a pack keeps clear or a road runs, no tree on a place's floor. A point
+    finds what is near it through lists by base-map cell, which hold every cell a place or a road
+    reaches into (a cell only clipped at a corner too).
+  - The host shows the sites near the eye (`followPlaces`, `fv::world::sitesSeen`): an entity a
+    model, its places in the site as copies, under the backdrop's root, so they are the world's
+    as its plants are (no props, not saved, outside the floor and the scene's standing). A pack's
+    models are read on a worker when its first site comes near and brought in a few a frame,
+    held hidden: every site of a pack is copies of the same meshes, so memory goes with the packs
+    held, not with the places. What grows over a place shows from nearer. In play mode a place's
+    walls are met as a prop's are (`placeSets`).
 - **The camera** (`FvHost::Impl::followPlanet`, `applyFly`): the free view's "up" is the scene's by
   the figures and the planet's own vertical away from them (`fv::world::viewUp`), so the horizon
   stays level on the far side; a flight's speed goes with its height over the ground

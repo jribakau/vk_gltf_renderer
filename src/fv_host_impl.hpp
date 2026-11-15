@@ -95,6 +95,7 @@
 #include "fv_journal.hpp"
 #include "ram_watch.hpp"
 #include "fv_backdrop_state.hpp"
+#include "fv_world_places.hpp"
 #include "fv_world_plants.hpp"
 #include "fv_lighting.hpp"
 #include "fv_materials.hpp"
@@ -130,6 +131,8 @@ struct HostSettings
   bool originalTextures = false;  // the source images, not the BC7 cache: only what the renderer cannot read is cooked
   // the folder of the backdrop's plants (its kit.json, fv_host_backdrop.cpp), which the app fills; empty: none
   std::filesystem::path backdropKit;
+  // the folder of the catalogue a planet is settled from (its places.json, fv_host_world_places.cpp); empty: none
+  std::filesystem::path placesDir;
 };
 
 // A shown dial as the morph topic lists it (publishMorphs): what the panel is told of it, as last sent.
@@ -1750,7 +1753,72 @@ struct FvHost::Impl
     fv::world::GrassWas                grassWas;
     glm::dvec3                         tiledFor{1.0e30};  // where the camera was when the tiles were laid
     uint64_t                           standing = 0, tiled = 0;  // plants shown: with a place, in tiles
+
+    // What people left on it (fv_world_places.hpp, fv_host_world_places.cpp). The planet is settled
+    // from the catalogue the host has read, by the backdrop's `places`: again when either is another.
+    uint64_t                                    made = 0;  // which planet this is, through every asking again of its quads
+    std::shared_ptr<const fv::world::Catalogue> settledWith;
+    double                                      settledAmount = 0.0;
+    uint64_t                                    settling      = 0;  // a settling that ends after a newer one is asked is dropped
+    // A pack's models, held hidden under the root: what the sites of that pack are copies of
+    struct HeldModel
+    {
+      struct Node
+      {
+        rs::EntityId entity;
+        glm::mat4    base{1.0F};  // where its file has it
+      };
+      std::vector<rs::EntityId> roots;
+      std::vector<Node>         nodes;  // those that draw
+    };
+    struct HeldPack
+    {
+      std::vector<std::shared_ptr<tinygltf::Model>> read;      // by piece, once its files are read; none for one missing
+      std::vector<HeldModel>                        models;    // by piece, as they come into the scene
+      // Each model's triangles, for someone walking among them (play mode): by piece, then by node
+      std::vector<std::vector<std::shared_ptr<const fv::physics::SharedTriangles>>> walls;
+      size_t   imported = 0;
+      bool     reading = false, held = false;
+      uint32_t users = 0;  // the shown sites of it
+      uint64_t used  = 0;  // when the last of them went (packClock)
+    };
+    std::map<uint32_t, HeldPack> packs;  // by pack of the catalogue
+    struct ShownSite
+    {
+      std::vector<rs::EntityId> entities, growth;  // a model's copies each; what grows over it, from nearer
+      glm::dvec3                at{0.0};           // its middle, in the root's frame
+      glm::mat4                 turn{1.0F};        // its frame's turn
+      bool                      stood = false, grown = false;
+    };
+    std::map<uint32_t, ShownSite> sites;  // by site of the planet's places: those the eye sees
+    std::vector<uint32_t>         seen;
+    glm::dvec3                    seenFor{1.0e30};
+    uint64_t                      packClock = 0;
   };
+  // The catalogue a planet is settled from (settings.placesDir), read on a worker; none until then
+  std::shared_ptr<const fv::world::Catalogue> placesCatalogue;
+  std::filesystem::path                       placesDir;  // the folder it was read from: its models are named from there
+  uint64_t                                    placesRequest = 0;
+  // Reads the catalogue of the settings' folder; the planet that stands is settled from it when it has come
+  void readPlaces();
+  // Settles the planet that stands, if the catalogue or the backdrop's `places` is another than it
+  // was settled by: on a worker, and its ground asked again when that is done
+  void settlePlanet();
+  // The planet with these places (none: null): its quads again, the sites shown before gone
+  void placePlaces(std::shared_ptr<const fv::world::Places> places);
+  // Every frame: the sites the eye sees stood, those it has left gone, the packs' models brought in
+  void followPlaces(rs::RetainedScene& scene, const glm::dvec3& eye);
+  // A pack's files read on a worker; its models into the scene, as many as `budget` allows: true once
+  // all are held
+  void readPack(uint32_t pack);
+  bool holdPack(rs::RetainedScene& scene, uint32_t pack, size_t& budget);
+  // A shown site's entities made: its pack's models (or what grows over it) as copies where it stands
+  void standSite(rs::RetainedScene& scene, uint32_t site, bool growth);
+  // Every shown site and held pack gone
+  void dropSites(rs::RetainedScene& scene);
+  // The shown places within `within` metres of a point of the world, as triangle sets where they
+  // stand, added to `out`: what someone on foot or a ship meets (play mode). Not what grows over them.
+  void placeSets(const glm::dvec3& near, double within, std::vector<PlacedSet>& out);
   std::unique_ptr<PlanetBuilt> planetBuilt;
   uint64_t                     planetGeneration = 0;
   // Set, the planet being made on a worker stops at its next step: nobody waits for it any more
