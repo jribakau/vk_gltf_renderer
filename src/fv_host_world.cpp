@@ -30,9 +30,16 @@
 // The sea floor's plants need no kit (fv_world_sea.hpp): their meshes are made with the planet and
 // held hidden the same way, and a quad's arrive with it as the kit's do.
 //
+// The ground's grain is the kit's too (mapPlanetGround): a material a layer (grass, a wood's floor,
+// rock, sand), made of the kit's ground maps with the colour map divided by its own mean, so the
+// colour stays the ground's vertices'. The quads are still drawn with the one ground material; the
+// renderer is told which materials the layers are, a quad's vertices carry their shares of each, and
+// the path tracer draws a hit with one of them (shaders/world_ground.h.slang).
+//
 
 #include "fv_host_impl.hpp"
 #include "fv_world_map.hpp"
+#include "scene_import_gltf.hpp"
 
 #include <chrono>
 
@@ -198,6 +205,7 @@ void FvHost::Impl::dropPlanet()
   planetStop.reset();
   if(!planetBuilt)
     return;
+  renderer->setWorldGround({});  // (its layers' materials went with the backdrop's root)
   if(renderer->feedsHostScene())
   {
     // (its entities went with the backdrop's root)
@@ -365,6 +373,7 @@ void FvHost::Impl::planetArrived(std::vector<PlanetMade>& made, uint64_t generat
     record.positions     = std::move(m.positions);
     record.normals       = std::move(m.normals);
     record.colors        = std::move(m.colors);
+    record.masks         = std::move(m.layers);  // the ground's: its vertices' shares of its layers
     record.indices.own() = std::move(m.indices);
     record.submeshes.push_back({.firstIndex = 0, .indexCount = count, .material = 0, .order = 0});
     const rs::MeshId   mesh = scene.addMesh(std::move(record));
@@ -574,6 +583,7 @@ void FvHost::Impl::plantPlanet(rs::RetainedScene& scene)
   p.tiledFor = glm::dvec3(1.0e30);
   p.tiled    = 0;
 
+  mapPlanetGround(scene);
   // the kit's plants, held under the root and hidden: what a quad's copies and a tile's mesh are of
   holdBackdropPlants(scene);
   for(const auto& [role, variants] : backdropBuilt->variants)
@@ -597,6 +607,133 @@ void FvHost::Impl::plantPlanet(rs::RetainedScene& scene)
     p.patches.push_back(makeBackdropPatch(scene, kind.cover));
   p.planted = true;
   replantPlanet(scene);
+}
+
+tinygltf::Model FvHost::Impl::planetGroundModel(const BackdropKit& kit, std::vector<size_t>& layerOf)
+{
+  tinygltf::Model  m;
+  tinygltf::Buffer buffer;
+  const auto       put = [&](const void* data, size_t bytes, int target, int componentType, size_t count, int type) {
+    tinygltf::BufferView view;
+    view.buffer     = 0;
+    view.byteOffset = buffer.data.size();
+    view.byteLength = bytes;
+    view.target     = target;
+    const auto* b   = static_cast<const unsigned char*>(data);
+    buffer.data.insert(buffer.data.end(), b, b + bytes);
+    m.bufferViews.push_back(view);
+    tinygltf::Accessor a;
+    a.bufferView    = int(m.bufferViews.size()) - 1;
+    a.componentType = componentType;
+    a.count         = count;
+    a.type          = type;
+    m.accessors.push_back(a);
+    return int(m.accessors.size()) - 1;
+  };
+  // one small triangle, every layer's: nothing ever draws it
+  const std::array<glm::vec3, 3> positions{glm::vec3(0.0F), glm::vec3(0.0F, 0.0F, 0.01F), glm::vec3(0.01F, 0.0F, 0.0F)};
+  const std::array<glm::vec3, 3> normals{glm::vec3(0.0F, 1.0F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F), glm::vec3(0.0F, 1.0F, 0.0F)};
+  const std::array<glm::vec2, 3> uvs{glm::vec2(0.0F), glm::vec2(0.0F, 1.0F), glm::vec2(1.0F, 0.0F)};
+  const std::array<uint32_t, 3>  indices{0, 1, 2};
+  const int position = put(positions.data(), sizeof(positions), TINYGLTF_TARGET_ARRAY_BUFFER, TINYGLTF_COMPONENT_TYPE_FLOAT, 3, TINYGLTF_TYPE_VEC3);
+  const int normal   = put(normals.data(), sizeof(normals), TINYGLTF_TARGET_ARRAY_BUFFER, TINYGLTF_COMPONENT_TYPE_FLOAT, 3, TINYGLTF_TYPE_VEC3);
+  const int uv       = put(uvs.data(), sizeof(uvs), TINYGLTF_TARGET_ARRAY_BUFFER, TINYGLTF_COMPONENT_TYPE_FLOAT, 3, TINYGLTF_TYPE_VEC2);
+  const int index    = put(indices.data(), sizeof(indices), TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER, TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT, 3, TINYGLTF_TYPE_SCALAR);
+  m.accessors[size_t(position)].minValues = {0.0, 0.0, 0.0};
+  m.accessors[size_t(position)].maxValues = {0.01, 0.0, 0.01};
+  m.buffers.push_back(std::move(buffer));
+
+  const auto texture = [&](const std::string& uri) {
+    tinygltf::Image image;
+    image.uri = uri;
+    m.images.push_back(image);
+    tinygltf::Texture tex;
+    tex.source = int(m.images.size()) - 1;
+    m.textures.push_back(tex);
+    return int(m.textures.size()) - 1;
+  };
+  tinygltf::Mesh mesh;
+  mesh.name = "Planet ground layers";
+  layerOf.clear();
+  for(size_t layer = 0; layer < W::kGroundLayers; layer++)
+  {
+    const auto found = kit.ground.find(std::string(W::kGroundKinds[layer]));
+    if(found == kit.ground.end() || found->second.diffuse.empty() || std::min({found->second.mean.x, found->second.mean.y, found->second.mean.z}) <= 0.0F)
+      continue;  // no maps for it, or a kit that does not say what its map's colour is
+    const BackdropKit::Ground& g = found->second;
+    tinygltf::Material         material;
+    material.name = "Planet ground: " + std::string(W::kGroundKinds[layer]);
+    // the ground's colour is its vertices': the map over its own mean gives it its grain
+    material.pbrMetallicRoughness.baseColorFactor        = {1.0 / double(g.mean.x), 1.0 / double(g.mean.y), 1.0 / double(g.mean.z), 1.0};
+    material.pbrMetallicRoughness.baseColorTexture.index = texture(g.diffuse);
+    material.pbrMetallicRoughness.roughnessFactor        = 1.0;
+    material.pbrMetallicRoughness.metallicFactor         = 0.0;
+    if(!g.normal.empty())
+      material.normalTexture.index = texture(g.normal);
+    if(!g.arm.empty())
+    {
+      // occlusion, roughness and metal in one image, as glTF packs them
+      material.pbrMetallicRoughness.metallicRoughnessTexture.index = texture(g.arm);
+      material.pbrMetallicRoughness.metallicFactor                 = 1.0;
+    }
+    m.materials.push_back(material);
+    tinygltf::Primitive prim;
+    prim.mode                     = TINYGLTF_MODE_TRIANGLES;
+    prim.attributes["POSITION"]   = position;
+    prim.attributes["NORMAL"]     = normal;
+    prim.attributes["TEXCOORD_0"] = uv;
+    prim.indices                  = index;
+    prim.material                 = int(m.materials.size()) - 1;
+    mesh.primitives.push_back(prim);
+    layerOf.push_back(layer);
+  }
+  m.meshes.push_back(mesh);
+  tinygltf::Node node;
+  node.name = "Planet ground layers";
+  node.mesh = 0;
+  m.nodes.push_back(node);
+  tinygltf::Scene scene;
+  scene.nodes = {0};
+  m.scenes.push_back(scene);
+  m.defaultScene = 0;
+  return m;
+}
+
+void FvHost::Impl::mapPlanetGround(rs::RetainedScene& scene)
+{
+  PlanetBuilt& p = *planetBuilt;
+  if(p.groundKit == backdropKit && scene.entity(p.groundLayers))
+    return;  // made, of this kit
+  if(scene.entity(p.groundLayers))
+    scene.destroyEntity(p.groundLayers);
+  p.groundLayers = {};
+  p.groundKit    = backdropKit;
+  HostRenderer::WorldGround ground;
+  std::vector<size_t>       layerOf;
+  const tinygltf::Model     model = planetGroundModel(*backdropKit, layerOf);
+  if(!layerOf.empty())
+  {
+    try
+    {
+      const rs::ImportResult r = rs::importGltf(scene, model, {.prop = 0, .parent = backdropBuilt->root, .imageSearchPaths = {backdropKit->dir}});
+      if(!r.roots.empty())
+      {
+        p.groundLayers = r.roots.front();
+        scene.setVisible(p.groundLayers, false);
+        ground.ground = p.ground;
+        for(size_t i = 0; i < layerOf.size() && i < r.materials.size(); i++)
+        {
+          ground.layers[layerOf[i]] = r.materials[i];
+          ground.tiles[layerOf[i]]  = backdropKit->ground.at(std::string(W::kGroundKinds[layerOf[i]])).tile;
+        }
+      }
+    }
+    catch(const std::exception& e)
+    {
+      notice("The planet's ground maps could not be read: " + problemOf(e));
+    }
+  }
+  renderer->setWorldGround(ground);
 }
 
 void FvHost::Impl::replantPlanet(rs::RetainedScene& scene)

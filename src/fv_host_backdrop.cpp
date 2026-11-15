@@ -16,7 +16,12 @@
 //                          "tintWoods"?: that where the far ground is a wood (the tint darkened
 //                          when not given),
 //                          "albedo"?: [r, g, b] linear, what the land reflects seen from afar: the
-//                          colour of the ground past the land's end under the physical sky}}}
+//                          colour of the ground past the land's end under the physical sky,
+//                          "mean"?: [r, g, b] linear, what the diffuse map reflects on average}}}
+//
+// A kind is a backdrop's (its ground's maps) or one of a planet's grounds (fv::world::kGroundKinds:
+// "rock" and "sand" beside the meadow's and the forest's), which takes a map's grain and not its
+// colour: fv_host_world.cpp.
 //
 // Every mesh of a plant's file is a variant of it. The kit is read on a worker (a tree's file is
 // hundreds of megabytes) and kept; of its plants the scene holds those the kind plants
@@ -199,6 +204,7 @@ std::shared_ptr<const FvHost::Impl::BackdropKit> FvHost::Impl::readBackdropKit(c
         ground.tintDry = ground.tint;
       rgb("tintWoods", ground.tintWoods);
       rgb("albedo", ground.albedo);
+      rgb("mean", ground.mean);
       kit->ground[it.key()] = ground;
     }
   return kit;

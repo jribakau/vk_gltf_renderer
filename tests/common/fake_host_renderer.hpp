@@ -94,6 +94,8 @@ public:
 
   void setHazeScope(const nvutils::Bbox* bounds) override { hazeScope = bounds ? std::optional<nvutils::Bbox>(*bounds) : std::nullopt; }
   std::optional<nvutils::Bbox> hazeScope;
+  void        setWorldGround(const WorldGround& ground) override { worldGround = ground; }
+  WorldGround worldGround;
 
   void         selectEntity(rs::EntityId entity) override { m_selected = entity; }
   rs::EntityId selectedEntity() const override { return m_selected; }

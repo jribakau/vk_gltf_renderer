@@ -1547,6 +1547,9 @@ struct FvHost::Impl
       // what the land reflects seen from afar, linear: the planet's ground under the physical sky
       // beyond the land's end (atmoLandAlbedo). Not given (negative): the atmosphere's own
       glm::vec3 albedo{-1.0F};
+      // what the diffuse map reflects on average, linear: a planet's ground is its own colour times
+      // the map over this. Not given (negative; a kit older than its recipe 8): no planet's ground
+      glm::vec3 mean{-1.0F};
     };
     std::filesystem::path         dir;
     std::vector<Plant>            plants;
@@ -1659,6 +1662,11 @@ struct FvHost::Impl
     std::shared_ptr<const fv::world::World> world;       // shared with the pool's jobs; none while it is being made
     uint64_t                                generation = 0;  // a batch made for a planet since gone is dropped
     rs::MaterialId                          ground, sea;
+    // The ground's maps (shaders/world_ground.h.slang), from the kit's grounds: an entity never
+    // shown whose mesh is a triangle a layer, there to hold the layers' materials in the scene, and
+    // the kit they were made from. None without a kit, or with one that has no maps for a planet.
+    rs::EntityId                       groundLayers;
+    std::shared_ptr<const BackdropKit> groundKit;
     // The sea floor's plants (fv_world_sea.hpp), made for the planet's seed: their meshes, shared
     // with the pool's jobs, and an entity each that is never shown, which a quad's copies are of
     std::shared_ptr<const std::vector<fv::world::SeaMesh>>                        seaMeshes;
@@ -1704,6 +1712,12 @@ struct FvHost::Impl
   void plantPlanet(rs::RetainedScene& scene);
   // Its quads made again, the first cut whole before any shows: what stands on them is another
   void replantPlanet(rs::RetainedScene& scene);
+  // The materials its ground's layers are drawn with, made from the kit's grounds and said to the
+  // renderer (HostRenderer::setWorldGround); once a kit
+  void mapPlanetGround(rs::RetainedScene& scene);
+  // Those materials as a glTF model, for the import to make with their textures: a triangle a layer
+  // the kit has maps for. `layerOf`: which layer (fv::world::kGroundKinds) each of its materials is
+  static tinygltf::Model planetGroundModel(const BackdropKit& kit, std::vector<size_t>& layerOf);
   // The grass's tiles for where the camera is (fv::world::grassTiles), laid
   void tilePlanet(rs::RetainedScene& scene, const glm::dvec3& eye);
   // Reads the kit for a planet that stands without one, on a worker: planted when it has come

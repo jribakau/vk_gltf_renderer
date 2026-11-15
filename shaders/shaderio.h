@@ -551,6 +551,14 @@ struct SceneFrameInfo
   float  worldSeaRipples = 0.0F;
   float3 worldSeaTop     = {0.0F, 0.0F, 0.0F};
   float  _worldSeaPad    = 0.0F;
+  // A planet's ground where it has maps (shaders/world_ground.h.slang): the material slot its quads
+  // are drawn with (-1: none, or no maps), the slots of its layers' materials in the order of a
+  // vertex's shares (grass, a wood's floor, rock, sand; -1: none, and that layer is the ground's own
+  // material), and how many repeats of each layer's maps a metre has. (Appended.)
+  int4   worldGroundLayer = {-1, -1, -1, -1};
+  float4 worldGroundTile  = {1.0F, 1.0F, 1.0F, 1.0F};
+  int    worldGround      = -1;
+  int    _worldGroundPad  = 0;
 };
 
 enum PathtracerFlags

@@ -1147,6 +1147,14 @@ void GltfRenderer::setWorldBodies(std::span<const glm::vec4> place, std::span<co
   resetFrame(/*sceneChanged=*/false);  // what the camera sees of the sky, and the sun past them
 }
 
+void GltfRenderer::setWorldGround(const WorldGround& ground)
+{
+  if(ground.ground == m_worldGround.ground && ground.layers == m_worldGround.layers && ground.tiles == m_worldGround.tiles)
+    return;
+  m_worldGround = ground;
+  resetFrame(/*sceneChanged=*/false);  // what the ground is drawn with
+}
+
 float GltfRenderer::skyObserverAltitudeKm() const
 {
   const Settings& s = m_resources.settings;

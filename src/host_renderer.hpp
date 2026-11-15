@@ -160,6 +160,16 @@ public:
   // each one's centre in the scene with its radius in .w, metres, and its linear colour with what it
   // is made of in .w. As many of `place` as of `look`; none clears them.
   virtual void setWorldBodies(std::span<const glm::vec4> /*place*/, std::span<const glm::vec4> /*look*/) {}
+  // A planet's ground with maps (shaders/world_ground.h.slang): the material its quads are drawn
+  // with, the materials of its layers in the order of a vertex's shares (none: that layer is the
+  // ground's own), and the metres a repeat of each one's maps covers. No ground: none has maps.
+  struct WorldGround
+  {
+    rs::MaterialId                ground;
+    std::array<rs::MaterialId, 4> layers;
+    std::array<float, 4>          tiles{1.0F, 1.0F, 1.0F, 1.0F};
+  };
+  virtual void setWorldGround(const WorldGround& /*ground*/) {}
   virtual void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> /*observer*/) {}
   // The pixel readout: what is at a normalized viewport position (origin top-left) and how bright it
   // is, read a frame or two later and again while the still refines (a few times a second), so it

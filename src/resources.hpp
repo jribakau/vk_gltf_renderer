@@ -262,6 +262,10 @@ struct Settings
   glm::vec3 worldSeaTop     = {0.0f, 0.0f, 0.0f};
   float     worldSeaWaves   = 0.0f;
   float     worldSeaRipples = 0.0f;
+  // ... and its ground's maps (shaders/world_ground.h.slang), where the host has said which
+  // materials they are (GltfRenderer::setWorldGround). Off: the ground is drawn as its mesh has it,
+  // which is what a timing compares them with.
+  bool worldGroundMaps = true;
   // The other bodies in that planet's sky (the backdrop's `bodies`; shaders/world_bodies.h.slang), as
   // the frame carries them: each one's centre in the scene with its radius, and its colour with what
   // it is made of. The host's to say (GltfRenderer::setWorldBodies), and nothing a file keeps.

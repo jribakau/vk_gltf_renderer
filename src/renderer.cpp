@@ -1250,6 +1250,22 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.worldSeaTop     = m_resources.settings.worldSeaTop;
     finfo.worldSeaWaves   = m_resources.settings.worldSeaWaves;
     finfo.worldSeaRipples = m_resources.settings.worldSeaRipples;
+    // ... and its ground's maps (shaders/world_ground.h.slang): the slots its materials have now. With
+    // no layer resident the ground is drawn as its mesh has it.
+    if(m_resources.settings.worldGroundMaps && !m_worldGround.ground.isNone() && m_resources.retainedGpu)
+    {
+      const rs::Residency& residency = m_resources.retainedGpu->residency();
+      bool                 any       = false;
+      for(int i = 0; i < 4; i++)
+      {
+        const int slot = m_worldGround.layers[size_t(i)].isNone() ? -1 : residency.materialSlot(m_worldGround.layers[size_t(i)]);
+        finfo.worldGroundLayer[i] = slot;
+        finfo.worldGroundTile[i]  = 1.0F / std::max(m_worldGround.tiles[size_t(i)], 1e-3F);
+        any                       = any || slot >= 0;
+      }
+      if(any)
+        finfo.worldGround = residency.materialSlot(m_worldGround.ground);
+    }
     // a planet that stands in the scene is the physical sky's: every question of the sky is asked
     // from a place of it (shaders/sky_world.h.slang)
     if(m_resources.settings.envSystem == shaderio::EnvSystem::eSky && m_resources.settings.worldRadius > 0.0F)

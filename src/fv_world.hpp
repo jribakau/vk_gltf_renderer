@@ -26,6 +26,11 @@
 //
 // What grows on it is a biome's too (Biome::plants, grass, drift): fv_world_plants.hpp places it.
 //
+// The ground's colour is the fields' (Sample::colour, a vertex's colour). Its grain is a map's, where
+// the backdrop's kit has maps: a place is so much grass, so much of a wood's floor, of rock and of
+// sand (surfaceLayers, a vertex's shares), and the renderer draws each hit with one of them
+// (shaders/world_ground.h.slang).
+//
 // The figures stand where the planet's `site` is: a level place on land, found by the seed. The planet
 // is turned and set so that place is the origin with +y up (Frame); the ground is flat there for
 // kClearing metres and eases into the land over kClearingEdge more.
@@ -63,6 +68,21 @@ struct Spec
 // The ground is level within this of where the figures stand, and eases into the land over the next
 inline constexpr double kClearing     = 5.0;
 inline constexpr double kClearingEdge = 25.0;
+
+// What a ground is drawn with, where the backdrop's kit has its maps: grass (soil with grass on it),
+// a wood's floor, rock, sand. A place is so much of each (surfaceLayers); what they leave of it is
+// the ground's own colour and nothing more (snow). In the order of a vertex's shares, and of
+// kGroundKinds, the kit's names for them.
+enum class Soil : uint8_t
+{
+  eGrass = 0,
+  eFloor,
+  eRock,
+  eSand,
+  ePlain,
+};
+inline constexpr size_t                                      kGroundLayers = 4;
+inline constexpr std::array<std::string_view, kGroundLayers> kGroundKinds{"meadow", "forest", "rock", "sand"};
 
 // No water: a level under any ground
 inline constexpr double kDry = -1.0e30;
@@ -103,6 +123,7 @@ struct Sample
   float     moisture    = 0.5F;  // 0 dry to 1 wet
   float     rough       = 1.0F;  // of the ground's fine relief, its biome's
   float     rock        = 0.0F;  // the share of bare rock whatever the slope
+  float     sand        = 0.0F;  // the share of sand over its biome's ground: a beach, the sea's floor, a river's bed
   float     cliff       = 0.0F;  // 0..1: on a cliff's face (the `cliffs` stage), 1 at its middle
   float     steepened   = 1.0F;  // how many times as steep the tiers made the land's own slope here (by a shore)
   float     tiers       = 0.0F;  // how many tiers the land stands on here: whole on a tier, between on a face
@@ -154,6 +175,7 @@ struct Biome
   std::vector<Growth> plants;
   Grass               grass = Grass::eNone;
   std::string_view    drift;  // what stands in drifts in its grass: flower | fern | "" none
+  Soil                soil = Soil::ePlain;  // what its ground is drawn with
 };
 
 struct World;
@@ -219,6 +241,11 @@ double temperatureAt(const World& world, const glm::dvec3& direction, double ele
 
 // What the ground reflects where it slopes (rise over run): rock shows through as it steepens
 glm::vec3 surfaceColour(const World& world, const Sample& s, float slope);
+
+// And what it is drawn with there: its shares of the ground's layers (kGroundKinds' order), summing
+// to 1 at the most. Rock where surfaceColour has rock, sand where the sample has it, the biomes' soils
+// under them.
+std::array<float, kGroundLayers> surfaceLayers(const World& world, const Sample& s, float slope);
 
 // What the sea's water is: how far light goes in it before a colour is left, per channel
 inline const glm::vec3 kSeaColour{0.25F, 0.72F, 0.80F};
@@ -309,7 +336,10 @@ struct ChunkMesh
   glm::dvec3             centre{0.0};  // in the scene; the positions are about it
   std::vector<glm::vec3> positions, normals;
   std::vector<glm::vec4> colors;
-  std::vector<uint32_t>  indices;
+  // The ground's: each vertex's shares of the layers (surfaceLayers), a byte a layer, the first the
+  // lowest. A water mesh has none.
+  std::vector<uint32_t> layers;
+  std::vector<uint32_t> indices;
   uint32_t               surface = 0;  // the first vertices are the surface's; the rest its skirts'
   double                 lowest = 0.0, highest = 0.0;  // its elevations: under 0, the sea lies on it
   bool                   inland = false;  // a river or a lake lies on it

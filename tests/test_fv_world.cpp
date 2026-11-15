@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <numeric>
 #include <set>
 
 #include <gtest/gtest.h>
@@ -275,6 +276,69 @@ TEST(WorldFields, TheLandStandsInTiersWithCliffsAtTheirEdges)
     EXPECT_EQ(W::sample(flat, spread(i, 2000), 1.0).cliff, 0.0F);
 }
 
+// What a place's ground is drawn with (shaders/world_ground.h.slang): its shares of the layers
+TEST(WorldFields, AGroundIsSharedOutAmongItsLayers)
+{
+  const W::World& w = planet();
+  const auto      of = [](W::Soil soil) { return size_t(soil); };
+  int             sea = 0, faces = 0, woods = 0, grass = 0, snow = 0, beach = 0;
+  for(uint32_t i = 0; i < 20000; i++)
+  {
+    const W::Sample s      = W::sample(w, spread(i, 20000), 1.0);
+    const auto      level  = W::surfaceLayers(w, s, 0.0F);
+    const auto      steep  = W::surfaceLayers(w, s, 2.0F);
+    const float     total  = level[0] + level[1] + level[2] + level[3];
+    const float     shares = std::accumulate(s.share.begin(), s.share.end(), 0.0F);
+    for(const float share : level)
+      ASSERT_GE(share, 0.0F);
+    ASSERT_LE(total, 1.0F + 1e-4F);
+    if(s.elevation < 0.0)
+    {
+      // the sea's floor is sand, however it slopes
+      EXPECT_FLOAT_EQ(level[of(W::Soil::eSand)], 1.0F);
+      EXPECT_FLOAT_EQ(steep[of(W::Soil::eSand)], 1.0F);
+      sea++;
+      continue;
+    }
+    if(s.water > s.elevation)
+      continue;  // a river's or a lake's bed
+    // rock where the colour has rock: a mountain's heights, a cliff's face, and any slope too steep for soil
+    EXPECT_NEAR(level[of(W::Soil::eRock)], s.rock, 1e-5F);
+    EXPECT_NEAR(steep[of(W::Soil::eRock)], 1.0F, 1e-5F);
+    if(s.cliff > 0.9F)
+    {
+      EXPECT_GT(level[of(W::Soil::eRock)], 0.9F);
+      faces++;
+    }
+    if(shares < 0.5F || s.rock > 0.0F || s.sand > 0.0F)
+    {
+      beach += s.sand > 0.5F && level[of(W::Soil::eSand)] > 0.5F * (1.0F - s.rock);
+      continue;
+    }
+    // level ground with nothing over it is its biomes' soils, snow's none
+    const std::string_view biome = w.biomes[size_t(s.biome)].name;
+    if(s.share[size_t(s.biome)] < 0.99F)
+      continue;
+    if(biome == "forest")
+      woods += level[of(W::Soil::eFloor)] > 0.98F;
+    else if(biome == "grassland" || biome == "steppe" || biome == "tundra")
+      grass += level[of(W::Soil::eGrass)] > 0.98F;
+    else if(biome == "desert")
+      EXPECT_GT(level[of(W::Soil::eSand)], 0.98F);
+    else if(biome == "snow")
+    {
+      EXPECT_LT(total, 0.01F);
+      snow++;
+    }
+  }
+  EXPECT_GT(sea, 5000);
+  EXPECT_GT(woods, 100);
+  EXPECT_GT(grass, 500);
+  EXPECT_GT(snow, 10);
+  EXPECT_GT(beach, 3);
+  (void)faces;  // (a face is a few metres wide: the tiers' own test walks onto them)
+}
+
 TEST(WorldSite, TheFiguresStandOnLevelLandAtTheOrigin)
 {
   for(const int seed : {1, 2, 3, 4, 5})
@@ -423,6 +487,7 @@ TEST(WorldMesh, AQuadsTrianglesAreItsGround)
     ASSERT_EQ(m.surface, side * side);
     ASSERT_EQ(m.positions.size(), m.normals.size());
     ASSERT_EQ(m.positions.size(), m.colors.size());
+    ASSERT_EQ(m.positions.size(), m.layers.size());
     EXPECT_EQ(m.positions.size(), size_t(m.surface) + 4 * side);
     EXPECT_EQ(m.indices.size() % 3, 0U);
     for(const uint32_t i : m.indices)
@@ -445,6 +510,21 @@ TEST(WorldMesh, AQuadsTrianglesAreItsGround)
         EXPECT_GE(m.colors[v][c], 0.0F);
         EXPECT_LE(m.colors[v][c], 1.0F);
       }
+      // its shares of the ground's layers, a byte each: the whole of it at the most (and a rounding)
+      uint32_t whole = 0;
+      for(uint32_t l = 0; l < W::kGroundLayers; l++)
+        whole += (m.layers[v] >> (8U * l)) & 255U;
+      EXPECT_LE(whole, 255U + 2U);
+      if(e < -1.0)
+        EXPECT_EQ(m.layers[v], 255U << (8U * uint32_t(W::Soil::eSand)));
+    }
+    // a skirt's vertex is drawn as the edge's it hangs from
+    for(size_t v = m.surface; v < m.positions.size(); v++)
+    {
+      bool found = false;
+      for(uint32_t s = 0; s < m.surface && !found; s++)
+        found = m.layers[s] == m.layers[v] && m.colors[s] == m.colors[v];
+      EXPECT_TRUE(found);
     }
     // each triangle of the surface faces out of the planet
     for(size_t t = 0; t < size_t(W::kGroundCells) * W::kGroundCells * 6; t += 3)
@@ -503,4 +583,5 @@ TEST(WorldMesh, TheSeaHasNoMesh)
   const W::ChunkMesh m = W::waterMesh(w, {4, 3, 2, 5});
   EXPECT_FALSE(m.inland);
   EXPECT_TRUE(m.indices.empty());
+  EXPECT_TRUE(m.layers.empty());  // (and water has no layers)
 }

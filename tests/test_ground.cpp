@@ -19,6 +19,7 @@ using namespace shaderio;
 inline float saturate(float x) { return glm::clamp(x, 0.0f, 1.0f); }
 #include "../shaders/ground.h.slang"
 #include "../shaders/world_sea.h.slang"
+#include "../shaders/world_ground.h.slang"
 #include "../src/sky_ground.hpp"
 
 namespace {
@@ -908,4 +909,203 @@ TEST(Sea, ItsWaterScattersForward)
   EXPECT_GT(sent.z, 0.025f);
   EXPECT_LT(sent.z, 0.05f);
   EXPECT_GT(sent.z, 3.0f * sent.y);
+}
+
+// ---- a planet's ground (shaders/world_ground.h.slang) --------------------------------------------
+
+namespace {
+
+SceneFrameInfo groundWithMaps()
+{
+  SceneFrameInfo frame{};
+  frame.worldGround      = 7;
+  frame.worldGroundLayer = int4(10, 11, 12, 13);                    // grass, a wood's floor, rock, sand
+  frame.worldGroundTile  = float4(1.0f / 2.5f, 0.5f, 0.25f, 0.5f);  // repeats a metre
+  return frame;
+}
+
+}  // namespace
+
+TEST(WorldGround, OnlyThePlanetsGroundIsDrawnByIt)
+{
+  SceneFrameInfo none{};
+  EXPECT_FALSE(worldGroundIs(&none, 0));  // no planet, or one without maps: no slot is its ground
+  EXPECT_FALSE(worldGroundIs(&none, 7));
+  SceneFrameInfo frame = groundWithMaps();
+  EXPECT_TRUE(worldGroundIs(&frame, 7));
+  EXPECT_FALSE(worldGroundIs(&frame, 10));
+}
+
+TEST(WorldGround, ThePickIsTheSameAtAPlaceAndSpreadOverTheGround)
+{
+  EXPECT_EQ(worldGroundPick(float3(3.1f, -2.0f, 8.4f)), worldGroundPick(float3(3.1f, -2.0f, 8.4f)));
+  // smooth: a centimetre on, nearly the same
+  const float4 here = worldGroundPick(float3(3.1f, -2.0f, 8.4f)), near = worldGroundPick(float3(3.11f, -2.0f, 8.4f));
+  for(int c = 0; c < 4; c++)
+    EXPECT_LT(std::abs(here[c] - near[c]), 0.1f);
+  // over a field, about as often anywhere from 0 to 1, each of the four, and no two together
+  int    low[4] = {}, high[4] = {}, n = 0;
+  double sum[4] = {}, both[4] = {};
+  for(int i = 0; i < 200; i++)
+    for(int j = 0; j < 200; j++, n++)
+    {
+      const float4 p = worldGroundPick(float3(-800.0f + 0.37f * float(i), 12.0f, 300.0f + 0.41f * float(j)));
+      for(int c = 0; c < 4; c++)
+      {
+        ASSERT_GE(p[c], 0.0f);
+        ASSERT_LE(p[c], 1.0f);
+        low[c] += p[c] < 0.25f;
+        high[c] += p[c] > 0.75f;
+        sum[c] += p[c];
+        both[c] += (p[c] - 0.5) * (p[(c + 1) % 4] - 0.5);
+      }
+    }
+  for(int c = 0; c < 4; c++)
+  {
+    EXPECT_NEAR(sum[c] / n, 0.5, 0.05);
+    EXPECT_NEAR(double(low[c]) / n, 0.25, 0.08);
+    EXPECT_NEAR(double(high[c]) / n, 0.25, 0.08);
+    EXPECT_LT(std::abs(both[c] / n), 0.02);
+  }
+}
+
+TEST(WorldGround, ALayerHasItsShareOfThePlace)
+{
+  // all of one: that one, wherever the noise is
+  for(const float pick : {0.0f, 0.3f, 1.0f})
+  {
+    EXPECT_EQ(worldGroundLayer(float4(1, 0, 0, 0), pick), 0);
+    EXPECT_EQ(worldGroundLayer(float4(0, 0, 1, 0), pick), 2);
+    EXPECT_EQ(worldGroundLayer(float4(0, 0, 0, 0), pick), -1);  // none: the ground's own material
+  }
+  // rock first along the noise, then sand, a wood's floor, grass, and what they leave
+  const float4 mixed(0.2f, 0.2f, 0.2f, 0.2f);
+  EXPECT_EQ(worldGroundLayer(mixed, 0.1f), 2);
+  EXPECT_EQ(worldGroundLayer(mixed, 0.3f), 3);
+  EXPECT_EQ(worldGroundLayer(mixed, 0.5f), 1);
+  EXPECT_EQ(worldGroundLayer(mixed, 0.7f), 0);
+  EXPECT_EQ(worldGroundLayer(mixed, 0.95f), -1);
+  // a trace of a layer shows nowhere, though the noise is at its end over some of the ground; nor
+  // does the ground's own where a byte's rounding leaves a trace of it
+  EXPECT_EQ(worldGroundLayer(float4(0.99f, 0, 0.01f, 0), 0.0f), 0);
+  EXPECT_EQ(worldGroundLayer(float4(0.6f, 0, 0.392f, 0), 1.0f), 0);
+  // over a field of the noise a layer has about its share
+  int rock = 0, n = 0;
+  for(int i = 0; i < 150; i++)
+    for(int j = 0; j < 150; j++, n++)
+      rock += worldGroundLayer(float4(0.7f, 0, 0.3f, 0), worldGroundPick(float3(40.0f + 0.3f * float(i), 0.0f, 0.3f * float(j))).x) == 2;
+  EXPECT_NEAR(double(rock) / n, 0.3, 0.08);
+}
+
+TEST(WorldGround, ItsMapsAreLaidOnThePlaneItFaces)
+{
+  // level ground on y's plane, a cliff's face on the plane it faces, whichever way it faces it
+  for(const float pick : {0.0f, 0.5f, 1.0f})
+  {
+    EXPECT_EQ(worldGroundPlane(normalize(float3(0.1f, 1.0f, -0.2f)), pick), 1);
+    EXPECT_EQ(worldGroundPlane(normalize(float3(-1.0f, 0.2f, 0.1f)), pick), 0);
+    EXPECT_EQ(worldGroundPlane(normalize(float3(0.3f, -0.1f, -1.0f)), pick), 2);
+    // 35 degrees from level is still level ground's plane
+    EXPECT_EQ(worldGroundPlane(normalize(float3(0.7f, 1.0f, 0.0f)), pick), 1);
+  }
+  // where it faces two alike, either, by the noise
+  EXPECT_EQ(worldGroundPlane(normalize(float3(1.0f, 1.0f, 0.0f)), 0.2f), 1);
+  EXPECT_EQ(worldGroundPlane(normalize(float3(1.0f, 1.0f, 0.0f)), 0.8f), 0);
+
+  SceneFrameInfo frame = groundWithMaps();
+  // Sand, level. A map lies one of two ways, by the noise: a centimetre along x is so much of a
+  // repeat along u and none along v, or, turned a quarter and a little larger, the other way round.
+  const float3 up(0, 1, 0);
+  const float4 sand(0, 0, 0, 1);
+  int          first = 0, second = 0;
+  for(int i = 0; i < 400; i++)
+  {
+    const float3         at(10.0f + 0.83f * float(i), 0.0f, 20.0f - 0.61f * float(i));
+    const WorldGroundHit a = worldGroundAt(&frame, at, up, sand, 0.0f);
+    const WorldGroundHit b = worldGroundAt(&frame, at + float3(0.01f, 0, 0), up, sand, 0.0f);
+    const WorldGroundHit c = worldGroundAt(&frame, at + float3(0, 0, 0.01f), up, sand, 0.0f);
+    ASSERT_TRUE(a.mapped);
+    EXPECT_EQ(a.material, 13);
+    if(b.texelDensity != a.texelDensity || c.texelDensity != a.texelDensity)
+      continue;  // the three are not in one patch
+    const float tol = 2e-4f;  // (a float's worth of a coordinate tens of repeats out)
+    if(a.texelDensity == 0.5f)
+    {
+      first++;
+      EXPECT_NEAR(b.uv.x - a.uv.x, 0.005f, tol);
+      EXPECT_NEAR(b.uv.y - a.uv.y, 0.0f, tol);
+      EXPECT_NEAR(c.uv.y - a.uv.y, 0.005f, tol);
+      // the frame is the map's: u along x, and up the map against v, which runs along z
+      EXPECT_GT(a.tangent.x, 0.99f);
+      EXPECT_LT(a.bitangent.z, -0.99f);
+    }
+    else
+    {
+      second++;
+      EXPECT_FLOAT_EQ(a.texelDensity, 0.5f * WORLD_GROUND_SECOND_SCALE);
+      EXPECT_NEAR(b.uv.y - a.uv.y, -0.005f * WORLD_GROUND_SECOND_SCALE, tol);
+      EXPECT_NEAR(b.uv.x - a.uv.x, 0.0f, tol);
+      EXPECT_NEAR(c.uv.x - a.uv.x, 0.005f * WORLD_GROUND_SECOND_SCALE, tol);
+      EXPECT_GT(a.tangent.z, 0.99f);
+      EXPECT_GT(a.bitangent.x, 0.99f);
+    }
+  }
+  EXPECT_GT(first, 100);
+  EXPECT_GT(second, 100);
+
+  // Rock on a face that looks along +x: the map's top is up either way it lies, so v falls as the
+  // face is climbed, and the frame is the map's: the tangent along u, the bitangent up the map, both
+  // in the face
+  const float3 out = normalize(float3(1.0f, 0.15f, 0.1f));
+  const float4 rock(0, 0, 1, 0);
+  for(int i = 0; i < 50; i++)
+  {
+    const float3         at(5.0f, 3.0f + 1.3f * float(i), 7.0f + 2.9f * float(i));
+    const WorldGroundHit f = worldGroundAt(&frame, at, out, rock, 0.0f);
+    const WorldGroundHit g = worldGroundAt(&frame, at + float3(0, 0.01f, 0), out, rock, 0.0f);
+    const WorldGroundHit h = worldGroundAt(&frame, at + float3(0, 0, 0.01f), out, rock, 0.0f);
+    ASSERT_TRUE(f.mapped);
+    EXPECT_EQ(f.material, 12);
+    if(g.texelDensity != f.texelDensity || h.texelDensity != f.texelDensity)
+      continue;
+    EXPECT_TRUE(f.texelDensity == 0.25f || f.texelDensity == 0.25f * WORLD_GROUND_SECOND_SCALE);
+    EXPECT_NEAR(g.uv.y - f.uv.y, -0.01f * f.texelDensity, 2e-4f);
+    EXPECT_NEAR(h.uv.x - f.uv.x, 0.01f * f.texelDensity, 2e-4f);
+    EXPECT_NEAR(length(f.tangent), 1.0f, 1e-5f);
+    EXPECT_NEAR(length(f.bitangent), 1.0f, 1e-5f);
+    EXPECT_NEAR(dot(f.tangent, out), 0.0f, 1e-5f);
+    EXPECT_NEAR(dot(f.bitangent, out), 0.0f, 1e-5f);
+    EXPECT_NEAR(dot(f.tangent, f.bitangent), 0.0f, 1e-5f);
+    EXPECT_GT(f.tangent.z, 0.9f);    // along u, which runs along z on this plane
+    EXPECT_GT(f.bitangent.y, 0.9f);  // up the map: against v
+  }
+
+  // a place with no layer, or a layer the kit has no maps for, is the ground's own material
+  EXPECT_FALSE(worldGroundAt(&frame, float3(1, 2, 3), up, float4(0, 0, 0, 0), 0.0f).mapped);
+  frame.worldGroundLayer = int4(10, 11, -1, 13);
+  const WorldGroundHit bare = worldGroundAt(&frame, float3(5, 3, 7), out, rock, 0.0f);
+  EXPECT_FALSE(bare.mapped);
+  EXPECT_EQ(bare.material, 7);
+}
+
+TEST(WorldGround, FromFarItIsItsOwnMaterialAgain)
+{
+  // a repeat forty pixels across or more: the map, everywhere; under eight: nowhere
+  for(const float pick : {0.0f, 0.5f, 1.0f})
+  {
+    EXPECT_FALSE(worldGroundFaded(0.0f, 0.5f, pick));
+    EXPECT_FALSE(worldGroundFaded(0.04f, 0.5f, pick));  // sand's two metres from 40 m at a milliradian a pixel
+    EXPECT_TRUE(worldGroundFaded(0.3f, 0.5f, pick));
+    EXPECT_FALSE(worldGroundFaded(0.08f, 0.25f, pick));  // rock's four metres are seen from twice as far
+  }
+  // between, in patches
+  EXPECT_TRUE(worldGroundFaded(0.15f, 0.5f, 0.2f));
+  EXPECT_FALSE(worldGroundFaded(0.15f, 0.5f, 0.8f));
+  SceneFrameInfo frame = groundWithMaps();
+  int            mapped = 0;
+  for(int i = 0; i < 400; i++)
+    mapped += worldGroundAt(&frame, float3(3.0f + 0.9f * float(i), 0.0f, -2.0f * float(i)), float3(0, 1, 0), float4(0, 0, 0, 1), 0.15f).mapped;
+  EXPECT_GT(mapped, 100);
+  EXPECT_LT(mapped, 300);
+  EXPECT_FALSE(worldGroundAt(&frame, float3(3, 0, 4), float3(0, 1, 0), float4(0, 0, 0, 1), 1.0f).mapped);
 }

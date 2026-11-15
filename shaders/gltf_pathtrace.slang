@@ -1312,7 +1312,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     {
       // Find material at the hit point and evaluate the material (PBR material evaluation)
 
-      materialIndex = max(0, renderNode.materialID);
+      // (a planet's ground is drawn with the one of its materials its place is, its maps laid by
+      // where the hit is: world_ground.h.slang)
+      materialIndex = worldGroundMaterial(max(0, renderNode.materialID), hit, worldFoot, frameInfo);
 
 #if GLTF_USE_VOLUME
       // What the surface is to the media the path is in (medium_stack.h.slang); the segment up to here
@@ -3725,7 +3727,7 @@ void inspectPixel(IRaytracer raytracer)
   }
   else
   {
-    const int   materialIndex   = max(0, node.materialID);
+    const int   materialIndex   = worldGroundMaterial(max(0, node.materialID), hit, worldFoot, frameInfo);
     MeshState   mesh            = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, false,
                                             worldFoot * hit.texelDensity * pushConst.texGradScale);
     mesh.baseColorVertexMul     = hit.color;

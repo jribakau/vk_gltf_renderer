@@ -671,6 +671,90 @@ TEST(FvHost, APlanetStandsWithNoKit)
   EXPECT_TRUE(rootNamed(scene, "Backdrop").isNone());
 }
 
+// A planet's ground takes its grain from the kit's ground maps (mapPlanetGround): a material a layer
+// the kit has maps and a mean colour for, held by an entity never shown, said to the renderer with the
+// ground's own; a quad's vertices carry their shares of the layers; gone with the planet
+TEST(FvHost, APlanetsGroundTakesTheKitsMaps)
+{
+  const fs::path kit = fs::temp_directory_path() / ("fv-planet-kit-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fs::create_directories(kit);
+  writeTriangles(kit / "grass.gltf", 2);
+  writeTriangles(kit / "tree.gltf", 1);
+  // rock with maps and its mean; sand with maps but no mean (an older kit's: no planet's ground);
+  // the meadow's with a colour and no map
+  std::ofstream(kit / "kit.json") << Json{{"version", 1},
+                                          {"plants", {{{"role", "grass"}, {"file", "grass.gltf"}}, {{"role", "tree"}, {"file", "tree.gltf"}}}},
+                                          {"ground",
+                                           {{"meadow", {{"color", {0.1, 0.2, 0.05}}, {"tile", 3.0}}},
+                                            {"rock", {{"diffuse", "rock.png"}, {"normal", "rock_nor.png"}, {"arm", "rock_arm.png"}, {"tile", 4.0}, {"mean", {0.25, 0.2, 0.1}}}},
+                                            {"sand", {{"diffuse", "sand.png"}, {"tile", 2.0}}}}}}
+                                         .dump();
+  HostRig            rig;
+  rs::RetainedScene& scene = rig.renderer.hostScene();
+  const auto         state = [&] { return rig.topic("backdrop"); };
+  const auto         until = [&](const std::function<bool()>& done) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while(!done() && std::chrono::steady_clock::now() < end)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return done();
+  };
+  rig.host->onUpdate();
+  ASSERT_TRUE(rig.cmd("settings.apply", {{"backdropKit", kit.generic_string()}}).value("ok", false));
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "planet"}, {"radius", 5}}).value("ok", false));
+  // bare first, then planted when the kit has been read: its ground's maps come with its plants
+  ASSERT_TRUE(until([&] { return !rig.renderer.worldGround.ground.isNone() && state().value("state", "") == "ready"; })) << state().dump();
+  const HostRenderer::WorldGround said = rig.renderer.worldGround;
+  const size_t rock = size_t(fv::world::Soil::eRock);
+  for(size_t layer = 0; layer < said.layers.size(); layer++)
+    EXPECT_EQ(said.layers[layer].isNone(), layer != rock) << layer;
+  EXPECT_EQ(said.tiles[rock], 4.0F);
+  const rs::MaterialRecord* ground = scene.material(said.ground);
+  const rs::MaterialRecord* layer  = scene.material(said.layers[rock]);
+  ASSERT_NE(ground, nullptr);
+  ASSERT_NE(layer, nullptr);
+  EXPECT_EQ(ground->payload.name, "Planet ground");
+  // the map over its own mean: the ground's colour stays its vertices'
+  EXPECT_NEAR(layer->payload.baseColor[0], 4.0F, 1e-4F);
+  EXPECT_NEAR(layer->payload.baseColor[1], 5.0F, 1e-4F);
+  EXPECT_NEAR(layer->payload.baseColor[2], 10.0F, 1e-4F);
+  // what holds the layers' materials is under the root and never shown; the quads are drawn with
+  // the ground's own, and carry their vertices' shares
+  const rs::EntityId root = rootNamed(scene, "Backdrop");
+  ASSERT_FALSE(root.isNone());
+  int holders = 0, quads = 0;
+  for(const rs::EntityId e : scene.entity(root)->children)
+  {
+    const rs::Entity* entity = scene.entity(e);
+    if(entity->name == "Planet ground layers")
+    {
+      holders++;
+      EXPECT_FALSE(scene.shown(e));
+    }
+    if(entity->name != "Planet ground" || !entity->mesh)
+      continue;
+    quads++;
+    EXPECT_EQ(entity->mesh->parts.at(0).materials.at(0), said.ground);
+    const rs::MeshRecord* mesh = scene.mesh(entity->mesh->parts.at(0).mesh);
+    ASSERT_NE(mesh, nullptr);
+    EXPECT_EQ(mesh->masks.size(), mesh->positions.size());
+  }
+  EXPECT_EQ(holders, 1);
+  EXPECT_GT(quads, 30);
+  // planted again (another density): the same materials, made once a kit
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"density", 0.5}}).value("ok", false));
+  ASSERT_TRUE(until([&] { return state().value("state", "") == "ready"; }));
+  EXPECT_EQ(rig.renderer.worldGround.layers[rock], said.layers[rock]);
+  // gone with the planet
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "none"}}).value("ok", false));
+  EXPECT_TRUE(rig.renderer.worldGround.ground.isNone());
+  EXPECT_TRUE(rig.renderer.worldGround.layers[rock].isNone());
+  std::error_code ec;
+  fs::remove_all(kit, ec);
+}
+
 // Auto white balance: the frame's light as the renderer read it, answered as the white balance that makes
 // it grey; a frame with nothing to read answers found false
 TEST(FvHost, WhiteBalanceAnswersTheFramesLight)

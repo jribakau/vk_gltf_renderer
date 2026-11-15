@@ -462,6 +462,7 @@ public:
   void setHoverObserver(std::function<void(const std::optional<InstancePick>& pick)> observer) override { m_hoverObserver = std::move(observer); }
   void pivotAt(glm::vec2 uv) override;
   void setWorldBodies(std::span<const glm::vec4> place, std::span<const glm::vec4> look) override;
+  void setWorldGround(const WorldGround& ground) override;
   void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> observer) override
   {
     m_pivotObserver = std::move(observer);
@@ -867,6 +868,7 @@ private:
   // a pivot's pick waiting for the picker (pivotAt), ahead of the hover's
   std::optional<glm::vec2>                                                   m_pivotDue;
   std::function<void(const std::optional<glm::vec3>& at, bool recentred)> m_pivotObserver;
+  WorldGround m_worldGround;  // a planet's ground with maps, as the host said (setWorldGround)
   std::optional<PendingClickResult> m_pendingClickResult;
   // The pixel readout: where (none: off), whether a reading is due (a new place), when the last was
   // recorded and whether a frame was traced since, and the frame that has one in flight

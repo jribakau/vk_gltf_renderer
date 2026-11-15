@@ -13,6 +13,7 @@
 #include "sky_background.h.slang"
 #include "ground.h.slang"
 #include "world_sea.h.slang"
+#include "world_ground.h.slang"
 #include "light_pick.h.slang"
 #include "medium_stack.h.slang"
 
@@ -32,6 +33,25 @@
 #include "dlss_specular_guide.h.slang"
 #include "haze.h.slang"
 #include "rain.h.slang"  // rainShelterTexel: where the rain lands
+
+//-----------------------------------------------------------------------
+// The material a mesh hit is drawn with: its own, or, for a planet's ground with maps, the one of
+// its layers' that the place is (world_ground.h.slang), the hit then given its place in that
+// layer's maps and the frame they are read in. `footprint`: metres across what the hit stands for
+//-----------------------------------------------------------------------
+int worldGroundMaterial(int material, inout HitState hit, float footprint, SceneFrameInfo* frameInfo)
+{
+  if(!worldGroundIs(frameInfo, material))
+    return material;
+  const WorldGroundHit ground = worldGroundAt(frameInfo, hit.pos, hit.nrm, hit.masks, footprint);
+  if(!ground.mapped)
+    return material;
+  hit.uv[0]        = ground.uv;
+  hit.tangent      = ground.tangent;
+  hit.bitangent    = ground.bitangent;
+  hit.texelDensity = ground.texelDensity;
+  return ground.material;
+}
 
 //-----------------------------------------------------------------------
 // Types and tuning constants
@@ -2759,10 +2779,11 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     GltfRenderPrimitive prim  = renderPrimitive[payload.rprimID];
     float3              barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
     HitState  hit  = getHitState(prim, barys, node.worldToObject, node.objectToWorld, payload.primitiveID, dir);
+    const int material = worldGroundMaterial(max(0, node.materialID), hit, 0.0F, pushConst.frameInfo);  // a lake's bed
     MeshState mesh = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, isInside, 0.0f);
     mesh.baseColorVertexMul = hit.color;
     mesh.masks              = hit.masks;
-    mat    = evaluateMaterial(max(0, node.materialID), mesh, allImages, allSamplers, texInfos, materials,
+    mat    = evaluateMaterial(material, mesh, allImages, allSamplers, texInfos, materials,
                               hasFlag(pushConst.flags, PathtracerFlags::ePtScatterAsThin),
                               hasFlag(pushConst.flags, PathtracerFlags::ePtSkinFaceOn));
     origin       = hit.pos;

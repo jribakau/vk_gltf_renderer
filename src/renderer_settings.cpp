@@ -446,6 +446,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_resources.settings.worldSeaWaves, Persist::eNo, 0.0F, 1.0F);
   m_settings.add({.name = "worldSeaRipples", .help = "A planet's sea: the ripples on it, 0 still to 1", .callbackSuccess = seaChanged},
                  &m_resources.settings.worldSeaRipples, Persist::eNo, 0.0F, 1.0F);
+  m_settings.add({.name            = "worldGroundMaps",
+                  .help            = "A planet's ground: drawn with its layers' maps where the host has them "
+                                     "(shaders/world_ground.h.slang). Off: its vertices' colours alone, for a timing against them",
+                  .callbackSuccess = seaChanged},
+                 &m_resources.settings.worldGroundMaps, Persist::eNo);
 
   // The clouds over the physical sky. Each re-bakes the cloud image with the sky, through the same
   // preview-then-settle path; none of them touches the atmosphere's tables.

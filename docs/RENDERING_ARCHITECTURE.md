@@ -892,6 +892,17 @@ their kit when there is one. It needs no kit: without one it stands bare.
   is. Meshes are made on the job pool a batch at a time and arrive as hidden entities, so their BLAS
   is built before they show. A quad's edges carry skirts, since neighbours of different levels don't
   meet exactly and a ray would find the crack.
+- **The ground's colour** is its vertices' (the fields'), and **its grain** a map's where the
+  backdrop's kit has ground maps (`shaders/world_ground.h.slang`, `mapPlanetGround`). The quads are
+  all drawn with one material; the kit's maps make four more, a layer each (grass, a wood's floor,
+  rock, sand), each colour map divided by its own mean so that it changes the ground's grain and not
+  its colour. A vertex carries its place's share of each layer (`surfaceLayers`, in the mesh's
+  masks), and the path tracer, at a hit of the ground's material, takes one of them by a noise over
+  the ground and evaluates that material instead: a blend would be four material evaluations a hit.
+  The maps have no coordinates of the mesh's; they are laid by where the hit is in the scene, on
+  the axis plane the ground faces most squarely (a cliff's face from its side), the normal map's
+  frame with them. The frame carries the materials' slots (`GltfRenderer::setWorldGround`,
+  `SceneFrameInfo::worldGround`); with none, the ground is drawn as its mesh has it.
 - **The sea** is no mesh: it is the ground's body of water (`shaders/ground.h.slang`) asked about a
   sphere (`shaders/world_sea.h.slang`; `worldSeaRadius`, `worldSeaTop`, `worldSeaWaves`,
   `worldSeaRipples`, the backdrop's `waves`). A path's ray meets its surface, the sphere at the
