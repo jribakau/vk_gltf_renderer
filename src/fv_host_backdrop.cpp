@@ -276,9 +276,39 @@ void FvHost::Impl::publishBackdrop()
   publishedBackdrop = now;
 }
 
+// A planet an author made (the backdrop's `planet`): its file read, its numbers the spec's and what it
+// puts on the land the spec's `placed`. Read at every patch, so a file changed since is the planet from
+// the next one; what it places is kept as it was while it says the same, so the planet is not made
+// again for nothing. Throws what is wrong with it. Before the app has said where the planets are (a
+// scene opened at the start), the name waits: settings.apply's planetsDir comes back here.
+void FvHost::Impl::readPlanetFile(fv::backdrop::Spec& spec) const
+{
+  if(spec.planet.empty() || !fv::backdrop::isPlanet(spec))
+  {
+    spec.placed.reset();
+    return;
+  }
+  if(settings.planetsDir.empty())
+    return;
+  const std::filesystem::path path = settings.planetsDir / (spec.planet + ".json");
+  std::ifstream               in(path, std::ios::binary);
+  if(!in)
+    throw std::invalid_argument("no planet is called " + spec.planet);
+  const std::string           text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const fv::world::PlanetFile file = fv::world::parsePlanet(text);
+  spec.seed   = file.seed.value_or(spec.seed);
+  spec.radius = file.radius.value_or(spec.radius);
+  spec.sea    = file.sea.value_or(spec.sea);
+  spec.relief = file.relief.value_or(spec.relief);
+  if(!spec.placed || !(*spec.placed == file.features))
+    spec.placed = std::make_shared<const fv::world::Features>(file.features);
+}
+
 Json FvHost::Impl::backdropSet(const Json& patch)
 {
-  backdropSpec = fv::backdrop::applyPatch(backdropSpec, patch);  // throws, leaving everything as it was
+  fv::backdrop::Spec next = fv::backdrop::applyPatch(backdropSpec, patch);  // throws, leaving everything as it was
+  readPlanetFile(next);                                                     // ... and so does this
+  backdropSpec = std::move(next);
   fv::timing::Scope t("backdrop.set", 20);
   applyBackdrop();
   applyLighting(false);  // the renderer's parameters: the ground's plane gives way to it, its air

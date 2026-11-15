@@ -57,6 +57,8 @@
 
 #include <glm/glm.hpp>
 
+#include "fv_world_features.hpp"
+
 namespace fv::world {
 
 struct Spec
@@ -68,7 +70,10 @@ struct Spec
   // How far from where the figures stand the ground is level, metres: kClearing, or as far as what
   // stands in the scene reaches (the host's, from fv::backdrop::levelFor), up to mostLevel
   double clearing = 5.0;
-  bool   operator==(const Spec&) const = default;
+  // What is put on it by hand (fv_world_features.hpp), shaping the land before the base map is baked;
+  // none: the seed's own land. Two specs are the same planet with the same one (the pointer).
+  std::shared_ptr<const Features> features;
+  bool operator==(const Spec&) const = default;
 };
 
 // The ground is level within this of where the figures stand (Spec::clearing: further with props
@@ -162,6 +167,7 @@ struct Sample
   float  shore = 1.0e9F;         // metres to the nearest inland water's edge, negative in it
   float  painted = 0.0F;         // 0..1: a river too narrow for what draws the sample, as a share of its colour
   Inland inland;                 // what the base map says of the water near
+  PlacedLand placed;              // what is put here by hand (World::features), found by the first stage
   Built  built;                  // what is built here
 };
 

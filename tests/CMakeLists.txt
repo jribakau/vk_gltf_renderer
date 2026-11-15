@@ -175,6 +175,10 @@ set(TEST_SOURCES
     test_world_bodies.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_map.cpp
+    # What is put on a planet by hand: a feature's reach from its point or its arc, each kind in its
+    # stage's measure, a planet file read and its mistakes named
+    test_fv_world_features.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_world_features.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_plants.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_sea.cpp
     # What people left on a planet: a catalogue read, places on level dry ground the same for a seed

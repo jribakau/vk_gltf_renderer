@@ -166,7 +166,10 @@ namespace {
 // 82: what people left on a planet: the backdrop's `places` (0 none to 2) and settings.apply's
 // placesDir, the folder of the catalogue it is settled from (fv_world_places.hpp). An older renderer
 // refuses the backdrop that has it.
-constexpr int kProtocolVersion = 82;
+// 83: a planet an author made: the backdrop's `planet`, the name of a planet file ("" the seed's own),
+// and settings.apply's planetsDir, the folder it is read from (fv_world_features.hpp). An older
+// renderer refuses the backdrop that has it.
+constexpr int kProtocolVersion = 83;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

@@ -944,7 +944,18 @@ their kit when there is one. It needs no kit: without one it stands bare.
   that takes (a lake under its hollow's brim, rivers at the sea's level by a shore, the cube's
   corners). The planet is made on a worker (`standPlanet`), since the bake is about a second for
   20 km of radius and a few for the largest; a flat planet (no relief) has no map.
-- **Where the figures stand** is a level place on land the seed picks (`site`). The planet is turned
+- **What is put on it by hand** (`src/fv_world_features.hpp`): a seed grows its land from noise, and
+  an author who wants a particular world says where some of it is: land or sea, a mountain range
+  along an arc, a peak, a basin, a plain. Each is a point or an arc of a great circle with a width,
+  and acts on the measure of the stage that takes it (`placedAt`, read once a sample by the first
+  stage), so the seed's noise still fills it in. They shape the land before the base map is baked:
+  the rain falls on a placed range and rivers run off it as off the seed's own. A planet file is a
+  seed's numbers and these (`parsePlanet`). The backdrop names one (`planet`, a file's name in the
+  folder the app gives as `planetsDir`); the host reads it at every patch (`readPlanetFile`), its
+  numbers become the backdrop's and what it places a part of which planet it is, so a file changed
+  since is another planet from the next patch on.
+- **Where the figures stand** is a level place on land the seed picks (`site`), or the author's where
+  that is dry land. The planet is turned
   and set so that place is the origin with +y up; its centre is `Frame::centre`, a radius below.
 - **What draws** is a cut of six quadtrees, one a cube face (`select`): a quad splits while the eye is
   within about twice its width, so the ground underfoot is a metre a vertex and the far side a

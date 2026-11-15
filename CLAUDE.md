@@ -72,7 +72,9 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   `shaders/world_bodies.h.slang`, `shaders/world_sea.h.slang`, `shaders/world_ground.h.slang` — a
   small planet as the backdrop's
   `planet` kind: its fields by
-  stages, its base map (`src/fv_world_map.*`: rain, erosion, lakes and rivers, baked once a planet),
+  stages, what an author puts on it by hand from a planet file (`src/fv_world_features.*`: land, sea,
+  ranges, peaks, basins and plains, shaping the land before the base map is baked),
+  its base map (`src/fv_world_map.*`: rain, erosion, lakes and rivers, baked once a planet),
   its plants by biome from the backdrop's kit (`src/fv_world_plants.*`) and its sea floor's, made
   from a seed (`src/fv_world_sea.*`), what people left on it from a catalogue of packs and rules
   (`src/fv_world_places.*`, `src/fv_host_world_places.cpp`: places on levelled ground, roads routed

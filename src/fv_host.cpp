@@ -101,6 +101,24 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
         st.placesDir = dir;
         impl->post([impl] { impl->readPlaces(); });
       }
+    // where the planets an author made are: one that stands is read again from another folder
+    if(args.contains("planetsDir") && args["planetsDir"].is_string())
+      if(const std::filesystem::path dir = pathOf(args["planetsDir"].get<std::string>()); dir != st.planetsDir)
+      {
+        st.planetsDir = dir;
+        impl->post([impl] {
+          if(impl->backdropSpec.planet.empty())
+            return;
+          try
+          {
+            impl->backdropSet(Json::object());
+          }
+          catch(const std::exception& e)
+          {
+            LOGW("planet: %s\n", e.what());
+          }
+        });
+      }
     return Json{{"ok", true}};
   });
   // load works out on a worker what the file is, and comes to the application thread for the rest

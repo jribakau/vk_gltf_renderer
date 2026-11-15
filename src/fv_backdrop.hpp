@@ -39,6 +39,7 @@
 
 #include <array>
 #include <compare>
+#include <memory>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -48,6 +49,8 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <glm/glm.hpp>
+
+#include "fv_world_features.hpp"
 
 namespace fv::backdrop {
 
@@ -84,6 +87,12 @@ struct Spec
   // roads and alone): 1 as the catalogue's rules have it, more or fewer by it, none at 0. The planet
   // itself is not made again by it; its ground is asked again where they stand.
   double places = 1.0;
+  // ... and which planet it is, when it is one an author made: the name of a planet file (the host's
+  // settings.planetsDir has it as <name>.json; fv_world_features.hpp), "" the seed's own. Its seed,
+  // radius, sea and relief are then the file's where the file gives them, and `placed` is what the
+  // file puts on it: both the host's (backdropSet), no patch sets `placed` and no file keeps it.
+  std::string                                 planet;
+  std::shared_ptr<const fv::world::Features> placed;
   // ... and the other bodies in its sky: one moon to begin with. Nothing is made again by them.
   std::vector<Body> bodies = {Body{}};
   // How many metres of air a metre of the land counts for between the eye and what it sees (the

@@ -41,7 +41,9 @@
 //                    backdropKit?: dir, backdropKitChanged?}   (the backdrop's plants, fv_host_backdrop.cpp:
 //                    another folder, or the same one filled since, is read again),
 //                    placesDir?: dir   (the catalogue a planet is settled from: its places.json,
-//                    fv_host_world_places.cpp)
+//                    fv_host_world_places.cpp),
+//                    planetsDir?: dir  (where the planets an author made are, <name>.json each:
+//                    fv_world_features.hpp)
 //   load            {path} or {rel}, prop?, as?, kind?   -> {job}; a DAZ object or a model becomes a new prop
 //                                                (the job's end state has its {prop}). A DAZ object's kind
 //                                                (FvHost::Impl::classifyDaz): a character (its bones name a
@@ -273,7 +275,10 @@
 //   backdrop.set    a merge patch of the backdrop, the land round the scene or the planet under it
 //                   (fv_backdrop_state.hpp; kind planet, radius, sea: fv_world.hpp, fv_host_world.cpp;
 //                   its `bodies`, the moons and planets in its sky: shaders/world_bodies.h.slang;
-//                   `waves`, how its sea runs, protocol 80: shaders/world_sea.h.slang)
+//                   `waves`, how its sea runs, protocol 80: shaders/world_sea.h.slang;
+//                   `planet`, the name of a planet file, protocol 83: its seed, radius, sea and relief
+//                   are then the file's, and its land has what the file puts on it. A name no file
+//                   has, or a file with a mistake, is refused with what is wrong)
 //                                                -> the whole state, as the "backdrop" topic has it
 //   backdrop.status {at?: [x, y, z]}             -> {state, planet: null | {wanted, shown, arrived, waiting, late,
 //                                                busy, standing, tiled, eye, at, follow}}: a planet's stream, its quads

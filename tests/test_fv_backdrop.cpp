@@ -1048,6 +1048,32 @@ TEST(BackdropState, APlanetsRadiusAndSeaAreCheckedAndClamped)
 }
 
 // The bodies in a planet's sky: a list set whole, each checked, placed where the figures see them
+// A planet an author made is named: a file's name and nothing of a path, "" the seed's own. Another
+// name is another planet; what the file puts on it is the host's to read, and is a part of which planet
+// it is.
+TEST(BackdropState, APlanetAnAuthorMadeIsNamed)
+{
+  const B::Spec s = B::applyPatch({}, {{"kind", "planet"}});
+  EXPECT_EQ(s.planet, "");
+  EXPECT_EQ(B::toJson(s)["planet"], "");
+  const B::Spec home = B::applyPatch(s, {{"planet", "home"}});
+  EXPECT_EQ(home.planet, "home");
+  EXPECT_EQ(B::toJson(home)["planet"], "home");
+  EXPECT_EQ(B::applyPatch({}, B::toJson(home)), home);
+  EXPECT_EQ(B::applyPatch(home, {{"planet", nullptr}}).planet, "");
+  EXPECT_EQ(B::applyPatch(home, {{"planet", "old-world_2"}}).planet, "old-world_2");
+  EXPECT_FALSE(B::samePlanting(home, s));
+  for(const Json& bad : {Json(3), Json("../home"), Json("a/b"), Json("home.json"), Json("c:\\x"), Json(std::string(65, 'a'))})
+    EXPECT_THROW(B::applyPatch(s, {{"planet", bad}}), std::invalid_argument) << bad;
+  // what is placed on it goes into the planet that is made, and makes it another
+  B::Spec placed = home;
+  placed.placed  = std::make_shared<const fv::world::Features>();
+  EXPECT_EQ(B::planetSpec(placed).features, placed.placed);
+  EXPECT_NE(B::planetSpec(placed), B::planetSpec(home));
+  EXPECT_FALSE(B::samePlanting(placed, home));
+  EXPECT_FALSE(B::toJson(placed).contains("placed")) << "the host's: no file keeps it";
+}
+
 // What people left on a planet is an amount from none: it makes no planet again (its ground is
 // asked again where they stand: the host's), and plants nothing on the land
 TEST(BackdropState, PlacesIsAnAmountFromNone)

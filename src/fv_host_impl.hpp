@@ -133,6 +133,8 @@ struct HostSettings
   std::filesystem::path backdropKit;
   // the folder of the catalogue a planet is settled from (its places.json, fv_host_world_places.cpp); empty: none
   std::filesystem::path placesDir;
+  // the folder of the planets an author made (<name>.json each, fv_world_features.hpp); empty: none
+  std::filesystem::path planetsDir;
 };
 
 // A shown dial as the morph topic lists it (publishMorphs): what the panel is told of it, as last sent.
@@ -1520,6 +1522,7 @@ struct FvHost::Impl
   Json backdropTopic() const;
   void publishBackdrop();
   Json backdropSet(const Json& patch);
+  void readPlanetFile(fv::backdrop::Spec& spec) const;
   // Planted and in the scene, not only asked for (its kit may be missing, or being read)
   bool backdropStands() const;
   // The renderer's parameters with the backdrop's over them (fv::backdrop::rendererParams)

@@ -149,6 +149,12 @@ double continentNoise(const Spec& spec, const glm::dvec3& direction, double fine
 void continents(const World& w, const Point& p, Sample& s)
 {
   s.continent    = (continentNoise(w.spec, p.direction, finestOf(w, p, kContinents)) - w.seaLevel) / w.seaSpread;
+  // what is placed here by hand, for this stage and those after: land or sea where the author says
+  if(w.spec.features)
+  {
+    s.placed = placedAt(*w.spec.features, p.direction, w.spec.radius);
+    s.continent += double(s.placed.continent);
+  }
   const double u = s.continent;
   const double R = w.spec.radius;
   if(u >= 0.0)
@@ -160,11 +166,26 @@ void continents(const World& w, const Point& p, Sample& s)
 // Mountains in ranges, inland
 void mountains(const World& w, const Point& p, Sample& s)
 {
-  const double inland = smooth(0.15, 0.9, s.continent);
-  if(inland <= 0.0 || w.spec.relief <= 0.0)
+  double inland = smooth(0.15, 0.9, s.continent);
+  // a placed range stands wherever it is put, by a coast or in the sea; a plain stands the land down
+  const double placed = double(s.placed.range) * (1.0 - double(s.placed.level));
+  if((inland <= 0.0 && placed <= 0.0) || w.spec.relief <= 0.0)
     return;
-  const double range = smooth(0.50, 0.66, fbm3(p.direction * kRanges + glm::dvec3(3.1, 7.7, 1.3), seedOf(w), kChRange, 3, finestOf(w, p, kRanges)));
-  if(range <= 0.0)
+  const double ranges = fbm3(p.direction * kRanges + glm::dvec3(3.1, 7.7, 1.3), seedOf(w), kChRange, 3, finestOf(w, p, kRanges));
+  double       range  = smooth(0.50, 0.66, ranges);
+  if(w.spec.features)
+  {
+    // the seed's own ranges as far as they are let stand, and the placed one, its edge and its height
+    // wandering with the seed's noise so it is no even bank
+    range *= w.spec.features->wild * (1.0 - double(s.placed.level));
+    const double put = placed * (0.6 + 0.8 * ranges);
+    if(put > inland * range)
+    {
+      inland = 1.0;
+      range  = put;
+    }
+  }
+  if(range <= 0.0 || inland <= 0.0)
     return;
   const double ridge = ridged3(p.direction * kRidges, seedOf(w), kChRidge, 5, finestOf(w, p, kRidges));
   s.mountain         = float(inland * range * ridge);
@@ -178,7 +199,9 @@ void hills(const World& w, const Point& p, Sample& s)
     return;
   const double h    = fbm3(p.direction * kHills, seedOf(w), kChHills, 4, finestOf(w, p, kHills)) - 0.5;
   const double land = 0.15 + 0.85 * smooth(0.0, 0.5, s.continent);
-  s.elevation += 2.0 * h * 0.007 * w.spec.radius * w.spec.relief * land;
+  s.elevation += 2.0 * h * 0.007 * w.spec.radius * w.spec.relief * land * (1.0 - 0.85 * double(s.placed.level));
+  // the placed peaks and basins
+  s.elevation += double(s.placed.elevation);
 }
 
 // Cliffs: the land stands in tiers, each a step over the one below along a winding line, so a tier's
@@ -689,7 +712,10 @@ World make(const Spec& asked, const Making& making)
   w.stages.push_back({"colour", colour});
 
   // where the figures stand, the origin
-  w.frame.site          = findSite(w);
+  // (the author's place for them, where that is dry land)
+  w.frame.site = findSite(w);
+  if(w.spec.features && w.spec.features->site && sampleUpTo(w, *w.spec.features->site, 8.0, w.stages.size()).elevation > 1.0)
+    w.frame.site = *w.spec.features->site;
   w.frame.siteElevation = sampleUpTo(w, w.frame.site, 1.0, w.stages.size()).elevation;
   w.frame.turn          = toUp(w.frame.site);
   w.frame.centre        = glm::dvec3(0.0, -(w.spec.radius + w.frame.siteElevation), 0.0);

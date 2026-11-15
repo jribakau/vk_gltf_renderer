@@ -1,5 +1,7 @@
 #include "fv_backdrop_state.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 
 #include "fv_lighting.hpp"
@@ -72,7 +74,8 @@ Json toJson(const Spec& s)
     bodies.push_back(toJson(b));
   return {{"kind", s.kind},     {"seed", s.seed}, {"size", s.size},     {"density", s.density}, {"relief", s.relief},
           {"air", s.air},       {"mature", s.mature}, {"wind", s.wind}, {"windFrom", s.windFrom},
-          {"radius", s.radius}, {"sea", s.sea},   {"waves", s.waves},   {"places", s.places}, {"bodies", bodies}};
+          {"radius", s.radius}, {"sea", s.sea},   {"waves", s.waves},   {"places", s.places}, {"planet", s.planet},
+          {"bodies", bodies}};
 }
 
 Spec applyPatch(const Spec& s, const Json& patch)
@@ -115,6 +118,16 @@ Spec applyPatch(const Spec& s, const Json& patch)
       field(out.waves, d.waves, v, [&](const Json& x) { return kChecks.number(x, k, 0.0, 1.0); });
     else if(k == "places")
       field(out.places, d.places, v, [&](const Json& x) { return kChecks.number(x, k, 0.0, 2.0); });
+    else if(k == "planet")
+      // a file's name with nothing of a path in it: the host looks in its own folder
+      field(out.planet, d.planet, v, [&](const Json& x) {
+        if(!x.is_string())
+          kChecks.reject(k + " must be a planet's name, or \"\" for the seed's own");
+        const std::string name = x.get<std::string>();
+        if(name.size() > 64 || !std::all_of(name.begin(), name.end(), [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_'; }))
+          kChecks.reject(k + " is a name of letters, digits, - and _");
+        return name;
+      });
     else if(k == "bodies")
       field(out.bodies, d.bodies, v, [&](const Json& x) {
         if(!x.is_array())
@@ -173,7 +186,7 @@ Json rendererParams(const Spec& s, bool stands, const glm::vec3& landAlbedo, con
 
 fv::world::Spec planetSpec(const Spec& s)
 {
-  return {.seed = s.seed, .radius = s.radius * 1000.0, .sea = s.sea, .relief = s.relief, .clearing = s.clearing};
+  return {.seed = s.seed, .radius = s.radius * 1000.0, .sea = s.sea, .relief = s.relief, .clearing = s.clearing, .features = s.placed};
 }
 
 std::vector<PlacedBody> placedBodies(const Spec& s, const glm::dvec3& origin)
