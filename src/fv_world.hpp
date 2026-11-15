@@ -16,8 +16,9 @@
 // - The base map (BaseMap, fv_world_map.hpp): the fields of the whole planet as a cube map, baked once
 //   a planet, for what a point alone cannot say: where the wind carries the sea's rain, what that rain
 //   wore away, where it gathers into rivers and stands in lakes. The stages read it: the `base` stage
-//   adds what the rain did to the land and finds the water near a point, `water` cuts the rivers'
-//   beds. A planet made without one (Making::base) is the stages' alone.
+//   adds what the rain did to the land and finds the water near a point, `gullies` furrows the steep
+//   slopes down their fall finer than the map's cells, `water` cuts the rivers' beds. A planet made
+//   without one (Making::base) is the stages' alone.
 // - The mesh: a cube laid on the sphere, each face a quadtree (Quad). `select` says which quads draw
 //   for an eye: a quad splits into four while the eye is within about twice its width of it, so the
 //   ground underfoot is a metre a vertex and the far side of the planet a kilometre. `groundMesh` and
@@ -270,6 +271,9 @@ World withClearing(const World& world, double clearing);
 
 // What the point `direction` of the planet is, for something `footprint` metres across
 Sample sample(const World& world, const glm::dvec3& direction, double footprint);
+// The same with one stage left out (World::stages, by name): the land as it would be without it.
+// What a road's level follows, which is cut and filled through the gullies and not over each one.
+Sample sampleWithout(const World& world, const glm::dvec3& direction, double footprint, std::string_view stage);
 
 // A smooth noise over the planet, 0 to 1 and a half on average, its features `across` metres across:
 // what stands in groves stands where it is high. `channel`: which noise.

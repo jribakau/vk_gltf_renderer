@@ -119,7 +119,7 @@ double ridged3(glm::dvec3 p, uint32_t seed, uint32_t channel, uint32_t octaves, 
 
 // The noise channels, ten apart: an fbm takes one an octave
 constexpr uint32_t kChContinent = 10, kChRange = 20, kChRidge = 30, kChHills = 40, kChWarm = 50, kChWet = 60, kChDetail = 70,
-                   kChShade = 90, kChPatch = 100, kChSite = 110, kChDither = 120, kChCliff = 130;
+                   kChShade = 90, kChPatch = 100, kChSite = 110, kChDither = 120, kChCliff = 130, kChGully = 150;
 
 // How many of each noise's cells go across the planet's radius: the continents are the planet's
 // size, the ranges a few to a continent, a hill a few hundred metres on a planet 20 km in radius
@@ -261,6 +261,167 @@ void base(const World& w, const Point& p, Sample& s)
   s.elevation += std::min(added, 0.0) + std::max(added, 0.0) * smooth(0.0, 4.0, s.elevation);
   s.inland = mapInland(*w.base, w.spec.radius, p.direction);
   s.shore  = float(std::min(s.inland.shore(), 1.0e9));
+}
+
+// Gullies: what running water cuts into a slope, between the valleys the base map wore (its cells are
+// tens of metres to 150) and the ground's fine relief. No simulation: a point's own, from the way the
+// land falls there, so it is as fine as what draws it and costs the bake nothing. The idea is Clay
+// John's and Fewes's eroded noise, lately Rune Skovbo Johansen's erosion filter: ridges and furrows
+// laid as stripes that run down the slope, then finer ones laid down the slope with the first ones'
+// sides added to it, so they run into the larger from either side as tributaries do. Written here
+// from that idea, and in space, as the planet's noises are.
+//
+// A size's stripes: each cell of a lattice has waves of its own, level across the slope at the
+// point, with a phase of its own; the cells round a point are summed as phasors (Tricard et al.,
+// "Procedural Phasor Noise", 2019), so the sum has one phase, to which the ridge's shape is given,
+// and a length that falls where the cells disagree: there a gully ends or two join. What steers the
+// next size is the sum's smooth slope, not the shaped one's: a direction that turned at once across
+// a crest would break the finer stripes along it.
+//
+// Each size follows the land's fall as broadly as its own lattice (BaseMap::slopes), so the widest
+// run down a mountain's flank and the finer down the spurs between them.
+//
+// A gully's sides are a share of the slope it runs down, so it is as deep as the land is steep, and
+// only on steep land: they fade in from a gentle slope to a steep one, as running water cuts deep
+// only where it runs fast. (So the gentle land a road, a site or a hut keeps to is the land's own,
+// and a road's level is found without them at all: fv::world::sampleWithout.)
+constexpr double kGullyLargest  = 1.0 / 40.0;  // of the radius: from one of the widest gullies to the next
+constexpr double kGullySmallest = 35.0;        // metres: and of the narrowest
+constexpr double kGullyStripes  = 1.5;         // gullies across a cell of their lattice
+constexpr double kGullySlope    = 0.5;         // the land's fall a size follows: over this share of its lattice's cells
+constexpr double kGullySide     = 1.0;         // a gully's sides against the slope it runs down
+constexpr double kGullyGain     = 0.78;        // each finer size's sides against the last's
+constexpr double kGullySteep    = 0.8;         // the slope (rise over run) past which they cut no deeper
+constexpr double kGullyFrom     = 0.03;        // the slopes over which they fade in
+constexpr double kGullyFull     = 0.25;
+constexpr double kGullySharp    = 0.6;         // crests and floors: 0 rounded, 1 creased
+constexpr double kGullyBranch   = 0.6;         // how far a gully's sides turn the finer ones into it
+
+// A cell's own phase: one of 256 turns of the circle
+const std::array<glm::dvec2, 256>& gullyTurns()
+{
+  static const std::array<glm::dvec2, 256> turns = [] {
+    std::array<glm::dvec2, 256> out{};
+    for(size_t i = 0; i < out.size(); i++)
+      out[i] = glm::dvec2(std::cos(2.0 * kPi * (double(i) + 0.5) / 256.0), std::sin(2.0 * kPi * (double(i) + 0.5) / 256.0));
+    return out;
+  }();
+  return turns;
+}
+
+// (cos a, sin a) to within a ten-millionth: a quarter turn's polynomial, several times as fast as
+// the library's two
+glm::dvec2 turnOf(double a)
+{
+  const double q  = std::nearbyint(a * (2.0 / kPi));
+  const double r  = a - q * (0.5 * kPi), r2 = r * r;
+  const double sn = r * (1.0 - r2 * (1.0 / 6.0 - r2 * (1.0 / 120.0 - r2 * (1.0 / 5040.0))));
+  const double c  = 1.0 - r2 * (0.5 - r2 * (1.0 / 24.0 - r2 * (1.0 / 720.0 - r2 * (1.0 / 40320.0))));
+  switch(int64_t(q) & 3)
+  {
+    case 0: return {c, sn};
+    case 1: return {-sn, c};
+    case 2: return {-c, -sn};
+    default: return {sn, -c};
+  }
+}
+
+// How far round from (1, 0) the point (x, y) is, in half turns, 0 to 1 either way: |atan2| / pi to
+// within a hundred-thousandth of a turn, and some times faster
+double halfTurns(double y, double x)
+{
+  const double ax = std::abs(x), ay = std::abs(y), most = std::max(ax, ay);
+  if(most <= 0.0)
+    return 0.0;
+  const double a = std::min(ax, ay) / most, a2 = a * a;
+  double       r = ((-0.0464964749 * a2 + 0.15931422) * a2 - 0.327622764) * a2 * a + a;
+  if(ay > ax)
+    r = 0.5 * kPi - r;
+  if(x < 0.0)
+    r = kPi - r;
+  return r / kPi;
+}
+
+void gullies(const World& w, const Point& p, Sample& s)
+{
+  const double level = 1.0 - double(s.placed.level);  // a placed plain is a plain
+  if(w.spec.relief <= 0.0 || s.elevation <= 1.0 || level <= 0.0)
+    return;
+  const double    R       = w.spec.radius;
+  const double    largest = kGullyLargest * R;
+  const FacePoint on      = locate(p.direction);
+  // the land's fall as broad as the widest gullies' cells, and finer for the finer
+  int        broad = slopeLevelFor(*w.base, R, kGullySlope * kGullyStripes * largest), read = -1;
+  glm::dvec3 land(0.0), sides(0.0);  // the land's rise, and what the gullies so far add to it
+  double     steep = 0.0;
+  glm::dvec3 q     = p.direction * (R / (largest * kGullyStripes));
+  glm::dmat3 turned(1.0);  // the lattice's axes against the planet's
+  double     sum = 0.0, most = 0.0, gain = 1.0;
+  uint32_t   octave = 0;
+  for(double size = largest; size >= kGullySmallest; size *= 0.5, octave++, broad--, gain *= kGullyGain, q = nextOctave(q), turned = octaveTurn() * turned)
+  {
+    // (a stripe needs four points across to be drawn at all)
+    const double k = smooth(4.0 * p.footprint, 8.0 * p.footprint, size);
+    if(k <= 0.0)
+      break;  // nor any finer
+    if(const int from = std::max(broad, 0); from != read)
+    {
+      read  = from;
+      land  = mapSlope(*w.base, on, p.direction, from);
+      steep = glm::length(land);
+    }
+    // level across the rise, in the lattice's axes
+    const glm::dvec3 across = glm::cross(p.direction, land + sides);
+    const double     run    = glm::length(across);
+    if(run < 1e-9 || steep < 1e-9)
+      continue;
+    const double side = kGullySide * std::min(steep, kGullySteep) * smooth(kGullyFrom, kGullyFull, steep) * level * gain;
+    if(side <= 0.0)
+      continue;
+    const glm::dvec3 level_ = across / run;
+    const glm::dvec3 t      = turned * level_ * (2.0 * kPi * kGullyStripes);
+    // the eight cells whose middles stand round the point, each a wave e^(i(from.t + its own phase)):
+    // the first's turn, and what a step of a cell along each axis takes off it (four turns, not eight)
+    const glm::dvec3 f    = glm::floor(q - 0.5);
+    const glm::dvec3 o    = q - f - 0.5;
+    const auto       by   = [](const glm::dvec2& a, const glm::dvec2& b) { return glm::dvec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); };
+    const glm::dvec2 stepX = turnOf(-t.x), stepY = turnOf(-t.y), stepZ = turnOf(-t.z);
+    glm::dvec2       turns[8];
+    turns[0] = turnOf(glm::dot(o, t));
+    turns[1] = by(turns[0], stepX);
+    turns[2] = by(turns[0], stepY);
+    turns[3] = by(turns[1], stepY);
+    for(int n = 0; n < 4; n++)
+      turns[n + 4] = by(turns[n], stepZ);
+    const uint32_t   ix = uint32_t(int64_t(f.x)), iy = uint32_t(int64_t(f.y)), iz = uint32_t(int64_t(f.z));
+    const uint32_t   base = lattice(seedOf(w), kChGully + octave);
+    glm::dvec2       wave(0.0);
+    double           total = 0.0;
+    for(int n = 0; n < 8; n++)
+    {
+      const int        dx = n & 1, dy = (n >> 1) & 1, dz = n >> 2;
+      const glm::dvec3 from = o - glm::dvec3(dx, dy, dz);
+      const double     far  = glm::dot(from, from);
+      if(far >= 1.0)
+        continue;  // (one at least is nearer: the point is in the cube of their middles)
+      const double weight = (1.0 - far) * (1.0 - far);
+      const uint32_t h = mix(base ^ ((ix + uint32_t(dx)) * 73856093U) ^ ((iy + uint32_t(dy)) * 19349663U) ^ ((iz + uint32_t(dz)) * 83492791U));
+      wave += weight * by(turns[n], gullyTurns()[h >> 24U]);
+      total += weight;
+    }
+    const double c = wave.x / total, sn = wave.y / total;
+    // a crest where the phase is nothing, a floor half a turn on: a wave, and a roof's pitch
+    const double length = std::sqrt(c * c + sn * sn);
+    const double pitch  = length * (1.0 - 2.0 * halfTurns(sn, c));
+    const double height = 0.25 * side * size;  // metres, crest over the middle
+    sum += height * k * (c + (pitch - c) * kGullySharp);
+    most += height * k;
+    // its sides, added to the rise the finer ones run down
+    sides -= level_ * (kGullyBranch * 0.5 * kPi * side * k * sn);
+  }
+  // none by the sea, whose shore stays where it is, nor by a river or a lake: their banks are theirs
+  const double dry = smooth(1.0, 1.0 + 2.0 * most, s.elevation) * smooth(0.0, 30.0 + 3.0 * most, double(s.shore));
+  s.elevation += sum * dry;
 }
 
 // The rivers' beds and banks cut into the ground, and the water over it. After the ground's fine
@@ -705,7 +866,7 @@ World make(const Spec& asked, const Making& making)
   if(making.base && w.spec.relief > 0.0)
     w.base = bake(w, making.map ? making.map : mapCells(w.spec.radius), making.stop);
   if(w.base)
-    w.stages.push_back({"base", base});
+    w.stages.insert(w.stages.end(), {{"base", base}, {"gullies", gullies}});
   w.stages.insert(w.stages.end(), {{"climate", climate}, {"biome", biome}, {"detail", detail}});
   if(w.base)
     w.stages.push_back({"water", water});
@@ -749,6 +910,16 @@ double temperatureAt(const World& world, const glm::dvec3& direction, double ele
 Sample sample(const World& world, const glm::dvec3& direction, double footprint)
 {
   return sampleUpTo(world, direction, footprint, world.stages.size());
+}
+
+Sample sampleWithout(const World& world, const glm::dvec3& direction, double footprint, std::string_view stage)
+{
+  const Point p{direction, std::max(footprint, 1e-3)};
+  Sample      s;
+  for(const Stage& each : world.stages)
+    if(each.name != stage)
+      each.apply(world, p, s);
+  return s;
 }
 
 namespace {

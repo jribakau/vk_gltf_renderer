@@ -1095,7 +1095,7 @@ struct Settling
       for(size_t k = begin; k < end && !stopped(); k++)
       {
         const glm::dvec3 d = at(nodes[k]);
-        levels[k]          = roadLevel(d, sample(w, d, kRoadFootprint).elevation);
+        levels[k]          = roadLevel(d, sampleWithout(w, d, kRoadFootprint, "gullies").elevation);
       }
     });
     std::map<uint32_t, double> level;
@@ -1185,8 +1185,9 @@ struct Settling
     std::vector<double> L(Q.size());
     L[0] = level.at(line.front());
     L[n] = level.at(line.back());
+    // (the land without its gullies: a road is cut through their crests and banked over their floors)
     for(size_t j = 1; j < n; j++)
-      L[j] = sample(w, Q[j], kRoadFootprint).elevation;
+      L[j] = sampleWithout(w, Q[j], kRoadFootprint, "gullies").elevation;
     const std::vector<double> ground = L;
     for(int pass = 0; pass < 2; pass++)
     {

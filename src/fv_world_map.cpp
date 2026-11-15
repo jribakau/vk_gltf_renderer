@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <queue>
+#include <unordered_map>
 
 #include <figure/jobs/pool.hpp>
 
@@ -996,6 +997,105 @@ std::shared_ptr<const BaseMap> bake(const World& w, uint32_t asked, const std::a
       at.swap(coarse);
     }
   }
+  // ---- the worn land's broad slope ----
+  // At the corners of coarser grids, each from the plane that best fits the cells round it (the
+  // nearer counting more), found in space and not on a face's own grid: a face's lines turn where
+  // they cross an edge, and a slope read off them would turn with them.
+  {
+    std::vector<float> at   = m.height;
+    uint32_t           size = n;
+    const auto         halve = [&] {
+      const uint32_t     halfN = size / 2;
+      std::vector<float> coarse(size_t(6) * halfN * halfN);
+      for(uint32_t face = 0; face < 6; face++)
+        for(uint32_t j = 0; j < halfN; j++)
+          for(uint32_t i = 0; i < halfN; i++)
+          {
+            const size_t a = (size_t(face) * size + 2 * j) * size + 2 * i;
+            coarse[(size_t(face) * halfN + j) * halfN + i] = 0.25F * (at[a] + at[a + 1] + at[a + size] + at[a + size + 1]);
+          }
+      at.swap(coarse);
+      size = halfN;
+    };
+    while(size > slopeCellsFor(n))
+      halve();
+    for(;; halve())
+    {
+      const uint32_t sn = size;
+      const CubeGrid sg(sn);
+      const uint32_t side = sn + 1, perFace = side * side;
+      const double   reach = 2.5 * 0.5 * kPi * R / double(sn);  // metres: two and a half cells
+      BaseMap::Slope level{sn, std::vector<glm::vec3>(size_t(6) * perFace, glm::vec3(0.0F))};
+      parallelFor(level.at.size(), 2048, [&](size_t begin, size_t end) {
+        for(size_t v = begin; v < end; v++)
+        {
+          const uint8_t    face = uint8_t(v / perFace);
+          const int        i = int((v % perFace) % side), j = int((v % perFace) / side);
+          const glm::dvec3 d = direction(face, 2.0 * double(i) / double(sn) - 1.0, 2.0 * double(j) / double(sn) - 1.0);
+          const glm::dvec3 a = glm::normalize(glm::cross(std::abs(d.y) < 0.9 ? glm::dvec3(0.0, 1.0, 0.0) : glm::dvec3(1.0, 0.0, 0.0), d));
+          const glm::dvec3 b = glm::cross(d, a);
+          double           sw = 0.0, sx = 0.0, sy = 0.0, sh = 0.0, sxx = 0.0, sxy = 0.0, syy = 0.0, sxh = 0.0, syh = 0.0;
+          for(int q = j - 2; q <= j + 1; q++)
+            for(int p = i - 2; p <= i + 1; p++)
+            {
+              uint32_t c = 0;
+              if(!sg.cell(face, p, q, c))
+                continue;
+              const glm::dvec3 to  = sg.centre(c) - d;
+              const double     x = R * glm::dot(to, a), y = R * glm::dot(to, b);
+              const double     far = (x * x + y * y) / (reach * reach);
+              if(far >= 1.0)
+                continue;
+              const double wgt = (1.0 - far) * (1.0 - far), h = double(at[c]);
+              sw += wgt;
+              sx += wgt * x;
+              sy += wgt * y;
+              sh += wgt * h;
+              sxx += wgt * x * x;
+              sxy += wgt * x * y;
+              syy += wgt * y * y;
+              sxh += wgt * x * h;
+              syh += wgt * y * h;
+            }
+          if(sw <= 0.0)
+            continue;
+          const double mx = sx / sw, my = sy / sw, mh = sh / sw;
+          const double cxx = sxx / sw - mx * mx, cxy = sxy / sw - mx * my, cyy = syy / sw - my * my;
+          const double cxh = sxh / sw - mx * mh, cyh = syh / sw - my * mh;
+          const double det = cxx * cyy - cxy * cxy;
+          if(det <= 1e-9 * (cxx + cyy) * (cxx + cyy))
+            continue;
+          level.at[v] = glm::vec3(a * ((cxh * cyy - cyh * cxy) / det) + b * ((cyh * cxx - cxh * cxy) / det));
+        }
+      });
+      // a corner on a face's edge is two faces' (three's, at the cube's own): one slope for all of them
+      struct Shared
+      {
+        glm::vec3 sum{0.0F};
+        float     count = 0.0F;
+      };
+      std::unordered_map<uint64_t, Shared> shared;
+      const auto                           each = [&](const auto& fn) {
+        for(uint8_t face = 0; face < 6; face++)
+          for(uint32_t j = 0; j < side; j++)
+            for(uint32_t i = 0; i < side; i++)
+              if(i == 0 || j == 0 || i == sn || j == sn)
+              {
+                const glm::dvec3 d = direction(face, 2.0 * double(i) / double(sn) - 1.0, 2.0 * double(j) / double(sn) - 1.0);
+                const auto       part = [](double x) { return uint64_t(std::llround((x + 1.0) * 500000.0)) & 0x1FFFFFU; };
+                fn(level.at[size_t(face) * perFace + size_t(j) * side + i], shared[part(d.x) | (part(d.y) << 21U) | (part(d.z) << 42U)]);
+              }
+      };
+      each([](const glm::vec3& slope, Shared& s) {
+        s.sum += slope;
+        s.count += 1.0F;
+      });
+      each([](glm::vec3& slope, Shared& s) { slope = s.sum / s.count; });
+      m.slopes.push_back(std::move(level));
+      if(size / 2 < 16)
+        break;
+    }
+  }
   m.down = std::move(down);
   m.kind = std::move(kind);
   return out;
@@ -1019,6 +1119,38 @@ double mapAdded(const BaseMap& m, const glm::dvec3& d, double footprint)
 float mapRain(const BaseMap& m, const glm::dvec3& d)
 {
   return read(m.rain, tapOf(m.rainGrid, m.rainGrid.at(d)), m.rainGrid.stride());
+}
+
+uint32_t slopeCellsFor(uint32_t cells)
+{
+  while(cells >= 512)
+    cells /= 2;
+  return cells;
+}
+
+int slopeLevelFor(const BaseMap& m, double radius, double metres)
+{
+  if(m.slopes.empty())
+    return 0;
+  const double finest = 0.5 * kPi * radius / double(m.slopes.front().cells);
+  return std::clamp(int(std::lround(std::log2(std::max(metres / finest, 1e-6)))), 0, int(m.slopes.size()) - 1);
+}
+
+glm::dvec3 mapSlope(const BaseMap& m, const FacePoint& p, const glm::dvec3& d, int level)
+{
+  if(m.slopes.empty())
+    return glm::dvec3(0.0);
+  const BaseMap::Slope& s = m.slopes[size_t(std::clamp(level, 0, int(m.slopes.size()) - 1))];
+  const double          n = double(s.cells);
+  const double          x = (p.u + 1.0) * 0.5 * n, y = (p.v + 1.0) * 0.5 * n;
+  const double          i = std::clamp(std::floor(x), 0.0, n - 1.0), j = std::clamp(std::floor(y), 0.0, n - 1.0);
+  const float           fx = float(std::clamp(x - i, 0.0, 1.0)), fy = float(std::clamp(y - j, 0.0, 1.0));
+  const size_t          side = size_t(s.cells) + 1;
+  const glm::vec3*      at   = s.at.data() + size_t(p.face) * side * side + size_t(j) * side + size_t(i);
+  const glm::vec3       low = at[0] + (at[1] - at[0]) * fx, high = at[side] + (at[side + 1] - at[side]) * fx;
+  // along the ground here: what four corners say leans a little off it
+  const glm::dvec3 slope(low + (high - low) * fy);
+  return slope - d * glm::dot(slope, d);
 }
 
 Inland mapInland(const BaseMap& m, double radius, const glm::dvec3& d)

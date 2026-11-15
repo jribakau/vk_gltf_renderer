@@ -27,7 +27,8 @@
 //   ground of a lake's hollow a river runs at the lake's level, cutting its way in or out.
 //
 // What is kept (BaseMap): what the wear added to the land (and that again at half the cells, and half
-// again, for what draws coarsely), the rain, the lakes' levels, and the rivers' curves by cell.
+// again, for what draws coarsely), the rain, the lakes' levels, the rivers' curves by cell, and the
+// worn land's broad slope.
 //
 // The cube's faces are grids of `cells` squares along an edge, laid as fv::world::direction lays a
 // face (even in angle). A field is kept with a gutter round each face, filled from the faces beyond,
@@ -138,6 +139,19 @@ struct BaseMap
   std::vector<float> rain;  // 0 dry to 1 wet, with gutters
 
   std::vector<float>      lake;    // a lake cell's water level, kDryCell elsewhere; with gutters
+  // Which way the land falls and how steeply, seen broadly: its rise over its run as a vector along
+  // the ground (the planet's axes), at the corners of a grid of squares (each face's own, a shared
+  // edge's kept alike on both). No gutters: read between four corners, it is the same from either side
+  // of an edge, which what is laid along it (the `gullies` stage) needs. slopes[0] has slopeCellsFor
+  // squares along a face, each next half as many and a slope as much broader: a gully follows the
+  // land's fall at its own size.
+  struct Slope
+  {
+    uint32_t               cells = 0;
+    std::vector<glm::vec3> at;  // (cells + 1) squared a face
+  };
+  std::vector<Slope> slopes;
+
   std::vector<int32_t>    river;   // a river cell's piece, -1 elsewhere; with gutters
   std::vector<uint8_t>    reach;   // by cell: a river runs within the lookup's window of it
   std::vector<RiverPiece> pieces;
@@ -169,6 +183,18 @@ std::shared_ptr<const BaseMap> bake(const World& world, uint32_t cells, const st
 double mapAdded(const BaseMap& map, const glm::dvec3& direction, double footprint);
 // How wet the weather is there, 0 to 1
 float mapRain(const BaseMap& map, const glm::dvec3& direction);
+// The land's broad slope at a direction (BaseMap::slopes): uphill, as long as it is steep. `on`: where
+// the direction is on the cube (locate). `level`: which of the slopes, the nearest there is.
+glm::dvec3 mapSlope(const BaseMap& map, const FacePoint& on, const glm::dvec3& direction, int level = 0);
+inline glm::dvec3 mapSlope(const BaseMap& map, const glm::dvec3& direction, int level = 0)
+{
+  return mapSlope(map, locate(direction), direction, level);
+}
+// Which of the slopes has squares nearest `metres` across
+int slopeLevelFor(const BaseMap& map, double radius, double metres);
+// The squares along a face of the finest of them, for a map of `cells`: some 600 m across on the
+// largest planet
+uint32_t slopeCellsFor(uint32_t cells);
 // The inland water near
 Inland mapInland(const BaseMap& map, double radius, const glm::dvec3& direction);
 

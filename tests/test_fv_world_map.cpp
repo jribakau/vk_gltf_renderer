@@ -7,8 +7,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <map>
 #include <set>
+#include <sstream>
 
 #include <gtest/gtest.h>
 
@@ -430,6 +432,232 @@ TEST(WorldMapRain, TheLandIsWetInPlacesAndDryInOthers)
   ASSERT_GT(land, 1000);
   EXPECT_GT(dry, land / 20);
   EXPECT_GT(wet, land / 20);
+}
+
+// The worn land's broad slope points uphill, lies along the ground, is one slope from either side of
+// a cube's edge, and is kept again at half the cells, and half again
+TEST(WorldMapSlope, ItPointsUphillAndIsTheSameAcrossTheCubesEdges)
+{
+  const W::World&   w = planet();
+  const W::BaseMap& m = *w.base;
+  ASSERT_FALSE(m.slopes.empty());
+  ASSERT_EQ(m.slopes.front().cells, W::slopeCellsFor(m.grid.cells()));
+  EXPECT_EQ(W::slopeCellsFor(1024), 256U);
+  EXPECT_EQ(W::slopeCellsFor(64), 64U);
+  for(size_t l = 1; l < m.slopes.size(); l++)
+    EXPECT_EQ(m.slopes[l].cells * 2, m.slopes[l - 1].cells);
+  EXPECT_EQ(W::slopeLevelFor(m, w.spec.radius, 0.5 * kPi * w.spec.radius / double(m.slopes.front().cells)), 0);
+  EXPECT_EQ(W::slopeLevelFor(m, w.spec.radius, 2.0 * kPi * w.spec.radius / double(m.slopes.front().cells)), 2);
+  EXPECT_EQ(W::slopeLevelFor(m, w.spec.radius, 1.0e9), int(m.slopes.size()) - 1);
+  const auto heightAt = [&](const glm::dvec3& d) {
+    const W::MapPoint p = m.grid.at(d);
+    const int         n = int(m.grid.cells());
+    return double(m.height[m.grid.index(p.face, uint32_t(std::clamp(int(std::lround(p.x)), 0, n - 1)), uint32_t(std::clamp(int(std::lround(p.y)), 0, n - 1)))]);
+  };
+  const double step = 3.0 * 0.5 * kPi / double(m.grid.cells());  // three cells, of the radius
+  int          steep = 0, uphill = 0;
+  for(uint32_t i = 0; i < 4000; i++)
+  {
+    const glm::dvec3 d = spread(i, 4000), g = W::mapSlope(m, d);
+    EXPECT_NEAR(glm::dot(g, d), 0.0, 1e-9);
+    if(glm::length(g) < 0.08)
+      continue;
+    const glm::dvec3 up = glm::normalize(g);
+    steep++;
+    uphill += heightAt(glm::normalize(d + up * step)) > heightAt(glm::normalize(d - up * step));
+  }
+  ASSERT_GT(steep, 200);
+  EXPECT_GT(uphill, steep * 9 / 10);
+
+  double most = 0.0;
+  for(int level = 0; level < int(m.slopes.size()); level++)
+    for(uint8_t face = 0; face < 6; face++)
+      for(int side = 0; side < 4; side++)
+        for(int k = 0; k <= 200; k++)
+        {
+          const double along = -1.0 + 2.0 * double(k) / 200.0;
+          const auto   at    = [&](double off) {
+            return W::direction(face, side == 0 ? -off : side == 1 ? off : along, side == 2 ? -off : side == 3 ? off : along);
+          };
+          const glm::dvec3 in = W::mapSlope(m, at(1.0 - 1e-9), level), out = W::mapSlope(m, at(1.0 + 1e-9), level);
+          most = std::max(most, glm::length(in - out));
+        }
+  EXPECT_LT(most, 1e-5);
+}
+
+// Gullies: running water's furrows down the slopes. None where the land is level, by the sea or on
+// its floor; they run down the slope, not across it; and none finer than what draws them.
+TEST(WorldMapGullies, TheSlopesAreFurrowedDownTheirFall)
+{
+  // the land up to the gullies, and the same without them
+  W::World with = planet();
+  const auto stage = std::find_if(with.stages.begin(), with.stages.end(), [](const W::Stage& s) { return s.name == "gullies"; });
+  ASSERT_NE(stage, with.stages.end());
+  with.stages.erase(stage + 1, with.stages.end());
+  W::World bare = with;
+  bare.stages.pop_back();
+  ASSERT_EQ(bare.stages.back().name, "base");
+  const W::BaseMap& m       = *with.base;
+  const double      R       = with.spec.radius;
+  const double      largest = R / 40.0;                              // from one of the widest to the next
+  const int         broad   = W::slopeLevelFor(m, R, 0.75 * largest);  // the land's slope they follow
+  const auto        steepest = [&](const glm::dvec3& d) {
+    double most = 0.0;
+    for(int l = 0; l <= broad; l++)
+      most = std::max(most, glm::length(W::mapSlope(m, d, l)));
+    return most;
+  };
+
+  int    slopes = 0, sea = 0, level = 0;
+  double furrowed = 0.0, across = 0.0, along = 0.0;
+  for(uint32_t i = 0; i < 6000; i++)
+  {
+    const glm::dvec3 d     = spread(i, 6000);
+    const W::Sample  b     = W::sample(bare, d, 2.0);
+    const double     cut   = W::sample(with, d, 2.0).elevation - b.elevation;
+    const double     steep = steepest(d);
+    // no deeper than a share of the widest one's width, and nothing where the land is level
+    EXPECT_LE(std::abs(cut), 0.35 * largest);
+    if(steep < 0.03)
+    {
+      level++;
+      EXPECT_EQ(cut, 0.0);
+    }
+    if(b.elevation <= 1.0)
+    {
+      sea++;
+      EXPECT_EQ(cut, 0.0);
+    }
+    // what draws a gully with fewer than four points across it draws none
+    EXPECT_EQ(W::sample(with, d, 0.26 * largest).elevation, W::sample(bare, d, 0.26 * largest).elevation);
+    const glm::dvec3 rise = W::mapSlope(m, d, broad);
+    if(glm::length(rise) < 0.15 || b.elevation < 60.0 || b.shore < 400.0F)
+      continue;
+    slopes++;
+    furrowed += std::abs(cut);
+    // the widest alone (what draws them finer has finer ones, turned into these): a step along the
+    // rise stays in its furrow, a step across it leaves it
+    const double     footprint = largest / 8.0, pace = 0.1 * largest / R;
+    const glm::dvec3 up = glm::normalize(rise), side = glm::cross(d, up);
+    const auto       cutAt = [&](const glm::dvec3& at) { return W::sample(with, at, footprint).elevation - W::sample(bare, at, footprint).elevation; };
+    const double     here = cutAt(d);
+    along += std::abs(cutAt(glm::normalize(d + up * pace)) - here);
+    across += std::abs(cutAt(glm::normalize(d + side * pace)) - here);
+  }
+  ASSERT_GT(slopes, 50);
+  ASSERT_GT(sea, 1000);
+  ASSERT_GT(level, 100);
+  EXPECT_GT(furrowed / double(slopes), 1.0);  // metres, on a planet 20 km in radius
+  EXPECT_GT(across, 2.0 * along);
+
+  // a planet with no map has none
+  const W::World dry = W::make({}, {.base = false});
+  EXPECT_TRUE(std::none_of(dry.stages.begin(), dry.stages.end(), [](const W::Stage& s) { return s.name == "gullies"; }));
+}
+
+// Not a test: what a quad's ground costs to make, with the gullies and without
+TEST(WorldMapGullies, DISABLED_Cost)
+{
+ for(const double radius : {20000.0, 100000.0})
+ {
+  const W::World with = W::make({.radius = radius}, {.map = radius > 50000.0 ? 0U : kCells});
+  W::World       bared = with;
+  std::erase_if(bared.stages, [](const W::Stage& s) { return s.name == "gullies"; });
+  const W::World& bare = bared;
+  std::printf("a planet %.0f km in radius\n", radius / 1000.0);
+  // quads over the steepest land found, a metre a vertex and sixteen
+  glm::dvec3 steepest(0.0, 1.0, 0.0);
+  double     most = 0.0;
+  for(uint32_t i = 0; i < 6000; i++)
+    if(const double s = glm::length(W::mapSlope(*with.base, spread(i, 6000))); s > most && W::sample(bare, spread(i, 6000), 8.0).elevation > 50.0)
+    {
+      most     = s;
+      steepest = spread(i, 6000);
+    }
+  for(const uint8_t back : {uint8_t(0), uint8_t(4)})
+  {
+    const W::FacePoint p     = W::locate(steepest);
+    const uint8_t      level = uint8_t(W::finestLevel(with) - back);
+    const uint32_t     tiles = 1U << level;
+    const W::Quad      q{p.face, level, std::min(uint32_t((p.u + 1.0) * 0.5 * tiles), tiles - 1), std::min(uint32_t((p.v + 1.0) * 0.5 * tiles), tiles - 1)};
+    for(const W::World* w : {&bare, &with, &bare, &with, &bare, &with})
+    {
+      const auto from = std::chrono::steady_clock::now();
+      for(int k = 0; k < 20; k++)
+        W::groundMesh(*w, q);
+      std::printf("level %u (%.1f m a quad) %s: %.2f ms a quad\n", unsigned(level), W::width(with, q), w == &with ? "gullies" : "bare   ",
+                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count() / 20.0);
+    }
+  }
+ }
+}
+
+// Not a test, and an author's map: the land round a place as a shaded relief from straight above,
+// north up, lit from the north-west, in the ground's colours (FV_WORLD_RELIEF = "latitude longitude kilometres pixels file.ppm [planet.json]": the
+// image's width in kilometres; the default planet, or a planet file's)
+TEST(WorldMapGullies, DISABLED_Relief)
+{
+  const char* asked = std::getenv("FV_WORLD_RELIEF");
+  if(!asked)
+    return;
+  double lat = 0, lon = 0, km = 10;
+  int    n = 512;
+  char   file[512] = {}, planetFile[512] = {};
+  ASSERT_GE(std::sscanf(asked, "%lf %lf %lf %d %511s %511s", &lat, &lon, &km, &n, file, planetFile), 5);
+  W::Spec spec;
+  bool    sited = false;
+  if(planetFile[0])
+  {
+    std::ifstream     in(planetFile, std::ios::binary);
+    std::stringstream text;
+    text << in.rdbuf();
+    const W::PlanetFile planet = W::parsePlanet(text.str());
+    spec.seed     = planet.seed.value_or(spec.seed);
+    spec.radius   = planet.radius.value_or(spec.radius / 1000.0) * 1000.0;
+    spec.sea      = planet.sea.value_or(spec.sea);
+    spec.relief   = planet.relief.value_or(spec.relief);
+    spec.features = std::make_shared<const W::Features>(planet.features);
+    sited         = bool(planet.features.site);
+  }
+  const auto       from = std::chrono::steady_clock::now();
+  const W::World   w    = W::make(spec);
+  std::printf("made in %.1f s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count());
+  // (latitude 100: where the figures stand)
+  const glm::dvec3 d     = lat > 90.0 ? w.frame.site : W::directionOf(lat, lon);
+  const glm::dvec3 north = glm::normalize(glm::dvec3(0.0, 1.0, 0.0) - d * d.y), east = glm::cross(d, north);
+  const double     size = km * 1000.0, pixel = size / double(n);
+  std::vector<W::Sample> samples(size_t(n) * size_t(n));
+  fv::jobs::parallelFor(samples.size(), 256, [&](size_t begin, size_t end) {
+    for(size_t k = begin; k < end; k++)
+    {
+      const double x = (double(k % size_t(n)) + 0.5) / n - 0.5, y = (double(k / size_t(n)) + 0.5) / n - 0.5;
+      samples[k] = W::sample(w, glm::normalize(d + (east * x - north * y) * (size / w.spec.radius)), pixel);
+    }
+  });
+  const glm::dvec3           light = glm::normalize(glm::dvec3(-1.0, 1.0, 1.1));  // east, north, up
+  std::vector<unsigned char> image(samples.size() * 3);
+  double                     lowest = 1e30, highest = -1e30;
+  const auto                 at = [&](int i, int j) { return samples[size_t(std::clamp(j, 0, n - 1)) * n + std::clamp(i, 0, n - 1)].elevation; };
+  for(int j = 0; j < n; j++)
+    for(int i = 0; i < n; i++)
+    {
+      const W::Sample& s = samples[size_t(j) * n + i];
+      lowest             = std::min(lowest, s.elevation);
+      highest            = std::max(highest, s.elevation);
+      const glm::dvec3 normal = glm::normalize(glm::dvec3(-(at(i + 1, j) - at(i - 1, j)) / (2.0 * pixel), (at(i, j + 1) - at(i, j - 1)) / (2.0 * pixel), 1.0));
+      const double     lit    = 0.25 + 1.1 * std::max(glm::dot(normal, light), 0.0);
+      glm::dvec3       c      = glm::dvec3(W::surfaceColour(w, s, float(std::sqrt(1.0 - normal.z * normal.z) / normal.z))) * lit * 2.5;
+      if(s.elevation < 0.0 || s.water > s.elevation)
+        c = glm::dvec3(0.02, 0.07, 0.16) * (s.elevation < 0.0 ? 1.0 : 2.0);
+      for(int k = 0; k < 3; k++)
+        image[(size_t(j) * n + i) * 3 + k] = (unsigned char)(255.0 * std::pow(std::clamp(c[k], 0.0, 1.0), 1.0 / 2.2));
+    }
+  std::printf("%d x %d, %.1f m a pixel, land from %.0f to %.0f m%s\n", n, n, pixel, lowest, highest, sited ? " (the file gives a site)" : "");
+  FILE* out = std::fopen(file, "wb");
+  ASSERT_NE(out, nullptr);
+  std::fprintf(out, "P6\n%d %d\n255\n", n, n);
+  std::fwrite(image.data(), 1, image.size(), out);
+  std::fclose(out);
 }
 
 // Not a test: the ground and the water round a place of the default planet, from straight above, as

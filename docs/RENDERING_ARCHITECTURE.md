@@ -937,8 +937,13 @@ their kit when there is one. It needs no kit: without one it stands bare.
   (`BaseMap`, `src/fv_world_map.hpp`, `bake`): the rain the wind carries in from the sea, the hollows
   filled to where they spill (the deep ones hold lakes), what the running water wore off the land
   (the stream power law, solved from the sea up), and the rivers, kept as curves with a level and a
-  width. Two stages read it: `base` adds the wear to the land and finds the water near a point,
-  `water` cuts the rivers' beds and says where water lies. The map's cells are tens of metres and
+  width. Three stages read it: `base` adds the wear to the land and finds the water near a point,
+  `gullies` furrows the steep slopes finer than the map's cells, `water` cuts the rivers' beds and
+  says where water lies. The gullies are no simulation: stripes laid down the land's fall as the map
+  has it (`BaseMap::slopes`, the worn land's slope at a few breadths), each size steered by the sides
+  of the one before so they branch, after the erosion filters of Clay John, Fewes and Rune Skovbo
+  Johansen (written here from the idea, as phasor noise in space). A road's level is found without
+  them (`sampleWithout`): it is cut and banked through them. The map's cells are tens of metres and
   the ground is drawn to a metre, so what is drawn is never the map's cells: a lake's shore is where
   the ground comes up through its level, a river's bed is cut from its curve. The header says what
   that takes (a lake under its hollow's brim, rivers at the sea's level by a shore, the cube's

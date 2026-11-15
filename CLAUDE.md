@@ -74,7 +74,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   `planet` kind: its fields by
   stages, what an author puts on it by hand from a planet file (`src/fv_world_features.*`: land, sea,
   ranges, peaks, basins and plains, shaping the land before the base map is baked),
-  its base map (`src/fv_world_map.*`: rain, erosion, lakes and rivers, baked once a planet),
+  its base map (`src/fv_world_map.*`: rain, erosion, lakes and rivers, baked once a planet) and the
+  gullies on its steep slopes, laid down the fall that map has,
   its plants by biome from the backdrop's kit (`src/fv_world_plants.*`) and its sea floor's, made
   from a seed (`src/fv_world_sea.*`), what people left on it from a catalogue of packs and rules
   (`src/fv_world_places.*`, `src/fv_host_world_places.cpp`: places on levelled ground, roads routed
