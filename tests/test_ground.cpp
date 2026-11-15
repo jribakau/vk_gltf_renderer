@@ -911,6 +911,101 @@ TEST(Sea, ItsWaterScattersForward)
   EXPECT_GT(sent.z, 3.0f * sent.y);
 }
 
+// A planet's lakes and rivers are the same water standing higher (worldSeaAt): what a shadow ray
+// from under one keeps is what it would keep under a sea at that level, while the path is in it
+TEST(Sea, InlandWaterIsTheSeaStandingHigher)
+{
+  SceneFrameInfo frame{};
+  frame.worldSeaRadius  = 20000.0f;
+  frame.worldSeaTop     = float3(0.0f, -12.0f, 0.0f);
+  frame.worldSeaWaves   = 0.6f;
+  frame.worldSeaRipples = 0.5f;
+  // no slot is its lakes' until the host says one, and no mesh without a material is
+  EXPECT_FALSE(worldWaterIs(&frame, -1));
+  EXPECT_FALSE(worldWaterIs(&frame, 3));
+  frame.worldWater = 3;
+  EXPECT_TRUE(worldWaterIs(&frame, 3));
+  EXPECT_FALSE(worldWaterIs(&frame, 4));
+
+  const Sea sea = worldSea(&frame), same = worldSeaAt(&frame, 0.0f), lake = worldSeaAt(&frame, 50.0f);
+  EXPECT_EQ(same.radius, sea.radius);
+  EXPECT_EQ(same.top, sea.top);
+  EXPECT_EQ(same.waves, sea.waves);
+  EXPECT_FLOAT_EQ(lake.radius, 20050.0f);
+  EXPECT_FLOAT_EQ(lake.top.y, 38.0f);
+  EXPECT_FLOAT_EQ(lake.waves, 0.6f * SEA_INLAND_WAVES);  // calmer than the sea
+  EXPECT_EQ(lake.ripples, sea.ripples);
+  // a point 49 m over the sea is a metre under that lake's surface, 300 m from the planet's top
+  const float3 at = sea.top + float3(300.0f, 49.0f - 300.0f * 300.0f / 40000.0f, 0.0f);
+  EXPECT_FALSE(seaUnder(sea, at));
+  EXPECT_TRUE(seaUnder(lake, at));
+  EXPECT_NEAR(seaHeight(lake, at), -1.0f, 0.02f);
+
+  const float3 toSun = normalize(float3(0.3f, 1.0f, 0.2f));
+  // a path in no water, or in the sea: the ray from there is in the air
+  g_waterLevel = 0.0f;
+  EXPECT_EQ(waterShadowTransmittance(at, toSun, 1e30f, &frame), float3(1.0f));
+  // in the lake: it crosses the lake's surface, with what the surface reflects and the water takes
+  g_waterLevel        = 50.0f;
+  const float3 through = waterShadowTransmittance(at, toSun, 1e30f, &frame);
+  EXPECT_EQ(through, seaShadowTransmittance(lake, at, toSun, 1e30f));
+  EXPECT_LT(through.x, through.z);  // red goes first
+  EXPECT_GT(through.z, 0.0f);
+  // over the lake's surface the ray is in the air again
+  EXPECT_EQ(waterShadowTransmittance(at + float3(0.0f, 2.0f, 0.0f), toSun, 1e30f, &frame), float3(1.0f));
+  g_waterLevel = 0.0f;
+}
+
+// Their mesh is the water's surface to a ray that comes to it from the other side of it, and no
+// surface otherwise (worldInlandHit)
+TEST(Sea, ALakesMeshIsItsSurfaceFromTheOtherSideOnly)
+{
+  SceneFrameInfo frame{};
+  frame.worldSeaRadius = 20000.0f;
+  frame.worldSeaTop    = float3(0.0f, -12.0f, 0.0f);
+  const Sea    sea     = worldSea(&frame);
+  const float3 at      = sea.top + float3(300.0f, 49.0f, 0.0f);  // over the sea
+  const float3 up      = seaUp(sea, at);
+  const float3 side    = normalize(cross(up, float3(0.0f, 0.0f, 1.0f)));
+  const float3 down    = normalize(-up + 0.4f * side), rising = normalize(up + 0.4f * side);
+
+  // from the air down onto it, and from the water up to it: its surface, the normal turned to the
+  // ray whichever way round the face is
+  for(const float3 face : {up, -up})
+  {
+    const InlandHit in = worldInlandHit(sea, at, down, face, false);
+    EXPECT_TRUE(in.fromAbove);
+    EXPECT_FALSE(in.passed);
+    EXPECT_NEAR(dot(in.normal, up), 1.0f, 1e-5f);
+    const InlandHit out = worldInlandHit(sea, at, rising, face, true);
+    EXPECT_FALSE(out.fromAbove);
+    EXPECT_FALSE(out.passed);
+    EXPECT_NEAR(dot(out.normal, up), -1.0f, 1e-5f);
+  }
+  // met from the side the path is on already: no surface
+  EXPECT_TRUE(worldInlandHit(sea, at, down, up, true).passed);
+  EXPECT_TRUE(worldInlandHit(sea, at, rising, up, false).passed);
+
+  // a wall of the mesh's skirt: nothing to a path in the water, either way it goes; the surface,
+  // level, to one that came down a crack from the air
+  EXPECT_TRUE(worldInlandHit(sea, at, down, side, true).passed);
+  EXPECT_TRUE(worldInlandHit(sea, at, rising, side, true).passed);
+  const InlandHit crack = worldInlandHit(sea, at, down, side, false);
+  EXPECT_TRUE(crack.fromAbove);
+  EXPECT_FALSE(crack.passed);
+  EXPECT_NEAR(dot(crack.normal, up), 1.0f, 1e-5f);
+  // a river's water running downhill is no wall
+  const float3 sloped = normalize(up + 0.3f * side);
+  EXPECT_FALSE(worldInlandHit(sea, at, down, sloped, false).passed);
+  EXPECT_NEAR(dot(worldInlandHit(sea, at, down, sloped, false).normal, sloped), 1.0f, 1e-5f);
+
+  // the end of a river's mesh under the sea, at its mouth: the sea's own surface is over it
+  const float3 under = sea.top + float3(300.0f, -300.0f * 300.0f / 40000.0f - 0.2f, 0.0f);
+  ASSERT_TRUE(seaUnder(sea, under));
+  EXPECT_TRUE(worldInlandHit(sea, under, down, up, false).passed);
+  EXPECT_TRUE(worldInlandHit(sea, under, rising, up, true).passed);
+}
+
 // ---- a planet's ground (shaders/world_ground.h.slang) --------------------------------------------
 
 namespace {

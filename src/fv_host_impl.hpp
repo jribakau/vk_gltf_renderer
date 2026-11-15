@@ -1667,6 +1667,9 @@ struct FvHost::Impl
     // the kit they were made from. None without a kit, or with one that has no maps for a planet.
     rs::EntityId                       groundLayers;
     std::shared_ptr<const BackdropKit> groundKit;
+    // Where the camera was when the renderer was last told what inland water it is in
+    // (HostRenderer::setWorldWaterAtEye)
+    glm::dvec3 waterAtEyeFor{1.0e30};
     // The sea floor's plants (fv_world_sea.hpp), made for the planet's seed: their meshes, shared
     // with the pool's jobs, and an entity each that is never shown, which a quad's copies are of
     std::shared_ptr<const std::vector<fv::world::SeaMesh>>                        seaMeshes;

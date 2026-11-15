@@ -1035,9 +1035,32 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 
     // Then the water's surface, over the floor: before it, it is the hit
     bool       waterFromAbove = false;
-    const bool hitWater       = checkWaterIntersection(ray, payload, hit, frameInfo, waterFromAbove);
+    bool       hitWater       = checkWaterIntersection(ray, payload, hit, frameInfo, waterFromAbove);
     if(hitWater)
       hitInfinitePlane = false;
+    // A planet's lake or river is a mesh, and where the ray met it nearer than the sea it is the
+    // water's surface all the same (world_sea.h.slang), or no surface to this ray (worldInlandHit)
+    bool hitInland   = false;
+    bool waterPassed = false;
+    if(!hitWater && !hitInfinitePlane && payload.hitT != INFINITE && worldWaterIs(frameInfo, renderNode.materialID))
+    {
+      const InlandHit inland = worldInlandHit(worldSea(frameInfo), hit.pos, ray.Direction, hit.geonrm, pt.inWater);
+      hitWater               = true;
+      hitInland              = true;
+      waterFromAbove         = inland.fromAbove;
+      waterPassed            = inland.passed;
+      if(!waterPassed)
+      {
+        hit.geonrm    = inland.normal;
+        hit.nrm       = hit.geonrm;
+        hit.shadowPos = hit.pos;
+        orthonormalBasis(hit.geonrm, hit.tangent, hit.bitangent);
+      }
+    }
+    // The sea's sphere inside a lake (one whose bed goes down under the sea's level) is no surface
+    // either: a path in the lake's water goes down through it
+    else if(hitWater && g_waterLevel > 0.0F && waterFromAbove)
+      waterPassed = true;
 #if USE_PIXEL_TIME
     // the Time view sums a pixel's time by what its first sample's camera ray met
     if(firstRay && g_timeSlot == kPixelTimeUnset)
@@ -1264,6 +1287,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // Compute the ray-cone footprint at the hit point which is used to compute the texture-LOD gradient
     float worldFoot = rayConeWorldFootprint(pt.cone, payload.hitT, hit.geonrm, -ray.Direction);
 
+    // Water that is no surface to this ray (above): it goes on
+    if(waterPassed)
+    {
+      pt.cone.width = worldFoot;
+      pt.nullDistance += payload.hitT;
+      ray.Origin = safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance);  // getHitState turned geonrm to the ray
+      return PathStepResult.eEarlyContinue;
+    }
+
     //-----------------------------------------------------------------------
     // Hitting the infinite plane
     //-----------------------------------------------------------------------
@@ -1303,7 +1335,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     //-----------------------------------------------------------------------
     else if(hitWater)
     {
-      pbrMat = waterSurfaceMaterial(hit.pos, hit.geonrm, waterFromAbove, worldFoot, frameInfo);
+      pbrMat = waterSurfaceMaterial(hit.pos, hit.geonrm, waterFromAbove, worldFoot, frameInfo, hitInland);
     }
     //-----------------------------------------------------------------------
     // Hitting the mesh
@@ -2602,7 +2634,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // Through the water's surface the path goes into the water or out of it; reflected, it stays
         // on the side it came from
         if(hitWater)
+        {
           pt.inWater = isTransmission ? waterFromAbove : !waterFromAbove;
+          // ... and the water it is in then stands where this surface does: a lake's level, or the sea's
+          g_waterLevel = pt.inWater && hitInland ? max(seaHeight(worldSea(frameInfo), hit.pos), 0.0F) : 0.0F;
+        }
 
         // A walk entered from a surface seen directly keeps the path direct until it leaves, as in
         // Unreal: the skin's light is the walk's, and the exit's own diffuse sample makes the path rough.
@@ -2749,6 +2785,15 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
   g_unlitLamps       = 0u;  // the camera's: no surface yet
   g_skyStars         = float2(0.0F);
   pt.inWater         = waterUnder(ray.Origin, pushConst.frameInfo);
+  // (a camera in a lake or a river: the host says how high the water over it stands, which no sphere
+  // does; deep in a lake it may be under the sea's level too, and is in the lake all the same)
+  g_waterLevel = 0.0F;
+  if(worldHasSea(pushConst.frameInfo) && pushConst.frameInfo->worldWater >= 0
+     && seaHeight(worldSea(pushConst.frameInfo), ray.Origin) < pushConst.frameInfo->worldWaterAtEye)
+  {
+    pt.inWater   = true;
+    g_waterLevel = pushConst.frameInfo->worldWaterAtEye;
+  }
 
 #if GLTF_USE_VOLUME
   // A camera path starts in the medium the camera is in (probeCameraMedium). No pointer: the scene

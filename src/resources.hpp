@@ -266,6 +266,10 @@ struct Settings
   // materials they are (GltfRenderer::setWorldGround). Off: the ground is drawn as its mesh has it,
   // which is what a timing compares them with.
   bool worldGroundMaps = true;
+  // ... and its lakes and rivers as the sea's water (shaders/world_sea.h.slang): their meshes met as
+  // the water's surface. Off: the meshes as the clear glass their material is, as they were before
+  // (no waves, nothing scattered, a camera in one sees as in air), for a timing or a look against it.
+  bool worldInlandWater = true;
   // The other bodies in that planet's sky (the backdrop's `bodies`; shaders/world_bodies.h.slang), as
   // the frame carries them: each one's centre in the scene with its radius, and its colour with what
   // it is made of. The host's to say (GltfRenderer::setWorldBodies), and nothing a file keeps.

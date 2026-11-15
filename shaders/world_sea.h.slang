@@ -83,6 +83,49 @@ Sea worldSea(SceneFrameInfo* frameInfo)
   return sea;
 }
 
+// A planet's lakes and rivers are the same water standing higher. Their surfaces are meshes (a lake's
+// outline is where the ground comes up through its level, which no sphere says), and a path that
+// meets one is at the water's surface as it is at the sea's (worldWaterIs; the path tracer makes the
+// hit the water's): it refracts by the waves' normal, and under it is in the water. What is asked of
+// the water from there on is asked of the sea's sphere made as much larger as that water stands over
+// the sea (worldSeaAt): level water is a sphere about the planet's centre whatever its height, and a
+// shadow ray from under a lake leaves the water within metres of where the path went in.
+//
+// Where the mesh is no surface is worldInlandHit's to say. The sea's sphere runs on under a lake whose
+// bed lies under the sea's level; a path in the lake goes down through it (the path tracer), and one
+// that comes back up meets it as a surface, which is wrong there and right at a river's mouth, where
+// the two waters are one: light that deep in a lake has been through all the water over it.
+
+// How high over the sea's sphere the water a path is in stands, metres: 0 in the sea, and in none;
+// a lake's or a river's level while the path is in one (the path tracer sets it where a path goes in
+// and comes out). A shadow ray is traced from where the path is, so this is the water it crosses.
+static float g_waterLevel = 0.0F;
+
+// A lake's or a river's swell against the sea's
+static const float SEA_INLAND_WAVES = 0.25F;
+// A face of their mesh this far from level (the cosine to the planet's vertical) is a wall of its
+// skirt, not the water's surface
+static const float SEA_INLAND_WALL = 0.5F;
+
+// Whether a mesh's material slot is that of a planet's lakes and rivers
+bool worldWaterIs(SceneFrameInfo* frameInfo, int material)
+{
+  return frameInfo->worldWater >= 0 && material == frameInfo->worldWater;
+}
+
+// The planet's water that stands `level` metres over its sea: the sea itself at 0, inland water above
+Sea worldSeaAt(SceneFrameInfo* frameInfo, float level)
+{
+  Sea sea = worldSea(frameInfo);
+  if(level > 0.0F)
+  {
+    sea.top.y += level;
+    sea.radius += level;
+    sea.waves *= SEA_INLAND_WAVES;
+  }
+  return sea;
+}
+
 // `pos` from the sea's centre
 float3 seaFromCentre(Sea sea, float3 pos)
 {
@@ -326,6 +369,35 @@ float3 seaScattered(float cosTheta)
   return GROUND_WATER_SCATTERING * groundWaterPhase(cosTheta) + float3(1.0F, 1.0F, 1.0F) * (SEA_PARTICLES * seaParticlePhase(cosTheta));
 }
 
+// What a ray makes of a lake's or a river's mesh where it meets it
+struct InlandHit
+{
+  bool   fromAbove;  // it comes down onto the water
+  bool   passed;     // no surface to this ray: it goes on
+  float3 normal;     // the surface's, turned to the ray (when not passed)
+};
+
+// A ray going along `direction` meets the mesh of a planet's inland water at `pos`, on a face whose
+// normal is `faceNormal` (either way round), its path in water or not (`inWater`). The mesh is the
+// water's surface, with three exceptions, where the ray goes on:
+// - met from the side the path is on already: water met from below by a path that never went into
+//   it, or again by one in it;
+// - the end of a river's mesh that lies under the sea at its mouth: the sea's own surface is over it;
+// - the walls under each quad's edges (its skirt, against cracks between quads of two sizes), to a
+//   path in the water. To one in the air a wall is the surface, seen down a crack.
+InlandHit worldInlandHit(Sea sea, float3 pos, float3 direction, float3 faceNormal, bool inWater)
+{
+  InlandHit    h;
+  const float3 up   = seaUp(sea, pos);
+  const bool   wall = abs(dot(faceNormal, up)) < SEA_INLAND_WALL;
+  h.fromAbove       = dot(direction, up) < 0.0F;
+  h.passed          = inWater == h.fromAbove || (wall && inWater) || seaOver(sea, pos) < 0.0F;
+  h.normal          = wall ? up : faceNormal;
+  if(dot(h.normal, direction) > 0.0F)
+    h.normal = -h.normal;
+  return h;
+}
+
 //-----------------------------------------------------------------------
 // The water there is: the planet's sea when one stands, the ground's otherwise
 //-----------------------------------------------------------------------
@@ -339,8 +411,9 @@ bool waterUnder(float3 pos, SceneFrameInfo* frameInfo)
 
 float3 waterShadowTransmittance(float3 origin, float3 direction, float tMax, SceneFrameInfo* frameInfo)
 {
+  // (through the water the path is in: the sea's, or a lake's at its own level)
   if(worldHasSea(frameInfo))
-    return seaShadowTransmittance(worldSea(frameInfo), origin, direction, tMax);
+    return seaShadowTransmittance(worldSeaAt(frameInfo, g_waterLevel), origin, direction, tMax);
   return groundWaterShadowTransmittance(origin, direction, tMax, frameInfo);
 }
 

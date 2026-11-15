@@ -267,7 +267,8 @@ shaders/
 │                               #   one leaves of the sun's disk, its markings and shading; C++ too (unit-tested)
 ├── water_optics.h.slang        # The ground's water as a medium (IOR, absorption, scattering) and its albedo; C++ too
 ├── world_sea.h.slang           # A planet's sea: the ground's body of water on a sphere (its surface, waves,
-│                               #   caustics, the light in the water); C++ too (unit-tested with the ground's)
+│                               #   caustics, the light in the water), and its lakes and rivers as that water
+│                               #   standing higher; C++ too (unit-tested with the ground's)
 ├── world_ground.h.slang        # A planet's ground: which of its layers' materials a hit is drawn with, and that
 │                               #   one's maps laid by where the hit is; C++ too (unit-tested with the ground's)
 ├── sky_omi_shaderio.h.slang    # SkyType + the per-type OMI_environment_sky parameter blocks

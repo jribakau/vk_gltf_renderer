@@ -36,6 +36,11 @@
 // renderer is told which materials the layers are, a quad's vertices carry their shares of each, and
 // the path tracer draws a hit with one of them (shaders/world_ground.h.slang).
 //
+// Its lakes and rivers are meshes (fv::world::waterMesh), but the water is the sea's: the renderer is
+// told which material they are drawn with and meets a hit of it as the water's surface
+// (shaders/world_sea.h.slang), and, as the camera moves, what inland water the camera is in
+// (fv::world::inlandWaterOver), for its paths to start there.
+//
 
 #include "fv_host_impl.hpp"
 #include "fv_world_map.hpp"
@@ -142,6 +147,8 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
                                              .attenuationDistance = fv::world::kSeaColourDistance,
                                              .attenuationColor    = {fv::world::kSeaColour.x, fv::world::kSeaColour.y, fv::world::kSeaColour.z}};
   p.sea                    = scene.addMaterial(std::move(sea));
+  // (the path tracer meets it as the water's surface; the ground's maps come with a kit: mapPlanetGround)
+  renderer->setWorldGround({.ground = p.ground, .water = p.sea});
   p.density                = backdropSpec.density;
 
   // the sea floor's plants: made here (the kit has none), a mesh a variant, held hidden under the
@@ -206,6 +213,7 @@ void FvHost::Impl::dropPlanet()
   if(!planetBuilt)
     return;
   renderer->setWorldGround({});  // (its layers' materials went with the backdrop's root)
+  renderer->setWorldWaterAtEye(HostRenderer::kNoWorldWater);
   if(renderer->feedsHostScene())
   {
     // (its entities went with the backdrop's root)
@@ -258,6 +266,14 @@ void FvHost::Impl::followPlanet()
     const double     needed = fv::world::farPlane(world, eye);
     if(clip.y < needed)
       camera->setClipPlanes({clip.x, 2.0 * needed});
+  }
+  // the lake or the river the camera is in, if any: its paths start in that water (once it has
+  // gone a hand's breadth: a look at the ground under it)
+  if(glm::distance(eye, p.waterAtEyeFor) > 0.1)
+  {
+    p.waterAtEyeFor    = eye;
+    const double level = fv::world::inlandWaterOver(world, eye);
+    renderer->setWorldWaterAtEye(level > 0.0 ? float(level) : HostRenderer::kNoWorldWater);
   }
   // selected again once it has gone a twentieth of its height over the ground: a quad's reach is
   // twice its width, and the nearest is no nearer than that height
@@ -708,7 +724,7 @@ void FvHost::Impl::mapPlanetGround(rs::RetainedScene& scene)
     scene.destroyEntity(p.groundLayers);
   p.groundLayers = {};
   p.groundKit    = backdropKit;
-  HostRenderer::WorldGround ground;
+  HostRenderer::WorldGround ground{.ground = p.ground, .water = p.sea};
   std::vector<size_t>       layerOf;
   const tinygltf::Model     model = planetGroundModel(*backdropKit, layerOf);
   if(!layerOf.empty())
@@ -720,7 +736,6 @@ void FvHost::Impl::mapPlanetGround(rs::RetainedScene& scene)
       {
         p.groundLayers = r.roots.front();
         scene.setVisible(p.groundLayers, false);
-        ground.ground = p.ground;
         for(size_t i = 0; i < layerOf.size() && i < r.materials.size(); i++)
         {
           ground.layers[layerOf[i]] = r.materials[i];

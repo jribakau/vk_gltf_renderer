@@ -1149,10 +1149,19 @@ void GltfRenderer::setWorldBodies(std::span<const glm::vec4> place, std::span<co
 
 void GltfRenderer::setWorldGround(const WorldGround& ground)
 {
-  if(ground.ground == m_worldGround.ground && ground.layers == m_worldGround.layers && ground.tiles == m_worldGround.tiles)
+  if(ground.ground == m_worldGround.ground && ground.layers == m_worldGround.layers && ground.tiles == m_worldGround.tiles
+     && ground.water == m_worldGround.water)
     return;
   m_worldGround = ground;
   resetFrame(/*sceneChanged=*/false);  // what the ground is drawn with
+}
+
+void GltfRenderer::setWorldWaterAtEye(float level)
+{
+  if(level == m_worldWaterAtEye)
+    return;
+  m_worldWaterAtEye = level;
+  resetFrame(/*sceneChanged=*/false);  // the camera's paths start in that water, or no longer do
 }
 
 float GltfRenderer::skyObserverAltitudeKm() const

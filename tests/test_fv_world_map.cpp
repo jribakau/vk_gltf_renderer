@@ -328,6 +328,74 @@ TEST(WorldMapWater, ALakeIsLevelAndHeldInByItsShore)
   FAIL() << "no lake on any of the planets";
 }
 
+// A camera in a lake starts its paths in the water (shaders/world_sea.h.slang): what it is in is the
+// planet's to say
+TEST(WorldMapWater, APointUnderALakesSurfaceIsInIt)
+{
+  // some planet of a few has a lake
+  for(const int seed : {1, 2, 3, 4})
+  {
+    const W::World    held = seed == 1 ? W::World{} : W::make({.seed = seed}, {.map = kCells});
+    const W::World&   w    = seed == 1 ? planet() : held;
+    const W::BaseMap& m    = *w.base;
+    if(m.lakes == 0)
+      continue;
+    int lakes = 0;
+    for(uint32_t c = 0; c < m.grid.count(); c++)
+    {
+      if(m.kind[c] != W::eMapLake)
+        continue;
+      const glm::dvec3 d = m.grid.centre(c);
+      const W::Sample  s = W::sample(w, d, 1.0);
+      if(!(s.water > s.elevation + 1.0))
+        continue;  // the ground's fine relief stands out of it here, or nearly
+      lakes++;
+      // half way down it: in it, and it says its level; over its surface: in none
+      EXPECT_NEAR(W::inlandWaterOver(w, W::toScene(w, d, 0.5 * (s.water + s.elevation))), s.water, 1e-6);
+      EXPECT_EQ(W::inlandWaterOver(w, W::toScene(w, d, s.water + 0.2)), W::kDry);
+    }
+    EXPECT_GT(lakes, 3);
+    // dry ground has none over it, nor has the sea, under its surface or over it
+    for(uint32_t i = 0; i < 3000; i++)
+    {
+      const glm::dvec3 d = spread(i, 3000);
+      const W::Sample  s = W::sample(w, d, 1.0);
+      if(s.water > -1.0e20)
+        continue;  // a river or a lake is near
+      EXPECT_EQ(W::inlandWaterOver(w, W::toScene(w, d, s.elevation < 0.0 ? 0.5 * s.elevation : s.elevation + 1.0)), W::kDry);
+      EXPECT_EQ(W::inlandWaterOver(w, W::toScene(w, d, std::max(s.elevation, 0.0) + 30.0)), W::kDry);
+    }
+    // a planet with no map has no inland water
+    const W::World bare = W::make({}, {.base = false});
+    EXPECT_EQ(W::inlandWaterOver(bare, glm::dvec3(0.0, -5.0, 0.0)), W::kDry);
+    return;
+  }
+  FAIL() << "no lake on any of the planets";
+}
+
+// A deep lake's bed can lie under the sea's level. It is the lake's bed all the same: dark mud, not
+// the pale sand of the sea's shallows (which drew a disc in the lake, seen from the air)
+TEST(WorldMapWater, ALakesBedUnderTheSeasLevelIsStillALakesBed)
+{
+  const W::World&   w = planet();
+  const W::BaseMap& m = *w.base;
+  int               found = 0;
+  for(uint32_t c = 0; c < m.grid.count(); c++)
+  {
+    if(m.kind[c] != W::eMapLake)
+      continue;
+    const glm::dvec3 d = m.grid.centre(c);
+    const W::Sample  s = W::sample(w, d, 1.0);
+    if(!(s.elevation < -0.5) || !(s.water > s.elevation + 8.0))
+      continue;
+    found++;
+    EXPECT_LT(std::max({s.colour.x, s.colour.y, s.colour.z}), 0.1F) << "elevation " << s.elevation << ", water " << s.water;
+    // and the camera there is in the lake, under the sea's level or not
+    EXPECT_NEAR(W::inlandWaterOver(w, W::toScene(w, d, s.elevation + 0.3)), s.water, 1e-6);
+  }
+  EXPECT_GT(found, 0) << "this planet's deepest lake goes under the sea's level by its south-east shore";
+}
+
 TEST(WorldMapWater, TheFiguresStandOnDryGround)
 {
   for(const int seed : {1, 2, 3})

@@ -163,13 +163,20 @@ public:
   // A planet's ground with maps (shaders/world_ground.h.slang): the material its quads are drawn
   // with, the materials of its layers in the order of a vertex's shares (none: that layer is the
   // ground's own), and the metres a repeat of each one's maps covers. No ground: none has maps.
+  // And the material its lakes' and rivers' meshes are drawn with, which the path tracer meets as
+  // the water's surface (shaders/world_sea.h.slang); none: no planet, or none with inland water.
   struct WorldGround
   {
     rs::MaterialId                ground;
     std::array<rs::MaterialId, 4> layers;
     std::array<float, 4>          tiles{1.0F, 1.0F, 1.0F, 1.0F};
+    rs::MaterialId                water;
   };
   virtual void setWorldGround(const WorldGround& /*ground*/) {}
+  // How high over its sea the lake or the river the camera is in stands, metres; far under any
+  // (kNoWorldWater): it is in none. Said as the camera moves, since no sphere says where a lake is.
+  static constexpr float kNoWorldWater = -1.0e30F;
+  virtual void setWorldWaterAtEye(float /*level*/) {}
   virtual void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> /*observer*/) {}
   // The pixel readout: what is at a normalized viewport position (origin top-left) and how bright it
   // is, read a frame or two later and again while the still refines (a few times a second), so it

@@ -644,6 +644,10 @@ bool shadowCrossSurface(GltfRenderNode      renderNode,
                         inout float         prevHitT,
                         inout uint          seed)
 {
+  // A planet's lake or river: its surface is the water's, crossed where the ray leaves the water the
+  // path is in (waterShadowTransmittance), not here
+  if(worldWaterIs(pushConst.frameInfo, renderNode.materialID))
+    return true;
   const float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics, mul(float4(rayDirection, 0.0F), worldToObject).xyz);
   if(opacity <= 0.0F)
     return true;
@@ -1865,8 +1869,8 @@ bool checkWaterIntersection(RayDesc ray, inout HitPayload payload, inout HitStat
 
 // The water's surface as a material: clear water, refracting into it from above and out of it from
 // below, smooth but for what the footprint averages of its waves and ripples. `geometricNormal` is the
-// hit's, which faces the ray.
-PbrMaterial waterSurfaceMaterial(float3 pos, float3 geometricNormal, bool fromAbove, float footprint, SceneFrameInfo* frameInfo)
+// hit's, which faces the ray. `inland`: a planet's lake or river, calmer than its sea.
+PbrMaterial waterSurfaceMaterial(float3 pos, float3 geometricNormal, bool fromAbove, float footprint, SceneFrameInfo* frameInfo, bool inland = false)
 {
   float3     up;
   float      variance;  // per axis: the slopes the footprint averages out
@@ -1874,7 +1878,10 @@ PbrMaterial waterSurfaceMaterial(float3 pos, float3 geometricNormal, bool fromAb
   if(sea)
   {
     // a planet's sea: its swell and ripples as a normal over the sphere (no rain falls on a planet yet)
-    const SeaSurface surface = seaSurfaceAt(worldSea(frameInfo), pos, footprint);
+    Sea water = worldSea(frameInfo);
+    if(inland)
+      water.waves *= SEA_INLAND_WAVES;
+    const SeaSurface surface = seaSurfaceAt(water, pos, footprint);
     up                       = surface.up;
     variance                 = surface.variance;
   }

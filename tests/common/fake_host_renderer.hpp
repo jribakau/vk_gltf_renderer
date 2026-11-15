@@ -96,6 +96,8 @@ public:
   std::optional<nvutils::Bbox> hazeScope;
   void        setWorldGround(const WorldGround& ground) override { worldGround = ground; }
   WorldGround worldGround;
+  void        setWorldWaterAtEye(float level) override { worldWaterAtEye = level; }
+  float       worldWaterAtEye = kNoWorldWater;
 
   void         selectEntity(rs::EntityId entity) override { m_selected = entity; }
   rs::EntityId selectedEntity() const override { return m_selected; }

@@ -77,7 +77,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   from a seed (`src/fv_world_sea.*`),
   its quadtree meshes drawn a cut at a time, its ground's maps from the kit (a material a layer,
   one picked a hit), its sea (no mesh: the ground's body of water on a
-  sphere, seen from over it and from in it), the sky scaled to it and asked from any place of
+  sphere, seen from over it and from in it; its lakes and rivers are meshes met as that water's
+  surface), the sky scaled to it and asked from any place of
   it, on the ground or in orbit, and the other bodies in that sky
   ([docs/RENDERING_ARCHITECTURE.md](docs/RENDERING_ARCHITECTURE.md#a-planet)).
 - `src/sun_position.*` — NOAA solar position.

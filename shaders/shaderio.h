@@ -558,7 +558,13 @@ struct SceneFrameInfo
   int4   worldGroundLayer = {-1, -1, -1, -1};
   float4 worldGroundTile  = {1.0F, 1.0F, 1.0F, 1.0F};
   int    worldGround      = -1;
-  int    _worldGroundPad  = 0;
+  // Its lakes and rivers (shaders/world_sea.h.slang): the material slot their meshes are drawn with
+  // (-1: none), which a path meets as the water's surface; and how high over the sea's sphere the
+  // inland water the camera is in stands, metres (far under any: it is in none), since no sphere
+  // says where a lake is. (Appended.)
+  int    worldWater       = -1;
+  float  worldWaterAtEye  = -1.0e30F;
+  float  _worldWaterPad   = 0.0F;
 };
 
 enum PathtracerFlags

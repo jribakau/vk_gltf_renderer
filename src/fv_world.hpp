@@ -297,6 +297,11 @@ double heightOver(const World& world, const glm::dvec3& point);
 // the surface goes down under the ground, which hides it.
 double waterLevel(const World& world, const glm::dvec3& direction, double footprint);
 
+// The lake or the river a scene point is in: how high its surface stands over the sea's level,
+// metres; kDry when the point is over dry ground, over the sea, or over water it is not under.
+// What a camera's paths start in (shaders/world_sea.h.slang: no sphere says where a lake is).
+double inlandWaterOver(const World& world, const glm::dvec3& point);
+
 // A camera's "up" at `eye` (the scene's frame). By the site it is the scene's +y, which the figures
 // stand along; away from it the planet's own vertical there, so the horizon stays level all the way
 // round. Eased from one to the other between these shares of the radius from the origin.

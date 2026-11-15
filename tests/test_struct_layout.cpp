@@ -259,7 +259,7 @@ HostStruct sceneFrameInfo()
     F(rainWet), F(rainPuddles), F(rainShear), F(rainShelterCentre), F(rainShelter), F(rainRate), F(rainTime),
     F(worldCentre), F(worldRadiusKm), F(worldBodyPlace), F(worldBodyLook), F(worldBodyCount), F(worldBodyLight),
     F(lightMix), F(lightGroupsUsed), F(worldSeaRadius), F(worldSeaWaves), F(worldSeaRipples), F(worldSeaTop), F(_worldSeaPad),
-    F(worldGroundLayer), F(worldGroundTile), F(worldGround), F(_worldGroundPad)
+    F(worldGroundLayer), F(worldGroundTile), F(worldGround), F(worldWater), F(worldWaterAtEye), F(_worldWaterPad)
   }};
 }
 

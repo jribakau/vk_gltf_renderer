@@ -629,6 +629,15 @@ TEST(FvHost, APlanetStandsWithNoKit)
   EXPECT_LT(first.sea, first.ground + 1);
   EXPECT_EQ(first.hidden, 0) << "nothing waits once the first cut shows";
   EXPECT_GT(first.held, 4) << "the sea floor's plants are made with the planet, kit or no kit";
+  // the renderer is told which material its lakes' and rivers' meshes are drawn with (it meets
+  // them as the water's surface), and no ground maps without a kit
+  const rs::MaterialRecord* water = scene.material(rig.renderer.worldGround.water);
+  ASSERT_NE(water, nullptr);
+  EXPECT_EQ(water->payload.name, "Planet sea");
+  for(const rs::MaterialId layer : rig.renderer.worldGround.layers)
+    EXPECT_TRUE(layer.isNone());
+  // (no camera here: the eye is a figure's, on dry ground)
+  EXPECT_EQ(rig.renderer.worldWaterAtEye, HostRenderer::kNoWorldWater);
   // the figures' floor is its ground: a vertex within a metre of the origin
   EXPECT_LT(first.nearest, 1.5F);
   // the quads are the planet once over: their areas add up to a sphere's, about (a quad's corners'
@@ -662,6 +671,7 @@ TEST(FvHost, APlanetStandsWithNoKit)
   ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "none"}}).value("ok", false));
   EXPECT_EQ(state().value("state", ""), "off");
   EXPECT_TRUE(rootNamed(scene, "Backdrop").isNone());
+  EXPECT_TRUE(rig.renderer.worldGround.water.isNone());
   // a batch on its way for the planet that went is dropped when it comes
   for(int i = 0; i < 50; i++)
   {
@@ -707,6 +717,7 @@ TEST(FvHost, APlanetsGroundTakesTheKitsMaps)
   // bare first, then planted when the kit has been read: its ground's maps come with its plants
   ASSERT_TRUE(until([&] { return !rig.renderer.worldGround.ground.isNone() && state().value("state", "") == "ready"; })) << state().dump();
   const HostRenderer::WorldGround said = rig.renderer.worldGround;
+  EXPECT_FALSE(said.water.isNone());
   const size_t rock = size_t(fv::world::Soil::eRock);
   for(size_t layer = 0; layer < said.layers.size(); layer++)
     EXPECT_EQ(said.layers[layer].isNone(), layer != rock) << layer;

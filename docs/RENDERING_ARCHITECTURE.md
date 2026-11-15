@@ -919,10 +919,21 @@ their kit when there is one. It needs no kit: without one it stands bare.
 - **Lakes and rivers** are a second mesh a quad with inland water on it (`waterMesh`): their
   surfaces where they lie (`waterLevel`), cut at the ground's own points so the shore is where the
   two cross. By a bank the surface goes down under the ground, which hides it, and at a river's
-  mouth under the sea. A transmissive volume, so the colour of the shallows is the path tracer's; it
-  has no waves, and a camera in it sees as in air. A river too narrow for what draws a quad is not
-  water there but a line of colour. The camera-medium probe (`ptCameraMedium`) must be off, as the
-  app has it: its ray passes through the ground and can meet a lake on the far side from behind.
+  mouth under the sea. The water is the sea's all the same: the frame says which material the
+  meshes are drawn with (`setWorldGround`'s `water`, `SceneFrameInfo::worldWater`), and a path that
+  meets one is at the water's surface as it is at the sea's, with calmer waves; from there the
+  water is asked about the sea's sphere made as much larger as the lake stands over the sea
+  (`worldSeaAt`, `g_waterLevel`), so a shadow ray crosses that sphere and never the mesh. The mesh
+  is no surface to a ray that meets it from the side its path is on already, nor are its skirt's
+  walls or the end of a river under the sea (`worldInlandHit`), and the sea's sphere is none to a
+  path that goes down through it in a lake whose bed lies under the sea's level. No sphere says
+  where a lake is, so the host tells the renderer what inland water the camera is in as it moves
+  (`fv::world::inlandWaterOver`, `setWorldWaterAtEye`). Left approximate: a path in a river is in
+  water as high as where it went in, and a camera deep in a lake under the sea's level sees the
+  sea's surface over it. `worldInlandWater` off draws the mesh as the glass it is made as, for
+  comparison. A river too narrow for what draws a quad is not water there but a line of colour.
+  The camera-medium probe (`ptCameraMedium`) must be off, as the app has it: its ray passes through
+  the ground and can meet a lake on the far side from behind.
 - **What grows** (`src/fv_world_plants.hpp`) is a biome's row too: what stands on it and how
   thickly, its grass, what drifts in its grass. With the backdrop's kit read (`readPlanetKit`,
   `plantPlanet`) the planet is planted with the same plants a meadow and a forest are, held the same

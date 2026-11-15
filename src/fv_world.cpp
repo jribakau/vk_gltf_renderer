@@ -349,6 +349,13 @@ const glm::vec3 kSeaFloorDeep{0.07F, 0.08F, 0.07F};
 const glm::vec3 kRock{0.19F, 0.175F, 0.16F};
 constexpr double    kBeach = 2.5;  // metres over the sea a beach reaches
 
+// Whether a lake's or a river's water stands over the ground here (water this little over the sea
+// is the sea: its mesh goes under it there)
+bool underInlandWater(const Sample& s)
+{
+  return s.water > s.elevation && s.water > kSeaMeets;
+}
+
 // The ground's colour: its biome's, in lighter and darker patches, sand at the shore and on the
 // sea's floor
 void colour(const World& w, const Point& p, Sample& s)
@@ -357,7 +364,8 @@ void colour(const World& w, const Point& p, Sample& s)
   const double patch = fbm3(p.direction * (w.spec.radius / 90.0), seedOf(w), kChPatch, 2, p.footprint / 90.0);
   const double shade = fbm3(p.direction * 40.0, seedOf(w), kChShade, 2, finestOf(w, p, 40.0));
   s.colour *= float((0.85 + 0.3 * patch) * (0.9 + 0.2 * shade));
-  if(s.elevation < 0.0)
+  // (a deep lake's bed may lie under the sea's level, and is the lake's all the same)
+  if(s.elevation < 0.0 && !underInlandWater(s))
   {
     s.colour = glm::mix(kSand, kSeaFloorDeep, float(smooth(0.0, 40.0, -s.elevation)));
     s.rock   = 0.0F;
@@ -825,6 +833,18 @@ double waterLevel(const World& world, const glm::dvec3& d, double footprint)
   if(!world.base)
     return 0.0;
   return std::max(0.0, sample(world, d, footprint).water);
+}
+
+double inlandWaterOver(const World& world, const glm::dvec3& point)
+{
+  if(!world.base)
+    return kDry;
+  double           r = 0.0;
+  const glm::dvec3 d = toPlanet(world, point, &r);
+  const Sample     s = sample(world, d, 1.0);
+  if(!underInlandWater(s))
+    return kDry;
+  return r - world.spec.radius < s.water ? s.water : kDry;
 }
 
 glm::dvec3 viewUp(const World& world, const glm::dvec3& eye)

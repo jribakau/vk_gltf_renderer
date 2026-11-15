@@ -58,7 +58,7 @@ static const float WORLD_GROUND_FADE_TO   = 0.125F;
 // Whether a mesh's material slot is that of a planet's ground with maps to draw it with
 bool worldGroundIs(SceneFrameInfo* frameInfo, int material)
 {
-  return material == frameInfo->worldGround;
+  return frameInfo->worldGround >= 0 && material == frameInfo->worldGround;
 }
 
 uint worldGroundHash(int3 cell)

@@ -451,6 +451,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                                      "(shaders/world_ground.h.slang). Off: its vertices' colours alone, for a timing against them",
                   .callbackSuccess = seaChanged},
                  &m_resources.settings.worldGroundMaps, Persist::eNo);
+  m_settings.add({.name            = "worldInlandWater",
+                  .help            = "A planet's lakes and rivers: their meshes met as the water's surface, the sea's water at their "
+                                     "own level (shaders/world_sea.h.slang). Off: clear glass, as their material is",
+                  .callbackSuccess = seaChanged},
+                 &m_resources.settings.worldInlandWater, Persist::eNo);
 
   // The clouds over the physical sky. Each re-bakes the cloud image with the sky, through the same
   // preview-then-settle path; none of them touches the atmosphere's tables.

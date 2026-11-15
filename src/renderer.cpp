@@ -1252,6 +1252,12 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.worldSeaRipples = m_resources.settings.worldSeaRipples;
     // ... and its ground's maps (shaders/world_ground.h.slang): the slots its materials have now. With
     // no layer resident the ground is drawn as its mesh has it.
+    // ... and its lakes and rivers, whose meshes a path meets as the water's surface
+    if(m_resources.settings.worldInlandWater && !m_worldGround.water.isNone() && m_resources.retainedGpu)
+    {
+      finfo.worldWater      = m_resources.retainedGpu->residency().materialSlot(m_worldGround.water);
+      finfo.worldWaterAtEye = m_worldWaterAtEye;
+    }
     if(m_resources.settings.worldGroundMaps && !m_worldGround.ground.isNone() && m_resources.retainedGpu)
     {
       const rs::Residency& residency = m_resources.retainedGpu->residency();
