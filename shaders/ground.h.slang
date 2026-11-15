@@ -128,8 +128,9 @@ float groundCover(float z, float share, float edge)
 }
 
 // The water in a wind. Its waves travel: a train at the speed its length gives it over deep water
-// (the square root of g times its wavenumber, in radians a second), and the noise that roughens the
-// trains and the ripples on them drift downwind as waves twice an octave's size would. All of it by
+// (the square root of g times its wavenumber, in radians a second), the noise that roughens the
+// trains drifts downwind as waves twice an octave's size would (groundDrift), and the ripples on
+// them drift downwind as one field (GROUND_RIPPLE_DRIFT). All of it by
 // `g_waterTime`, seconds, which the path tracer's entry points take from the frame
 // (SceneFrameInfo::waterTime): 0 in a calm, where the water stands as it always did, and the moment
 // of the frame in a wind (the host's clock, wrapped: fv_host_backdrop.cpp). `g_waterHeading` is
