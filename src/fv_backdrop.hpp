@@ -393,6 +393,19 @@ struct SwayFrame
   glm::vec3  down{0.0F}, across{0.0F};  // the axes its top tips about: across the wind, and along it
 };
 SwayFrame swayFrame(const Spec& spec, double seconds);
+
+// The water in that wind (shaders/ground.h.slang, g_waterTime): the ground's water, a planet's sea
+// and its lakes. Its waves travel while a backdrop stands in a wind, at `seconds` of the wind's
+// clock, wrapped so a float keeps the time fine (once a wrap the waves are others from one frame to
+// the next); in a calm they stand, at 0. They go downwind, calm or not: `heading`, radians round
+// from +x toward +z.
+struct WaterMotion
+{
+  float seconds = 0.0F;
+  float heading = 0.0F;
+};
+inline constexpr double kWaterClockWrap = 1024.0;
+WaterMotion waterMotion(const Spec& spec, double seconds);
 glm::mat4 swayed(const SwayFrame& frame, Sway sway, const glm::mat4& place, const glm::mat4& standing, glm::vec2 eye);
 
 // The kit's roles a spec plants, sorted: its layers', its grass's and its drifts'. What a kind doesn't

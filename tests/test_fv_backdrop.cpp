@@ -493,6 +493,40 @@ TEST(BackdropLayers, AForestIsAGladeInAWoodThatRunsToTheHorizon)
 }
 
 // Mature woods: grown firs among the near woods' young ones, the kind's own layers left as they were
+// The water in the wind: its waves go downwind, calm or not, and travel only while a backdrop stands
+// in a wind, by a clock wrapped so a float keeps it fine
+TEST(BackdropWind, TheWatersWavesTravelDownwindWhileItBlows)
+{
+  B::Spec spec = meadow();
+  // a calm: the water stands, whatever the clock says
+  EXPECT_EQ(B::waterMotion(spec, 37.5).seconds, 0.0F);
+  // wind from +x (azimuth 90): the waves go toward -x; from +z (0): toward -z; from -x: toward +x
+  spec.windFrom = 90.0;
+  EXPECT_NEAR(std::cos(B::waterMotion(spec, 0.0).heading), -1.0F, 1e-6F);
+  EXPECT_NEAR(std::sin(B::waterMotion(spec, 0.0).heading), 0.0F, 1e-6F);
+  spec.windFrom = 0.0;
+  EXPECT_NEAR(std::cos(B::waterMotion(spec, 0.0).heading), 0.0F, 1e-6F);
+  EXPECT_NEAR(std::sin(B::waterMotion(spec, 0.0).heading), -1.0F, 1e-6F);
+  spec.windFrom = -90.0;
+  EXPECT_NEAR(std::cos(B::waterMotion(spec, 0.0).heading), 1.0F, 1e-6F);
+  // ... the way the trees lean
+  spec.wind              = 30.0;
+  spec.windFrom          = 25.0;
+  const B::SwayFrame sway = B::swayFrame(spec, 1.0);
+  const B::WaterMotion at = B::waterMotion(spec, 37.5);
+  EXPECT_NEAR(std::cos(at.heading), sway.toward.x, 1e-6);
+  EXPECT_NEAR(std::sin(at.heading), sway.toward.y, 1e-6);
+  // in a wind the clock runs, and wraps
+  EXPECT_FLOAT_EQ(at.seconds, 37.5F);
+  EXPECT_NEAR(B::waterMotion(spec, B::kWaterClockWrap + 2.25).seconds, 2.25F, 1e-4F);
+  EXPECT_LT(B::waterMotion(spec, 1.0e6).seconds, float(B::kWaterClockWrap));
+  // a planet's sea and lakes move in it too; with no backdrop there is no wind
+  spec.kind = "planet";
+  EXPECT_FLOAT_EQ(B::waterMotion(spec, 12.0).seconds, 12.0F);
+  spec.kind = "none";
+  EXPECT_EQ(B::waterMotion(spec, 12.0).seconds, 0.0F);
+}
+
 // The wind: a plant turns about its base, its top downwind on the whole and swinging, more in a
 // harder wind, less out toward its role's end and not at all past it; what doesn't sway, and a calm, leave
 // it where it stands

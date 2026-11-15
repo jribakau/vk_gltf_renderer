@@ -811,9 +811,26 @@ TEST(FvHost, APlanetStandsWithNoKit)
   for(const rs::EntityId e : scene.roots())
     roots += scene.entity(e)->name == "Backdrop";
   EXPECT_EQ(roots, 1);
-  // the air and the wind are not a planet's: nothing is made again
+  // the air is not a planet's, and the wind plants nothing: nothing is made again
   ASSERT_TRUE(rig.cmd("backdrop.set", {{"air", 3}}).value("ok", false));
   EXPECT_EQ(state().value("state", ""), "ready");
+  // in a calm its water stands; in a wind its sea's and its lakes' waves travel, a frame's moment
+  // told to the renderer each frame, and stand again when the wind drops
+  rig.host->onUpdate();
+  EXPECT_EQ(rig.renderer.waterSeconds, 0.0F);
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"wind", 20}, {"windFrom", 90}}).value("ok", false));
+  EXPECT_EQ(state().value("state", ""), "ready");
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  rig.host->onUpdate();
+  const float moving = rig.renderer.waterSeconds;
+  EXPECT_GT(moving, 0.0F);
+  EXPECT_NEAR(std::cos(rig.renderer.waterHeading), -1.0F, 1e-5F);  // from +x: toward -x
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  rig.host->onUpdate();
+  EXPECT_GT(rig.renderer.waterSeconds, moving);
+  ASSERT_TRUE(rig.cmd("backdrop.set", {{"wind", 0}}).value("ok", false));
+  rig.host->onUpdate();
+  EXPECT_EQ(rig.renderer.waterSeconds, 0.0F);
 
   // land with no kit: missing, and the planet gone; a planet again; then none
   ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "meadow"}}).value("ok", false));

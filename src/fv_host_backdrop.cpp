@@ -917,6 +917,17 @@ void FvHost::Impl::followBackdrop()
     publishBackdrop();
 }
 
+void FvHost::Impl::moveWater()
+{
+  // (a backdrop on its way stands in no wind yet: its plants are not there to sway either)
+  fv::backdrop::Spec spec = backdropSpec;
+  if(backdropState != "ready")
+    spec.wind = 0.0;
+  const double                      seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - backdropWindEpoch).count();
+  const fv::backdrop::WaterMotion motion  = fv::backdrop::waterMotion(spec, seconds);
+  renderer->setWaterMotion(motion.seconds, motion.heading);
+}
+
 void FvHost::Impl::swayBackdrop()
 {
   if(!backdropBuilt || backdropState != "ready" || !renderer->feedsHostScene())

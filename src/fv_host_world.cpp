@@ -25,7 +25,8 @@
 // tree, a bush, a rock) is made with its quad's ground and shown and let go with it, a variant an
 // entity whose copies are its places; the kit's own entities are held hidden, as what the copies
 // are of. The grass and its drifts are tiles round the camera and the figures (tilePlanet), the
-// meadow's own way. Nothing sways in the wind yet.
+// meadow's own way. Nothing on it sways in the wind yet; its water's waves travel in it
+// (fv_host_backdrop.cpp, moveWater).
 //
 // The sea floor's plants need no kit (fv_world_sea.hpp): their meshes are made with the planet and
 // held hidden the same way, and a quad's arrive with it as the kit's do.

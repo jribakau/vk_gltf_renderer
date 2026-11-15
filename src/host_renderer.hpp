@@ -177,6 +177,10 @@ public:
   // (kNoWorldWater): it is in none. Said as the camera moves, since no sphere says where a lake is.
   static constexpr float kNoWorldWater = -1.0e30F;
   virtual void setWorldWaterAtEye(float /*level*/) {}
+  // The water in a wind (shaders/ground.h.slang): the frame's moment, seconds (0: it stands), and
+  // where its waves go, radians round from +x toward +z. Every frame; a frame whose moment is new
+  // starts the image again where there is water to draw.
+  virtual void setWaterMotion(float /*seconds*/, float /*heading*/) {}
   virtual void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> /*observer*/) {}
   // The pixel readout: what is at a normalized viewport position (origin top-left) and how bright it
   // is, read a frame or two later and again while the still refines (a few times a second), so it

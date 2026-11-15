@@ -787,6 +787,19 @@ its row unchanged: a tree's reach is some hundreds of metres, a bush's a hundred
 centimetres come under a pixel. The grass, in tiles of one mesh, stands still. A scene that changes every frame is a
 moving one: while the wind blows the still waits. It plants nothing (`samePlanting`).
 
+The water moves in the same wind (`fv::backdrop::waterMotion`, `moveWater`,
+`HostRenderer::setWaterMotion`): the ground's body of water and its puddles, and a planet's sea and
+lakes, which have no plants that sway. The frame carries a moment and a heading
+(`SceneFrameInfo::waterTime`, `waterHeading`), which the path tracer's entry points hand to the
+water's functions (`groundWaterMotion` in `shaders/ground.h.slang`): a wave train's phase runs at
+the rate its length gives it over deep water, and the noise that roughens the trains and the
+ripples on them drift downwind (`groundDrift`, `GROUND_RIPPLE_DRIFT`). The waves go downwind calm or not; in a calm the moment is 0 and
+the water stands, so a still refines. A new moment starts the image again only where there is
+water to draw. The moment is the host's wind clock wrapped (`kWaterClockWrap`) for a float's sake.
+DLSS is told the water's look moves with its waves ([denoising.md](denoising.md#motion-vectors--what-is-and-isnt-captured)),
+for which the ripples drift as one field and the frame carries the step from the frame before
+(`waterStep`).
+
 Measured (2026-11-12, RTX 4080, 1080p, the moving view at rest on the ground, 40 km/h): the meadow
 17.5 ms between frames, as calm; the forest 21.5 against 17.5, path tracing unchanged (11.1 ms). The
 forest's is the sync's CPU, which a change anywhere in a scene of its size pays. The row a draw item

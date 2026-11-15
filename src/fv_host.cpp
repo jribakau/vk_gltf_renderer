@@ -797,6 +797,7 @@ void FvHost::onUpdate()
   s.clearBackdrop();
   s.followBackdrop();
   s.swayBackdrop();
+  s.moveWater();
   s.applyPendingMorphs();
   // a figure's animation after the panels' edits, so what it drives shows its frame
   s.applyFigureAnimation();

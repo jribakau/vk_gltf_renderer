@@ -911,6 +911,172 @@ TEST(Sea, ItsWaterScattersForward)
   EXPECT_GT(sent.z, 3.0f * sent.y);
 }
 
+// In a wind the water's waves travel downwind (g_waterTime, g_waterHeading): the same water a moment
+// later, as rough as it was, and in a calm exactly the water there was before it could move
+TEST(GroundWaves, TravelDownwindInAWind)
+{
+  const auto heightsAt = [](float2 from, float2 step, int count) {
+    std::vector<float> h;
+    for(int i = 0; i < count; i++)
+      h.push_back(groundWavesAt(from + step * float(i), 0.0f, 1.0f).height);
+    return h;
+  };
+  const auto correlation = [](const std::vector<float>& a, const std::vector<float>& b) {
+    double ab = 0.0, aa = 0.0, bb = 0.0;
+    for(size_t i = 0; i < a.size(); i++)
+    {
+      ab += double(a[i]) * b[i];
+      aa += double(a[i]) * a[i];
+      bb += double(b[i]) * b[i];
+    }
+    return ab / std::sqrt(aa * bb);
+  };
+  const auto rmsSlope = [] {
+    double sum = 0.0;
+    for(int i = 0; i < 4000; i++)
+    {
+      const float2      at(float(i % 63) * 0.37f - 9.0f, float(i / 63) * 0.41f + 3.0f);
+      const GroundWaves w = groundWavesAt(at, 0.0f, 1.0f);
+      const GroundSlope r = groundRipplesAt(at, 0.0f, 1.0f);
+      sum += double(dot(w.slope.slope + r.slope, w.slope.slope + r.slope));
+    }
+    return std::sqrt(sum / 4000.0);
+  };
+
+  for(const float heading : {GROUND_SWELL_WIND, 2.4f, -1.1f})
+  {
+    const float2 way(std::cos(heading), std::sin(heading));
+    // a line of the water along the wind, in a calm
+    groundWaterMotion(0.0f, heading);
+    const float2             from(4.0f, -7.0f);
+    const std::vector<float> calm     = heightsAt(from, way * 0.05f, 400);
+    const std::vector<float> calmUp   = heightsAt(from - way * 0.38f, way * 0.05f, 400);
+    const std::vector<float> calmDown = heightsAt(from + way * 0.38f, way * 0.05f, 400);
+    const double             rough = rmsSlope();
+    const GroundSlope        still = groundRipplesAt(from, 0.0f, 1.0f);
+    // a fifth of a second on, the water is what stood some 38 cm upwind (its trains go 1.1 to
+    // 2.2 m/s, the shorter ones more across the wind), not what stood here, and still less what
+    // stood as far downwind
+    groundWaterMotion(0.2f, heading);
+    const std::vector<float> later = heightsAt(from, way * 0.05f, 400);
+    const double             here  = correlation(later, calm);
+    const double             up    = correlation(later, calmUp);
+    const double             down  = correlation(later, calmDown);
+    EXPECT_GT(up, 0.9) << heading;
+    EXPECT_GT(up, here + 0.05) << heading;
+    EXPECT_LT(down, up - 0.3) << heading;
+    // the ripples have moved too, and the water is as rough as it was, then and a quarter of an hour on
+    groundWaterMotion(0.2f, heading);
+    const GroundSlope moved = groundRipplesAt(from, 0.0f, 1.0f);
+    EXPECT_GT(length(moved.slope - still.slope), 1e-3f);
+    EXPECT_NEAR(rmsSlope(), rough, 0.05 * rough);
+    groundWaterMotion(900.0f, heading);
+    EXPECT_NEAR(rmsSlope(), rough, 0.05 * rough);
+    // the ripples drift as one field: a quarter of a second on they are the ripples that stood
+    // 15 cm upwind, which is what lets DLSS follow them (groundPatternVelocity)
+    groundWaterMotion(3.0f, heading);
+    const GroundSlope then = groundRipplesAt(from, 0.0f, 1.0f);
+    groundWaterMotion(3.25f, heading);
+    const GroundSlope now = groundRipplesAt(from + way * (GROUND_RIPPLE_DRIFT * 0.25f), 0.0f, 1.0f);
+    EXPECT_NEAR(now.slope.x, then.slope.x, 2e-3f);
+    EXPECT_NEAR(now.slope.y, then.slope.y, 2e-3f);
+    // a moment's difference is a little water's difference: no jump from one frame to the next
+    groundWaterMotion(900.0f, heading);
+    const float before = groundWavesAt(from, 0.0f, 1.0f).height;
+    groundWaterMotion(900.004f, heading);
+    EXPECT_NEAR(groundWavesAt(from, 0.0f, 1.0f).height, before, 2e-3f);
+  }
+
+  // a swell four times as long turns over half as fast: the sea's (deep water's dispersion)
+  EXPECT_FLOAT_EQ(SEA_SWELL_TIME, 1.0f / std::sqrt(SEA_SWELL_SCALE));
+  EXPECT_NEAR(groundWaveSpeed(3.1f), 2.2f, 0.01f);
+
+  // in a calm, with the wind's way never said: the water as it was before it could move
+  groundWaterMotion(0.0f, GROUND_SWELL_WIND);
+  EXPECT_EQ(g_waterTime, 0.0f);
+  const GroundWaves w = groundWavesAt(float2(1.3f, -2.1f), 0.0f, 1.0f);
+  float             h = 0.0f;
+  for(int i = 0; i < 4; i++)
+  {
+    const float heading = GROUND_SWELL_WIND + GROUND_SWELL_HEADING[i];
+    const float k       = GROUND_TWO_PI / GROUND_SWELL_LENGTH[i];
+    h += GROUND_SWELL_STEEPNESS / k * std::sin(k * dot(float2(std::cos(heading), std::sin(heading)), float2(1.3f, -2.1f)) + GROUND_SWELL_PHASE[i]);
+  }
+  for(int j = 0; j < 2; j++)
+    h += GROUND_SWELL_NOISE_HEIGHT * GROUND_SWELL_STEEPNESS * GROUND_SWELL_NOISE[j]
+         * groundNoise(float2(1.3f, -2.1f) / GROUND_SWELL_NOISE[j] + float2(11.3f + 6.1f * float(j), -5.7f + 2.3f * float(j))).x;
+  EXPECT_NEAR(w.height, h, 1e-6f);
+}
+
+// What DLSS is told a pixel of water moves by: the way of the waves its footprint shows
+TEST(GroundWaves, TheLookGoesWithTheWavesAFootprintShows)
+{
+  const float  heading = 0.3f;
+  const float2 way(std::cos(heading), std::sin(heading));
+  groundWaterMotion(5.0f, heading, 0.01f);
+  // near, on water with no swell: the ripples' drift
+  const float2 ripples = groundPatternVelocity(0.001f, 0.0f, 1.0f, 1.0f);
+  EXPECT_NEAR(ripples.x, GROUND_RIPPLE_DRIFT * way.x, 1e-6f);
+  EXPECT_NEAR(ripples.y, GROUND_RIPPLE_DRIFT * way.y, 1e-6f);
+  // with no ripples: the trains' mean, downwind, no faster than the longest train
+  const float2 swell = groundPatternVelocity(0.001f, 1.0f, 0.0f, 1.0f);
+  EXPECT_GT(dot(swell, way), 1.0f);
+  EXPECT_LT(length(swell), groundWaveSpeed(GROUND_SWELL_LENGTH[0]));
+  EXPECT_LT(std::abs(swell.x * way.y - swell.y * way.x), 0.3f * length(swell));
+  // a swell laid out four times as long goes twice as fast
+  const float2 sea = groundPatternVelocity(0.001f, 1.0f, 0.0f, 4.0f);
+  EXPECT_NEAR(sea.x, 2.0f * swell.x, 1e-4f);
+  EXPECT_NEAR(sea.y, 2.0f * swell.y, 1e-4f);
+  // both: the ripples', alone, while they show whole (they are the finest of the look, and theirs
+  // is the one motion that is exact)
+  const float2 both = groundPatternVelocity(0.001f, 1.0f, 1.0f, 4.0f);
+  EXPECT_NEAR(both.x, ripples.x, 1e-6f);
+  EXPECT_NEAR(both.y, ripples.y, 1e-6f);
+  // ... going over to the swell's as a footprint averages them out, and the swell's from there
+  const float2 fading = groundPatternVelocity(0.1f, 1.0f, 1.0f, 4.0f);
+  EXPECT_GT(dot(fading, way), GROUND_RIPPLE_DRIFT + 0.1f);
+  EXPECT_LT(dot(fading, way), dot(sea, way) - 0.1f);
+  const float2 far = groundPatternVelocity(1.0f, 1.0f, 1.0f, 4.0f);
+  EXPECT_GT(dot(far, way), 2.0f);
+  EXPECT_NEAR(far.x, groundPatternVelocity(1.0f, 1.0f, 0.0f, 4.0f).x, 1e-6f);
+  EXPECT_EQ(groundPatternVelocity(100.0f, 1.0f, 1.0f, 4.0f), float2(0.0f, 0.0f));
+  EXPECT_EQ(groundPatternVelocity(0.001f, 0.0f, 0.0f, 1.0f), float2(0.0f, 0.0f));
+
+  // in the scene, since the frame before: the ground's water along x and z ...
+  SceneFrameInfo flat{};
+  flat.flags         = int(SceneFrameInfoFlags::eSceneUseInfinitePlane);
+  flat.waterDepth    = 2.0f;
+  flat.waterWaves    = 0.0f;
+  flat.groundRipples = 1.0f;
+  const float3 moved = waterPatternStep(&flat, float3(3.0f, 2.0f, -1.0f), 0.001f, false);
+  EXPECT_NEAR(moved.x, GROUND_RIPPLE_DRIFT * way.x * 0.01f, 1e-7f);
+  EXPECT_EQ(moved.y, 0.0f);
+  EXPECT_NEAR(moved.z, GROUND_RIPPLE_DRIFT * way.y * 0.01f, 1e-7f);
+  // ... a planet's along its surface, by the scene on the plane the scene lies in, and round its
+  // side on that side's plane; a lake's swell is calmer, so its look is more its ripples'
+  SceneFrameInfo planet{};
+  planet.worldSeaRadius  = 20000.0f;
+  planet.worldSeaTop     = float3(0.0f, -12.0f, 0.0f);
+  planet.worldSeaWaves   = 0.0f;
+  planet.worldSeaRipples = 1.0f;
+  const Sea    water = worldSea(&planet);
+  const float3 top   = waterPatternStep(&planet, water.top + float3(200.0f, -1.0f, 100.0f), 0.001f, false);
+  EXPECT_NEAR(top.x, GROUND_RIPPLE_DRIFT * way.x * 0.01f, 1e-5f);
+  EXPECT_NEAR(top.z, GROUND_RIPPLE_DRIFT * way.y * 0.01f, 1e-5f);
+  EXPECT_LT(std::abs(top.y), 1e-4f);
+  const float3 centre = water.top - float3(0.0f, water.radius, 0.0f);
+  const float3 side   = waterPatternStep(&planet, centre + float3(water.radius, 0.0f, 0.0f), 0.001f, false);
+  EXPECT_NEAR(length(side), GROUND_RIPPLE_DRIFT * 0.01f, 1e-5f);
+  EXPECT_LT(std::abs(side.x), 1e-5f);  // (along the surface there: y and z)
+  // far off, where only the swell shows, a lake's goes as the sea's does (calmer, not slower)
+  planet.worldSeaWaves = 1.0f;
+  EXPECT_GT(length(waterPatternStep(&planet, water.top, 1.0f, false)), 2.0f * 0.01f);
+  EXPECT_EQ(waterPatternStep(&planet, water.top, 1.0f, true), waterPatternStep(&planet, water.top, 1.0f, false));
+  // in a calm there is no step
+  groundWaterMotion(0.0f, GROUND_SWELL_WIND);
+  EXPECT_EQ(waterPatternStep(&planet, water.top, 0.001f, false), float3(0.0f));
+}
+
 // A planet's lakes and rivers are the same water standing higher (worldSeaAt): what a shadow ray
 // from under one keeps is what it would keep under a sea at that level, while the path is in it
 TEST(Sea, InlandWaterIsTheSeaStandingHigher)

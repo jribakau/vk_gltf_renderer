@@ -27,7 +27,9 @@
 //     surface focused).
 //
 // The sea's swell is the ground water's, SEA_SWELL_SCALE times as long: a pond's wavelets read as a
-// model's sea. Its water carries particles as well as its own molecules (seaScattered).
+// model's sea. Its water carries particles as well as its own molecules (seaScattered). In a wind
+// it travels as the ground's does (ground.h.slang, g_waterTime), a swell that much longer turning
+// over that much slower (SEA_SWELL_TIME); the caustics, read from the same waves, move with it.
 //
 // Slang and plain C++ (tests/test_ground.cpp, with the ground's).
 #ifndef WORLD_SEA_H_SLANG
@@ -48,6 +50,8 @@
 
 // How many times as long as the ground water's swell the sea's is (its steepness the same)
 static const float SEA_SWELL_SCALE = 4.0F;
+// ... and how fast its time runs for that: one over the square root of the scale (groundWavesAt)
+static const float SEA_SWELL_TIME = 0.5F;
 // The particles in the water: what they scatter, per metre, the same in every band, and how far
 // forward (Henyey-Greenstein's g). Coastal water: the sea's own molecules alone are the clearest
 // ocean's, in which the sun draws no shafts and nothing fades with distance but its red.
@@ -194,7 +198,7 @@ SeaWaves seaWavesAt(Sea sea, float3 pos, float footprint, float waves, float rip
     const float3      x       = plane == 1 ? float3(0.0F, 1.0F, 0.0F) : float3(1.0F, 0.0F, 0.0F);
     const float3      z       = plane == 2 ? float3(0.0F, 1.0F, 0.0F) : float3(0.0F, 0.0F, 1.0F);
     const float2      q       = float2(dot(r, x), dot(r, z));
-    const GroundWaves swell   = groundWavesAt(q / SEA_SWELL_SCALE, footprint / SEA_SWELL_SCALE, waves);
+    const GroundWaves swell   = groundWavesAt(q / SEA_SWELL_SCALE, footprint / SEA_SWELL_SCALE, waves, SEA_SWELL_TIME);
     const GroundSlope rippled = groundRipplesAt(q, rippleFootprint, ripples);
     const float       k       = b * b / total;
     w.slope += k * (x * (swell.slope.slope.x + rippled.slope.x) + z * (swell.slope.slope.y + rippled.slope.y));
@@ -396,6 +400,31 @@ InlandHit worldInlandHit(Sea sea, float3 pos, float3 direction, float3 faceNorma
   if(dot(h.normal, direction) > 0.0F)
     h.normal = -h.normal;
   return h;
+}
+
+// How far the water's look at `pos` has gone since the frame before, in the scene, for a footprint
+// `footprint` metres wide (groundPatternVelocity): the ground water's along x and z, a planet's
+// along the axes of the plane its waves are mostly laid from there (seaWavesAt), kept to its
+// surface. `inland`: a lake's or a river's, with their calmer swell.
+float3 waterPatternStep(SceneFrameInfo* frameInfo, float3 pos, float footprint, bool inland)
+{
+  if(!worldHasSea(frameInfo))
+  {
+    const float2 flat = groundPatternVelocity(footprint, groundWaterWaves(frameInfo), frameInfo->groundRipples, 1.0F) * g_waterStep;
+    return float3(flat.x, 0.0F, flat.y);
+  }
+  const Sea    sea  = worldSea(frameInfo);
+  const float2 step = groundPatternVelocity(footprint, sea.waves * (inland ? SEA_INLAND_WAVES : 1.0F), sea.ripples, SEA_SWELL_SCALE) * g_waterStep;
+  const float3 n    = seaUp(sea, pos);
+  const float3 a = abs(n);
+  float3       x = float3(1.0F, 0.0F, 0.0F);
+  float3       z = float3(0.0F, 0.0F, 1.0F);
+  if(a.x > a.y && a.x >= a.z)
+    x = float3(0.0F, 1.0F, 0.0F);
+  else if(a.z > a.y)
+    z = float3(0.0F, 1.0F, 0.0F);
+  const float3 d = x * step.x + z * step.y;
+  return d - n * dot(n, d);
 }
 
 //-----------------------------------------------------------------------

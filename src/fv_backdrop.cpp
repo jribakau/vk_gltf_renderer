@@ -898,6 +898,16 @@ SwayFrame swayFrame(const Spec& spec, double seconds)
   return f;
 }
 
+WaterMotion waterMotion(const Spec& spec, double seconds)
+{
+  WaterMotion  m;
+  const double from = glm::radians(spec.windFrom);
+  m.heading         = float(std::atan2(-std::cos(from), -std::sin(from)));  // (toward: x, z)
+  if(planted(spec) && spec.wind > 0.0)
+    m.seconds = float(std::fmod(std::max(seconds, 0.0), kWaterClockWrap));
+  return m;
+}
+
 glm::mat4 swayed(const SwayFrame& frame, Sway sway, const glm::mat4& place, const glm::mat4& standing, glm::vec2 eye)
 {
   if(!sway.any() || !frame.on)

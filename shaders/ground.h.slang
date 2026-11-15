@@ -127,6 +127,45 @@ float groundCover(float z, float share, float edge)
   return 1.0F / (1.0F + exp(min((threshold - z) / edge, 80.0F)));
 }
 
+// The water in a wind. Its waves travel: a train at the speed its length gives it over deep water
+// (the square root of g times its wavenumber, in radians a second), and the noise that roughens the
+// trains and the ripples on them drift downwind as waves twice an octave's size would. All of it by
+// `g_waterTime`, seconds, which the path tracer's entry points take from the frame
+// (SceneFrameInfo::waterTime): 0 in a calm, where the water stands as it always did, and the moment
+// of the frame in a wind (the host's clock, wrapped: fv_host_backdrop.cpp). `g_waterHeading` is
+// where the waves go, radians round from +x toward +z: downwind; `g_waterWay` that way as a vector.
+static const float GROUND_TWO_PI     = 6.28318531F;
+static const float GROUND_GRAVITY    = 9.81F;
+static const float GROUND_SWELL_WIND = 0.52F;  // the waves' way with no wind said
+static float       g_waterTime       = 0.0F;
+static float       g_waterHeading    = GROUND_SWELL_WIND;
+static float2      g_waterWay        = float2(0.867819F, 0.496880F);
+static float       g_waterStep       = 0.0F;  // seconds since the frame before's moment
+// How fast the ripples drift downwind, metres a second: all their octaves as one field, so that a
+// frame's ripples are the last frame's moved (groundPatternVelocity), which is what DLSS can follow
+static const float GROUND_RIPPLE_DRIFT = 0.6F;
+
+// The frame's moment and the wind's way, for all that follows (once, where a shader starts)
+void groundWaterMotion(float seconds, float heading, float step = 0.0F)
+{
+  g_waterTime    = seconds;
+  g_waterHeading = heading;
+  g_waterWay     = float2(cos(heading), sin(heading));
+  g_waterStep    = step;
+}
+
+// How fast a wave `length` metres long travels over deep water, metres a second
+float groundWaveSpeed(float length)
+{
+  return sqrt(GROUND_GRAVITY * length / GROUND_TWO_PI);
+}
+
+// How far the water's noise of an octave `scale` metres across has drifted, metres along x and z
+float2 groundDrift(float scale, float timeScale)
+{
+  return g_waterWay * (groundWaveSpeed(2.0F * scale) * g_waterTime * timeScale);
+}
+
 // A water surface's slope at a point, as a footprint sees it
 struct GroundSlope
 {
@@ -151,7 +190,8 @@ GroundSlope groundRipplesAt(float2 xz, float footprint, float ripples)
   for(int k = 0; k < 3; ++k)
   {
     const float  kept = saturate(2.0F - 4.0F * footprint / scale);
-    const float2 q    = float2(dot(axisX, xz), dot(axisZ, xz)) / scale + float2(-2.9F + 7.3F * float(k), 4.3F + 1.9F * float(k));
+    const float2 at   = xz - g_waterWay * (GROUND_RIPPLE_DRIFT * g_waterTime);
+    const float2 q    = float2(dot(axisX, at), dot(axisZ, at)) / scale + float2(-2.9F + 7.3F * float(k), 4.3F + 1.9F * float(k));
     const float3 n    = groundNoise(q);
     s.slope += weight * kept * (axisX * n.y + axisZ * n.z);
     s.variance += weight * weight * GROUND_NOISE_SLOPE_VARIANCE * (1.0F - kept * kept);
@@ -251,14 +291,12 @@ float groundWaterPhase(float cosTheta)
 {
   return 0.06225F * (1.0F + 0.835F * cosTheta * cosTheta);
 }
-static const float  GROUND_TWO_PI           = 6.28318531F;
-// The swell at Waves 1: four trains of one steepness (their slope's amplitude) from a wind
-// GROUND_SWELL_WIND radians round from +x, each with its wavelength (metres), heading off the wind
+// The swell at Waves 1: four trains of one steepness (their slope's amplitude) going the wind's way
+// (g_waterHeading, radians round from +x), each with its wavelength (metres), heading off the wind
 // (radians) and phase; and two octaves of noise, GROUND_SWELL_NOISE metres across and as high as
 // GROUND_SWELL_NOISE_HEIGHT times steepness times that, that keep the trains from looking ruled.
 // About 6 cm from trough to crest at most, RMS slope 0.06.
 static const float GROUND_SWELL_STEEPNESS    = 0.04F;
-static const float GROUND_SWELL_WIND         = 0.52F;
 static const float GROUND_SWELL_LENGTH[4]    = {3.1F, 1.9F, 1.3F, 0.83F};
 static const float GROUND_SWELL_HEADING[4]   = {0.0F, 0.4F, -0.55F, 0.82F};
 static const float GROUND_SWELL_PHASE[4]     = {0.0F, 1.7F, 4.1F, 2.6F};
@@ -275,8 +313,9 @@ struct GroundWaves
 
 // The swell at `xz`, for a footprint `footprint` metres wide. A train or octave as fine as the
 // footprint fades out of the slope and into its variance; the height keeps them all, since it is
-// the surface the rays meet.
-GroundWaves groundWavesAt(float2 xz, float footprint, float waves)
+// the surface the rays meet. `timeScale`: how fast its time runs against the clock's, for a swell
+// laid out larger than life (a swell S times as long turns over the square root of S times slower).
+GroundWaves groundWavesAt(float2 xz, float footprint, float waves, float timeScale = 1.0F)
 {
   GroundWaves w;
   w.height         = 0.0F;
@@ -287,10 +326,10 @@ GroundWaves groundWavesAt(float2 xz, float footprint, float waves)
   const float steepness = GROUND_SWELL_STEEPNESS * waves;
   for(int i = 0; i < 4; ++i)
   {
-    const float  heading = GROUND_SWELL_WIND + GROUND_SWELL_HEADING[i];
+    const float  heading = g_waterHeading + GROUND_SWELL_HEADING[i];
     const float2 dir     = float2(cos(heading), sin(heading));
     const float  k       = GROUND_TWO_PI / GROUND_SWELL_LENGTH[i];
-    const float  phase   = k * dot(dir, xz) + GROUND_SWELL_PHASE[i];
+    const float  phase   = k * dot(dir, xz) + GROUND_SWELL_PHASE[i] - sqrt(GROUND_GRAVITY * k) * (g_waterTime * timeScale);
     const float  kept    = saturate(2.0F - 4.0F * footprint / GROUND_SWELL_LENGTH[i]);
     w.height += steepness / k * sin(phase);
     w.slope.slope += kept * steepness * cos(phase) * dir;
@@ -301,13 +340,43 @@ GroundWaves groundWavesAt(float2 xz, float footprint, float waves)
   {
     const float  scale  = GROUND_SWELL_NOISE[j];
     const float  height = GROUND_SWELL_NOISE_HEIGHT * steepness * scale;
-    const float3 n      = groundNoise(xz / scale + float2(11.3F + 6.1F * float(j), -5.7F + 2.3F * float(j)));
+    const float3 n      = groundNoise((xz - groundDrift(scale, timeScale)) / scale + float2(11.3F + 6.1F * float(j), -5.7F + 2.3F * float(j)));
     const float  kept   = saturate(2.0F - 4.0F * footprint / scale);
     w.height += height * n.x;
     w.slope.slope += kept * height / scale * float2(n.y, n.z);
     w.slope.variance += (1.0F - kept * kept) * (height / scale) * (height / scale) * GROUND_NOISE_SLOPE_VARIANCE;
   }
   return w;
+}
+
+// Which way the water's look goes as a footprint `footprint` metres wide sees it, metres a second
+// along x and z. What DLSS is told a pixel of water moves by (waterPatternStep): nothing there
+// moves, but the reflections and the light under it go with the waves, and left to its history of a
+// place RR averages them away. Where the ripples show it is their drift, alone: they are the finest
+// of what shows and drift as one field, so RR has their motion exactly, and a mean with the swell's
+// is wrong for both (tried: the ripples went soft). Where the footprint has averaged them out it
+// is the trains' mean, each by the slope it keeps; they go their own ways, but they are metres
+// long, and a mean a metre a second off blurs them by centimetres. `swellScale`: how many times
+// life size the swell is laid out (groundWavesAt's timeScale is one over its square root).
+float2 groundPatternVelocity(float footprint, float waves, float ripples, float swellScale)
+{
+  // how much of the ripples the footprint keeps: all of the largest octave, or none of it
+  const float rippled = ripples > 0.0F ? saturate(2.0F - 4.0F * footprint / GROUND_RIPPLE_SCALE) : 0.0F;
+  float2      swell   = float2(0.0F, 0.0F);
+  float       total   = 0.0F;
+  if(waves > 0.0F && rippled < 1.0F)
+  {
+    for(int i = 0; i < 4; ++i)
+    {
+      const float heading = g_waterHeading + GROUND_SWELL_HEADING[i];
+      const float kept    = saturate(2.0F - 4.0F * footprint / (swellScale * GROUND_SWELL_LENGTH[i]));
+      swell += kept * kept * groundWaveSpeed(swellScale * GROUND_SWELL_LENGTH[i]) * float2(cos(heading), sin(heading));
+      total += kept * kept;
+    }
+  }
+  if(total > 0.0F)
+    swell /= total;
+  return swell + (GROUND_RIPPLE_DRIFT * g_waterWay - swell) * rippled;
 }
 
 // How far the waves reach above and below the level: all their crests at once, which bounds them

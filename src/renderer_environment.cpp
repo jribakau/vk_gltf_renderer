@@ -687,6 +687,8 @@ void GltfRenderer::fillGround(shaderio::SceneFrameInfo& finfo) const
   finfo.groundRipples          = settings.groundRipples;
   finfo.waterDepth             = settings.groundWaterDepth;
   finfo.waterWaves             = settings.groundWaves;
+  finfo.waterTime              = m_waterTime;
+  finfo.waterHeading           = m_waterHeading;
   const SceneGpuView& view     = m_resources.gpuView();
   if(!settings.useInfinitePlane || settings.groundFade <= 0.0F || !view.hasContent() || view.renderNodeCapacity() == 0)
     return;
@@ -1162,6 +1164,18 @@ void GltfRenderer::setWorldWaterAtEye(float level)
     return;
   m_worldWaterAtEye = level;
   resetFrame(/*sceneChanged=*/false);  // the camera's paths start in that water, or no longer do
+}
+
+void GltfRenderer::setWaterMotion(float seconds, float heading)
+{
+  if(seconds == m_waterTime && heading == m_waterHeading)
+    return;
+  m_waterTime    = seconds;
+  m_waterHeading = heading;
+  // where there is water to draw: a planet's sea and lakes, the ground's water or its puddles, the rain's
+  const Settings& s = m_resources.settings;
+  if(s.worldSeaRadius > 0.0F || (s.useInfinitePlane && (s.groundWaterDepth > 0.0F || s.groundWater > 0.0F)) || m_rain.prepared())
+    resetFrame(/*sceneChanged=*/false);
 }
 
 float GltfRenderer::skyObserverAltitudeKm() const

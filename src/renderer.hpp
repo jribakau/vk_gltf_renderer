@@ -464,6 +464,7 @@ public:
   void setWorldBodies(std::span<const glm::vec4> place, std::span<const glm::vec4> look) override;
   void setWorldGround(const WorldGround& ground) override;
   void setWorldWaterAtEye(float level) override;
+  void setWaterMotion(float seconds, float heading) override;
   void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> observer) override
   {
     m_pivotObserver = std::move(observer);
@@ -871,6 +872,9 @@ private:
   std::function<void(const std::optional<glm::vec3>& at, bool recentred)> m_pivotObserver;
   WorldGround m_worldGround;  // a planet's ground with maps, as the host said (setWorldGround)
   float       m_worldWaterAtEye = kNoWorldWater;  // the inland water the camera is in (setWorldWaterAtEye)
+  float       m_waterTime       = 0.0F;           // the water's moment and its waves' way (setWaterMotion)
+  float       m_waterHeading    = 0.52F;
+  float       m_waterTimeDrawn  = 0.0F;  // the moment of the frame before
   std::optional<PendingClickResult> m_pendingClickResult;
   // The pixel readout: where (none: off), whether a reading is due (a new place), when the last was
   // recorded and whether a frame was traced since, and the frame that has one in flight

@@ -1201,6 +1201,11 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
         .envPickEstimate       = 0.25F * m_resources.hdrIbl.getIntegral(),
     };
     fillGround(finfo);
+    // how far the water's moment has gone since the frame before: its ripples' motion, for DLSS
+    // (none across the clock's wrap, or from a calm)
+    const float waterStep = m_waterTime - m_waterTimeDrawn;
+    finfo.waterStep       = m_waterTimeDrawn > 0.0F && waterStep > 0.0F && waterStep < 1.0F ? waterStep : 0.0F;
+    m_waterTimeDrawn      = m_waterTime;
     fillHaze(finfo);
     finfo.estimator = std::clamp(m_resources.settings.ptEstimator, 0, 2);
     if(m_resources.settings.ptEyeCaustic)

@@ -1636,6 +1636,8 @@ struct FvHost::Impl
   // swayed (fv::backdrop::swayedPlace), their copies moved and nothing made again; once more when it
   // drops, back to where they stand
   void swayBackdrop();
+  // Every frame: the water's moment in that wind, for its waves to travel (fv::backdrop::waterMotion)
+  void moveWater();
   std::chrono::steady_clock::time_point backdropWindEpoch = std::chrono::steady_clock::now();
   // A cover's tile as one mesh, its role's variants at their places in it, under a holder
   BackdropBuilt::Patch makeBackdropPatch(rs::RetainedScene& scene, const fv::backdrop::Cover& cover);

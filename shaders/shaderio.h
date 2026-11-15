@@ -565,6 +565,13 @@ struct SceneFrameInfo
   int    worldWater       = -1;
   float  worldWaterAtEye  = -1.0e30F;
   float  _worldWaterPad   = 0.0F;
+  // The water in a wind (shaders/ground.h.slang, g_waterTime): the frame's moment, seconds (0: the
+  // water stands), and where its waves go, radians round from +x toward +z. The ground's water, a
+  // planet's sea and its lakes alike. (Appended.)
+  float  waterTime        = 0.0F;
+  float  waterHeading     = 0.52F;
+  float  waterStep        = 0.0F;  // seconds since the frame before's moment (DLSS's motion of the ripples)
+  float  _waterPad        = 0.0F;
 };
 
 enum PathtracerFlags

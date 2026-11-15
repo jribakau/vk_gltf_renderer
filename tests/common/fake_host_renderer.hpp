@@ -98,6 +98,12 @@ public:
   WorldGround worldGround;
   void        setWorldWaterAtEye(float level) override { worldWaterAtEye = level; }
   float       worldWaterAtEye = kNoWorldWater;
+  void        setWaterMotion(float seconds, float heading) override
+  {
+    waterSeconds = seconds;
+    waterHeading = heading;
+  }
+  float waterSeconds = 0.0F, waterHeading = 0.0F;
 
   void         selectEntity(rs::EntityId entity) override { m_selected = entity; }
   rs::EntityId selectedEntity() const override { return m_selected; }

@@ -1632,6 +1632,11 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
         pt.firstHitPosPrev = dlssPrevHitPos(renderNode, renderPrim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos);
       }
+      // water whose waves travel: nothing moves, but what it shows does, with its waves
+      // (waterPatternStep), and RR follows them as it follows a surface that moves. Where the
+      // floor under it is what the pixel shows, the guides are the floor's (below), which stands.
+      else if(hitWater && g_waterStep > 0.0F)
+        pt.firstHitPosPrev = hit.pos - waterPatternStep(frameInfo, hit.pos, worldFoot, hitInland);
       // the hit's own motion, which a reflection in it moves with (primary surface replacement below
       // puts the surface behind glass in firstHitPosPrev)
       const float3 firstHitDelta = pt.firstHitPosPrev - hit.pos;
@@ -1684,6 +1689,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           // where the eye sees it: nearer under water and through solid glass (dlssSeenScale)
           pt.guide.psrPos    = hit.pos + ray.Direction * psr.seenLength;
           pt.firstHitPosPrev = pt.guide.psrPos + psr.posDelta;
+          // (under water whose waves travel too: the floor stands still. Its light and its image
+          // go with the waves, but told so RR drags the floor's own rocks and plants after them.)
           replacedDepth      = psr.seenLength;
         }
         // Its own reflection, on every DLSS frame (dlssTraceMirror): how far it reaches and how its
@@ -3821,6 +3828,7 @@ void inspectPixel(IRaytracer raytracer)
 void computeMain(uint3 threadIdx: SV_DispatchThreadID)
 {
   RAYQUERY_USE_OPACITY_MICROMAP(computeMain);
+  groundWaterMotion(pushConst.frameInfo->waterTime, pushConst.frameInfo->waterHeading, pushConst.frameInfo->waterStep);  // (the water's waves: ground.h.slang)
   // The render size, not the output image's: DLSS's frames trace its smaller input size.
   RayQueryRaytracer raytracer;
   // the one-thread modes, in one branch (inspectPixel's note)
@@ -3854,6 +3862,7 @@ void computeMain(uint3 threadIdx: SV_DispatchThreadID)
 void rgenMain()
 {
   RAYQUERY_USE_OPACITY_MICROMAP(rgenMain);  // Ray queries here too (e.g. dlssTraceSkipThinGlass)
+  groundWaterMotion(pushConst.frameInfo->waterTime, pushConst.frameInfo->waterHeading, pushConst.frameInfo->waterStep);  // (the water's waves: ground.h.slang)
   TraditionalRaytracer raytracer;
   // the one-thread modes, in one branch (inspectPixel's note)
   if(hasFlag(pushConst.flags, int(PathtracerFlags::ePtProbeCameraMedium) | int(PathtracerFlags::ePtInspectPixel)))

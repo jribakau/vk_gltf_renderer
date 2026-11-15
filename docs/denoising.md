@@ -271,6 +271,17 @@ A dolly or orbit of a posed figure is camera motion and was already correct. The
 this and also lacks the instance vectors the path tracer has: `vertexMain` in
 `shaders/gltf_raster.slang` multiplies the current position by `prevMVP`.
 
+**Water whose waves travel** (a backdrop's wind: `SceneFrameInfo::waterTime`) moves nothing, but
+what it shows goes with its waves, and with no motion RR averages them away: windy water came out
+smoother than calm water. A first hit on water is given the motion of its look
+(`waterPatternStep`, `groundPatternVelocity`): the ripples' drift wherever a pixel's footprint
+shows them, which is exact because they drift as one field, and the swell's mean where distance
+has averaged the ripples out. A mean of the two where both show softened the ripples, and the
+responsivity mask alone changed nothing. Where the floor under the water is what a pixel shows
+(primary surface replacement, below) the motion is the floor's, none: with the waves' RR dragged the
+floor's rocks and plants after them, so the waves' glitter over a floor seen through them is soft
+in a wind.
+
 ### The motion of reflections
 
 RR moves a pixel's reflection by the motion it is given in `pInMotionVectorsReflections`
