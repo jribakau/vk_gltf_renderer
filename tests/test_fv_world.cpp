@@ -512,6 +512,48 @@ TEST(WorldSelect, AnEyeThatHoversChangesNothing)
   EXPECT_EQ(W::select(w, eyeAt(w, 100.0)).leaves, first.leaves);
 }
 
+TEST(WorldSelect, AnEyeThatMovesIsLed)
+{
+  const W::World& w = planet();
+  const auto      whole = [](const W::Selection& s) {
+    double area = 0.0;
+    for(const W::Quad& q : s.leaves)
+      area += 1.0 / double(uint64_t(1) << (2 * q.level));
+    return area;
+  };
+  // low over the ground at a ship's speed: every quad split for where it is and for where it will
+  // be kLead on is split, and the sphere is covered once
+  const glm::dvec3 eye(0.0, 60.0, 0.0), going(100.0, 0.0, 0.0);
+  size_t           more = 0;
+  for(int k = 0; k < 6; k++)
+  {
+    const glm::dvec3   from  = eye + glm::dvec3(37.0 * k, 0.0, 0.0);
+    const W::Selection led   = W::select(w, from, nullptr, going);
+    const W::Selection stood = W::select(w, from);
+    EXPECT_NEAR(whole(led), 6.0, 1e-9);
+    for(const glm::dvec3& at : {from, from + going * W::kLead})
+      for(const W::Quad& q : W::select(w, at).split)
+      {
+        EXPECT_TRUE(std::binary_search(led.split.begin(), led.split.end(), q)) << int(q.level);
+        more += !std::binary_search(stood.split.begin(), stood.split.end(), q);
+      }
+  }
+  EXPECT_GT(more, 0U) << "ahead of it, quads the eye is not yet in reach of";
+  // an eye that stands is led nowhere
+  EXPECT_EQ(W::select(w, eye, nullptr, glm::dvec3(0.0)).leaves, W::select(w, eye).leaves);
+  // faster than its finest quads are passed in kPassing: none narrower than that, the sphere still once
+  const double       fast = 2.5 * W::width(w, {0, W::finestLevel(w), 0, 0}) / W::kPassing;
+  const W::Selection flown = W::select(w, eye, nullptr, glm::dvec3(fast, 0.0, 0.0));
+  EXPECT_NEAR(whole(flown), 6.0, 1e-9);
+  uint8_t finest = 0;
+  for(const W::Quad& q : flown.leaves)
+  {
+    EXPECT_GE(W::width(w, q), fast * W::kPassing);
+    finest = std::max(finest, q.level);
+  }
+  EXPECT_EQ(finest, W::finestLevel(w) - 2);
+}
+
 TEST(WorldMesh, AQuadsTrianglesAreItsGround)
 {
   const W::World&    w = planet();

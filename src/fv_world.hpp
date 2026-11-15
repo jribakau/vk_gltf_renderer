@@ -343,10 +343,17 @@ struct Selection
   std::vector<Quad> leaves;  // what draws: the sphere once over, sorted
   std::vector<Quad> split;   // what split to get there, sorted
 };
-// The quads for an eye at `eye` (the scene's frame). `was`, the last selection: a quad that was split
-// stays so until the eye is kSplitHold times further than where it splits, so an eye that hovers at a
-// boundary changes nothing.
-Selection select(const World& world, const glm::dvec3& eye, const Selection* was = nullptr);
+// An eye that moves is led: its quads are chosen for where it is and for where it will be kLead
+// seconds on, the nearer of the two deciding, so a quad is asked for before the eye is at its
+// distance. And none is narrower than the eye passes in kPassing seconds: it would be behind a ship
+// before it drew. (Short, so that it holds only for a ship low and very fast: when it slows, every
+// quad held back is wanted at once, near it.)
+inline constexpr double kLead    = 0.5;
+inline constexpr double kPassing = 0.2;
+// The quads for an eye at `eye` (the scene's frame), going at `velocity` (scene units a second).
+// `was`, the last selection: a quad that was split stays so until the eye is kSplitHold times further
+// than where it splits, so an eye that hovers at a boundary changes nothing.
+Selection select(const World& world, const glm::dvec3& eye, const Selection* was = nullptr, const glm::dvec3& velocity = glm::dvec3(0.0));
 
 // ---- a quad's triangles ----------------------------------------------------------------------------
 

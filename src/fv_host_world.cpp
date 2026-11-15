@@ -55,10 +55,19 @@ namespace {
 
 namespace W = fv::world;
 
-// How many quads are made at a time: each is a BLAS to build in the frame it arrives in. Fewer of a
-// planted planet's: a quad's plants are hundreds of instances to bring into the scene in that frame.
-constexpr size_t kPlanetBatch        = 32;
-constexpr size_t kPlanetBatchPlanted = 8;
+// Quads are made a few batches at a time, each of about this many (whole families: a quad gives way
+// to its four children together), the nearest along the eye's way first: a small batch is back
+// soon, and what the eye has come to since is asked for without waiting for the last.
+constexpr size_t   kPlanetBatch   = 8;
+constexpr uint32_t kPlanetFlights = 3;
+// What has been made comes into the scene for this long a frame, one quad at the least: each is a
+// BLAS to build and its plants' instances to make in that frame
+constexpr double kPlanetLandMs = 2.0;
+// How fast the eye's speed follows its steps, seconds; and a step longer than this many of its
+// heights over the ground (or metres, near it) is a jump
+constexpr double kEyeSpeedOver = 0.15;
+constexpr double kEyeJump      = 0.2;
+constexpr double kEyeJumpLeast = 40.0;
 
 W::Quad parentOf(const W::Quad& q)
 {
@@ -284,75 +293,97 @@ void FvHost::Impl::followPlanet()
     const double level = fv::world::inlandWaterOver(world, eye);
     renderer->setWorldWaterAtEye(level > 0.0 ? float(level) : HostRenderer::kNoWorldWater);
   }
-  // selected again once it has gone a twentieth of its height over the ground: a quad's reach is
-  // twice its width, and the nearest is no nearer than that height
-  if(!p.selected || glm::distance(eye, p.selectedFor) > std::max(0.5, 0.05 * p.eyeHeight))
+  // how it goes: its step since the last frame, smoothed; a jump is no speed
   {
-    p.selection   = fv::world::select(world, eye, p.selected ? &p.selection : nullptr);
-    p.selectedFor = eye;
-    p.eyeHeight   = std::abs(fv::world::heightOver(world, eye));
-    p.selected    = true;
+    const auto   now = std::chrono::steady_clock::now();
+    const double dt  = std::chrono::duration<double>(now - p.eyeWasAt).count();
+    const double step = glm::distance(eye, p.eyeWas);
+    if(p.eyeWas.x > 1.0e29 || dt > 0.5 || step > std::max(kEyeJumpLeast, kEyeJump * p.eyeHeight))
+      p.velocity = glm::dvec3(0.0);
+    else if(dt > 1.0e-4)
+      p.velocity += ((eye - p.eyeWas) / dt - p.velocity) * (1.0 - std::exp(-dt / kEyeSpeedOver));
+    if(dt > 1.0e-4 || p.eyeWas.x > 1.0e29)
+    {
+      p.eyeWas   = eye;
+      p.eyeWasAt = now;
+    }
+  }
+  // selected again once it, or where it will be, has gone a twentieth of its height over the ground:
+  // a quad's reach is twice its width, and the nearest is no nearer than that height
+  const glm::dvec3 ahead = eye + p.velocity * W::kLead;
+  if(const double gone = std::max(0.5, 0.05 * p.eyeHeight);
+     !p.selected || glm::distance(eye, p.selectedFor) > gone || glm::distance(ahead, p.selectedAhead) > gone)
+  {
+    p.selection     = fv::world::select(world, eye, p.selected ? &p.selection : nullptr, p.velocity);
+    p.selectedFor   = eye;
+    p.selectedAhead = ahead;
+    p.eyeHeight     = std::abs(fv::world::heightOver(world, eye));
+    p.selected      = true;
     if(!p.shown.empty())
       resolvePlanet(scene);  // what has arrived may no longer be wanted
   }
+  landPlanet(scene);
   // (the grass's tiles, once the camera has gone a few metres: a tile is two across at the least and
   // stays a little past where it would be laid, and every change is a pass of the renderer over the
   // scene's instances)
   if(p.planted && !p.shown.empty() && glm::distance(eye, p.tiledFor) >= 3.0)
     tilePlanet(scene, eye);
-  if(p.busy)
-    return;  // a batch is being made
-
-  // what to make next: the whole first cut; then the children of shown quads the selection has split,
-  // and the quads it has whole over shown ones
+  // what to make next: the whole first cut at once; then, a few batches at a time, the children of
+  // shown quads the selection has split and the quads it has whole over shown ones
+  const auto asked = [&](const W::Quad& q) { return p.arrived.count(q) || p.making.count(q); };
   std::vector<W::Quad> ask;
   if(p.shown.empty())
   {
+    if(p.flights)
+      return;
     for(const W::Quad& q : p.selection.leaves)
-      if(!p.arrived.count(q))
+      if(!asked(q))
         ask.push_back(q);
   }
   else
   {
+    if(p.flights >= kPlanetFlights)
+      return;
+    // by family: what takes the place of one shown quad (its four children) or of several (the
+    // quad over them), the family of the quad nearest the eye or where it will be first
+    const auto away = [&](const W::Quad& q) {
+      const double     span = 2.0 / double(uint64_t(1) << q.level);
+      const glm::dvec3 at   = W::toScene(world, W::direction(q.face, (double(q.x) + 0.5) * span - 1.0, (double(q.y) + 0.5) * span - 1.0), 0.0);
+      return std::min(glm::distance(eye, at), glm::distance(ahead, at));
+    };
+    std::map<W::Quad, std::vector<W::Quad>> families;  // by the quad that splits, or the one over
     for(const auto& [q, chunk] : p.shown)
     {
       if(has(p.selection.split, q))
       {
         for(const W::Quad& child : W::children(q))
-          if(!p.arrived.count(child))
-            ask.push_back(child);
+          if(!asked(child))
+            families[q].push_back(child);
       }
       else if(!has(p.selection.leaves, q))
       {
         W::Quad over = q;
         while(over.level > 0 && !has(p.selection.leaves, over))
           over = parentOf(over);
-        if(has(p.selection.leaves, over) && !p.arrived.count(over))
-          ask.push_back(over);
+        if(has(p.selection.leaves, over) && !asked(over) && !families.count(over))
+          families[over].push_back(over);
       }
     }
-    std::sort(ask.begin(), ask.end());
-    ask.erase(std::unique(ask.begin(), ask.end()), ask.end());
-    const size_t batch = p.planted ? kPlanetBatchPlanted : kPlanetBatch;
-    if(ask.size() > batch)
+    std::vector<std::pair<double, W::Quad>> byDistance;
+    for(const auto& [of, quads] : families)
+      byDistance.emplace_back(away(of), of);
+    std::sort(byDistance.begin(), byDistance.end());
+    for(const auto& [distance, of] : byDistance)
     {
-      // the nearest first
-      const auto away = [&](const W::Quad& q) {
-        const double span = 2.0 / double(uint64_t(1) << q.level);
-        return glm::distance(eye, W::toScene(world, W::direction(q.face, (double(q.x) + 0.5) * span - 1.0, (double(q.y) + 0.5) * span - 1.0), 0.0));
-      };
-      std::vector<std::pair<double, W::Quad>> byDistance;
-      for(const W::Quad& q : ask)
-        byDistance.emplace_back(away(q), q);
-      std::sort(byDistance.begin(), byDistance.end());
-      ask.clear();
-      for(size_t i = 0; i < batch; i++)
-        ask.push_back(byDistance[i].second);
+      if(ask.size() >= kPlanetBatch)
+        break;
+      ask.insert(ask.end(), families[of].begin(), families[of].end());
     }
   }
   if(ask.empty())
     return;
-  p.busy = true;
+  p.flights++;
+  p.making.insert(ask.begin(), ask.end());
   loaders.spawn([this, held = p.world, ask = std::move(ask), generation = p.generation, planted = p.planted, variants = p.variants,
                  density = p.density, seaMeshes = p.seaMeshes] {
     auto made = std::make_shared<std::vector<PlanetMade>>(ask.size());
@@ -376,20 +407,36 @@ void FvHost::Impl::followPlanet()
           m.seaStands = W::seaStanding(*held, ask[i], m.ground.centre, *seaMeshes, density);
       }
     });
-    post([this, made, generation] { planetArrived(*made, generation); });
+    post([this, made, generation] { planetArrived(made, generation); });
   });
 }
 
-void FvHost::Impl::planetArrived(std::vector<PlanetMade>& made, uint64_t generation)
+void FvHost::Impl::planetArrived(std::shared_ptr<std::vector<PlanetMade>> made, uint64_t generation)
 {
   if(!planetBuilt || planetBuilt->generation != generation)
     return;  // of a planet that has gone since
   PlanetBuilt& p = *planetBuilt;
-  p.busy         = false;
-  if(!backdropBuilt || !renderer->feedsHostScene() || !renderer->hostScene().entity(backdropBuilt->root))
+  p.flights -= std::min(p.flights, 1U);
+  p.landed.push_back({.made = std::move(made)});
+}
+
+void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
+{
+  PlanetBuilt& p = *planetBuilt;
+  if(p.landed.empty())
     return;
   fv::timing::Scope time("planet: quads arrived", 4);
-  rs::RetainedScene& scene  = renderer->hostScene();
+  const auto        started = std::chrono::steady_clock::now();
+  // one still waited for: of the first cut; a child of a shown quad the selection has split; one the
+  // selection has whole over shown quads. (The eye has gone on since it was asked for: the rest is
+  // dropped unmade.)
+  const auto waited = [&](const W::Quad& q) {
+    if(p.shown.empty())
+      return has(p.selection.leaves, q);
+    if(q.level > 0 && p.shown.count(parentOf(q)) && has(p.selection.split, parentOf(q)))
+      return true;
+    return has(p.selection.leaves, q) && std::any_of(p.shown.begin(), p.shown.end(), [&](const auto& s) { return isUnder(s.first, q); });
+  };
   const auto         entity = [&](W::ChunkMesh& m, rs::MaterialId material, const char* name) {
     rs::MeshRecord record;
     record.name          = name;
@@ -411,10 +458,10 @@ void FvHost::Impl::planetArrived(std::vector<PlanetMade>& made, uint64_t generat
     scene.setVisible(e, false);
     return e;
   };
-  for(PlanetMade& m : made)
-  {
-    if(p.arrived.count(m.quad) || p.shown.count(m.quad))
-      continue;
+  const auto land = [&](PlanetMade& m) {
+    p.making.erase(m.quad);
+    if(p.arrived.count(m.quad) || p.shown.count(m.quad) || !waited(m.quad))
+      return;
     PlanetBuilt::Chunk chunk;
     const glm::vec3 centre(m.ground.centre);
     chunk.ground = entity(m.ground, p.ground, "Planet ground");
@@ -456,6 +503,17 @@ void FvHost::Impl::planetArrived(std::vector<PlanetMade>& made, uint64_t generat
       if(s.role < p.seaPlants.size() && s.variant < p.seaPlants[s.role].size())
         stand(p.seaPlants[s.role][s.variant], glm::mat4(1.0F), s.places);
     p.arrived[m.quad] = chunk;
+  };
+  const bool first = p.shown.empty();  // (the first cut shows whole: nothing is drawn to hitch)
+  while(!p.landed.empty())
+  {
+    PlanetBuilt::Landed& batch = p.landed.front();
+    if(batch.next < batch.made->size())
+      land((*batch.made)[batch.next++]);
+    if(batch.next >= batch.made->size())
+      p.landed.erase(p.landed.begin());
+    if(!first && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() >= kPlanetLandMs)
+      break;
   }
   resolvePlanet(scene);
 }
@@ -619,7 +677,7 @@ Json FvHost::Impl::planetStatus(const Json& args) const
     late                = std::max(late, 1.0 - std::min(away / asked, 1.0));
   }
   return Json{{"wanted", p.selection.leaves.size()}, {"shown", p.shown.size()}, {"arrived", p.arrived.size()}, {"waiting", waiting},
-              {"late", late},                        {"busy", p.busy},          {"standing", p.standing},      {"tiled", p.tiled},
+              {"late", late},                        {"busy", p.flights > 0},   {"standing", p.standing},      {"tiled", p.tiled},
               {"eye", eye},                          {"at", at}};
 }
 
@@ -857,7 +915,7 @@ void FvHost::Impl::replantPlanet(rs::RetainedScene& scene)
   p.stale.clear();
   p.standing   = 0;
   p.selected   = false;
-  p.busy       = false;
+  p.forgetFlights();
   p.generation = ++planetGeneration;
   if(backdropState == "ready")
   {
@@ -886,7 +944,7 @@ void FvHost::Impl::restreamPlanet(rs::RetainedScene& scene)
   p.arrived.clear();
   p.standing   = 0;
   p.selected   = false;
-  p.busy       = false;
+  p.forgetFlights();
   p.generation = ++planetGeneration;
 }
 

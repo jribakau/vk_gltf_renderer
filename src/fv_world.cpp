@@ -903,17 +903,28 @@ double distanceTo(const World& w, const Quad& q, const glm::dvec3& eye, const gl
   return std::max(glm::length(eye - middle) - 0.75 * size, 0.0);
 }
 
-void visit(const World& w, const Quad& q, const glm::dvec3& eye, const glm::dvec3& eyeDirection, uint8_t finest, const Selection* was, Selection& out)
+// The eye (the planet's axes, from its centre), and where it will be kLead on: `led` that far from it
+struct Eyes
+{
+  glm::dvec3 eye, eyeDirection, ahead, aheadDirection;
+  double     led = 0.0;
+};
+
+void visit(const World& w, const Quad& q, const Eyes& e, uint8_t finest, const Selection* was, Selection& out)
 {
   if(q.level < finest)
   {
     const bool   held  = was && std::binary_search(was->split.begin(), was->split.end(), q);
     const double reach = kSplit * width(w, q) * (held ? kSplitHold : 1.0);
-    if(distanceTo(w, q, eye, eyeDirection) < reach)
+    double       away  = distanceTo(w, q, e.eye, e.eyeDirection);
+    // (from where it will be, when that can be within reach: no nearer than the way there less)
+    if(away >= reach && e.led > 0.0 && away - e.led < reach)
+      away = std::min(away, distanceTo(w, q, e.ahead, e.aheadDirection));
+    if(away < reach)
     {
       out.split.push_back(q);
       for(const Quad& child : children(q))
-        visit(w, child, eye, eyeDirection, finest, was, out);
+        visit(w, child, e, finest, was, out);
       return;
     }
   }
@@ -922,14 +933,27 @@ void visit(const World& w, const Quad& q, const glm::dvec3& eye, const glm::dvec
 
 }  // namespace
 
-Selection select(const World& world, const glm::dvec3& eye, const Selection* was)
+Selection select(const World& world, const glm::dvec3& eye, const Selection* was, const glm::dvec3& velocity)
 {
   double           r = 0.0;
   const glm::dvec3 d = toPlanet(world, eye, &r);
-  Selection        out;
-  const uint8_t    finest = finestLevel(world);
+  Eyes             eyes{.eye = d * r, .eyeDirection = d, .ahead = d * r, .aheadDirection = d};
+  const double     speed = glm::length(velocity);
+  if(speed > 0.0)
+  {
+    double           ra = 0.0;
+    const glm::dvec3 da = toPlanet(world, eye + velocity * kLead, &ra);
+    eyes.ahead          = da * ra;
+    eyes.aheadDirection = da;
+    eyes.led            = speed * kLead;
+  }
+  Selection out;
+  // (no quad narrower than the eye passes in kPassing)
+  uint8_t finest = finestLevel(world);
+  while(finest > 0 && width(world, {0, finest, 0, 0}) < speed * kPassing)
+    finest--;
   for(uint8_t face = 0; face < 6; face++)
-    visit(world, {face, 0, 0, 0}, d * r, d, finest, was, out);
+    visit(world, {face, 0, 0, 0}, eyes, finest, was, out);
   std::sort(out.leaves.begin(), out.leaves.end());
   std::sort(out.split.begin(), out.split.end());
   return out;

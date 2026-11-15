@@ -1713,10 +1713,30 @@ struct FvHost::Impl
     std::vector<Chunk> stale;
     std::map<fv::world::Quad, Chunk> arrived;  // made and hidden, until what they take the place of can go
     fv::world::Selection             selection;  // the cut the camera asks for
-    glm::dvec3                       selectedFor{0.0};
+    glm::dvec3                       selectedFor{0.0}, selectedAhead{0.0};  // the eye then, and where it was going
     double                           eyeHeight = 0.0;
     bool                             selected  = false;
-    bool                             busy      = false;  // a batch is being made
+    // How the eye goes, from where it was a frame ago: the cut is chosen for where it will be too
+    // (fv::world::kLead). A jump (a view set, a camera taken) is no speed.
+    glm::dvec3                            eyeWas{1.0e30}, velocity{0.0};
+    std::chrono::steady_clock::time_point eyeWasAt{};
+    // Quads being made, a few batches at a time (`flights`), and those made and not yet in the
+    // scene: taken into it a few milliseconds a frame (landPlanet)
+    uint32_t                   flights = 0;
+    std::set<fv::world::Quad>  making;
+    struct Landed
+    {
+      std::shared_ptr<std::vector<PlanetMade>> made;
+      size_t                                   next = 0;
+    };
+    std::vector<Landed> landed;
+    // The quads no longer made or waited for (the planet's quads asked again)
+    void forgetFlights()
+    {
+      flights = 0;
+      making.clear();
+      landed.clear();
+    }
     // Its plants (fv_world_plants.hpp), the kit's: none until the kit is read and held (plantPlanet).
     // What has a place arrives with its quad; the grass and its drifts are tiles laid round where
     // one looks from, a kind's all sharing one mesh, as a meadow's are.
@@ -1762,7 +1782,10 @@ struct FvHost::Impl
   // Every frame: the cut the camera asks for, and the next batch of quads toward it asked of the pool
   void followPlanet();
   // A batch back from the pool: its quads as hidden entities, and the cut moved on where it can
-  void planetArrived(std::vector<PlanetMade>& made, uint64_t generation);
+  void planetArrived(std::shared_ptr<std::vector<PlanetMade>> made, uint64_t generation);
+  // Every frame: the quads made come into the scene, hidden, as many as a few milliseconds allow
+  // (all of the first cut), and the cut that draws is resolved with them
+  void landPlanet(rs::RetainedScene& scene);
   void resolvePlanet(rs::RetainedScene& scene);
   // How its stream stands (backdrop.status): the quads the camera asks for, those drawn, and how
   // late the latest of the rest is; what is planted; what the planet is under the camera, and at

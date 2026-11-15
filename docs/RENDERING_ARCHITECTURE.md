@@ -951,8 +951,12 @@ their kit when there is one. It needs no kit: without one it stands bare.
   kilometre. `FvHost::Impl::followPlanet` (`src/fv_host_world.cpp`) moves the shown cut toward the
   selected one a step at a time, and at every step it is a whole cut: a shown quad gives way to its
   four children only once all four are made, and shown quads give way to the one over them once it
-  is. Meshes are made on the job pool a batch at a time and arrive as hidden entities, so their BLAS
-  is built before they show. A quad's edges carry skirts, since neighbours of different levels don't
+  is. An eye that moves is led: the cut is chosen for where it is and for where it will be a moment
+  on (`kLead`, from its steps over the last frames), so a quad is asked for before the eye is at its
+  distance. Meshes are made on the job pool a few small batches at a time, the nearest along the
+  eye's way first, and come into the scene as hidden entities for a couple of milliseconds a frame
+  (`landPlanet`), so their BLAS is built before they show and a frame takes in no more than it can.
+  A quad's edges carry skirts, since neighbours of different levels don't
   meet exactly and a ray would find the crack.
 - **The ground's colour** is its vertices' (the fields'), and **its grain** a map's where the
   backdrop's kit has ground maps (`shaders/world_ground.h.slang`, `mapPlanetGround`). The quads are
