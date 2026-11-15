@@ -21,8 +21,8 @@
 //                          "mean"?: [r, g, b] linear, what the diffuse map reflects on average}}}
 //
 // A kind is a backdrop's (its ground's maps) or one of a planet's grounds (fv::world::kGroundKinds:
-// "rock" and "sand" beside the meadow's and the forest's), which takes a map's grain and not its
-// colour: fv_host_world.cpp.
+// rock, sand, snow and the rest beside the meadow's and the forest's), which takes a map's grain and
+// not its colour: fv_host_world.cpp.
 //
 // Every mesh of a plant's file is a variant of it. The kit is read on a worker (a tree's file is
 // hundreds of megabytes) and kept; of its plants the scene holds those the kind plants

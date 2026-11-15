@@ -553,11 +553,14 @@ struct SceneFrameInfo
   float  _worldSeaPad    = 0.0F;
   // A planet's ground where it has maps (shaders/world_ground.h.slang): the material slot its quads
   // are drawn with (-1: none, or no maps), the slots of its layers' materials in the order of a
-  // vertex's shares (grass, a wood's floor, rock, sand; -1: none, and that layer is the ground's own
-  // material), and how many repeats of each layer's maps a metre has. (Appended.)
-  int4   worldGroundLayer = {-1, -1, -1, -1};
-  float4 worldGroundTile  = {1.0F, 1.0F, 1.0F, 1.0F};
-  int    worldGround      = -1;
+  // vertex's shares (fv::world::Soil: grass, a wood's floor, rock, sand, then snow, dry earth, stony
+  // soil, pebbles; -1: none, and that layer is the ground's own material), and how many repeats of
+  // each layer's maps a metre has. (Appended.)
+  int4   worldGroundLayer     = {-1, -1, -1, -1};
+  float4 worldGroundTile      = {1.0F, 1.0F, 1.0F, 1.0F};
+  int4   worldGroundLayerMore = {-1, -1, -1, -1};
+  float4 worldGroundTileMore  = {1.0F, 1.0F, 1.0F, 1.0F};
+  int    worldGround          = -1;
   // Its lakes and rivers (shaders/world_sea.h.slang): the material slot their meshes are drawn with
   // (-1: none), which a path meets as the water's surface; and how high over the sea's sphere the
   // inland water the camera is in stands, metres (far under any: it is in none), since no sphere

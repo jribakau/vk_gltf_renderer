@@ -1179,10 +1179,22 @@ namespace {
 SceneFrameInfo groundWithMaps()
 {
   SceneFrameInfo frame{};
-  frame.worldGround      = 7;
-  frame.worldGroundLayer = int4(10, 11, 12, 13);                    // grass, a wood's floor, rock, sand
-  frame.worldGroundTile  = float4(1.0f / 2.5f, 0.5f, 0.25f, 0.5f);  // repeats a metre
+  frame.worldGround          = 7;
+  frame.worldGroundLayer     = int4(10, 11, 12, 13);                    // grass, a wood's floor, rock, sand
+  frame.worldGroundTile      = float4(1.0f / 2.5f, 0.5f, 0.25f, 0.5f);  // repeats a metre
+  frame.worldGroundLayerMore = int4(14, 15, 16, -1);                    // snow, dry earth, stony soil; no pebbles
+  frame.worldGroundTileMore  = float4(0.5f, 0.25f, 0.5f, 0.5f);
   return frame;
+}
+
+// A place with shares of the first four layers only
+int worldGroundLayer(float4 shares, float pick)
+{
+  return ::worldGroundLayer(shares, float4(0, 0, 0, 0), pick);
+}
+WorldGroundHit worldGroundAt(SceneFrameInfo* frame, float3 pos, float3 normal, float4 shares, float footprint)
+{
+  return ::worldGroundAt(frame, pos, normal, shares, float4(0, 0, 0, 0), footprint);
 }
 
 }  // namespace
@@ -1228,6 +1240,38 @@ TEST(WorldGround, ThePickIsTheSameAtAPlaceAndSpreadOverTheGround)
     EXPECT_NEAR(double(high[c]) / n, 0.25, 0.08);
     EXPECT_LT(std::abs(both[c] / n), 0.02);
   }
+}
+
+TEST(WorldGround, TheLayersPastTheFourthAreItsTextureCoordinates)
+{
+  const float4 none(0, 0, 0, 0);
+  for(const float pick : {0.0f, 0.5f, 1.0f})
+    for(int l = 0; l < 4; l++)
+    {
+      float4 more(0, 0, 0, 0);
+      more[l] = 1.0f;
+      EXPECT_EQ(worldGroundLayer(none, more, pick), 4 + l);
+    }
+  // rock gives way to the stones under it, pebbles to a shore's sand
+  EXPECT_EQ(worldGroundLayer(float4(0, 0, 0.5f, 0), float4(0, 0, 0.5f, 0), 0.2f), 2);
+  EXPECT_EQ(worldGroundLayer(float4(0, 0, 0.5f, 0), float4(0, 0, 0.5f, 0), 0.8f), 6);
+  EXPECT_EQ(worldGroundLayer(float4(0, 0, 0, 0.5f), float4(0, 0, 0, 0.5f), 0.2f), 7);
+  EXPECT_EQ(worldGroundLayer(float4(0, 0, 0, 0.5f), float4(0, 0, 0, 0.5f), 0.8f), 3);
+  // all eight make the whole place between them
+  EXPECT_EQ(worldGroundLayer(float4(0.1f, 0.1f, 0.1f, 0.1f), float4(0.1f, 0.1f, 0.1f, 0.1f), 0.97f), -1);
+  EXPECT_EQ(worldGroundLayer(float4(0.125f, 0.125f, 0.125f, 0.125f), float4(0.125f, 0.125f, 0.125f, 0.125f), 0.97f), 0);
+  // drawn with its own material and maps
+  SceneFrameInfo       frame = groundWithMaps();
+  const float3         up(0, 1, 0);
+  const WorldGroundHit snow  = worldGroundAt(&frame, float3(3, 0, 4), up, none, float4(1, 0, 0, 0), 0.0f);
+  ASSERT_TRUE(snow.mapped);
+  EXPECT_EQ(snow.material, 14);
+  EXPECT_TRUE(snow.texelDensity == 0.5f || snow.texelDensity == 0.5f * WORLD_GROUND_SECOND_SCALE);
+  const WorldGroundHit dry = worldGroundAt(&frame, float3(3, 0, 4), up, none, float4(0, 1, 0, 0), 0.0f);
+  EXPECT_EQ(dry.material, 15);
+  EXPECT_TRUE(dry.texelDensity == 0.25f || dry.texelDensity == 0.25f * WORLD_GROUND_SECOND_SCALE);
+  // a layer the kit has no maps for is the ground's own material
+  EXPECT_FALSE(worldGroundAt(&frame, float3(3, 0, 4), up, none, float4(0, 0, 0, 1), 0.0f).mapped);
 }
 
 TEST(WorldGround, ALayerHasItsShareOfThePlace)

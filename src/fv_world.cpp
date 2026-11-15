@@ -559,9 +559,11 @@ void colour(const World& w, const Point& p, Sample& s)
   if(s.water > s.elevation)
   {
     // a river's or a lake's bed: gravel in the shallows, dark mud under a few metres
-    s.colour = glm::mix(kGravel, 0.6F * kSeaFloorDeep, float(smooth(0.0, 6.0, s.water - s.elevation)));
-    s.rock   = 0.0F;
-    s.sand   = 1.0F;
+    const float deep = float(smooth(0.0, 6.0, s.water - s.elevation));
+    s.colour         = glm::mix(kGravel, 0.6F * kSeaFloorDeep, deep);
+    s.rock           = 0.0F;
+    s.sand           = 1.0F;
+    s.pebbles        = 1.0F - deep;
     return;
   }
   // a beach no narrower than what draws it
@@ -574,6 +576,7 @@ void colour(const World& w, const Point& p, Sample& s)
     const float damp = 0.5F * float(1.0 - smooth(0.0, 2.5, double(s.shore)));
     s.colour         = glm::mix(s.colour, kGravel, damp);
     s.sand           = std::max(s.sand, damp);
+    s.pebbles        = damp;
   }
   if(s.painted > 0.0F)
     s.colour = glm::mix(s.colour, kRiverSeen, s.painted);
@@ -609,21 +612,21 @@ std::vector<Biome> biomeTable()
   // tundra low bushes, stones and stunted pines at its warm edge. A fir wood's floor and a meadow's
   // drifts are the warm, wet rows' alone.
   return {
-      // (what each one's ground is drawn with: soil with grass on it wherever anything grows, a
-      // wood's floor under the firs, sand in the desert; snow has no map)
-      {.name = "snow", .temperatureTo = -5.0F, .colour = {0.78F, 0.80F, 0.84F}, .rough = 0.5F},
+      // (what each one's ground is drawn with: soil with grass on it in the grassland, a wood's floor
+      // under the trees, stony earth in the dry lands, soil and stones in the tundra, snow)
+      {.name = "snow", .temperatureTo = -5.0F, .colour = {0.78F, 0.80F, 0.84F}, .rough = 0.5F, .soil = Soil::eSnow},
       {.name = "tundra", .temperatureFrom = -5.0F, .temperatureTo = 5.0F, .colour = {0.17F, 0.16F, 0.11F}, .rough = 1.0F,
        .plants = {{.role = "rock", .perSquareMetre = 0.006, .scaleMin = 0.15F, .scaleMax = 0.8F, .sink = 0.1F, .cover = 0.5F, .patch = 40.0F},
                   {.role = "boulder", .perSquareMetre = 0.006, .scaleMin = 0.2F, .scaleMax = 0.9F, .sink = 0.12F, .cover = 0.4F, .patch = 50.0F},
                   {.role = "shrub", .perSquareMetre = 0.006, .scaleMin = 0.4F, .scaleMax = 0.8F, .sink = 0.03F, .cover = 0.25F, .patch = 30.0F},
                   {.role = "pine", .perSquareMetre = 0.0008, .scaleMin = 0.45F, .scaleMax = 0.9F, .sink = 0.1F, .cover = 0.15F, .patch = 120.0F}},
        .grass  = Grass::eCold,
-       .soil   = Soil::eGrass},
+       .soil   = Soil::eStony},
       {.name = "desert", .temperatureFrom = 5.0F, .moistureTo = 0.15F, .colour = {0.40F, 0.30F, 0.17F}, .rough = 0.6F,
        .plants = {{.role = "boulder", .perSquareMetre = 0.008, .scaleMin = 0.2F, .scaleMax = 1.2F, .sink = 0.12F, .cover = 0.35F, .patch = 70.0F},
                   {.role = "drybush", .perSquareMetre = 0.006, .scaleMin = 0.6F, .scaleMax = 1.3F, .sink = 0.03F, .cover = 0.3F, .patch = 45.0F},
                   {.role = "drytree", .perSquareMetre = 0.0012, .scaleMin = 0.8F, .scaleMax = 1.6F, .sink = 0.05F, .cover = 0.2F, .patch = 150.0F}},
-       .soil   = Soil::eSand},
+       .soil   = Soil::eDry},
       {.name = "steppe", .temperatureFrom = 5.0F, .moistureFrom = 0.15F, .moistureTo = 0.36F, .colour = {0.26F, 0.21F, 0.12F}, .rough = 0.9F,
        .plants = {{.role = "drybush", .perSquareMetre = 0.008, .scaleMin = 0.6F, .scaleMax = 1.2F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
                   {.role = "shrub", .perSquareMetre = 0.003, .scaleMin = 0.5F, .scaleMax = 1.1F, .sink = 0.03F, .cover = 0.3F, .patch = 35.0F},
@@ -631,7 +634,7 @@ std::vector<Biome> biomeTable()
                   {.role = "pine", .perSquareMetre = 0.003, .scaleMin = 0.8F, .scaleMax = 1.5F, .sink = 0.15F, .cover = 0.15F, .patch = 90.0F},
                   {.role = "drytree", .perSquareMetre = 0.002, .scaleMin = 0.8F, .scaleMax = 1.5F, .sink = 0.05F, .cover = 0.2F, .patch = 70.0F}},
        .grass  = Grass::eDry,
-       .soil   = Soil::eGrass},
+       .soil   = Soil::eDry},
       {.name = "grassland", .temperatureFrom = 5.0F, .moistureFrom = 0.36F, .moistureTo = 0.68F, .colour = {0.085F, 0.14F, 0.045F}, .rough = 0.8F,
        .plants = {{.role = "broadleaf", .perSquareMetre = 0.012, .scaleMin = 1.2F, .scaleMax = 2.4F, .sink = 0.1F, .cover = 0.3F, .patch = 80.0F},
                   {.role = "tree", .perSquareMetre = 0.008, .scaleMin = 0.8F, .scaleMax = 1.9F, .sink = 0.15F, .cover = 0.25F, .patch = 110.0F},
@@ -781,6 +784,8 @@ void addSkirts(ChunkMesh& m, const World& w, uint32_t cells, double depth, const
     m.colors.push_back(m.colors[v]);
     if(!m.layers.empty())
       m.layers.push_back(m.layers[v]);
+    if(!m.layersMore.empty())
+      m.layersMore.push_back(m.layersMore[v]);
     return uint32_t(m.positions.size() - 1);
   };
   // the edges in turn, each walked so the wall faces out of the quad
@@ -962,7 +967,12 @@ std::array<float, kGroundLayers> surfaceLayers(const World& world, const Sample&
   const float sand = std::clamp(s.sand, 0.0F, 1.0F);
   for(float& layer : layers)
     layer *= (1.0F - sand) * (1.0F - rock);
-  layers[size_t(Soil::eSand)] += sand * (1.0F - rock);
+  // of the sand, a track's earth is the dry lands', and a bed's shallows and a damp shore pebbles
+  const float earth   = s.built.earth ? std::min(std::clamp(s.built.road, 0.0F, 1.0F), sand) : 0.0F;
+  const float pebbles = std::min(std::clamp(s.pebbles, 0.0F, 1.0F), sand - earth);
+  layers[size_t(Soil::eSand)] += (sand - earth - pebbles) * (1.0F - rock);
+  layers[size_t(Soil::eDry)] += earth * (1.0F - rock);
+  layers[size_t(Soil::ePebbles)] += pebbles * (1.0F - rock);
   layers[size_t(Soil::eRock)] += rock;
   // asphalt is none of them: the ground's own material in the road's colour
   if(s.built.road > 0.0F && !s.built.earth)
@@ -1207,6 +1217,7 @@ ChunkMesh groundMesh(const World& world, const Quad& q)
   m.normals.reserve(count + 4 * size_t(N + 1));
   m.colors.reserve(count + 4 * size_t(N + 1));
   m.layers.reserve(count + 4 * size_t(N + 1));
+  m.layersMore.reserve(count + 4 * size_t(N + 1));
   const uint32_t dither = lattice(uint32_t(world.spec.seed), kChDither);
   for(int j = 0; j <= int(N); j++)
     for(int i = 0; i <= int(N); i++)
@@ -1225,12 +1236,14 @@ ChunkMesh groundMesh(const World& world, const Quad& q)
       const uint32_t h = mix(mix(mix(dither + q.face * 64U + q.level) + uint32_t(q.x * N + uint32_t(i))) + uint32_t(q.y * N + uint32_t(j)));
       c += (glm::vec3(float(h & 255U), float((h >> 8U) & 255U), float((h >> 16U) & 255U)) / 255.0F - 0.5F) / 255.0F;
       m.colors.emplace_back(glm::clamp(c, 0.0F, 1.0F), 1.0F);
-      // what it is drawn with: a byte a layer
+      // what it is drawn with: a byte each of the first four layers, the rest as floats
       uint32_t   packed = 0;
       const auto layers = surfaceLayers(world, s, slope);
-      for(size_t l = 0; l < kGroundLayers; l++)
+      for(size_t l = 0; l < 4; l++)
         packed |= uint32_t(std::lround(255.0F * std::clamp(layers[l], 0.0F, 1.0F))) << (8U * uint32_t(l));
       m.layers.push_back(packed);
+      static_assert(kGroundLayers == 8, "four layers in a word, four as floats");
+      m.layersMore.emplace_back(layers[4], layers[5], layers[6], layers[7]);
       m.lowest  = std::min(m.lowest, s.elevation);
       m.highest = std::max(m.highest, s.elevation);
       m.inland  = m.inland || s.water > s.elevation - 0.3;

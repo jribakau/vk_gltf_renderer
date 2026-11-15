@@ -1004,11 +1004,16 @@ their kit when there is one. It needs no kit: without one it stands bare.
   meet exactly and a ray would find the crack.
 - **The ground's colour** is its vertices' (the fields'), and **its grain** a map's where the
   backdrop's kit has ground maps (`shaders/world_ground.h.slang`, `mapPlanetGround`). The quads are
-  all drawn with one material; the kit's maps make four more, a layer each (grass, a wood's floor,
-  rock, sand), each colour map divided by its own mean so that it changes the ground's grain and not
-  its colour. A vertex carries its place's share of each layer (`surfaceLayers`, in the mesh's
-  masks), and the path tracer, at a hit of the ground's material, takes one of them by a noise over
-  the ground and evaluates that material instead: a blend would be four material evaluations a hit.
+  all drawn with one material; the kit's maps make a material a layer (`fv::world::Soil`: grass, a
+  wood's floor, rock, sand, snow, the dry lands' stony earth, the tundra's soil and stones, a bed's
+  pebbles), each colour map divided by its own mean so that it changes the ground's grain and not
+  its colour. A biome's soil is one of them, sand is laid over it (a beach, the sea's floor, a
+  river's bed, of which the shallows and a damp shore are pebbles and a track's earth the dry lands'),
+  and rock over all. A vertex carries its place's share of each layer (`surfaceLayers`): the first
+  four in the mesh's masks, a byte each, the rest as floats in its two texture coordinates, which
+  the ground has no other use for and which blend across a triangle as the masks do. The path
+  tracer, at a hit of the ground's material, takes one layer by a noise over the ground and
+  evaluates that material instead: a blend would be several material evaluations a hit.
   The maps have no coordinates of the mesh's; they are laid by where the hit is in the scene, on
   the axis plane the ground faces most squarely (a cliff's face from its side), the normal map's
   frame with them. The frame carries the materials' slots (`GltfRenderer::setWorldGround`,

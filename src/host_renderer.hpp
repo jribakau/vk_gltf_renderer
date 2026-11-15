@@ -165,12 +165,13 @@ public:
   // ground's own), and the metres a repeat of each one's maps covers. No ground: none has maps.
   // And the material its lakes' and rivers' meshes are drawn with, which the path tracer meets as
   // the water's surface (shaders/world_sea.h.slang); none: no planet, or none with inland water.
+  static constexpr size_t kWorldGroundLayers = 8;  // fv::world::kGroundLayers
   struct WorldGround
   {
-    rs::MaterialId                ground;
-    std::array<rs::MaterialId, 4> layers;
-    std::array<float, 4>          tiles{1.0F, 1.0F, 1.0F, 1.0F};
-    rs::MaterialId                water;
+    rs::MaterialId                                 ground;
+    std::array<rs::MaterialId, kWorldGroundLayers> layers;
+    std::array<float, kWorldGroundLayers>          tiles{1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F};
+    rs::MaterialId                                 water;
   };
   virtual void setWorldGround(const WorldGround& /*ground*/) {}
   // How high over its sea the lake or the river the camera is in stands, metres; far under any

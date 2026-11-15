@@ -7,13 +7,15 @@
 // material's maps laid on it.
 //
 // A planet's quads are all drawn with one material: their vertices' colours on a rough surface. Where
-// the backdrop's kit has ground maps the ground has four more, a layer each (grass, a wood's floor,
-// rock, sand): standard materials, their colour maps divided by their own mean so that the ground's
-// colour stays its vertices' and the map gives it its grain. A vertex says how much of each layer its
-// place is (HitState::masks, a channel a layer; what they leave is the ground's own material), and a
-// hit is drawn with one of them. The shares are measured out along a noise over the ground: where
-// rock gives way to grass the rock ends in tongues and patches a pace or two across, as it does, and
-// no hit evaluates more than one material. (A blend would be four evaluations at every hit of the
+// the backdrop's kit has ground maps the ground has eight more, a layer each (fv::world::Soil: grass,
+// a wood's floor, rock, sand, snow, dry earth, stony soil, pebbles): standard materials, their colour
+// maps divided by their own mean so that the ground's colour stays its vertices' and the map gives it
+// its grain. A vertex says how much of each layer its place is (the first four in HitState::masks, a
+// channel a layer; the other four in its texture coordinates, which the ground has no other use for,
+// its maps being laid by where a hit is; what they leave is the ground's own material), and a hit is
+// drawn with one of them. The shares are measured out along a noise over the ground: where rock
+// gives way to grass the rock ends in tongues and patches a pace or two across, as it does, and no
+// hit evaluates more than one material. (A blend would be several evaluations at every hit of the
 // ground, in a kernel where a loop round that one call cost a tenth of a frame.)
 //
 // The maps have no coordinates of the mesh's. They are laid by where the hit is in the scene, on the
@@ -33,9 +35,11 @@
 #define WORLD_GROUND_H_SLANG
 
 // The layers, in the order of a vertex's shares (fv::world::Soil)
-static const int WORLD_GROUND_LAYERS = 4;
-// The order they are measured out in along the noise: rock, sand, a wood's floor, grass
-static const int WORLD_GROUND_ORDER[4] = {2, 3, 1, 0};
+static const int WORLD_GROUND_LAYERS = 8;
+// The order they are measured out in along the noise: rock, stony soil, pebbles, sand, dry earth,
+// snow, a wood's floor, grass (those that meet in one place are neighbours here: rock and the
+// stones under it, pebbles and sand at a shore)
+static const int WORLD_GROUND_ORDER[8] = {2, 6, 7, 3, 5, 4, 1, 0};
 // Metres across the noise's patches, and across the grain in them
 static const float WORLD_GROUND_PATCH = 1.7F;
 static const float WORLD_GROUND_GRAIN = 0.37F;
@@ -101,18 +105,29 @@ float4 worldGroundPick(float3 pos)
   return clamp((n - 0.5F) * 2.2F + 0.5F, float4(0.0F, 0.0F, 0.0F, 0.0F), float4(1.0F, 1.0F, 1.0F, 1.0F));
 }
 
-// The layer a place of `shares` is drawn with where the noise is `pick`; -1: the ground's own material
-int worldGroundLayer(float4 shares, float pick)
+// The slot of a layer's material (-1: none), and how many repeats of its maps a metre has
+int worldGroundSlot(SceneFrameInfo* frameInfo, int layer)
 {
-  const float total = shares.x + shares.y + shares.z + shares.w;
-  // (a vertex's shares are bytes: all but a hundredth of a place is the whole of it)
+  return layer < 4 ? frameInfo->worldGroundLayer[layer] : frameInfo->worldGroundLayerMore[layer - 4];
+}
+float worldGroundRepeats(SceneFrameInfo* frameInfo, int layer)
+{
+  return layer < 4 ? frameInfo->worldGroundTile[layer] : frameInfo->worldGroundTileMore[layer - 4];
+}
+
+// The layer a place of `shares` (the first four layers') and `more` (the other four's) is drawn with
+// where the noise is `pick`; -1: the ground's own material
+int worldGroundLayer(float4 shares, float4 more, float pick)
+{
+  const float total = shares.x + shares.y + shares.z + shares.w + more.x + more.y + more.z + more.w;
+  // (a vertex's first shares are bytes: all but a hundredth of a place is the whole of it)
   const float at    = lerp(WORLD_GROUND_LEAST_LAYER, 1.0F - WORLD_GROUND_LEAST_LAYER, pick) * (total > 0.97F ? total : 1.0F);
   int         layer = -1;
   float       upTo  = 0.0F;
   for(int i = 0; i < WORLD_GROUND_LAYERS; i++)
   {
     const int l = WORLD_GROUND_ORDER[i];
-    upTo += shares[l];
+    upTo += l < 4 ? shares[l] : more[l - 4];
     if(layer < 0 && at < upTo)
       layer = l;
   }
@@ -148,9 +163,9 @@ struct WorldGroundHit
 };
 
 // What a hit of a planet's ground at `pos`, world space, is drawn with: `normal` its shading normal,
-// `shares` its vertices' (HitState::masks), `footprint` the metres across what the hit stands for (0:
-// as from near)
-WorldGroundHit worldGroundAt(SceneFrameInfo* frameInfo, float3 pos, float3 normal, float4 shares, float footprint)
+// `shares` and `more` its vertices' (HitState::masks, and its two texture coordinates), `footprint`
+// the metres across what the hit stands for (0: as from near)
+WorldGroundHit worldGroundAt(SceneFrameInfo* frameInfo, float3 pos, float3 normal, float4 shares, float4 more, float footprint)
 {
   WorldGroundHit g;
   g.mapped       = false;
@@ -161,8 +176,8 @@ WorldGroundHit worldGroundAt(SceneFrameInfo* frameInfo, float3 pos, float3 norma
   g.texelDensity = 0.0F;
 
   const float4 pick  = worldGroundPick(pos);
-  const int    layer = worldGroundLayer(shares, pick.x);
-  if(layer < 0 || frameInfo->worldGroundLayer[layer] < 0 || worldGroundFaded(footprint, frameInfo->worldGroundTile[layer], pick.w))
+  const int    layer = worldGroundLayer(shares, more, pick.x);
+  if(layer < 0 || worldGroundSlot(frameInfo, layer) < 0 || worldGroundFaded(footprint, worldGroundRepeats(frameInfo, layer), pick.w))
     return g;
 
   // the plane's own directions: along its maps' u, and along their v (down the map, so that a
@@ -175,7 +190,7 @@ WorldGroundHit worldGroundAt(SceneFrameInfo* frameInfo, float3 pos, float3 norma
   else if(plane == 0)
     alongU = float3(0.0F, 0.0F, 1.0F);
   // its second way of lying; turned on level ground only, as a face's map keeps its top up
-  g.texelDensity = frameInfo->worldGroundTile[layer];
+  g.texelDensity = worldGroundRepeats(frameInfo, layer);
   if(pick.z > 0.5F)
   {
     g.texelDensity *= WORLD_GROUND_SECOND_SCALE;
@@ -188,7 +203,7 @@ WorldGroundHit worldGroundAt(SceneFrameInfo* frameInfo, float3 pos, float3 norma
   }
 
   g.mapped   = true;
-  g.material = frameInfo->worldGroundLayer[layer];
+  g.material = worldGroundSlot(frameInfo, layer);
   g.uv       = float2(dot(pos, alongU), dot(pos, alongV)) * g.texelDensity;
   // (the plane is one the normal all but faces, WORLD_GROUND_LEAST_PLANE: its u is never along the normal)
   g.tangent   = normalize(alongU - normal * dot(normal, alongU));

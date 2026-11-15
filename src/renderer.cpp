@@ -1269,12 +1269,13 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     {
       const rs::Residency& residency = m_resources.retainedGpu->residency();
       bool                 any       = false;
-      for(int i = 0; i < 4; i++)
+      for(int i = 0; i < int(HostRenderer::kWorldGroundLayers); i++)
       {
-        const int slot = m_worldGround.layers[size_t(i)].isNone() ? -1 : residency.materialSlot(m_worldGround.layers[size_t(i)]);
-        finfo.worldGroundLayer[i] = slot;
-        finfo.worldGroundTile[i]  = 1.0F / std::max(m_worldGround.tiles[size_t(i)], 1e-3F);
-        any                       = any || slot >= 0;
+        const int   slot   = m_worldGround.layers[size_t(i)].isNone() ? -1 : residency.materialSlot(m_worldGround.layers[size_t(i)]);
+        const float repeat = 1.0F / std::max(m_worldGround.tiles[size_t(i)], 1e-3F);
+        (i < 4 ? finfo.worldGroundLayer : finfo.worldGroundLayerMore)[i & 3] = slot;
+        (i < 4 ? finfo.worldGroundTile : finfo.worldGroundTileMore)[i & 3]   = repeat;
+        any                                                                   = any || slot >= 0;
       }
       if(any)
         finfo.worldGround = residency.materialSlot(m_worldGround.ground);

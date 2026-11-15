@@ -89,19 +89,24 @@ inline double mostLevel(double radius)
 }
 
 // What a ground is drawn with, where the backdrop's kit has its maps: grass (soil with grass on it),
-// a wood's floor, rock, sand. A place is so much of each (surfaceLayers); what they leave of it is
-// the ground's own colour and nothing more (snow). In the order of a vertex's shares, and of
-// kGroundKinds, the kit's names for them.
+// a wood's floor, rock, sand, snow, the dry lands' stony earth (and a track's), the tundra's soil and
+// stones, a river's pebbles. A place is so much of each (surfaceLayers); what they leave of it is the
+// ground's own colour and nothing more. In the order of a vertex's shares (the first four a byte
+// each, the rest as floats: ChunkMesh), and of kGroundKinds, the kit's names for them.
 enum class Soil : uint8_t
 {
   eGrass = 0,
   eFloor,
   eRock,
   eSand,
+  eSnow,
+  eDry,
+  eStony,
+  ePebbles,
   ePlain,
 };
-inline constexpr size_t                                      kGroundLayers = 4;
-inline constexpr std::array<std::string_view, kGroundLayers> kGroundKinds{"meadow", "forest", "rock", "sand"};
+inline constexpr size_t                                      kGroundLayers = 8;
+inline constexpr std::array<std::string_view, kGroundLayers> kGroundKinds{"meadow", "forest", "rock", "sand", "snow", "dry", "stony", "pebbles"};
 
 // No water: a level under any ground
 inline constexpr double kDry = -1.0e30;
@@ -156,6 +161,7 @@ struct Sample
   float     rough       = 1.0F;  // of the ground's fine relief, its biome's
   float     rock        = 0.0F;  // the share of bare rock whatever the slope
   float     sand        = 0.0F;  // the share of sand over its biome's ground: a beach, the sea's floor, a river's bed
+  float     pebbles     = 0.0F;  // of that, the share that is pebbles: a river's or a lake's shallow bed, a damp shore
   float     cliff       = 0.0F;  // 0..1: on a cliff's face (the `cliffs` stage), 1 at its middle
   float     steepened   = 1.0F;  // how many times as steep the tiers made the land's own slope here (by a shore)
   float     tiers       = 0.0F;  // how many tiers the land stands on here: whole on a tier, between on a face
@@ -393,9 +399,12 @@ struct ChunkMesh
   glm::dvec3             centre{0.0};  // in the scene; the positions are about it
   std::vector<glm::vec3> positions, normals;
   std::vector<glm::vec4> colors;
-  // The ground's: each vertex's shares of the layers (surfaceLayers), a byte a layer, the first the
-  // lowest. A water mesh has none.
-  std::vector<uint32_t> layers;
+  // The ground's: each vertex's shares of the layers (surfaceLayers), the first four a byte each, the
+  // first the lowest, and the rest as floats (the renderer has them as its texture coordinates: the
+  // ground's maps are laid by where a hit is, and a float share blends across a triangle as a byte
+  // does). A water mesh has none.
+  std::vector<uint32_t>  layers;
+  std::vector<glm::vec4> layersMore;
   std::vector<uint32_t> indices;
   uint32_t               surface = 0;  // the first vertices are the surface's; the rest its skirts'
   double                 lowest = 0.0, highest = 0.0;  // its elevations: under 0, the sea lies on it

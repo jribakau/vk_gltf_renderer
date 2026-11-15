@@ -31,11 +31,12 @@
 // The sea floor's plants need no kit (fv_world_sea.hpp): their meshes are made with the planet and
 // held hidden the same way, and a quad's arrive with it as the kit's do.
 //
-// The ground's grain is the kit's too (mapPlanetGround): a material a layer (grass, a wood's floor,
-// rock, sand), made of the kit's ground maps with the colour map divided by its own mean, so the
-// colour stays the ground's vertices'. The quads are still drawn with the one ground material; the
-// renderer is told which materials the layers are, a quad's vertices carry their shares of each, and
-// the path tracer draws a hit with one of them (shaders/world_ground.h.slang).
+// The ground's grain is the kit's too (mapPlanetGround): a material a layer (fv::world::Soil),
+// made of the kit's ground maps with the colour map divided by its own mean, so the colour stays the
+// ground's vertices'. The quads are still drawn with the one ground material; the renderer is told
+// which materials the layers are, a quad's vertices carry their shares of each (the first four as
+// its masks, the rest as its texture coordinates), and the path tracer draws a hit with one of them
+// (shaders/world_ground.h.slang).
 //
 // Its lakes and rivers are meshes (fv::world::waterMesh), but the water is the sea's: the renderer is
 // told which material they are drawn with and meets a hit of it as the water's surface
@@ -497,7 +498,20 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
     record.positions     = std::move(m.positions);
     record.normals       = std::move(m.normals);
     record.colors        = std::move(m.colors);
-    record.masks         = std::move(m.layers);  // the ground's: its vertices' shares of its layers
+    record.masks         = std::move(m.layers);  // the ground's: its vertices' shares of its layers,
+    // and of those past the fourth, as texture coordinates (shaders/world_ground.h.slang: the maps
+    // are laid by where a hit is, and the ground has no coordinates of its own)
+    if(!m.layersMore.empty())
+    {
+      std::vector<glm::vec2>& uv0 = record.uv0.own();
+      uv0.reserve(m.layersMore.size());
+      record.uv1.reserve(m.layersMore.size());
+      for(const glm::vec4& more : m.layersMore)
+      {
+        uv0.emplace_back(more.x, more.y);
+        record.uv1.emplace_back(more.z, more.w);
+      }
+    }
     record.indices.own() = std::move(m.indices);
     record.submeshes.push_back({.firstIndex = 0, .indexCount = count, .material = 0, .order = 0});
     const rs::MeshId   mesh = scene.addMesh(std::move(record));
@@ -1047,6 +1061,8 @@ tinygltf::Model FvHost::Impl::planetGroundModel(const BackdropKit& kit, std::vec
   m.defaultScene = 0;
   return m;
 }
+
+static_assert(HostRenderer::kWorldGroundLayers == W::kGroundLayers, "a slot a layer");
 
 void FvHost::Impl::mapPlanetGround(rs::RetainedScene& scene)
 {

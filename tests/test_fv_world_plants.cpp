@@ -285,7 +285,8 @@ TEST(WorldPlants, EachBiomeGrowsItsOwn)
   // the steppe: dry bushes, and no fir nor leafy tree
   EXPECT_GT(of("steppe", "drybush"), 0U);
   EXPECT_TRUE(few("steppe", "tree")) << of("steppe", "tree");
-  EXPECT_TRUE(few("steppe", "broadleaf")) << of("steppe", "broadleaf");
+  // (leafy trees stand at its edges, where a grassland's groves reach into it: far fewer than there)
+  EXPECT_LT(4 * of("steppe", "broadleaf"), of("grassland", "broadleaf"));
   // the desert, where this planet has one: bare boulders and dry bushes, no mossy rock nor a wood's tree
   if(grown["desert"].second >= 3)
   {

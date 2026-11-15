@@ -788,7 +788,7 @@ TEST(WorldRoads, TheGroundIsLevelAcrossItAndEasesIntoItsVerges)
       EXPECT_FALSE(s.built.earth);
       // asphalt: none of the ground's layers, and the road's colour
       const auto layers = W::surfaceLayers(w, s, 0.0F);
-      EXPECT_LT(layers[0] + layers[1] + layers[2] + layers[3], 0.06F);
+      EXPECT_LT(std::accumulate(layers.begin(), layers.end(), 0.0F), 0.06F);
       EXPECT_NEAR(s.colour.x, 0.17F, 0.04F);
       EXPECT_NEAR(s.colour.y, s.colour.x, 1e-4F);
     }
@@ -837,7 +837,7 @@ TEST(WorldRoads, ATrackIsEarth)
       if(s.built.road < 0.95F || s.shore < 30.0F)
         continue;  // (by a ford, or where a wider road joins)
       EXPECT_TRUE(s.built.earth);
-      EXPECT_GT(W::surfaceLayers(w, s, 0.0F)[size_t(W::Soil::eSand)], 0.9F);
+      EXPECT_GT(W::surfaceLayers(w, s, 0.0F)[size_t(W::Soil::eDry)], 0.9F);  // the dry lands' stony earth
       EXPECT_GT(s.colour.x, s.colour.z * 1.3F);
       return;
     }

@@ -281,13 +281,13 @@ TEST(WorldFields, AGroundIsSharedOutAmongItsLayers)
 {
   const W::World& w = planet();
   const auto      of = [](W::Soil soil) { return size_t(soil); };
-  int             sea = 0, faces = 0, woods = 0, grass = 0, snow = 0, beach = 0;
+  int             sea = 0, faces = 0, woods = 0, grass = 0, snow = 0, beach = 0, dry = 0, stony = 0, beds = 0;
   for(uint32_t i = 0; i < 20000; i++)
   {
     const W::Sample s      = W::sample(w, spread(i, 20000), 1.0);
     const auto      level  = W::surfaceLayers(w, s, 0.0F);
     const auto      steep  = W::surfaceLayers(w, s, 2.0F);
-    const float     total  = level[0] + level[1] + level[2] + level[3];
+    const float     total  = std::accumulate(level.begin(), level.end(), 0.0F);
     const float     shares = std::accumulate(s.share.begin(), s.share.end(), 0.0F);
     for(const float share : level)
       ASSERT_GE(share, 0.0F);
@@ -301,7 +301,17 @@ TEST(WorldFields, AGroundIsSharedOutAmongItsLayers)
       continue;
     }
     if(s.water > s.elevation)
-      continue;  // a river's or a lake's bed
+    {
+      // a river's or a lake's bed: pebbles in its shallows, and what is deeper silt, as the sea's floor
+      const float pebbles = level[of(W::Soil::ePebbles)];
+      EXPECT_NEAR(pebbles + level[of(W::Soil::eSand)], 1.0F, 1e-4F);
+      if(s.water - s.elevation < 0.5)
+      {
+        EXPECT_GT(pebbles, 0.9F);
+        beds++;
+      }
+      continue;
+    }
     // rock where the colour has rock: a mountain's heights, a cliff's face, and any slope too steep for soil
     EXPECT_NEAR(level[of(W::Soil::eRock)], s.rock, 1e-5F);
     EXPECT_NEAR(steep[of(W::Soil::eRock)], 1.0F, 1e-5F);
@@ -321,13 +331,15 @@ TEST(WorldFields, AGroundIsSharedOutAmongItsLayers)
       continue;
     if(biome == "forest")
       woods += level[of(W::Soil::eFloor)] > 0.98F;
-    else if(biome == "grassland" || biome == "steppe" || biome == "tundra")
+    else if(biome == "grassland")
       grass += level[of(W::Soil::eGrass)] > 0.98F;
-    else if(biome == "desert")
-      EXPECT_GT(level[of(W::Soil::eSand)], 0.98F);
+    else if(biome == "steppe" || biome == "desert")
+      dry += level[of(W::Soil::eDry)] > 0.98F;
+    else if(biome == "tundra")
+      stony += level[of(W::Soil::eStony)] > 0.98F;
     else if(biome == "snow")
     {
-      EXPECT_LT(total, 0.01F);
+      EXPECT_GT(level[of(W::Soil::eSnow)], 0.98F);
       snow++;
     }
   }
@@ -336,6 +348,9 @@ TEST(WorldFields, AGroundIsSharedOutAmongItsLayers)
   EXPECT_GT(grass, 500);
   EXPECT_GT(snow, 10);
   EXPECT_GT(beach, 3);
+  EXPECT_GT(dry, 10) << "the steppe and the desert are stony earth";
+  EXPECT_GT(stony, 10) << "the tundra soil and stones";
+  EXPECT_GT(beds, 3) << "a bed's shallows pebbles";
   (void)faces;  // (a face is a few metres wide: the tiers' own test walks onto them)
 }
 
@@ -590,11 +605,18 @@ TEST(WorldMesh, AQuadsTrianglesAreItsGround)
         EXPECT_GE(m.colors[v][c], 0.0F);
         EXPECT_LE(m.colors[v][c], 1.0F);
       }
-      // its shares of the ground's layers, a byte each: the whole of it at the most (and a rounding)
-      uint32_t whole = 0;
-      for(uint32_t l = 0; l < W::kGroundLayers; l++)
-        whole += (m.layers[v] >> (8U * l)) & 255U;
-      EXPECT_LE(whole, 255U + 2U);
+      // its shares of the ground's layers, the first four a byte each and the rest floats: the whole of
+      // it at the most (and a rounding)
+      ASSERT_EQ(m.layersMore.size(), m.positions.size());
+      float whole = 0.0F;
+      for(uint32_t l = 0; l < 4; l++)
+        whole += float((m.layers[v] >> (8U * l)) & 255U) / 255.0F;
+      for(int l = 0; l < 4; l++)
+      {
+        EXPECT_GE(m.layersMore[v][l], 0.0F);
+        whole += m.layersMore[v][l];
+      }
+      EXPECT_LE(whole, 1.0F + 2.5F / 255.0F);
       if(e < -1.0)
         EXPECT_EQ(m.layers[v], 255U << (8U * uint32_t(W::Soil::eSand)));
     }

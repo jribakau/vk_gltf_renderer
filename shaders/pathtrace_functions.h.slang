@@ -43,7 +43,8 @@ int worldGroundMaterial(int material, inout HitState hit, float footprint, Scene
 {
   if(!worldGroundIs(frameInfo, material))
     return material;
-  const WorldGroundHit ground = worldGroundAt(frameInfo, hit.pos, hit.nrm, hit.masks, footprint);
+  // (the shares of its layers past the fourth are its texture coordinates)
+  const WorldGroundHit ground = worldGroundAt(frameInfo, hit.pos, hit.nrm, hit.masks, float4(hit.uv[0], hit.uv[1]), footprint);
   if(!ground.mapped)
     return material;
   hit.uv[0]        = ground.uv;
