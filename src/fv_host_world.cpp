@@ -68,15 +68,24 @@ constexpr double kPlanetLandMs = 2.0;
 constexpr double kEyeSpeedOver = 0.15;
 constexpr double kEyeJump      = 0.2;
 constexpr double kEyeJumpLeast = 40.0;
-// A plant grows in by this many steps of its size (fv::world::grownAt)
-constexpr int kPlantSteps = 16;
+// A plant grows in by steps of its size (fv::world::grownAt): fewer the further it is seen from,
+// where it is a few pixels whole and a step of it under one. Every step of every plant is a copy
+// the scene's sync places again, and those growing in at any moment are a quarter of the far ones.
+uint8_t plantSteps(float reach)
+{
+  return reach < 300.0F ? 8 : reach < 1000.0F ? 6 : reach < 3000.0F ? 4 : 3;
+}
+// What a frame takes of plants' copies: the instances of the quads that land in it, and of the
+// entities given other copies in it (both are gone through whole by the scene's sync, about a
+// microsecond an instance); one quad or entity at the least
+constexpr size_t kPlantsAFrame = 6000;
 // A chunk's entities have the plants seen from kPlantsHeld of the eye's distance to the chunk or
 // further, and are given them again when they have fewer than those seen from kPlantsHeldLeast of it
 // or more than those from kPlantsHeldMost: an entity given other copies is gone through whole
 constexpr double kPlantsHeld = 0.84, kPlantsHeldLeast = 0.93, kPlantsHeldMost = 0.72;
 // A chunk's plants are shown by their distance again once the eye has gone this share of its
-// distance to the chunk (of kPlantsNear, nearer): a step of a plant's growing in is 1 / kPlantSteps
-// of fv::world::kGrowsOver of its reach
+// distance to the chunk (of kPlantsNear, nearer): a step of a plant's growing in is a third to an
+// eighth of fv::world::kGrowsOver of its reach
 constexpr double kPlantsAgain = 0.02;
 constexpr double kPlantsNear  = 40.0;
 
@@ -501,7 +510,8 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
     scene.setVisible(e, false);
     return e;
   };
-  const auto land = [&](PlanetMade& m) {
+  size_t     landed = 0;  // instances of plants' copies
+  const auto land   = [&](PlanetMade& m) {
     p.making.erase(m.quad);
     if(p.arrived.count(m.quad) || p.shown.count(m.quad) || !waited(m.quad))
       return;
@@ -560,6 +570,9 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
       if(s.role < p.seaPlants.size() && s.variant < p.seaPlants[s.role].size())
         stand(p.seaPlants[s.role][s.variant], glm::mat4(1.0F), s);
     showPlanetPlants(scene, chunk, p.eyeWas);
+    for(size_t k = 0; k < chunk.plants.size(); k++)
+      if(const rs::Entity* e = scene.entity(chunk.plants[k]); e && e->mesh)
+        landed += (*chunk.stood)[k].grown.size() * e->mesh->parts.size();
     p.arrived[m.quad] = chunk;
   };
   const bool first = p.shown.empty();  // (the first cut shows whole: nothing is drawn to hitch)
@@ -570,19 +583,22 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
       land((*batch.made)[batch.next++]);
     if(batch.next >= batch.made->size())
       p.landed.erase(p.landed.begin());
-    if(!first && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() >= kPlanetLandMs)
+    if(!first && (landed >= kPlantsAFrame || std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() >= kPlanetLandMs))
       break;
   }
   resolvePlanet(scene);
 }
 
-void FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk& chunk, const glm::dvec3& eye)
+bool FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk& chunk, const glm::dvec3& eye, size_t* budget)
 {
-  chunk.shownFrom = eye;
   if(!chunk.stood)
-    return;
+  {
+    chunk.shownFrom = eye;
+    return true;
+  }
   const double away     = std::max(glm::distance(eye, chunk.middle) - chunk.round, 0.0);
   uint64_t     standing = 0;
+  bool         done     = true;
   std::vector<uint32_t>  moved, shown, hidden;
   std::vector<glm::mat4> to;
   for(size_t k = 0; k < chunk.plants.size() && k < chunk.stood->size(); k++)
@@ -596,19 +612,36 @@ void FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
     const auto seenFrom = [&](double share) {
       return size_t(std::partition_point(s.reach.begin(), s.reach.end(), [&](float reach) { return double(reach) >= share * away; }) - s.reach.begin());
     };
-    // how much of its size plant `i` shows, in steps, and its copy's place at that
+    // how much of its size plant `i` shows, in its steps, and its copy's place at that
     const auto step = [&](size_t i) {
       const double off = glm::distance(eye, chunk.middle + glm::dvec3(s.places[i][3]));
-      return uint8_t(std::ceil(double(W::grownAt(off, double(s.reach[i]))) * double(kPlantSteps)));
+      return uint8_t(std::ceil(double(W::grownAt(off, double(s.reach[i]))) * double(plantSteps(s.reach[i]))));
     };
     const auto placed = [&](size_t i, uint8_t grown) {
-      return grown == 0 || grown == kPlantSteps ? s.places[i] : glm::scale(s.places[i], glm::vec3(float(grown) / float(kPlantSteps)));
+      const uint8_t steps = plantSteps(s.reach[i]);
+      return grown == 0 || grown >= steps ? s.places[i] : glm::scale(s.places[i], glm::vec3(float(grown) / float(steps)));
     };
-    if(const size_t has = s.grown.size(); has < seenFrom(kPlantsHeldLeast) || has > std::max<size_t>(seenFrom(kPlantsHeldMost), 1))
+    // those that show whole wherever on the chunk they stand: seen from past its far side with the
+    // way in to spare. Once looked at, they are not again while that holds.
+    const size_t has   = s.grown.size();
+    const size_t whole = size_t(std::partition_point(s.reach.begin(), s.reach.end(),
+                                                     [&](float reach) { return double(reach) * (1.0 - W::kGrowsOver) >= away + 2.0 * chunk.round; })
+                                - s.reach.begin());
+    if(has < seenFrom(kPlantsHeldLeast) || has > std::max<size_t>(seenFrom(kPlantsHeldMost), 1))
     {
-      // other copies: the entity's instance again (the copies it keeps keep their rows)
+      // other copies: the entity's instance again (the copies it keeps keep their rows), when the
+      // frame has room for it
+      const size_t count = std::max<size_t>(seenFrom(kPlantsHeld), 1);
+      const size_t cost  = count * entity->mesh->parts.size();
+      if(budget && cost > *budget && *budget < kPlantsAFrame)
+      {
+        done = false;
+        standing += size_t(std::count_if(s.grown.begin(), s.grown.end(), [](uint8_t g) { return g != 0; }));
+        continue;
+      }
+      if(budget)
+        *budget -= std::min(*budget, cost);
       rs::MeshInstance instance = *entity->mesh;
-      const size_t     count    = std::max<size_t>(seenFrom(kPlantsHeld), 1);
       instance.copies.resize(count);
       instance.hidden.assign(count, 0);
       s.grown.resize(count);
@@ -619,6 +652,7 @@ void FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
         instance.hidden[i] = s.grown[i] == 0;
         standing += s.grown[i] != 0;
       }
+      s.whole = uint32_t(std::min(whole, count));
       scene.setMeshInstance(chunk.plants[k], std::move(instance));
       continue;
     }
@@ -626,7 +660,10 @@ void FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
     shown.clear();
     hidden.clear();
     to.clear();
-    for(size_t i = 0; i < s.grown.size(); i++)
+    const size_t from = std::min({size_t(s.whole), whole, has});
+    standing += from;
+    s.whole = uint32_t(std::min(whole, has));
+    for(size_t i = from; i < has; i++)
     {
       const uint8_t grown = step(i);
       standing += grown != 0;
@@ -651,11 +688,15 @@ void FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
       scene.setCopiesShown(chunk.plants[k], hidden, false);
   }
   chunk.standing = standing;
+  if(done)
+    chunk.shownFrom = eye;
+  return done;
 }
 
 void FvHost::Impl::followPlanetPlants(rs::RetainedScene& scene, const glm::dvec3& eye)
 {
-  PlanetBuilt& p = *planetBuilt;
+  PlanetBuilt& p      = *planetBuilt;
+  size_t       budget = kPlantsAFrame;
   for(auto& [q, chunk] : p.shown)
   {
     if(!chunk.stood || chunk.stood->empty())
@@ -664,7 +705,7 @@ void FvHost::Impl::followPlanetPlants(rs::RetainedScene& scene, const glm::dvec3
     if(glm::distance(eye, chunk.shownFrom) < kPlantsAgain * std::max(away, kPlantsNear))
       continue;
     const uint64_t stood = chunk.standing;
-    showPlanetPlants(scene, chunk, eye);
+    showPlanetPlants(scene, chunk, eye, &budget);
     p.standing = p.standing + chunk.standing - std::min(p.standing, stood);
   }
 }

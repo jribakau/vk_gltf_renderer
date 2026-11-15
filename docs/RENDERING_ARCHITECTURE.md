@@ -1024,7 +1024,9 @@ their kit when there is one. It needs no kit: without one it stands bare.
   changes none. They are made with the quad's ground on the pool and arrive with it, a variant an
   entity. The host gives the entity as copies the plants that may be seen from where the eye is and
   shows each by its own distance (`showPlanetPlants`: hidden past its reach, by the copy's own flag,
-  and growing to its size over the last of the way in, so it comes into view small), again whenever
+  and growing to its size over the last of the way in, in a few steps, fewer the further it is seen
+  from, so it comes into view small; a frame gives no more entities other copies, and takes in no
+  more quads' plants, than `kPlantsAFrame` instances, which the scene's sync goes through), again whenever
   the eye has gone a few hundredths of its distance to the quad. Past the largest trees' reach a
   wood is the colour of its ground,
   which near, where its trees are drawn, is its floor's and not its canopy's (`Biome::floor`,

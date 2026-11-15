@@ -57,14 +57,15 @@ struct Stand
 // between by their size among their kind's, as many of them at a distance as its square allows (so
 // the plants seen from one place are about as many however far the largest are seen). `all` follows
 // from how thickly the role grows where it grows thickest, so that those seen from one place stay
-// under the role's count (kTreesSeen, kOthersSeen): no nearer than `least`.
+// under the role's count (kTreesSeen; kUndergrowthSeen for what else stands on land; kOthersSeen for
+// the sea floor's): no nearer than `least`.
 struct Reach
 {
   double all = 0.0, most = 0.0;
   // of a plant `rank` among its kind's by size: 0 the largest, toward 1 the smallest
   double of(double rank) const { return std::min(all / std::sqrt(std::max(rank, 1e-6)), most); }
 };
-inline constexpr double kTreesSeen = 60000.0, kOthersSeen = 5000.0;
+inline constexpr double kTreesSeen = 200000.0, kUndergrowthSeen = 15000.0, kOthersSeen = 5000.0;
 Reach reachOf(std::string_view role, double perSquareMetre);
 // The reach a plant needs for a quad to hold it: the quad draws only while the eye is kSplit of its
 // widths away or further (less a margin: the eye's distance to a quad is to its ground as drawn),

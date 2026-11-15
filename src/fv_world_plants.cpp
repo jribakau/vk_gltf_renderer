@@ -196,10 +196,13 @@ void standsOf(uint8_t role, std::vector<std::vector<Placed>>& placed, std::vecto
 
 Reach reachOf(std::string_view role, double perSquareMetre)
 {
-  // Trees are seen for kilometres, the smallest of them for a few hundred metres; the undergrowth,
-  // rocks and dead wood, and what grows on the sea floor, a hundred metres or a few about
+  // Trees are seen for kilometres (a 20 m one is a pixel or two of a traced frame at 12 km), the
+  // smallest of them for a few hundred metres; the undergrowth, rocks and dead wood on land for some
+  // hundreds of metres; what grows on the sea floor, through water, a hundred metres or a few
   const bool   tree  = role == "tree" || role == "grown";
-  const double least = tree ? 350.0 : 120.0, most = tree ? 4000.0 : 400.0, seen = tree ? kTreesSeen : kOthersSeen;
+  const bool   land  = role == "sapling" || role == "shrub" || role == "rock" || role == "stump" || role == "log";
+  const double least = tree ? 350.0 : 120.0, most = tree ? 12000.0 : land ? 800.0 : 400.0;
+  const double seen  = tree ? kTreesSeen : land ? kUndergrowthSeen : kOthersSeen;
   // those seen from one place, with every one seen from `all`: all within it, and beyond it the share
   // (all / d)^2 of them at d, to `most`
   const auto count = [&](double all) { return perSquareMetre * kPi * all * all * (1.0 + 2.0 * std::log(most / all)); };

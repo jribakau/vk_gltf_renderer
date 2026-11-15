@@ -1029,9 +1029,14 @@ TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
   EXPECT_EQ(stood.held, 2) << "a pack's model once, however many places are of it";
   // the yard stands on the planet's ground, level for it: a vertex of that within a few paces, at
   // its height (a post by the road stands on the road's bank, which far quads draw coarsely)
+  // (a yard kilometres off shows too, on ground drawn too coarsely to say: those near are looked at)
   ASSERT_FALSE(stood.yards.empty());
+  size_t beside = 0;
   for(const glm::vec3& at : stood.yards)
   {
+    if(glm::length(at) > 700.0F)
+      continue;
+    beside++;
     float      nearest = 1e9F, height = 0.0F;
     const rs::EntityId root = rootNamed(scene, "Backdrop");
     for(const rs::EntityId e : scene.entity(root)->children)
@@ -1054,6 +1059,7 @@ TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
     EXPECT_NEAR(height, at.y, 0.35F) << "at " << at.x << ", " << at.z;
     EXPECT_GT(glm::length(glm::vec2(at.x, at.z)), 100.0F) << "not where the figures stand";
   }
+  EXPECT_GT(beside, 0U);
   // none of it is the scene's: no prop, nothing selected
   EXPECT_TRUE(rig.topic("scene").value("props", Json::object()).empty());
   // the topic says how many places there are, and where the nearest is: the yard
@@ -1162,7 +1168,7 @@ TEST(FvHost, APlanetsPlantsShowByTheirDistance)
       continue;
     const float away = glm::distance(c.at, eye);
     (c.tree ? trees : bushes)++;
-    EXPECT_LT(away, c.tree ? 4200.0F : 450.0F);
+    EXPECT_LT(away, c.tree ? 12600.0F : 850.0F);
     if(c.tree && away > furthest)
     {
       furthest = away;
@@ -1203,7 +1209,7 @@ TEST(FvHost, APlanetsPlantsShowByTheirDistance)
   EXPECT_GT(about(beside), was);
   for(const Copy& c : beside)
     if(c.shown && !c.tree)
-      EXPECT_LT(glm::distance(c.at, from), 450.0F);
+      EXPECT_LT(glm::distance(c.at, from), 850.0F);
   ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "none"}}).value("ok", false));
   std::error_code ec;
   fs::remove_all(kit, ec);

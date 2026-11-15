@@ -1714,13 +1714,14 @@ struct FvHost::Impl
       uint64_t                  standing = 0; // how many of those show
       // An entity's plants, the furthest seen first (fv::world::Stand): where each stands at its full
       // size, how far it is seen from, and how much of its size each copy the entity has shows, in
-      // kPlantSteps (0: hidden). The entity has the first of them, as many as may be seen from where
+      // steps (plantSteps; 0: hidden). The entity has the first of them, as many as may be seen from where
       // the eye is, and the rest come as it nears (showPlanetPlants).
       struct Stood
       {
         std::vector<glm::mat4> places;
         std::vector<float>     reach;
         std::vector<uint8_t>   grown;  // one a copy the entity has
+        uint32_t               whole = 0;  // the first of them known to show whole: not looked at again while they must
       };
       std::shared_ptr<std::vector<Stood>> stood;  // by entity of `plants` (shared: a chunk is handed about by value)
       // Its ground's middle in the root's frame, which its plants' places are about, and how far its
@@ -1880,7 +1881,10 @@ struct FvHost::Impl
   void landPlanet(rs::RetainedScene& scene);
   // A chunk's plants by how far each is from the eye (fv::world::grownAt): its entities have the
   // plants that may be seen from there, each hidden past its reach and growing in within it
-  void showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk& chunk, const glm::dvec3& eye);
+  // `budget`: the instances it may give other copies to (an entity given other copies is gone
+  // through whole by the scene's sync); none: all it needs. False when some had to wait for it:
+  // asked again the next frame.
+  bool showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk& chunk, const glm::dvec3& eye, size_t* budget = nullptr);
   // Every frame: that, for the shown chunks the eye has gone a few hundredths of its distance from
   void followPlanetPlants(rs::RetainedScene& scene, const glm::dvec3& eye);
   void resolvePlanet(rs::RetainedScene& scene);
