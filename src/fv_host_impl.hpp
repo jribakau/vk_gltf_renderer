@@ -1719,8 +1719,9 @@ struct FvHost::Impl
     // the kit they were made from. None without a kit, or with one that has no maps for a planet.
     rs::EntityId                       groundLayers;
     std::shared_ptr<const BackdropKit> groundKit;
-    // A road's surface, its paint and a bridge's concrete (fv_world_roads.hpp): plain colours, and
-    // the kit's asphalt and concrete maps once it has them (mapPlanetRoads), laid at the kit's tiles
+    // A road's surface, its paint and a bridge's concrete (fv_world_roads.hpp): plain colours; the
+    // first two with the asphalt's maps once they are made (paveRoads), the last with the kit's
+    // concrete once it has it (mapPlanetRoads), laid at the kit's tile
     rs::MaterialId       roadSurface, roadPaint, roadBridge;
     fv::world::RoadTiles roadTiles;
     // Where the camera was when the renderer was last told what inland water it is in
@@ -1894,8 +1895,14 @@ struct FvHost::Impl
   // The materials its ground's layers are drawn with, made from the kit's grounds and said to the
   // renderer (HostRenderer::setWorldGround); once a kit
   void mapPlanetGround(rs::RetainedScene& scene);
-  // And the roads' (PlanetBuilt::roadSurface, roadBridge), from the kit's asphalt and concrete
+  // And a bridge's (PlanetBuilt::roadBridge), from the kit's concrete
   void mapPlanetRoads(rs::RetainedScene& scene);
+  // A road's surface and paint with the asphalt's maps (fv_world_asphalt.hpp): made on a worker the
+  // first time a planet stands, and laid on each planet's materials from then on
+  void paveRoads(rs::RetainedScene& scene);
+  void layAsphalt(rs::RetainedScene& scene);
+  std::shared_ptr<const fv::world::AsphaltMaps> asphalt;
+  bool                                          asphaltMaking = false;
   static tinygltf::Model planetRoadModel(const BackdropKit& kit, std::vector<rs::MaterialId*>& into, PlanetBuilt& p);
   // Those materials as a glTF model, for the import to make with their textures: a triangle a layer
   // the kit has maps for. `layerOf`: which layer (fv::world::kGroundKinds) each of its materials is

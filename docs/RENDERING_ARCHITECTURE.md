@@ -1170,8 +1170,14 @@ their kit when there is one. It needs no kit: without one it stands bare.
     the road at the road's level, parapets, piers in the water, an abutment into each bank, on the
     quad that holds its middle at any level. A stretch of road is the quad's its middle falls in,
     so quads of any levels side by side draw it once. Their materials are the planet's
-    (`PlanetBuilt::roadSurface`, `roadPaint`, `roadBridge`): plain colours, and the kit's asphalt
-    and concrete maps once it has them (`mapPlanetRoads`).
+    (`PlanetBuilt::roadSurface`, `roadPaint`, `roadBridge`), plain colours at first. The asphalt's
+    maps are the planet's own (`src/fv_world_asphalt.hpp`, made once on a worker: `paveRoads`): an
+    old road's wear laid across its carriageway edge to edge and along it for a repeat (paler, smoother
+    wheel paths, dusty and broken edges, cracks, some of them tarred, crazing, repairs, potholes), its
+    stones' grain as the material's detail layer, and the markings' paint worn on the same
+    coordinates, so a crack runs on through a line. Each way starts at its own place in the repeat,
+    and the vertices' colours tint it by a weathering wider than the repeat. A bridge takes the kit's
+    concrete once the kit has it (`mapPlanetRoads`).
 - **Its map** (`src/fv_world_chart.hpp`, the `planet.map` command, the app's World › Planet › Map):
   an author's view of the planet, north up. `chartImage` draws a window of latitude and longitude as
   an image, a sample a pixel at the pixel's footprint (so the stages leave out what is finer than it):

@@ -6,7 +6,9 @@
 // stands no more often than its rule lets it. A planet file's say: a region with none, more, or only
 // the kinds it names, and a place by name as near its point as the ground will have it. A river too
 // wide to ford is bridged, the road held clear over it; a road's surface lies on its ground as drawn,
-// each stretch on one quad, and a bridge on the quad that holds its middle.
+// each stretch on one quad, and a bridge on the quad that holds its middle. Its asphalt's maps
+// (src/fv_world_asphalt.hpp): a seed's every time, going on round their repeat, worn where the wheels
+// went and dusty at the edges; a surface laid on them from edge to edge, each way from its own place.
 
 #include <algorithm>
 #include <cmath>
@@ -1286,6 +1288,199 @@ TEST(WorldRoads, ABridgeIsDrawnByTheQuadThatHoldsItsMiddleAtAnyLevel)
       EXPECT_EQ(held, W::roadMeshes(w, parent, centre).bridge.indices.size());
     }
   }
+}
+
+// A road's surface on its asphalt's maps: from one edge of the carriageway to the other across them,
+// along them by the metre, each piece on from the last by whole repeats, and tinted from place to place
+TEST(WorldRoads, ItsSurfaceIsLaidOnItsAsphaltFromEdgeToEdge)
+{
+  const W::World&  w      = settled();
+  const W::Places& pl     = places();
+  const uint8_t    finest = W::finestLevel(w);
+  float            longest = 0.0F;
+  for(const W::RoadPiece& p : pl.roads)
+    longest = std::max(longest, p.length);
+  std::vector<W::Quad> quads;
+  for(size_t i = 0; i < pl.roads.size() && quads.size() < 8; i += 31)
+  {
+    const W::RoadPiece& p = pl.roads[i];
+    if(!catalogue()->roads[p.kind].earth && !W::bridgeAt(pl, p.way, double(p.start) + 0.5 * double(p.length), 40.0))
+      quads.push_back(quadOf(glm::normalize(p.b), finest));
+  }
+  ASSERT_GE(quads.size(), 4U);
+  size_t joins = 0;
+  float  least = 1e9F, most = -1e9F;
+  for(const W::Quad& q : quads)
+  {
+    const glm::dvec3    centre = W::toScene(w, W::direction(q.face, (double(q.x) + 0.5) * 2.0 / double(1U << q.level) - 1.0, (double(q.y) + 0.5) * 2.0 / double(1U << q.level) - 1.0), 0.0);
+    const W::RoadMeshes m      = W::roadMeshes(w, q, centre);
+    ASSERT_FALSE(m.surface.empty());
+    ASSERT_EQ(m.surface.colours.size(), m.surface.positions.size());
+    ASSERT_EQ(m.marking.uvs.size(), m.marking.positions.size());
+    ASSERT_EQ(m.marking.colours.size(), m.marking.positions.size());
+    EXPECT_TRUE(m.bridge.colours.empty());
+    // a section's seven vertices: a skirt, the carriageway's five columns from edge to edge, a skirt;
+    // all of it at one place along
+    ASSERT_EQ(m.surface.positions.size() % 7, 0U);
+    struct Across
+    {
+      glm::vec3 left, middle, right;
+      float     along;
+    };
+    std::vector<Across> sections;
+    for(size_t s = 0; s < m.surface.positions.size(); s += 7)
+    {
+      const std::vector<glm::vec2>& uv = m.surface.uvs;
+      EXPECT_LT(uv[s].x, 0.0F);
+      EXPECT_NEAR(uv[s + 1].x, 0.0F, 1e-5F);
+      EXPECT_NEAR(uv[s + 3].x, 0.5F, 1e-5F);
+      EXPECT_NEAR(uv[s + 5].x, 1.0F, 1e-5F);
+      EXPECT_GT(uv[s + 6].x, 1.0F);
+      for(size_t k = 1; k < 7; k++)
+        EXPECT_NEAR(uv[s + k].y, uv[s].y, 1e-5F);
+      // (small however long its way: a repeat and a piece at most)
+      EXPECT_GE(uv[s].y, 0.0F);
+      EXPECT_LE(uv[s].y, 1.0F + longest / float(W::kAsphaltRepeat) + 1e-3F);
+      sections.push_back({m.surface.positions[s + 1], m.surface.positions[s + 3], m.surface.positions[s + 5], uv[s].y});
+    }
+    // where one piece ends and the next of its way begins (a section twice, edge to edge), both at a
+    // place on the maps that is the same but for whole repeats
+    for(size_t a = 0; a < sections.size(); a++)
+      for(size_t b = a + 1; b < sections.size(); b++)
+        if(glm::length(sections[a].middle - sections[b].middle) < 1e-3F && glm::length(sections[a].left - sections[b].left) < 1e-3F
+           && glm::length(sections[a].right - sections[b].right) < 1e-3F)
+        {
+          const float apart = std::abs(sections[a].along - sections[b].along);
+          EXPECT_NEAR(apart, std::round(apart), 1e-4F);
+          joins++;
+        }
+    // the paint on a line: an edge's, or the middle's
+    for(const glm::vec2& uv : m.marking.uvs)
+    {
+      const float x = std::min(uv.x, 1.0F - uv.x);
+      EXPECT_TRUE((x > 0.04F && x < 0.08F) || x > 0.48F) << uv.x;
+    }
+    for(const glm::vec4& c : m.surface.colours)
+    {
+      EXPECT_GT(c.y, 0.6F);
+      EXPECT_LT(c.y, 1.3F);
+      EXPECT_EQ(c.w, 1.0F);
+      least = std::min(least, c.y);
+      most  = std::max(most, c.y);
+    }
+  }
+  EXPECT_GT(joins, 0U) << "pieces of a way meet on these quads";
+  EXPECT_GT(most - least, 0.05F) << "the tint varies";
+}
+
+// The asphalt's maps: a seed's every time, another seed's others, and each of them going on round
+// its repeat as it goes on from one row to the next
+TEST(WorldRoads, TheAsphaltsMapsAreASeedsAndGoOnRoundTheirRepeat)
+{
+  const W::AsphaltSize size{.across = 128, .grain = 64, .paint = 32};
+  const W::AsphaltMaps a = W::asphaltMaps(1, size), b = W::asphaltMaps(1, size), c = W::asphaltMaps(2, size);
+  const int            along = 128 * int(W::kAsphaltRepeat / W::kAsphaltWidth);
+  for(const auto& [map, again, other, width, height, channels] :
+      {std::tuple{&a.colour, &b.colour, &c.colour, 128, along, 4}, std::tuple{&a.normal, &b.normal, &c.normal, 128, along, 2},
+       std::tuple{&a.rough, &b.rough, &c.rough, 128, along, 2}, std::tuple{&a.grain, &b.grain, &c.grain, 64, 64, 2},
+       std::tuple{&a.paint, &b.paint, &c.paint, 32, along, 4}})
+  {
+    EXPECT_EQ(map->width, width);
+    EXPECT_EQ(map->height, height);
+    EXPECT_EQ(map->channels, channels);
+    ASSERT_EQ(map->pixels.size(), size_t(width) * size_t(height) * size_t(channels));
+    EXPECT_EQ(map->pixels, again->pixels);
+    EXPECT_NE(map->pixels, other->pixels);
+    // the last row on into the first, as a row into the next
+    const auto step = [&](int from, int to) {
+      double sum = 0.0;
+      for(int i = 0; i < width * channels; i++)
+        sum += std::abs(int(map->pixels[size_t(from) * size_t(width * channels) + size_t(i)]) - int(map->pixels[size_t(to) * size_t(width * channels) + size_t(i)]));
+      return sum / double(width * channels);
+    };
+    double typical = 0.0;
+    for(int j = 0; j + 1 < height; j++)
+      typical += step(j, j + 1) / double(height - 1);
+    EXPECT_LT(step(height - 1, 0), 2.0 * typical + 1.0) << width << " by " << height;
+  }
+  // the grain, across too
+  double typical = 0.0, round = 0.0;
+  for(int j = 0; j < 64; j++)
+    for(int k = 0; k < 2; k++)
+    {
+      const auto at = [&](int i) { return int(a.grain.pixels[(size_t(j) * 64U + size_t(i)) * 2U + size_t(k)]); };
+      for(int i = 0; i + 1 < 64; i++)
+        typical += std::abs(at(i) - at(i + 1)) / (63.0 * 128.0);
+      round += std::abs(at(63) - at(0)) / 128.0;
+    }
+  EXPECT_LT(round, 2.0 * typical + 1.0);
+}
+
+// The asphalt as an old road is: smoother in the wheels' paths than between them, browner at its
+// edges than in its middle; its colours those of asphalt, stone, soil and tar; its normals leaning
+// every way alike; its stones' grain in relief; and its edge lines' paint worn through in places
+TEST(WorldRoads, TheAsphaltIsWornWhereTheWheelsWentAndDustyAtItsEdges)
+{
+  const W::AsphaltMaps a = W::asphaltMaps(1, {.across = 256, .grain = 1024, .paint = 64});  // (the grain as drawn: its stones a few texels across)
+  const int            across = a.colour.width, along = a.colour.height;
+  const auto           linear = [](uint8_t s) {
+    const double v = double(s) / 255.0;
+    return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+  };
+  std::vector<double> rough(static_cast<size_t>(across), 0.0), red(static_cast<size_t>(across), 0.0), blue(static_cast<size_t>(across), 0.0);
+  double              grey = 0.0, leanX = 0.0, leanY = 0.0;
+  for(int j = 0; j < along; j++)
+    for(int i = 0; i < across; i++)
+    {
+      const size_t at = size_t(j) * size_t(across) + size_t(i);
+      const double r = linear(a.colour.pixels[at * 4U]), g = linear(a.colour.pixels[at * 4U + 1U]), b = linear(a.colour.pixels[at * 4U + 2U]);
+      ASSERT_GT(std::min({r, g, b}), 0.005) << i << ", " << j;
+      ASSERT_LT(std::max({r, g, b}), 0.5) << i << ", " << j;
+      rough[size_t(i)] += double(a.rough.pixels[at * 2U + 1U]) / 255.0 / double(along);
+      red[size_t(i)] += r / double(along);
+      blue[size_t(i)] += b / double(along);
+      grey += g / double(along * across);
+      leanX += (double(a.normal.pixels[at * 2U]) / 127.5 - 1.0) / double(along * across);
+      leanY += (double(a.normal.pixels[at * 2U + 1U]) / 127.5 - 1.0) / double(along * across);
+    }
+  const auto band = [&](const std::vector<double>& v, double x0, double x1) {
+    double sum = 0.0;
+    int    n   = 0;
+    for(int i = 0; i < across; i++)
+      if(const double x = (double(i) + 0.5) * W::kAsphaltWidth / double(across); x >= x0 && x <= x1)
+      {
+        sum += v[size_t(i)];
+        n++;
+      }
+    return sum / double(std::max(n, 1));
+  };
+  for(const double wheel : {0.7, 2.3, 3.7, 5.3})
+    for(const double between : {1.5, 4.5})
+      EXPECT_LT(band(rough, wheel - 0.1, wheel + 0.1), band(rough, between - 0.1, between + 0.1) - 0.04) << wheel << " against " << between;
+  const double middle = band(red, 2.0, 4.0) / band(blue, 2.0, 4.0);
+  EXPECT_GT(band(red, 0.0, 0.25) / band(blue, 0.0, 0.25), middle + 0.1);
+  EXPECT_GT(band(red, W::kAsphaltWidth - 0.25, W::kAsphaltWidth) / band(blue, W::kAsphaltWidth - 0.25, W::kAsphaltWidth), middle + 0.1);
+  EXPECT_GT(grey, 0.06);
+  EXPECT_LT(grey, 0.2);
+  EXPECT_LT(std::abs(leanX), 0.03);
+  EXPECT_LT(std::abs(leanY), 0.03);
+  // the grain: stones standing out of their sand
+  double spread = 0.0;
+  for(size_t t = 0; t < a.grain.pixels.size(); t += 2)
+    spread += std::pow(double(a.grain.pixels[t]) / 127.5 - 1.0, 2.0) / double(a.grain.pixels.size() / 2);
+  EXPECT_GT(std::sqrt(spread), 0.1);
+  // the left edge line's paint, 0.35 m in: whole along most of it, worn through in places
+  size_t whole = 0, there = 0;
+  for(int j = 0; j < along; j++)
+    for(int i = 0; i < a.paint.width; i++)
+      if(const double x = (double(i) + 0.5) * W::kAsphaltWidth / double(a.paint.width); x > 0.3 && x < 0.4)
+      {
+        there++;
+        whole += linear(a.paint.pixels[(size_t(j) * size_t(a.paint.width) + size_t(i)) * 4U + 1U]) > 0.25 ? 1 : 0;
+      }
+  ASSERT_GT(there, 0U);
+  EXPECT_GT(whole, there * 4 / 10);
+  EXPECT_LT(whole, there * 98 / 100);
 }
 
 TEST(WorldRoads, ATracksSurfaceIsTheGroundsEarth)

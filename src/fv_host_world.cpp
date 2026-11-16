@@ -204,8 +204,8 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
   p.sea                    = scene.addMaterial(std::move(sea));
   // (the path tracer meets it as the water's surface; the ground's maps come with a kit: mapPlanetGround)
   renderer->setWorldGround({.ground = p.ground, .water = p.sea});
-  // the roads: worn asphalt, its faded paint, a bridge's concrete; the kit's maps for the first and
-  // last when it has them (mapPlanetRoads)
+  // the roads: worn asphalt, its faded paint, a bridge's concrete; the asphalt's own maps for the
+  // first two once they are made (paveRoads), the kit's for the last when it has them (mapPlanetRoads)
   const auto plain = [&](const char* name, glm::vec3 colour, float roughness) {
     rs::MaterialRecord m;
     m.owner             = {0, -1};
@@ -218,6 +218,7 @@ void FvHost::Impl::standPlanet(rs::RetainedScene& scene)
   p.roadSurface = plain("Planet road", glm::vec3(0.075F, 0.074F, 0.07F), 0.9F);
   p.roadPaint   = plain("Planet road paint", glm::vec3(0.5F, 0.49F, 0.45F), 0.75F);
   p.roadBridge  = plain("Planet bridge", glm::vec3(0.22F, 0.21F, 0.19F), 0.9F);
+  paveRoads(scene);
   p.density                = backdropSpec.density;
 
   // the sea floor's plants: made here (the kit has none), a mesh a variant, held hidden under the
@@ -576,6 +577,9 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
       record.normals.insert(record.normals.end(), part->normals.begin(), part->normals.end());
       uv0.insert(uv0.end(), part->uvs.begin(), part->uvs.end());
       uv0.resize(record.positions.size(), glm::vec2(0.0F));
+      // (the asphalt's tint; a bridge is its concrete's colour)
+      record.colors.insert(record.colors.end(), part->colours.begin(), part->colours.end());
+      record.colors.resize(record.positions.size(), glm::vec4(1.0F));
       for(const uint32_t i : part->indices)
         ix.push_back(base + i);
       if(!part->indices.empty())
@@ -1116,30 +1120,28 @@ tinygltf::Model FvHost::Impl::planetRoadModel(const BackdropKit& kit, std::vecto
     return int(m.textures.size()) - 1;
   };
   into.clear();
-  // the kit's maps as they are, their colour the map's own (a road is not the planet's colour)
-  for(const auto& [kind, slot, tile] : {std::tuple{"asphalt", &p.roadSurface, &p.roadTiles.surface}, std::tuple{"concrete", &p.roadBridge, &p.roadTiles.bridge}})
+  // the kit's concrete as it is, its colour the map's own (a bridge is not the planet's colour; a
+  // road's asphalt is its own: paveRoads)
+  const auto found = kit.ground.find("concrete");
+  if(found == kit.ground.end() || found->second.diffuse.empty())
+    return m;
+  const BackdropKit::Ground& g = found->second;
+  tinygltf::Material         material;
+  material.name                                        = "Planet road: concrete";
+  material.pbrMetallicRoughness.baseColorTexture.index = texture(g.diffuse);
+  material.pbrMetallicRoughness.roughnessFactor        = 1.0;
+  material.pbrMetallicRoughness.metallicFactor         = 0.0;
+  if(!g.normal.empty())
+    material.normalTexture.index = texture(g.normal);
+  if(!g.arm.empty())
   {
-    const auto found = kit.ground.find(kind);
-    if(found == kit.ground.end() || found->second.diffuse.empty())
-      continue;
-    const BackdropKit::Ground& g = found->second;
-    tinygltf::Material         material;
-    material.name                                        = std::string("Planet road: ") + kind;
-    material.pbrMetallicRoughness.baseColorTexture.index = texture(g.diffuse);
-    material.pbrMetallicRoughness.roughnessFactor        = 1.0;
-    material.pbrMetallicRoughness.metallicFactor         = 0.0;
-    if(!g.normal.empty())
-      material.normalTexture.index = texture(g.normal);
-    if(!g.arm.empty())
-    {
-      material.pbrMetallicRoughness.metallicRoughnessTexture.index = texture(g.arm);
-      material.pbrMetallicRoughness.metallicFactor                 = 1.0;
-    }
-    m.materials.push_back(material);
-    into.push_back(slot);
-    if(g.tile > 0.0F)
-      *tile = double(g.tile);
+    material.pbrMetallicRoughness.metallicRoughnessTexture.index = texture(g.arm);
+    material.pbrMetallicRoughness.metallicFactor                 = 1.0;
   }
+  m.materials.push_back(material);
+  into.push_back(&p.roadBridge);
+  if(g.tile > 0.0F)
+    p.roadTiles.bridge = double(g.tile);
   holdMaterials(m, "Planet road maps");
   return m;
 }
@@ -1167,6 +1169,87 @@ void FvHost::Impl::mapPlanetRoads(rs::RetainedScene& scene)
   {
     notice("The roads' maps could not be read: " + problemOf(e));
   }
+}
+
+void FvHost::Impl::paveRoads(rs::RetainedScene& scene)
+{
+  if(asphalt)
+  {
+    layAsphalt(scene);
+    return;
+  }
+  if(asphaltMaking)
+    return;  // (laid on whichever planet stands when they come)
+  asphaltMaking = true;
+  loaders.spawn([this] {
+    const auto started = std::chrono::steady_clock::now();
+    auto       maps    = std::make_shared<const W::AsphaltMaps>(W::asphaltMaps());
+    LOGI("planet: the roads' asphalt made in %.0f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+    post([this, maps] {
+      asphalt       = maps;
+      asphaltMaking = false;
+      if(renderer->feedsHostScene())
+        layAsphalt(renderer->hostScene());
+    });
+  });
+}
+
+void FvHost::Impl::layAsphalt(rs::RetainedScene& scene)
+{
+  if(!asphalt || !planetBuilt || !scene.material(planetBuilt->roadSurface) || !scene.material(planetBuilt->roadPaint))
+    return;
+  PlanetBuilt& p     = *planetBuilt;
+  const auto   image = [&](const W::AsphaltImage& from, const char* name) {
+    rs::TextureRecord t;
+    t.name      = name;
+    t.width     = from.width;
+    t.height    = from.height;
+    t.component = from.channels;
+    t.bits      = 8;
+    t.pixels    = from.pixels;
+    return scene.addTexture(std::move(t));
+  };
+  // the maps a table both materials share: colour, normals, roughness (and the grain's share), the
+  // grain, the markings' colour
+  const std::array<rs::TextureId, 5> ids{image(asphalt->colour, "Planet road: asphalt"), image(asphalt->normal, "Planet road: asphalt normals"),
+                                         image(asphalt->rough, "Planet road: asphalt roughness"), image(asphalt->grain, "Planet road: asphalt grain"),
+                                         image(asphalt->paint, "Planet road: paint")};
+  auto table = std::make_shared<rs::TextureTable>();
+  for(const rs::TextureId id : ids)
+    table->push_back({.texture = id});
+  enum : int { kColour, kNormal, kRough, kGrain, kPaint };
+  // the grain over the wear, a repeat every kAsphaltGrain metres of a road as wide as the wear's
+  const auto grain = [](float strength) {
+    fv::mat::Detail d;
+    d.weight             = 1.0F;
+    d.normalMap.index    = kGrain;
+    d.normalMap.scale    = strength;
+    d.normalMap.transform = fv::mat::UvTransform{.scale = {float(W::kAsphaltWidth / W::kAsphaltGrain), float(W::kAsphaltRepeat / W::kAsphaltGrain)}};
+    d.weightMap.index    = kRough;  // (its red: little of it on tar)
+    return d;
+  };
+  fv::mat::Material road           = scene.material(p.roadSurface)->payload;
+  road.name                        = "Planet road: asphalt";
+  road.baseColor                   = {1.0F, 1.0F, 1.0F, 1.0F};
+  road.baseColorMap.index          = kColour;
+  road.normalMap.index             = kNormal;
+  road.metallicRoughnessMap.index  = kRough;
+  road.metallic                    = 0.0F;
+  road.roughness                   = 1.0F;
+  road.detail                      = grain(0.8F);
+  fv::mat::Material paint          = scene.material(p.roadPaint)->payload;
+  paint.name                       = "Planet road: paint";
+  paint.baseColor                  = {1.0F, 1.0F, 1.0F, 1.0F};
+  paint.baseColorMap.index         = kPaint;
+  paint.normalMap.index            = kNormal;  // (the road's cracks and ruts, under the paint)
+  paint.metallicRoughnessMap.index = kRough;
+  paint.metallic                   = 0.0F;
+  paint.roughness                  = 0.75F;  // (smoother than the asphalt)
+  paint.detail                     = grain(0.5F);
+  scene.setMaterial(p.roadSurface, std::move(road), table);
+  scene.setMaterial(p.roadPaint, std::move(paint), table);
+  for(const rs::TextureId id : ids)
+    scene.release(id);  // the materials' now
 }
 
 tinygltf::Model FvHost::Impl::planetGroundModel(const BackdropKit& kit, std::vector<size_t>& layerOf)

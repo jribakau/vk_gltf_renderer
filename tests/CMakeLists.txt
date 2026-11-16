@@ -186,10 +186,12 @@ set(TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/src/fv_world_sea.cpp
     # What people left on a planet: a catalogue read, places on level dry ground the same for a seed
     # whatever the threads, roads between them that cross no lake and step nowhere, bridges over the rivers
-    # they do not ford, their surfaces on the ground as a quad draws it, nothing planted on them
+    # they do not ford, their surfaces on the ground as a quad draws it, nothing planted on them; their
+    # asphalt's maps
     test_fv_world_places.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_places.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_roads.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_world_asphalt.cpp
     # A map of a planet: a pixel where its latitude and longitude are, the sea as sea, the rivers and roads over it
     test_fv_world_chart.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_world_chart.cpp

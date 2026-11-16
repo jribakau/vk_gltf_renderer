@@ -983,17 +983,17 @@ TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
                                                {"roads", Json::array({{{"name", "road"}, {"width", 6.0}, {"verge", 3.0}}})},
                                                {"along", Json::array({{{"kind", "post"}, {"road", "road"}, {"every", 30.0}, {"chance", 1.0}, {"side", 5.0}}})}}}}
                                             .dump();
-  // a kit of no plants, with the roads' maps (not there: their materials are what is looked at)
-  std::ofstream(dir / "kit.json") << Json{{"version", 1},
-                                          {"plants", Json::array()},
-                                          {"ground", {{"asphalt", {{"diffuse", "asphalt.png"}, {"tile", 2.5}}}, {"concrete", {{"diffuse", "concrete.png"}, {"tile", 3.0}}}}}}
-                                         .dump();
+  // a kit of no plants, with a bridge's maps (not there: its material is what is looked at); a road's
+  // asphalt is the planet's own
+  std::ofstream(dir / "kit.json") << Json{{"version", 1}, {"plants", Json::array()}, {"ground", {{"concrete", {{"diffuse", "concrete.png"}, {"tile", 3.0}}}}}}.dump();
   HostRig            rig;
   rs::RetainedScene& scene = rig.renderer.hostScene();
   const auto         state = [&] { return rig.topic("backdrop").value("state", std::string()); };
   struct Stands
   {
     int                    places = 0, copies = 0, held = 0, roads = 0;
+    int                    paved = 0;  // of the roads, those whose surface and paint have the asphalt's maps, their bridges the kit's
+    int                    laid  = 0;  // and whose meshes are laid on the maps and tinted
     std::vector<glm::vec3> at;  // where each shown place's entity is, in the root's frame
     std::vector<glm::vec3> yards;  // those of them that are the yard's (two slabs)
   };
@@ -1020,17 +1020,24 @@ TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
         EXPECT_FALSE(scene.shown(e));
         out.held++;
       }
-      // a quad's roads: their surfaces and bridges, drawn with the planet's road materials, which
-      // have the kit's maps
+      // a quad's roads: their surfaces, paint and bridges, drawn with the planet's road materials: the
+      // asphalt's own maps (made on a worker: they may come after the roads), the kit's concrete
       else if(entity->name == "Planet roads" && entity->mesh && scene.shown(e))
       {
         out.roads++;
         const rs::MeshPart& part = entity->mesh->parts.at(0);
         EXPECT_EQ(part.materials.size(), 3U);
-        const rs::MaterialRecord* surface = scene.material(part.materials.at(0));
-        EXPECT_TRUE(surface && surface->payload.name == "Planet road: asphalt" && surface->textures) << (surface ? surface->payload.name : "none");
+        const rs::MaterialRecord *surface = scene.material(part.materials.at(0)), *paint = scene.material(part.materials.at(1)),
+                                 *bridge = scene.material(part.materials.at(2));
+        const auto mapped = [](const rs::MaterialRecord* m, const char* name) {
+          return m && m->payload.name == name && m->textures && m->payload.baseColorMap.has() && m->payload.normalMap.has();
+        };
+        if(mapped(surface, "Planet road: asphalt") && mapped(paint, "Planet road: paint") && surface->payload.detail
+           && surface->textures->size() == 5U && bridge && bridge->payload.name == "Planet road: concrete" && bridge->textures)
+          out.paved++;
         const rs::MeshRecord* mesh = scene.mesh(part.mesh);
-        EXPECT_TRUE(mesh && mesh->uv0.size() == mesh->positions.size() && !mesh->submeshes.empty());
+        if(mesh && mesh->uv0.size() == mesh->positions.size() && mesh->colors.size() == mesh->positions.size() && !mesh->submeshes.empty())
+          out.laid++;
       }
     }
     return out;
@@ -1047,8 +1054,9 @@ TEST(FvHost, APlanetIsSettledFromItsCatalogueAndStandsThePlacesNear)
   rig.host->onUpdate();
   ASSERT_TRUE(rig.cmd("settings.apply", {{"placesDir", dir.generic_string()}, {"backdropKit", dir.generic_string()}}).value("ok", false));
   ASSERT_TRUE(rig.cmd("backdrop.set", {{"kind", "planet"}, {"radius", 5}}).value("ok", false));
-  ASSERT_TRUE(until([&] { return state() == "ready" && stands().places > 0 && stands().copies >= 2 && stands().roads > 0; }))
-      << state() << ", " << stands().places << " places, " << stands().roads << " quads of roads";
+  ASSERT_TRUE(until([&] { return state() == "ready" && stands().places > 0 && stands().copies >= 2 && stands().roads > 0 && stands().paved == stands().roads; }))
+      << state() << ", " << stands().places << " places, " << stands().roads << " quads of roads, " << stands().paved << " of them paved";
+  EXPECT_EQ(stands().laid, stands().roads);
   // the yard near the figures: one entity of its two slabs (and the posts by its road, one each)
   const Stands stood = stands();
   EXPECT_GE(stood.copies, stood.places + 1) << "the yard's two slabs are one entity's copies";

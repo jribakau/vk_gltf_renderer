@@ -12,6 +12,9 @@
 //   asphalt road's alone: a track is the ground's earth.
 // - On an asphalt road, its markings: a dashed line down its middle and a line along each edge, worn,
 //   some dashes gone and the edge lines broken.
+// - The surface and its markings are laid on the asphalt's maps (fv_world_asphalt.hpp) edge to edge,
+//   each way from its own place in their repeat, and tinted by a weathering wider than that repeat
+//   (their vertices' colours), so no two repeats look alike.
 // - A bridge: its deck under the road from bank to bank and on into each (kBridgeEnds), a parapet
 //   each side, piers in the water when it is long, and an abutment at each end down into the bank.
 //   On whichever quad holds its middle, however coarse: a bridge is seen from further than a road's
@@ -27,13 +30,16 @@
 #include <vector>
 
 #include "fv_world.hpp"
+#include "fv_world_asphalt.hpp"
 
 namespace fv::world {
 
 struct RoadMesh
 {
   std::vector<glm::vec3> positions, normals;  // about the quad's centre, in the scene
-  std::vector<glm::vec2> uvs;                 // laid by the material's tile (RoadTiles)
+  // a road's surface and paint: where on the asphalt's maps (roadUv); a bridge: by its tile (RoadTiles)
+  std::vector<glm::vec2> uvs;
+  std::vector<glm::vec4> colours;  // a road's surface and paint: the asphalt's tint; a bridge: none (white)
   std::vector<uint32_t>  indices;
   bool                   empty() const { return indices.empty(); }
 };
@@ -46,12 +52,19 @@ struct RoadMeshes
   bool     empty() const { return surface.empty() && marking.empty() && bridge.empty(); }
 };
 
-// How far a repeat of each material's maps reaches, metres
+// How far a repeat of a bridge's maps reaches, metres (a road's are its asphalt's: roadUv)
 struct RoadTiles
 {
-  double surface = 3.0;
-  double bridge  = 3.0;
+  double bridge = 3.0;
 };
+
+// Where a point of a road's surface is on its asphalt's maps: `x` metres across from the middle line
+// of a carriageway `half` wide either side (0 at one edge, 1 at the other) and `along` metres along
+// it, a repeat a unit
+inline glm::vec2 roadUv(double x, double half, double along)
+{
+  return glm::vec2(float(0.5 + 0.5 * x / half), float(along / kAsphaltRepeat));
+}
 
 // The coarsest ground a road's surface is laid on: metres between its points (the three finest
 // levels of quads, out to some 700 m from the eye)

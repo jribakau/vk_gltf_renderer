@@ -165,6 +165,8 @@ src/
 │                               #   reads the catalogue, holds the packs' models and stands the sites near the eye
 ├── fv_world_roads.cpp/hpp      # What a quad draws of the roads: an asphalt road's surface on the ground as the
 │                               #   quad has it, its worn markings, and the bridges whose middles it holds
+├── fv_world_asphalt.cpp/hpp    # A road's asphalt as maps made from a seed: an old road's wear across its
+│                               #   carriageway and along it, its stones' grain, its markings' paint worn on it
 ├── fv_world_light.cpp/hpp      # The light of the bodies in a planet's sky: each one's face summed as a place sees
 │                               #   it, what they and the planet give each other's dark sides, which light the scene
 │                               #   and which the air and clouds (docs/sky.md, "Their light")
