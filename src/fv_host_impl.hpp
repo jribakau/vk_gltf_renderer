@@ -1749,12 +1749,15 @@ struct FvHost::Impl
         std::vector<float>     reach;
         std::vector<uint8_t>   grown;  // one a copy the entity has
         uint32_t               whole = 0;  // the first of them known to show whole: not looked at again while they must
+        uint32_t               shownTo = 0;  // none from here on shows (grown 0)
         int16_t                role    = -1;  // of fv::world::kStandingRoles: the kit's variant it is; -1 the sea floor's
         uint32_t               variant = 0;
       };
       std::shared_ptr<std::vector<Stood>> stood;  // by entity of `plants` (shared: a chunk is handed about by value)
       // Its ground's middle in the root's frame, which its plants' places are about, and how far its
-      // corners are from that; where the eye was when its plants were last shown by their distance
+      // corners and the furthest of its plants are from that (a plant is no nearer the eye than the
+      // middle less this, nor further than it more); where the eye was when its plants were last
+      // shown by their distance
       glm::dvec3 middle{0.0};
       double     round = 0.0;
       glm::dvec3 shownFrom{1.0e30};

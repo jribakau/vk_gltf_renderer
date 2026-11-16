@@ -696,6 +696,11 @@ void FvHost::Impl::landPlanet(rs::RetainedScene& scene)
     for(W::Stand& s : m.seaStands)
       if(s.role < p.seaPlants.size() && s.variant < p.seaPlants[s.role].size())
         stand(p.seaPlants[s.role][s.variant], glm::mat4(1.0F), s, false);
+    // (a plant over a steep quad's corners from its middle: `round` bounds them all, which
+    // showPlanetPlants goes by)
+    for(const PlanetBuilt::Chunk::Stood& s : *chunk.stood)
+      for(const glm::mat4& place : s.places)
+        chunk.round = std::max(chunk.round, double(glm::length(glm::vec3(place[3]))));
     showPlanetPlants(scene, chunk, p.eyeWas);
     for(size_t k = 0; k < chunk.plants.size(); k++)
       if(const rs::Entity* e = scene.entity(chunk.plants[k]); e && e->mesh)
@@ -759,6 +764,9 @@ bool FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
     const size_t whole = size_t(std::partition_point(s.reach.begin(), s.reach.end(),
                                                      [&](float reach) { return double(reach) * (1.0 - W::kGrowsOver) >= away + 2.0 * chunk.round; })
                                 - s.reach.begin());
+    // and those that show nowhere on it, seen from no further than its nearest: hidden without a
+    // look (a chunk holds plants from further than they show)
+    const size_t none = size_t(std::partition_point(s.reach.begin(), s.reach.end(), [&](float reach) { return double(reach) > away; }) - s.reach.begin());
     if(has < seenFrom(kPlantsHeldLeast) || has > std::max<size_t>(seenFrom(kPlantsHeldMost), 1))
     {
       // other copies: the entity's instance again (the copies it keeps keep their rows), when the
@@ -777,12 +785,15 @@ bool FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
       instance.copies.resize(count);
       instance.hidden.assign(count, 0);
       s.grown.resize(count);
+      s.shownTo = 0;
       for(size_t i = 0; i < count; i++)
       {
-        s.grown[i]         = step(i);
+        s.grown[i]         = i < none ? step(i) : uint8_t(0);
         instance.copies[i] = placed(i, s.grown[i]);
         instance.hidden[i] = s.grown[i] == 0;
         standing += s.grown[i] != 0;
+        if(s.grown[i] != 0)
+          s.shownTo = uint32_t(i + 1);
       }
       s.whole = uint32_t(std::min(whole, count));
       scene.setMeshInstance(chunk.plants[k], std::move(instance));
@@ -796,10 +807,15 @@ bool FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
     const size_t from = std::min({size_t(s.whole), whole, has});
     standing += from;
     s.whole = uint32_t(std::min(whole, has));
-    for(size_t i = from; i < has; i++)
+    // (past `none` only those still shown are looked at: from shownTo on, none is)
+    const size_t until = std::min(has, std::max(none, size_t(s.shownTo)));
+    s.shownTo          = uint32_t(from);
+    for(size_t i = from; i < until; i++)
     {
-      const uint8_t grown = step(i);
+      const uint8_t grown = i < none ? step(i) : uint8_t(0);
       standing += grown != 0;
+      if(grown != 0)
+        s.shownTo = uint32_t(i + 1);
       if(grown == s.grown[i])
         continue;
       if(grown == 0)

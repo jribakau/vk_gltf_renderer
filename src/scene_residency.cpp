@@ -3249,6 +3249,10 @@ void Residency::holdBackArrivals(RetainedScene& scene, std::span<const EntityId>
     const Entity* e = scene.entity(id);
     if(!e || !e->mesh)
       continue;
+    // (one whose meshes are all resident or parked brings none: most of a sync's, as a planet's
+    // plants given other copies of what they draw are)
+    if(std::all_of(e->mesh->parts.begin(), e->mesh->parts.end(), [&](const MeshPart& part) { return m_meshes.count(part.mesh) || m_parked.count(part.mesh); }))
+      continue;
     for(const DrawItem& run : scene.drawsOf(id).runs)
     {
       if(m_parked.count(run.mesh) || m_meshes.count(run.mesh) || coming.count(run.mesh) || m_arriving.count(run.mesh))
@@ -3603,18 +3607,36 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
     m_work.entities++;
   }
 
-  const auto letGo = [&](uint32_t slot) {
-    Instance& inst = *m_instances[slot];
-    releasePrim(inst.prim);
-    if(inst.deformed)
-      releaseDrawer({inst.entity, inst.mesh});
-    releaseMaterial(inst.material);
-    m_prevWorlds[slot] = glm::mat4(0.f);  // a hole's motion row is zeroed with its render node
-    m_dirtyPrevNodes.push_back(slot);
-    // (left in m_movedLast: the next sync passes over a hole, and a slot taken again meanwhile starts at rest)
-    m_instances[slot].reset();
-    m_gpu.retire([pool = m_instancePool, slot] { pool->destroyID(slot); });
-    m_dirtyNodes.insert(slot);  // a hole: its row zeroed; the slot goes back to the pool at its retire frame
+  // A run's copies from `first` on: they share its prim, its drawer and its material, each holding a
+  // user of them, so those are given back once for all (one at a time, the lookups were most of what
+  // a planet's thousands of plants' slots a frame cost). Their slots go back to the pool together, at
+  // their retire frame.
+  std::vector<uint32_t> retired;
+  const auto            letGo = [&](const EntityDraw& d, size_t run, uint32_t first) {
+    if(first >= d.copies)
+      return;
+    const Instance& any    = *m_instances[d.slot(run, first)];
+    const uint32_t  others = d.copies - first - 1;
+    m_prims[any.prim]->users -= others;
+    releasePrim(any.prim);
+    if(any.deformed)
+    {
+      m_drawers.at({any.entity, any.mesh}).users -= others;
+      releaseDrawer({any.entity, any.mesh});
+    }
+    if(const auto m = m_materials.find(any.material); m != m_materials.end())
+      m->second.users -= others;
+    releaseMaterial(any.material);
+    for(uint32_t copy = first; copy < d.copies; copy++)
+    {
+      const uint32_t slot = d.slot(run, copy);
+      m_prevWorlds[slot]  = glm::mat4(0.f);  // a hole's motion row is zeroed with its render node
+      m_dirtyPrevNodes.push_back(slot);
+      // (left in m_movedLast: the next sync passes over a hole, and a slot taken again meanwhile starts at rest)
+      m_instances[slot].reset();
+      retired.push_back(slot);
+      m_dirtyNodes.push_back(slot);  // a hole: its row zeroed
+    }
     result.drawListChanged = true;
   };
   const auto uncount = [&](const EntityDraw& d, size_t run) {
@@ -3628,9 +3650,10 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
     if(EntityDraw* d = drawOf(id))
     {
       for(size_t r = 0; r < d->runs.size(); r++)
+      {
         uncount(*d, r);
-      for(const uint32_t slot : d->slots)
-        letGo(slot);
+        letGo(*d, r, 0);
+      }
       *d = {};
     }
   for(size_t i = 0; i < entities.size(); i++)
@@ -3663,10 +3686,14 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
         w.from[size_t(now)] = int32_t(was);
       else
         uncount(*d, was);
-      for(uint32_t copy = stays ? copies : 0; copy < d->copies; copy++)
-        letGo(d->slot(was, copy));
+      letGo(*d, was, stays ? copies : 0);
     }
   }
+  if(!retired.empty())
+    m_gpu.retire([pool = m_instancePool, slots = std::move(retired)] {
+      for(const uint32_t slot : slots)
+        pool->destroyID(slot);
+    });
 
   for(size_t i = 0; i < entities.size(); i++)
   {
@@ -3690,6 +3717,10 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
       const DrawItem& run = w.draws.runs[r];
       draw.runs.push_back({run.mesh, run.submesh, bool(w.deformed[r])});
       const int32_t was = w.from[r];
+      // (its new copies' prim, drawer and material: found for the first, a user more for the rest)
+      std::optional<uint32_t> prim, materialSlot;
+      DrawerGpu*              drawer   = nullptr;
+      MaterialSlot*           material = nullptr;
       for(uint32_t copy = 0; copy < copies; copy++)
       {
         uint32_t& slot = draw.slots[r * copies + copy];
@@ -3707,7 +3738,7 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
             releaseMaterial(inst.material);
             inst.material     = run.material;
             inst.materialSlot = materialSlot;
-            m_dirtyNodes.insert(slot);
+            m_dirtyNodes.push_back(slot);
             if(copy == 0)
               countRun(entity, inst.prim, inst.materialSlot, 1);
             // its raster list and its emitters follow the material, which may be drawn already (so
@@ -3727,19 +3758,34 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
         inst.submesh  = run.submesh;
         inst.copy     = copy;
         inst.deformed = bool(w.deformed[r]);
-        if(inst.deformed)
-          acquireDrawer(scene, entity, run.mesh).users++;
-        inst.prim = acquirePrim(scene, run.mesh, run.submesh, inst.deformed ? entity : EntityId{});
-        if(m_gpu.takeAllocationFailed())
-          m_failedMeshes.insert(run.mesh);
+        if(!prim)
+        {
+          if(inst.deformed)
+            (drawer = &acquireDrawer(scene, entity, run.mesh))->users++;
+          prim = acquirePrim(scene, run.mesh, run.submesh, inst.deformed ? entity : EntityId{});
+          if(m_gpu.takeAllocationFailed())
+            m_failedMeshes.insert(run.mesh);
+          materialSlot = acquireMaterial(scene, run.material);
+          if(const auto m = m_materials.find(run.material); m != m_materials.end())
+            material = &m->second;
+        }
+        else
+        {
+          if(drawer)
+            drawer->users++;
+          m_prims[*prim]->users++;
+          if(material)
+            material->users++;
+        }
+        inst.prim         = *prim;
         inst.material     = run.material;
-        inst.materialSlot = acquireMaterial(scene, run.material);
+        inst.materialSlot = *materialSlot;
         inst.world        = at.worldOf(copy);
         inst.shown        = at.shownOf(copy);
         inst.offCamera    = at.offCamera;
         inst.link         = at.link;
         m_instances[slot] = inst;
-        m_dirtyNodes.insert(slot);
+        m_dirtyNodes.push_back(slot);
         // a new slot starts where it is: no motion, never the motion of what had the slot before
         if(slot >= m_prevWorlds.size())
           m_prevWorlds.resize(size_t(slot) + 1, glm::mat4(0.f));
@@ -3968,8 +4014,7 @@ void Residency::ensureCapacity(SyncResult& result)
 // only some copies of which did, those copies'.
 void Residency::syncRows(RetainedScene& scene, const SceneChanges& changes, SyncResult& result)
 {
-  std::vector<uint32_t> nodes(m_dirtyNodes.begin(), m_dirtyNodes.end());
-  m_dirtyNodes.clear();
+  std::vector<uint32_t> nodes = std::exchange(m_dirtyNodes, {});  // (sorted below, once)
   if(m_allNodes)
     for(uint32_t s = 0; s < m_instances.size(); s++)
       nodes.push_back(s);

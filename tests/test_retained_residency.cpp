@@ -669,6 +669,71 @@ TEST(RetainedResidency, ScatteredCopiesMovedAreFewUploadsOfTheRowsAsTheyAre)
   EXPECT_EQ(uploadsTo(residency.renderNodeTable()), 0);
 }
 
+// A run's copies come and go together: its prim and material hold a user an instance, given back and
+// taken a run at a time, so a mesh another entity draws stays while it does and goes with the last
+// (one at a time, the lookups were most of what a planet's thousands of plants' slots a frame cost)
+TEST(RetainedResidency, ARunsCopiesComeAndGoTogetherAndItsPrimsWithTheLast)
+{
+  RetainedScene    scene;
+  const MeshId     grid = scene.addMesh(gridMesh(2, 0.f, 2));  // two submeshes: two runs, two prims
+  const MaterialId a = material(scene, "a"), b = material(scene, "b");
+  const EntityId   many = scene.createEntity("many", {}, {});
+  MeshInstance     instance;
+  instance.parts.push_back({grid, {a, b}});
+  const auto copies = [&](int n) {
+    instance.copies.clear();
+    for(int i = 0; i < n; i++)
+      instance.copies.push_back(glm::translate(glm::mat4(1.f), glm::vec3(float(i), 0.f, 0.f)));
+    scene.setMeshInstance(many, instance);
+  };
+  copies(50);
+  const EntityId one = drawn(scene, "one", grid, {a, b});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu, "made: ");
+  const auto users = [&] {
+    uint32_t n = 0;
+    for(uint32_t p = 0; p < residency.primHighWater(); p++)
+      if(const auto* prim = residency.prim(p))
+        n += prim->users;
+    return n;
+  };
+  EXPECT_EQ(users(), 2u * 51u);
+  for(const int n : {10, 80, 1, 3})
+  {
+    copies(n);
+    gpu.beginFrame();
+    residency.sync(scene);
+    expectClean(scene, residency, gpu, "copies " + std::to_string(n) + ": ");
+    EXPECT_EQ(users(), 2u * uint32_t(n + 1)) << n << " copies";
+  }
+  scene.destroyEntity(one);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "one gone: ");
+  EXPECT_EQ(users(), 2u * 3u);
+  EXPECT_GE(residency.materialSlot(a), 0);
+  scene.destroyEntity(many);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "all gone: ");
+  EXPECT_EQ(users(), 0u);
+  EXPECT_EQ(residency.materialSlot(a), -1);
+  EXPECT_EQ(residency.materialSlot(b), -1);
+  drain(gpu);
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+  // and their slots are back: as many again take those, none above them
+  const uint32_t highWater = residency.instanceHighWater();
+  instance.copies.resize(80);
+  scene.setMeshInstance(scene.createEntity("again", {}, {}), instance);
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "again: ");
+  EXPECT_EQ(residency.instanceHighWater(), highWater);
+}
+
 // A destroyed entity leaves holes; their slots come back only a frame cycle later, and the meshes and
 // prims nothing draws any more are freed then.
 TEST(RetainedResidency, ARemovalLeavesHolesThatAreReusedAfterTheirRetireFrame)

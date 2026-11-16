@@ -547,7 +547,10 @@ void RetainedScene::destroyUnlinked(EntityId id)
     m_changes.instances.insert(id);  // (kept though it is gone: what it drew is let go of by it)
   }
   if(!e->light.isNone())
+  {
     release(e->light);
+    m_litStale = true;
+  }
   if(!e->camera.isNone())
     release(e->camera);
   m_entities.erase(id);
@@ -585,6 +588,7 @@ bool RetainedScene::setParent(EntityId id, EntityId parent, int index, bool keep
   m_changes.structure = true;
   m_structureRevision++;
   m_boundsRevision++;
+  m_litStale = true;  // (the lights' order may be another)
   return true;
 }
 
@@ -745,6 +749,7 @@ void RetainedScene::setEntityLight(EntityId id, LightId light)
   e->light            = m_lights.contains(light) ? light : LightId{};
   m_changes.structure = true;
   m_structureRevision++;
+  m_litStale = true;
 }
 
 void RetainedScene::setEntityCamera(EntityId id, CameraId camera)
@@ -1123,13 +1128,22 @@ std::vector<DrawItem> RetainedScene::drawItems()
 std::vector<LightItem> RetainedScene::lightItems()
 {
   updateWorld();
-  std::vector<LightItem> out;
-  for(EntityId id : entitiesInOrder())
+  // the entities with a light, in document order: looked for again only once one gains or loses its
+  // light, goes, or something is moved in the tree (every entity was walked twice a frame, on a
+  // planet tens of thousands, for its one or two lights)
+  if(m_litStale)
   {
-    const Entity& e = m_entities[id];
-    if(const LightRecord* l = light(e.light))
-      out.push_back({id, e.light, m_derived[id.index].world, m_derived[id.index].shown && l->shown});
+    m_lit.clear();
+    for(EntityId id : entitiesInOrder())
+      if(!m_entities[id].light.isNone())
+        m_lit.push_back(id);
+    m_litStale = false;
   }
+  std::vector<LightItem> out;
+  for(EntityId id : m_lit)
+    if(const Entity* e = m_entities.get(id))
+      if(const LightRecord* l = light(e->light))
+        out.push_back({id, e->light, m_derived[id.index].world, m_derived[id.index].shown && l->shown});
   return out;
 }
 

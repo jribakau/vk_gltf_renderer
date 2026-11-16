@@ -874,6 +874,9 @@ private:
 
   SlotMap<Entity, EntityTag> m_entities;
   std::vector<EntityId>      m_roots;
+  // the entities with a light, in document order (lightItems), and whether that is to be found again
+  std::vector<EntityId>      m_lit;
+  bool                       m_litStale = true;
   LightLink                  m_defaultLink;  // of every entity with no link up to its root (setDefaultLightLink)
   // per entity slot: world matrix, cascaded visibility, and whether they are stale
   struct Derived

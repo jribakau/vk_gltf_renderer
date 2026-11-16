@@ -116,6 +116,45 @@ TEST(RetainedScene, AnEntityGoesWithAllItsChildren)
   EXPECT_EQ(scene.entity(other)->children, (std::vector<rs::EntityId>{kept, b}));
 }
 
+// The lights come in document order however the tree changes round them: a light given or taken, an
+// entity with one moved or gone, a parent of one gone (the entities with one are remembered, not
+// looked for among all of them each time)
+TEST(RetainedScene, LightsComeInDocumentOrderAsTheTreeChanges)
+{
+  rs::RetainedScene  scene;
+  const rs::LightId  light = scene.addLight({});
+  const rs::EntityId a     = scene.createEntity("a", {1, 0});
+  const rs::EntityId b     = scene.createEntity("b", {1, 1});
+  const rs::EntityId under = scene.createEntity("under", {1, 2}, b);
+  for(int i = 0; i < 1000; i++)
+    scene.createEntity("plain", {1, 3}, a);
+  const auto order = [&] {
+    std::vector<rs::EntityId> out;
+    for(const rs::LightItem& item : scene.lightItems())
+      out.push_back(item.entity);
+    return out;
+  };
+  using Ids = std::vector<rs::EntityId>;
+  EXPECT_EQ(order(), Ids{});
+  scene.setEntityLight(under, light);
+  scene.setEntityLight(a, light);
+  EXPECT_EQ(order(), (Ids{a, under}));
+  scene.createEntity("more", {1, 4}, a);  // (nothing of the lights' order)
+  EXPECT_EQ(order(), (Ids{a, under}));
+  scene.setParent(under, {}, 0);  // a root, first
+  EXPECT_EQ(order(), (Ids{under, a}));
+  scene.setEntityLight(a, {});
+  EXPECT_EQ(order(), (Ids{under}));
+  scene.setParent(under, b);
+  scene.setEntityLight(b, light);
+  EXPECT_EQ(order(), (Ids{b, under}));
+  scene.destroyEntity(b);  // and `under` with it
+  EXPECT_EQ(order(), Ids{});
+  const rs::EntityId c = scene.createEntity("c", {1, 5});
+  scene.setEntityLight(c, light);
+  EXPECT_EQ(order(), Ids{c});
+}
+
 // Many children of one entity go together, their siblings left in their order, whatever else is in
 // the list: one already gone, one twice, one under another of them, a root (one at a time, each went
 // through all its siblings: a planet's quads giving way, a few of 30,000 a frame)

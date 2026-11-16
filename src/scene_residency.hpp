@@ -1058,7 +1058,7 @@ private:
   std::vector<uint32_t> m_primsReblased;
   bool                  m_tlasAllRows = false;  // a material's bits changed: every row is looked at
 
-  std::set<uint32_t> m_dirtyNodes;        // render-node rows to write: rebound or now holes
+  std::vector<uint32_t> m_dirtyNodes;     // render-node rows to write: rebound or now holes (some perhaps twice)
   bool               m_allNodes = false;  // every row, into a new table
   bool               m_allPrims = false;
   std::set<uint32_t> m_compacting;  // prim slots whose BLASes wait for their compacted copies

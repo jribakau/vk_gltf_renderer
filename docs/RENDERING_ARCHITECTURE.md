@@ -42,7 +42,10 @@ The TLAS rows are worked out again only for slots placed, shown or linked since 
 for the instances of a prim whose BLAS is another (found by `m_primRuns`). The rows changed go up a
 run of slots an upload, and a run takes in a short gap to the next one, its rows written again as
 they are (`runsOf`'s `bridged`, `buildTlasRows`): copies moved here and there were thousands of
-uploads of two or three rows a frame. The emissive table finds
+uploads of two or three rows a frame. A run's copies that come or go take or give back the prim
+and the material they share once for all of them, and their slots go back to the pool together.
+The scene keeps its lit entities in document order (`RetainedScene::lightItems`), looked for again
+only when a light is given or taken, an entity with one goes, or something is moved in the tree. The emissive table finds
 its emitters by their materials (`m_materialRuns`); the scene's bounds are kept a box an entity; the
 raster lists are made when read. `Residency::lastSyncWork` counts what a sync looked at, and
 the tests hold it to the change (`RetainedResidency.ASyncLooksOnlyAtWhatChanged`). A copy can be
@@ -1102,7 +1105,8 @@ their kit when there is one. It needs no kit: without one it stands bare.
   and growing to its size over the last of the way in, in a few steps, fewer the further it is seen
   from, so it comes into view small; a frame gives no more entities other copies, and takes in no
   more quads' plants, than `kPlantsAFrame` instances, which the scene's sync goes through), again whenever
-  the eye has gone a few hundredths of its distance to the quad. The trees a quad does not show from
+  the eye has gone a few hundredths of its distance to the quad; a copy seen from no further than
+  the quad's nearest point (`Chunk::round` bounds its plants) is hidden without a look. The trees a quad does not show from
   where its trees are on the whole while it draws (`kCanopyAway` of its widths), the smaller of a
   wood's, stand on its ground as a **canopy** (`canopyLift`, `groundMesh`'s `Lift`,
   `World::canopied`): the quad's own mesh is raised as high as their crowns over the ground they would
