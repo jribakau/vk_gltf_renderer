@@ -1623,13 +1623,28 @@ void PathTracer::chooseOptimalStandIn(Resources& resources)
   }
   if(targetReady)
   {
+    if(m_optimalStandIn)
+      LOGI("[PathTracer] Optimal variant drawing: [%s]\n", target.features.toString().c_str());
     m_optimalStandIn = false;
     return;
   }
+  // A scene loading changes the feature set prop by prop, and a build can't be stopped: one started too
+  // soon is minutes of a worker on a variant no frame will ask for (on a planet the one wanted started
+  // two minutes late behind such a build and its DLSS twin, 2026-11-16)
+  constexpr auto kSettle = std::chrono::seconds(2);
+  const auto     now     = std::chrono::steady_clock::now();
+  if(!(m_optimalSettling == target))
+  {
+    m_optimalSettling      = target;
+    m_optimalSettlingSince = now;
+  }
   const bool failed = m_failedVariant && *m_failedVariant == target;
-  if(!failed && !m_variantJobs.job())
+  if(!failed && !m_variantJobs.job() && now - m_optimalSettlingSince >= kSettle)
     startVariantJob(resources, target);
-  m_optimalStandIn = fullReady || failed || !(liveCovers && resources.gpuView().variantMayBuildOffFrame());
+  const bool standIn = fullReady || failed || !(liveCovers && resources.gpuView().variantMayBuildOffFrame());
+  if(standIn && !m_optimalStandIn)
+    LOGI("[PathTracer] Full build standing in while the optimal variant builds: [%s]\n", target.features.toString().c_str());
+  m_optimalStandIn = standIn;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1646,14 +1661,22 @@ bool PathTracer::buildsOffTheFrame(Resources& resources, const PendingCompileWor
   // expectation: both are unbiased), so either stands in while the other builds as a job, with no frame
   // waiting on a Slang compile and the driver's pipeline (seconds, tens of them cold). So does one with
   // the moving view's bounce cache compiled in or out: without the code a frame traces its paths whole,
-  // and with it but no table (the setting off, RadianceCache::prepare) it does the same.
+  // and with it but no table (the setting off, RadianceCache::prepare) it does the same. While the full
+  // build stands in for an optimal variant, one without nested media stands in too: for the seconds
+  // until that variant comes, a medium inside another is drawn by the one-medium rules, where making
+  // the full build with it would hold the frame through its compile (72-90 s cold on a planet) only to
+  // be replaced. Not once the optimal variant failed: then the full build is what draws.
   if(work.recompile && !work.stalePipeline && !(m_failedVariant && *m_failedVariant == wanted))
   {
-    const auto otherRis = [&](const VariantKey& k) {
+    const bool looseMedia = m_optimalStandIn && !(m_failedVariant && *m_failedVariant == targetVariantKey(resources));
+    const auto otherRis   = [&](const VariantKey& k) {
       VariantKey same = k;
       same.lightRis      = wanted.lightRis;
       same.radianceCache = wanted.radianceCache;
-      return (k.lightRis != wanted.lightRis || k.radianceCache != wanted.radianceCache) && same == wanted;
+      if(looseMedia)
+        same.nestedMedia = wanted.nestedMedia;
+      return (k.lightRis != wanted.lightRis || k.radianceCache != wanted.radianceCache || k.nestedMedia != wanted.nestedMedia)
+             && same == wanted;
     };
     const bool rayQuery = m_renderTechnique == RenderTechnique::RayQuery;
     bool       standIn  = false;
@@ -1677,7 +1700,9 @@ bool PathTracer::buildsOffTheFrame(Resources& resources, const PendingCompileWor
     }
     if(standIn)
     {
-      if(!m_variantJobs.job())
+      // the full build standing in for an optimal one is never built itself: the job is the optimal
+      // variant's (chooseOptimalStandIn)
+      if(!m_variantJobs.job() && !m_optimalStandIn)
         startVariantJob(resources, wanted);
       return true;
     }
@@ -1854,7 +1879,8 @@ void PathTracer::installBuiltVariant(Resources& resources)
   }
   LOGI("[PathTracer] Variant built off the frame in %.0f ms: [%s]\n", built.ms, job.key.features.toString().c_str());
 
-  if(!isDlssEnabled())
+  // an optimal variant the scene no longer wants (its features or settings changed while it built) gets no twin
+  if(!isDlssEnabled() || (job.key.optimal && !(job.key == targetVariantKey(resources))))
     return;
   VariantKey sibling = job.key;
   sibling.dlss       = !job.key.dlss;

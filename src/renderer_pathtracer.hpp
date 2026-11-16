@@ -439,7 +439,11 @@ public:
   // on, as with ptOptimalShader off) draws whatever they would: set by chooseOptimalStandIn() at each
   // frame's top, on the application thread, while the variant the settings want is neither live nor cached
   bool m_optimalStandIn{false};
-  void chooseOptimalStandIn(Resources& resources);
+  // The optimal variant last wanted and since when: its job starts once it has held for a moment, as a
+  // scene loading changes its feature set prop by prop and a build can't be stopped once started
+  VariantKey                            m_optimalSettling{};
+  std::chrono::steady_clock::time_point m_optimalSettlingSince{};
+  void                                  chooseOptimalStandIn(Resources& resources);
   // An optimal variant's full build: the one ptOptimalShader off asks for, its guides on as the
   // embedded build's are (GltfRenderer::dlssGuideRequired)
   static VariantKey fullBuildOf(const VariantKey& key);
