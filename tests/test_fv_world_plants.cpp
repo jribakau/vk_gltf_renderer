@@ -711,14 +711,15 @@ TEST(WorldSea, ItsPlantsStandOnTheSeasFloorUnderItsSurface)
 
 // ---- far woods as a canopy (canopyLift, groundMesh's lift) ---------------------------------------------
 
-// Where a quad holds every tree, it lifts nothing, and its ground is what it was before there was a
-// canopy: the quads round the eye, on the three finest levels
+// Where a quad shows every tree, it lifts nothing, and its ground is what it was before there was a
+// canopy: the quads round the eye, on the two finest levels; the next is far enough for some
 TEST(WorldCanopy, TheGroundNearIsWhatItWas)
 {
   const W::World&  w    = canopied();
   const W::Canopy  kit  = kitCanopy();
   const glm::dvec3 wood = inAWood(w);
-  for(int up = 0; up <= 2; up++)
+  EXPECT_TRUE(W::canopyLift(w, quadAt(wood, uint8_t(W::finestLevel(w) - 2)), kit));
+  for(int up = 0; up <= 1; up++)
   {
     const W::Quad   q    = quadAt(wood, uint8_t(W::finestLevel(w) - up));
     const W::LiftOf lift = W::canopyLift(w, q, kit);

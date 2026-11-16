@@ -1085,8 +1085,9 @@ their kit when there is one. It needs no kit: without one it stands bare.
   and growing to its size over the last of the way in, in a few steps, fewer the further it is seen
   from, so it comes into view small; a frame gives no more entities other copies, and takes in no
   more quads' plants, than `kPlantsAFrame` instances, which the scene's sync goes through), again whenever
-  the eye has gone a few hundredths of its distance to the quad. The trees a quad does not hold, the
-  smaller of a wood's, stand on its ground as a **canopy** (`canopyLift`, `groundMesh`'s `Lift`,
+  the eye has gone a few hundredths of its distance to the quad. The trees a quad does not show from
+  where its trees are on the whole while it draws (`kCanopyAway` of its widths), the smaller of a
+  wood's, stand on its ground as a **canopy** (`canopyLift`, `groundMesh`'s `Lift`,
   `World::canopied`): the quad's own mesh is raised as high as their crowns over the ground they would
   stand on, by the same rule `standing` grows them by and none where it stands none. Where the mesh's
   points are a few metres apart each one is a crown's top or the floor between it, by how much of the
@@ -1095,7 +1096,7 @@ their kit when there is one. It needs no kit: without one it stands bare.
   crowns. A raised point takes the canopy's colour and none of the ground's layers; the rest is the
   floor (`Biome::floor`, `World::planted`) at any distance, and the skirts hang as much further as the
   canopy stands. Nothing reads the mesh back (every query of the ground asks `sample`), so the walker,
-  plants and roads stand on the ground under it. The quads round the eye hold every tree and lift
+  plants and roads stand on the ground under it. The quads round the eye show every tree and lift
   nothing; the `worldCanopy` setting turns it off for a comparison (the quads are made again). Without
   it a far wood is flat ground its canopy's colour. Grass and its flowers and ferns are the meadow's tiles, laid by the meadow's own
   rule on a cube face's plane round the camera and the figures (`tilePlanet`), each leant and

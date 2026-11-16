@@ -112,9 +112,13 @@ std::vector<Stand> standing(const World& world, const Quad& quad, const glm::dve
 
 // ---- far woods as a canopy -----------------------------------------------------------------------------
 
-// A quad holds only the trees seen from where it draws, the largest (heldFrom): the rest of a far
-// wood stands on its ground mesh as a canopy, its surface raised as high as their crowns over the
-// ground they stand on (groundMesh's lift). Where its points are a few metres apart each is a crown's
+// A quad holds only the trees seen from where it draws, the largest (heldFrom), and shows each of
+// them only from as near as its reach: the rest of a far wood stands on its ground mesh as a canopy,
+// its surface raised as high as their crowns over the ground they stand on (groundMesh's lift). Which
+// trees those are is decided once for the quad, at kCanopyAway of its widths: where its trees are on
+// the whole while it draws (it draws from kSplit of its widths to about twice that, and its trees
+// lie across it). Nearer, a few of them are drawn and in the canopy both; further, a few are in
+// neither; on the whole, as many as stand. Where its points are a few metres apart each is a crown's
 // top or the floor between, by how much of the ground those trees' crowns cover; where they are tens
 // of metres apart, the wood as a whole, as high as its crowns stand on the whole and its colour as
 // much as a slanting view sees of them. Where `standing` would stand no tree, none.
@@ -127,7 +131,8 @@ struct Canopy
   std::array<float, kStandingRoles.size()> height{};       // metres from the foot to the top
   std::array<float, kStandingRoles.size()> crown{};        // how far its crown reaches from the trunk, metres
 };
-// The lift of a quad's ground; none where the quad holds all its trees (the finest, and those near
+inline constexpr double kCanopyAway = 5.0;
+// The lift of a quad's ground; none where the quad shows all its trees (the finest, and those near
 // them) or none stand
 LiftOf canopyLift(const World& world, const Quad& quad, const Canopy& canopy);
 
