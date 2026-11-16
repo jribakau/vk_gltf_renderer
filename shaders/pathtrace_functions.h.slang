@@ -727,7 +727,7 @@ float worldBodyCloudShare(SceneFrameInfo* frameInfo)
 // a surface facing it there (SceneFrameInfo::worldBodyShine, through the air over the point toward it
 // and the clouds' share), carried as a sphere's (an illuminance E is a sphere light's colour
 // E r^2 / (2 (1 - cos))). `at`: through the air at `pos`; without it, above the air.
-GltfLight worldBodyAsLight(int i, float3 pos, bool at)
+GltfLight worldBodyAsLight(int i, float3 pos)
 {
   SceneFrameInfo* frameInfo   = pushConst.frameInfo;
   const float4    place       = frameInfo->worldBodyPlace[i];
@@ -747,8 +747,7 @@ GltfLight worldBodyAsLight(int i, float3 pos, bool at)
   const float3 toCentre       = place.xyz - pos;
   const float  d              = length(toCentre);
   float3       e              = frameInfo->worldBodyShine[i].xyz * worldBodySunlight(frameInfo) * frameInfo->envIntensity;
-  if(at)
-    e *= worldSunThrough(g_atmosphere, g_transmittance, skyWorldPoint(frameInfo, pos), toCentre / max(d, 1e-6F)) * worldBodyCloudShare(frameInfo);
+  e *= worldSunThrough(g_atmosphere, g_transmittance, skyWorldPoint(frameInfo, pos), toCentre / max(d, 1e-6F)) * worldBodyCloudShare(frameInfo);
   light.color = e * (place.w * place.w / (2.0F * max(worldBodyOneMinusCos(d, place.w), 1e-12F)));
   return light;
 }
@@ -778,10 +777,9 @@ int punctualLightCount()
 static uint g_unlitLamps = 0u;
 
 // Index into that set. The scene's lights come first, so the sky's sun is the last one.
+// (a planet's bodies, past worldBodyLightBase, are lit at a point: getPunctualLightAt)
 GltfLight getPunctualLight(int index)
 {
-  if(index >= worldBodyLightBase())
-    return worldBodyAsLight(index - worldBodyLightBase(), float3(0.0F), /*at=*/false);
   if(index >= pushConst.gltfScene.numLights)
     return makeSkySunLight(pushConst.frameInfo);
 
@@ -807,7 +805,7 @@ int skySunPunctualIndex()
 GltfLight getPunctualLightAt(int index, float3 pos)
 {
   if(index >= worldBodyLightBase())
-    return worldBodyAsLight(index - worldBodyLightBase(), pos, /*at=*/true);
+    return worldBodyAsLight(index - worldBodyLightBase(), pos);
   GltfLight light = getPunctualLight(index);
   if(index == skySunPunctualIndex())
   {
@@ -1007,6 +1005,14 @@ float coatBaseSpecularOfRow(GltfShadeMaterial mat)
   return bsdfCoatBaseSpecular(specular, ior);
 }
 
+// -1 for an instance whose transform mirrors (negative determinant), else 1: what turns the cross
+// product of a triangle's world edges back to its object normal's side, which getHitState's geometric
+// normal (the inverse transpose) keeps and a hit's front face is judged by
+float emitterMirror(float4x4 objectToWorld)
+{
+  return determinant((float3x3)objectToWorld) < 0.0F ? -1.0F : 1.0F;
+}
+
 EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, float2 u, float totalWeight, bool pointOnly = false)
 {
 #if USE_LIGHT_RIS
@@ -1039,7 +1045,9 @@ EmissiveSample sampleEmissiveTriangle(int emissiveIndex, float3 shadingPos, floa
 
   const float3 we1     = mul(float4(o1 - o0, 0.0), node.objectToWorld).xyz;
   const float3 we2     = mul(float4(o2 - o0, 0.0), node.objectToWorld).xyz;
-  float3       ng      = cross(we1, we2);
+  // the side it emits from is its object normal's, carried as getHitState carries a hit's: a
+  // mirroring instance turns the cross product of its world edges the other way
+  float3       ng      = cross(we1, we2) * emitterMirror(node.objectToWorld);
   float        twoArea = length(ng);
   if(twoArea <= 1e-12)
     return es;  // degenerate triangle
@@ -1126,7 +1134,8 @@ float emitterHitSolidAnglePdf(float weight, float area, float3 geoNormal, float3
 // (LightPick::bsdfOnly), before the tree's share is rebuilt from the pick's point. The triangle is
 // `primitiveID` of `prim` under `objectToWorld`, for its area (read only where a weight is owed).
 float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float weight, float3 geoNormal, float3 rayDir, float hitDist,
-                                 uint renderNodeID, GltfRenderPrimitive prim, int primitiveID, float4x4 objectToWorld)
+                                 uint renderNodeID, GltfRenderPrimitive prim, int primitiveID, float4x4 objectToWorld,
+                                 uint unlitOfPick)
 {
   if(lastSamplePdf == DIRAC || pick.bsdfOnly || !(weight > 0.0f))
     return 1.0f;
@@ -1139,7 +1148,11 @@ float computeEmitterHitMisWeight(float lastSamplePdf, LightPick pick, float weig
       return 1.0f;
     const bool             cull  = any(pick.normal != float3(0.0F));
     const EmissiveTreeWalk climb = emissiveTreeClimb(pushConst.gltfScene.emissiveGroups, leaf, pick.pos, pick.normal, cull);
-    const LightPickSet     set   = lightPickSet(pick.pos, pick.normal, cull);
+    // the pick as that vertex made it: among its lamps (light linking), not those of the emitter met here
+    const uint             unlitHere = g_unlitLamps;
+    g_unlitLamps                     = unlitOfPick;
+    const LightPickSet     set       = lightPickSet(pick.pos, pick.normal, cull);
+    g_unlitLamps                     = unlitHere;
     const float            share = set.restShare * climb.prob
                         * lightPickProbability(emissiveGroupPickEstimate(climb.leaf, pick.pos, pick.normal, cull), set.total, set.candidates);
     emitterNeePdf = share
@@ -1583,11 +1596,15 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
   // weighed against this with sizedLightNeePdf. The sky's sun is the sky's disk, which a BSDF ray
   // sees on escape: skySunNeePdf() gives computeSkySunHitMisWeight() the same pdf from `pick.sun`.
   // A point is DIRAC: no BSDF ray reaches it, so this is its only technique, of weight 1. So is
-  // every light at a volume scatter, whose phase-sampled ray gathers no light (sizedLightHits).
+  // every light at a volume scatter, whose phase-sampled ray gathers no light (sizedLightHits), and a
+  // sphere light at a point inside it, which no BSDF ray can enter (sphereLightHitDistance).
   const float sunSolidAngle = (lightIndex == skySunPunctualIndex()) ? skySunSolidAngle(pushConst.frameInfo) : 0.0F;
+  const float3 toLight      = light.position - pos;
+  const bool   insideSphere = light.type != LightType::eLightTypeDirectional && light.radius > 0.0F
+                            && dot(toLight, toLight) <= light.radius * light.radius;
   if(sunSolidAngle > 0.0F)
     directLight.pdf = selectionPdf / sunSolidAngle;
-  else if(contrib.pdf != DIRAC && !isVolumeSample)
+  else if(contrib.pdf != DIRAC && !isVolumeSample && !insideSphere)
     directLight.pdf = selectionPdf * contrib.pdf;
   else
     directLight.pdf = DIRAC;
@@ -1793,7 +1810,7 @@ ReusedLight evaluateReusedLight(LightReuseRecord r, float3 pos, float3 normal, L
       return l;
     const float3 we1     = mul(float4(o1 - o0, 0.0), node.objectToWorld).xyz;
     const float3 we2     = mul(float4(o2 - o0, 0.0), node.objectToWorld).xyz;
-    const float3 ng      = cross(we1, we2);
+    const float3 ng      = cross(we1, we2) * emitterMirror(node.objectToWorld);  // as sampleEmissiveTriangle's
     const float  twoArea = length(ng);
     if(twoArea <= 1e-12F)
       return l;
@@ -1890,7 +1907,7 @@ bool handleShadowCatcher(IRaytracer      raytracer,
     shadowRay.Direction = directLight.direction;
     shadowRay.TMin      = 0.0;
     shadowRay.TMax      = directLight.distance;  // short of the light: an emitter is no shadow on what it lights
-    const float3 shadow = raytracer.TraceShadow(shadowRay, seed, false, float3(0.0F), directLight.shadowMask);
+    const float3 shadow = raytracer.TraceShadow(shadowRay, seed, shadowInside, shadowExtinction, directLight.shadowMask);
     visibility          = (shadow.x + shadow.y + shadow.z) / 3.0F;
   }
 
@@ -2645,6 +2662,17 @@ float3 dlssEnforceMinAlbedo(float3 albedo, float3 specularAlbedo)
   return albedo;
 }
 
+// The guide albedo of a surface: its colour, and where DLSS-RR reads the guides (a DLSS frame, the
+// still's RR) its diffuse albedo, the metal's share going to the specular guide (NVIDIA's RR guide).
+// The first hit's, and a surface's seen through clear glass or water, so a metal behind a pane is
+// described as the same metal seen directly.
+float3 rrGuideAlbedo(float3 baseColor, float metallic)
+{
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) || hasFlag(pushConst.flags, PathtracerFlags::ePtRrStillGuides))
+    return baseColor * (1.0F - metallic);
+  return baseColor;
+}
+
 // #DLSS specular guide: what a surface reflects, seen along `dir`, as DLSS-RR's specular albedo takes
 // it (RR guide 3.5). KHR_materials_specular's dielectric F0, min(f0_from_ior * specularColor, 1) *
 // specular; a metal's F0 its base colour, less what its edge tint takes where its lobe's Fresnel is
@@ -2924,9 +2952,7 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     // As the surface would be described seen directly (gltf_pathtrace.slang's first hit): a metal's
     // colour is its reflection's, not a texture under it, where DLSS-RR reads the guides
     result.valid          = true;
-    result.albedo         = mat.baseColor.xyz;
-    if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
-      result.albedo *= 1.0F - mat.metallic;
+    result.albedo         = rrGuideAlbedo(mat.baseColor.xyz, mat.metallic);
     result.specularAlbedo = dlssSpecularAlbedo(mat, dir);
     result.normal         = mat.N;
     result.roughness      = mat.roughness.x;
@@ -2975,9 +3001,7 @@ DlssGlassPsr dlssTraceWater(PbrMaterial waterMat, HitState waterHit, float3 dir,
   const PbrMaterial ground = defaultPbrMaterial(frameInfo->infinitePlaneBaseColor, frameInfo->infinitePlaneMetallic,
                                                 frameInfo->infinitePlaneRoughness, up, up);
   psr.valid          = true;
-  psr.albedo         = ground.baseColor;
-  if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
-    psr.albedo *= 1.0F - ground.metallic;
+  psr.albedo         = rrGuideAlbedo(ground.baseColor, ground.metallic);
   psr.specularAlbedo = dlssSpecularAlbedo(ground, refracted);
   psr.normal         = float3(0.0f, 1.0f, 0.0f);
   psr.roughness      = frameInfo->infinitePlaneRoughness * frameInfo->infinitePlaneRoughness;
@@ -3488,12 +3512,14 @@ float3 sizedLightHits(RayDesc ray, float tMax, bool escaped, PathTracerState pt,
     const bool directional = light.type == LightType::eLightTypeDirectional;
     if(directional && !escaped)
       continue;
+    // a sphere's ray test first, its cone (a square root and a divide) only for one the ray meets:
+    // nearly every light is passed by
+    if(!directional && (!(light.radius > 0.0F) || sphereLightHitDistance(ray.Origin, ray.Direction, light.position, light.radius, tMax) < 0.0F))
+      continue;
     const float omc = sizedLightOneMinusCos(directional, light.position, light.radius, light.angularSizeOrInvRange, vertex);
     if(!(omc > 0.0F))
       continue;
-    const bool hit = directional ? directionalLightHit(ray.Direction, light.direction, omc) :
-                                   sphereLightHitDistance(ray.Origin, ray.Direction, light.position, light.radius, tMax) >= 0.0F;
-    if(!hit)
+    if(directional && !directionalLightHit(ray.Direction, light.direction, omc))
       continue;
     // Facing the light, so nothing is culled: the light sample's own test was its pick's
     const float3 toLight = directional ? -light.direction : normalize(light.position - vertex);
@@ -3626,7 +3652,10 @@ bool tryPrimaryMissBackplate(RayDesc ray, SceneFrameInfo* frameInfo, inout PathT
     // The physical sky's disk is not in its baked image, so it is added here as on the unblurred
     // path; a no-op for every other environment.
     const float3 blurred = smoothHDRBlur(texturesHdr[HDR_IMAGE_INDEX], uv, frameInfo->envBlur).xyz;
-    setBackplate(pt, (blurred + evalSunDiskBackground(dir, frameInfo) * cloudSunShare(ray.Origin, frameInfo)) * frameInfo->envIntensity);
+    float3       sunDisk = evalSunDiskBackground(dir, frameInfo);
+    if(any(sunDisk > 0.0F))  // (the clouds read only for a ray in the disk)
+      sunDisk *= cloudSunShare(ray.Origin, frameInfo);
+    setBackplate(pt, (blurred + sunDisk) * frameInfo->envIntensity);
     return true;
   }
 

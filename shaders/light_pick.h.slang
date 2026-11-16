@@ -63,7 +63,8 @@ float sphereLightSampleDistance(float3 pos, float3 direction, float3 center, flo
   const float  along    = dot(direction, toCenter);
   const float  d2       = dot(toCenter, toCenter);
   const float  r2       = radius * radius;
-  const float  half     = sqrt(max(r2 - (d2 - along * along), 0.0F));  // 0 at the silhouette
+  const float3 across   = toCenter - direction * along;  // not d^2 - along^2, as sphereLightHitDistance
+  const float  half     = sqrt(max(r2 - dot(across, across), 0.0F));  // 0 at the silhouette
   const float  t        = (d2 > r2) ? along - half : along + half;
   return max(t, 0.0F) * (1.0F - 1e-4F);
 }

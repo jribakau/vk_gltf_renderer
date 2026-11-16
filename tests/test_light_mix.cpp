@@ -188,3 +188,25 @@ TEST(LightMix, TheGroupsTakeTurns)
   EXPECT_EQ(lightGroupTurnsBefore(1u << LIGHT_GROUP_GLOW, 17), 17u);
   EXPECT_EQ(lightGroupOfSample(0u, 3, 9), uint(LIGHT_GROUP_COUNT));
 }
+
+// A pixel's start may be any number: three groups, which 2^32 is no multiple of, keep their turns where
+// the start plus the sample would wrap
+TEST(LightMix, TheTurnsGoRoundPastTheLargestStart)
+{
+  const uint used = (1u << LIGHT_GROUP_SKY) | (1u << LIGHT_GROUP_SUN) | (1u << LIGHT_GROUP_LAMPS);
+  ASSERT_EQ(lightGroupsInTurn(used), 3u);
+  for(uint start : {0xFFFFFFF0u, 0xFFFFFFFFu})
+  {
+    std::array<uint, LIGHT_GROUP_COUNT> turns{};
+    for(uint sample = 0; sample < 300; sample++)
+    {
+      const uint group = lightGroupOfSample(used, sample, start);
+      ASSERT_LT(group, uint(LIGHT_GROUP_COUNT));
+      EXPECT_EQ(lightGroupTurnsBefore(used, sample), turns[group]) << sample << " from " << start;
+      turns[group]++;
+    }
+    EXPECT_EQ(turns[LIGHT_GROUP_SKY], 100u);
+    EXPECT_EQ(turns[LIGHT_GROUP_SUN], 100u);
+    EXPECT_EQ(turns[LIGHT_GROUP_LAMPS], 100u);
+  }
+}

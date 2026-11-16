@@ -61,7 +61,7 @@ inline uint lightGroupOfSample(uint used, uint sample, uint start)
   const uint count = lightGroupsInTurn(used);
   if(count == 0u)
     return uint(LIGHT_GROUP_COUNT);
-  uint turn = (sample + start) % count;
+  uint turn = (sample % count + start % count) % count;  // (the sum itself would wrap at 2^32 and skip turns)
   for(uint g = 0u; g < uint(LIGHT_GROUP_COUNT); g++)
   {
     if(((used >> g) & 1u) == 0u)

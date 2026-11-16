@@ -172,6 +172,26 @@ TEST(SceneGpuTables, AnEmittersTrianglesKeepTheirPlacesAndTheirOwnLuminance)
   EXPECT_LT(table.groups[1].radius, 1.f);
 }
 
+// A one-sided emitter in a mirroring instance emits from the side its object normal is carried to (the
+// inverse transpose, as a hit's front face is judged), not the side the cross product of its mirrored
+// world edges points to: the leaf's cone faces that way
+TEST(SceneGpuTables, AMirroredOneSidedEmittersConeFacesItsObjectNormal)
+{
+  const std::vector<glm::vec3> quad = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};  // its normal +z
+  const std::vector<uint32_t>  two  = {0, 1, 2, 0, 2, 3};
+  const glm::mat4              flip = glm::scale(glm::mat4(1.f), {-1.f, 1.f, 1.f});    // mirrored in x
+  const glm::mat4              push = glm::scale(glm::mat4(1.f), {1.f, 1.f, -1.f});    // mirrored in z
+  for(const auto& [world, front] : {std::pair{flip, glm::vec3(0, 0, 1)}, std::pair{push, glm::vec3(0, 0, -1)}})
+  {
+    const std::vector<Emitter> emitters = {
+        {.renderNodeID = 0, .renderPrimID = 0, .radiance = glm::vec3(1.f), .world = world, .positions = quad, .indices = two}};
+    const auto table = buildEmissiveTable(emitters, shaderio::EMISSIVE_GROUP_MAX);
+    ASSERT_FALSE(table.groups.empty());
+    const shaderio::EmissiveGroup& leaf = table.groups[0];
+    EXPECT_GT(glm::dot(glm::vec3(leaf.axis), front), 0.99f) << "x mirrored: " << (world == flip);
+  }
+}
+
 TEST(SceneGpuTables, NoEmittersNoTable)
 {
   const auto table = buildEmissiveTable({});

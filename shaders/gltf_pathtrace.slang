@@ -59,11 +59,6 @@
 #endif
 // clang-format on
 
-// This is a debug flag to enable/disable debug output
-// For example, to use print statements in the shader, set this to true.
-// Add printf and enable the Validation layer debug output.
-static bool doDebug = false;
-
 #include "gltf_material_eval.h.slang"
 #include "gltf_scene_io.h.slang"
 #include "water.h.slang"
@@ -749,9 +744,17 @@ static bool g_reuseFirstSample = true;     // ...its frame's first sample, which
 static bool g_cacheOn     = false;
 static bool g_cacheUpdate = false;
 
-// The slot of `key`'s cell, taking a free one of its bucket where it has none yet; -1: the bucket is full
+// The slot of `key`'s cell, taking a free one of its bucket where it has none yet; -1: the bucket is full.
+// Its own slot first, wherever it is in the bucket: the resolve frees slots in place, and a free one
+// before a cell's own would give it a second, which radianceCacheFind (the first match) then reads.
 int radianceCacheClaim(uint* table, RadianceCacheKey key)
 {
+  for(int i = 0; i < RC_BUCKET; i++)
+  {
+    const uint slot = key.bucket + uint(i);
+    if(table[slot * uint(RC_WORDS) + uint(RC_KEY)] == key.fingerprint)
+      return int(slot);
+  }
   for(int i = 0; i < RC_BUCKET; i++)
   {
     const uint slot = key.bucket + uint(i);
@@ -1107,11 +1110,23 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       PIXEL_TIME_COUNT(kPixelTimeCountWalkSteps);
 #endif
 
+    // A planet's sea is no mesh: where the ray crosses its sphere it is the hit (checkWaterIntersection
+    // takes any crossing nearer than what the ray met), so nothing past it is traced: from the air,
+    // not the sea floor down the water and its weed. Not in a lake, where the sphere is no surface.
+    if(worldHasSea(frameInfo) && g_waterLevel == 0.0F)
+    {
+      const SeaCrossing toSea = seaCrossing(worldSea(frameInfo), ray.Origin, ray.Direction, ray.TMax);
+      if(toSea.t >= 0.0F)
+        ray.TMax = toSea.t;
+    }
+
     // Trace the ray through the scene. A walk's step sees only what can bound its medium: it
     // passes through lashes, hair and clothing that reach under the skin (INSTANCE_MASK_WALK). A ray
     // that still looks as the camera does passes what the camera looks through (ptViewMask).
+    // (its sides as the camera's while it looks as the camera does, as its instances are: through a
+    // clear pane too)
     raytracer.Trace(ray, payload, seed, freeFlight.drawn ? uint(INSTANCE_MASK_WALK) : ptViewMask(pt),
-                    ptOnCameraRay(pt) || ptIsInside(pt) ? CAMERA_RAY_FLAGS : BOUNCE_RAY_FLAGS);
+                    ptCameraView(pt) || ptIsInside(pt) ? CAMERA_RAY_FLAGS : BOUNCE_RAY_FLAGS);
     ray.TMax = INFINITE;
 
     // Getting the scene information
@@ -1363,10 +1378,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
             disk = evalWorldLightDisk(ray.Origin, ray.Direction, frameInfo);
           else
             disk = evalSkySunDisk(bgDir, frameInfo);
-          disk *= cloudSunShare(ray.Origin, frameInfo);
+          // (the clouds read only for a ray in the disk: nearly every one misses it)
           if(any(disk > 0.0F))
+          {
+            disk *= cloudSunShare(ray.Origin, frameInfo);
             addRadiance(pt, pt.throughput * computeSkySunHitMisWeight(pt.lastSamplePdf, pt.lightPick) * disk * frameInfo->envIntensity, indirect,
                         uint(LIGHT_GROUP_SUN));
+          }
         }
       }
 
@@ -1389,8 +1407,15 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       }
     }
     // Light linking: from here the lamps are this surface's (g_unlitLamps). The floor and the water
-    // are no mesh and take every lamp.
-    g_unlitLamps = (hitInfinitePlane || hitWater) ? 0u : renderNode.unlit;
+    // are no mesh and take every lamp. Until here they were those of the vertex the path's light pick
+    // was made at: a surface the path goes on through puts them back as it puts the pick back, so an
+    // emitter met beyond it is weighed among the lamps that vertex picked from.
+    const uint unlitOfPick = g_unlitLamps;
+    g_unlitLamps           = (hitInfinitePlane || hitWater) ? 0u : renderNode.unlit;
+    // the texture signal counts the camera's first hit: the floor or the water is that hit, and a mesh
+    // a later bounce meets is not
+    if(hitInfinitePlane || hitWater)
+      g_hitToCount = false;
 
     GltfShadeMaterial* materials     = pushConst.gltfScene->materials;
     GltfTextureInfo*   texInfos      = pushConst.gltfScene->textureInfos;
@@ -1426,7 +1451,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     {
       pt.cone.width = worldFoot;
       pt.nullDistance += payload.hitT;
-      ray.Origin = safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance);  // getHitState turned geonrm to the ray
+      ray.Origin   = safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance);  // getHitState turned geonrm to the ray
+      g_unlitLamps = unlitOfPick;
       return PathStepResult.eEarlyContinue;
     }
 
@@ -1461,6 +1487,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
                                                 pt.lastSamplePdf, seed, ptIsInside(pt), shadowExtinction, frameInfo);
         if(!continuePath)
           return PathStepResult.eBreak;
+        g_unlitLamps = unlitOfPick;
+        pt.nullDistance += payload.hitT;  // an emitter met beyond is as far as the vertex the path left
         return PathStepResult.eEarlyContinue;  // On through the plane, as if it were not there
       }
     }
@@ -1507,7 +1535,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           pt.outerMaterial = -1;
           pt.cone.width    = worldFoot;
           pt.nullDistance += payload.hitT;
-          ray.Origin = safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance);  // getHitState turned geonrm to the ray
+          ray.Origin   = safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance);  // getHitState turned geonrm to the ray
+          g_unlitLamps = unlitOfPick;
           return PathStepResult.eEarlyContinue;
         }
 #endif
@@ -1782,8 +1811,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // taken off: skin's (up to 0.95) would leave RR a near-black albedo.
       float3 guideAlbedo = pbrMat.baseColor.xyz;
 #if USE_DLSS_SHADER
-      if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) || hasFlag(pushConst.flags, PathtracerFlags::ePtRrStillGuides))
-        guideAlbedo *= 1.0F - pbrMat.metallic;
+      guideAlbedo = rrGuideAlbedo(guideAlbedo, pbrMat.metallic);
       // #DLSS specular guide - specular albedo + clear-glass albedo refinement. DLSS-only quality
       // path, compiled out of the variant without DLSS's guides.
       float3 specularAlbedo = dlssSpecularAlbedo(pbrMat, ray.Direction);
@@ -1887,6 +1915,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
           pt.glassBounces++;
         else
           pt.surfaceDepth++;
+        g_unlitLamps = unlitOfPick;
         return PathStepResult.eEarlyContinue;
       }
     }
@@ -1897,7 +1926,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // (CLEAR_CROSSING_ROUGHNESS) is decided by it, texel by texel as they decide. 1: no refracting mesh.
     float crossingRoughness = 1.0F;
 #if GLTF_USE_TRANSMISSION
-    if(materialIndex >= 0 && pbrMat.transmission > MIN_TRANSMISSION)
+    // (not on a surface that scatters: neither reader below takes one as glass)
+    if(materialIndex >= 0 && pbrMat.transmission > MIN_TRANSMISSION && materials[materialIndex].scatterStrengthFactor <= 0.0F)
     {
       const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
       crossingRoughness  = crossingRoughnessMetallic(materials[materialIndex], renderPrim, getTriangleIndices(renderPrim, payload.primitiveID), barys).x;
@@ -1988,7 +2018,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         // material row's), its area as it is here, its geometric normal, and what it was picked among.
         emissiveMis = computeEmitterHitMisWeight(pt.lastSamplePdf, pt.lightPick, emitterWeight(payload.rnodeID, payload.primitiveID),
                                                  hit.geonrm, ray.Direction, pt.nullDistance + payload.hitT, payload.rnodeID,
-                                                 renderPrim, payload.primitiveID, renderNode.objectToWorld);
+                                                 renderPrim, payload.primitiveID, renderNode.objectToWorld, unlitOfPick);
       }
       const float3 throughCoat = bsdfCoatEmission(pbrMat.clearcoat, pbrMat.clearcoatRoughness, pbrMat.baseColor, pbrMat.metallic,
                                                   bsdfCoatBaseSpecular(pbrMat.specular, pbrMat.ior2), bsdfCoatClearTransmission(pbrMat),
@@ -2660,6 +2690,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       {
         pt.lastSamplePdf = prevSamplePdf;
         pt.lightPick     = prevLightPick;
+        g_unlitLamps     = unlitOfPick;  // the pick's lamps with it
         pt.nullDistance += payload.hitT;
       }
       else
@@ -3061,7 +3092,9 @@ SampleResult pathTrace(IRaytracer raytracer, RayDesc ray, inout uint seed)
   //
   // `pt.solid` is the primary-hit test -- a miss saw the sky, which already integrated the whole
   // atmosphere, and hazing it a second time would grey out the horizon it just drew.
-  if(pt.solid && pt.firstHitHazed && hasAerialPerspective(pushConst.frameInfo))
+  // A camera path that ended before its first hit (a ray under the water that met nothing, a walk
+  // lost in the camera's medium) has no point to march to, as the haze below says too.
+  if(pt.solid && pt.firstHitHazed && hasAerialPerspective(pushConst.frameInfo) && all(abs(pt.firstHitPos) < float3(1e33F)))
   {
     const float3 eye = pushConst.frameInfo->viewInv[3].xyz;
     const float2 u   = float2(rand(seed), rand(seed));
@@ -3397,13 +3430,6 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   g_timeCount               = 0u;
 #endif
 
-  // Check if the sample position is the mouse coordinate
-  if(samplePos.x == pushConst.mouseCoord.x && samplePos.y == pushConst.mouseCoord.y)
-  {
-    // Set the debug flag to true (used for printing debug information)
-    doDebug = true;
-  }
-
   // Converged pixels of an accumulation take no more samples (ePtAdaptiveStop), a warp at a time: a
   // thread whose warp still works costs the same idle, so a converged pixel among unconverged ones goes
   // on sampling (and is unconverged again if a bright path arrives). Before any trace, while the warp
@@ -3444,7 +3470,10 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
   if(pushConst.frameInfo->shadowRayShare > 0.0F && accumulating && pushConst.totalSamples >= SHADOW_ROULETTE_FROM
      && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
   {
-    const float mean = luminance(outImages[int(OutputImage::eResultImage)][int2(samplePos)].xyz);
+    // (the image holds its samples pre-exposed, times SceneFrameInfo::outputScale; a vertex's light term
+    // is in the scene's units, as inspectPixel reads it back)
+    const float mean = luminance(outImages[int(OutputImage::eResultImage)][int2(samplePos)].xyz)
+                       / max(pushConst.frameInfo->outputScale, 1e-30F);
     g_shadowRest     = (mean > 0.0F && mean < 1e30F) ? mean : 0.0F;
   }
 #endif
@@ -3590,11 +3619,15 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
                    uint(min(counting ? elapsed : elapsed >> kPixelTimeUnitShift, uint64_t(0x7FFFFFFFu))), 1u);
   }
   outImages[int(OutputImage::eResultImage)][int2(samplePos)] = pixelColor;
+  const float4 written                                       = pixelColor;
 #else
   // Saving result
   // Nothing accumulated yet (the first frame, or the first after DLSS's frame 0): replace the value in
   // the buffer, never weigh it by 0, which an infinite value would turn into NaN. A DLSS frame's first
   // sample replaces it too, and its later ones (totalSamples then counts the frame's so far) join it.
+  // `written` is what the image holds now, for the adaptive stop below (32-bit floats: a read back
+  // would give the same)
+  float4 written = pixelColor;
   if(firstFrame || pushConst.totalSamples == 0 || (hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss) && !laterSample))
   {
     outImages[int(OutputImage::eResultImage)][int2(samplePos)] = pixelColor;
@@ -3604,8 +3637,8 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     // Do accumulation over time using uniform weighting
     float  totalSamplesAfter = float(pushConst.totalSamples + 1);
     float4 old_color         = outImages[0][int2(samplePos)];
-    outImages[int(OutputImage::eResultImage)][int2(samplePos)] =
-        (old_color * pushConst.totalSamples + pixelColor) / totalSamplesAfter;
+    written                  = (old_color * pushConst.totalSamples + pixelColor) / totalSamplesAfter;
+    outImages[int(OutputImage::eResultImage)][int2(samplePos)] = written;
   }
 #endif
 
@@ -3617,7 +3650,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     float       second  = lumSquared;
     if(accumulating)
       second = (outImages[int(OutputImage::eConvergence)][pixel].x * pushConst.totalSamples + lumSquared) / float(samples);
-    const float mean = luminance(outImages[int(OutputImage::eResultImage)][pixel].xyz);
+    const float mean = luminance(written.xyz);
     // where the tone mapper flattens the pixel, the table's widening, between its entries
     float       relax    = 1.0F;
     const float position = adaptiveRelaxPosition(mean, pushConst.adaptiveRelaxBase);

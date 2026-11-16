@@ -220,7 +220,11 @@ HitState getHitState(GltfRenderPrimitive renderPrim,  //
       orthoLength2 > 1e-6 * dot(tangent, tangent) ? tangentOrtho * rsqrt(orthoLength2) : makeFastTangent(hit.nrm).xyz;
   // The handedness is a sign: a zero tangent's w is 0 too (a vertex no tangent-needing triangle
   // touches, in a mesh whose other submeshes need them), and a bitangent scaled by it is no frame.
-  hit.bitangent = cross(hit.nrm, hit.tangent) * (tng[0].w < 0.0 ? -1.0 : 1.0);
+  // A mirroring instance (a transform of negative determinant) turns the cross product of the
+  // transformed normal and tangent the other way from its transformed bitangent: a normal map's
+  // green would be read upside down.
+  const float mirrored = determinant((float3x3)objectToWorld) < 0.0 ? -1.0 : 1.0;
+  hit.bitangent        = cross(hit.nrm, hit.tangent) * ((tng[0].w < 0.0 ? -1.0 : 1.0) * mirrored);
 
   // Flip geometric normal toward the ray origin for back-face hits (front-face already
   // computed above so the shadow-terminator hack can pre-flip the per-vertex normals).
@@ -244,7 +248,13 @@ HitState getHitState(GltfRenderPrimitive renderPrim,  //
   float3 r = reflect(normalize(worldRayDirection), hit.nrm);
   if(dot(r, hit.geonrm) < 0)
   {
-    hit.nrm = hit.geonrm;
+    // the frame follows the normal it now has, keeping its handedness
+    const float hand  = dot(cross(hit.nrm, hit.tangent), hit.bitangent) < 0.0 ? -1.0 : 1.0;
+    hit.nrm           = hit.geonrm;
+    const float3 ortho = hit.tangent - hit.nrm * dot(hit.nrm, hit.tangent);
+    const float  len2  = dot(ortho, ortho);
+    hit.tangent       = len2 > 1e-12 ? ortho * rsqrt(len2) : makeFastTangent(hit.nrm).xyz;
+    hit.bitangent     = cross(hit.nrm, hit.tangent) * hand;
   }
 
   return hit;

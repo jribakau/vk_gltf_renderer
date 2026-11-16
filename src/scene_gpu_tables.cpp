@@ -367,7 +367,9 @@ EmissiveTable buildEmissiveTable(std::span<const Emitter> emitters, int maxCut)
         const glm::vec3 w0    = glm::vec3(e.world * glm::vec4(e.positions[i0], 1.0f));
         const glm::vec3 w1    = glm::vec3(e.world * glm::vec4(e.positions[i1], 1.0f));
         const glm::vec3 w2    = glm::vec3(e.world * glm::vec4(e.positions[i2], 1.0f));
-        const glm::vec3 cross = glm::cross(w1 - w0, w2 - w0);  // as sampleEmissiveTriangle's lightN
+        // as sampleEmissiveTriangle's lightN: a mirroring transform turns the edges' cross product
+        // away from the side the triangle emits from (emitterMirror)
+        const glm::vec3 cross = glm::cross(w1 - w0, w2 - w0) * (glm::determinant(glm::mat3(e.world)) < 0.0f ? -1.0f : 1.0f);
         area                  = 0.5f * glm::length(cross);
         tlum                  = own ? (t < e.triangleLuminance.size() ? e.triangleLuminance[t] : 0.f) : lum;
         if(area > 0.0f && tlum > 0.0f)

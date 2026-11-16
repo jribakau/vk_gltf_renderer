@@ -71,6 +71,11 @@ static const uint SHADOW_RAY_FLAGS = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 // camera's: a back face there says its medium ended, and only the medium's own mesh may say that.
 static const uint CAMERA_RAY_FLAGS = RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
 static const uint BOUNCE_RAY_FLAGS = RAY_FLAG_NONE;
+// The selection image's ray (traceSelectionRay) sees what the camera sees: its instances and its
+// sides, every surface solid. Else an outline would go to what the camera looks through (hidden from
+// the camera, a single-sided face from behind), and one ray tracer would cull where another did not.
+static const uint SELECTION_RAY_FLAGS = RAY_FLAG_FORCE_OPAQUE | CAMERA_RAY_FLAGS;
+static const uint SELECTION_RAY_MASK  = INSTANCE_MASK_CAMERA;
 
 // Raytracer interface definition
 interface IRaytracer
@@ -206,7 +211,7 @@ struct RayQueryRaytracer : IRaytracer
     payload.hitT = INFINITE;
     PIXEL_TIME_COUNT(kPixelTimeCountRays);
     RayQuery rayQuery;
-    rayQuery.TraceRayInline(topLevelAS, RAY_FLAG_FORCE_OPAQUE, 0xFF, ray);
+    rayQuery.TraceRayInline(topLevelAS, SELECTION_RAY_FLAGS, SELECTION_RAY_MASK, ray);
     while(rayQuery.Proceed())
     {
     }  // All geometry treated as opaque, nothing to process
@@ -269,7 +274,7 @@ struct TraditionalRaytracer : IRaytracer
     PIXEL_TIME_COUNT(kPixelTimeCountRays);
     if(USE_SER == 1 && AVAILABLE_SER == 1)
     {
-      HitObject hitObj = HitObject::TraceRay(topLevelAS, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 0, 0, ray, payload);
+      HitObject hitObj = HitObject::TraceRay(topLevelAS, SELECTION_RAY_FLAGS, SELECTION_RAY_MASK, 0, 0, 0, ray, payload);
       if(hitObj.IsMiss())
       {
         payload.hitT = INFINITE;
@@ -283,7 +288,7 @@ struct TraditionalRaytracer : IRaytracer
       // Accepted trade-off: this dispatches rchitMain, but only hitT/rnodeID are used.
       // A dedicated minimal CHS would require an extra SBT entry. The SER path above
       // already avoids that dispatch overhead.
-      TraceRay(topLevelAS, RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, 0, 0, 0, ray, payload);
+      TraceRay(topLevelAS, SELECTION_RAY_FLAGS, SELECTION_RAY_MASK, 0, 0, 0, ray, payload);
     }
   }
 

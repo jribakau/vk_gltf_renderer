@@ -41,7 +41,11 @@ RayDesc getRay(float2 samplePos, float2 offset, float2 imageSize, float4x4 projM
   RayDesc ray;
   if(isOrthographic)
   {
-    ray.Origin    = mul(viewCoords, viewMatrixI).xyz;
+    // from the near plane, at depth 0 of the projection (orthoRH_ZO): its depth -1 lies far minus
+    // twice near behind the eye, and rays from there met what stands behind the camera
+    float4 nearCoords = mul(float4(clipCoords, 0.0, 1.0), projMatrixI);
+    nearCoords /= nearCoords.w;
+    ray.Origin    = mul(nearCoords, viewMatrixI).xyz;
     ray.Direction = normalize(mul(float4(0, 0, -1, 0), viewMatrixI).xyz);
   }
   else

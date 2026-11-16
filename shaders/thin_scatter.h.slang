@@ -86,6 +86,10 @@ float dielectricFresnelOutside(float cosI, float eta)
   cosI              = clamp(cosI, 0.0F, 1.0F);
   const float sinT2 = (1.0F - cosI * cosI) / (eta * eta);
   const float cosT  = sqrt(max(1.0F - sinT2, 0.0F));
+  // grazing onto a medium of the same index (a light below the map's normal, eta 1): both ratios are
+  // 0 over 0, where every other index reflects it all
+  if(cosI + eta * cosT <= 0.0F)
+    return 1.0F;
   const float rs    = (cosI - eta * cosT) / (cosI + eta * cosT);
   const float rp    = (eta * cosI - cosT) / (eta * cosI + cosT);
   return 0.5F * (rs * rs + rp * rp);

@@ -244,7 +244,9 @@ float3 convertSGToMR(float3 diffuseColor, float3 specularColor, float glossiness
     baseColor = clamp(baseColor, 0.0f, 1.0f);
   }
 
-  float r   = 1.0f - glossiness;
+  // floored as the metallic-roughness branch is: at glossiness 1 (the extension's default) alpha 0
+  // would make every GGX evaluation NaN
+  float r   = max(1.0f - glossiness, MICROFACET_MIN_ROUGHNESS);
   roughness = float2(r * r);
 
   return baseColor;
@@ -681,11 +683,12 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
     // Adjust the roughness to account for anisotropy.
     pbrMat.roughness.x = lerp(pbrMat.roughness.y, 1.0f, anisotropyStrength * anisotropyStrength);
 
-    // Rotate the anisotropy direction in the tangent space.
+    // Rotate the anisotropy direction in the tangent space: counter-clockwise from T toward B, as
+    // KHR_materials_anisotropy and its sample renderer turn it (the host packs sin, cos)
     const float s       = material.anisotropyRotation.x;
     const float c       = material.anisotropyRotation.y;
-    anisotropyDirection = float2(c * anisotropyDirection.x + s * anisotropyDirection.y,
-                                 c * anisotropyDirection.y - s * anisotropyDirection.x);
+    anisotropyDirection = float2(c * anisotropyDirection.x - s * anisotropyDirection.y,
+                                 s * anisotropyDirection.x + c * anisotropyDirection.y);
 
     // Update the tangent to be along the anisotropy direction in tangent space.
     const float3 T_aniso = pbrMat.T * anisotropyDirection.x + pbrMat.B * anisotropyDirection.y;
@@ -880,8 +883,14 @@ PbrMaterial evaluateMaterial(GltfShadeMaterial material, MeshState state, Textur
     {
       weight *= getTexture(images, samplers, texInfos[material.flakesWeightTexture], state.tc, state.texGrad).r;
     }
-    const Flake flake = flakeAt(state.tc[0], material.flakesSize, material.flakesDensity);
-    if(flakeShows(flake, weight * flake.reflectivity))
+    Flake flake = {};
+    bool  shows = false;
+    if(weight > 0.0F)  // (where its weight map is black no flake shows: its noise is not worked out)
+    {
+      flake = flakeAt(state.tc[0], material.flakesSize, material.flakesDensity);
+      shows = flakeShows(flake, weight * flake.reflectivity);
+    }
+    if(shows)
     {
       float3 tint = material.flakesColor;
       if(isTexturePresent(material.flakesColorTexture))

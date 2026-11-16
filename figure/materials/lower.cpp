@@ -939,11 +939,13 @@ Lowered lower(const Surface& surface, const Edits& e, const LowerOptions& opts)
     eff.microDetail = *e.microDetail;
 
   // Hair cards: the highlight stretches across the strands, a band. The rotation is measured from
-  // the mesh in the renderer's convention. An authored Glossy Anisotropy of 0 keeps it round.
-  // A live ribbon uses the per-hit strand instead of one angle for the whole material.
+  // the mesh clockwise (mat::strandRotation, the hair fibre's own convention); KHR_materials_anisotropy,
+  // the renderer's and a file's alike, turns counter-clockwise, so it is negated. An authored Glossy
+  // Anisotropy of 0 keeps it round. A live ribbon uses the per-hit strand instead of one angle for
+  // the whole material.
   if(s.kind == Kind::eHair && !liveRibbon && opts.anisotropyRotation)
     if(const auto strength = strandStrength(s, roughnessFactor, lobes.glossyShare))
-      out.anisotropy = Anisotropy{.strength = *strength, .rotation = opts.forFile ? -*opts.anisotropyRotation : *opts.anisotropyRotation};
+      out.anisotropy = Anisotropy{.strength = *strength, .rotation = -*opts.anisotropyRotation};
 
   if(liveRibbon)
   {

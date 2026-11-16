@@ -105,6 +105,10 @@ TEST(ThinScatter, TheExitFresnelMovesLightWithoutAddingAny)
   // Skin at 1.4: head-on 5% more (Ft 0.972 over c 0.922)
   EXPECT_NEAR(diffuseExitFresnelWeight(1.0f, 1.4f), 1.054f, 0.005f);
   EXPECT_NEAR(diffuseExitFresnelWeight(1.0f, 1.0f), 1.0f, 0.02f);
+  // a light below the map's normal onto a medium of the same index: all of it reflected, not 0 over 0
+  EXPECT_EQ(dielectricFresnelOutside(0.0f, 1.0f), 1.0f);
+  EXPECT_TRUE(std::isfinite(diffuseExitFresnelWeight(0.0f, 1.0f)));
+  EXPECT_TRUE(std::isfinite(diffuseExitFresnelWeight(-0.3f, 1.0f)));
 }
 
 // The preview's softened diffuse pays the boundary's exit Fresnel per part: the part about the smooth
