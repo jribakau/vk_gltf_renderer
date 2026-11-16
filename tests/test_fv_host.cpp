@@ -6429,8 +6429,8 @@ void writeTree(const fs::path& dir, double radius, double scale)
 
 // Play mode on a meadow (fv_host_play.cpp): someone walking at a tree stops at its bark, its crown
 // left out of what they meet; the torch (L) is a light in the scene while it is on and goes with play;
-// the view's exposure is the walker's eye's while playing; B with no ship in the scene and none to load
-// says so
+// the view's exposure is the walker's eye's while playing, X putting it off and on again, and none at all
+// when play.start says so; B with no ship in the scene and none to load says so
 TEST(FvHost, PlayWalksUpToATreesTrunkAndCarriesATorch)
 {
   const fs::path kit = fs::temp_directory_path() / ("fv-play-tree-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -6525,6 +6525,16 @@ TEST(FvHost, PlayWalksUpToATreesTrunkAndCarriesATorch)
   ASSERT_FALSE(torch.isNone());
   EXPECT_FALSE(scene.entity(torch)->light.isNone());
   EXPECT_LT(glm::distance(glm::dvec3(scene.world(torch)[3]), eye), 0.6);
+  // the eye: off with X, on again with X
+  EXPECT_TRUE(rig.topic("play").value("eye", false));
+  hold(fv::play::kEye, 100);
+  hold(0, 100);
+  EXPECT_FALSE(rig.renderer.playEye);
+  EXPECT_FALSE(rig.topic("play").value("eye", true));
+  hold(fv::play::kEye, 100);
+  hold(0, 100);
+  EXPECT_TRUE(rig.renderer.playEye);
+  EXPECT_TRUE(rig.topic("play").value("eye", false));
   // B with nothing to put down
   hold(fv::play::kShipHere, 100);
   EXPECT_EQ(rig.topic("play").value("prompt", ""), "No ship to put down");
@@ -6532,6 +6542,12 @@ TEST(FvHost, PlayWalksUpToATreesTrunkAndCarriesATorch)
   frames(50);
   EXPECT_TRUE(rootNamed(scene, "Torch").isNone());
   EXPECT_FALSE(rig.renderer.playEye);
+  // played again with the eye put off: none
+  ASSERT_TRUE(rig.cmd("play.start", {{"eye", false}}).value("ok", false));
+  frames(50);
+  EXPECT_FALSE(rig.renderer.playEye);
+  EXPECT_FALSE(rig.topic("play").value("eye", true));
+  ASSERT_TRUE(rig.cmd("play.stop").value("ok", false));
   std::error_code ec;
   fs::remove_all(kit, ec);
 }

@@ -119,14 +119,16 @@
 //                                                (the selection's state.moves)
 //   scene.clear     {}                           every prop goes
 //   scene.order     {order: [prop]}              the props in this order (the ones it leaves out after them), one composition
-//   play.start      {ship?: path}                play mode (fv_host_play.cpp): on foot where the view is, the keys and
+//   play.start      {ship?: path, eye?: bool}    play mode (fv_host_play.cpp): on foot where the view is, the keys and
 //                                                the mouse from /input's `play` events; B (kShipHere) puts the scene's
 //                                                nearest ship (a model with an fv_seat node) down ahead, or with none
-//                                                loads `ship` there; L (kTorch) the torch in hand on or off
+//                                                loads `ship` there; L (kTorch) the torch in hand on or off; the view's
+//                                                exposure the walker's eye's (HostRenderer::setPlayEye) unless `eye` is
+//                                                false, X (kEye) turning it on or off
 //   play.stop       {}                           the view free again; each ship flown or moved stays where it was left,
 //                                                one step of the history ("Fly <name>"). The "play" topic: {active, mode
 //                                                (walk|enter|fly|exit), prompt, ship, ships, view (chase|cockpit), range (m/s at full
-//                                                throttle here), speed, height, throttle (a share of the range), boost, torch}
+//                                                throttle here), speed, height, throttle (a share of the range), boost, torch, eye}
 //   pose.set        {prop, values: {"bone/kind/axis": value}, gesture?}
 //   pose.reset      {prop}
 //   pose.eyes       {prop}                       aim the eyeballs at the camera

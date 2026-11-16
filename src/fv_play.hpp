@@ -59,6 +59,7 @@ enum Key : uint32_t
   kView      = 1u << 10,  // V: the cockpit's view or the chase camera's
   kTorch     = 1u << 11,  // L: the torch on or off
   kShipHere  = 1u << 12,  // B: a ship put down ahead
+  kEye       = 1u << 13,  // X: the eye adapting to the view, or the exposure as it is
 };
 
 struct Surface

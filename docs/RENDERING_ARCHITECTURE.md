@@ -622,7 +622,8 @@ settings); it opens up for a dark view and closes down for a bright one as an ey
 sunny day, metered from the frame (`src/exposure_adapt_vk.hpp`; the arithmetic and its constants in
 `src/exposure_adapt.hpp`). Off by default: the Camera tab's Adapt to the view (the lighting's
 `tonemap.adapt`, protocol 84; `tmAdapt`), in Simple and Auto, not Manual. Play mode turns on an eye of
-its own while it runs (`HostRenderer::setPlayEye`), whatever the tab says.
+its own while it runs (`HostRenderer::setPlayEye`), whatever the tab says; X while playing, or
+play.start's `eye` false (the app's saved choice), leaves it off.
 
 - **The meter:** nvpro's tone mapper histogram (`nvshaders::Tonemapper::cmdHistogram`, the Histogram
   pass alone) of the image the tone mapper takes, before the lens, bloom and local exposure, counted

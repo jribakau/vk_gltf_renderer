@@ -177,7 +177,10 @@ namespace {
 // the scene's nearest or play.start's `ship`; L (kTorch) the torch on or off, the topic's `torch`; and
 // lighting.set takes a `gesture`, one step of the history however long it runs (play mode's clock).
 // An older renderer puts the ship down at play.start and refuses a lighting patch with a gesture.
-constexpr int kProtocolVersion = 86;
+// 87: play mode's eye: while playing the view's exposure adapts as the walker's eye does, unless
+// play.start's `eye` is false; X (the `play` event's kEye bit) turns it on or off, the topic's `eye`.
+// An older renderer has no eye, and takes neither.
+constexpr int kProtocolVersion = 87;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

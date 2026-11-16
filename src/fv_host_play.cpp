@@ -25,7 +25,8 @@
 // camera looks from. On foot the torch (L) is a spot light the host keeps in the walker's hand, aimed
 // at what the view looks at, and B puts a ship down ahead: the nearest in the scene, else the app's
 // own (play.start's `ship`). While playing, the view's exposure adapts as the walker's eye does
-// (HostRenderer::setPlayEye), so a night is seen by the moon and the torch's pool by its light. What the
+// (HostRenderer::setPlayEye), so a night is seen by the moon and the torch's pool by its light; X (or
+// play.start's `eye` false) leaves the exposure as the Camera tab has it. What the
 // walker and the ship meet are the props' triangles, the planet's places, and the backdrop's trees
 // (their trunks, found from each tree's mesh) and stones (their own triangles) near them.
 //
@@ -220,7 +221,8 @@ struct FvHost::Impl::PlayState
   std::set<const fv::physics::SharedTriangles*> indexing;
   std::string        shipPath;     // the GLB B puts down when the scene has no ship (play.start's `ship`)
   Clock::time_point  shipAsked{};  // when B last asked for it to load
-  int                torches = 0, brings = 0;  // presses of L and B not yet taken
+  int                torches = 0, brings = 0, eyes = 0;  // presses of L, B and X not yet taken
+  bool               eye = true;  // the view's exposure adapts as the walker's eye does (X; play.start's `eye`)
   game::Torch        torch;
   rs::EntityId       torchEntity;
   rs::LightId        torchLight;
@@ -698,7 +700,8 @@ Json FvHost::Impl::playStart(const Json& args)
     P.active = true;
     P.heard  = Clock::now();
     P.clip   = manip->getClipPlanes();
-    renderer->setPlayEye(true);  // the view's exposure is the walker's eye's while playing
+    P.eye = args.value("eye", true);
+    renderer->setPlayEye(P.eye);  // the view's exposure is the walker's eye's while playing, unless it is put off
     if(view)
     {
       P.lens               = view->lens();
@@ -787,6 +790,7 @@ void FvHost::Impl::playInput(const Json& e)
   P.jumps += (pressed & game::kUp) ? 1 : 0;
   P.torches += (pressed & game::kTorch) ? 1 : 0;
   P.brings += (pressed & game::kShipHere) ? 1 : 0;
+  P.eyes += (pressed & game::kEye) ? 1 : 0;
   P.look += glm::dvec2(e.value("dx", 0.0), e.value("dy", 0.0));
   if(const double wheel = e.value("wheel", 0.0); wheel != 0.0)
     P.chase.zoom = std::clamp(P.chase.zoom * std::exp(wheel * 0.001), 0.5, 3.0);
@@ -807,7 +811,7 @@ void FvHost::Impl::applyPlay()
   if(now - P.heard > std::chrono::milliseconds(500))
     P.keys = 0;
   const int        uses = std::exchange(P.uses, 0), views = std::exchange(P.views, 0), jumps = std::exchange(P.jumps, 0);
-  const int        torches = std::exchange(P.torches, 0), brings = std::exchange(P.brings, 0);
+  const int        torches = std::exchange(P.torches, 0), brings = std::exchange(P.brings, 0), eyes = std::exchange(P.eyes, 0);
   const glm::dvec2 look = std::exchange(P.look, glm::dvec2(0.0));
 
   PlayState::findRigs(*this, P);
@@ -981,6 +985,12 @@ void FvHost::Impl::applyPlay()
   if(torches % 2 == 1)
     P.torch.on = !P.torch.on;
   PlayState::showTorch(*this, P, P.torch.on && (P.mode == PlayState::Mode::eWalk || P.mode == PlayState::Mode::eExit), world, dt);
+  // the eye (X): the view's exposure adapting as it does, on foot and in the ship, or as the Camera tab has it
+  if(eyes % 2 == 1)
+  {
+    P.eye = !P.eye;
+    renderer->setPlayEye(P.eye);
+  }
 
   // the camera: a near plane close enough for the cockpit, the far one the scene's
   const glm::dvec2 clip = manip->getClipPlanes();
@@ -1004,7 +1014,8 @@ void FvHost::Impl::applyPlay()
                        {"throttle", fly ? std::round(P.ship.throttle * 100.0) / 100.0 : 0.0},
                        {"range", fly ? std::round(P.range) : 0.0},
                        {"boost", fly && (P.ship.keys & game::kFast) != 0},
-                       {"torch", P.torch.on}};
+                       {"torch", P.torch.on},
+                       {"eye", P.eye}};
   if(state != P.published && now - P.publishedAt > std::chrono::milliseconds(100))
   {
     P.published   = state;
@@ -1017,7 +1028,7 @@ void FvHost::Impl::publishPlay(bool force)
 {
   if(playing() && !force)
     return;
-  Json state = playing() ? Json{{"active", true}, {"mode", "walk"}, {"prompt", ""}, {"ships", play->rigs.size()}, {"torch", play->torch.on}} : Json{{"active", false}};
+  Json state = playing() ? Json{{"active", true}, {"mode", "walk"}, {"prompt", ""}, {"ships", play->rigs.size()}, {"torch", play->torch.on}, {"eye", play->eye}} : Json{{"active", false}};
   if(play)
   {
     play->published   = state;
