@@ -256,6 +256,32 @@ TEST(RetainedScene, OffCameraCascadesAndLeavesItShown)
   EXPECT_TRUE(scene.offCamera(a1));
 }
 
+// Shadowless cascades as offCamera does, and through any light link a child takes as its own
+TEST(RetainedScene, ShadowlessCascadesThroughAChildsOwnLink)
+{
+  rs::RetainedScene  scene;
+  const rs::EntityId a  = scene.createEntity("a", {});
+  const rs::EntityId b  = scene.createEntity("b", {});
+  const rs::EntityId a1 = scene.createEntity("a1", {}, a);
+  scene.takeChanges();
+  scene.setShadowless(a, true);
+  EXPECT_TRUE(scene.lightLink(a).shadowless);
+  EXPECT_TRUE(scene.lightLink(a1).shadowless);  // its parent's
+  EXPECT_FALSE(scene.lightLink(b).shadowless);
+  const rs::SceneChanges changes = scene.takeChanges();
+  EXPECT_TRUE(changes.visibility.count(a) && changes.visibility.count(a1));
+  EXPECT_FALSE(changes.visibility.count(b));
+  scene.setShadowless(a, true);
+  EXPECT_TRUE(scene.takeChanges().empty());
+  // a child's own link leaves it shadowless, and keeps its own bits
+  scene.setLightLink(a1, rs::LightLink{.unshadowed = 0x20});
+  EXPECT_TRUE(scene.lightLink(a1).shadowless);
+  EXPECT_EQ(scene.lightLink(a1).unshadowed, 0x20);
+  scene.setShadowless(a, false);
+  EXPECT_FALSE(scene.lightLink(a1).shadowless);
+  EXPECT_FALSE(scene.lightLink(a).shadowless);
+}
+
 // A light link is the entity's own, else the nearest parent's, else the scene's
 TEST(RetainedScene, ALightLinkIsTheNearestOrTheScenes)
 {

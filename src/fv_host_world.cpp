@@ -1533,6 +1533,9 @@ void FvHost::Impl::tilePlanet(rs::RetainedScene& scene, const glm::dvec3& eye)
     {
       entity = scene.createEntity("Planet tile", {0, -1}, backdropBuilt->root);
       scene.setMeshInstance(entity, rs::MeshInstance(patch.instance));
+      // shadows no light: a grass blade's shadow rays crossing the blades round it were much of a
+      // meadow's frame (2026-11-16), for a shade the bounces still give; the trees' shadows fall on it
+      scene.setShadowless(entity, true);
     }
     scene.setLocal(entity, {.translation = glm::vec3(place.position), .rotation = place.rotation, .scale = place.scale});
     scene.setVisible(entity, true);

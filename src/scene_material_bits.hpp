@@ -113,10 +113,15 @@ inline MaterialBits materialBits(const tinygltf::Material& mat)
 
 // The mask of an instance that draws with `bits`: its material's, less the camera's bit when the
 // camera looks through it (rs::Entity::offCamera) and the bits of the linked lamps it casts no
-// shadow from (`unshadowed`, rs::LightLink). Every other ray still meets it.
-inline uint8_t instanceMaskOf(const MaterialBits& bits, bool offCamera, uint8_t unshadowed = 0)
+// shadow from (`unshadowed`, rs::LightLink). Every other ray still meets it. One that shadows no
+// light (`shadowless`, rs::Entity::shadowless) has none of the bits a shadow ray looks for (OTHER and
+// the lamps'), and INSTANCE_MASK_SHADOWLESS in their place, which a bounce's 0xFF meets.
+inline uint8_t instanceMaskOf(const MaterialBits& bits, bool offCamera, uint8_t unshadowed = 0, bool shadowless = false)
 {
-  return uint8_t(bits.instanceMask & ~(offCamera ? INSTANCE_MASK_CAMERA : 0) & ~(unshadowed & INSTANCE_MASK_SHADOWS));
+  const uint8_t mask = uint8_t(bits.instanceMask & ~(offCamera ? INSTANCE_MASK_CAMERA : 0) & ~(unshadowed & INSTANCE_MASK_SHADOWS));
+  if(!shadowless || mask == 0)  // (what no ray keeps stays out of every ray)
+    return mask;
+  return uint8_t((mask & ~(INSTANCE_MASK_OTHER | INSTANCE_MASK_SHADOWS)) | INSTANCE_MASK_SHADOWLESS);
 }
 
 // The texture indices a material samples as colour (sRGB). decides it:

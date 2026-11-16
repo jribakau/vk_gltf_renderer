@@ -40,7 +40,8 @@ NAMESPACE_SHADERIO_BEGIN()
 #define PT_WORKGROUP_Y 8
 #define SILHOUETTE_WORKGROUP_SIZE 16
 
-// TLAS instance masks. Every ray sees every instance but two kinds. The rays of a scatter walk see
+// TLAS instance masks. Every ray sees every instance but three kinds (the third, what shadows no
+// light, below with INSTANCE_MASK_SHADOWLESS). The rays of a scatter walk see
 // only what can bound the medium: a material whose extras say `"fvWalkThrough": true` (lashes, hair,
 // clothing on a figure) has no INSTANCE_MASK_WALK, so a walk under the skin passes through it
 // instead of leaving the skin early. And the camera's own rays (ptCameraView, the click and hover
@@ -61,6 +62,12 @@ NAMESPACE_SHADERIO_BEGIN()
 #define INSTANCE_MASK_SHADOW_2 0x40
 #define INSTANCE_MASK_SHADOWS 0x70
 #define INSTANCE_SHADOW_SLOTS 3
+// What shadows no light (rs::Entity::shadowless): a shadow ray looks only for INSTANCE_MASK_OTHER and
+// the lamps' bits (shadowRayMask, raytracer_interface.h.slang), which such an instance lacks; this
+// bit is what the camera-less rays that are not shadow rays (a bounce's 0xFF) meet it by
+#define INSTANCE_MASK_SHADOWLESS 0x80
+// the bits a shadow ray looks for, of those it was asked for (shadowRayMask)
+#define SHADOW_RAY_INSTANCES (INSTANCE_MASK_OTHER | INSTANCE_MASK_SHADOWS)
 // How many other bodies the sky of a planet in the scene holds (SceneFrameInfo::worldBodyPlace)
 #define WORLD_BODY_MAX 4
 // ... and how many of them light its air and its clouds, the brightest (SceneFrameInfo::worldAirToward)

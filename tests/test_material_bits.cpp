@@ -121,6 +121,33 @@ TEST(MaterialBits, OffCameraAnInstanceLosesTheCamerasBitAlone)
   EXPECT_EQ(nvvkgltf::instanceMaskOf(none, true), 0);
 }
 
+// What shadows no light (a planet's grass): no shadow ray meets it, whether for every lamp (0xFF) or
+// a linked one's bit, while a bounce (0xFF), the camera and a walk still do; every other instance
+// still meets a shadow ray
+TEST(MaterialBits, AShadowlessInstanceIsMetByEveryRayButShadowRays)
+{
+  const auto    bits = materialBits(tinygltf::Material{});
+  const uint8_t m    = nvvkgltf::instanceMaskOf(bits, false, 0, true);
+  EXPECT_EQ(m & SHADOW_RAY_INSTANCES & 0xFF, 0);
+  EXPECT_EQ(m & SHADOW_RAY_INSTANCES & INSTANCE_MASK_SHADOW_1, 0);
+  EXPECT_NE(m & 0xFF, 0);
+  EXPECT_NE(m & INSTANCE_MASK_CAMERA, 0);
+  EXPECT_NE(m & INSTANCE_MASK_WALK, 0);
+  // looked through by the camera too: the bounces alone
+  const uint8_t off = nvvkgltf::instanceMaskOf(bits, true, 0, true);
+  EXPECT_EQ(off & INSTANCE_MASK_CAMERA, 0);
+  EXPECT_EQ(off & SHADOW_RAY_INSTANCES, 0);
+  EXPECT_NE(off & 0xFF, 0);
+  // what casts shadows meets every shadow ray, and a linked lamp's that it isn't unshadowed for
+  EXPECT_NE(nvvkgltf::instanceMaskOf(bits, false) & SHADOW_RAY_INSTANCES & 0xFF, 0);
+  EXPECT_NE(nvvkgltf::instanceMaskOf(bits, true) & SHADOW_RAY_INSTANCES & INSTANCE_MASK_SHADOW_2, 0);
+  EXPECT_EQ(nvvkgltf::instanceMaskOf(bits, false, INSTANCE_MASK_SHADOW_2) & SHADOW_RAY_INSTANCES & INSTANCE_MASK_SHADOW_2, 0);
+  // the bit is no other's
+  EXPECT_EQ(INSTANCE_MASK_SHADOWLESS & (INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_TEAR_FILM | INSTANCE_MASK_SHADOWS), 0);
+  // what no ray keeps stays out of every ray
+  EXPECT_EQ(nvvkgltf::instanceMaskOf(nvvkgltf::MaterialBits{}, false, 0, true), 0);
+}
+
 // Shadow linking: a lamp whose shadows are its own traces them with one bit, which every instance
 // has but those that cast it none. Every other ray (0xFF, the camera's, a walk's) meets them as before
 TEST(MaterialBits, AnInstanceThatCastsALampNoShadowLosesThatLampsBitAlone)

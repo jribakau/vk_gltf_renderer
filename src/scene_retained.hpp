@@ -437,7 +437,10 @@ struct LightLink
 {
   uint32_t unlit      = 0;
   uint8_t  unshadowed = 0;
-  bool     operator==(const LightLink&) const = default;
+  // it shadows no light at all, every shadow ray passing through it (Entity::shadowless): set where
+  // the links are derived, from the entity and its parents, whatever link it takes
+  bool shadowless = false;
+  bool operator==(const LightLink&) const = default;
 };
 
 struct CameraRecord
@@ -528,6 +531,10 @@ struct Entity
   // the camera's own rays and the picks, there for every other ray, so it still shades, bounces light
   // and shows in mirrors (shaderio.h INSTANCE_MASK_CAMERA). A wall between the camera and a room.
   bool offCamera = false;
+  // It and what is under it shadow no light: shadow rays pass through, while the camera and every
+  // bounce still meet it (shaderio.h INSTANCE_MASK_SHADOWLESS). A planet's grass, whose shadow rays
+  // crossing its own blades cost more than their shade shows. Cascades as offCamera does (LightLink::shadowless)
+  bool shadowless = false;
   // Its light link and that of what is under it, down to the next entity with one of its own
   // (lightLink() gives the nearest); none up to the root: the scene's (setDefaultLightLink).
   std::optional<LightLink>    link;
@@ -703,6 +710,8 @@ public:
   void setVisible(EntityId id, bool visible);
   // The camera looks through the entity and what is under it (Entity::offCamera)
   void setOffCamera(EntityId id, bool offCamera);
+  // The entity and what is under it shadow no light (Entity::shadowless)
+  void setShadowless(EntityId id, bool shadowless);
   // The linked lights that leave the entity and what is under it dark or unshadowed (Entity::link);
   // none: its parent's. And the link of every entity with none up to its root.
   void setLightLink(EntityId id, std::optional<LightLink> link);

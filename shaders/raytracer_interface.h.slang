@@ -92,8 +92,16 @@ interface IRaytracer
 // (TraditionalRaytracer::TraceShadow under USE_INLINE_SHADOW): on Ada it took 15-18% off the moving frame's
 // path trace and 12-16% off a still's (1TEST, 7TEST, 10TEST at 1080p, 2026-11-08). The same function, so
 // both give the same light; only the order the candidates come in differs, as between any two traversals.
+// The instances a shadow ray meets: of those it was asked for (0xFF, or a linked lamp's bit), what
+// casts shadows. Every instance has INSTANCE_MASK_OTHER but what shadows no light (rs::Entity::shadowless)
+uint shadowRayMask(uint instanceMask)
+{
+  return instanceMask & uint(SHADOW_RAY_INSTANCES);
+}
+
 float3 traceShadowInline(RayDesc ray, inout uint seed, bool initialInside, float3 initialExtinction, uint instanceMask)
 {
+  instanceMask = shadowRayMask(instanceMask);
   const float ground = infinitePlaneShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo);
   if(ground <= 0.0F)
     return float3(0.0);
@@ -286,6 +294,7 @@ struct TraditionalRaytracer : IRaytracer
   {
     if(USE_INLINE_SHADOW == 1)
       return traceShadowInline(ray, seed, initialInside, initialExtinction, instanceMask);
+    instanceMask = shadowRayMask(instanceMask);
 
     const float ground = infinitePlaneShadowTransmittance(ray.Origin, ray.Direction, ray.TMax, pushConst.frameInfo);
     if(ground <= 0.0F)

@@ -631,6 +631,16 @@ void RetainedScene::setOffCamera(EntityId id, bool offCamera)
   }
 }
 
+void RetainedScene::setShadowless(EntityId id, bool shadowless)
+{
+  assertOwner();
+  if(Entity* e = m_entities.get(id); e && e->shadowless != shadowless)
+  {
+    e->shadowless = shadowless;
+    markVisibilityDirty(id);
+  }
+}
+
 void RetainedScene::setLightLink(EntityId id, std::optional<LightLink> link)
 {
   assertOwner();
@@ -913,7 +923,9 @@ void RetainedScene::updateWorld()
       d.shown     = parentShown && e.visible;
       d.offCamera = parentOffCamera || e.offCamera;
       d.link      = e.link.value_or(parentLink);
-      d.dirty     = false;
+      // shadowless cascades as offCamera does, whatever link a child takes as its own
+      d.link.shadowless = parentLink.shadowless || e.shadowless;
+      d.dirty           = false;
     }
     for(EntityId c : e.children)
       walk(c, d.world, d.shown, d.offCamera, d.link, redo);

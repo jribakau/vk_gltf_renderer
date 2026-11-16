@@ -4278,7 +4278,7 @@ void Residency::buildTlas()
         std::memcpy(row.transform, was.transform, sizeof(row.transform));
       row.customIndex                    = inst->prim;
       const nvvkgltf::MaterialBits& bits = m_materialStates[inst->materialSlot]->bits;
-      row.mask                           = nvvkgltf::instanceMaskOf(bits, inst->offCamera, inst->link.unshadowed);
+      row.mask = nvvkgltf::instanceMaskOf(bits, inst->offCamera, inst->link.unshadowed, inst->link.shadowless);
       row.flags                          = bits.instanceFlags;
       if(inst->shown)
         row.blas = m_prims[inst->prim]->blas;
