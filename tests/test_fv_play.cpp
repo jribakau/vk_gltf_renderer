@@ -506,19 +506,59 @@ TEST(PlayCamera, ABlendEndsWhereItSaysAndKeepsAnUpright)
   EXPECT_NEAR(mid.up.y, 1.0, 1e-9);
 }
 
+// Where a beam from `p` passes nearest `point`: how far off its line the point is
+double offBeam(const Pose& p, const glm::dvec3& point)
+{
+  const glm::dvec3 off = point - p.eye;
+  return glm::length(off - p.forward * glm::dot(off, p.forward));
+}
+
 TEST(PlayTorch, InTheRightHandShiningWhereTheViewLooks)
 {
   Torch      t;
   const Pose view{{0.0, 1.65, 0.0}, {0.0, 0.0, -1.0}, {0.0, 1.0, 0.0}};
-  const Pose p = torchView(t, view, 1.0 / 60.0);
+  const Pose p = torchView(t, view, 8.0, 1.0 / 60.0);
   EXPECT_GT(p.eye.x, 0.1);   // right of the eye
   EXPECT_LT(p.eye.y, 1.45);  // and under it
   EXPECT_NEAR(glm::length(p.forward), 1.0, 1e-9);
   EXPECT_NEAR(glm::dot(p.forward, p.up), 0.0, 1e-9);
-  // its beam crosses the view's line a few metres ahead
-  const glm::dvec3 ahead = view.eye + view.forward * 8.0;
-  const glm::dvec3 off   = ahead - p.eye;
-  EXPECT_LT(glm::length(off - p.forward * glm::dot(off, p.forward)), 0.05);
+  // its beam crosses the view's line where the view meets something, 8 m ahead
+  EXPECT_LT(offBeam(p, view.eye + view.forward * 8.0), 0.01);
+  // looking at nothing, it crosses it a long way ahead, nearly along it
+  Torch      far;
+  const Pose q = torchView(far, view, std::nullopt, 1.0 / 60.0);
+  EXPECT_GT(glm::dot(q.forward, view.forward), 0.999);
+  // nothing nearer than a metre: the wrist turns no further in
+  Torch      near;
+  const Pose r = torchView(near, view, 0.1, 1.0 / 60.0);
+  EXPECT_LT(offBeam(r, view.eye + view.forward * 1.0), 0.01);
+}
+
+// What the view looks at, down its line: the floor it looks down at, a box in its way, nothing up at the sky
+TEST(PlayTorch, TheViewsLineMeetsTheGroundOrWhatStandsThere)
+{
+  const World      world = flatWorld({{{-1.0, 0.0, -6.0}, {1.0, 3.0, -5.0}}});
+  const glm::dvec3 eye{0.0, 1.65, 0.0};
+  // 30 degrees down: the floor 3.3 m off
+  const glm::dvec3 down = glm::normalize(glm::dvec3(0.0, -std::sin(std::numbers::pi / 6.0), -std::cos(std::numbers::pi / 6.0)));
+  const auto       floor = sightDistance(world, {eye, down, {0.0, 1.0, 0.0}}, 40.0);
+  ASSERT_TRUE(floor.has_value());
+  EXPECT_NEAR(*floor, 1.65 / std::sin(std::numbers::pi / 6.0), 0.02);
+  // level, at the box 5 m ahead
+  const auto box = sightDistance(world, {eye, {0.0, 0.0, -1.0}, {0.0, 1.0, 0.0}}, 40.0);
+  ASSERT_TRUE(box.has_value());
+  EXPECT_NEAR(*box, 5.0, 1e-6);
+  // level the other way, and up: nothing within reach
+  EXPECT_FALSE(sightDistance(world, {eye, {0.0, 0.0, 1.0}, {0.0, 1.0, 0.0}}, 40.0).has_value());
+  EXPECT_FALSE(sightDistance(world, {eye, glm::normalize(glm::dvec3(0.0, 1.0, 1.0)), glm::normalize(glm::dvec3(0.0, 1.0, -1.0))}, 40.0).has_value());
+  // a floor further off than the reach is nothing either: 2 degrees down meets it 47 m off
+  const glm::dvec3 shallow = glm::normalize(glm::dvec3(0.0, -std::sin(0.035), std::cos(0.035)));
+  EXPECT_FALSE(sightDistance(world, {eye, shallow, {0.0, 1.0, 0.0}}, 40.0).has_value());
+  // looking down at the floor, the torch's pool is where the view's middle is
+  Torch      t;
+  const Pose view{eye, down, glm::normalize(glm::cross(glm::cross(down, glm::dvec3(0.0, 1.0, 0.0)), down))};
+  const Pose p = torchView(t, view, floor, 1.0 / 60.0);
+  EXPECT_LT(offBeam(p, eye + down * *floor), 0.01);
 }
 
 TEST(PlayTorch, ItsAimFollowsATurnAMomentLate)
@@ -526,12 +566,27 @@ TEST(PlayTorch, ItsAimFollowsATurnAMomentLate)
   Torch      t;
   const Pose before{{0.0, 1.65, 0.0}, {0.0, 0.0, -1.0}, {0.0, 1.0, 0.0}};
   const Pose after{{0.0, 1.65, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}};
-  torchView(t, before, 1.0 / 60.0);
-  const Pose first = torchView(t, after, 1.0 / 60.0);
+  torchView(t, before, 8.0, 1.0 / 60.0);
+  const Pose first = torchView(t, after, 8.0, 1.0 / 60.0);
   EXPECT_LT(glm::dot(first.forward, after.forward), 0.7);  // still turning
   for(int i = 0; i < 60; i++)
-    torchView(t, after, 1.0 / 60.0);
-  EXPECT_GT(glm::dot(torchView(t, after, 1.0 / 60.0).forward, after.forward), 0.99);
+    torchView(t, after, 8.0, 1.0 / 60.0);
+  EXPECT_GT(glm::dot(torchView(t, after, 8.0, 1.0 / 60.0).forward, after.forward), 0.99);
+  // and its reach a moment late too: from a wall 2 m off to a hill 30 m off, eased, the same pace either way
+  Torch      r;
+  const Pose view{{0.0, 1.65, 0.0}, {0.0, 0.0, -1.0}, {0.0, 1.0, 0.0}};
+  torchView(r, view, 2.0, 1.0 / 60.0);
+  torchView(r, view, 30.0, 1.0 / 60.0);
+  EXPECT_GT(r.reach, 2.0);
+  EXPECT_LT(r.reach, 30.0);
+  const double out = std::log(r.reach / 2.0);
+  Torch        b;
+  torchView(b, view, 30.0, 1.0 / 60.0);
+  torchView(b, view, 2.0, 1.0 / 60.0);
+  EXPECT_NEAR(std::log(30.0 / b.reach), out, 1e-9);
+  for(int i = 0; i < 60; i++)
+    torchView(r, view, 30.0, 1.0 / 60.0);
+  EXPECT_NEAR(r.reach, 30.0, 0.01);
 }
 
 // A tree: a trunk of `radius` round `centre` up to 3 m (a plain column of ten sides, or rings of

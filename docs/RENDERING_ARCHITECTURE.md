@@ -621,25 +621,33 @@ The exposure the host sets is for the light there is (the sun's height, the sky,
 settings); it opens up for a dark view and closes down for a bright one as an eye takes to a barn on a
 sunny day, metered from the frame (`src/exposure_adapt_vk.hpp`; the arithmetic and its constants in
 `src/exposure_adapt.hpp`). Off by default: the Camera tab's Adapt to the view (the lighting's
-`tonemap.adapt`, protocol 84; `tmAdapt`), in Simple and Auto, not Manual.
+`tonemap.adapt`, protocol 84; `tmAdapt`), in Simple and Auto, not Manual. Play mode turns on an eye of
+its own while it runs (`HostRenderer::setPlayEye`), whatever the tab says.
 
 - **The meter:** nvpro's tone mapper histogram (`nvshaders::Tonemapper::cmdHistogram`, the Histogram
   pass alone) of the image the tone mapper takes, before the lens, bloom and local exposure, counted
   more at the frame's middle, in a range about mid grey at the host's exposure. It goes into a
   host-visible slot per frame in flight and is read at a later frame's start, as the adaptive stop's
   pixel count is. nvpro's own auto exposure is not used: it puts the view's median at mid grey, which
-  would move every scene, and counts what is under its range as black.
+  would move every scene. A pixel is black, out of the reading, only under both the histogram's floor
+  (1e-5) and the range's bottom, so a range that reaches down to a night (a night's exposure, or the
+  eye's) counts it.
 - **The reading and the adaptation:** the mean of the middle half of what is lit, in stops from mid
   grey; within a knee nothing moves, so a view the exposure suits keeps it; past it a share of each
   stop is made up, never all (a dark room still reads dark), up to a limit each way; eased over
   seconds, faster into the light than into the dark, at any frame rate.
+- **Play mode's eye** (`exposure_adapt::kEye`, the camera's being `kCamera`): what the walker looks at,
+  a spot about as wide as the torch's beam, the brighter part of it, so the torch's pool is what it
+  takes to and not the dark round it; taken to wholly; an eye's range, from a day's exposure down to a
+  moonlit night, which it leaves a few stops under mid grey, a night. The torch is aimed at what the
+  view looks at (`fv::play::sightDistance`), so its pool is in that spot.
 - **Where it acts:** a factor on the host's exposure, `Resources::exposureAdapt`, applied by
   `Resources::shownTonemapper`, so the tone mapper, the HDR image, the still's adaptive stop and its
   denoiser's threshold, local exposure, an .exr and the pixel readout all take the exposure as
   adapted. The path tracer's firefly clamps, set for the host's exposure, are divided by it.
 - **Checked:** `tests/test_exposure_adapt.cpp` (the meter's range against the shader's binning, the
-  reading, the curve, the easing at three frame rates); `tests/test_fv_lighting.cpp` for the host's
-  part. Not yet run on the card.
+  reading, the curve, the easing at three frame rates; the eye's moonlit night and torch's pool);
+  `tests/test_fv_lighting.cpp` for the host's part. Not yet run on the card.
 
 ## The Shaped tone curve
 

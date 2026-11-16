@@ -129,16 +129,21 @@ Pose walkerView(const Walker& w, const World& world, const WalkerTuning& t = {})
 // there is one within `reach`
 Walker walkerAt(const Pose& camera, const World& world, double reach, const WalkerTuning& t = {});
 
-// A torch held in the right hand: beside and under the eye, shining at what the view looks at a few
-// metres ahead, its aim a moment behind the view's, so it sways after a turn
+// A torch held in the right hand: beside and under the eye, shining at what the view looks at, so its
+// pool is where the view's middle is; its aim a moment behind the view's, so it sways after a turn
 struct Torch
 {
   bool       on = false;
   glm::dquat aim{1.0, 0.0, 0.0, 0.0};
+  double     reach  = 0.0;  // metres ahead the beam crosses the view's line, eased
   bool       placed = false;
 };
-// Where it is and where it shines (`forward`) for the view as it is now, after `dt` seconds
-Pose torchView(Torch& t, const Pose& view, double dt);
+// How far ahead the view's line meets what stands there or the ground, within `far`; none: nothing
+// does (the sky, or ground further off)
+std::optional<double> sightDistance(const World& world, const Pose& view, double far);
+// Where it is and where it shines (`forward`) for the view as it is now, after `dt` seconds: at what
+// the view looks at `sight` metres ahead (sightDistance), or some way ahead when it looks at nothing
+Pose torchView(Torch& t, const Pose& view, std::optional<double> sight, double dt);
 
 // ---- what stands in a world -------------------------------------------------------------------------
 

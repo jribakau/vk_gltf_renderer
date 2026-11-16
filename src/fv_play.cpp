@@ -219,27 +219,74 @@ Pose walkerView(const Walker& w, const World& world, const WalkerTuning& t)
   return {w.feet + up * (t.eyeHeight + w.eyeLag), forward, glm::normalize(glm::cross(right, forward))};
 }
 
-Pose torchView(Torch& t, const Pose& view, double dt)
+std::optional<double> sightDistance(const World& world, const Pose& view, double far)
+{
+  constexpr double kFirst = 0.25;  // metres: the first point down the line asked about the ground
+  constexpr double kGrow  = 1.25;  // each next one this much further, and kFirst more
+  constexpr double kOver  = 20.0;  // metres over a point the ground under it is asked from
+  constexpr int    kHalve = 8;     // halvings of the step the line went under the ground in
+  const glm::dvec3 dir = glm::normalize(view.forward);
+  std::optional<double> best;
+  if(world.ray)
+    if(const auto hit = world.ray(view.eye, dir, far))
+      best = std::max(0.0, glm::dot(hit->at - view.eye, dir));
+  if(!world.ground || !world.up)
+    return best;
+  // the ground: down the line in steps that grow with the distance, till a point of it is under the
+  // ground there; then the step it went under in halved
+  const auto under = [&](double d) {
+    const glm::dvec3 p  = view.eye + dir * d;
+    const glm::dvec3 up = world.up(p);
+    const auto       g  = world.ground(p + up * kOver, up, 2.0 * kOver);
+    return g && glm::dot(p - g->at, up) <= 0.0;
+  };
+  const double end = best.value_or(far);
+  for(double was = 0.0, d = std::min(kFirst, end);; was = d, d = std::min(d * kGrow + kFirst, end))
+  {
+    if(under(d))
+    {
+      double lo = was, hi = d;
+      for(int i = 0; i < kHalve; i++)
+      {
+        const double mid = 0.5 * (lo + hi);
+        if(under(mid))
+          hi = mid;
+        else
+          lo = mid;
+      }
+      return hi;
+    }
+    if(d >= end)
+      return best;
+  }
+}
+
+Pose torchView(Torch& t, const Pose& view, std::optional<double> sight, double dt)
 {
   constexpr double kRight = 0.22, kDown = 0.3, kAhead = 0.25;  // metres from the eye: a hand at the hip
-  constexpr double kAimAt = 8.0;                               // metres ahead the beam crosses the view's line
-  constexpr double kLag   = 0.07;                              // seconds the aim follows the view behind
+  constexpr double kNearest = 1.0;   // metres: the beam crosses the view's line no nearer (a wrist turns so far)
+  constexpr double kNothing = 25.0;  // and this far ahead when the view looks at nothing
+  constexpr double kLag     = 0.07;  // seconds the aim follows the view behind
   const glm::dvec3 forward = glm::normalize(view.forward);
   const glm::dvec3 right   = glm::normalize(glm::cross(forward, view.up));
   const glm::dvec3 up      = glm::cross(right, forward);
   const glm::dquat want    = glm::quatLookAt(forward, up);
+  const double     reach   = std::max(sight.value_or(kNothing), kNearest);
   if(!t.placed)
   {
     t.aim    = want;
+    t.reach  = reach;
     t.placed = true;
   }
   t.aim = glm::normalize(glm::slerp(t.aim, want, share(dt, kLag)));
+  // the reach eased in its logarithm, so a turn from a wall to a far hill is as quick as one back
+  t.reach = std::exp(std::log(std::max(t.reach, kNearest)) + std::log(reach / std::max(t.reach, kNearest)) * share(dt, kLag));
   // the hand goes with the aim, as an arm does
   const glm::dvec3 ahead  = t.aim * glm::dvec3(0.0, 0.0, -1.0);
   const glm::dvec3 aimUp  = t.aim * glm::dvec3(0.0, 1.0, 0.0);
   const glm::dvec3 aside  = glm::normalize(glm::cross(ahead, aimUp));
   const glm::dvec3 at     = view.eye + aside * kRight - aimUp * kDown + ahead * kAhead;
-  const glm::dvec3 shine  = glm::normalize(view.eye + ahead * kAimAt - at);
+  const glm::dvec3 shine  = glm::normalize(view.eye + ahead * t.reach - at);
   const glm::dvec3 across = glm::normalize(glm::cross(shine, aimUp));
   return {at, shine, glm::cross(across, shine)};
 }

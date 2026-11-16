@@ -182,6 +182,9 @@ public:
   // where its waves go, radians round from +x toward +z. Every frame; a frame whose moment is new
   // starts the image again where there is water to draw.
   virtual void setWaterMotion(float /*seconds*/, float /*heading*/) {}
+  // Play mode's eye: while on, the exposure adapts to the view as the eye of the one who walks there
+  // does (exposure_adapt::kEye), on top of the host's and whatever the Camera tab's adapting says
+  virtual void setPlayEye(bool /*on*/) {}
   // Whether a planet's far woods stand on its ground as a canopy (the `worldCanopy` setting,
   // fv_world_plants.hpp canopyLift): the host's quads are made so, and made again when it changes
   virtual bool worldCanopy() const { return true; }

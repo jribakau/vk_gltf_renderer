@@ -5,14 +5,15 @@
 
 #include <nvvk/resources.hpp>
 
+#include "exposure_adapt.hpp"
 #include "resources.hpp"
 #include "settings_registry.hpp"
 
 //-------------------------------------------------------------------------------------------------------
 // ExposureAdapt
 //
-// Exposure that adapts to the view (tmAdapt, the host's tonemap.adapt; the arithmetic and its
-// constants in src/exposure_adapt.hpp). Each frame the tone mapper's histogram of the image it takes
+// Exposure that adapts to the view (tmAdapt, the host's tonemap.adapt, a camera's; or play mode's eye,
+// setEye; the arithmetic and its tunings in src/exposure_adapt.hpp). Each frame the tone mapper's histogram of the image it takes
 // goes into a slot of a host-visible buffer, a slot per frame in flight; at a later frame's start,
 // once the application has waited for the frame that filled it, the slot is read, and the
 // adaptation eases toward what it asks for. It is a factor on the host's exposure,
@@ -32,7 +33,11 @@ public:
   void registerParameters(SettingsRegistry* settings);
   void deinit(Resources& resources);
 
-  bool on() const { return m_on != 0; }
+  bool on() const { return m_on != 0 || m_eye; }
+  // Play mode's eye: while on, the view adapts as the eye of the one who walks there does
+  // (exposure_adapt::kEye), whatever tmAdapt says
+  void setEye(bool eye) { m_eye = eye; }
+  const exposure_adapt::Tuning& tuning() const { return m_eye ? exposure_adapt::kEye : exposure_adapt::kCamera; }
 
   // A frame's start, before anything reads the exposure: Resources::exposureAdapt
   void update(Resources& resources);
@@ -48,10 +53,12 @@ private:
   struct Slot
   {
     bool  metered  = false;
-    float exposure = 1.0F;  // the host's, shown, when it was metered: the bins' range follows it
+    float exposure = 1.0F;   // the host's, shown, when it was metered: the bins' range follows it
+    bool  eye      = false;  // and whose range it was
   };
 
-  int                                   m_on = 0;
+  int                                   m_on  = 0;
+  bool                                  m_eye = false;
   nvvk::Buffer                          m_readback;
   std::vector<Slot>                     m_slots;
   float                                 m_stops  = 0.0F;  // the adaptation now

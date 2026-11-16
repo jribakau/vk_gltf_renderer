@@ -104,6 +104,8 @@ public:
     waterHeading = heading;
   }
   float waterSeconds = 0.0F, waterHeading = 0.0F;
+  void  setPlayEye(bool on) override { playEye = on; }
+  bool  playEye = false;
 
   void         selectEntity(rs::EntityId entity) override { m_selected = entity; }
   rs::EntityId selectedEntity() const override { return m_selected; }

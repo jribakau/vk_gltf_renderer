@@ -174,7 +174,8 @@ src/
 │                               #   in its own colours, shaded, the sea by its depth, rivers and roads over it;
 │                               #   planet.map (fv_host_world.cpp) sends it with what stands on the planet
 ├── fv_play.cpp/hpp             # Play mode's controllers, Vulkan-free: someone on foot (collide and slide,
-│                               #   steps, gravity) with a torch in hand, and a ship on a throttle with flight
+│                               #   steps, gravity) with a torch in hand aimed at what the view looks at (its
+│                               #   eye is the exposure's, exposure_adapt kEye), and a ship on a throttle with flight
 │                               #   assist that lands on its pads, with a chase camera; a tree's trunk found
 │                               #   from its mesh (trunkOf); fv_host_play.cpp drives them from the app's keys,
 │                               #   finds ships by their glTF markers (fv_seat) and moves their parts, and
@@ -207,7 +208,8 @@ src/
 ├── hdr_output.cpp/hpp          # The frame an HDR display is shown (scRGB), and EXR exports' linear image
 ├── white_balance.cpp/hpp       # Auto white balance: the frame's light, and the white balance that makes it grey
 ├── lens.cpp/hpp                # A cheap wide lens on the tone mapper's input: barrel distortion and colour fringing
-├── exposure_adapt.hpp          # The exposure adapting to the view: its meter's reading, curve and easing (unit-tested)
+├── exposure_adapt.hpp          # The exposure adapting to the view: its meter's reading, curve and easing, a camera's
+│                               #   and play mode's eye's (unit-tested)
 ├── exposure_adapt_vk.cpp/hpp   # Its frame part: the tone mapper's histogram read back, the factor on the exposure
 ├── rain.cpp/hpp                # Rain in the air: drops culled, lit and drawn as streaks over the tone mapper's input
 ├── rain_cells.hpp              # The rain's cells a frame draws (plain C++, tested)

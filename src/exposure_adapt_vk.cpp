@@ -7,17 +7,7 @@
 #include <nvvk/check_error.hpp>
 #include <nvvk/debug_util.hpp>
 
-#include "exposure_adapt.hpp"
-
 static_assert(exposure_adapt::kBins == EXPOSURE_HISTOGRAM_SIZE, "the meter reads the tone mapper's histogram as it is");
-
-namespace {
-
-// Where the reading starts counting: a pixel at the middle of the frame counts fully, one this far
-// out (of the frame's width) not at all (nvshaders centerMeteringWeight)
-constexpr float kMeterSpread = 0.75F;
-
-}  // namespace
 
 void ExposureAdapt::registerParameters(SettingsRegistry* settings)
 {
@@ -56,11 +46,11 @@ void ExposureAdapt::update(Resources& resources)
       s.metered = false;
       std::array<uint32_t, exposure_adapt::kBins> bins{};
       std::memcpy(bins.data(), m_readback.mapping + slot * sizeof(bins), sizeof(bins));
-      if(const std::optional<float> reading = exposure_adapt::meteredStops(bins))
+      if(const std::optional<float> reading = exposure_adapt::meteredStops(bins, s.eye ? exposure_adapt::kEye : exposure_adapt::kCamera))
       {
         // (the bins were counted about mid grey at the exposure of then: from mid grey at the one of now)
         const float exposure = resources.shownTonemapper(false).exposure;
-        m_target = exposure_adapt::adaptationFor(*reading + std::log2(std::max(exposure, 1e-30F) / std::max(s.exposure, 1e-30F)));
+        m_target = exposure_adapt::adaptationFor(*reading + std::log2(std::max(exposure, 1e-30F) / std::max(s.exposure, 1e-30F)), tuning());
         if(!m_have)
           m_stops = m_target;
         m_have = true;
@@ -68,7 +58,7 @@ void ExposureAdapt::update(Resources& resources)
     }
   }
   if(m_have)
-    m_stops = exposure_adapt::eased(m_stops, m_target, seconds);
+    m_stops = exposure_adapt::eased(m_stops, m_target, seconds, tuning());
   resources.exposureAdapt = std::exp2(m_stops);
 }
 
@@ -90,11 +80,13 @@ void ExposureAdapt::cmdMeter(VkCommandBuffer cmd, Resources& resources, const Vk
 
   // counted about mid grey at the host's exposure (the factor left out: the reading is of the light)
   shaderio::TonemapperData   tm    = resources.shownTonemapper(false);
-  const exposure_adapt::Range range = exposure_adapt::meterRange(tm.exposure);
+  // (a pixel at the frame's middle counts fully, one the tuning's spread out, of its width, not at all:
+  // nvshaders centerMeteringWeight)
+  const exposure_adapt::Range range = exposure_adapt::meterRange(tm.exposure, tuning());
   tm.evMinValue                     = range.evMin;
   tm.evMaxValue                     = range.evMax;
   tm.enableCenterMetering           = 1;
-  tm.centerMeteringSize             = kMeterSpread;
+  tm.centerMeteringSize             = tuning().spread;
   resources.tonemapper.cmdHistogram(cmd, size, tm, image, out, m_readback.buffer, slot * block);
-  m_slots[slot] = {.metered = true, .exposure = tm.exposure};
+  m_slots[slot] = {.metered = true, .exposure = tm.exposure, .eye = m_eye};
 }

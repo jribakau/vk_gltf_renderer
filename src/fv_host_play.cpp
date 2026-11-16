@@ -22,8 +22,10 @@
 // fv_play.hpp's). The app holds the keys and the mouse (pointer lock) and sends them as `play` input
 // events; each frame here steps the controller in charge, moves the ship it flies, opens its canopy,
 // folds its gear and lights its engines, and puts the camera where the walker, the pilot or the chase
-// camera looks from. On foot the torch (L) is a spot light the host keeps in the walker's hand, and B
-// puts a ship down ahead: the nearest in the scene, else the app's own (play.start's `ship`). What the
+// camera looks from. On foot the torch (L) is a spot light the host keeps in the walker's hand, aimed
+// at what the view looks at, and B puts a ship down ahead: the nearest in the scene, else the app's
+// own (play.start's `ship`). While playing, the view's exposure adapts as the walker's eye does
+// (HostRenderer::setPlayEye), so a night is seen by the moon and the torch's pool by its light. What the
 // walker and the ship meet are the props' triangles, the planet's places, and the backdrop's trees
 // (their trunks, found from each tree's mesh) and stones (their own triangles) near them.
 //
@@ -74,6 +76,7 @@ constexpr double kTorchStrength = 0.6;
 constexpr double kTorchInner    = 0.12;  // radians from its axis: full strength inside
 constexpr double kTorchOuter    = 0.45;  // and none outside
 constexpr double kTorchRadius   = 0.015;
+constexpr double kTorchSight    = 40.0;  // metres ahead the beam is aimed at what the view looks at, at most
 
 // A model's node in the model's frame (its scene's root), its parents' turns and moves with it
 glm::dmat4 nodeMatrix(const tinygltf::Model& model, int node)
@@ -232,7 +235,7 @@ struct FvHost::Impl::PlayState
   static std::vector<PlacedSet>         playSets(Impl& s, const std::string& skip, const glm::dvec3& around, double within = kSolidsNear);
   static void                           plantSets(Impl& s, const glm::dvec3& around, double within, std::vector<PlacedSet>& out);
   static std::string                    bringShip(Impl& s, PlayState& P, const Clock::time_point& now);
-  static void                           showTorch(Impl& s, PlayState& P, bool on, double dt);
+  static void                           showTorch(Impl& s, PlayState& P, bool on, const game::World& world, double dt);
   static void                           dropTorch(Impl& s, PlayState& P);
   static game::World                    playWorld(Impl& s, const std::vector<PlacedSet>& sets);
   static game::Ship                     shipOf(const Impl& s, const Prop& p, const Rig& rig);
@@ -380,7 +383,7 @@ std::string FvHost::Impl::PlayState::bringShip(Impl& s, PlayState& P, const Cloc
 }
 
 // The torch in hand where the view is, or put away
-void FvHost::Impl::PlayState::showTorch(Impl& s, PlayState& P, bool on, double dt)
+void FvHost::Impl::PlayState::showTorch(Impl& s, PlayState& P, bool on, const game::World& world, double dt)
 {
   if(!s.renderer->feedsHostScene())
     return;
@@ -394,7 +397,7 @@ void FvHost::Impl::PlayState::showTorch(Impl& s, PlayState& P, bool on, double d
     P.torch.placed = false;  // taken out again it is in hand at once, not swinging in from where it was
     return;
   }
-  const game::Pose    pose = game::torchView(P.torch, P.view, dt);
+  const game::Pose    pose = game::torchView(P.torch, P.view, game::sightDistance(world, P.view, kTorchSight), dt);
   const rs::Transform local{.translation = glm::vec3(pose.eye), .rotation = glm::quat(glm::quatLookAt(pose.forward, pose.up))};
   if(!have)
   {
@@ -695,6 +698,7 @@ Json FvHost::Impl::playStart(const Json& args)
     P.active = true;
     P.heard  = Clock::now();
     P.clip   = manip->getClipPlanes();
+    renderer->setPlayEye(true);  // the view's exposure is the walker's eye's while playing
     if(view)
     {
       P.lens               = view->lens();
@@ -725,6 +729,7 @@ Json FvHost::Impl::playStop()
   PlayState& P = *play;
   P.active     = false;
   PlayState::dropTorch(*this, P);
+  renderer->setPlayEye(false);
   // the ships stay where they were left, a step of the history each, and their parts as their files have them
   for(auto& [id, rig] : P.rigs)
     if(const auto p = findProp(id))
@@ -975,7 +980,7 @@ void FvHost::Impl::applyPlay()
   // the torch, in hand on foot (L): put away in the ship, out again on getting out if it was
   if(torches % 2 == 1)
     P.torch.on = !P.torch.on;
-  PlayState::showTorch(*this, P, P.torch.on && (P.mode == PlayState::Mode::eWalk || P.mode == PlayState::Mode::eExit), dt);
+  PlayState::showTorch(*this, P, P.torch.on && (P.mode == PlayState::Mode::eWalk || P.mode == PlayState::Mode::eExit), world, dt);
 
   // the camera: a near plane close enough for the cockpit, the far one the scene's
   const glm::dvec2 clip = manip->getClipPlanes();

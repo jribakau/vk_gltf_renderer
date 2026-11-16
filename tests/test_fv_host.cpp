@@ -6429,7 +6429,8 @@ void writeTree(const fs::path& dir, double radius, double scale)
 
 // Play mode on a meadow (fv_host_play.cpp): someone walking at a tree stops at its bark, its crown
 // left out of what they meet; the torch (L) is a light in the scene while it is on and goes with play;
-// B with no ship in the scene and none to load says so
+// the view's exposure is the walker's eye's while playing; B with no ship in the scene and none to load
+// says so
 TEST(FvHost, PlayWalksUpToATreesTrunkAndCarriesATorch)
 {
   const fs::path kit = fs::temp_directory_path() / ("fv-play-tree-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -6487,7 +6488,9 @@ TEST(FvHost, PlayWalksUpToATreesTrunkAndCarriesATorch)
   rig.renderer.getCameraManipulator()->setLookat(glm::dvec3(target->at) + glm::dvec3(4.0, 2.0, 0.0), glm::dvec3(target->at) + glm::dvec3(0.0, 1.6, 0.0),
                                                  glm::dvec3(0.0, 1.0, 0.0), true);
   frames(50);
+  EXPECT_FALSE(rig.renderer.playEye);
   ASSERT_TRUE(rig.cmd("play.start").value("ok", false));
+  EXPECT_TRUE(rig.renderer.playEye);
   // where the eye has been, a frame at a time
   std::vector<glm::dvec3> path;
   const auto              hold = [&](uint32_t keys, int ms) {
@@ -6528,6 +6531,7 @@ TEST(FvHost, PlayWalksUpToATreesTrunkAndCarriesATorch)
   ASSERT_TRUE(rig.cmd("play.stop").value("ok", false));
   frames(50);
   EXPECT_TRUE(rootNamed(scene, "Torch").isNone());
+  EXPECT_FALSE(rig.renderer.playEye);
   std::error_code ec;
   fs::remove_all(kit, ec);
 }
