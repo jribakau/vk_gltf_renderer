@@ -447,6 +447,24 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
     if(s < tlas->rows.size() && (tlas->rows[s].blas || tlas->rows[s].mask))
       out.push_back(at("I1", s) + "a hole's TLAS row is not null");
   }
+  // what the stats say is traced (traceCounts) is what the TLAS rows trace
+  {
+    Residency::TraceCounts traced;
+    std::set<uint32_t>     prims;
+    for(const TlasRow& row : tlas->rows)
+      if(const Residency::Prim* prim = row.blas ? residency.prim(row.customIndex) : nullptr)
+      {
+        traced.instances++;
+        traced.triangles += prim->indexCount / 3;
+        if(prims.insert(row.customIndex).second)
+          traced.unique += prim->indexCount / 3;
+      }
+    const Residency::TraceCounts said = residency.traceCounts();
+    if(said.instances != traced.instances || said.triangles != traced.triangles || said.unique != traced.unique)
+      out.push_back("I1: traceCounts says " + std::to_string(said.instances) + " instances, " + std::to_string(said.triangles) + " triangles ("
+                    + std::to_string(said.unique) + " unique); the TLAS rows trace " + std::to_string(traced.instances) + ", "
+                    + std::to_string(traced.triangles) + " (" + std::to_string(traced.unique) + ")");
+  }
 
   // prims: their rows, bytes and BLASes (I3, I17, the build hashes), their micromap links (I21)
   std::map<const OpacityMicromap*, uint32_t> micromapUsers;

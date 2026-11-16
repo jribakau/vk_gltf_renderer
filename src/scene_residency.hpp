@@ -470,6 +470,13 @@ public:
     uint32_t emissiveBuilds = 0;  // the emissive table built again
   };
   const SyncWork& lastSyncWork() const { return m_work; }
+  // What the TLAS traces, as of its last build: the shown instances, their triangles (a copy's each
+  // time) and the triangles of the submeshes they draw, each once (the BLASes'). The performance stats'.
+  struct TraceCounts
+  {
+    uint64_t instances = 0, triangles = 0, unique = 0;
+  };
+  TraceCounts traceCounts() const;
   // The world-space bounds of what is shown; min over max for nothing. Kept an entity at a time: one
   // only some copies of which moved keeps its box and grows it by those (it never shrinks for them:
   // what such a move moves, it moves by little), until it is placed whole again.
@@ -1036,6 +1043,8 @@ private:
   // The rows of m_tlasRowsOf's last build (buildTlas): what the device holds, so only what differs is written
   std::vector<TlasRow> m_tlasRows;
   AccelHandle          m_tlasRowsOf;
+  // By prim slot, how many of those rows trace it (a row with its BLAS): kept as the rows are (traceCounts)
+  std::vector<uint32_t> m_primRows;
   // slots placed since the last TLAS build (a sync that stops before its build keeps them for the next)
   std::vector<uint32_t> m_tlasPlaced;
   // Slots whose row may be another without their having moved: shown or hidden, seen by the camera

@@ -356,6 +356,7 @@ void Residency::clear()
   m_renderNodes = m_renderPrims = m_sceneDesc = {};
   m_tlas                                      = {};
   m_tlasRows.clear();  // the next build writes every row
+  m_primRows.clear();
   m_tlasPlaced.clear();
   m_tlasTouched.clear();
   m_primsReblased.clear();
@@ -4388,6 +4389,20 @@ void Residency::writeRenderPrims(const std::set<uint32_t>& slots)
   }
 }
 
+Residency::TraceCounts Residency::traceCounts() const
+{
+  TraceCounts out;
+  for(size_t p = 0; p < m_primRows.size() && p < m_prims.size(); p++)
+    if(m_primRows[p] && m_prims[p])
+    {
+      const uint64_t triangles = m_prims[p]->indexCount / 3;
+      out.instances += m_primRows[p];
+      out.triangles += triangles * m_primRows[p];
+      out.unique += triangles;
+    }
+  return out;
+}
+
 // Rows up to the high-water mark: a live instance's, a hidden one's without its BLAS, a hole's null.
 // Kept from build to build (m_tlasRows), and only what may be another is worked out again: a slot
 // placed since (its transform), one shown, hidden or linked since, the instances of a prim whose BLAS
@@ -4415,6 +4430,13 @@ void Residency::buildTlas()
   m_tlasRowsOf = m_tlas;
   std::vector<uint32_t> changed;
   const uint64_t        frame  = m_gpu.frame();
+  const auto            traced = [&](const TlasRow& r, uint32_t by) {  // by 1 or ~0 (one less)
+    if(!r.blas)
+      return;
+    if(r.customIndex >= m_primRows.size())
+      m_primRows.resize(size_t(r.customIndex) + 1, 0);
+    m_primRows[r.customIndex] += by;
+  };
   const auto            derive = [&](size_t s, bool moved) {
     const std::optional<Instance>& inst = m_instances[s];
     TlasRow&                       was  = m_tlasRows[s];
@@ -4435,6 +4457,9 @@ void Residency::buildTlas()
     }
     if(every || moved || row.customIndex != was.customIndex || row.mask != was.mask || row.flags != was.flags || row.blas != was.blas)
     {
+      // (what it traces: the prim it named no longer by this row, the one it names now)
+      traced(was, ~0U);
+      traced(row, 1U);
       // what it points at now, and since when what it pointed at before no longer is pointed at by any
       m_tlasRefs->point(s, row.blas.value, frame);
       was = row;

@@ -24,7 +24,7 @@
 // sync, what the fake GPU holds, walked against the retained scene's CPU truth. Each check names
 // its invariant. Run it after every sync of every residency test.
 //
-// Checked here so far: I1 (TLAS rows, their mask and flags), I2 (custom index), I3 (render-node and
+// Checked here so far: I1 (TLAS rows, their mask and flags, what traceCounts says they trace), I2 (custom index), I3 (render-node and
 // prim rows, addresses in live buffers), I4 (material rows, texture and sampler slots, sRGB), I13
 // (capacity at or above the high-water mark), I17 (BLAS input alignment), the geometry bytes, every
 // BLAS built or refit from the bytes the buffers hold now, the raster lists, I10 (the DLSS motion tables),

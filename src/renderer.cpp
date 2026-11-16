@@ -783,6 +783,14 @@ std::string GltfRenderer::frameProfileJson() const
                   double(b.budget) / (1 << 20), double(allocatedMemory().allocations) / (1 << 20));
     out += buf;
   }
+  // what the frame traces: everything shown, the backdrop's planet, plants and places as well as the
+  // props (the residency's TLAS rows: a copy's triangles each time, and each submesh's once)
+  if(m_resources.retainedGpu)
+  {
+    const rs::Residency::TraceCounts t = m_resources.retainedGpu->residency().traceCounts();
+    out += ",\"traced\":{\"instances\":" + std::to_string(t.instances) + ",\"triangles\":" + std::to_string(t.triangles)
+           + ",\"unique\":" + std::to_string(t.unique) + "}";
+  }
   return out + "}";
 }
 

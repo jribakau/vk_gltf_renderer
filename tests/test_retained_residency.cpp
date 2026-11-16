@@ -676,6 +676,63 @@ TEST(RetainedResidency, CopiesAreShownAndHiddenOneByOne)
   EXPECT_FALSE(blasOf(1));
 }
 
+// What the performance stats say is traced: every shown instance's triangles, a copy's each time, and
+// each submesh's once; nothing of what is hidden, a hidden copy's or a hidden entity's, and none once
+// what drew it is gone
+TEST(RetainedResidency, ItCountsTheTrianglesItTracesACopyEachTimeAndEachMeshOnce)
+{
+  RetainedScene    scene;
+  const MeshId     grid  = scene.addMesh(gridMesh(2, 0.f));     // 8 triangles
+  const MeshId     split = scene.addMesh(gridMesh(4, 1.f, 2));  // 32, in two submeshes
+  const MaterialId m     = material(scene, "m");
+  const EntityId   trees = scene.createEntity("trees", {}, {});
+  MeshInstance     instance;
+  instance.parts.push_back({grid, {m}});
+  for(float x : {0.f, 10.f, 20.f, 30.f})
+    instance.copies.push_back(glm::translate(glm::mat4(1.f), glm::vec3(x, 0.f, 0.f)));
+  scene.setMeshInstance(trees, instance);
+  const EntityId ground = drawn(scene, "ground", split, {m, m});
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  EXPECT_EQ(residency.traceCounts().triangles, 0u);
+  residency.replace(scene);
+  const auto expect = [&](uint64_t instances, uint64_t triangles, uint64_t unique, const char* when) {
+    const Residency::TraceCounts t = residency.traceCounts();
+    EXPECT_EQ(t.instances, instances) << when;
+    EXPECT_EQ(t.triangles, triangles) << when;
+    EXPECT_EQ(t.unique, unique) << when;
+  };
+  expect(6, 4 * 8 + 32, 8 + 32, "all shown");
+
+  const auto sync = [&] {
+    gpu.beginFrame();
+    residency.sync(scene);
+  };
+  scene.setCopiesShown(trees, std::array<uint32_t, 1>{2}, false);
+  sync();
+  expect(5, 3 * 8 + 32, 8 + 32, "a copy hidden");
+  scene.setVisible(ground, false);
+  sync();
+  expect(3, 3 * 8, 8, "the ground hidden");
+  scene.setCopiesShown(trees, std::array<uint32_t, 3>{0, 1, 3}, false);
+  sync();
+  expect(0, 0, 0, "every copy hidden");
+  scene.setCopiesShown(trees, std::array<uint32_t, 4>{0, 1, 2, 3}, true);
+  scene.setVisible(ground, true);
+  sync();
+  expect(6, 4 * 8 + 32, 8 + 32, "shown again");
+  // more copies, then the trees gone
+  instance.copies.push_back(glm::translate(glm::mat4(1.f), glm::vec3(40.f, 0.f, 0.f)));
+  scene.setMeshInstance(trees, instance);
+  sync();
+  expect(7, 5 * 8 + 32, 8 + 32, "a copy more");
+  scene.destroyEntity(trees);
+  sync();
+  expect(2, 32, 32, "the trees gone");
+  residency.clear();
+  expect(0, 0, 0, "cleared");
+}
+
 // Copies moved here and there are a run of rows an upload, a short gap between two written again as it
 // is: the render nodes, and their motion, the frame they move and the frame they come to rest (an
 // upload of two or three rows each was most of a fast flight's sync)

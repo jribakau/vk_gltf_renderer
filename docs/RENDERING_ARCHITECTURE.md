@@ -53,7 +53,9 @@ matrices are worked out again for the dirty subtrees alone (`RetainedScene::upda
 `Residency::lastSyncWork` counts what a sync looked at, and
 the tests hold it to the change (`RetainedResidency.ASyncLooksOnlyAtWhatChanged`). A copy can be
 hidden by itself (`MeshInstance::hidden`): it keeps its instance and its slot, its TLAS row without
-its BLAS, as a hidden entity's.
+its BLAS, as a hidden entity's. What the TLAS traces is counted as its rows are written
+(`Residency::traceCounts`: the shown instances, their triangles a copy's each time, and each
+submesh's once), which the performance stats show from `/stats`.
 
 **Slots and side tables.** An entity's draw item (entity, mesh, submesh, instancing copy) is an
 instance: a render-node row and a TLAS row, whose custom index is its prim slot. The row's mask and
