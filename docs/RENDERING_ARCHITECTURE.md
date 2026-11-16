@@ -642,8 +642,8 @@ play.start's `eye` false (the app's saved choice), leaves it off.
   seconds, faster into the light than into the dark, at any frame rate.
 - **Play mode's eye** (`exposure_adapt::kEye`, the camera's being `kCamera`): what the walker looks at,
   a spot about as wide as the torch's beam, the brighter part of it, so the torch's pool is what it
-  takes to and not the dark round it; taken to wholly; an eye's range, from a day's exposure down to a
-  moonlit night, which it leaves a few stops under mid grey, a night. The torch is aimed at what the
+  takes to and not the dark round it; taken to wholly, but opened no further than a torch's pool needs
+  (`kEye.mostUp`), so a night stays black and the torch is what it is seen by. The torch is aimed at what the
   view looks at (`fv::play::sightDistance`), so its pool is in that spot.
 - **Where it acts:** a factor on the host's exposure, `Resources::exposureAdapt`, applied by
   `Resources::shownTonemapper`, so the tone mapper, the HDR image, the still's adaptive stop and its

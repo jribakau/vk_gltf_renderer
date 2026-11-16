@@ -23,8 +23,8 @@
 //
 // Play mode's eye (kEye) is the one who walks there: it reads what it looks at (a spot about as wide
 // as the torch's beam, the brighter part of it, so the torch's pool is what it takes to and not the
-// dark round it), takes to it wholly, and has an eye's range: from a day down to a moonlit night,
-// which it still leaves a night's dark.
+// dark round it), and takes to it wholly; but it opens only as far as a torch's pool needs, so a night
+// stays dark and the torch is what it is seen by.
 //-------------------------------------------------------------------------------------------------------
 
 #include <algorithm>
@@ -57,16 +57,17 @@ struct Tuning
 // A camera's: the Camera tab's Adapt to the view
 inline constexpr Tuning kCamera{};
 
-// An eye's: play mode's. A moonlit night is some 20 stops under a day's exposure (0.3 lux against
-// 1e5), a torch's pool a few metres off some 8 (11,000 cd); the eye opens to the one and leaves it
-// three stops under mid grey, and to the other wholly; a moonless night (29) it leaves dark.
+// An eye's: play mode's. A torch's pool a few metres off is some 8 stops under a day's exposure
+// (11,000 cd), a moonlit night some 20 (0.3 lux against 1e5): it opens to the pool wholly, and no
+// further, so the night round it, and a night without it, stay black. (Opened to the night, at 17
+// stops, a moonlit field was a dusk, and the torch did nothing: the user's look of 2026-11-16.)
 inline constexpr Tuning kEye{.below        = 32.0F,
                              .above        = 12.0F,
                              .spread       = 0.25F,
                              .trimLow      = 0.5F,
                              .trimHigh     = 0.95F,
                              .share        = 1.0F,
-                             .mostUp       = 17.0F,
+                             .mostUp       = 9.0F,
                              .mostDown     = 12.0F,
                              .openSeconds  = 1.2F,
                              .closeSeconds = 0.4F};

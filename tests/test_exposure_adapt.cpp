@@ -2,8 +2,8 @@
 // tone mapper's histogram counts it, a view is read from the middle half of its tones, a view the
 // exposure suits moves nothing while a dark one opens it up by a share of how dark it is, and the
 // adaptation eases at the same pace whatever the frame rate, faster into the light than into the dark.
-// Play mode's eye: a moonlit night seen as a night, a moonless one dark, a torch's pool by its light
-// whatever the dark round it, a day as it is.
+// Play mode's eye: a night black, a torch's pool seen by its light whatever the dark round it, a day as
+// it is.
 
 #include <array>
 #include <cmath>
@@ -131,28 +131,29 @@ float eyeFor(std::initializer_list<std::pair<float, uint32_t>> tones, float expo
   return reading ? A::adaptationFor(*reading, A::kEye) : 0.0F;
 }
 
-TEST(ExposureAdapt, AnEyeSeesAMoonlitNightAsANightAndATorchsPoolByItsLight)
+TEST(ExposureAdapt, AnEyeSeesANightByTheTorchAndNotWithoutIt)
 {
   // a moonlit field, some 20 stops under the day (0.3 lux against 1e5), its grass a stop either way:
-  // seen, as a night is, two to four stops under mid grey. The camera's meter doesn't reach it.
+  // a night, black, ten stops and more under mid grey (the camera's meter doesn't reach it at all)
   const float night = -20.0F + eyeFor({{-21.0F, 300}, {-20.0F, 400}, {-19.0F, 300}});
-  EXPECT_GT(night, -4.0F);
-  EXPECT_LT(night, -2.0F);
+  EXPECT_LT(night, -10.0F);
   EXPECT_FALSE(A::meteredStops(view({{A::kMidGrey / 0.65F * std::exp2(-20.0F), 1000}}, 0.65F)).has_value());
   // a moonless one (29 stops, the sky's glow) darker still
   EXPECT_LT(-29.0F + eyeFor({{-30.0F, 300}, {-29.0F, 400}, {-28.0F, 300}}), night - 4.0F);
   // the torch's pool, 8 stops under the day a few metres off and brighter at its middle, over half the
   // spot the eye reads: taken to wholly, within a stop of mid grey, whatever the moon does round it,
-  // which goes dark beside it
+  // which stays black beside it
   for(const float around : {-20.0F, -29.0F})
   {
     const float open = eyeFor({{around, 450}, {-9.0F, 200}, {-8.0F, 250}, {-7.0F, 100}});
     EXPECT_GT(-8.0F + open, -1.6F) << around;
     EXPECT_LT(-8.0F + open, 0.5F) << around;
-    EXPECT_LT(around + open, night - 6.0F) << around;
+    EXPECT_LT(around + open, -10.0F) << around;
   }
-  // and over a third of it, the rest moonlit: brighter than mid grey, a few stops at most
-  EXPECT_LT(-8.0F + eyeFor({{-20.0F, 650}, {-8.0F, 350}}), 3.5F);
+  // and the pool further off, 20 m (11 stops): still seen, a couple of stops under mid grey
+  EXPECT_GT(-11.0F + eyeFor({{-20.0F, 450}, {-11.0F, 550}}), -2.5F);
+  // and over a third of the spot, the rest moonlit: brighter than mid grey, a stop or so
+  EXPECT_LT(-8.0F + eyeFor({{-20.0F, 650}, {-8.0F, 350}}), 1.5F);
   // a day is as the exposure has it: a view within a stop of mid grey moves nothing, one with a bright
   // sky in the spot a little
   EXPECT_FLOAT_EQ(eyeFor({{-1.5F, 300}, {-0.5F, 400}, {0.5F, 300}}), 0.0F);
