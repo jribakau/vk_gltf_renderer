@@ -26,9 +26,12 @@
 //
 // A map two metres across laid end to end shows as a grid from the air. So a map is laid two ways,
 // the second turned a quarter and a little larger, in patches of the noise: no two repeats side by
-// side are alike for long. And from far enough that a repeat is a few pixels the ground is its own
-// material again, patch by patch (by the hit's footprint): a map sampled that sparsely is noise in
-// the colour the denoiser is guided by, and its mean is the colour the vertices have.
+// side are alike for long. From far enough that a repeat is a few pixels the map is laid again, larger
+// (distance tiling), patch by patch by the hit's footprint, so that a repeat stays tens of pixels
+// across: a map sampled more sparsely is noise in the colour the denoiser is guided by. What is laid
+// larger is read at the mip the footprint wants (worldGroundTexGradScale), as near ground isn't: there
+// the path tracer's mip 0 stands, the pixel's own samples resolving the grain. Past the largest the
+// ground is its own material again, the map's mean being the colour its vertices have.
 //
 // Slang and plain C++ (tests/test_ground.cpp).
 #ifndef WORLD_GROUND_H_SLANG
@@ -54,10 +57,14 @@ static const float WORLD_GROUND_LEAST_LAYER = 0.02F;
 static const float WORLD_GROUND_LEAST_PLANE = 0.1F;
 // A map's second way of lying: turned a quarter, and this many repeats to the first way's one
 static const float WORLD_GROUND_SECOND_SCALE = 0.77F;
-// The maps give way to the ground's own material as a hit's footprint grows from this share of a
-// repeat to that: from a fortieth (a repeat forty pixels across) to an eighth
+// A map is laid larger as a hit's footprint grows from this share of a repeat to that: from a fortieth
+// (a repeat forty pixels across) to an eighth
 static const float WORLD_GROUND_FADE_FROM = 0.025F;
 static const float WORLD_GROUND_FADE_TO   = 0.125F;
+// Each time this many times larger, at most so many times (grass's 2.5 m to 160 m), before the ground
+// is its own material
+static const float WORLD_GROUND_FAR_SCALE = 4.0F;
+static const int   WORLD_GROUND_FAR_STEPS = 3;
 
 // Whether a mesh's material slot is that of a planet's ground with maps to draw it with
 bool worldGroundIs(SceneFrameInfo* frameInfo, int material)
@@ -144,12 +151,29 @@ int worldGroundPlane(float3 normal, float pick)
   return at < w.y ? 1 : (at < w.y + w.x ? 0 : 2);
 }
 
-// Whether a hit `footprint` metres across is too far for a map of `repeats` repeats a metre, where
-// the noise is `pick`: nowhere under WORLD_GROUND_FADE_FROM of a repeat, everywhere past _FADE_TO
-bool worldGroundFaded(float footprint, float repeats, float pick)
+// How many times over (WORLD_GROUND_FAR_SCALE each) a map of `repeats` repeats a metre is laid larger
+// for a hit `footprint` metres across, where the noise is `pick`: the fewest that leave the footprint at
+// most a share of a repeat between WORLD_GROUND_FADE_FROM and _FADE_TO, by the noise; -1: more than
+// WORLD_GROUND_FAR_STEPS, the ground's own material. (Divided step by step: a power of the scale is exact.)
+int worldGroundFarStep(float footprint, float repeats, float pick)
 {
-  const float share = footprint * repeats;
-  return share > lerp(WORLD_GROUND_FADE_FROM, WORLD_GROUND_FADE_TO, pick);
+  const float most  = lerp(WORLD_GROUND_FADE_FROM, WORLD_GROUND_FADE_TO, pick);
+  float       share = footprint * repeats;
+  for(int step = 0; step <= WORLD_GROUND_FAR_STEPS; step++)
+  {
+    if(share <= most)
+      return step;
+    share /= WORLD_GROUND_FAR_SCALE;
+  }
+  return -1;
+}
+
+// The scale of a hit's footprint its material's maps are read at, `frame`'s otherwise (ptTexGradScale,
+// 0: mip 0): a layer laid larger for the distance at the footprint's mip (worldGroundFarStep), as its
+// repeat is as many pixels across as near ground's was. Near ground stays as the frame has it.
+float worldGroundTexGradScale(int farStep, float frame)
+{
+  return farStep > 0 ? 1.0F : frame;
 }
 
 struct WorldGroundHit
@@ -160,6 +184,7 @@ struct WorldGroundHit
   float3 tangent;       // the frame its normal map is read in: along u,
   float3 bitangent;     // and up the map
   float  texelDensity;  // repeats of its maps a metre
+  int    farStep;       // how many times over it is laid larger for the distance (worldGroundFarStep)
 };
 
 // What a hit of a planet's ground at `pos`, world space, is drawn with: `normal` its shading normal,
@@ -174,11 +199,18 @@ WorldGroundHit worldGroundAt(SceneFrameInfo* frameInfo, float3 pos, float3 norma
   g.tangent      = float3(1.0F, 0.0F, 0.0F);
   g.bitangent    = float3(0.0F, 0.0F, 1.0F);
   g.texelDensity = 0.0F;
+  g.farStep      = 0;
 
   const float4 pick  = worldGroundPick(pos);
   const int    layer = worldGroundLayer(shares, more, pick.x);
-  if(layer < 0 || worldGroundSlot(frameInfo, layer) < 0 || worldGroundFaded(footprint, worldGroundRepeats(frameInfo, layer), pick.w))
+  if(layer < 0 || worldGroundSlot(frameInfo, layer) < 0)
     return g;
+  g.farStep = worldGroundFarStep(footprint, worldGroundRepeats(frameInfo, layer), pick.w);
+  if(g.farStep < 0)
+  {
+    g.farStep = 0;
+    return g;
+  }
 
   // the plane's own directions: along its maps' u, and along their v (down the map, so that a
   // cliff's strata lie as the map has them)
@@ -191,6 +223,8 @@ WorldGroundHit worldGroundAt(SceneFrameInfo* frameInfo, float3 pos, float3 norma
     alongU = float3(0.0F, 0.0F, 1.0F);
   // its second way of lying; turned on level ground only, as a face's map keeps its top up
   g.texelDensity = worldGroundRepeats(frameInfo, layer);
+  for(int s = 0; s < g.farStep; s++)
+    g.texelDensity /= WORLD_GROUND_FAR_SCALE;
   if(pick.z > 0.5F)
   {
     g.texelDensity *= WORLD_GROUND_SECOND_SCALE;

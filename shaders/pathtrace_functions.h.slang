@@ -37,9 +37,11 @@
 //-----------------------------------------------------------------------
 // The material a mesh hit is drawn with: its own, or, for a planet's ground with maps, the one of
 // its layers' that the place is (world_ground.h.slang), the hit then given its place in that
-// layer's maps and the frame they are read in. `footprint`: metres across what the hit stands for
+// layer's maps and the frame they are read in. `footprint`: metres across what the hit stands for.
+// `texGradScale`: the frame's footprint scale for its maps' mips (ptTexGradScale), 1 where the layer is
+// laid larger for the distance (worldGroundTexGradScale)
 //-----------------------------------------------------------------------
-int worldGroundMaterial(int material, inout HitState hit, float footprint, SceneFrameInfo* frameInfo)
+int worldGroundMaterial(int material, inout HitState hit, float footprint, SceneFrameInfo* frameInfo, inout float texGradScale)
 {
   if(!worldGroundIs(frameInfo, material))
     return material;
@@ -51,6 +53,7 @@ int worldGroundMaterial(int material, inout HitState hit, float footprint, Scene
   hit.tangent      = ground.tangent;
   hit.bitangent    = ground.bitangent;
   hit.texelDensity = ground.texelDensity;
+  texGradScale     = worldGroundTexGradScale(ground.farStep, texGradScale);
   return ground.material;
 }
 
@@ -2931,7 +2934,8 @@ DlssGlassPsr dlssTraceClearGlass(PbrMaterial glassMat, HitState glassHit, float3
     GltfRenderPrimitive prim  = renderPrimitive[payload.rprimID];
     float3              barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
     HitState  hit  = getHitState(prim, barys, node.worldToObject, node.objectToWorld, payload.primitiveID, dir);
-    const int material = worldGroundMaterial(max(0, node.materialID), hit, 0.0F, pushConst.frameInfo);  // a lake's bed
+    float     bedGradScale = 0.0F;  // (no footprint: as from near)
+    const int material     = worldGroundMaterial(max(0, node.materialID), hit, 0.0F, pushConst.frameInfo, bedGradScale);  // a lake's bed
     MeshState mesh = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, isInside, 0.0f);
     mesh.baseColorVertexMul = hit.color;
     mesh.masks              = hit.masks;

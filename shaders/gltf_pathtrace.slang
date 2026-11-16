@@ -1507,8 +1507,9 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       // Find material at the hit point and evaluate the material (PBR material evaluation)
 
       // (a planet's ground is drawn with the one of its materials its place is, its maps laid by
-      // where the hit is: world_ground.h.slang)
-      materialIndex = worldGroundMaterial(max(0, renderNode.materialID), hit, worldFoot, frameInfo);
+      // where the hit is, and laid larger in the distance read at the footprint's mip: world_ground.h.slang)
+      float texGradScale = pushConst.texGradScale;
+      materialIndex      = worldGroundMaterial(max(0, renderNode.materialID), hit, worldFoot, frameInfo, texGradScale);
 
 #if GLTF_USE_VOLUME
       // What the surface is to the media the path is in (medium_stack.h.slang); the segment up to here
@@ -1601,7 +1602,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
       }
 #endif
 
-      float     texGrad = worldFoot * hit.texelDensity * pushConst.texGradScale;
+      float     texGrad = worldFoot * hit.texelDensity * texGradScale;
       if(g_hitToCount)
       {
         g_hitToCount = false;
@@ -3946,9 +3947,10 @@ void inspectPixel(IRaytracer raytracer)
   }
   else
   {
-    const int   materialIndex   = worldGroundMaterial(max(0, node.materialID), hit, worldFoot, frameInfo);
+    float       texGradScale    = pushConst.texGradScale;
+    const int   materialIndex   = worldGroundMaterial(max(0, node.materialID), hit, worldFoot, frameInfo, texGradScale);
     MeshState   mesh            = MeshState(hit.nrm, hit.tangent, hit.bitangent, hit.geonrm, hit.uv, false,
-                                            worldFoot * hit.texelDensity * pushConst.texGradScale);
+                                            worldFoot * hit.texelDensity * texGradScale);
     mesh.baseColorVertexMul     = hit.color;
     mesh.masks                  = hit.masks;
 #if GLTF_USE_PROCEDURAL

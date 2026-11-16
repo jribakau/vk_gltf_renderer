@@ -1393,24 +1393,80 @@ TEST(WorldGround, ItsMapsAreLaidOnThePlaneItFaces)
   EXPECT_EQ(bare.material, 7);
 }
 
-TEST(WorldGround, FromFarItIsItsOwnMaterialAgain)
+// From far, a map is laid larger (distance tiling) so that a repeat stays tens of pixels across, and read at
+// the footprint's mip; past the largest the ground is its own material again
+TEST(WorldGround, FromFarItsMapsAreLaidLargerThenItIsItsOwnMaterial)
 {
-  // a repeat forty pixels across or more: the map, everywhere; under eight: nowhere
+  // a repeat forty pixels across or more: as laid near, everywhere
   for(const float pick : {0.0f, 0.5f, 1.0f})
   {
-    EXPECT_FALSE(worldGroundFaded(0.0f, 0.5f, pick));
-    EXPECT_FALSE(worldGroundFaded(0.04f, 0.5f, pick));  // sand's two metres from 40 m at a milliradian a pixel
-    EXPECT_TRUE(worldGroundFaded(0.3f, 0.5f, pick));
-    EXPECT_FALSE(worldGroundFaded(0.08f, 0.25f, pick));  // rock's four metres are seen from twice as far
+    EXPECT_EQ(worldGroundFarStep(0.0f, 0.5f, pick), 0);
+    EXPECT_EQ(worldGroundFarStep(0.04f, 0.5f, pick), 0);  // sand's two metres from 40 m at a milliradian a pixel
+    EXPECT_EQ(worldGroundFarStep(0.08f, 0.25f, pick), 0);  // rock's four metres are seen from twice as far
   }
-  // between, in patches
-  EXPECT_TRUE(worldGroundFaded(0.15f, 0.5f, 0.2f));
-  EXPECT_FALSE(worldGroundFaded(0.15f, 0.5f, 0.8f));
+  // between a fortieth and an eighth of a repeat, near in patches, larger in the rest
+  EXPECT_EQ(worldGroundFarStep(0.15f, 0.5f, 0.2f), 1);
+  EXPECT_EQ(worldGroundFarStep(0.15f, 0.5f, 0.8f), 0);
+  // whatever the footprint and the noise: the fewest steps that leave the footprint within its share of a
+  // repeat, and none past the last
+  for(float footprint = 1e-3f; footprint < 1e3f; footprint *= 1.37f)
+    for(const float pick : {0.0f, 0.3f, 0.7f, 1.0f})
+    {
+      const float most = WORLD_GROUND_FADE_FROM + (WORLD_GROUND_FADE_TO - WORLD_GROUND_FADE_FROM) * pick;
+      const int   step = worldGroundFarStep(footprint, 0.4f, pick);
+      SCOPED_TRACE(testing::Message() << footprint << " " << pick << " " << step);
+      ASSERT_GE(step, -1);
+      ASSERT_LE(step, WORLD_GROUND_FAR_STEPS);
+      if(step < 0)
+      {
+        EXPECT_GT(footprint * 0.4f / std::pow(WORLD_GROUND_FAR_SCALE, float(WORLD_GROUND_FAR_STEPS)), most);
+        continue;
+      }
+      EXPECT_LE(footprint * 0.4f / std::pow(WORLD_GROUND_FAR_SCALE, float(step)), most * 1.0001f);
+      if(step > 0)
+        EXPECT_GT(footprint * 0.4f / std::pow(WORLD_GROUND_FAR_SCALE, float(step - 1)), most);
+    }
+
+  // laid larger: its repeats a metre as many times fewer, and a centimetre along so much less of one
   SceneFrameInfo frame = groundWithMaps();
-  int            mapped = 0;
+  const float3   up(0, 1, 0);
+  const float4   sand(0, 0, 0, 1);
+  int            steps[WORLD_GROUND_FAR_STEPS + 1] = {};
   for(int i = 0; i < 400; i++)
-    mapped += worldGroundAt(&frame, float3(3.0f + 0.9f * float(i), 0.0f, -2.0f * float(i)), float3(0, 1, 0), float4(0, 0, 0, 1), 0.15f).mapped;
-  EXPECT_GT(mapped, 100);
-  EXPECT_LT(mapped, 300);
-  EXPECT_FALSE(worldGroundAt(&frame, float3(3, 0, 4), float3(0, 1, 0), float4(0, 0, 0, 1), 1.0f).mapped);
+  {
+    const float3         at(3.0f + 0.9f * float(i), 0.0f, -2.0f * float(i));
+    const WorldGroundHit g = worldGroundAt(&frame, at, up, sand, 0.15f);
+    ASSERT_TRUE(g.mapped);
+    ASSERT_GE(g.farStep, 0);
+    ASSERT_LE(g.farStep, 1);
+    steps[g.farStep]++;
+    const float laid = 0.5f / std::pow(WORLD_GROUND_FAR_SCALE, float(g.farStep));
+    EXPECT_TRUE(g.texelDensity == laid || g.texelDensity == laid * WORLD_GROUND_SECOND_SCALE) << g.texelDensity;
+    const WorldGroundHit b = worldGroundAt(&frame, at + float3(0.01f, 0, 0), up, sand, 0.15f);
+    if(b.texelDensity == g.texelDensity && b.farStep == g.farStep)
+      EXPECT_NEAR(std::abs(b.uv.x - g.uv.x) + std::abs(b.uv.y - g.uv.y), 0.01f * g.texelDensity, 2e-4f);
+  }
+  EXPECT_GT(steps[0], 100);
+  EXPECT_GT(steps[1], 100);
+  // read at the footprint's mip where it is laid larger, as the frame says where it isn't
+  EXPECT_EQ(worldGroundTexGradScale(0, 0.0f), 0.0f);
+  EXPECT_EQ(worldGroundTexGradScale(0, 0.5f), 0.5f);
+  EXPECT_EQ(worldGroundTexGradScale(1, 0.0f), 1.0f);
+  EXPECT_EQ(worldGroundTexGradScale(WORLD_GROUND_FAR_STEPS, 0.0f), 1.0f);
+
+  // the last step at a footprint of 2.2 repeats (a 64th of one laid largest): there in most patches, the
+  // ground's own material in the rest; past it, the ground's own material everywhere
+  int last = 0;
+  for(int i = 0; i < 200; i++)
+  {
+    const WorldGroundHit g = worldGroundAt(&frame, float3(1.3f * float(i), 0.0f, -0.7f * float(i)), up, sand, 4.4f);
+    if(g.mapped)
+    {
+      EXPECT_EQ(g.farStep, WORLD_GROUND_FAR_STEPS);
+      last++;
+    }
+  }
+  EXPECT_GT(last, 100);
+  EXPECT_FALSE(worldGroundAt(&frame, float3(3, 0, 4), up, sand, 1000.0f).mapped);
+  EXPECT_EQ(worldGroundAt(&frame, float3(3, 0, 4), up, sand, 1000.0f).farStep, 0);
 }
