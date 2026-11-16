@@ -691,6 +691,10 @@ public:
   EntityId createEntity(std::string name, OwnerTag owner, EntityId parent = {}, int index = -1);
   // The entity and everything under it go; what they referenced is released.
   void destroyEntity(EntityId id);
+  // The same for each of `ids` (one gone already, or under another of them, is passed by): each list
+  // of siblings they leave is gone through once, where one at a time goes through it once each. Many
+  // children of one entity go this way (a planet's quads giving way under the backdrop's root).
+  void destroyEntities(std::span<const EntityId> ids);
   // Moves an entity under another (none: a root) at `index` among its siblings (-1: last). Refused
   // (false) when `parent` is the entity or under it. `keepWorld`: its local transform changes so
   // it stays where it is.
@@ -842,6 +846,8 @@ private:
   void markTransformDirty(EntityId id);
   void markVisibilityDirty(EntityId id);
   void unlink(EntityId id);
+  // destroyEntity's work on an entity already off its siblings' list
+  void destroyUnlinked(EntityId id);
   void link(EntityId id, EntityId parent, int index);
   bool isUnder(EntityId id, EntityId ancestor) const;
   void retainInstance(const MeshInstance& instance);

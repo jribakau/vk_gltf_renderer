@@ -91,6 +91,25 @@ constexpr double kPlantsHeld = 0.84, kPlantsHeldLeast = 0.93, kPlantsHeldMost = 
 // eighth of fv::world::kGrowsOver of its reach
 constexpr double kPlantsAgain = 0.02;
 constexpr double kPlantsNear  = 40.0;
+// A plant the eye passes through its growing in quicker than this comes whole at its reach: its steps
+// would each be a copy placed again for a frame or two, nothing anyone sees grow (at 600 m/s, 300 m
+// up, their steps were a third of a 15 ms sync)
+constexpr double kGrowSeconds = 0.5;
+// The cut is selected again no sooner than the eye goes this long's way: low and fast, a twentieth of
+// its height (followPlanet) was every frame, and a selection 1.8 ms of each at 210 m/s, 40 m up. It
+// leads by fv::world::kLead, a few times this.
+constexpr double kReselectSeconds = 0.1;
+
+// A chunk's entities, to go with others' in one RetainedScene::destroyEntities: they are children of
+// the backdrop's root, and one at a time each went through all of its tens of thousands
+template <class Chunk>
+void entitiesOf(const Chunk& chunk, std::vector<rs::EntityId>& out)
+{
+  for(const rs::EntityId e : {chunk.ground, chunk.sea, chunk.roads})
+    if(!e.isNone())
+      out.push_back(e);
+  out.insert(out.end(), chunk.plants.begin(), chunk.plants.end());
+}
 
 W::Quad parentOf(const W::Quad& q)
 {
@@ -410,9 +429,10 @@ void FvHost::Impl::followPlanet()
     }
   }
   // selected again once it, or where it will be, has gone a twentieth of its height over the ground:
-  // a quad's reach is kSplit of its widths, and the nearest is no nearer than that height
+  // a quad's reach is kSplit of its widths, and the nearest is no nearer than that height (at speed,
+  // kReselectSeconds' way)
   const glm::dvec3 ahead = eye + p.velocity * W::kLead;
-  if(const double gone = std::max(0.5, 0.05 * p.eyeHeight);
+  if(const double gone = std::max({0.5, 0.05 * p.eyeHeight, glm::length(p.velocity) * kReselectSeconds});
      !p.selected || glm::distance(eye, p.selectedFor) > gone || glm::distance(ahead, p.selectedAhead) > gone)
   {
     p.selection     = fv::world::select(world, eye, p.selected ? &p.selection : nullptr, p.velocity);
@@ -704,6 +724,7 @@ bool FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
     return true;
   }
   const double away     = std::max(glm::distance(eye, chunk.middle) - chunk.round, 0.0);
+  const double passing  = glm::length(planetBuilt->velocity) * kGrowSeconds;  // metres the eye goes in kGrowSeconds
   uint64_t     standing = 0;
   bool         done     = true;
   std::vector<uint32_t>  moved, shown, hidden;
@@ -721,8 +742,12 @@ bool FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
     };
     // how much of its size plant `i` shows, in its steps, and its copy's place at that
     const auto step = [&](size_t i) {
-      const double off = glm::distance(eye, chunk.middle + glm::dvec3(s.places[i][3]));
-      return uint8_t(std::ceil(double(W::grownAt(off, double(s.reach[i]))) * double(plantSteps(s.reach[i]))));
+      const double  off   = glm::distance(eye, chunk.middle + glm::dvec3(s.places[i][3]));
+      const double  grown = double(W::grownAt(off, double(s.reach[i])));
+      const uint8_t steps = plantSteps(s.reach[i]);
+      if(passing > W::kGrowsOver * double(s.reach[i]))
+        return grown > 0.0 ? steps : uint8_t(0);  // (passed too quickly to grow: whole)
+      return uint8_t(std::ceil(grown * double(steps)));
     };
     const auto placed = [&](size_t i, uint8_t grown) {
       const uint8_t steps = plantSteps(s.reach[i]);
@@ -761,6 +786,7 @@ bool FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
       }
       s.whole = uint32_t(std::min(whole, count));
       scene.setMeshInstance(chunk.plants[k], std::move(instance));
+      planetBuilt->plantWork.held += cost;
       continue;
     }
     moved.clear();
@@ -793,6 +819,9 @@ bool FvHost::Impl::showPlanetPlants(rs::RetainedScene& scene, PlanetBuilt::Chunk
       scene.setCopiesShown(chunk.plants[k], shown, true);
     if(!hidden.empty())
       scene.setCopiesShown(chunk.plants[k], hidden, false);
+    const size_t parts = entity->mesh->parts.size();
+    planetBuilt->plantWork.stepped += (moved.size() - shown.size()) * parts;
+    planetBuilt->plantWork.flipped += (shown.size() + hidden.size()) * parts;
   }
   chunk.standing = standing;
   if(done)
@@ -828,18 +857,16 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
       if(!e.isNone())
         scene.setVisible(e, true);
     for(const rs::EntityId e : chunk.plants)
+    {
       scene.setVisible(e, true);
+      if(const rs::Entity* entity = scene.entity(e); entity && entity->mesh)
+        p.plantWork.revealed += entity->mesh->copies.size() * entity->mesh->parts.size();
+    }
     p.standing += chunk.standing;
     p.shown[q] = chunk;
   };
-  const auto gone = [&](const PlanetBuilt::Chunk& chunk) {
-    for(const rs::EntityId e : {chunk.ground, chunk.sea, chunk.roads})
-      if(!e.isNone() && scene.entity(e))
-        scene.destroyEntity(e);
-    for(const rs::EntityId e : chunk.plants)
-      if(scene.entity(e))
-        scene.destroyEntity(e);
-  };
+  std::vector<rs::EntityId> going;  // (destroyed together once the cut is resolved)
+  const auto                gone = [&](const PlanetBuilt::Chunk& chunk) { entitiesOf(chunk, going); };
   // (a shown one's plants are no longer counted)
   const auto hide = [&](const W::Quad& q) {
     const PlanetBuilt::Chunk chunk = p.shown.at(q);
@@ -866,6 +893,8 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
       for(const PlanetBuilt::Chunk& chunk : p.stale)
         gone(chunk);
       p.stale.clear();
+      scene.destroyEntities(going);
+      going.clear();
       if(p.planted)
       {
         for(const auto& [tile, entity] : p.tiles)
@@ -879,6 +908,7 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
         tilePlanet(scene, p.selectedFor);
       }
     }
+    scene.destroyEntities(going);
     backdropState = "ready";
     scopeHaze();
     publishBackdrop();
@@ -934,6 +964,7 @@ void FvHost::Impl::resolvePlanet(rs::RetainedScene& scene)
     gone(it->second);
     it = p.arrived.erase(it);
   }
+  scene.destroyEntities(going);
 }
 
 Json FvHost::Impl::planetStatus(const Json& args) const
@@ -978,7 +1009,8 @@ Json FvHost::Impl::planetStatus(const Json& args) const
   return Json{{"wanted", p.selection.leaves.size()}, {"shown", p.shown.size()}, {"arrived", p.arrived.size()}, {"waiting", waiting},
               {"late", late},                        {"busy", p.flights > 0},   {"standing", p.standing},      {"tiled", p.tiled},
               {"eye", eye},                          {"at", at},
-              {"follow", {{"frames", p.followFrames}, {"ms", p.followMs}, {"slow", p.followSlow}}}};
+              {"follow", {{"frames", p.followFrames}, {"ms", p.followMs}, {"slow", p.followSlow}}},
+              {"plantWork", {{"held", p.plantWork.held}, {"stepped", p.plantWork.stepped}, {"flipped", p.plantWork.flipped}, {"revealed", p.plantWork.revealed}}}};
 }
 
 // ---- its plants ----------------------------------------------------------------------------------------
@@ -1367,20 +1399,14 @@ void FvHost::Impl::replantPlanet(rs::RetainedScene& scene)
   PlanetBuilt& p = *planetBuilt;
   // the quads that stand have what was on them: made again, the first cut whole before any shows.
   // (A batch on its way was made as before: it is of a planet gone, as far as its arrival can tell.)
-  const auto gone = [&](const PlanetBuilt::Chunk& chunk) {
-    for(const rs::EntityId e : {chunk.ground, chunk.sea, chunk.roads})
-      if(!e.isNone() && scene.entity(e))
-        scene.destroyEntity(e);
-    for(const rs::EntityId e : chunk.plants)
-      if(scene.entity(e))
-        scene.destroyEntity(e);
-  };
+  std::vector<rs::EntityId> going;
   for(const auto& [q, chunk] : p.shown)
-    gone(chunk);
+    entitiesOf(chunk, going);
   for(const auto& [q, chunk] : p.arrived)
-    gone(chunk);
+    entitiesOf(chunk, going);
   for(const PlanetBuilt::Chunk& chunk : p.stale)
-    gone(chunk);
+    entitiesOf(chunk, going);
+  scene.destroyEntities(going);
   p.shown.clear();
   p.arrived.clear();
   p.stale.clear();
@@ -1402,15 +1428,10 @@ void FvHost::Impl::restreamPlanet(rs::RetainedScene& scene)
   // arrived and not shown is of the planet as it was. (A batch on its way too: another generation.)
   for(const auto& [q, chunk] : p.shown)
     p.stale.push_back(chunk);
+  std::vector<rs::EntityId> going;
   for(const auto& [q, chunk] : p.arrived)
-  {
-    for(const rs::EntityId e : {chunk.ground, chunk.sea, chunk.roads})
-      if(!e.isNone() && scene.entity(e))
-        scene.destroyEntity(e);
-    for(const rs::EntityId e : chunk.plants)
-      if(scene.entity(e))
-        scene.destroyEntity(e);
-  }
+    entitiesOf(chunk, going);
+  scene.destroyEntities(going);
   p.shown.clear();
   p.arrived.clear();
   p.standing   = 0;

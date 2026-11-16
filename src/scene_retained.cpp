@@ -496,16 +496,49 @@ EntityId RetainedScene::createEntity(std::string name, OwnerTag owner, EntityId 
 
 void RetainedScene::destroyEntity(EntityId id)
 {
+  destroyEntities({&id, 1});
+}
+
+void RetainedScene::destroyEntities(std::span<const EntityId> ids)
+{
   assertOwner();
+  std::vector<EntityId> going;
+  going.reserve(ids.size());
+  for(const EntityId id : ids)
+    if(m_entities.get(id))
+      going.push_back(id);
+  std::sort(going.begin(), going.end());
+  going.erase(std::unique(going.begin(), going.end()), going.end());
+  // off the lists they are on, each gone through once: a planet's quads giving way took a few of its
+  // root's tens of thousands of children a frame, each with a pass over all of them
+  std::vector<std::vector<EntityId>*> lists;
+  for(const EntityId id : going)
+  {
+    const EntityId parent = m_entities[id].parent;
+    lists.push_back(m_entities.contains(parent) ? &m_entities[parent].children : &m_roots);
+  }
+  std::sort(lists.begin(), lists.end());
+  lists.erase(std::unique(lists.begin(), lists.end()), lists.end());
+  for(std::vector<EntityId>* list : lists)
+    std::erase_if(*list, [&](EntityId e) { return std::binary_search(going.begin(), going.end(), e); });
+  for(const EntityId id : going)
+    m_entities[id].parent = {};
+  // (one under another of them is gone with it)
+  for(const EntityId id : going)
+    destroyUnlinked(id);
+}
+
+void RetainedScene::destroyUnlinked(EntityId id)
+{
   Entity* e = m_entities.get(id);
   if(!e)
     return;
-  // its children's list taken first: each child unlinks itself from it, and erasing them one by one
-  // from a list of n was n squared (a model of 400,000 nodes took 33 s to clear)
+  // its children's list taken first: it goes whole, and erasing them one by one from a list of n was
+  // n squared (a model of 400,000 nodes took 33 s to clear)
   const std::vector<EntityId> children = std::move(e->children);
   e->children.clear();
   for(EntityId child : children)
-    destroyEntity(child);
+    destroyUnlinked(child);
   e = m_entities.get(id);
   if(e->mesh)
   {
@@ -517,7 +550,6 @@ void RetainedScene::destroyEntity(EntityId id)
     release(e->light);
   if(!e->camera.isNone())
     release(e->camera);
-  unlink(id);
   m_entities.erase(id);
   m_changes.transforms.erase(id);
   m_changes.visibility.erase(id);

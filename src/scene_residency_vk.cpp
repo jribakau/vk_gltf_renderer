@@ -1396,12 +1396,18 @@ void VulkanGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow
   }
   else
   {
-    size_t first = 0;
+    // (a run takes in a gap of up to kRowsBridged to the next changed row, written again as it is: an
+    // upload a run of two or three rows was most of the rows' time when scattered copies moved)
+    constexpr size_t kRowsBridged = 16;
+    size_t           first        = 0;
     for(const uint32_t i : changed)
     {
       if(i >= rows.size())
         break;
-      if(!instances.empty() && i != first + instances.size())
+      if(const size_t end = first + instances.size(); !instances.empty() && i >= end && i - end <= kRowsBridged)
+        for(size_t gap = end; gap < i; gap++)
+          instances.push_back(instanceOf(gap));
+      else if(!instances.empty())
         upload(first);
       if(instances.empty())
         first = i;

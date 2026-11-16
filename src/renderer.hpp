@@ -801,6 +801,8 @@ private:
   uint64_t              m_ledgerLogged = 0;          // the scene's bytes the last [memory] line said
   std::optional<uint64_t> m_blasTimedFrame;            // blasTimeBuilds: the frame whose AS builds are being timed
   uint64_t              m_trailFrames  = 0;          // frames begun, as the crash trail numbers them (gpu_crash_trail.hpp)
+  uint64_t              m_trailSpilled = 0;          // the trail's bytes off the device, and since when (kTrailSpilledEvery)
+  double                m_trailSpilledAt = -1.0;
   std::vector<nvvk::Buffer> m_memoryFill;            // memoryFillMB's
   size_t                m_memoryFillNext = 0;        // the block memoryFillWriteMB writes next
   rs::MemoryWatch       m_memoryWatch;

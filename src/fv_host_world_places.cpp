@@ -147,16 +147,15 @@ void FvHost::Impl::placePlaces(std::shared_ptr<const W::Places> places)
 void FvHost::Impl::dropSites(rs::RetainedScene& scene)
 {
   PlanetBuilt& p = *planetBuilt;
+  // (all at once: they are children of the backdrop's root, and each alone went through all of them)
+  std::vector<rs::EntityId> going;
   for(auto& [site, shown] : p.sites)
     for(const std::vector<rs::EntityId>* entities : {&shown.entities, &shown.growth})
-      for(const rs::EntityId e : *entities)
-        if(scene.entity(e))
-          scene.destroyEntity(e);
+      going.insert(going.end(), entities->begin(), entities->end());
   for(auto& [pack, held] : p.packs)
     for(const PlanetBuilt::HeldModel& model : held.models)
-      for(const rs::EntityId e : model.roots)
-        if(scene.entity(e))
-          scene.destroyEntity(e);
+      going.insert(going.end(), model.roots.begin(), model.roots.end());
+  scene.destroyEntities(going);
   p.sites.clear();
   p.packs.clear();
   p.seen.clear();
@@ -379,9 +378,7 @@ void FvHost::Impl::followPlaces(rs::RetainedScene& scene, const glm::dvec3& eye)
     return;  // (none, or its ground has not come yet)
   const W::Places& pl = *p.world->places;
   const auto       gone = [&](std::vector<rs::EntityId>& entities) {
-    for(const rs::EntityId e : entities)
-      if(scene.entity(e))
-        scene.destroyEntity(e);
+    scene.destroyEntities(entities);
     entities.clear();
   };
   if(glm::distance(eye, p.seenFor) > kSeenAgain)

@@ -104,18 +104,26 @@ uint32_t capacityFor(uint32_t count, uint32_t minimum)
   return std::max(minimum, std::bit_ceil(std::max(count, 1u)));
 }
 
-// [first, count) runs of consecutive slots, ascending
+// [first, count) runs of consecutive slots, ascending; with `bridged`, a run takes in a gap of up to
+// that many to the next slot, for a table whose rows are written again as they are. An upload a run
+// was most of a table's time when the eye flying fast moved scattered copies (some 16,000 a frame
+// of two or three rows, over the render nodes, their motion and the TLAS).
 template <class Slots>
-std::vector<std::pair<uint32_t, uint32_t>> runsOf(const Slots& slots)
+std::vector<std::pair<uint32_t, uint32_t>> runsOf(const Slots& slots, uint32_t bridged = 0)
 {
   std::vector<std::pair<uint32_t, uint32_t>> runs;
   for(uint32_t s : slots)
-    if(!runs.empty() && runs.back().first + runs.back().second == s)
-      runs.back().second++;
+    if(const uint32_t end = runs.empty() ? 0 : runs.back().first + runs.back().second; !runs.empty() && s >= end && s - end <= bridged)
+      runs.back().second = s - runs.back().first + 1;
     else
       runs.push_back({s, 1});
   return runs;
 }
+
+// The gaps runsOf bridges: rows of the render nodes (an inverse each, written again) and of their
+// motion (a copy)
+constexpr uint32_t kNodesBridged  = 4;
+constexpr uint32_t kMotionBridged = 16;
 
 void sortUnique(std::vector<uint32_t>& slots)
 {
@@ -3204,7 +3212,8 @@ void Residency::writeMotionTables(SyncResult& result)
     }
     m_gpu.upload(m_prevPositionTable, uint64_t(first) * sizeof(uint64_t), bytesOf(rows));
   }
-  for(const auto& [first, count] : runsOf(nodes))
+  // (a row between two written is written again as it is: m_prevWorlds holds each as uploaded)
+  for(const auto& [first, count] : runsOf(nodes, kMotionBridged))
   {
     std::vector<glm::mat4> rows(count, glm::mat4(0.f));
     for(uint32_t i = 0; i < count; i++)
@@ -4134,7 +4143,8 @@ void Residency::syncRows(RetainedScene& scene, const SceneChanges& changes, Sync
 
 void Residency::writeRenderNodes(std::span<const uint32_t> slots)
 {
-  for(const auto& [first, count] : runsOf(slots))
+  // (a row between two written is written again from its instance, as it was)
+  for(const auto& [first, count] : runsOf(slots, kNodesBridged))
   {
     std::vector<shaderio::GltfRenderNode> rows(count);
     for(uint32_t i = 0; i < count; i++)

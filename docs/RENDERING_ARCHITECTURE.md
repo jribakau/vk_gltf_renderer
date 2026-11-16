@@ -39,7 +39,10 @@ keeps its copies' slots), the row pass places the instances of the entities that
 copies named. Every entity is gone through only when a mesh's own state says what is drawn (parked,
 arriving a few a sync, brought back, a fresh scene), which costs the entities, not their copies.
 The TLAS rows are worked out again only for slots placed, shown or linked since the last build and
-for the instances of a prim whose BLAS is another (found by `m_primRuns`); the emissive table finds
+for the instances of a prim whose BLAS is another (found by `m_primRuns`). The rows changed go up a
+run of slots an upload, and a run takes in a short gap to the next one, its rows written again as
+they are (`runsOf`'s `bridged`, `buildTlasRows`): copies moved here and there were thousands of
+uploads of two or three rows a frame. The emissive table finds
 its emitters by their materials (`m_materialRuns`); the scene's bounds are kept a box an entity; the
 raster lists are made when read. `Residency::lastSyncWork` counts what a sync looked at, and
 the tests hold it to the change (`RetainedResidency.ASyncLooksOnlyAtWhatChanged`). A copy can be
@@ -1006,9 +1009,12 @@ their kit when there is one. It needs no kit: without one it stands bare.
   four children only once all four are made, and shown quads give way to the one over them once it
   is. An eye that moves is led: the cut is chosen for where it is and for where it will be a moment
   on (`kLead`, from its steps over the last frames), so a quad is asked for before the eye is at its
-  distance. Meshes are made on the job pool a few small batches at a time, the nearest along the
+  distance, and chosen again no more often than the eye goes a fraction of that way
+  (`kReselectSeconds`). Meshes are made on the job pool a few small batches at a time, the nearest along the
   eye's way first, and come into the scene as hidden entities for a couple of milliseconds a frame
   (`landPlanet`), so their BLAS is built before they show and a frame takes in no more than it can.
+  The quads' entities are children of the backdrop's root, and those of the quads that give way go
+  in one `RetainedScene::destroyEntities`, which goes through the root's list once.
   A quad's edges carry skirts, since neighbours of different levels don't
   meet exactly and a ray would find the crack.
 - **The ground's colour** is its vertices' (the fields'), and **its grain** a map's where the

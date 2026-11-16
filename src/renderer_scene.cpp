@@ -622,11 +622,20 @@ bool GltfRenderer::syncRetainedScene(VkCommandBuffer cmd)
                                   std::pair{result.tlasHandleChanged, "TLAS made"}, std::pair{result.verticesWritten, "vertices"}})
       if(on)
         did += did.empty() ? name : std::string(", ") + name;
+    // (spilledBytes asks of every allocation the scene has where it lies: a planet's tens of thousands
+    // were a millisecond of every frame, for a figure that moves by the second)
+    constexpr double kTrailSpilledEvery = 0.25;
+    if(const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+       m_trailSpilledAt < 0.0 || now - m_trailSpilledAt >= kTrailSpilledEvery)
+    {
+      m_trailSpilled   = m_resources.retainedGpu->backend().spilledBytes();
+      m_trailSpilledAt = now;
+    }
     gpu_trail::record({.frame       = m_trailFrames,
                        .budget      = budget.budget,
                        .usage       = budget.usage,
                        .allocated   = budget.allocatorBlocks,
-                       .spilled     = m_resources.retainedGpu->backend().spilledBytes(),
+                       .spilled     = m_trailSpilled,
                        .stagingHeld = staging.allocatedSize,
                        .stagingLive = staging.requestedSize,
                        .decoded     = images.decoded,

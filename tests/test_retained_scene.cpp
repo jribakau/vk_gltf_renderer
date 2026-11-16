@@ -116,6 +116,37 @@ TEST(RetainedScene, AnEntityGoesWithAllItsChildren)
   EXPECT_EQ(scene.entity(other)->children, (std::vector<rs::EntityId>{kept, b}));
 }
 
+// Many children of one entity go together, their siblings left in their order, whatever else is in
+// the list: one already gone, one twice, one under another of them, a root (one at a time, each went
+// through all its siblings: a planet's quads giving way, a few of 30,000 a frame)
+TEST(RetainedScene, ManyGoTogetherAndTheRestKeepTheirOrder)
+{
+  rs::RetainedScene         scene;
+  const rs::EntityId        root = scene.createEntity("root", {1, 0});
+  const rs::EntityId        lone = scene.createEntity("lone", {2, 0});
+  std::vector<rs::EntityId> children;
+  for(int i = 0; i < 30000; i++)
+    children.push_back(scene.createEntity("c", {1, 1}, root));
+  const rs::EntityId under = scene.createEntity("under", {1, 2}, children[7]);
+  const rs::EntityId gone  = scene.createEntity("gone", {1, 3}, root);
+  scene.destroyEntity(gone);
+  std::vector<rs::EntityId> going{gone, under, lone, children[7], children[7]};
+  std::vector<rs::EntityId> kept;
+  for(size_t i = 0; i < children.size(); i++)
+    if(i % 3 == 0 && i != 7)
+      going.push_back(children[i]);
+    else if(i != 7)
+      kept.push_back(children[i]);
+  scene.destroyEntities(going);
+  EXPECT_EQ(scene.entity(root)->children, kept);
+  EXPECT_EQ(scene.roots(), (std::vector<rs::EntityId>{root}));
+  EXPECT_EQ(scene.entity(under), nullptr);
+  EXPECT_EQ(scene.entity(children[7]), nullptr);
+  EXPECT_EQ(scene.entityCount(), 1u + kept.size());
+  scene.destroyEntities({});
+  EXPECT_EQ(scene.entityCount(), 1u + kept.size());
+}
+
 TEST(RetainedScene, WorldMatricesFollowTheHierarchy)
 {
   rs::RetainedScene scene;

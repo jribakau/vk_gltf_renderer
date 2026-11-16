@@ -624,6 +624,51 @@ TEST(RetainedResidency, CopiesAreShownAndHiddenOneByOne)
   EXPECT_FALSE(blasOf(1));
 }
 
+// Copies moved here and there are a run of rows an upload, a short gap between two written again as it
+// is: the render nodes, and their motion, the frame they move and the frame they come to rest (an
+// upload of two or three rows each was most of a fast flight's sync)
+TEST(RetainedResidency, ScatteredCopiesMovedAreFewUploadsOfTheRowsAsTheyAre)
+{
+  RetainedScene    scene;
+  const MeshId     grid = scene.addMesh(gridMesh(2, 0.f));
+  const MaterialId m    = material(scene, "m");
+  const EntityId   e    = scene.createEntity("trees", {}, {});
+  MeshInstance     instance;
+  instance.parts.push_back({grid, {m}});
+  for(int i = 0; i < 200; i++)
+    instance.copies.push_back(glm::translate(glm::mat4(1.f), glm::vec3(float(i), 0.f, 0.f)));
+  scene.setMeshInstance(e, instance);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(scene);
+  expectClean(scene, residency, gpu, "made: ");
+  // every third of the first sixty, and two far from them and each other
+  std::vector<uint32_t> which;
+  for(uint32_t c = 0; c < 60; c += 3)
+    which.push_back(c);
+  which.insert(which.end(), {120, 190});
+  std::vector<glm::mat4> to;
+  for(const uint32_t c : which)
+    to.push_back(glm::translate(glm::mat4(1.f), glm::vec3(float(c), 5.f, 0.f)));
+  const auto uploadsTo = [&](BufferHandle buffer) {
+    return std::count_if(gpu.uploads().begin(), gpu.uploads().end(), [&](const FakeGpuBackend::UploadRecord& u) { return u.buffer == buffer; });
+  };
+  scene.moveCopies(e, which, to);
+  gpu.clearUploads();
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "moved: ");
+  EXPECT_EQ(uploadsTo(residency.renderNodeTable()), 3);
+  EXPECT_EQ(uploadsTo(residency.prevWorldTable()), 3);
+  // at rest: their motion rows again, as many
+  gpu.clearUploads();
+  gpu.beginFrame();
+  residency.sync(scene);
+  expectClean(scene, residency, gpu, "at rest: ");
+  EXPECT_EQ(uploadsTo(residency.prevWorldTable()), 3);
+  EXPECT_EQ(uploadsTo(residency.renderNodeTable()), 0);
+}
+
 // A destroyed entity leaves holes; their slots come back only a frame cycle later, and the meshes and
 // prims nothing draws any more are freed then.
 TEST(RetainedResidency, ARemovalLeavesHolesThatAreReusedAfterTheirRetireFrame)

@@ -1786,6 +1786,14 @@ struct FvHost::Impl
     // its frames, their time, and those of them that took over four milliseconds
     uint64_t followFrames = 0, followSlow = 0;
     double   followMs     = 0.0;
+    // What the plants gave the scene's sync to go through since the planet stood, each a copy of a
+    // mesh part (the sync's own measure): entities given their copies again (a quad landing, or the
+    // eye nearer or further), copies a step of their growing in placed again, copies shown or hidden by
+    // their reach, and entities shown with their quad
+    struct PlantWork
+    {
+      uint64_t held = 0, stepped = 0, flipped = 0, revealed = 0;
+    } plantWork;
     // The quads no longer made or waited for (the planet's quads asked again)
     void forgetFlights()
     {
