@@ -104,9 +104,9 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   The host is one `FvHost::Impl` (`src/fv_host_impl.hpp`) split by area into `src/fv_host_*.cpp`, its
   commands registered in `src/fv_host.cpp`. The protocol is listed in `src/fv_host.hpp` and
   `src/fv_view.hpp`; the app's `native/README.md` describes how it drives the renderer, and its
-  `docs/improvements.md` holds the open issues. Play mode (`src/fv_play.*`, `src/fv_host_play.cpp`)
-  walks the scene in first person with a torch and flies a ship in it, from the app's keys, meeting
-  the props and the backdrop's trees and stones.
+  `docs/improvements.md` holds the open issues. Play mode (`src/fv_play*`, `src/fv_host_play.cpp`)
+  walks the scene in first person with a torch, flies a ship and drives cars in it (a raycast vehicle,
+  `src/fv_play_car.cpp`), from the app's keys, meeting the props and the backdrop's trees and stones.
 - `src/dlss*`, `src/rr_still_denoiser*` — DLSS Ray Reconstruction, the one denoiser: the moving view's,
   and the still's over the accumulated image (OptiX and OIDN were removed 2026-11-09; the app is
   NVIDIA RTX only). `src/denoiser_handoff*` blends from the moving image to the denoised still

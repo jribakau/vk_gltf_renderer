@@ -171,11 +171,16 @@ src/
 │                               #   planet.map (fv_host_world.cpp) sends it with what stands on the planet
 ├── fv_play.cpp/hpp             # Play mode's controllers, Vulkan-free: someone on foot (collide and slide,
 │                               #   steps, gravity) with a torch in hand aimed at what the view looks at (its
-│                               #   eye is the exposure's, exposure_adapt kEye), and a ship on a throttle with flight
-│                               #   assist that lands on its pads, with a chase camera; a tree's trunk found
-│                               #   from its mesh (trunkOf); fv_host_play.cpp drives them from the app's keys,
-│                               #   finds ships by their glTF markers (fv_seat) and moves their parts, and
+│                               #   eye is the exposure's, exposure_adapt kEye), a ship on a throttle with flight
+│                               #   assist that lands on its pads, a car (fv_play_car.cpp), and the chase and seat
+│                               #   cameras for any of them; a tree's trunk found from its mesh (trunkOf);
+│                               #   fv_host_play.cpp drives them from the app's keys, finds ships and cars by their
+│                               #   glTF markers (fv_seat, a car's wheel_* pivots) and moves their parts, and
 │                               #   gives them the props, places and backdrop trees and stones to meet
+├── fv_play_car.cpp             # The car: a raycast vehicle, a rigid body on four suspension rays, its tyres'
+│                               #   friction solved as impulses (slip-angle grip, a friction circle, a locked
+│                               #   rear on the handbrake), an automatic gearbox, its body against walls and
+│                               #   the ground, sleep at rest, righting itself off its roof (unit-tested)
 ├── fv_patch.hpp                # What a merge patch's fields are checked with (lighting.set, backdrop.set), and
 │                               #   the merge patch between two states that a topic's change is published as
 │
