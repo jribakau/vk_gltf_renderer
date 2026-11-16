@@ -598,4 +598,22 @@ RoadMeshes roadMeshes(const World& w, const Quad& q, const glm::dvec3& centre, c
   return out;
 }
 
+RoadMesh bridgeMesh(const World& w, const Bridge& b, const glm::dvec3& centre, const RoadTiles& tiles)
+{
+  RoadMesh out;
+  if(!w.places)
+    return out;
+  Bridges bridges{w, *w.places, centre, tiles, out, w.spec.radius};
+  bridges.bridge(b);
+  return out;
+}
+
+glm::dvec3 bridgeMiddle(const World& w, const Bridge& b)
+{
+  if(!w.places)
+    return glm::dvec3(0.0);
+  const OnWay on = onWay(*w.places, b.way, 0.5 * (double(b.from) + double(b.to)));
+  return toScene(w, on.direction, on.level);
+}
+
 }  // namespace fv::world

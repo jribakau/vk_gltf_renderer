@@ -39,6 +39,8 @@
 
 namespace fv::world {
 
+struct Bridge;  // fv_world_places.hpp
+
 struct RoadMesh
 {
   std::vector<glm::vec3> positions, normals;  // about the quad's centre, in the scene
@@ -83,5 +85,11 @@ inline double surfaceLift(double footprint)
 // A quad's roads and bridges, about `centre` (its ground's, ChunkMesh::centre). Empty on a planet
 // with no places.
 RoadMeshes roadMeshes(const World& world, const Quad& quad, const glm::dvec3& centre, const RoadTiles& tiles = {});
+
+// One bridge as roadMeshes draws it (its deck, parapets, abutments and piers), about `centre`: what
+// someone on it walks and drives on, and meets (play mode). And where the middle of its deck is in the
+// scene, on its road's level.
+RoadMesh   bridgeMesh(const World& world, const Bridge& bridge, const glm::dvec3& centre, const RoadTiles& tiles = {});
+glm::dvec3 bridgeMiddle(const World& world, const Bridge& bridge);
 
 }  // namespace fv::world

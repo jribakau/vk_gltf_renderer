@@ -1223,6 +1223,9 @@ their kit when there is one. It needs no kit: without one it stands bare.
     from the side, its surface stops at that road's edge; at an open end it is broken off, dusty, its
     edge going down into the ground, its paint stopping short. A bridge takes the kit's concrete once
     the kit has it (`mapPlanetRoads`).
+    In play mode a bridge is solid (`placeSets`, `bridgeMesh`): the deck, parapets, piers and abutments
+    as drawn, one bridge a triangle set made when someone first comes near, so the walker and a car
+    go over it while the ground under it stays the river's.
 - **Its map** (`src/fv_world_chart.hpp`, the `planet.map` command, the app's World › Planet › Map):
   an author's view of the planet, north up. `chartImage` draws a window of latitude and longitude as
   an image, a sample a pixel at the pixel's footprint (so the stages leave out what is finer than it):

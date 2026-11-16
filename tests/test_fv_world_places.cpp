@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 
 #include <figure/jobs/pool.hpp>
+#include <figure/physics/collide/triangle_set.hpp>
 
 #include "../src/fv_world_places.hpp"
 #include "../src/fv_world_plants.hpp"
@@ -1286,6 +1287,83 @@ TEST(WorldRoads, ABridgeIsDrawnByTheQuadThatHoldsItsMiddleAtAnyLevel)
       for(const W::Quad& c : W::children(parent))
         held += W::roadMeshes(w, c, centre).bridge.indices.size();
       EXPECT_EQ(held, W::roadMeshes(w, parent, centre).bridge.indices.size());
+    }
+  }
+}
+
+// A bridge alone (play mode's): what the quad holding its middle draws of it, and solid: a ray down
+// onto its deck meets the deck, over the river, and one across it at a walker's knees meets a parapet
+// at the edge of its deck
+TEST(WorldRoads, ABridgeAloneIsWhatItsQuadDrawsOfItAndItsDeckIsMetOverTheWater)
+{
+  const W::World&  w      = settled();
+  const W::Places& pl     = places();
+  const uint8_t    finest = W::finestLevel(w);
+  ASSERT_GE(pl.bridges.size(), 8U);
+  for(size_t i = 0; i < 8; i++)
+  {
+    const size_t     index = i * pl.bridges.size() / 8;
+    const W::Bridge& b     = pl.bridges[index];
+    const double     mid   = 0.5 * (double(b.from) + double(b.to));
+    const W::OnWay   on    = W::onWay(pl, b.way, mid);
+    const glm::dvec3 middle = W::bridgeMiddle(w, b);
+    EXPECT_LT(glm::distance(middle, W::toScene(w, on.direction, on.level)), 1e-6);
+    // the quad's bridges, those whose middles it holds, one after another
+    const W::Quad    q      = quadOf(on.direction, finest);
+    const glm::dvec3 centre = W::toScene(w, on.direction, 0.0);
+    W::RoadMesh      alone;
+    for(const W::Bridge& o : pl.bridges)
+      if(W::contains(q, W::onWay(pl, o.way, 0.5 * (double(o.from) + double(o.to))).direction))
+      {
+        const W::RoadMesh m    = W::bridgeMesh(w, o, centre);
+        const uint32_t    base = uint32_t(alone.positions.size());
+        alone.positions.insert(alone.positions.end(), m.positions.begin(), m.positions.end());
+        for(const uint32_t k : m.indices)
+          alone.indices.push_back(base + k);
+      }
+    const W::RoadMesh drawn = W::roadMeshes(w, q, centre).bridge;
+    ASSERT_EQ(alone.indices, drawn.indices) << "bridge " << index;
+    ASSERT_EQ(alone.positions.size(), drawn.positions.size());
+    for(size_t k = 0; k < drawn.positions.size(); k++)
+      ASSERT_LT(glm::distance(alone.positions[k], drawn.positions[k]), 1e-4F);
+
+    // its own, about its middle, as a solid
+    const W::RoadMesh  m = W::bridgeMesh(w, b, middle);
+    std::vector<float> xyz;
+    for(const glm::vec3& v : m.positions)
+      xyz.insert(xyz.end(), {v.x, v.y, v.z});
+    const fv::physics::TriangleSet set(std::move(xyz), std::vector<uint32_t>(m.indices));
+    fv::physics::Stamps            stamps;
+    const auto                     scene = [&](const glm::dvec3& v) { return w.frame.turn * v; };
+    const glm::dvec3               up = scene(on.direction), side = glm::normalize(glm::cross(scene(on.forward), up));
+    const auto                     ray = [&](const glm::dvec3& from, const glm::dvec3& dir) {
+      return fv::physics::exitAlong(set, {from.x, from.y, from.z}, {dir.x, dir.y, dir.z}, 50.0, stamps);
+    };
+    const double half = double(on.piece->half);
+    const glm::dvec3 forward = scene(on.forward);
+    // (off the seams between its sections, which a ray may slip between: a measure of nothing)
+    for(const double along : {-0.3 * double(b.to - b.from), 0.37, 0.3 * double(b.to - b.from)})
+    {
+      const glm::dvec3 at = forward * along;
+      for(const double x : {-0.8 * half, 0.13, 0.8 * half})
+      {
+        // down from 3 m over the road: its deck just under the road's level, clear of the water
+        const fv::physics::Inside down = ray(at + up * 3.0 + side * x, -up);
+        ASSERT_TRUE(down.inside) << "bridge " << index << " at " << along << ", " << x;
+        const double level = glm::dot(glm::dvec3(down.exit[0], down.exit[1], down.exit[2]), up);
+        const double road  = W::onWay(pl, b.way, mid + along).level - on.level;  // (it may rise or fall along it)
+        EXPECT_NEAR(level, road - 0.02, 0.02) << "bridge " << index << " at " << along << ", " << x;
+        EXPECT_GT(on.level + level, double(b.water) + 1.0);
+        EXPECT_GT(std::abs(glm::dot(glm::dvec3(down.normal[0], down.normal[1], down.normal[2]), up)), 0.99);  // (level: turned along the ray)
+      }
+      // across from its middle half a metre over the road: a parapet's face, either way
+      for(const double way : {-1.0, 1.0})
+      {
+        const fv::physics::Inside across = ray(at + up * 0.5, side * way);
+        ASSERT_TRUE(across.inside) << "bridge " << index << " at " << along;
+        const double out = glm::dot(glm::dvec3(across.exit[0], across.exit[1], across.exit[2]), side) * way;
+        EXPECT_NEAR(out, half + 0.3, 0.05) << "bridge " << index << " at " << along;
+      }
     }
   }
 }

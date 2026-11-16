@@ -160,7 +160,8 @@ src/
 │                               #   and the stage that levels the ground under them; fv_host_world_places.cpp
 │                               #   reads the catalogue, holds the packs' models and stands the sites near the eye
 ├── fv_world_roads.cpp/hpp      # What a quad draws of the roads: an asphalt road's surface on the ground as the
-│                               #   quad has it, its worn markings, and the bridges whose middles it holds
+│                               #   quad has it, its worn markings, and the bridges whose middles it holds;
+│                               #   one bridge alone, which play mode walks and drives on (bridgeMesh)
 ├── fv_world_asphalt.cpp/hpp    # A road's asphalt as maps made from a seed: an old road's wear across its
 │                               #   carriageway and along it, its stones' grain, its markings' paint worn on it
 ├── fv_world_light.cpp/hpp      # The light of the bodies in a planet's sky: each one's face summed as a place sees
@@ -176,7 +177,7 @@ src/
 │                               #   cameras for any of them; a tree's trunk found from its mesh (trunkOf);
 │                               #   fv_host_play.cpp drives them from the app's keys, finds ships and cars by their
 │                               #   glTF markers (fv_seat, a car's wheel_* pivots) and moves their parts, and
-│                               #   gives them the props, places and backdrop trees and stones to meet
+│                               #   gives them the props, places, bridges and backdrop trees and stones to meet
 ├── fv_play_car.cpp             # The car: a raycast vehicle, a rigid body on four suspension rays, its tyres'
 │                               #   friction solved as impulses (slip-angle grip, a friction circle, a locked
 │                               #   rear on the handbrake), an automatic gearbox, its body against walls and

@@ -690,8 +690,9 @@ std::optional<game::Surface> FvHost::Impl::PlayState::groundUnder(Impl& s, const
 
 // What the controllers collide with: every shown prop's surfaces but `skip`'s (a ship doesn't meet
 // itself) and people's, whose poses move under them; the planet's places round `around` (their walls
-// are met as a prop's are), and the backdrop's trees and stones within `within` of it. A set not
-// indexed yet is indexed on the pool and met once it is.
+// are met as a prop's are) and its bridges (their decks stood and driven on, over the river), and the
+// backdrop's trees and stones within `within` of it. A set not indexed yet is indexed on the pool and
+// met once it is.
 std::vector<FvHost::Impl::PlacedSet> FvHost::Impl::PlayState::playSets(Impl& s, const std::string& skip, const glm::dvec3& around, double within)
 {
   std::vector<PlacedSet> out;

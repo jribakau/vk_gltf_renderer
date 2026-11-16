@@ -1869,6 +1869,18 @@ struct FvHost::Impl
     std::vector<uint32_t>         seen;
     glm::dvec3                    seenFor{1.0e30};
     uint64_t                      packClock = 0;
+    // Its bridges as someone in play mode meets them (placeSets), by bridge of the places: the middle of
+    // each one's deck in the root's frame, how far its parts reach from there, and its triangles about
+    // that middle, made the first time someone comes near. For the world they were found on.
+    struct HeldBridge
+    {
+      glm::dvec3                                          middle{0.0};
+      double                                              reach = 0.0;
+      std::shared_ptr<const fv::physics::SharedTriangles> solid;
+      bool                                                made = false;
+    };
+    std::vector<HeldBridge>               bridges;
+    std::weak_ptr<const fv::world::World> bridgesOf;
   };
   // The catalogue a planet is settled from (settings.placesDir), read on a worker; none until then
   std::shared_ptr<const fv::world::Catalogue> placesCatalogue;
@@ -1892,8 +1904,9 @@ struct FvHost::Impl
   void standSite(rs::RetainedScene& scene, uint32_t site, bool growth);
   // Every shown site and held pack gone
   void dropSites(rs::RetainedScene& scene);
-  // The shown places within `within` metres of a point of the world, as triangle sets where they
-  // stand, added to `out`: what someone on foot or a ship meets (play mode). Not what grows over them.
+  // The shown places within `within` metres of a point of the world, and the bridges, as triangle sets
+  // where they stand, added to `out`: what someone on foot, a ship or a car meets (play mode), a
+  // bridge's deck what they stand and drive on over its river. Not what grows over the places.
   void placeSets(const glm::dvec3& near, double within, std::vector<PlacedSet>& out);
   std::unique_ptr<PlanetBuilt> planetBuilt;
   uint64_t                     planetGeneration = 0;

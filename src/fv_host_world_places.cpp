@@ -369,6 +369,52 @@ void FvHost::Impl::placeSets(const glm::dvec3& near, double within, std::vector<
             out.push_back({walls[n], toWorld * W::copyPlace(copy) * nodes[n].base, false});
     }
   }
+  // the bridges: drawn by whichever quad holds them, at any level, so always there; each one's triangles
+  // made as it is drawn the first time someone comes near (a few hundred, well under a millisecond)
+  if(p.bridgesOf.lock() != p.world)
+  {
+    p.bridges.clear();
+    p.bridges.resize(pl.bridges.size());
+    for(size_t i = 0; i < pl.bridges.size(); i++)
+    {
+      const W::Bridge& b = pl.bridges[i];
+      p.bridges[i].middle = W::bridgeMiddle(*p.world, b);
+      // (its deck's half and its ends in the banks, its width and its piers' depth: until it is made)
+      p.bridges[i].reach = 0.5 * double(b.to - b.from) + W::kBridgeEnds + 40.0;
+    }
+    p.bridgesOf = p.world;
+  }
+  for(size_t i = 0; i < p.bridges.size(); i++)
+  {
+    PlanetBuilt::HeldBridge& held = p.bridges[i];
+    if(glm::distance(near - floor, held.middle) > held.reach + within)
+      continue;
+    if(!held.made)
+    {
+      held.made = true;
+      const W::RoadMesh  mesh = W::bridgeMesh(*p.world, pl.bridges[i], held.middle);
+      std::vector<float> xyz;
+      fv::physics::Box   box;
+      double             reach = 0.0;
+      xyz.reserve(mesh.positions.size() * 3);
+      for(const glm::vec3& v : mesh.positions)
+      {
+        xyz.insert(xyz.end(), {v.x, v.y, v.z});
+        box.add(v.x, v.y, v.z);
+        reach = std::max(reach, double(glm::length(v)));
+      }
+      if(!mesh.indices.empty())
+      {
+        held.reach = reach;
+        held.solid = std::make_shared<const fv::physics::SharedTriangles>(
+            [parts = std::vector<std::pair<std::vector<float>, std::vector<uint32_t>>>{{std::move(xyz), mesh.indices}}] { return parts; }, box);
+      }
+      if(glm::distance(near - floor, held.middle) > held.reach + within)
+        continue;
+    }
+    if(held.solid)
+      out.push_back({held.solid, glm::translate(glm::mat4(1.0F), glm::vec3(floor + held.middle)), false});
+  }
 }
 
 void FvHost::Impl::followPlaces(rs::RetainedScene& scene, const glm::dvec3& eye)
