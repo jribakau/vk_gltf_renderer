@@ -35,6 +35,13 @@
 // about), fv_pad_* (what it lands on). Its moving parts are found by name too: `canopy` turns about
 // its x axis to open, gear_* about theirs to fold, and *_glow shows while the engines run.
 //
+// A car is one with fv_seat (the driver's eye) and four mesh-less pivots wheel_fl, wheel_fr, wheel_rl and
+// wheel_rr at its wheels' middles, each wheel's meshes under its pivot and its axle along the pivot's x;
+// a steering_wheel pivot turns about its z, and fv_board, fv_exit and fv_com are as a ship's. N puts one
+// down ahead: the nearest in the scene, else the next of the app's (play.start's `cars`). It is driven
+// in first person from its seat or with the chase camera behind it (V), and one nobody drives settles
+// onto its wheels and sleeps.
+//
 
 #include "fv_host_impl.hpp"
 
@@ -67,6 +74,9 @@ constexpr double kGearDownUnder = 6.0;   // metres over the ground: the gear com
 constexpr double kStepLongest   = 1.0 / 60.0;
 constexpr double kLensWalk = 18.0, kLensFly = 20.0;  // focal lengths, mm: a game's wide view
 constexpr double kSpawnAhead = 16.0;                 // metres ahead of the camera a ship is put down
+constexpr double kCarAhead   = 8.0;                  // and a car
+constexpr double kStopSpeed  = 2.0;                  // m/s: slower than this a car can be got out of
+constexpr double kSteeringRatio = 15.0;              // the steering wheel's turn for the road wheels'
 constexpr double kNoticeSeconds = 2.5;
 constexpr double kSolidsNear    = 14.0;  // metres round the walker that the backdrop's trees and stones are met
 constexpr double kShipWaits     = 4.0;   // seconds B waits for a ship it asked to load before asking again
@@ -106,6 +116,42 @@ glm::dmat4 nodeMatrix(const tinygltf::Model& model, int node)
     m = local * m;
   }
   return m;
+}
+
+// Each node's parent (-1: a root)
+std::vector<int> parentsOf(const tinygltf::Model& model)
+{
+  std::vector<int> parent(model.nodes.size(), -1);
+  for(size_t i = 0; i < model.nodes.size(); i++)
+    for(const int c : model.nodes[i].children)
+      if(c >= 0 && size_t(c) < parent.size())
+        parent[size_t(c)] = int(i);
+  return parent;
+}
+
+// What a node's mesh takes up in the model's frame, grown into `lo` and `hi` (its accessors' boxes)
+void growByMesh(const tinygltf::Model& model, int node, glm::dvec3& lo, glm::dvec3& hi)
+{
+  const int mesh = model.nodes[size_t(node)].mesh;
+  if(mesh < 0 || size_t(mesh) >= model.meshes.size())
+    return;
+  const glm::dmat4 m = nodeMatrix(model, node);
+  for(const tinygltf::Primitive& prim : model.meshes[size_t(mesh)].primitives)
+  {
+    const auto it = prim.attributes.find("POSITION");
+    if(it == prim.attributes.end() || it->second < 0 || size_t(it->second) >= model.accessors.size())
+      continue;
+    const tinygltf::Accessor& a = model.accessors[size_t(it->second)];
+    if(a.minValues.size() < 3 || a.maxValues.size() < 3)
+      continue;
+    for(int c = 0; c < 8; c++)
+    {
+      const glm::dvec3 p(c & 1 ? a.maxValues[0] : a.minValues[0], c & 2 ? a.maxValues[1] : a.minValues[1], c & 4 ? a.maxValues[2] : a.minValues[2]);
+      const glm::dvec3 w = glm::dvec3(m * glm::dvec4(p, 1.0));
+      lo                 = glm::min(lo, w);
+      hi                 = glm::max(hi, w);
+    }
+  }
 }
 
 rs::Transform nodeLocal(const tinygltf::Node& n)
@@ -175,11 +221,18 @@ struct FvHost::Impl::PlayState
     eWalk,
     eEnter,
     eFly,
-    eExit
+    eExit,
+    eDrive
   };
-  // A ship among the props: its markers and moving parts, from its file
+  // A ship or a car among the props: its markers and moving parts, from its file
   struct Rig
   {
+    enum class Kind
+    {
+      eShip,
+      eCar
+    };
+    Kind                         kind  = Kind::eShip;
     const tinygltf::Model*       model = nullptr;
     glm::dvec3                   seat{0.0}, board{0.0}, exit{0.0}, com{0.0};  // the model's frame
     game::ShipShape              shape;                                      // about its centre, unscaled
@@ -191,6 +244,16 @@ struct FvHost::Impl::PlayState
     bool                         engines  = false;
     bool                         settling = false;  // nobody aboard and not at rest yet: it comes down and stops
     game::Ship                   loose;             // ... as it does
+    // a car's: its wheels' pivots (front left, front right, rear left, rear right) and its steering wheel's;
+    // each pivot's parent's frame's turn of the car's up and down (a model unit's), and which way its x
+    // runs along the car's left (a wheel rolls forward about the car's left)
+    std::array<int, 4>        wheels{-1, -1, -1, -1};
+    int                       steeringWheel = -1;
+    std::array<glm::dvec3, 4> upInParent{}, downInParent{};
+    std::array<float, 4>      spinSign{1.f, 1.f, 1.f, 1.f};
+    game::CarShape            car;              // about its centre, unscaled
+    game::Car                 drive;            // where it is and how it goes, the world's
+    bool                      placed = false;   // `drive` holds it (else it is read from the prop when needed)
   };
 
   bool               active = false;
@@ -221,7 +284,10 @@ struct FvHost::Impl::PlayState
   std::set<const fv::physics::SharedTriangles*> indexing;
   std::string        shipPath;     // the GLB B puts down when the scene has no ship (play.start's `ship`)
   Clock::time_point  shipAsked{};  // when B last asked for it to load
-  int                torches = 0, brings = 0, eyes = 0;  // presses of L, B and X not yet taken
+  std::vector<std::string> carPaths;  // the GLBs N puts down in turn when the scene has no car (play.start's `cars`)
+  size_t             carNext = 0;
+  Clock::time_point  carAsked{};
+  int                torches = 0, brings = 0, eyes = 0, carBrings = 0;  // presses of L, B, X and N not yet taken
   bool               eye = true;  // the view's exposure adapts as the walker's eye does (X; play.start's `eye`)
   game::Torch        torch;
   rs::EntityId       torchEntity;
@@ -233,33 +299,40 @@ struct FvHost::Impl::PlayState
   static std::optional<Rig>             rigOf(const tinygltf::Model& model);
   static glm::dvec3                     upAt(const Impl& s, const glm::dvec3& p);
   static std::optional<game::Surface>   groundUnder(Impl& s, const std::vector<PlacedSet>& sets, const glm::dvec3& from,
-                                                    const glm::dvec3& up, double reach);
+                                                    const glm::dvec3& up, double reach, bool slopes = false);
   static std::vector<PlacedSet>         playSets(Impl& s, const std::string& skip, const glm::dvec3& around, double within = kSolidsNear);
   static void                           plantSets(Impl& s, const glm::dvec3& around, double within, std::vector<PlacedSet>& out);
   static std::string                    bringShip(Impl& s, PlayState& P, const Clock::time_point& now);
+  static std::string                    bringCar(Impl& s, PlayState& P, const Clock::time_point& now);
   static void                           showTorch(Impl& s, PlayState& P, bool on, const game::World& world, double dt);
   static void                           dropTorch(Impl& s, PlayState& P);
-  static game::World                    playWorld(Impl& s, const std::vector<PlacedSet>& sets);
+  static game::World                    playWorld(Impl& s, const std::vector<PlacedSet>& sets, bool slopes = false);
   static game::Ship                     shipOf(const Impl& s, const Prop& p, const Rig& rig);
-  static void                           putShip(Impl& s, Prop& p, const Rig& rig, const game::Ship& ship);
+  static void                           putRig(Impl& s, Prop& p, const Rig& rig, const glm::dvec3& com, const glm::dquat& orientation);
   static game::ShipShape                shapeIn(const Rig& rig, double size);
+  static game::CarShape                 carShapeIn(const Rig& rig, double size);
+  static void                           placeCar(const Impl& s, const Prop& p, Rig& rig);
+  static void                           stepLooseCar(Impl& s, Prop& p, Rig& rig, double dt);
   static void                           poseRig(Impl& s, const Prop& p, const Rig& rig);
   static void                           findRigs(Impl& s, PlayState& P);
+  static size_t                         countOf(const PlayState& P, Rig::Kind kind);
 };
 
-// A ship's markers and parts, if the model is one
+// A ship's or a car's markers and parts, if the model is one
 std::optional<FvHost::Impl::PlayState::Rig> FvHost::Impl::PlayState::rigOf(const tinygltf::Model& model)
 {
   if(std::none_of(model.nodes.begin(), model.nodes.end(), [](const tinygltf::Node& n) { return n.name == "fv_seat"; }))
     return std::nullopt;
+  static constexpr const char* kWheels[4] = {"wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr"};
   Rig rig;
   rig.model     = &model;
   bool hasBoard = false, hasExit = false, hasCom = false;
   std::vector<glm::dvec3> pads;
   for(size_t i = 0; i < model.nodes.size(); i++)
   {
-    const std::string& name = model.nodes[i].name;
-    const auto         at   = [&] { return glm::dvec3(nodeMatrix(model, int(i))[3]); };
+    const std::string& name  = model.nodes[i].name;
+    const bool         pivot = model.nodes[i].mesh < 0;
+    const auto         at    = [&] { return glm::dvec3(nodeMatrix(model, int(i))[3]); };
     if(name == "fv_seat")
       rig.seat = at();
     else if(name == "fv_board")
@@ -272,40 +345,93 @@ std::optional<FvHost::Impl::PlayState::Rig> FvHost::Impl::PlayState::rigOf(const
       pads.push_back(at());
     else if(name == "canopy")
       rig.canopy = int(i);
-    else if(startsWith(name, "gear_") && model.nodes[i].mesh < 0)
+    else if(startsWith(name, "gear_") && pivot)
       rig.gear.push_back(int(i));
     else if(endsWith(name, "_glow"))
       rig.glow.push_back(int(i));
+    else if(name == "steering_wheel" && pivot)
+      rig.steeringWheel = int(i);
+    else
+      for(int w = 0; w < 4; w++)
+        if(name == kWheels[w] && pivot)
+          rig.wheels[size_t(w)] = int(i);
+  }
+  const bool car = std::all_of(rig.wheels.begin(), rig.wheels.end(), [](int n) { return n >= 0; });
+  if(!car && std::any_of(rig.wheels.begin(), rig.wheels.end(), [](int n) { return n >= 0; }))
+    return std::nullopt;  // a car's wheels, but not all four of them
+  // its size from what its meshes take up; a car's body's apart from its wheels'
+  const std::vector<int> parent  = parentsOf(model);
+  const auto             wheelOf = [&](int node) {
+    for(int at = node, steps = 0; at >= 0 && steps <= int(model.nodes.size()); at = parent[size_t(at)], steps++)
+      for(int w = 0; w < 4; w++)
+        if(at == rig.wheels[size_t(w)])
+          return w;
+    return -1;
+  };
+  glm::dvec3                lo(1e30), hi(-1e30);
+  std::array<glm::dvec3, 4> wheelLo, wheelHi;
+  wheelLo.fill(glm::dvec3(1e30));
+  wheelHi.fill(glm::dvec3(-1e30));
+  for(size_t i = 0; i < model.nodes.size(); i++)
+    if(const int w = car ? wheelOf(int(i)) : -1; w >= 0)
+      growByMesh(model, int(i), wheelLo[size_t(w)], wheelHi[size_t(w)]);
+    else
+      growByMesh(model, int(i), lo, hi);
+  if(car)
+  {
+    rig.kind   = Rig::Kind::eCar;
+    rig.canopy = -1;
+    rig.gear.clear();
+    std::array<game::CarWheel, 4> wheels;
+    glm::dvec3                    hubs(0.0);
+    double                        tyres = 1e30;
+    const bool                    body  = lo.x <= hi.x;  // a body with no mesh of its own is its wheels' box
+    for(size_t w = 0; w < 4; w++)
+    {
+      const int        node = rig.wheels[w];
+      const glm::dmat4 m    = nodeMatrix(model, node);
+      wheels[w].hub         = glm::dvec3(m[3]);
+      if(wheelLo[w].x <= wheelHi[w].x)
+        wheels[w].radius = 0.5 * std::max(wheelHi[w].y - wheelLo[w].y, wheelHi[w].z - wheelLo[w].z);
+      hubs += 0.25 * wheels[w].hub;
+      tyres = std::min(tyres, wheels[w].hub.y - wheels[w].radius);
+      if(!body)
+      {
+        lo = glm::min(lo, wheels[w].hub - glm::dvec3(wheels[w].radius));
+        hi = glm::max(hi, wheels[w].hub + glm::dvec3(wheels[w].radius));
+      }
+      rig.base[node] = nodeLocal(model.nodes[size_t(node)]);
+      // the car's up and down in the frame the pivot is turned in (its parent's), and its x along the car's left
+      const int        above = parent[size_t(node)];
+      const glm::dmat3 back  = glm::inverse(above >= 0 ? glm::dmat3(nodeMatrix(model, above)) : glm::dmat3(1.0));
+      rig.upInParent[w]      = glm::normalize(back * glm::dvec3(0.0, 1.0, 0.0));
+      rig.downInParent[w]    = back * glm::dvec3(0.0, -1.0, 0.0);
+      rig.spinSign[w]        = (glm::dmat3(m) * glm::dvec3(1.0, 0.0, 0.0)).x >= 0.0 ? 1.f : -1.f;
+    }
+    if(rig.steeringWheel >= 0)
+      rig.base[rig.steeringWheel] = nodeLocal(model.nodes[size_t(rig.steeringWheel)]);
+    // unmarked: its centre of mass between the wheels, a little nearer the front, at 1.6 tyres' radii up;
+    // the way in at the driver's door, out a step past it on the ground
+    const double front = 0.5 * (wheels[0].hub.z + wheels[1].hub.z), rear = 0.5 * (wheels[2].hub.z + wheels[3].hub.z);
+    if(!hasCom)
+      rig.com = {hubs.x, hubs.y + 0.6 * wheels[0].radius, rear + 0.52 * (front - rear)};
+    const double side = rig.seat.x >= hubs.x ? 1.0 : -1.0;  // the driver's side: +x, the car's left
+    const double door = side > 0.0 ? hi.x : lo.x;
+    if(!hasBoard)
+      rig.board = {door + side * 0.3, rig.seat.y - 0.3, rig.seat.z};
+    if(!hasExit)
+      rig.exit = {door + side * 0.9, tyres, rig.seat.z};
+    rig.length = std::max(hi.z - lo.z, 1.0);
+    for(game::CarWheel& w : wheels)
+      w.hub -= rig.com;
+    rig.car          = game::carShape(wheels, lo - rig.com, hi - rig.com);
+    rig.shape.radius = rig.car.radius;
+    return rig;
   }
   for(const int n : rig.gear)
     rig.base[n] = nodeLocal(model.nodes[size_t(n)]);
   if(rig.canopy >= 0)
     rig.base[rig.canopy] = nodeLocal(model.nodes[size_t(rig.canopy)]);
-  // its size from what its meshes take up
-  glm::dvec3 lo(1e30), hi(-1e30);
-  for(size_t i = 0; i < model.nodes.size(); i++)
-  {
-    const int mesh = model.nodes[i].mesh;
-    if(mesh < 0 || size_t(mesh) >= model.meshes.size())
-      continue;
-    const glm::dmat4 m = nodeMatrix(model, int(i));
-    for(const tinygltf::Primitive& prim : model.meshes[size_t(mesh)].primitives)
-    {
-      const auto it = prim.attributes.find("POSITION");
-      if(it == prim.attributes.end() || it->second < 0 || size_t(it->second) >= model.accessors.size())
-        continue;
-      const tinygltf::Accessor& a = model.accessors[size_t(it->second)];
-      if(a.minValues.size() < 3 || a.maxValues.size() < 3)
-        continue;
-      for(int c = 0; c < 8; c++)
-      {
-        const glm::dvec3 p(c & 1 ? a.maxValues[0] : a.minValues[0], c & 2 ? a.maxValues[1] : a.minValues[1], c & 4 ? a.maxValues[2] : a.minValues[2]);
-        const glm::dvec3 w = glm::dvec3(m * glm::dvec4(p, 1.0));
-        lo                 = glm::min(lo, w);
-        hi                 = glm::max(hi, w);
-      }
-    }
-  }
   if(lo.x > hi.x)
     lo = hi = rig.seat;
   const glm::dvec3 mid = (lo + hi) * 0.5;
@@ -339,7 +465,7 @@ std::string FvHost::Impl::PlayState::bringShip(Impl& s, PlayState& P, const Cloc
   std::shared_ptr<Prop> ship;
   double                nearest = 1e300;
   for(const auto& [id, rig] : P.rigs)
-    if(const auto p = s.findProp(id); p && s.shown(*p))
+    if(const auto p = s.findProp(id); p && s.shown(*p) && rig.kind == Rig::Kind::eShip)
       if(const double d = glm::distance(eye, glm::dvec3(glm::dmat4(s.worldOf(*p))[3])); d < nearest)
       {
         nearest = d;
@@ -366,7 +492,7 @@ std::string FvHost::Impl::PlayState::bringShip(Impl& s, PlayState& P, const Cloc
     game::Ship put;
     put.orientation = glm::normalize(glm::quat_cast(turn));
     put.com         = at + up * 0.3 + turn * (rig.com * size);
-    putShip(s, *ship, rig, put);
+    putRig(s, *ship, rig, put.com, put.orientation);
     rig.loose    = put;
     rig.settling = true;
     return "";
@@ -381,6 +507,66 @@ std::string FvHost::Impl::PlayState::bringShip(Impl& s, PlayState& P, const Cloc
                   s.renderer->selectEntity(rs::EntityId{});
                 },
                 {}, {{"transform", {{"t", {at.x, at.y, at.z}}, {"r", {q.x, q.y, q.z, q.w}}}}});
+  return "";
+}
+
+// N: a car on the ground ahead, its driver's door turned to the walker: the nearest the scene has, which
+// comes down onto its wheels there, else the next of the app's, loaded. What went wrong, to say.
+std::string FvHost::Impl::PlayState::bringCar(Impl& s, PlayState& P, const Clock::time_point& now)
+{
+  const glm::dvec3 eye   = P.view.eye;
+  const glm::dvec3 up    = upAt(s, eye);
+  glm::dvec3       ahead = P.view.forward - up * glm::dot(P.view.forward, up);
+  ahead                  = glm::length(ahead) > 1e-6 ? glm::normalize(ahead) : glm::dvec3(0.0, 0.0, -1.0);
+  std::shared_ptr<Prop> car;
+  double                nearest = 1e300;
+  for(const auto& [id, rig] : P.rigs)
+    if(const auto p = s.findProp(id); p && s.shown(*p) && rig.kind == Rig::Kind::eCar)
+      if(const double d = glm::distance(eye, glm::dvec3(glm::dmat4(s.worldOf(*p))[3])); d < nearest)
+      {
+        nearest = d;
+        car     = p;
+      }
+  if(!car && P.carPaths.empty())
+    return "No car to put down";
+  if(!car && now - P.carAsked < std::chrono::milliseconds(int(kShipWaits * 1000.0)))
+    return "";  // the one asked for is on its way
+  const double size   = car ? scaleOf(glm::dmat4(s.worldOf(*car))) : 1.0;
+  const Rig*   rig    = car ? &P.rigs.at(car->id) : nullptr;
+  const double length = rig ? rig->length * size : 5.0;
+  glm::dvec3   at     = eye + ahead * std::max(kCarAhead, 1.5 * length);
+  const auto   sets   = playSets(s, car ? car->id : std::string(), at, 20.0);
+  if(const auto g = groundUnder(s, sets, at + up * 50.0, up, 2000.0))
+    at = g->at;
+  else
+    at -= up * game::WalkerTuning{}.eyeHeight;
+  // its side to the walker: the driver's (+x is a car's left, where a left-hand drive's door is)
+  const double     side = rig && rig->seat.x < rig->com.x ? -1.0 : 1.0;
+  const glm::dvec3 x = -ahead * side, z = glm::cross(x, up);
+  const glm::dmat3 turn(x, up, z);
+  if(car)
+  {
+    Rig& placed = P.rigs.at(car->id);
+    // a little over the ground, to come down onto its wheels however the ground lies
+    placed.drive    = game::carAt(at + up * 0.3 + turn * (placed.com * size), glm::normalize(glm::quat_cast(turn)), carShapeIn(placed, size));
+    placed.placed   = true;
+    placed.settling = true;
+    putRig(s, *car, placed, placed.drive.com, placed.drive.orientation);
+    return "";
+  }
+  P.carAsked        = now;
+  const glm::quat q = glm::quat_cast(glm::mat3(turn));
+  // over a backdrop's uneven ground a little up, to come down onto its wheels; on the studio floor on it,
+  // as the floor's "auto" height is the scene's lowest point, and a car put down over it would lift it
+  const glm::dvec3 put = at + up * (s.backdropStands() ? 0.3 : 0.0);
+  s.importModel(P.carPaths[P.carNext++ % P.carPaths.size()],
+                [&s](std::shared_ptr<Prop> p) {
+                  s.recordAdded(p, "Add " + p->name);
+                  if(s.view)
+                    s.view->deselect(p->id);
+                  s.renderer->selectEntity(rs::EntityId{});
+                },
+                {}, {{"transform", {{"t", {put.x, put.y, put.z}}, {"r", {q.x, q.y, q.z, q.w}}}}});
   return "";
 }
 
@@ -444,9 +630,10 @@ glm::dvec3 FvHost::Impl::PlayState::upAt(const Impl& s, const glm::dvec3& p)
 }
 
 // The highest ground straight under `from` within `reach`: the floor, the backdrop's land or the
-// planet's, or a prop's surface
+// planet's, or a prop's surface. A planet's ground is faced as it lies with `slopes` (two more asks of
+// its height, for a car's wheels), else straight up (all on foot or in a ship need).
 std::optional<game::Surface> FvHost::Impl::PlayState::groundUnder(Impl& s, const std::vector<PlacedSet>& sets, const glm::dvec3& from, const glm::dvec3& up,
-                                                    double reach)
+                                                    double reach, bool slopes)
 {
   std::optional<game::Surface> best;
   double                       bestRise = 0.0;
@@ -463,7 +650,28 @@ std::optional<game::Surface> FvHost::Impl::PlayState::groundUnder(Impl& s, const
     if(fv::backdrop::isPlanet(s.backdropSpec))
     {
       if(s.planetBuilt && s.planetBuilt->world)
-        consider(from - up * fv::world::heightOver(*s.planetBuilt->world, from - glm::dvec3(0.0, floor, 0.0)), up);
+      {
+        const fv::world::World& world  = *s.planetBuilt->world;
+        const glm::dvec3        lift(0.0, floor, 0.0);
+        const auto              under  = [&](const glm::dvec3& p) { return p - up * fv::world::heightOver(world, p - lift); };
+        const glm::dvec3        ground = under(from);
+        glm::dvec3              normal = up;
+        if(slopes)
+        {
+          // the ground's own slope from two points of it some way off (about the size of what it is drawn with)
+          constexpr double kApart = 0.75;
+          const glm::dvec3 across = glm::length(glm::cross(up, glm::dvec3(1.0, 0.0, 0.0))) > 0.1 ? glm::normalize(glm::cross(up, glm::dvec3(1.0, 0.0, 0.0)))
+                                                                                                   : glm::normalize(glm::cross(up, glm::dvec3(0.0, 0.0, 1.0)));
+          const glm::dvec3 along = glm::cross(across, up);
+          glm::dvec3       n     = glm::cross(under(from + along * kApart) - ground, under(from + across * kApart) - ground);
+          if(glm::length(n) > 1e-9)
+          {
+            n      = glm::normalize(n);
+            normal = glm::dot(n, up) < 0.0 ? -n : n;
+          }
+        }
+        consider(ground, normal);
+      }
     }
     else
     {
@@ -572,11 +780,11 @@ void FvHost::Impl::PlayState::plantSets(Impl& s, const glm::dvec3& around, doubl
           meet(set, root, glm::vec3(0.0F), v.resting);
 }
 
-game::World FvHost::Impl::PlayState::playWorld(Impl& s, const std::vector<PlacedSet>& sets)
+game::World FvHost::Impl::PlayState::playWorld(Impl& s, const std::vector<PlacedSet>& sets, bool slopes)
 {
   game::World w;
   w.up     = [&s](const glm::dvec3& p) { return upAt(s, p); };
-  w.ground = [&s, &sets](const glm::dvec3& from, const glm::dvec3& up, double reach) { return groundUnder(s, sets, from, up, reach); };
+  w.ground = [&s, &sets, slopes](const glm::dvec3& from, const glm::dvec3& up, double reach) { return groundUnder(s, sets, from, up, reach, slopes); };
   w.ray    = [&sets](const glm::dvec3& from, const glm::dvec3& dir, double reach) -> std::optional<game::Surface> {
     const auto hit = Impl::rayThrough(sets, glm::vec3(from), glm::vec3(dir), true);
     if(!hit || glm::dot(glm::dvec3(hit->at) - from, dir) > reach)
@@ -605,12 +813,12 @@ game::Ship FvHost::Impl::PlayState::shipOf(const Impl& s, const Prop& p, const R
   return ship;
 }
 
-// Its prop where the controller has it: no step of the history (play.stop makes one)
-void FvHost::Impl::PlayState::putShip(Impl& s, Prop& p, const Rig& rig, const game::Ship& ship)
+// Its prop where the controller has its centre (`com`) and turn: no step of the history (play.stop makes one)
+void FvHost::Impl::PlayState::putRig(Impl& s, Prop& p, const Rig& rig, const glm::dvec3& com, const glm::dquat& orientation)
 {
   const double     size   = scaleOf(glm::dmat4(s.worldOf(p)));
-  const glm::dmat3 turn   = glm::mat3_cast(ship.orientation);
-  const glm::dvec3 origin = ship.com - turn * (rig.com * size);
+  const glm::dmat3 turn   = glm::mat3_cast(orientation);
+  const glm::dvec3 origin = com - turn * (rig.com * size);
   const glm::dmat4 world  = glm::translate(glm::dmat4(1.0), origin) * glm::dmat4(turn) * glm::scale(glm::dmat4(1.0), glm::dvec3(size));
   const glm::dmat4 local  = glm::inverse(glm::dmat4(s.parentWorld(p))) * world;
   glm::dvec3       scale, t, skew;
@@ -636,10 +844,84 @@ game::ShipShape FvHost::Impl::PlayState::shapeIn(const Rig& rig, double size)
   return shape;
 }
 
-// Its canopy, gear and engines as the rig has them now
+// A car's shape in the world's metres, about its centre
+game::CarShape FvHost::Impl::PlayState::carShapeIn(const Rig& rig, double size)
+{
+  game::CarShape shape = rig.car;
+  for(game::CarWheel& w : shape.wheels)
+  {
+    w.hub *= size;
+    w.radius *= size;
+  }
+  for(glm::dvec3& p : shape.hull)
+    p *= size;
+  shape.half *= size;
+  shape.radius *= size;
+  return shape;
+}
+
+// A car the controller doesn't hold yet: where its prop stands, its suspension as its file has it
+void FvHost::Impl::PlayState::placeCar(const Impl& s, const Prop& p, Rig& rig)
+{
+  if(rig.placed)
+    return;
+  const game::Ship at = shipOf(s, p, rig);  // (its centre and its turn, as a ship's)
+  rig.drive           = game::carAt(at.com, at.orientation, carShapeIn(rig, scaleOf(glm::dmat4(s.worldOf(p)))));
+  rig.placed          = true;
+}
+
+// A car nobody drives, while it settles: down onto its wheels, its brakes on, till it sleeps
+void FvHost::Impl::PlayState::stepLooseCar(Impl& s, Prop& p, Rig& rig, double dt)
+{
+  placeCar(s, p, rig);
+  const game::CarShape shape = carShapeIn(rig, scaleOf(glm::dmat4(s.worldOf(p))));
+  const auto           own   = playSets(s, p.id, rig.drive.com, kSolidsNear + 2.0 * shape.radius);
+  const game::World    its   = playWorld(s, own, true);
+  substeps(dt, [&](double h) { game::stepCar(rig.drive, shape, its, h, false); });
+  putRig(s, p, rig, rig.drive.com, rig.drive.orientation);
+  if(rig.drive.asleep)
+    rig.settling = false;
+}
+
+size_t FvHost::Impl::PlayState::countOf(const PlayState& P, Rig::Kind kind)
+{
+  return size_t(std::count_if(P.rigs.begin(), P.rigs.end(), [kind](const auto& r) { return r.second.kind == kind; }));
+}
+
+// Its canopy, gear and engines as the rig has them now; a car's wheels where its suspension has them,
+// steered and turned as they roll, and its steering wheel turned with them
 void FvHost::Impl::PlayState::poseRig(Impl& s, const Prop& p, const Rig& rig)
 {
   rs::RetainedScene& scene = s.renderer->hostScene();
+  const auto         set   = [&](int node, const rs::Transform& local) {
+    const rs::EntityId e      = s.nodeEntity(p, node);
+    const rs::Entity*  entity = scene.entity(e);
+    if(entity && !(entity->local == local))
+      scene.setLocal(e, local);
+  };
+  if(rig.kind == Rig::Kind::eCar)
+  {
+    const double size = scaleOf(glm::dmat4(s.worldOf(p)));
+    const double rest = game::CarTuning{}.travelUp;
+    for(size_t w = 0; w < 4; w++)
+    {
+      const auto base = rig.base.find(rig.wheels[w]);
+      if(base == rig.base.end())
+        continue;
+      const game::CarWheelState& state = rig.drive.wheels[w];
+      rs::Transform              local = base->second;
+      local.translation += glm::vec3(rig.downInParent[w] * ((state.length - rest) / size));
+      local.rotation = glm::angleAxis(float(state.steer), glm::vec3(rig.upInParent[w])) * local.rotation
+                       * glm::angleAxis(rig.spinSign[w] * float(state.spin), glm::vec3(1.f, 0.f, 0.f));
+      set(rig.wheels[w], local);
+    }
+    if(const auto base = rig.base.find(rig.steeringWheel); base != rig.base.end())
+    {
+      rs::Transform local = base->second;
+      local.rotation      = local.rotation * glm::angleAxis(float(-rig.drive.steer * kSteeringRatio), glm::vec3(0.f, 0.f, 1.f));
+      set(rig.steeringWheel, local);
+    }
+  }
   const auto         turn  = [&](int node, double angle) {
     const rs::EntityId e = s.nodeEntity(p, node);
     const rs::Entity*  entity = scene.entity(e);
@@ -663,7 +945,8 @@ void FvHost::Impl::PlayState::poseRig(Impl& s, const Prop& p, const Rig& rig)
   }
 }
 
-// Ships come and go with the props: a model with a seat is one
+// Ships and cars come and go with the props: a model with a seat is one. A car found settles onto its
+// wheels where it was put.
 void FvHost::Impl::PlayState::findRigs(Impl& s, PlayState& P)
 {
   for(auto it = P.rigs.begin(); it != P.rigs.end();)
@@ -678,7 +961,10 @@ void FvHost::Impl::PlayState::findRigs(Impl& s, PlayState& P)
     if(const auto it = P.plain.find(p->model.get()); it != P.plain.end() && !it->second.expired())
       continue;  // read once: a model is no ship the next frame either
     if(auto rig = rigOf(*p->model))
+    {
+      rig->settling = rig->kind == Rig::Kind::eCar;
       P.rigs.emplace(p->id, std::move(*rig));
+    }
     else
       P.plain[p->model.get()] = p->model;
   }
@@ -719,8 +1005,13 @@ Json FvHost::Impl::playStart(const Json& args)
     P.view                 = game::walkerView(P.walker, world);
   }
   PlayState::findRigs(*this, P);
-  // the ship B puts down when the scene has none
+  // the ship B puts down when the scene has none, and the cars N does in turn
   P.shipPath = args.value("ship", std::string());
+  P.carPaths.clear();
+  if(const auto cars = args.find("cars"); cars != args.end() && cars->is_array())
+    for(const Json& path : *cars)
+      if(path.is_string() && !path.get<std::string>().empty())
+        P.carPaths.push_back(path.get<std::string>());
   publishPlay(true);
   return {{"ok", true}};
 }
@@ -729,7 +1020,7 @@ void FvHost::Impl::playMoveTo(const glm::dvec3& eye, const glm::dvec3& ahead, co
 {
   PlayState& P = *play;
   if(P.mode != PlayState::Mode::eWalk)
-    throw std::runtime_error("get out of the ship first: Go to moves the one walking");
+    throw std::runtime_error("get out first: Go to moves the one walking");
   const auto sets  = PlayState::playSets(*this, "", eye);
   const auto world = PlayState::playWorld(*this, sets);
   P.walker         = game::walkerAt({eye, ahead, up}, world, 2000.0);
@@ -744,19 +1035,25 @@ Json FvHost::Impl::playStop()
   P.active     = false;
   PlayState::dropTorch(*this, P);
   renderer->setPlayEye(false);
-  // the ships stay where they were left, a step of the history each, and their parts as their files have them
+  // the ships and cars stay where they were left, a step of the history each, and their parts as their
+  // files have them
   for(auto& [id, rig] : P.rigs)
     if(const auto p = findProp(id))
     {
       rig.canopyAngle = rig.gearAngle = 0.0;
       rig.engines                     = false;
+      rig.drive.steer                 = 0.0;
+      for(game::CarWheelState& w : rig.drive.wheels)
+        w = game::CarWheelState{.length = game::CarTuning{}.travelUp};
       PlayState::poseRig(*this, *p, rig);
     }
   for(const auto& [id, before] : P.startedAt)
     if(const auto p = findProp(id))
     {
-      const fv::composer::Trs now = p->transform;
-      p->transform                = before;
+      const fv::composer::Trs now  = p->transform;
+      const auto              rig  = P.rigs.find(id);
+      const bool              car  = rig != P.rigs.end() && rig->second.kind == PlayState::Rig::Kind::eCar;
+      p->transform                 = before;
       applyTransform(*p);
       try
       {
@@ -765,7 +1062,7 @@ Json FvHost::Impl::playStop()
                            {{"t", {now.translation.x, now.translation.y, now.translation.z}},
                             {"r", {now.rotation.x, now.rotation.y, now.rotation.z, now.rotation.w}},
                             {"s", {now.scale.x, now.scale.y, now.scale.z}}}},
-                          {"label", "Fly " + p->name}});
+                          {"label", (car ? "Drive " : "Fly ") + p->name}});
       }
       catch(const std::exception& e)
       {
@@ -801,6 +1098,7 @@ void FvHost::Impl::playInput(const Json& e)
   P.jumps += (pressed & game::kUp) ? 1 : 0;
   P.torches += (pressed & game::kTorch) ? 1 : 0;
   P.brings += (pressed & game::kShipHere) ? 1 : 0;
+  P.carBrings += (pressed & game::kCarHere) ? 1 : 0;
   P.eyes += (pressed & game::kEye) ? 1 : 0;
   P.look += glm::dvec2(e.value("dx", 0.0), e.value("dy", 0.0));
   if(const double wheel = e.value("wheel", 0.0); wheel != 0.0)
@@ -823,25 +1121,30 @@ void FvHost::Impl::applyPlay()
     P.keys = 0;
   const int        uses = std::exchange(P.uses, 0), views = std::exchange(P.views, 0), jumps = std::exchange(P.jumps, 0);
   const int        torches = std::exchange(P.torches, 0), brings = std::exchange(P.brings, 0), eyes = std::exchange(P.eyes, 0);
-  const glm::dvec2 look = std::exchange(P.look, glm::dvec2(0.0));
+  const int        carBrings = std::exchange(P.carBrings, 0);
+  const glm::dvec2 look      = std::exchange(P.look, glm::dvec2(0.0));
 
   PlayState::findRigs(*this, P);
-  // what is met near whoever is in charge: on foot, or in the ship
-  const bool        aboard = P.mode == PlayState::Mode::eFly || P.mode == PlayState::Mode::eEnter;
-  const auto        sets   = PlayState::playSets(*this, "", aboard ? P.ship.com : P.walker.feet);
-  const game::World world  = PlayState::playWorld(*this, sets);
   std::shared_ptr<Prop> flown = P.shipId.empty() ? nullptr : findProp(P.shipId);
   PlayState::Rig*       rig   = flown && P.rigs.count(P.shipId) ? &P.rigs.at(P.shipId) : nullptr;
+  const auto            isCar = [&] { return rig && rig->kind == PlayState::Rig::Kind::eCar; };
+  // what is met near whoever is in charge: on foot, in the ship or at the wheel
+  const bool            aboard = rig && P.mode != PlayState::Mode::eWalk && P.mode != PlayState::Mode::eExit;
+  const auto            sets   = PlayState::playSets(*this, "", !aboard ? P.walker.feet : isCar() ? rig->drive.com : P.ship.com);
+  const game::World     world  = PlayState::playWorld(*this, sets);
   if(P.mode != PlayState::Mode::eWalk && !rig)
   {
-    // the ship went (an undo, a delete): on foot where the camera is
+    // the ship or the car went (an undo, a delete): on foot where the camera is
     P.walker = game::walkerAt(P.view, world, 2000.0);
     P.mode   = PlayState::Mode::eWalk;
     P.shipId.clear();
   }
   const double size     = flown ? scaleOf(glm::dmat4(worldOf(*flown))) : 1.0;
   std::string  prompt;
-  const auto   seatPose = [&] { return game::cockpitView(P.ship, (rig->seat - rig->com) * size); };
+  const auto   seatPose = [&] {
+    return isCar() ? game::cockpitView(game::bodyOf(rig->drive), (rig->seat - rig->com) * size, rig->drive.gaze)
+                   : game::cockpitView(P.ship, (rig->seat - rig->com) * size);
+  };
   const auto   say      = [&](const std::string& text) {
     P.notice      = text;
     P.noticeUntil = now + std::chrono::milliseconds(int(kNoticeSeconds * 1000));
@@ -855,7 +1158,7 @@ void FvHost::Impl::applyPlay()
       P.walker.jumps += jumps;
       substeps(dt, [&](double h) { game::stepWalker(P.walker, world, h); });
       P.view = game::walkerView(P.walker, world);
-      // the nearest ship whose way in is within reach
+      // the nearest ship or car whose way in is within reach
       std::string closest;
       double      nearest = kBoardReach;
       for(const auto& [id, r] : P.rigs)
@@ -870,29 +1173,42 @@ void FvHost::Impl::applyPlay()
       if(brings > 0)
         if(const std::string why = PlayState::bringShip(*this, P, now); !why.empty())
           say(why);
+      if(carBrings > 0)
+        if(const std::string why = PlayState::bringCar(*this, P, now); !why.empty())
+          say(why);
       if(uses > 0 && !closest.empty())
       {
         P.shipId     = closest;
         flown        = findProp(closest);
         rig          = &P.rigs.at(closest);
-        P.ship       = PlayState::shipOf(*this, *flown, *rig);
         P.chase      = {.zoom = P.chase.zoom};
         P.mode       = PlayState::Mode::eEnter;
         P.transition = 0.0;
         P.from       = P.view;
-        rig->settling = false;
+        if(isCar())
+        {
+          // it keeps how it rests; the driver looks ahead
+          PlayState::placeCar(*this, *flown, *rig);
+          rig->drive.gaze = rig->drive.look = glm::dvec2(0.0);
+        }
+        else
+        {
+          P.ship        = PlayState::shipOf(*this, *flown, *rig);
+          rig->settling = false;
+        }
       }
       break;
     }
     case PlayState::Mode::eEnter: {
       P.transition += dt;
-      P.view = game::blend(P.from, game::cockpitView(P.ship, (rig->seat - rig->com) * scaleOf(glm::dmat4(worldOf(*flown)))), P.transition / kEnterSeconds);
+      P.view = game::blend(P.from, seatPose(), P.transition / kEnterSeconds);
       if(P.transition >= kEnterSeconds)
       {
-        P.mode         = PlayState::Mode::eFly;
+        P.mode          = isCar() ? PlayState::Mode::eDrive : PlayState::Mode::eFly;
         P.ship.throttle = 0.0;
         P.ship.aim      = glm::dvec2(0.0);
         rig->engines    = true;
+        rig->settling   = false;
         if(view)
         {
           FvView::Lens wide = view->lens();
@@ -912,7 +1228,7 @@ void FvHost::Impl::applyPlay()
       const game::World     its   = PlayState::playWorld(*this, own);
       substeps(dt, [&](double h) { game::stepShip(P.ship, shape, its, h, true); });
       P.range = game::shipSpeedRange(P.ship, its.speedCap);
-      PlayState::putShip(*this, *flown, *rig, P.ship);
+      PlayState::putRig(*this, *flown, *rig, P.ship.com, P.ship.orientation);
       P.view = P.cockpit ? seatPose() : game::chaseView(P.chase, P.ship, rig->length * size, dt);
       const bool canLeave = glm::length(P.ship.velocity) < kExitSpeed && P.ship.height >= 0.0 && P.ship.height < kExitHeight;
       if(canLeave)
@@ -942,6 +1258,57 @@ void FvHost::Impl::applyPlay()
       }
       break;
     }
+    case PlayState::Mode::eDrive: {
+      if(views > 0)
+        P.cockpit = !P.cockpit;
+      game::Car& car = rig->drive;
+      car.keys       = P.keys;
+      car.look += look;
+      const game::CarShape shape = PlayState::carShapeIn(*rig, size);
+      const auto           own   = PlayState::playSets(*this, P.shipId, car.com, kSolidsNear + 2.0 * shape.radius + 0.5 * glm::length(car.velocity));
+      const game::World    its   = PlayState::playWorld(*this, own, true);
+      substeps(dt, [&](double h) { game::stepCar(car, shape, its, h, true); });
+      PlayState::putRig(*this, *flown, *rig, car.com, car.orientation);
+      // from the driver's seat, or behind it, the chase kept in front of what stands between and over the ground
+      const glm::dvec3 up = PlayState::upAt(*this, car.com);
+      P.view = P.cockpit ? seatPose()
+                         : game::clearView(game::chaseView(P.chase, game::chaseBody(car, up), rig->length * size, dt, game::kCarChase),
+                                           car.com + up * (0.5 * size), its);
+      const bool canLeave = std::abs(game::carSpeed(car)) < kStopSpeed;
+      if(canLeave)
+        prompt = "F  Get out";
+      if(uses > 0)
+      {
+        if(!canLeave)
+          say("Stop to get out");
+        else
+        {
+          // out at the driver's door, standing on what is there, facing the car; at the other door when
+          // that side is against something
+          const glm::dmat4 placed = glm::dmat4(worldOf(*flown));
+          glm::dvec3       out    = glm::dvec3(placed * glm::dvec4(rig->exit, 1.0));
+          const glm::dvec3 middle = glm::dvec3(placed * glm::dvec4(rig->com, 1.0));
+          if(const glm::dvec3 way = out - middle; glm::length(way) > 1e-6)
+            if(its.ray(middle, glm::normalize(way), glm::length(way) + 0.3))
+            {
+              const glm::dvec3 mirrored = rig->exit + glm::dvec3(2.0 * (rig->com.x - rig->exit.x), 0.0, 0.0);
+              out                       = glm::dvec3(placed * glm::dvec4(mirrored, 1.0));
+            }
+          const glm::dvec3 standUp = PlayState::upAt(*this, out);
+          glm::dvec3       facing  = car.com - out;
+          facing -= standUp * glm::dot(facing, standUp);
+          const game::WalkerTuning t;
+          P.walker = game::walkerAt({out + standUp * (t.eyeHeight + 0.5), glm::length(facing) > 1e-6 ? glm::normalize(facing) : glm::dvec3(0.0, 0.0, -1.0), standUp},
+                                    world, 20.0);
+          P.from        = P.view;
+          P.transition  = 0.0;
+          P.mode        = PlayState::Mode::eExit;
+          rig->engines  = false;
+          rig->settling = true;
+        }
+      }
+      break;
+    }
     case PlayState::Mode::eExit: {
       P.transition += dt;
       P.view = game::blend(P.from, game::walkerView(P.walker, world), P.transition / kExitSeconds);
@@ -960,12 +1327,22 @@ void FvHost::Impl::applyPlay()
     }
   }
 
-  // ships nobody flies: one left in the air comes down onto its pads and stops; then it stands
+  // ships nobody flies: one left in the air comes down onto its pads and stops; then it stands. Cars
+  // nobody drives settle onto their wheels and sleep.
   for(auto& [id, r] : P.rigs)
   {
     const auto p = findProp(id);
     if(!p)
       continue;
+    if(r.kind == PlayState::Rig::Kind::eCar)
+    {
+      const bool driving = id == P.shipId && (P.mode == PlayState::Mode::eDrive || P.mode == PlayState::Mode::eEnter);
+      if(r.settling && !driving)
+        PlayState::stepLooseCar(*this, *p, r, dt);
+      if(r.placed)
+        PlayState::poseRig(*this, *p, r);
+      continue;
+    }
     const bool flying = id == P.shipId && (P.mode == PlayState::Mode::eFly || P.mode == PlayState::Mode::eEnter);
     if(r.settling && !flying)
     {
@@ -974,7 +1351,7 @@ void FvHost::Impl::applyPlay()
       const auto            own   = PlayState::playSets(*this, id, r.loose.com, kSolidsNear + 2.0 * shape.radius);
       const game::World     its   = PlayState::playWorld(*this, own);
       substeps(dt, [&](double h) { game::stepShip(r.loose, shape, its, h, false); });
-      PlayState::putShip(*this, *p, r, r.loose);
+      PlayState::putRig(*this, *p, r, r.loose.com, r.loose.orientation);
       if(r.loose.touching && glm::length(r.loose.velocity) < 0.02)
         r.settling = false;
     }
@@ -1012,21 +1389,32 @@ void FvHost::Impl::applyPlay()
   if(now < P.noticeUntil)
     prompt = P.notice;
 
-  const bool  fly   = P.mode == PlayState::Mode::eFly;
-  const char* modes[] = {"walk", "enter", "fly", "exit"};
-  Json        state = {{"active", true},
-                       {"mode", modes[int(P.mode)]},
-                       {"prompt", prompt},
-                       {"ship", P.shipId.empty() ? Json() : Json(P.shipId)},
-                       {"ships", P.rigs.size()},
-                       {"view", P.cockpit ? "cockpit" : "chase"},
-                       {"speed", fly ? std::round(glm::length(P.ship.velocity) * 10.0) / 10.0 : 0.0},
-                       {"height", fly ? std::round(std::max(0.0, P.ship.height)) : 0.0},
-                       {"throttle", fly ? std::round(P.ship.throttle * 100.0) / 100.0 : 0.0},
-                       {"range", fly ? std::round(P.range) : 0.0},
-                       {"boost", fly && (P.ship.keys & game::kFast) != 0},
-                       {"torch", P.torch.on},
-                       {"eye", P.eye}};
+  const bool  fly     = P.mode == PlayState::Mode::eFly;
+  const bool  driving = P.mode == PlayState::Mode::eDrive && isCar();
+  const char* modes[] = {"walk", "enter", "fly", "exit", "drive"};
+  const Json  vehicle = !rig || P.mode == PlayState::Mode::eWalk ? Json() : Json(isCar() ? "car" : "ship");
+  double      speed   = 0.0;
+  if(fly)
+    speed = glm::length(P.ship.velocity);
+  else if(driving)
+    speed = std::abs(game::carSpeed(rig->drive));
+  Json state = {{"active", true},
+                {"mode", modes[int(P.mode)]},
+                {"prompt", prompt},
+                {"ship", P.shipId.empty() ? Json() : Json(P.shipId)},
+                {"vehicle", vehicle},
+                {"ships", PlayState::countOf(P, PlayState::Rig::Kind::eShip)},
+                {"cars", PlayState::countOf(P, PlayState::Rig::Kind::eCar)},
+                {"view", P.cockpit ? "cockpit" : "chase"},
+                {"speed", std::round(speed * 10.0) / 10.0},
+                {"height", fly ? std::round(std::max(0.0, P.ship.height)) : 0.0},
+                {"throttle", fly ? std::round(P.ship.throttle * 100.0) / 100.0 : 0.0},
+                {"range", fly ? std::round(P.range) : 0.0},
+                {"boost", (fly && (P.ship.keys & game::kFast) != 0) || (driving && (rig->drive.keys & game::kFast) != 0)},
+                {"gear", driving ? Json(rig->drive.gear < 0 ? "R" : "D") : Json()},
+                {"handbrake", driving && rig->drive.handbrake},
+                {"torch", P.torch.on},
+                {"eye", P.eye}};
   if(state != P.published && now - P.publishedAt > std::chrono::milliseconds(100))
   {
     P.published   = state;
@@ -1039,7 +1427,14 @@ void FvHost::Impl::publishPlay(bool force)
 {
   if(playing() && !force)
     return;
-  Json state = playing() ? Json{{"active", true}, {"mode", "walk"}, {"prompt", ""}, {"ships", play->rigs.size()}, {"torch", play->torch.on}, {"eye", play->eye}} : Json{{"active", false}};
+  Json state = playing() ? Json{{"active", true},
+                                {"mode", "walk"},
+                                {"prompt", ""},
+                                {"ships", PlayState::countOf(*play, PlayState::Rig::Kind::eShip)},
+                                {"cars", PlayState::countOf(*play, PlayState::Rig::Kind::eCar)},
+                                {"torch", play->torch.on},
+                                {"eye", play->eye}}
+                         : Json{{"active", false}};
   if(play)
   {
     play->published   = state;

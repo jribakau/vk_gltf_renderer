@@ -182,7 +182,10 @@ namespace {
 // An older renderer has no eye, and takes neither.
 // 88: a planet's Go to: planet.places (where the figures stand, what its file names, the nearest
 // ground of each biome) and planet.goto (the view there, or the one walking in play).
-constexpr int kProtocolVersion = 88;
+// 89: play mode's cars: N (the `play` event's kCarHere bit) puts one ahead, the scene's nearest or the next
+// of play.start's `cars`; a car is driven (mode `drive`), the topic's vehicle, cars, gear and handbrake.
+// An older renderer ignores both, and finds no car in a model with wheels.
+constexpr int kProtocolVersion = 89;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

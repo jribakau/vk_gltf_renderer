@@ -6457,7 +6457,150 @@ void writeTree(const fs::path& dir, double radius, double scale)
                                           .dump();
 }
 
+// A car as play mode finds one (fv_host_play.cpp): a body box 0.35 m over the ground, four wheel pivots each
+// over a wheel box 0.4 m in radius, the driver's eye on the left (+x) and a steering wheel; no way in marked,
+// so play's defaults are what is used. Facing +z, its origin on the ground.
+void writeCar(const fs::path& path)
+{
+  const auto corners = [](std::array<float, 3> lo, std::array<float, 3> hi, std::vector<float>& p) {
+    for(int k = 0; k < 2; k++)
+      for(int j = 0; j < 2; j++)
+        for(int i = 0; i < 2; i++)
+          p.insert(p.end(), {i ? hi[0] : lo[0], j ? hi[1] : lo[1], k ? hi[2] : lo[2]});
+  };
+  const std::array<float, 3> bodyLo{-0.9f, 0.35f, -2.2f}, bodyHi{0.9f, 1.6f, 2.2f}, tyreLo{-0.12f, -0.4f, -0.4f}, tyreHi{0.12f, 0.4f, 0.4f};
+  std::vector<float>         p;
+  corners(bodyLo, bodyHi, p);
+  corners(tyreLo, tyreHi, p);
+  const std::vector<uint32_t> t = {0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3, 0, 4, 5, 0, 5, 1, 2, 3, 7, 2, 7, 6, 0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5};
+  std::vector<uint8_t>        bytes(p.size() * 4 + t.size() * 4);
+  std::memcpy(bytes.data(), p.data(), p.size() * 4);
+  std::memcpy(bytes.data() + p.size() * 4, t.data(), t.size() * 4);
+  Json nodes = Json::array({{{"name", "car"}, {"children", {1, 2, 3, 4, 5, 6, 11}}},
+                            {{"name", "body"}, {"mesh", 0}},
+                            {{"name", "fv_seat"}, {"translation", {0.4, 1.3, 0.1}}}});
+  const double hubs[4][3] = {{0.78, 0.4, 1.35}, {-0.78, 0.4, 1.35}, {0.78, 0.4, -1.35}, {-0.78, 0.4, -1.35}};
+  const char*  names[4]   = {"wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr"};
+  for(int w = 0; w < 4; w++)
+    nodes.push_back({{"name", names[w]}, {"translation", {hubs[w][0], hubs[w][1], hubs[w][2]}}, {"children", {7 + w}}});
+  for(int w = 0; w < 4; w++)
+    nodes.push_back({{"name", "tyre"}, {"mesh", 1}});
+  nodes.push_back({{"name", "steering_wheel"}, {"translation", {0.4, 1.1, 0.6}}});
+  const Json gltf = {
+      {"asset", {{"version", "2.0"}}},
+      {"scene", 0},
+      {"scenes", {{{"nodes", {0}}}}},
+      {"nodes", nodes},
+      {"meshes", {{{"primitives", {{{"attributes", {{"POSITION", 0}}}, {"indices", 2}}}}}, {{"primitives", {{{"attributes", {{"POSITION", 1}}}, {"indices", 2}}}}}}},
+      {"buffers", {{{"byteLength", bytes.size()}, {"uri", "data:application/octet-stream;base64," + base64(bytes)}}}},
+      {"bufferViews", {{{"buffer", 0}, {"byteOffset", 0}, {"byteLength", p.size() * 4}}, {{"buffer", 0}, {"byteOffset", p.size() * 4}, {"byteLength", t.size() * 4}}}},
+      {"accessors",
+       {{{"bufferView", 0}, {"componentType", 5126}, {"count", 8}, {"type", "VEC3"}, {"min", bodyLo}, {"max", bodyHi}},
+        {{"bufferView", 0}, {"byteOffset", 96}, {"componentType", 5126}, {"count", 8}, {"type", "VEC3"}, {"min", tyreLo}, {"max", tyreHi}},
+        {{"bufferView", 1}, {"componentType", 5125}, {"count", t.size()}, {"type", "SCALAR"}}}}};
+  std::ofstream(path) << gltf.dump();
+}
+
 }  // namespace
+
+// A car in play mode (fv_host_play.cpp) on the studio floor: N brings it (none in the scene: play.start's),
+// its driver's door to the walker; F gets in, W drives it off, its wheels rolling, A steers its front
+// wheels, Space is the handbrake; stopped, F gets out beside it; play.stop leaves one step of the history
+// and its wheels as the file has them
+TEST(FvHost, PlayDrivesACarAndGetsOutBesideIt)
+{
+  const fs::path dir = fs::temp_directory_path() / ("fv-play-car-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fs::create_directories(dir);
+  writeCar(dir / "car.gltf");
+  HostRig            rig;
+  rs::RetainedScene& scene  = rig.renderer.hostScene();
+  const auto         frames = [&](int ms) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while(std::chrono::steady_clock::now() < until)
+    {
+      rig.host->onUpdate();
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  };
+  const auto hold = [&](uint32_t keys, int ms) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while(std::chrono::steady_clock::now() < until)
+    {
+      rig.input({{{"t", "play"}, {"k", keys}, {"dx", 0}, {"dy", 0}, {"wheel", 0}}});
+      frames(20);
+    }
+  };
+  const auto play  = [&] { return rig.topic("play"); };
+  const auto wheel = [&]() -> const rs::Entity* {
+    for(const rs::EntityId e : scene.entitiesInOrder())
+      if(const rs::Entity* entity = scene.entity(e); entity && entity->name == "wheel_fl")
+        return entity;
+    return nullptr;
+  };
+  rig.renderer.getCameraManipulator()->setLookat({0.0, 1.65, 12.0}, {0.0, 1.65, 0.0}, {0.0, 1.0, 0.0}, true);
+  frames(30);
+  ASSERT_TRUE(rig.cmd("play.start", {{"cars", {(dir / "car.gltf").generic_string()}}}).value("ok", false));
+  EXPECT_EQ(play().value("cars", -1), 0);
+  hold(fv::play::kCarHere, 60);
+  hold(0, 60);
+  ASSERT_TRUE(rig.settle());
+  frames(1500);  // it comes down onto its wheels
+  ASSERT_EQ(play().value("cars", -1), 1) << play().dump();
+  std::string car;
+  const Json props = rig.topic("scene").value("props", Json::object());
+  for(const auto& [id, p] : props.items())
+    if(p.is_object() && p.value("kind", "") == "model")
+      car = id;
+  ASSERT_FALSE(car.empty()) << rig.topic("scene").dump();
+  const auto carAt = [&] {
+    const Json t = rig.topic("scene")["props"][car]["transform"]["t"];
+    return glm::dvec3(t[0].get<double>(), t[1].get<double>(), t[2].get<double>());
+  };
+  const glm::dvec3 parked = carAt();
+  EXPECT_NEAR(parked.y, 0.0, 0.05) << "on its wheels on the floor";
+  EXPECT_NEAR(parked.z, 4.0, 0.5) << "8 m ahead";
+  ASSERT_NE(wheel(), nullptr);
+
+  // to its door, which faces the walker, and in
+  hold(fv::play::kForward, 2500);
+  hold(0, 100);
+  EXPECT_EQ(play().value("prompt", ""), "F  Get in") << play().dump();
+  hold(fv::play::kUse, 60);
+  hold(0, 1500);
+  EXPECT_EQ(play().value("mode", ""), "drive") << play().dump();
+  EXPECT_EQ(play().value("vehicle", ""), "car");
+  EXPECT_EQ(play().value("gear", ""), "D");
+  const glm::quat fileTurn = wheel()->local.rotation;
+
+  // off it goes, its wheels rolling; then its front ones steered
+  hold(fv::play::kForward, 2000);
+  EXPECT_GT(glm::distance(carAt(), parked), 3.0);
+  EXPECT_GT(play().value("speed", 0.0), 3.0);
+  EXPECT_LT(std::abs(glm::dot(wheel()->local.rotation, fileTurn)), 0.9999F) << "rolled";
+  hold(fv::play::kForward | fv::play::kLeft, 300);
+  EXPECT_LT((wheel()->local.rotation * glm::vec3(1.f, 0.f, 0.f)).z, -0.05F) << "steered left: its axle turned back";
+  // the handbrake and the brakes to a stop, and out beside it
+  hold(fv::play::kBack | fv::play::kUp, 300);
+  EXPECT_TRUE(play().value("handbrake", false));
+  hold(fv::play::kBack | fv::play::kUp, 2500);
+  hold(0, 300);
+  EXPECT_EQ(play().value("prompt", ""), "F  Get out") << play().dump();
+  hold(fv::play::kUse, 60);
+  hold(0, 1300);
+  EXPECT_EQ(play().value("mode", ""), "walk");
+  glm::dvec3 eye, center, up;
+  rig.renderer.getCameraManipulator()->getLookat(eye, center, up);
+  EXPECT_LT(glm::length(glm::dvec2(eye.x, eye.z) - glm::dvec2(carAt().x, carAt().z)), 3.5) << "beside it";
+  const glm::dvec3 left = carAt();
+  frames(500);
+  EXPECT_LT(glm::distance(carAt(), left), 0.02) << "it stays where it was left";
+
+  ASSERT_TRUE(rig.cmd("play.stop").value("ok", false));
+  EXPECT_EQ(rig.topic("history").at("undo")[0].get<std::string>().rfind("Drive ", 0), 0u) << rig.topic("history").dump();
+  EXPECT_LT(glm::distance(wheel()->local.translation, glm::vec3(0.78f, 0.4f, 1.35f)), 1e-5F) << "as the file has it";
+  EXPECT_GT(std::abs(glm::dot(wheel()->local.rotation, glm::quat(1.f, 0.f, 0.f, 0.f))), 0.99999F);
+  fs::remove_all(dir);
+}
 
 // Play mode on a meadow (fv_host_play.cpp): someone walking at a tree stops at its bark, its crown
 // left out of what they meet; the torch (L) is a light in the scene while it is on and goes with play;
