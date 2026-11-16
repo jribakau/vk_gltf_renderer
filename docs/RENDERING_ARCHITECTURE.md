@@ -36,8 +36,9 @@ included) and, of an entity only some copies of which did, which copies (`SceneC
 (`Residency::EntityDraw`: its runs, each as many times as it has copies) and goes through those
 entities alone: the structure pass diffs an entity's runs against the ones it had (a run that stays
 keeps its copies' slots), the row pass places the instances of the entities that moved, or only the
-copies named. Every entity is gone through only when a mesh's own state says what is drawn (parked,
-arriving a few a sync, brought back, a fresh scene), which costs the entities, not their copies.
+copies named. When a mesh's own state says what is drawn (parked, arriving a few a sync, brought
+back) the entities gone through are those that draw it, and an entity whose runs and copies come out
+as they were isn't placed again; every entity only for a fresh scene.
 The TLAS rows are worked out again only for slots placed, shown or linked since the last build and
 for the instances of a prim whose BLAS is another (found by `m_primRuns`). The rows changed go up a
 run of slots an upload, and a run takes in a short gap to the next one, its rows written again as
@@ -46,8 +47,10 @@ uploads of two or three rows a frame. A run's copies that come or go take or giv
 and the material they share once for all of them, and their slots go back to the pool together.
 The scene keeps its lit entities in document order (`RetainedScene::lightItems`), looked for again
 only when a light is given or taken, an entity with one goes, or something is moved in the tree. The emissive table finds
-its emitters by their materials (`m_materialRuns`); the scene's bounds are kept a box an entity; the
-raster lists are made when read. `Residency::lastSyncWork` counts what a sync looked at, and
+its emitters by their materials (`m_materialRuns`), and is built again only for an emitting instance
+that came, went or was shown or hidden; the scene's bounds are kept a box an entity. A scene's world
+matrices are worked out again for the dirty subtrees alone (`RetainedScene::updateWorld`).
+`Residency::lastSyncWork` counts what a sync looked at, and
 the tests hold it to the change (`RetainedResidency.ASyncLooksOnlyAtWhatChanged`). A copy can be
 hidden by itself (`MeshInstance::hidden`): it keeps its instance and its slot, its TLAS row without
 its BLAS, as a hidden entity's.
@@ -107,8 +110,8 @@ that traces, or with no frame traced when the still is complete, `PathTracer::ta
 sync after that lets the edit through. With the optimal shader on, the full build, every feature
 compiled in, draws while the scene's variant builds, `PathTracer::chooseOptimalStandIn`, so an edit is
 held only where that build isn't at hand); the images those need, decoded in one batch; vertex edits uploaded and their
-BLASes refit; the deform passes; capacity grown; material rows and spans; the draw lists; the
-render-node and prim rows and the TLAS; the motion tables; IES profiles, the materials' water
+BLASes refit; the deform passes; capacity grown; material rows and spans; the
+render-node and prim rows and the TLAS (always built again, never updated); the motion tables; IES profiles, the materials' water
 (`scene_water.*`), lights and the emissive table; the scene descriptor; then a transfer-to-shader
 barrier. Everything a sync frees goes
 through the retire queue; nothing waits for idle.

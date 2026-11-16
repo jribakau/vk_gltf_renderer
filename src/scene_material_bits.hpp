@@ -44,18 +44,7 @@ struct MaterialBits
 {
   uint32_t instanceFlags = 0;
   uint8_t  instanceMask  = 0;
-  // the raster buckets' key (Scene::computeMaterialBucketKey): no texel is part see-through (alpha mode
-  // OPAQUE, or MASK: the prepass tests the cutout and its depth is the main pass's test), double-sided,
-  // transmissive
-  bool alphaSolid   = false;
-  bool doubleSided  = false;
-  bool transmission = false;
-
-  // the raster lists, as Scene::getShadedNodes sorts render nodes
-  bool solid() const { return alphaSolid && !doubleSided && !transmission; }
-  bool solidDoubleSided() const { return alphaSolid && doubleSided; }
-  bool blend() const { return !alphaSolid || transmission; }
-  bool operator==(const MaterialBits&) const = default;
+  bool     operator==(const MaterialBits&) const = default;
 };
 
 // No ray can keep the surface and it emits nothing (materialBits gives it no instance mask)
@@ -99,10 +88,6 @@ inline MaterialBits materialBits(const fv::mat::Material& mat)
   // it. An emitter stays, however transparent (a ghost light). Spec-gloss takes its alpha elsewhere.
   if(invisible(mat))
     bits.instanceMask = 0;
-
-  bits.alphaSolid   = opaque || mat.alphaMode == fv::mat::AlphaMode::eMask;
-  bits.doubleSided  = mat.doubleSided;
-  bits.transmission = transmission > 0.f;
   return bits;
 }
 
@@ -125,9 +110,9 @@ inline uint8_t instanceMaskOf(const MaterialBits& bits, bool offCamera, uint8_t 
 }
 
 // The texture indices a material samples as colour (sRGB). decides it:
-// base colour, emission, and the colour textures of specular, sheen, diffuse transmission, scatter
-// and specular-glossiness. (A texture's own `gamma` extra, which findSrgbImages also reads, is a
-// glTF texture's and not the material's.)
+// base colour, emission, and the colour textures of specular, clearcoat, sheen, diffuse transmission,
+// scatter, flakes and specular-glossiness: each one lower() asks for as sRGB. (A texture's own `gamma`
+// extra, which findSrgbImages also reads, is a glTF texture's and not the material's.)
 inline std::set<int> srgbTextures(const fv::mat::Material& mat)
 {
   std::set<int> out;
@@ -147,6 +132,8 @@ inline std::set<int> srgbTextures(const fv::mat::Material& mat)
     add(mat.diffuseTransmission->colorMap);
   if(mat.scatter)
     add(mat.scatter->multiscatterColorMap);
+  if(mat.flakes)
+    add(mat.flakes->colorMap);
   if(mat.specularGlossiness)
   {
     add(mat.specularGlossiness->diffuseMap);

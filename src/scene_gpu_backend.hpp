@@ -190,11 +190,6 @@ struct TlasRow
   AccelHandle blas;
 };
 
-enum class TlasMode
-{
-  eBuild,
-  eUpdate,  // only with the rows' count and BLASes of the previous build
-};
 
 // The execution dependencies the residency layer asks for between its passes
 enum class GpuBarrier
@@ -373,11 +368,12 @@ public:
   // A TLAS of up to `capacity` rows; its handle stays until it is destroyed.
   virtual AccelHandle createTlas(uint32_t capacity)                                             = 0;
   // Every row written again
-  void buildTlas(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode) { buildTlasRows(tlas, rows, mode, {}, true); }
+  void buildTlas(AccelHandle tlas, std::span<const TlasRow> rows) { buildTlasRows(tlas, rows, {}, true); }
   // `changed`, ascending: the rows that differ from the last build's, the rest as they were (unless
   // `everyRow`, as into a new TLAS); a row past the last build's is one of them. A sway of a forest's
-  // copies moves a fifth of its 190,000 rows, and writing every one again was 6 ms a frame
-  virtual void buildTlasRows(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow) = 0;
+  // copies moves a fifth of its 190,000 rows, and writing every one again was 6 ms a frame. Always a
+  // build, never an update: the rows' BLASes change from one to the next, which an update can't take.
+  virtual void buildTlasRows(AccelHandle tlas, std::span<const TlasRow> rows, std::span<const uint32_t> changed, bool everyRow) = 0;
   virtual void        destroyAccel(AccelHandle accel)                                           = 0;
   // What one holds on the device: a TLAS's instances and scratch with it, a micromap's inputs until they go
   virtual uint64_t accelBytes(AccelHandle accel) const = 0;

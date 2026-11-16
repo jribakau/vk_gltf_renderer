@@ -38,6 +38,7 @@
 #include <array>
 #include <cstdint>
 #include <initializer_list>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -319,7 +320,8 @@ struct MeshRecord
   uint32_t contentRev = 0;
   uint32_t tangentRev = 0;
 
-  // the positions' axis-aligned bounds; empty (min > max) without vertices
+  // the positions' axis-aligned bounds (a refined mesh's: its cage's, holding the surface made from
+  // it); empty (min > max) without vertices
   std::array<glm::vec3, 2> bounds() const;
 
   // Submesh `s` is drawn by a prim of its own: not merged into another (Submesh::mergedInto)
@@ -575,6 +577,19 @@ struct CopyChanges
   std::vector<uint32_t> which;        // these (moveCopies, setCopiesShown), in no order, some perhaps twice
 };
 
+// A box carried by a matrix, grown into `b`: its eight corners. (Its centre moved and its half extents
+// by the matrix's magnitudes is fewer products, but rounds otherwise: a camera fit to the scene's
+// bounds moved by that, and with it every ray of a still.)
+inline void growByBox(std::array<glm::vec3, 2>& b, const glm::vec3& lo, const glm::vec3& hi, const glm::mat4& m)
+{
+  for(int c = 0; c < 8; c++)
+  {
+    const glm::vec3 w = glm::vec3(m * glm::vec4(c & 1 ? hi.x : lo.x, c & 2 ? hi.y : lo.y, c & 4 ? hi.z : lo.z, 1.f));
+    b[0]              = glm::min(b[0], w);
+    b[1]              = glm::max(b[1], w);
+  }
+}
+
 struct SceneChanges
 {
   bool                 structure = false;  // entities, instances, lights or cameras came or went
@@ -814,7 +829,11 @@ public:
   std::vector<LightItem> lightItems();
   // the drawn positions' world-space bounds; empty (min > max) when nothing is drawn
   // (of everything shown; with `except`, but for that entity and what is under it)
-  std::array<glm::vec3, 2> bounds(EntityId except = {});
+  std::array<glm::vec3, 2> bounds(EntityId except = {}) { return shownBounds({}, except); }
+  // the same of `root` and what is under it (none: every root), but for `except` and what is under
+  // that: walked from `root` alone, each copy placed as drawn and each mesh's box taken once a call,
+  // where a list of every draw item and a mesh's vertices once an item was most of a frame's fit
+  std::array<glm::vec3, 2> shownBounds(EntityId root, EntityId except = {});
 
   // ---- shader features
   // The KHR_materials_* and KHR_texture_transform features the scene's materials use: what
@@ -898,10 +917,15 @@ private:
     // for jointMatrices: this entity's matrix from the anchor, and the walk that last reached it
     glm::mat4 anchored  = glm::mat4(1.f);
     uint64_t  anchorWalk = 0, seenWalk = 0;
+    // the change window (m_changeWindow) whose transforms and visibility sets took it and its subtree
+    uint64_t transformsMarked = 0, visibilityMarked = 0;
   };
   std::vector<Derived> m_derived;
+  void                 markDirty(EntityId id, std::set<EntityId>& into, uint64_t Derived::*marked);
   uint64_t             m_skinWalk = 0;
-  bool                 m_anyDirty = false;
+  // marked dirty since updateWorld (some perhaps under others, or gone): where its walks start
+  std::vector<EntityId> m_dirtyTops;
+  uint64_t              m_changeWindow = 1;  // one more at each takeChanges
 
   // per SceneFeatureSet feature: submesh uses of materials needing it
   std::array<uint32_t, nvvkgltf::SceneFeatureSet::kFeatureCount> m_featureUses{};

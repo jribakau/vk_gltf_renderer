@@ -185,8 +185,11 @@ inline std::vector<std::string> checkFeed(const SceneGraph& scene, int root, con
         lo = glm::min(lo, glm::vec3(geo.position[v * 3], geo.position[v * 3 + 1], geo.position[v * 3 + 2]));
         hi = glm::max(hi, glm::vec3(geo.position[v * 3], geo.position[v * 3 + 1], geo.position[v * 3 + 2]));
       }
+      // (a refined mesh's are its cage's, widened by its offsets: they hold the surface made from it)
       const std::array<glm::vec3, 2> bounds = r->bounds();
-      if(bounds[0] != lo || bounds[1] != hi)
+      const float                    slack  = 1e-5f * (1.f + glm::length(hi - lo));
+      if(r->refine && !r->cage.empty() ? glm::any(glm::greaterThan(bounds[0], lo + slack)) || glm::any(glm::lessThan(bounds[1], hi - slack))
+                                       : bounds[0] != lo || bounds[1] != hi)
         problems.push_back(name + "bounds");
     }
 

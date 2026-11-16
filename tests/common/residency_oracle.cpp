@@ -740,25 +740,6 @@ std::vector<std::string> checkResidency(RetainedScene& scene, const Residency& r
      && !sameBytes(gpu.bytesAt(gpu.bufferAddress(residency.textureInfoTable()), sizeof(none)), &none, 1))
     out.push_back("I4: the texture-info table's entry 0 is not the empty one");
 
-  // the raster lists: the live instances by their material's bits, in slot order
-  std::array<std::vector<uint32_t>, 4> lists;
-  for(uint32_t s = 0; s < hwm; s++)
-    if(const Residency::Instance* inst = residency.instance(s))
-      if(const fv::mat::Material* payload = drawnPayload(scene, residency, inst->material))
-      {
-        const nvvkgltf::MaterialBits bits = nvvkgltf::materialBits(*payload);
-        if(bits.solid())
-          lists[0].push_back(s);
-        if(bits.solidDoubleSided())
-          lists[1].push_back(s);
-        if(bits.blend())
-          lists[2].push_back(s);
-        lists[3].push_back(s);
-      }
-  for(size_t l = 0; l < lists.size(); l++)
-    if(residency.drawList(Residency::DrawList(l)) != lists[l])
-      out.push_back("raster list " + std::to_string(l) + " is not the live instances by their materials");
-
   // lights: dense, in document order, a hidden one at intensity 0
   std::vector<shaderio::GltfLight> lights;
   for(const LightItem& item : scene.lightItems())

@@ -231,7 +231,7 @@ TEST(FakeGpuBackend, RefitNeedsAllowUpdateAndTheSameAddresses)
   EXPECT_EQ(gpu.errors().size(), 4u);
 }
 
-TEST(FakeGpuBackend, ATlasKeepsItsRowsAndUpdatesOnlyOverTheSameBlases)
+TEST(FakeGpuBackend, ATlasKeepsItsRows)
 {
   FakeGpuBackend    gpu;
   Triangle          t    = uploadTriangle(gpu);
@@ -245,29 +245,25 @@ TEST(FakeGpuBackend, ATlasKeepsItsRowsAndUpdatesOnlyOverTheSameBlases)
   rows[0].mask = 0xFF;
   rows[2].blas = b;  // row 1 is a hole
   rows[2].mask = 0xFF;
-  gpu.buildTlas(tlas, rows, TlasMode::eBuild);
-  rows[0].transform[0][3] = 5.0f;  // moved: an update is valid
-  gpu.buildTlas(tlas, rows, TlasMode::eUpdate);
+  gpu.buildTlas(tlas, rows);
+  rows[0].transform[0][3] = 5.0f;  // moved
+  rows[1].blas            = b;     // a hole filled
+  gpu.buildTlas(tlas, rows);
   ASSERT_NE(gpu.tlas(tlas), nullptr);
   EXPECT_EQ(gpu.tlas(tlas)->rows.size(), 3u);
   EXPECT_EQ(gpu.tlas(tlas)->rows[0].transform[0][3], 5.0f);
-  EXPECT_FALSE(gpu.tlas(tlas)->rows[1].blas);
-  EXPECT_EQ(gpu.tlas(tlas)->builds, 1u);
-  EXPECT_EQ(gpu.tlas(tlas)->updates, 1u);
-  EXPECT_EQ(gpu.tlas(tlas)->lastMode, TlasMode::eUpdate);
+  EXPECT_EQ(gpu.tlas(tlas)->rows[1].blas, b);
+  EXPECT_EQ(gpu.tlas(tlas)->builds, 2u);
   EXPECT_TRUE(gpu.errors().empty());
 
-  rows[1].blas = b;  // a hole filled: the rows' references changed, so an update is invalid
-  gpu.buildTlas(tlas, rows, TlasMode::eUpdate);
-  EXPECT_EQ(gpu.errors().size(), 1u);
   rows.resize(5);  // past the capacity
-  gpu.buildTlas(tlas, rows, TlasMode::eBuild);
-  EXPECT_EQ(gpu.errors().size(), 2u);
+  gpu.buildTlas(tlas, rows);
+  EXPECT_EQ(gpu.errors().size(), 1u);
 
   rows.resize(1);
   gpu.destroyAccel(a);
-  gpu.buildTlas(tlas, rows, TlasMode::eBuild);  // row 0 names a destroyed BLAS
-  EXPECT_EQ(gpu.errors().size(), 3u);
+  gpu.buildTlas(tlas, rows);  // row 0 names a destroyed BLAS
+  EXPECT_EQ(gpu.errors().size(), 2u);
   EXPECT_EQ(gpu.liveAccels(), 2u);
 }
 
@@ -291,20 +287,12 @@ TEST(FakeGpuBackend, BarriersFenceWhatBuildsAndShadingRead)
   const AccelHandle tlas = gpu.createTlas(1);
   TlasRow           row;
   row.blas = blas;
-  gpu.buildTlas(tlas, std::span(&row, 1), TlasMode::eBuild);  // no build-to-build since the refit
+  gpu.buildTlas(tlas, std::span(&row, 1));  // no build-to-build since the refit
   EXPECT_EQ(gpu.errors().size(), 2u);
   EXPECT_EQ(gpu.unfencedForTheFrame().size(), 2u);  // the upload and the builds
   gpu.barrier(GpuBarrier::eTransferToShader);
   gpu.barrier(GpuBarrier::eBuildToTrace);
   EXPECT_TRUE(gpu.unfencedForTheFrame().empty());
-}
-
-TEST(FakeGpuBackend, AnUpdateBeforeAnyBuildIsAnError)
-{
-  FakeGpuBackend    gpu;
-  const AccelHandle tlas = gpu.createTlas(1);
-  gpu.buildTlas(tlas, {}, TlasMode::eUpdate);
-  EXPECT_EQ(gpu.errors().size(), 1u);
 }
 
 TEST(FakeGpuBackend, DescriptorsNameLiveImagesOrTheDefault)

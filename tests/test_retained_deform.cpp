@@ -1497,3 +1497,65 @@ TEST(RetainedDeform, ADisplacementWakesASettledMesh)
   drain(gpu);
   expectClean(rig.scene, residency, gpu, "woken: ");
 }
+
+// A scene let go of retires the displacement of a mesh drawn as it is, with every other buffer
+TEST(RetainedDeform, ClearingTheSceneRetiresAnUnrefinedMeshsDisplacement)
+{
+  Rig            rig(false);
+  FakeGpuBackend gpu;
+  Residency      residency(gpu);
+  residency.replace(rig.scene);
+  rig.bend(90);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  std::vector<float> d(rig.scene.mesh(rig.mesh)->vertexCount() * 3, 0.f);
+  d[0] = 0.5f;
+  ASSERT_TRUE(rig.scene.setMeshDisplacement(rig.mesh, d));
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  ASSERT_TRUE(residency.meshGpu(rig.mesh)->displacement);
+
+  residency.clear();
+  drain(gpu);
+  EXPECT_EQ(gpu.liveBuffers(), 0u);
+}
+
+// A refined mesh whose drawer deforms from its base (a cage without its own influences) makes that base
+// from its cage again when it wakes, as when it was first drawn: not from what the CPU holds, the
+// positions as loaded (audit 11-16)
+TEST(RetainedDeform, AWokenRefinedMeshMakesItsBaseFromItsCage)
+{
+  MeshRecord record = ribbonPiece();
+  record.cageJoints.clear();
+  record.cageWeights.clear();
+  for(glm::vec3& p : record.positions)
+    p += glm::vec3(5, 0, 0);  // not what the cage refines to
+  RibbonRig      rig(std::move(record));
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.settleQuietFrames = 0});
+  residency.replace(rig.scene);
+  ASSERT_FALSE(residency.drawer(rig.body, rig.mesh)->posed);
+  const auto turn = [&](float degrees) {
+    Transform t;
+    t.rotation = glm::angleAxis(glm::radians(degrees), glm::vec3(0, 0, 1));
+    rig.scene.setLocal(rig.bone, t);
+    gpu.beginFrame();
+    residency.sync(rig.scene);
+  };
+  turn(30);
+  const std::vector<glm::vec3> base = readBack<glm::vec3>(gpu, residency.meshGpu(rig.mesh)->positions);
+  ASSERT_EQ(base.size(), 3u);
+  for(size_t v = 0; v < base.size(); v++)
+    EXPECT_LT(glm::distance(base[v], rig.scene.mesh(rig.mesh)->cage[v] + kRibbonWidth), 1e-5f) << v;
+
+  residency.settle(rig.mesh);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  drain(gpu);
+  ASSERT_TRUE(residency.isSettled(rig.mesh));
+  EXPECT_FALSE(residency.meshGpu(rig.mesh)->positions);
+
+  turn(70);
+  EXPECT_FALSE(residency.isSettled(rig.mesh));
+  EXPECT_EQ(readBack<glm::vec3>(gpu, residency.meshGpu(rig.mesh)->positions), base);
+}

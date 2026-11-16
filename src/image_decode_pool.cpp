@@ -150,6 +150,11 @@ void ImageDecodePool::run()
     try
     {
       done.ok = m_decode(done.source.source, done.loaded, done.prefetched);
+      if(done.ok)
+      {
+        done.meanLuminance = nvvkgltf::imageMeanLuminance(done.loaded);
+        done.slopeVariance = nvvkgltf::imageSlopeVariance(done.loaded);
+      }
     }
     catch(const std::exception&)  // system memory ran out, most likely: as one that can't be read
     {

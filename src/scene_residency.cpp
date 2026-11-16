@@ -22,10 +22,12 @@
 #include "memory_plan.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cassert>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <string_view>
@@ -155,7 +157,6 @@ Residency::~Residency()
 {
   clear();
   trimGrace(0);
-  m_noticedLowered = m_noticedRefused = false;
 }
 
 std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb)
@@ -195,13 +196,32 @@ std::optional<TextureKey> textureKeyOf(const TextureRecord& record, bool srgb)
   return key;
 }
 
+// Every buffer a mesh holds outside its Refine, and every one its Refine holds: what retiring a mesh,
+// a scene's clear() and liveBuffers walk, so they can't list different ones
+static std::array<BufferHandle, 22> meshBuffers(const Residency::MeshGpu& m)
+{
+  return {m.positions,   m.normals,     m.tangents,       m.uv0,          m.uv1,          m.colors,
+          m.masks,       m.joints,      m.cageJoints,     m.cageWeights,  m.cageJoints1,  m.cageWeights1,
+          m.cageShares,  m.joints1,     m.weights1,       m.dualQuatShares, m.weights,    m.positionDeltas,
+          m.normalDeltas, m.tangentDeltas, m.prevPositions, m.displacement};
+}
+
+template <class Fn>
+static void forEachRefineBuffer(const Residency::MeshGpu::Refine& r, Fn&& fn)
+{
+  for(BufferHandle b : {r.cage, r.drawnFrom, r.triangles, r.normalStart, r.normalTriangles, r.offsets, r.tangentTriangles,
+                        r.tangentStart, r.tangentCorners, r.displacement, r.hdTopology, r.hdOffsets})
+    fn(b);
+  for(const Residency::MeshGpu::Refine::Level& l : r.levels)
+    for(BufferHandle b : {l.start, l.columns, l.weights})
+      fn(b);
+}
+
 void Residency::clear()
 {
   for(auto& [id, mesh] : m_meshes)
   {
-    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.masks, mesh.joints, mesh.cageJoints, mesh.cageWeights, mesh.cageJoints1, mesh.cageWeights1, mesh.cageShares, mesh.joints1,
-                          mesh.weights1, mesh.dualQuatShares, mesh.weights, mesh.positionDeltas, mesh.normalDeltas,
-                          mesh.tangentDeltas, mesh.prevPositions})
+    for(BufferHandle b : meshBuffers(mesh))
       retireBuffer(b);
     retireRefine(mesh);
   }
@@ -218,7 +238,17 @@ void Residency::clear()
   m_packsDirty = false;
   m_drawersWritten.clear();
   m_prevResting.clear();
+  m_meshPrevSince.clear();
+  // what was parked, failed or arriving, and noticed, names the old scene's meshes, whose ids the next
+  // scene's take again
   m_letGoHidden.clear();
+  m_parked.clear();
+  m_parkedDrawn.clear();
+  m_failedMeshes.clear();
+  m_noticedParked.clear();
+  m_arriving.clear();
+  m_parkedChanged  = false;
+  m_noticedLowered = m_noticedRefused = false;
   m_bringBack.clear();
   m_detail       = {};
   m_detailAsks.clear();
@@ -297,6 +327,7 @@ void Residency::clear()
   m_lightCount = m_emissiveCount = m_emissiveGroupCount = m_emissiveNodeCount = m_emissiveLeafCount = m_iesProfileCount = 0;
   m_emissiveTotalWeight = m_emissiveMeanLum = 0.f;
   m_emissiveStale                           = false;
+  m_emittersChanged                         = false;
   m_shadeMaterials.clear();
   m_descDirty = false;
   m_meshes.clear();
@@ -322,11 +353,6 @@ void Residency::clear()
   m_heldMaterials.clear();
   m_textureInfoPool = poolFromOne(m_options.textureInfoLimit);
   m_textureInfos.assign(1, {});
-  for(auto& list : m_drawLists)
-    list.clear();
-  m_drawListsStale = false;
-  m_drawListsRevision++;
-  m_hasTransmission = false;
   m_renderNodes = m_renderPrims = m_sceneDesc = {};
   m_tlas                                      = {};
   m_tlasRows.clear();  // the next build writes every row
@@ -881,11 +907,14 @@ void Residency::uploadStreams(const MeshRecord& record, MeshGpu& gpu, bool verti
 }
 
 // A static prim draws the mesh's own streams, and a drawer that doesn't pose its cage deforms from them. A
-// refined mesh's are made from its cage (m_refineAcquired), in this sync.
-void Residency::ensureBase(const MeshRecord& record, MeshGpu& gpu)
+// refined mesh's are made from its cage (m_refineAcquired), in this sync: what the CPU holds is the cage's
+// as loaded, or nothing (a thin record), whoever asks for them (a prim, a drawer, a mesh woken).
+void Residency::ensureBase(const MeshRecord& record, MeshId id, MeshGpu& gpu)
 {
   if(std::exchange(gpu.hasBase, true))
     return;
+  if(gpu.refine)
+    m_refineAcquired.push_back(id);
   const auto stream = [&](BufferHandle& buffer, std::span<const std::byte> bytes, BufferUsageFlags usage, const char* name) {
     if(bytes.empty())
       return;
@@ -935,8 +964,7 @@ void Residency::retireMesh(MeshId id)
   if(it == m_meshes.end())
     return;
   MeshGpu& m = it->second;
-  for(BufferHandle b : {m.positions, m.normals, m.tangents, m.uv0, m.uv1, m.colors, m.masks, m.joints, m.cageJoints, m.cageWeights, m.cageJoints1, m.cageWeights1, m.cageShares, m.joints1, m.weights1,
-                        m.dualQuatShares, m.weights, m.positionDeltas, m.normalDeltas, m.tangentDeltas, m.prevPositions, m.displacement})
+  for(BufferHandle b : meshBuffers(m))
     retireBuffer(b);
   retireRefine(m);
   m_meshes.erase(it);
@@ -946,13 +974,7 @@ void Residency::retireRefine(MeshGpu& m)
 {
   if(!m.refine)
     return;
-  for(BufferHandle b : {m.refine->cage, m.refine->drawnFrom, m.refine->triangles, m.refine->normalStart,
-                        m.refine->normalTriangles, m.refine->offsets, m.refine->tangentTriangles, m.refine->tangentStart,
-                        m.refine->tangentCorners, m.refine->displacement, m.refine->hdTopology, m.refine->hdOffsets})
-    retireBuffer(b);
-  for(const MeshGpu::Refine::Level& l : m.refine->levels)
-    for(BufferHandle b : {l.start, l.columns, l.weights})
-      retireBuffer(b);
+  forEachRefineBuffer(*m.refine, [&](BufferHandle b) { retireBuffer(b); });
   m.refine.reset();
 }
 
@@ -1040,12 +1062,8 @@ uint32_t Residency::acquirePrim(const RetainedScene& scene, MeshId id, uint32_t 
     m_prims.resize(size_t(slot) + 1);
 
   const MeshRecord& record = *scene.mesh(id);
-  if(!d && !mesh.hasBase)
-  {
-    ensureBase(record, mesh);
-    if(mesh.refine)
-      m_refineAcquired.push_back(id);
-  }
+  if(!d)
+    ensureBase(record, id, mesh);
   const Submesh     run    = record.drawnRun(submesh);
   Prim              prim;
   prim.mesh       = id;
@@ -1098,6 +1116,9 @@ void Residency::releasePrim(uint32_t slot)
       retireMesh(prim.mesh);
   }
   m_prims[slot].reset();
+  // (the slot is another prim's once its retire comes round: not one to build again settled)
+  m_settleBuilds.erase(slot);
+  m_compacting.erase(slot);
   m_dirtyPrevPrims.insert(slot);
   m_gpu.retire([pool = m_primPool, slot] { pool->destroyID(slot); });
 }
@@ -1271,8 +1292,15 @@ void Residency::acquireTexture(const RetainedScene& scene, TextureId id, const G
   if(image.users++ == 0)
     if(const TextureRecord* record = scene.texture(id))
     {
-      // decoded already, for another texture or in grace
-      image.key = textureKeyOf(*record, srgb);
+      // decoded already, for another texture or in grace. (The other colour space's key, when that one
+      // is held: the same bytes, hashed once.)
+      if(const auto other = m_images.find({id, !srgb}); other != m_images.end() && other->second.key)
+      {
+        image.key       = other->second.key;
+        image.key->srgb = srgb;
+      }
+      else
+        image.key = textureKeyOf(*record, srgb);
       if(image.key)
       {
         image.key->maxExtent = maxExtent;
@@ -1428,17 +1456,21 @@ void Residency::moveSlots(const std::set<ImageKey>& written)
 // The idle decodes, oldest first, destroyed at retire until the rest fit `budget`
 void Residency::trimGrace(uint64_t budget)
 {
-  while(m_graceBytes > budget)
+  if(m_graceBytes <= budget)
+    return;
+  // the idle decodes, the one let go of longest ago first: sorted once, not looked for once each
+  std::vector<decltype(m_decoded)::iterator> idle;
+  for(auto it = m_decoded.begin(); it != m_decoded.end(); ++it)
+    if(it->second.users == 0)
+      idle.push_back(it);
+  std::sort(idle.begin(), idle.end(), [](const auto& a, const auto& b) { return a->second.released < b->second.released; });
+  for(const auto it : idle)
   {
-    auto oldest = m_decoded.end();
-    for(auto it = m_decoded.begin(); it != m_decoded.end(); ++it)
-      if(it->second.users == 0 && (oldest == m_decoded.end() || it->second.released < oldest->second.released))
-        oldest = it;
-    if(oldest == m_decoded.end())
+    if(m_graceBytes <= budget)
       break;
-    m_graceBytes -= oldest->second.info.bytes;
-    retireImage(oldest->second.image, oldest->second.info.bytes);
-    m_decoded.erase(oldest);
+    m_graceBytes -= it->second.info.bytes;
+    retireImage(it->second.image, it->second.info.bytes);
+    m_decoded.erase(it);
   }
   if(m_graceBytes > budget)  // only idle decodes count, so this can't be
     m_graceBytes = 0;
@@ -1490,7 +1522,7 @@ std::set<Residency::ImageKey> Residency::pinnedImages(const RetainedScene& scene
   return out;
 }
 
-std::vector<std::pair<MeshId, uint64_t>> Residency::hiddenMeshes() const
+std::vector<std::pair<MeshId, uint64_t>> Residency::hiddenMeshes(const MemoryLedger* given) const
 {
   // (by entity and run: a run shows with its first shown copy, and most show their first)
   std::map<MeshId, bool> shown;
@@ -1507,7 +1539,8 @@ std::vector<std::pair<MeshId, uint64_t>> Residency::hiddenMeshes() const
       mesh       = mesh || any;
     }
   }
-  const MemoryLedger                       ledger = this->ledger();
+  const MemoryLedger                       own    = given ? MemoryLedger{} : this->ledger();
+  const MemoryLedger&                      ledger = given ? *given : own;
   std::vector<std::pair<MeshId, uint64_t>> out;
   for(const MemoryLedger::Mesh& m : ledger.meshes)
     if(const auto it = shown.find(m.mesh); it != shown.end() && !it->second && !m_parked.count(m.mesh))
@@ -1515,10 +1548,20 @@ std::vector<std::pair<MeshId, uint64_t>> Residency::hiddenMeshes() const
   return out;
 }
 
-std::vector<std::pair<MeshId, uint64_t>> Residency::settleableMeshes() const
+std::vector<std::pair<MeshId, uint64_t>> Residency::settleableMeshes(const MemoryLedger* given) const
 {
-  const MemoryLedger                       ledger = this->ledger();
+  const MemoryLedger                       own    = given ? MemoryLedger{} : this->ledger();
+  const MemoryLedger&                      ledger = given ? *given : own;
   std::vector<std::pair<MeshId, uint64_t>> out;
+  // per mesh a drawer draws: whether every drawer of it has been quiet long enough (one pass over them)
+  std::map<MeshId, bool> quietOf;
+  for(const auto& [key, d] : m_drawers)
+  {
+    const bool quiet       = d.ran && m_gpu.frame() >= d.writtenAt + m_options.settleQuietFrames;
+    const auto [it, first] = quietOf.try_emplace(key.second, quiet);
+    if(!first)
+      it->second = it->second && quiet;
+  }
   // what building its BVHs again compacted frees: from a refittable one already compacted, what is left
   // between the two shares
   std::map<MeshId, uint64_t> bvhFreed;
@@ -1537,14 +1580,7 @@ std::vector<std::pair<MeshId, uint64_t>> Residency::settleableMeshes() const
       continue;
     if(std::any_of(mesh->second.prims.begin(), mesh->second.prims.end(), [](int32_t p) { return p >= 0; }))
       continue;  // a static draw reads what would go
-    bool drawn = false, quiet = true;
-    for(const auto& [key, d] : m_drawers)
-      if(key.second == m.mesh)
-      {
-        drawn = true;
-        quiet = quiet && d.ran && m_gpu.frame() >= d.writtenAt + m_options.settleQuietFrames;
-      }
-    if(drawn && quiet)
+    if(const auto quiet = quietOf.find(m.mesh); quiet != quietOf.end() && quiet->second)
       out.emplace_back(m.mesh, m.bytes.remake + m.bytes.working + m.bytes.unread + bvhFreed[m.mesh]);
   }
   // the largest first, so that few have to wake; what is being edited after everything else
@@ -1639,7 +1675,7 @@ void Residency::wake(const RetainedScene& scene, MeshId id)
   m_wokeThisSync.insert(id);
   makeRefine(*record, mesh);
   if(std::exchange(mesh.hadBase, false))
-    ensureBase(*record, mesh);
+    ensureBase(*record, id, mesh);
   for(auto& [key, d] : m_drawers)
   {
     if(key.second != id)
@@ -1714,9 +1750,13 @@ std::set<Residency::ImageKey> Residency::favouredImages(const RetainedScene& sce
   return out;
 }
 
-void Residency::residentFits(const RetainedScene& scene, bool onlyLowered, std::vector<ResidentImage>& residents, std::vector<ImageFit>& fits) const
+void Residency::residentFits(const RetainedScene& scene, bool onlyLowered, std::vector<ResidentImage>& residents, std::vector<ImageFit>& fits,
+                             const std::set<ImageKey>* favouredGiven, const std::set<ImageKey>* pinnedGiven) const
 {
-  const std::set<ImageKey> favoured = favouredImages(scene), pinned = pinnedImages(scene);
+  const std::set<ImageKey>  ownFavoured = favouredGiven ? std::set<ImageKey>{} : favouredImages(scene);
+  const std::set<ImageKey>  ownPinned   = pinnedGiven ? std::set<ImageKey>{} : pinnedImages(scene);
+  const std::set<ImageKey>& favoured    = favouredGiven ? *favouredGiven : ownFavoured;
+  const std::set<ImageKey>& pinned      = pinnedGiven ? *pinnedGiven : ownPinned;
   std::set<TextureKey>     seen;  // one image, however many textures are it
   // what the last count wanted of each image, and of each file several may be
   using Bins = std::array<uint64_t, kHitBins>;
@@ -1927,14 +1967,15 @@ bool Residency::giveWayForHits(const RetainedScene& scene, uint64_t shortBy)
   return true;
 }
 
-std::vector<Residency::DetailStep> Residency::detailSteps(size_t& first, size_t& last) const
+std::vector<Residency::DetailStep> Residency::detailSteps(size_t& first, size_t& last, const MemoryLedger* given) const
 {
   std::vector<DetailStep> out;
   first = last = 0;
   if(m_detail.down.empty())
     return out;
   std::map<MeshId, uint64_t> held;
-  const MemoryLedger         ledger = this->ledger();
+  const MemoryLedger         own    = given ? MemoryLedger{} : this->ledger();
+  const MemoryLedger&        ledger = given ? *given : own;
   for(const MemoryLedger::Mesh& m : ledger.meshes)
     held[m.mesh] = m.bytes.total();
   for(const ItemDetail::Down& d : m_detail.down)
@@ -2027,29 +2068,34 @@ uint32_t Residency::bringBack(const RetainedScene& scene, uint64_t room)
   }
   if(brought)
     return brought;
-  // then one mesh, the largest that fits: it is made again
-  const auto  meshSpilled = [&](MeshId id) {
-    const MeshGpu* mesh = meshGpu(id);
-    if(!mesh)
-      return false;
-    for(BufferHandle b : {mesh->positions, mesh->normals, mesh->tangents, mesh->uv0, mesh->uv1, mesh->colors, mesh->masks})
+  // then one mesh, the largest that fits: it is made again. The meshes with a stream or a BVH spilled,
+  // found in one pass over the meshes, drawers and prims
+  std::set<MeshId> spilled;
+  for(const auto& [id, mesh] : m_meshes)
+    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.masks})
       if(m_gpu.bufferSpilled(b))
-        return true;
-    for(const auto& [key, d] : m_drawers)
-      if(key.second == id)
-        for(BufferHandle b : {d.positions, d.normals, d.tangents})
-          if(m_gpu.bufferSpilled(b))
-            return true;
-    for(const std::optional<Prim>& prim : m_prims)
-      if(prim && prim->mesh == id && m_gpu.accelSpilled(prim->blas))
-        return true;
-    return false;
-  };
+      {
+        spilled.insert(id);
+        break;
+      }
+  for(const auto& [key, d] : m_drawers)
+    if(!spilled.count(key.second))
+      for(BufferHandle b : {d.positions, d.normals, d.tangents})
+        if(m_gpu.bufferSpilled(b))
+        {
+          spilled.insert(key.second);
+          break;
+        }
+  for(const std::optional<Prim>& prim : m_prims)
+    if(prim && !spilled.count(prim->mesh) && m_gpu.accelSpilled(prim->blas))
+      spilled.insert(prim->mesh);
+  if(spilled.empty())
+    return 0;
   const MemoryLedger ledger = this->ledger();
   MeshId             best;
   uint64_t           bestBytes = 0;
   for(const MemoryLedger::Mesh& m : ledger.meshes)
-    if(m.bytes.total() <= room && m.bytes.total() > bestBytes && meshSpilled(m.mesh))
+    if(m.bytes.total() <= room && m.bytes.total() > bestBytes && spilled.count(m.mesh) && m_meshes.count(m.mesh))
     {
       best      = m.mesh;
       bestBytes = m.bytes.total();
@@ -2065,14 +2111,15 @@ std::string Residency::nextToGo(const RetainedScene& scene) const
 {
   if(m_graceBytes > 0)
     return "textures nothing is using";
-  const std::vector<std::pair<MeshId, uint64_t>> hidden = hiddenMeshes();
+  const MemoryLedger                             ledger = this->ledger();  // once, for each step below
+  const std::vector<std::pair<MeshId, uint64_t>> hidden = hiddenMeshes(&ledger);
   if(!hidden.empty())
   {
     const auto largest = std::max_element(hidden.begin(), hidden.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
     const MeshRecord* record = scene.mesh(largest->first);
     return "a hidden item" + (record && !record->name.empty() ? ": " + record->name : std::string());
   }
-  const std::vector<std::pair<MeshId, uint64_t>> settleable = settleableMeshes();
+  const std::vector<std::pair<MeshId, uint64_t>> settleable = settleableMeshes(&ledger);
   if(!settleable.empty())
   {
     const MeshRecord* record = scene.mesh(settleable.front().first);
@@ -2083,7 +2130,7 @@ std::string Residency::nextToGo(const RetainedScene& scene) const
   residentFits(scene, false, residents, fits);
   const std::vector<ImageFit> before = fits;
   size_t                      detailFirst = 0, detailLast = 0;
-  const std::vector<DetailStep> steps     = detailSteps(detailFirst, detailLast);
+  const std::vector<DetailStep> steps     = detailSteps(detailFirst, detailLast, &ledger);
   std::vector<uint64_t>         detailBytes;
   for(const DetailStep& step : steps)
     detailBytes.push_back(step.bytes);
@@ -2140,18 +2187,19 @@ void Residency::fitQueuedToMemory(const RetainedScene& scene, uint64_t slack)
     fits[f].pinned   = pinned.count(m_decodeQueue[queued[f]].image) > 0;
   }
   std::vector<ResidentImage> residents;
-  residentFits(scene, false, residents, fits);
+  residentFits(scene, false, residents, fits, &favoured, &pinned);
 
-  const std::vector<std::pair<MeshId, uint64_t>> hidden = hiddenMeshes();
+  const MemoryLedger                             ledger = this->ledger();  // once, for each step below
+  const std::vector<std::pair<MeshId, uint64_t>> hidden = hiddenMeshes(&ledger);
   std::vector<uint64_t>                          hiddenBytes;
   for(const auto& [mesh, bytes] : hidden)
     hiddenBytes.push_back(bytes);
-  const std::vector<std::pair<MeshId, uint64_t>> settleable = settleableMeshes();
+  const std::vector<std::pair<MeshId, uint64_t>> settleable = settleableMeshes(&ledger);
   std::vector<uint64_t>                          settleBytes;
   for(const auto& [mesh, bytes] : settleable)
     settleBytes.push_back(bytes);
   size_t                        detailFirst = 0, detailLast = 0;
-  const std::vector<DetailStep> steps       = detailSteps(detailFirst, detailLast);
+  const std::vector<DetailStep> steps       = detailSteps(detailFirst, detailLast, &ledger);
   std::vector<uint64_t>         detailBytes;
   for(const DetailStep& step : steps)
     detailBytes.push_back(step.bytes);
@@ -2316,6 +2364,9 @@ Residency::DecodesLanded Residency::decodeQueued(const RetainedScene& scene, boo
   };
   // What an image showed goes once its slots have moved: a size it was lowered to, or the same image
   // decoded twice (let go of and taken again while its first decode ran)
+  // the textures' images by the key they share, made at the first decode for a key that lands: not a
+  // look through every image for each one
+  std::optional<std::map<TextureKey, std::vector<ImageKey>>> byKey;
   const auto install = [&](const QueuedDecode& q, ImageHandle made, const ImageInfo& info) {
     if(q.key)
     {
@@ -2328,16 +2379,25 @@ Residency::DecodesLanded Residency::decodeQueued(const RetainedScene& scene, boo
       if(!made && decoded->second.image)
         return;  // it keeps the image it has
       noted(q, made, info);
-      for(auto& [id, image] : m_images)
-        if(image.key == q.key)
-        {
-          image.image   = made;
-          image.info    = info;
-          image.lowered = q.lowered;
-          if(!made)
-            image.key.reset();
-          written.insert(id);
-        }
+      if(!byKey)
+      {
+        byKey.emplace();
+        for(const auto& [id, image] : m_images)
+          if(image.key)
+            (*byKey)[*image.key].push_back(id);
+      }
+      if(const auto sharing = byKey->find(*q.key); sharing != byKey->end())
+        for(const ImageKey& id : sharing->second)
+          if(const auto it = m_images.find(id); it != m_images.end() && it->second.key == q.key)
+          {
+            ImageGpu& image = it->second;
+            image.image     = made;
+            image.info      = info;
+            image.lowered   = q.lowered;
+            if(!made)
+              image.key.reset();
+            written.insert(id);
+          }
       if(!made)
       {
         m_decoded.erase(decoded);
@@ -2476,7 +2536,8 @@ void Residency::syncMaterials(RetainedScene& scene, const std::set<MaterialId>& 
     const MaterialRecord* record = scene.material(id);
     if(it == m_materials.end() || !record || it->second.rev == record->rev)
       continue;
-    if(m_shaderFeatures && !m_shaderFeatures->isSupersetOf(nvvkgltf::detectMaterialFeatures(record->payload)))
+    // (with its water, as the store counts it: a water material needs the variant that draws water)
+    if(m_shaderFeatures && !m_shaderFeatures->isSupersetOf(nvvkgltf::detectMaterialFeatures(record->payload, record->water != nullptr)))
     {
       m_heldMaterials.insert(id);  // tried again each sync
       continue;
@@ -2561,7 +2622,7 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
   const MaterialSlot&   slot   = m_materials.at(state->material);
   if(!m_heldMaterials.count(state->material))  // a held edit: the payload its row has, over the textures it holds
     state->payload = record ? record->payload : fv::mat::Material{};
-  state->features                   = nvvkgltf::detectMaterialFeatures(state->payload);
+  state->features                   = nvvkgltf::detectMaterialFeatures(state->payload, record && record->water != nullptr);
   nvvkgltf::TextureSlotTable& table = state->slots;
   table                             = {};
   const size_t n                    = slot.textures.size();
@@ -2588,9 +2649,10 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
   state->bits                         = nvvkgltf::materialBits(state->payload);
   m_bitsChanged |= state->bits != before;
 
-  nvvkgltf::MaterialCache::convertOne(state->payload, table, 0, infos);  // how many it needs
-  const uint32_t count   = uint32_t(infos.size());
-  state->texturesDropped = false;
+  // converted where its span is; again only when it needs another number of texture infos, at its new span
+  shaderio::GltfShadeMaterial row = nvvkgltf::MaterialCache::convertOne(state->payload, table, state->span, infos);
+  const uint32_t              count = uint32_t(infos.size());
+  state->texturesDropped            = false;
   if(count != state->spanCount)
   {
     freeSpan(state->span, state->spanCount);
@@ -2611,9 +2673,10 @@ void Residency::convertMaterial(const RetainedScene& scene, uint32_t s)
       return;
     }
     state->spanCount = count;
+    infos.clear();
+    row = nvvkgltf::MaterialCache::convertOne(state->payload, table, state->span, infos);
   }
-  infos.clear();
-  m_shadeMaterials[s] = nvvkgltf::MaterialCache::convertOne(state->payload, table, state->span, infos);
+  m_shadeMaterials[s] = row;
   if(m_textureInfos.size() < size_t(state->span) + count)
     m_textureInfos.resize(size_t(state->span) + count);
   std::copy(infos.begin(), infos.end(), m_textureInfos.begin() + state->span);
@@ -2656,31 +2719,6 @@ void Residency::freeSpan(uint32_t start, uint32_t count)
     m_gpu.retire([pool = m_textureInfoPool, start, count] { pool->destroyRangeID(start, count); });
 }
 
-// The raster lists from the live instances' materials, in slot order
-void Residency::buildDrawLists() const
-{
-  if(!std::exchange(m_drawListsStale, false))
-    return;
-  for(auto& list : m_drawLists)
-    list.clear();
-  m_hasTransmission = false;
-  for(uint32_t s = 0; s < m_instances.size(); s++)
-  {
-    const std::optional<Instance>& inst = m_instances[s];
-    if(!inst)
-      continue;
-    const nvvkgltf::MaterialBits& bits = m_materialStates[inst->materialSlot]->bits;
-    if(bits.solid())
-      m_drawLists[size_t(DrawList::eSolid)].push_back(s);
-    if(bits.solidDoubleSided())
-      m_drawLists[size_t(DrawList::eSolidDoubleSided)].push_back(s);
-    if(bits.blend())
-      m_drawLists[size_t(DrawList::eBlend)].push_back(s);
-    m_drawLists[size_t(DrawList::eAll)].push_back(s);
-    m_hasTransmission |= bits.transmission;
-  }
-}
-
 // ---------- An entity's draws ----------
 
 void Residency::countRun(EntityId entity, uint32_t prim, uint32_t materialSlot, int delta)
@@ -2710,7 +2748,7 @@ template <class Each>
 void Residency::eachEmitter(Each&& each) const
 {
   for(uint32_t m = 0; m < m_shadeMaterials.size(); m++)
-    if(nvvkgltf::emissiveLuminance(nvvkgltf::emitterSelectionRadiance(m_shadeMaterials[m])) > 0.f)
+    if(slotEmits(m))
       eachWithMaterial(m, each);
 }
 
@@ -2719,14 +2757,10 @@ void Residency::grow(EntityDraw& draw, const Instance& inst) const
   const Prim& prim = *m_prims[inst.prim];
   if(!inst.shown || !prim.indexCount)
     return;
-  for(int corner = 0; corner < 8; corner++)
-  {
-    const glm::vec3 at(corner & 4 ? prim.boundsMax.x : prim.boundsMin.x, corner & 2 ? prim.boundsMax.y : prim.boundsMin.y,
-                       corner & 1 ? prim.boundsMax.z : prim.boundsMin.z);
-    const glm::vec3 w = glm::vec3(inst.world * glm::vec4(at, 1.f));
-    draw.boundsMin    = glm::min(draw.boundsMin, w);
-    draw.boundsMax    = glm::max(draw.boundsMax, w);
-  }
+  std::array<glm::vec3, 2> b{draw.boundsMin, draw.boundsMax};
+  growByBox(b, prim.boundsMin, prim.boundsMax, inst.world);
+  draw.boundsMin = b[0];
+  draw.boundsMax = b[1];
 }
 
 void Residency::measure(EntityDraw& draw) const
@@ -2849,12 +2883,8 @@ Residency::DrawerGpu& Residency::acquireDrawer(const RetainedScene& scene, Entit
   const bool cageInfluences = !record.cage.empty() && record.cageJoints.size() == record.cage.size() && record.cageWeights.size() == record.cage.size();
   d.posed = d.skin && !d.morph && mesh.refine && cageInfluences && (record.tangents.empty() || mesh.refine->tangentTriangles);
   makeDeformInputs(record, mesh, d.skin, d.posed);
-  if(!d.posed && !mesh.hasBase)
-  {
-    ensureBase(record, mesh);
-    if(mesh.refine)
-      m_refineAcquired.push_back(id);
-  }
+  if(!d.posed)
+    ensureBase(record, id, mesh);
   d.dualQuat      = d.skin && (record.dualQuat > 0.f || (d.posed ? bool(mesh.cageShares) : bool(mesh.dualQuatShares)));
   d.dualQuatShare = record.dualQuat;
   d.targetCount = d.morph ? mesh.targetCount : 0;
@@ -2945,7 +2975,8 @@ void Residency::snapshotPrevPositions()
     {
       MeshGpu& mesh = it->second;
       m_gpu.copyBuffer(mesh.positions, 0, mesh.prevPositions, 0, m_gpu.bufferSize(mesh.positions));
-      copied = true;
+      copied              = true;
+      m_meshPrevSince[id] = m_gpu.frame();
       if(!std::exchange(mesh.prevValid, true))
         for(int32_t p : mesh.prims)
           if(p >= 0)
@@ -3204,7 +3235,7 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
     if(run.skin)
     {
       d.lastPose   = std::move(run.pose);
-      d.lastJoints = run.joints;
+      d.lastJoints = std::move(run.joints);  // (uploaded above: nothing reads them after)
     }
     m_drawersWritten.insert({d.entity, d.mesh});
     written.insert(d.mesh);
@@ -3248,9 +3279,10 @@ void Residency::writeMotionTables(SyncResult& result)
     std::vector<uint64_t> rows(count, 0);
     for(uint32_t i = 0; i < count; i++)
     {
-      const std::optional<Prim>& prim = first + i < m_prims.size() ? m_prims[first + i] : std::nullopt;
-      if(!prim)
+      // (a ternary with std::nullopt would copy the prim, its cage support included, into a temporary)
+      if(first + i >= m_prims.size() || !m_prims[first + i])
         continue;
+      const Prim* prim = &*m_prims[first + i];
       if(!prim->drawer.isNone())
       {
         // at rest what the last frame drew is what its positions hold
@@ -3334,10 +3366,10 @@ void Residency::retryParked()
   m_parkedChanged = true;
 }
 
-bool Residency::parkFailed(const RetainedScene& scene)
+std::set<MeshId> Residency::parkFailed(const RetainedScene& scene)
 {
   if(m_failedMeshes.empty())
-    return false;
+    return {};
   std::string names;
   for(MeshId mesh : m_failedMeshes)
   {
@@ -3345,10 +3377,21 @@ bool Residency::parkFailed(const RetainedScene& scene)
     if(const MeshRecord* record = scene.mesh(mesh); record && m_noticedParked.insert(mesh).second)
       names += (names.empty() ? "" : ", ") + record->name;
   }
-  m_failedMeshes.clear();
   if(!names.empty())
     m_userNotices.push_back("GPU and system memory are both full, so these aren't drawn for now: " + names + ".");
-  return true;
+  return std::exchange(m_failedMeshes, {});
+}
+
+std::vector<EntityId> Residency::entitiesDrawing(const RetainedScene& scene, const std::set<MeshId>& meshes)
+{
+  std::vector<EntityId> out;
+  if(meshes.empty())
+    return out;
+  for(const EntityId id : scene.entitiesInOrder())
+    if(const Entity* e = scene.entity(id); e && e->mesh
+       && std::any_of(e->mesh->parts.begin(), e->mesh->parts.end(), [&](const MeshPart& part) { return meshes.count(part.mesh) > 0; }))
+      out.push_back(id);
+  return out;
 }
 
 SyncResult Residency::replace(RetainedScene& scene)
@@ -3404,7 +3447,28 @@ SyncResult Residency::sync(RetainedScene& scene)
       retireBuffer(std::exchange(d->second.prevPositions, {}));
     it = m_prevResting.erase(it);
   }
-  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !compacting && !imagesAsked && !parkedChanged && !settleBuild && !liveAsleep && !texelsAsked
+  // a static mesh's the same, its prims' rows pointed at nothing in this sync's motion tables (so the
+  // sync goes on to write them) before the buffer goes at its retire; a write since makes them again
+  bool staticRested = false;
+  for(auto it = m_meshPrevSince.begin(); it != m_meshPrevSince.end();)
+  {
+    if(m_gpu.frame() <= it->second + kPrevPositionsIdleFrames)
+    {
+      ++it;
+      continue;
+    }
+    if(auto mesh = m_meshes.find(it->first); mesh != m_meshes.end() && mesh->second.prevPositions && !m_meshesWritten.count(it->first))
+    {
+      retireBuffer(std::exchange(mesh->second.prevPositions, {}));
+      mesh->second.prevValid = false;
+      for(int32_t p : mesh->second.prims)
+        if(p >= 0)
+          m_dirtyPrevPrims.insert(uint32_t(p));
+      staticRested = true;
+    }
+    it = m_meshPrevSince.erase(it);
+  }
+  if(!fresh && changes.empty() && !emissiveSettled && !retryHeld && !motionToSettle && !staticRested && !compacting && !imagesAsked && !parkedChanged && !settleBuild && !liveAsleep && !texelsAsked
      && m_arriving.empty())
     return result;
   // what follows overwrites rows, streams, BLASes and the TLAS the frames in flight may still read
@@ -3449,26 +3513,40 @@ SyncResult Residency::sync(RetainedScene& scene)
     for(const EntityId id : changes.instances)
       shows(id);
   }
-  const bool everything = fresh || parkedChanged || cameBack || !m_arriving.empty();
-  if(everything || !changes.instances.empty())
+  // The meshes whose own state, not an entity's, changed what is drawn since the instances were last
+  // brought to it: parked or not (come back from being let go of while hidden among them), brought
+  // back, or held back to arrive later. Only the entities that draw them are looked at again: a
+  // planet's thousands of plants, re-placed copy by copy, were most of a sync while its quads arrived.
+  std::set<MeshId> restated;
+  if(!fresh && (parkedChanged || cameBack || !m_arriving.empty() || !m_bringBack.empty()))
+  {
+    std::set_symmetric_difference(m_parked.begin(), m_parked.end(), m_parkedDrawn.begin(), m_parkedDrawn.end(),
+                                  std::inserter(restated, restated.end()));
+    restated.insert(m_arriving.begin(), m_arriving.end());
+    restated.insert(m_bringBack.begin(), m_bringBack.end());
+  }
+  if(fresh || !restated.empty() || !changes.instances.empty())
   {
     std::vector<EntityId> entities, gone;
     for(const EntityId id : changes.instances)
       if(!scene.entity(id))
         gone.push_back(id);
-    if(everything)
+    if(fresh)
       entities = scene.entitiesInOrder();
-    else if(changes.instances.size() == gone.size() + 1)
+    else if(restated.empty() && changes.instances.size() == gone.size() + 1)
     {
       for(const EntityId id : changes.instances)
         if(scene.entity(id))
           entities.push_back(id);
     }
-    else if(changes.instances.size() > gone.size())
+    else if(!restated.empty() || changes.instances.size() > gone.size())
     {
       // in document order: what is new takes its slots, and its turn to arrive, in that order
       for(const EntityId id : scene.entitiesInOrder())
         if(changes.instances.count(id))
+          entities.push_back(id);
+        else if(const Entity* e = scene.entity(id); e && e->mesh && !restated.empty()
+                && std::any_of(e->mesh->parts.begin(), e->mesh->parts.end(), [&](const MeshPart& part) { return restated.count(part.mesh) > 0; }))
           entities.push_back(id);
     }
     holdBackArrivals(scene, entities);
@@ -3480,8 +3558,9 @@ SyncResult Residency::sync(RetainedScene& scene)
       gone.clear();
     }
     syncStructure(scene, entities, gone, nullptr, result);
-    if(parkFailed(scene))
-      syncStructure(scene, scene.entitiesInOrder(), {}, nullptr, result);
+    if(const std::set<MeshId> failed = parkFailed(scene); !failed.empty())
+      syncStructure(scene, entitiesDrawing(scene, failed), {}, nullptr, result);
+    m_parkedDrawn = m_parked;
   }
   std::set<MaterialId> edited = changes.materials;
   if(retryHeld)
@@ -3537,18 +3616,17 @@ SyncResult Residency::sync(RetainedScene& scene)
     result.buffersChanged = true;
   if(result.drawListChanged || m_bitsChanged)
   {
-    staleDrawLists();
     result.drawListChanged = true;
     m_tlasAllRows |= m_bitsChanged;  // its bits are in every row drawn with it
   }
   // (an edit held until now and written on its retry counts: it may emit, or stop)
-  const bool materialsWritten = m_tablesMoved || result.drawListChanged || !edited.empty();
+  const bool materialsWritten = m_tablesMoved || !edited.empty();
   syncRows(scene, changes, result);
   // what couldn't be built goes, and the rest is drawn
-  if(parkFailed(scene))
+  if(const std::set<MeshId> failed = parkFailed(scene); !failed.empty())
   {
-    syncStructure(scene, scene.entitiesInOrder(), {}, nullptr, result);
-    staleDrawLists();
+    syncStructure(scene, entitiesDrawing(scene, failed), {}, nullptr, result);
+    m_parkedDrawn          = m_parked;
     result.drawListChanged = true;
     syncRows(scene, changes, result);
   }
@@ -3585,12 +3663,13 @@ SyncResult Residency::sync(RetainedScene& scene)
   bool emitterMoved = false, emitterWritten = false, emitterRelit = false;
   for(const uint32_t relit : m_relitSlots)
     eachWithMaterial(relit, [&](uint32_t, const Instance& inst) { emitterRelit |= inst.shown; });
-  eachEmitter([&](uint32_t, const Instance& inst) {
-    if(!inst.shown)
-      return;
-    emitterMoved |= changes.transforms.count(inst.entity) > 0;
-    emitterWritten |= written.count(inst.mesh) > 0;
-  });
+  if(!changes.transforms.empty() || !written.empty())
+    eachEmitter([&](uint32_t, const Instance& inst) {
+      if(!inst.shown)
+        return;
+      emitterMoved |= changes.transforms.count(inst.entity) > 0;
+      emitterWritten |= written.count(inst.mesh) > 0;
+    });
   m_relitSlots.clear();
   // a textured emitter's own triangles weighed, now that their texels are averaged
   const bool texelsLanded = takeTexelAverages();
@@ -3599,10 +3678,12 @@ SyncResult Residency::sync(RetainedScene& scene)
     m_emissiveStale     = true;
     m_emitterWriteFrame = m_gpu.frame();
   }
-  if(fresh || materialsWritten || result.visibilityChanged || emitterMoved || emitterRelit || texelsLanded
+  // (instances that come, go or are shown count only when they emit: m_emittersChanged)
+  if(fresh || materialsWritten || std::exchange(m_emittersChanged, false) || emitterMoved || emitterRelit || texelsLanded
      || (emissiveSettled && !emitterWritten))
   {
     fv::timing::Accum time("emissive rebuild");
+    m_work.emissiveBuilds++;
     syncEmissive(scene);
     m_emissiveStale = false;
     result.changed  = true;
@@ -3668,6 +3749,7 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
       return;
     const Instance& any    = *m_instances[d.slot(run, first)];
     const uint32_t  others = d.copies - first - 1;
+    m_emittersChanged |= slotEmits(any.materialSlot);
     m_prims[any.prim]->users -= others;
     releasePrim(any.prim);
     if(any.deformed)
@@ -3759,6 +3841,9 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
     }
     const RetainedScene::Placement& at     = w.draws.at;
     const uint32_t                  copies = at.count();
+    // drawing what it drew: its runs and copies kept, and their materials (syncRows places it then
+    // only as its transform and visibility changes say)
+    bool                            same   = d && d->copies == copies && d->runs.size() == w.draws.runs.size();
     EntityDraw                      draw;
     draw.entity = entity;
     draw.copies = copies;
@@ -3768,6 +3853,7 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
       const DrawItem& run = w.draws.runs[r];
       draw.runs.push_back({run.mesh, run.submesh, bool(w.deformed[r])});
       const int32_t was = w.from[r];
+      same              = same && was >= 0;
       // (its new copies' prim, drawer and material: found for the first, a user more for the rest)
       std::optional<uint32_t> prim, materialSlot;
       DrawerGpu*              drawer   = nullptr;
@@ -3783,9 +3869,11 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
           Instance& inst = *m_instances[slot];
           if(inst.material != run.material)
           {
+            same = false;
             if(copy == 0)
               countRun(entity, inst.prim, inst.materialSlot, -1);
             const uint32_t materialSlot = acquireMaterial(scene, run.material);
+            m_emittersChanged |= slotEmits(inst.materialSlot) || slotEmits(materialSlot);
             releaseMaterial(inst.material);
             inst.material     = run.material;
             inst.materialSlot = materialSlot;
@@ -3817,6 +3905,7 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
           if(m_gpu.takeAllocationFailed())
             m_failedMeshes.insert(run.mesh);
           materialSlot = acquireMaterial(scene, run.material);
+          m_emittersChanged |= slotEmits(*materialSlot);
           if(const auto m = m_materials.find(run.material); m != m_materials.end())
             material = &m->second;
         }
@@ -3850,7 +3939,8 @@ void Residency::syncStructure(RetainedScene& scene, std::span<const EntityId> en
     // placed as it was, for what it had (syncRows places them again); as it is, when new
     if(d)
     {
-      m_restructured.push_back(entity);
+      if(!same)
+        m_restructured.push_back(entity);
       draw.world     = d->world;
       draw.shown     = d->shown;
       draw.offCamera = d->offCamera;
@@ -4095,6 +4185,7 @@ void Residency::syncRows(RetainedScene& scene, const SceneChanges& changes, Sync
         {
           inst.shown               = shown;
           result.visibilityChanged = row = true;  // the TLAS row, not the render node
+          m_emittersChanged |= slotEmits(inst.materialSlot);
         }
         if(inst.offCamera != at.offCamera)
         {
@@ -4239,24 +4330,32 @@ void Residency::syncRows(RetainedScene& scene, const SceneChanges& changes, Sync
 
 void Residency::writeRenderNodes(std::span<const uint32_t> slots)
 {
-  // (a row between two written is written again from its instance, as it was)
+  // (a row between two written is written again from its instance, as it was). One list for every run,
+  // and a mesh's owner looked up once for the copies of it that follow one another.
+  std::vector<shaderio::GltfRenderNode> rows;
+  MeshId                                ownerOf;
+  decltype(shaderio::GltfRenderNode::ownerID) owner{};
   for(const auto& [first, count] : runsOf(slots, kNodesBridged))
   {
-    std::vector<shaderio::GltfRenderNode> rows(count);
+    rows.assign(count, {});
     for(uint32_t i = 0; i < count; i++)
     {
-      const std::optional<Instance>& inst = first + i < m_instances.size() ? m_instances[first + i] : std::nullopt;
-      shaderio::GltfRenderNode&      row  = rows[i];
-      row                                 = {};
-      if(!inst)
+      if(first + i >= m_instances.size() || !m_instances[first + i])
         continue;  // a hole: zeroed
-      row.objectToWorld = inst->world;
-      row.worldToObject = glm::inverse(inst->world);
-      row.materialID    = int(inst->materialSlot);
-      row.renderPrimID  = int(inst->prim);
-      if(const auto mesh = m_meshes.find(inst->mesh); mesh != m_meshes.end())
-        row.ownerID = renderNodeOwner(mesh->second.owner);
-      row.unlit = inst->link.unlit;
+      const Instance&           inst = *m_instances[first + i];
+      shaderio::GltfRenderNode& row  = rows[i];
+      row.objectToWorld = inst.world;
+      row.worldToObject = glm::inverse(inst.world);
+      row.materialID    = int(inst.materialSlot);
+      row.renderPrimID  = int(inst.prim);
+      if(inst.mesh != ownerOf)
+      {
+        const auto mesh = m_meshes.find(inst.mesh);
+        owner           = mesh != m_meshes.end() ? renderNodeOwner(mesh->second.owner) : decltype(owner){};
+        ownerOf         = inst.mesh;
+      }
+      row.ownerID = owner;
+      row.unlit   = inst.link.unlit;
     }
     m_gpu.upload(m_renderNodes, uint64_t(first) * sizeof(shaderio::GltfRenderNode), bytesOf(rows));
   }
@@ -4367,7 +4466,7 @@ void Residency::buildTlas()
       derive(s, next < placed.size() && placed[next] == s);
     }
   }
-  m_gpu.buildTlasRows(m_tlas, m_tlasRows, TlasMode::eBuild, changed, every);
+  m_gpu.buildTlasRows(m_tlas, m_tlasRows, changed, every);
   m_tlasRefs->frame = frame;
   retireHeld();
 }
@@ -4525,9 +4624,13 @@ bool Residency::takeTexelAverages()
 // A shown instance whose material emits
 bool Residency::emits(const Instance& inst) const
 {
-  if(!inst.shown || inst.materialSlot >= m_shadeMaterials.size())
-    return false;
-  return nvvkgltf::emissiveLuminance(nvvkgltf::emitterSelectionRadiance(m_shadeMaterials[inst.materialSlot])) > 0.f;
+  return inst.shown && slotEmits(inst.materialSlot);
+}
+
+bool Residency::slotEmits(uint32_t materialSlot) const
+{
+  return materialSlot < m_shadeMaterials.size()
+         && nvvkgltf::emissiveLuminance(nvvkgltf::emitterSelectionRadiance(m_shadeMaterials[materialSlot])) > 0.f;
 }
 
 // The profiles' samples end to end, which a light's iesProfile indexes by kIesProfileSampleCount
@@ -4754,21 +4857,10 @@ size_t Residency::liveBuffers() const
   size_t n = 0;
   for(const auto& [id, mesh] : m_meshes)
   {
-    for(BufferHandle b : {mesh.positions, mesh.normals, mesh.tangents, mesh.uv0, mesh.uv1, mesh.colors, mesh.masks, mesh.joints, mesh.cageJoints, mesh.cageWeights, mesh.cageJoints1, mesh.cageWeights1, mesh.cageShares, mesh.joints1,
-                          mesh.weights1, mesh.dualQuatShares, mesh.weights, mesh.positionDeltas, mesh.normalDeltas,
-                          mesh.tangentDeltas, mesh.prevPositions, mesh.displacement})
+    for(BufferHandle b : meshBuffers(mesh))
       n += b ? 1 : 0;
     if(mesh.refine)
-    {
-      for(BufferHandle b : {mesh.refine->cage, mesh.refine->drawnFrom, mesh.refine->triangles,
-                            mesh.refine->normalStart, mesh.refine->normalTriangles, mesh.refine->offsets,
-                            mesh.refine->tangentTriangles, mesh.refine->tangentStart, mesh.refine->tangentCorners,
-                            mesh.refine->displacement, mesh.refine->hdTopology, mesh.refine->hdOffsets})
-        n += b ? 1 : 0;
-      for(const MeshGpu::Refine::Level& l : mesh.refine->levels)
-        for(BufferHandle b : {l.start, l.columns, l.weights})
-          n += b ? 1 : 0;
-    }
+      forEachRefineBuffer(*mesh.refine, [&](BufferHandle b) { n += b ? 1 : 0; });
   }
   for(const auto& [key, d] : m_drawers)
   {

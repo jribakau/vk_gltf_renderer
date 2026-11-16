@@ -77,8 +77,13 @@ bool fromPixels(const ImageSource& source, nvvkgltf::LoadedImageData& out)
                    outC == 2   ? VK_FORMAT_R8G8_UNORM :
                    source.srgb ? VK_FORMAT_R8G8B8A8_SRGB :
                                  VK_FORMAT_R8G8B8A8_UNORM;
+  const auto* in = reinterpret_cast<const char*>(source.pixels.data());
+  if(c == outC)  // two or four channels: as they are
+  {
+    out.mipData = {std::vector<char>(in, in + source.pixels.size())};
+    return true;
+  }
   std::vector<char> texelBytes(texels * size_t(outC) * size_t(bytes));
-  const auto*       in  = reinterpret_cast<const char*>(source.pixels.data());
   const char        one = char(0xFF);
   for(size_t t = 0; t < texels; t++)
     for(int k = 0; k < outC; k++)
@@ -677,7 +682,7 @@ ImageHandle VulkanGpuBackend::createImage(const ImageSource& source, ImageInfo& 
   nvvkgltf::LoadedImageData loaded;
   if(!decodeSource(source, loaded))
     return {};
-  return createFromDecoded(source, loaded, info);
+  return createFromDecoded(source, loaded, nvvkgltf::imageMeanLuminance(loaded), nvvkgltf::imageSlopeVariance(loaded), info);
 }
 
 void VulkanGpuBackend::dropPrefetch(const std::string& uri, bool srgb)
@@ -700,7 +705,7 @@ std::vector<GpuBackend::MadeImage> VulkanGpuBackend::takeDecodes(uint64_t budget
   {
     MadeImage& m = made.emplace_back();
     m.ticket     = done.ticket;
-    m.image      = done.ok ? createFromDecoded(done.source.source, done.loaded, m.info) : ImageHandle{};
+    m.image      = done.ok ? createFromDecoded(done.source.source, done.loaded, done.meanLuminance, done.slopeVariance, m.info) : ImageHandle{};
     done.loaded  = {};  // its texels uploaded: let them go before the next
     m_prefetchTaken += done.prefetched;
   }
@@ -718,7 +723,8 @@ bool VulkanGpuBackend::decodesReady() const
 }
 
 // An image from its decoded mips, uploaded through the frame uploader in the command buffer
-ImageHandle VulkanGpuBackend::createFromDecoded(const ImageSource& source, nvvkgltf::LoadedImageData& loaded, ImageInfo& info)
+ImageHandle VulkanGpuBackend::createFromDecoded(const ImageSource& source, nvvkgltf::LoadedImageData& loaded, float meanLuminance,
+                                                float slopeVariance, ImageInfo& info)
 {
   if(loaded.mipData.empty())
     return {};
@@ -737,8 +743,8 @@ ImageHandle VulkanGpuBackend::createFromDecoded(const ImageSource& source, nvvkg
   info.width         = loaded.size.width;
   info.height        = loaded.size.height;
   info.twoChannel    = nvvkgltf::formatColorComponentCount(loaded.format) == 2;
-  info.meanLuminance = nvvkgltf::imageMeanLuminance(loaded);
-  info.slopeVariance = nvvkgltf::imageSlopeVariance(loaded);
+  info.meanLuminance = meanLuminance;
+  info.slopeVariance = slopeVariance;
   VmaAllocationInfo allocation{};
   vmaGetAllocationInfo(*m_info.alloc, image.allocation, &allocation);
   info.bytes        = allocation.size;
@@ -818,15 +824,20 @@ void VulkanGpuBackend::destroyImage(ImageHandle handle)
   // The invariant a frame's reads rest on: no texture slot shows an image that is gone. A slot is
   // rewritten before its image is retired, so one still showing it here names the path that didn't;
   // the slot gets the missing image, a valid read in place of a fault once the driver takes the pages.
-  for(auto& [slot, shown] : m_slotImage)
-    if(shown == handle.value)
+  if(m_imageSlots.erase(handle.value))
+    for(auto s = m_slotImage.begin(); s != m_slotImage.end();)
     {
+      if(s->second != handle.value)
+      {
+        ++s;
+        continue;
+      }
       const auto made = m_imageMade.find(handle.value);
       LOGE("[gpu] An image (%s, %ux%u) is destroyed while texture slot %u still shows it: whatever rewrote the slot missed it; it shows the missing image now\n",
            made != m_imageMade.end() ? made->second.name.c_str() : "unnamed",
-           made != m_imageMade.end() ? made->second.info.width : 0, made != m_imageMade.end() ? made->second.info.height : 0, slot);
-      writeImageDescriptor(slot, m_missing);
-      shown = 0;
+           made != m_imageMade.end() ? made->second.info.width : 0, made != m_imageMade.end() ? made->second.info.height : 0, s->first);
+      writeImageDescriptor(s->first, m_missing);
+      s = m_slotImage.erase(s);
     }
   m_memory.untrack(kMemImages, it->second.allocation);
   m_info.alloc->destroyImage(it->second);
@@ -873,7 +884,18 @@ void VulkanGpuBackend::writeTextureDescriptor(uint32_t slot, ImageHandle handle)
   if(handle && it == m_images.end())
     LOGE("VulkanGpuBackend::writeTextureDescriptor: slot %u given a dead or unknown image\n", slot);
   writeImageDescriptor(slot, it != m_images.end() ? it->second : slot == 0 ? m_white : m_missing);
-  m_slotImage[slot] = it != m_images.end() ? handle.value : 0;
+  const uint64_t shown = it != m_images.end() ? handle.value : 0;
+  if(const auto was = m_slotImage.find(slot); was != m_slotImage.end())
+  {
+    if(const auto n = m_imageSlots.find(was->second); n != m_imageSlots.end() && --n->second == 0)
+      m_imageSlots.erase(n);
+    m_slotImage.erase(was);
+  }
+  if(shown)
+  {
+    m_slotImage[slot] = shown;
+    m_imageSlots[shown]++;
+  }
 }
 
 void VulkanGpuBackend::writeSamplerDescriptor(uint32_t slot, const GpuSamplerDesc& desc)
@@ -1030,22 +1052,41 @@ AccelHandle VulkanGpuBackend::buildMicromap(const MicromapInput& input)
     entry.usages.push_back(
         {.count = u.count, .subdivisionLevel = u.subdivisionLevel, .format = VkOpacityMicromapFormatKHR(u.format)});
 
+  // With no memory for a buffer, or none to stage its inputs, there is no micromap and the prim is drawn
+  // without one (linkMicromap). What was made goes once the frame is past it: a staged copy may write it.
+  const auto fail = [&](const char* what) {
+    LOGW("VulkanGpuBackend::buildMicromap: no memory for its %s; drawn without it\n", what);
+    retire([alloc = m_info.alloc, &memory = m_memory, e = entry]() mutable {
+      for(nvvk::Buffer* b : {&e.data, &e.triangles, &e.storage, &e.scratch})
+        if(b->buffer)
+        {
+          memory.untrack(b == &e.scratch ? kMemScratch : kMemMicromaps, b->allocation);
+          alloc->destroyBuffer(*b);
+        }
+    });
+    return AccelHandle{};
+  };
+
   // the data and triangle-array addresses must be multiples of 128
   // (VUID-vkCmdBuildAccelerationStructuresKHR-micromap-11552)
   constexpr VkDeviceSize kInputAlignment = 128;
   const auto inputBuffer = [&](nvvk::Buffer& buffer, std::span<const unsigned char> bytes, const char* name) {
-    NVVK_CHECK(m_info.alloc->createBuffer(buffer, std::max<VkDeviceSize>(bytes.size(), 4),
-                                          VK_BUFFER_USAGE_2_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
-                                              | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
-                                          VMA_MEMORY_USAGE_AUTO, {}, kInputAlignment));
+    if(m_info.alloc->createBuffer(buffer, std::max<VkDeviceSize>(bytes.size(), 4),
+                                  VK_BUFFER_USAGE_2_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+                                      | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
+                                  VMA_MEMORY_USAGE_AUTO, {}, kInputAlignment)
+       != VK_SUCCESS)
+    {
+      buffer = {};
+      return false;
+    }
     nvvk::DebugUtil::getInstance().setObjectName(buffer.buffer, name);
     m_memory.track(kMemMicromaps, buffer.allocation);
-    if(!bytes.empty())
-      NVVK_CHECK(appendBufferChunked(*m_info.staging, buffer, 0, bytes));
+    m_uploadsPending = true;
+    return bytes.empty() || appendBufferChunked(*m_info.staging, buffer, 0, bytes) == VK_SUCCESS;
   };
-  inputBuffer(entry.data, input.data, "micromap data");
-  inputBuffer(entry.triangles, input.triangles, "micromap triangles");
-  m_uploadsPending = true;
+  if(!inputBuffer(entry.data, input.data, "micromap data") || !inputBuffer(entry.triangles, input.triangles, "micromap triangles"))
+    return fail("inputs");
 
   // the sizes from the usage histogram and the stride; the addresses are filled when it is recorded
   VkAccelerationStructureGeometryMicromapDataKHR micromapData{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_MICROMAP_DATA_KHR};
@@ -1067,14 +1108,24 @@ AccelHandle VulkanGpuBackend::buildMicromap(const MicromapInput& input)
                                           nullptr, &sizes);
 
   // its address a multiple of 256 (VUID-VkAccelerationStructureCreateInfo2KHR-addressRange-11605)
-  NVVK_CHECK(m_info.alloc->createBuffer(entry.storage, std::max<VkDeviceSize>(sizes.accelerationStructureSize, 4),
-                                        VK_BUFFER_USAGE_2_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
-                                        VMA_MEMORY_USAGE_AUTO, {}, 256));
+  if(m_info.alloc->createBuffer(entry.storage, std::max<VkDeviceSize>(sizes.accelerationStructureSize, 4),
+                                VK_BUFFER_USAGE_2_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
+                                VMA_MEMORY_USAGE_AUTO, {}, 256)
+     != VK_SUCCESS)
+  {
+    entry.storage = {};
+    return fail("storage");
+  }
   NVVK_DBG_NAME(entry.storage.buffer);
   m_memory.track(kMemMicromaps, entry.storage.allocation);
-  NVVK_CHECK(m_info.alloc->createBuffer(entry.scratch, std::max<VkDeviceSize>(sizes.buildScratchSize, 4),
-                                        VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
-                                        VMA_MEMORY_USAGE_AUTO, {}, m_scratchAlignment));
+  if(m_info.alloc->createBuffer(entry.scratch, std::max<VkDeviceSize>(sizes.buildScratchSize, 4),
+                                VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT,
+                                VMA_MEMORY_USAGE_AUTO, {}, m_scratchAlignment)
+     != VK_SUCCESS)
+  {
+    entry.scratch = {};
+    return fail("build scratch");
+  }
   NVVK_DBG_NAME(entry.scratch.buffer);
   m_memory.track(kMemScratch, entry.scratch.allocation);
   // a micromap is created only through the address-range entry point
@@ -1082,7 +1133,8 @@ AccelHandle VulkanGpuBackend::buildMicromap(const MicromapInput& input)
   VkAccelerationStructureCreateInfo2KHR create{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_2_KHR};
   create.addressRange = {entry.storage.address, sizes.accelerationStructureSize};
   create.type         = VK_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_KHR;
-  NVVK_CHECK(vkCreateAccelerationStructure2KHR(m_info.device, &create, nullptr, &entry.micromap));
+  if(vkCreateAccelerationStructure2KHR(m_info.device, &create, nullptr, &entry.micromap) != VK_SUCCESS)
+    return fail("micromap object");
   NVVK_DBG_NAME(entry.micromap);
 
   const AccelHandle handle{m_nextHandle++};
@@ -1255,18 +1307,24 @@ void VulkanGpuBackend::flushBuilds()
                                   VMA_MEMORY_USAGE_AUTO, {}, m_scratchAlignment)
        != VK_SUCCESS)
     {
-      // nothing queued can be built: a BLAS never built must not reach a TLAS, and a refit keeps what it has
+      // nothing queued can be built: a BLAS never built must not reach a TLAS, and a refit keeps what it has.
+      // A build dropped gives back its compaction query, whose size is never written: compactBlas then
+      // says it stays as built, where it would say its frame is in flight for ever
       LOGW("VulkanGpuBackend::flushBuilds: no memory for %llu bytes of build scratch\n", (unsigned long long)plan.size);
       m_blasScratch      = {};
       m_allocationFailed = true;
       for(const QueuedBuild& q : m_queued)
         if(!q.update)
-          if(BlasEntry& blas = m_blases.at(q.blas); blas.accel.accel)
+        {
+          BlasEntry& blas = m_blases.at(q.blas);
+          releaseCompactQuery(blas);
+          if(blas.accel.accel)
           {
             m_memory.untrack(kMemBlas, blas.accel.buffer.allocation);
             m_info.alloc->destroyAcceleration(blas.accel);
             blas.accel = {};
           }
+        }
       m_queued.clear();
       return;
     }
@@ -1329,12 +1387,15 @@ AccelHandle VulkanGpuBackend::createTlas(uint32_t capacity)
   entry.data.asType = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
   entry.data.addGeometry(entry.data.makeInstanceGeometry(entry.capacity, entry.instances.address));
   const VkAccelerationStructureBuildSizesInfoKHR sizes =
+      // (ALLOW_UPDATE though it is only ever rebuilt: without it the driver keeps the instances' transforms
+      // otherwise, and every transformed instance's hits move by a rounding, so the golden gate's stills
+      // all change; the build scratch is all it needs)
       entry.data.finalizeGeometry(m_info.device, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR
                                                      | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
   NVVK_CHECK(m_info.alloc->createAcceleration(entry.accel, entry.data.makeCreateInfo()));
   NVVK_DBG_NAME(entry.accel.accel);
   m_memory.track(kMemTlas, entry.accel.buffer.allocation);
-  NVVK_CHECK(m_info.alloc->createBuffer(entry.scratch, std::max(sizes.buildScratchSize, sizes.updateScratchSize),
+  NVVK_CHECK(m_info.alloc->createBuffer(entry.scratch, sizes.buildScratchSize,
                                         VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT,
                                         VMA_MEMORY_USAGE_AUTO, {}, m_scratchAlignment));
   NVVK_DBG_NAME(entry.scratch.buffer);
@@ -1344,7 +1405,7 @@ AccelHandle VulkanGpuBackend::createTlas(uint32_t capacity)
   return handle;
 }
 
-void VulkanGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow)
+void VulkanGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow> rows, std::span<const uint32_t> changed, bool everyRow)
 {
   if(!recording("buildTlas"))
     return;
@@ -1355,6 +1416,7 @@ void VulkanGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow
     return;
   }
   TlasEntry& tlas = it->second;
+  everyRow        = everyRow || tlas.rowsLost;  // the instance buffer holds none of the last rows
   flushBuilds();
   flushUploads();
   // an instancing entity's copies come one after another, on one BLAS: looked up once for the run
@@ -1381,10 +1443,13 @@ void VulkanGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow
   // the rows written, a run of consecutive ones an upload: every one, or the changed (the instance
   // buffer keeps the rest as the last build wrote them)
   std::vector<VkAccelerationStructureInstanceKHR> instances;
-  const auto upload = [&](size_t first) {
-    if(!instances.empty())
-      NVVK_CHECK(appendBufferChunked(*m_info.staging, tlas.instances, first * sizeof(VkAccelerationStructureInstanceKHR),
-                                     std::span<const VkAccelerationStructureInstanceKHR>(instances)));
+  bool                                            lost   = false;  // no system memory to stage them
+  const auto                                      upload = [&](size_t first) {
+    if(!instances.empty() && !lost
+       && appendBufferChunked(*m_info.staging, tlas.instances, first * sizeof(VkAccelerationStructureInstanceKHR),
+                              std::span<const VkAccelerationStructureInstanceKHR>(instances))
+              != VK_SUCCESS)
+      lost = true;
     instances.clear();
   };
   if(everyRow)
@@ -1415,6 +1480,12 @@ void VulkanGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow
     }
     upload(first);
   }
+  // With rows left unstaged, the buffer holds some of the old rows, which may point at BLASes the
+  // residency lets go of now: the TLAS is built empty this frame (it draws nothing) and every row is
+  // written the next time
+  if(lost)
+    LOGW("VulkanGpuBackend::buildTlas: no system memory to stage %zu rows; built empty for a frame\n", rows.size());
+  tlas.rowsLost    = lost;
   m_uploadsPending = true;
   flushUploads();
   // (the span timed is the build alone: the rows' upload, and what came before, are outside it)
@@ -1422,11 +1493,8 @@ void VulkanGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow
   // (the destination masks nvvk's helper takes)
   nvvk::accelerationStructureBarrier(m_cmd, VK_ACCESS_TRANSFER_WRITE_BIT,
                                      VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_SHADER_READ_BIT);
-  tlas.data.asBuildRangeInfo[0].primitiveCount = uint32_t(rows.size());
-  if(mode == TlasMode::eUpdate)
-    tlas.data.cmdUpdateAccelerationStructure(m_cmd, tlas.accel.accel, tlas.scratch.address);
-  else
-    tlas.data.cmdBuildAccelerationStructure(m_cmd, tlas.accel.accel, tlas.scratch.address);
+  tlas.data.asBuildRangeInfo[0].primitiveCount = lost ? 0u : uint32_t(rows.size());
+  tlas.data.cmdBuildAccelerationStructure(m_cmd, tlas.accel.accel, tlas.scratch.address);
   if(timed)
     endSpan(BuildSpan::eTlas);
 }
@@ -1583,14 +1651,12 @@ void RetainedSceneVk::clear()
   m_hasScene = false;
   m_lights.clear();
   m_bounds = {};
-  m_transformsRevision++;
 }
 
 void RetainedSceneVk::afterSync(RetainedScene& scene, const SyncResult& result)
 {
   if(!result.changed)
     return;
-  m_transformsRevision++;
   m_lights.clear();
   for(const LightItem& item : scene.lightItems())
   {
@@ -1627,48 +1693,6 @@ VkAccelerationStructureKHR RetainedSceneVk::tlas() const
 uint32_t RetainedSceneVk::renderNodeCapacity() const
 {
   return m_hasScene ? m_residency.instanceCapacity() : 0;
-}
-
-const std::vector<uint32_t>& RetainedSceneVk::drawList(DrawList list) const
-{
-  switch(list)
-  {
-    case DrawList::eSolid:
-      return m_residency.drawList(Residency::DrawList::eSolid);
-    case DrawList::eSolidDoubleSided:
-      return m_residency.drawList(Residency::DrawList::eSolidDoubleSided);
-    case DrawList::eBlend:
-      return m_residency.drawList(Residency::DrawList::eBlend);
-    case DrawList::eAll:
-      break;
-  }
-  return m_residency.drawList(Residency::DrawList::eAll);
-}
-
-SceneGpuView::DrawRecord RetainedSceneVk::drawRecord(uint32_t renderNode) const
-{
-  const Residency::Instance* inst = m_residency.instance(renderNode);
-  const Residency::Prim*     prim = inst ? m_residency.prim(inst->prim) : nullptr;
-  const Residency::MeshGpu*  mesh = prim ? m_residency.meshGpu(prim->mesh) : nullptr;
-  if(!mesh)
-    return {};
-  // a deformed prim draws its drawer's output, which the deform passes wrote (its row says so too)
-  const Residency::DrawerGpu* drawer = prim->drawer.isNone() ? nullptr : m_residency.drawer(prim->drawer, prim->mesh);
-  return {.vertexBuffer = m_gpu.vkBuffer(drawer ? drawer->positions : mesh->positions),
-          .indexBuffer  = m_gpu.vkBuffer(prim->indices),
-          .indexCount   = prim->indexCount,
-          .materialID   = int32_t(inst->materialSlot),
-          .renderPrimID = int32_t(inst->prim),
-          .visible      = inst->shown};
-}
-
-std::optional<glm::vec3> RetainedSceneVk::worldCentre(uint32_t renderNode) const
-{
-  const Residency::Instance* inst = m_residency.instance(renderNode);
-  const Residency::Prim*     prim = inst ? m_residency.prim(inst->prim) : nullptr;
-  if(!prim)
-    return std::nullopt;
-  return glm::vec3(inst->world * glm::vec4((prim->boundsMin + prim->boundsMax) * 0.5f, 1.f));
 }
 
 SceneGpuView::MemoryStats RetainedSceneVk::memoryStats() const

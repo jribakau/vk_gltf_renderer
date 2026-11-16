@@ -265,7 +265,7 @@ public:
     // the inputs it last ran with; empty: it runs at the next sync
     std::vector<float>     lastWeights;
     std::vector<glm::mat4> lastPose;
-    std::vector<glm::mat4> lastJoints;  // what the skin ran with
+    std::vector<glm::mat4> lastJoints;  // what the skin ran with (the residency oracle reads it)
     bool                   ran = false;
     uint64_t               writtenAt = 0;  // the frame its passes last ran
   };
@@ -296,14 +296,6 @@ public:
     std::vector<uint32_t>             cageSupport;
     float                             cagePad = 0;
     std::weak_ptr<const RefineTables> supportOf;
-  };
-  // The raster lists (SceneGpuView::DrawList)
-  enum class DrawList
-  {
-    eSolid,
-    eSolidDoubleSided,
-    eBlend,
-    eAll,
   };
   // An opacity micromap built, and the prims that link it
   struct MicromapGpu
@@ -417,7 +409,8 @@ public:
   // The meshes that could settle, in the order they would, and what each would give back: what only
   // remakes it, and what its BVHs lose built again static and compacted (from a compacted refittable
   // copy, only what is left between the two)
-  std::vector<std::pair<MeshId, uint64_t>> settleableMeshes() const;
+  // (`ledger`, here and below: one this caller made already, or none and one is made)
+  std::vector<std::pair<MeshId, uint64_t>> settleableMeshes(const MemoryLedger* ledger = nullptr) const;
   // How many are settled now
   size_t settledCount() const;
   // What is being edited (the selected figure): woken as it becomes so, ready for the edit, and the last to
@@ -466,19 +459,6 @@ public:
   uint32_t    instanceCapacity() const { return m_instanceCapacity; }
   uint32_t    instanceHighWater() const { return uint32_t(m_instances.size()); }
   uint32_t    primCapacity() const { return m_primCapacity; }
-  // live instances by how their material draws, in slot order; hidden ones included (a draw skips them).
-  // Made when asked for: nothing of a sync reads them.
-  const std::vector<uint32_t>& drawList(DrawList list) const
-  {
-    buildDrawLists();
-    return m_drawLists[size_t(list)];
-  }
-  uint64_t drawListsRevision() const { return m_drawListsRevision; }
-  bool     hasTransmission() const
-  {
-    buildDrawLists();
-    return m_hasTransmission;
-  }
   // What the last sync looked at: the entities whose draws it went through, the instances it made or
   // compared with what they should be, and the TLAS rows it worked out again. A sync that moves a few
   // copies of an entity among a hundred thousand counts those few.
@@ -487,6 +467,7 @@ public:
     uint32_t entities  = 0;
     uint32_t instances = 0;
     uint32_t tlasRows  = 0;
+    uint32_t emissiveBuilds = 0;  // the emissive table built again
   };
   const SyncWork& lastSyncWork() const { return m_work; }
   // The world-space bounds of what is shown; min over max for nothing. Kept an entity at a time: one
@@ -675,8 +656,10 @@ private:
   // The instances of `entities`, in document order, brought to what each draws now, less the meshes
   // parked, arriving and in `without`; those of `gone` let go of
   void syncStructure(RetainedScene& scene, std::span<const EntityId> entities, std::span<const EntityId> gone, const std::set<MeshId>* without, SyncResult& result);
-  // what found no memory this sync parked; whether anything was (its instances go at the next syncStructure)
-  bool parkFailed(const RetainedScene& scene);
+  // what found no memory this sync parked, returned (its instances go at the next syncStructure)
+  std::set<MeshId> parkFailed(const RetainedScene& scene);
+  // the entities, in document order, whose mesh instance names one of `meshes`
+  static std::vector<EntityId> entitiesDrawing(const RetainedScene& scene, const std::set<MeshId>& meshes);
   void syncRows(RetainedScene& scene, const SceneChanges& changes, SyncResult& result);
   std::set<MeshId> syncVertices(RetainedScene& scene, const std::set<MeshId>& meshes, SyncResult& result);
   // the refined meshes' displacements brought up to their records; returns the meshes whose
@@ -698,7 +681,7 @@ private:
   void             copyPrevPositions(DrawerGpu& d);
   // the drawers written last sync and not this one: their rows name their positions, and the copies go
   void             settlePrevPositions();
-  void             ensureBase(const MeshRecord& record, MeshGpu& gpu);
+  void             ensureBase(const MeshRecord& record, MeshId id, MeshGpu& gpu);
 
   MeshGpu& acquireMesh(const RetainedScene& scene, MeshId id);
   // a submesh's prim: the mesh's own, or `drawer`'s when the entity draws it deformed
@@ -732,11 +715,12 @@ private:
     std::optional<TextureKey> key;
     uint32_t                  skip = 0;
   };
-  void residentFits(const RetainedScene& scene, bool onlyLowered, std::vector<ResidentImage>& residents, std::vector<ImageFit>& fits) const;
+  void residentFits(const RetainedScene& scene, bool onlyLowered, std::vector<ResidentImage>& residents, std::vector<ImageFit>& fits,
+                    const std::set<ImageKey>* favoured = nullptr, const std::set<ImageKey>* pinned = nullptr) const;
   // of the images, those whose materials are all marked Keep full
   std::set<ImageKey> pinnedImages(const RetainedScene& scene) const;
   // the meshes nothing shows, what each holds
-  std::vector<std::pair<MeshId, uint64_t>> hiddenMeshes() const;
+  std::vector<std::pair<MeshId, uint64_t>> hiddenMeshes(const MemoryLedger* ledger = nullptr) const;
   // A settled mesh made ready again; nothing is written, so nothing moves
   void wake(const RetainedScene& scene, MeshId id);
   // what changed since the last sync, on what is settled, or what became live
@@ -750,13 +734,13 @@ private:
   bool     placeSpan(uint32_t count, uint32_t& start);
   void     repackSpans();
   void     freeSpan(uint32_t start, uint32_t count);
-  void     buildDrawLists() const;
   void     syncLights(RetainedScene& scene);
   void     syncIesProfiles(const RetainedScene& scene);
   // the water table (scene_water.hpp) from every material slot's water
   void     syncWater(const RetainedScene& scene);
   void     syncEmissive(const RetainedScene& scene);
   bool     emits(const Instance& inst) const;
+  bool     slotEmits(uint32_t materialSlot) const;  // whatever the instance's shown state
   void     retireMesh(MeshId id);
   void     retireBuffer(BufferHandle buffer);
   // `why`: what let go of it, for the log should the last TLAS built still point at it once it is destroyed
@@ -813,6 +797,10 @@ private:
   GpuBackend&      m_gpu;
   ResidencyOptions m_options;
   std::set<MeshId> m_parked, m_failedMeshes, m_noticedParked, m_arriving;
+  std::set<MeshId> m_parkedDrawn;  // m_parked as the instances were last brought to it (syncStructure)
+  // a static mesh's previous positions, by the frame its last write was copied into them: let go of,
+  // and its prims' motion rows pointed at nothing again, once it has been quiet a while (as a drawer's)
+  std::map<MeshId, uint64_t> m_meshPrevSince;
   // of the meshes `entities` draw (in document order) that are not resident yet, those past a sync's worth
   void             holdBackArrivals(RetainedScene& scene, std::span<const EntityId> entities);
   // setItemDetail's, what has been asked and not reached the host, and what those asked will free
@@ -825,7 +813,7 @@ private:
     uint64_t                bytes = 0;
   };
   // In the order they go; how many at the start no ray reaches, and at the end are Keep full
-  std::vector<DetailStep> detailSteps(size_t& first, size_t& last) const;
+  std::vector<DetailStep> detailSteps(size_t& first, size_t& last, const MemoryLedger* ledger = nullptr) const;
   // The share of the scene's first hits on these; none when one of them hasn't been counted
   std::optional<double> hitShare(const std::vector<MaterialId>& materials) const;
   bool                  giveWayForHits(const RetainedScene& scene, uint64_t shortBy);
@@ -1012,6 +1000,9 @@ private:
   std::vector<std::string>                             m_notices;
   std::vector<std::string>                             m_userNotices;
   bool                                                 m_noticedLowered = false, m_noticedRefused = false;  // since the last clear()
+  // an instance drawn with an emitting material made, let go of, given another material, shown or
+  // hidden since the emissive table was last built: what other instances do leaves it as it is
+  bool                                                 m_emittersChanged = false;
   bool                                                 m_bitsChanged = false;  // a material's TLAS bits or raster lists
   bool                                                 m_tablesMoved = false;  // the material tables were made again
   std::vector<shaderio::GltfShadeMaterial>             m_shadeMaterials;       // the material table's rows
@@ -1036,16 +1027,6 @@ private:
   bool                                 m_descDirty           = false;  // a table moved or a count changed
   bool                                 m_emissiveStale       = false;  // see emissiveSettling()
   uint64_t                             m_emitterWriteFrame   = 0;      // the last frame that wrote one
-  // (made when read, buildDrawLists: stale from the sync that changed what they hold until then)
-  mutable std::array<std::vector<uint32_t>, 4> m_drawLists;
-  mutable bool                                 m_drawListsStale    = false;
-  uint64_t                                     m_drawListsRevision = 0;
-  mutable bool                                 m_hasTransmission   = false;
-  void                                         staleDrawLists()
-  {
-    m_drawListsStale = true;
-    m_drawListsRevision++;
-  }
 
   uint32_t     m_instanceCapacity = 0;
   uint32_t     m_primCapacity     = 0;

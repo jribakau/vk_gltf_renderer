@@ -66,6 +66,9 @@ public:
     bool                      ok         = false;
     bool                      prefetched = false;
     uint64_t                  bytes      = 0;  // of its levels
+    // the decoded image's statistics (imageMeanLuminance, imageSlopeVariance), worked out on the
+    // pool's thread rather than the one that uploads it; negative where unknown
+    float meanLuminance = -1.f, slopeVariance = -1.f;
   };
   // The decodes done, by ticket, until `budget` bytes of levels (the first whatever its size)
   std::vector<Done> take(uint64_t budget);

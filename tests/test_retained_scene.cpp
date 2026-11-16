@@ -466,3 +466,28 @@ TEST(RetainedScene, ChangesReportWhatTheResidencyHasToDo)
   EXPECT_TRUE(gone.transforms.empty());  // no handle to an entity that is gone
   EXPECT_EQ(scene.entityCount(), 0u);
 }
+
+// A refined mesh's bounds are its cage's, which its morphs move while its drawn positions stay as loaded,
+// widened by its offsets (a strand ribbon's width): ground and framing follow a shape dial (audit 11-16)
+TEST(RetainedScene, ARefinedMeshsBoundsFollowItsCage)
+{
+  rs::MeshRecord m;
+  m.cage      = {{0, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  m.positions = m.cage;  // as loaded
+  m.indices   = {0, 1, 2};
+  m.submeshes = {{0, 3, 0, 0}};
+  static const std::vector<glm::vec3> kOffsets(3, glm::vec3(0.1f, 0, 0));
+  auto                                t = std::make_shared<rs::RefineTables>();
+  t->cageCount                          = 3;
+  t->offsets                            = kOffsets;
+  m.refine                              = t;
+  for(glm::vec3& p : m.cage)
+    p.y += 2.f;  // a dial moved the cage up
+  const std::array<glm::vec3, 2> b = m.bounds();
+  EXPECT_NEAR(b[0].y, 2.f - 0.1f, 1e-6f);
+  EXPECT_NEAR(b[1].y, 3.f + 0.1f, 1e-6f);
+  EXPECT_NEAR(b[1].x, 0.1f, 1e-6f);
+
+  m.refine.reset();  // a mesh drawn as it is: its positions
+  EXPECT_NEAR(m.bounds()[1].y, 1.f, 1e-6f);
+}

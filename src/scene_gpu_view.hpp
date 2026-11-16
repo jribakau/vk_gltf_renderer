@@ -55,29 +55,6 @@
 class SceneGpuView
 {
 public:
-  // The raster draw lists, by how the material draws
-  enum class DrawList
-  {
-    eSolid,
-    eSolidDoubleSided,
-    eBlend,
-    eAll,
-  };
-
-  // What one render node draws. The offsets are 0 while every stream has its own buffer; a draw
-  // binds them all the same, so sub-allocated streams change no raster code.
-  struct DrawRecord
-  {
-    VkBuffer     vertexBuffer = VK_NULL_HANDLE;  // positions
-    VkDeviceSize vertexOffset = 0;
-    VkBuffer     indexBuffer  = VK_NULL_HANDLE;  // uint32
-    VkDeviceSize indexOffset  = 0;
-    uint32_t     indexCount   = 0;
-    int32_t      materialID   = -1;
-    int32_t      renderPrimID = -1;
-    bool         visible      = false;
-  };
-
   // A light as the shadow fit picks one
   struct LightInfo
   {
@@ -105,18 +82,7 @@ public:
   // Render node ids are below this; 0 without a scene
   virtual uint32_t renderNodeCapacity() const = 0;
 
-  // The render nodes of a raster list; its membership changes with drawListsRevision()
-  virtual const std::vector<uint32_t>& drawList(DrawList list) const = 0;
-  virtual uint64_t                     drawListsRevision() const     = 0;
-  // Bumped when a world matrix may have moved or the scene graph changed
-  virtual uint64_t   transformsRevision() const            = 0;
-  virtual DrawRecord drawRecord(uint32_t renderNode) const = 0;
-  // A render node's primitive centre in world space, for sorting blended draws; none for an id
-  // that names no primitive
-  virtual std::optional<glm::vec3> worldCentre(uint32_t renderNode) const = 0;
-
   // Material features
-  virtual bool hasTransmission() const      = 0;
   virtual bool hasOpacityMicromaps() const  = 0;
   // Whether a variant that only adds scene features may be built off the frame (D15): the view
   // holds the material edits that need them and draws nothing the live variant lacks
@@ -144,18 +110,9 @@ public:
   VkDeviceAddress              sceneDesc() const override { return 0; }
   VkAccelerationStructureKHR   tlas() const override { return VK_NULL_HANDLE; }
   uint32_t                     renderNodeCapacity() const override { return 0; }
-  const std::vector<uint32_t>& drawList(DrawList) const override { return m_noDraws; }
-  uint64_t                     drawListsRevision() const override { return 0; }
-  uint64_t                     transformsRevision() const override { return 0; }
-  DrawRecord                   drawRecord(uint32_t) const override { return {}; }
-  std::optional<glm::vec3>     worldCentre(uint32_t) const override { return std::nullopt; }
-  bool                         hasTransmission() const override { return false; }
   bool                         hasOpacityMicromaps() const override { return false; }
   bool                         variantMayBuildOffFrame() const override { return false; }
   std::vector<LightInfo>       lights() const override { return {}; }
   nvutils::Bbox                bounds() const override { return {}; }
   MemoryStats                  memoryStats() const override { return {}; }
-
-private:
-  std::vector<uint32_t> m_noDraws;
 };

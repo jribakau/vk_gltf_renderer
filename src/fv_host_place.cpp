@@ -126,13 +126,7 @@ std::optional<FvHost::Impl::Bounds> FvHost::Impl::ownBounds(const Prop& p)
       addBox(b, glm::vec3(box.min[0], box.min[1], box.min[2]), glm::vec3(box.max[0], box.max[1], box.max[2]), s.toWorld);
   }
   if(isEmpty(b) && (p.figure || p.model) && renderer->feedsHostScene() && renderer->hostScene().entity(p.root))
-  {
-    rs::RetainedScene& scene = renderer->hostScene();
-    for(const rs::DrawItem& item : scene.drawItems())
-      if(item.shown && scene.isWithin(item.entity, p.root))
-        if(const std::array<glm::vec3, 2> mb = scene.mesh(item.mesh)->bounds(); mb[0].x <= mb[1].x)
-          addBox(b, mb[0], mb[1], item.world);
-  }
+    b = renderer->hostScene().shownBounds(p.root);
   if(isEmpty(b) && (p.kind == PropKind::eCamera || p.kind == PropKind::eLight))
     addPoint(b, glm::vec3(worldOf(p)[3]));
   return isEmpty(b) ? std::nullopt : std::optional<Bounds>(b);
@@ -578,11 +572,7 @@ std::optional<glm::dvec3> FvHost::Impl::selectionCentre()
       return glm::dvec3(((*b)[0] + (*b)[1]) * 0.5f);
   }
   rs::RetainedScene& scene = renderer->hostScene();
-  Bounds             b     = emptyBounds();
-  for(const rs::DrawItem& item : scene.drawItems())
-    if(item.shown && scene.isWithin(item.entity, selected))
-      if(const std::array<glm::vec3, 2> mb = scene.mesh(item.mesh)->bounds(); mb[0].x <= mb[1].x)
-        addBox(b, mb[0], mb[1], item.world);
+  const Bounds       b     = scene.shownBounds(selected);
   if(!isEmpty(b))
     return glm::dvec3((b[0] + b[1]) * 0.5f);
   return glm::dvec3(scene.world(selected)[3]);
@@ -596,11 +586,7 @@ std::optional<glm::vec3> FvHost::Impl::nodePivot(rs::EntityId entity)
   if(!movableNodeAt(entity).first)
     return std::nullopt;
   rs::RetainedScene& scene = renderer->hostScene();
-  Bounds             b     = emptyBounds();
-  for(const rs::DrawItem& item : scene.drawItems())
-    if(item.shown && scene.isWithin(item.entity, entity))
-      if(const std::array<glm::vec3, 2> mb = scene.mesh(item.mesh)->bounds(); mb[0].x <= mb[1].x)
-        addBox(b, mb[0], mb[1], item.world);
+  const Bounds       b     = scene.shownBounds(entity);
   if(isEmpty(b))
     return std::nullopt;
   // its own origin where the part is around it (a chair modelled about its feet)

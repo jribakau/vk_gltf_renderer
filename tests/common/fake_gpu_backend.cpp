@@ -590,7 +590,7 @@ AccelHandle FakeGpuBackend::createTlas(uint32_t capacity)
   return handle;
 }
 
-void FakeGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow)
+void FakeGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow> rows, std::span<const uint32_t> changed, bool everyRow)
 {
   auto it = m_tlases.find(handle.value);
   if(it == m_tlases.end())
@@ -606,13 +606,13 @@ void FakeGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow> 
       error("buildTlas: row " + std::to_string(i) + " references a dead or unknown BLAS, or one that found no memory");
   if(m_blasBeforeTlas)
     error("buildTlas: BLASes built or refitted with no build-to-build barrier before it");
-  if(t.builds + t.updates > 0 && t.builtFrame < m_frame && !m_frameFenced)
+  if(t.builds > 0 && t.builtFrame < m_frame && !m_frameFenced)
     error("buildTlas: rebuilds a TLAS a frame in flight may still trace, with no frame-to-write barrier before");
   // rows named as changed: the others must be the last build's (the device keeps them as written),
   // so a row no build has had is named
   if(!everyRow)
   {
-    if(t.builds + t.updates == 0 || rows.size() < t.rows.size())
+    if(t.builds == 0 || rows.size() < t.rows.size())
       error("buildTlas: changed rows only, with no build before or one of more rows");
     else
     {
@@ -644,19 +644,8 @@ void FakeGpuBackend::buildTlasRows(AccelHandle handle, std::span<const TlasRow> 
   }
   t.builtFrame = m_frame;
   m_buildsBeforeTrace = true;
-  if(mode == TlasMode::eUpdate)
-  {
-    const bool sameRows = t.builds + t.updates > 0 && rows.size() == t.rows.size()
-                          && std::equal(rows.begin(), rows.end(), t.rows.begin(),
-                                        [](const TlasRow& a, const TlasRow& b) { return a.blas == b.blas; });
-    if(!sameRows)
-      error("buildTlas: an update with other rows than the last build's");
-    t.updates++;
-  }
-  else
-    t.builds++;
+  t.builds++;
   t.rows.assign(rows.begin(), rows.end());
-  t.lastMode = mode;
 }
 
 void FakeGpuBackend::destroyAccel(AccelHandle handle)

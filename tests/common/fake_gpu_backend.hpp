@@ -124,9 +124,7 @@ public:
   {
     uint32_t             capacity = 0;
     std::vector<TlasRow> rows;
-    TlasMode             lastMode = TlasMode::eBuild;
     uint32_t             builds   = 0;
-    uint32_t             updates  = 0;
     uint64_t             builtFrame = 0;
   };
 
@@ -194,7 +192,7 @@ public:
   void        refitBlas(AccelHandle blas, const BlasInput& input) override;
   AccelHandle compactBlas(AccelHandle blas) override;
   AccelHandle createTlas(uint32_t capacity) override;
-  void        buildTlasRows(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow) override;
+  void        buildTlasRows(AccelHandle tlas, std::span<const TlasRow> rows, std::span<const uint32_t> changed, bool everyRow) override;
   void        destroyAccel(AccelHandle accel) override;
   // as a driver might: kBlasBytesPerTriangle a triangle as built, kCompactedBlasBytesPerTriangle compacted,
   // kCompactedRefittableBlasBytesPerTriangle compacted when built to be refitted too

@@ -136,7 +136,9 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const fv::mat::
   handleTexture(dstMat.normalTexture, srcMat.normalMap);
   handleTexture(dstMat.pbrBaseColorTexture, srcMat.baseColorMap);
   handleTexture(dstMat.pbrMetallicRoughnessTexture, srcMat.metallicRoughnessMap);
-  handleTexture(dstMat.occlusionTexture, srcMat.occlusionMap);
+  // No occlusion map: the path tracer traces occlusion, and sets the map's term to 1 before any BSDF
+  // reads it (gltf_pathtrace.slang), so a map here would be made resident for nothing; the eOcclusion
+  // debug view shows the strength alone. The material keeps it, for export.
 
   // a lobe left out packs as one at its defaults
 #if MAT_EXT_TRANSMISSION
@@ -159,7 +161,8 @@ void populateShaderMaterial(shaderio::GltfShadeMaterial& dstMat, const fv::mat::
   // Spec range is (0, +inf); clamp out-of-range values to FLT_MAX (= no attenuation) on the CPU
   // so shaders can skip the branch and rely on division by FLT_MAX giving ~0 extinction.
   dstMat.attenuationDistance = (volume.attenuationDistance > 0.0f) ? volume.attenuationDistance : FLT_MAX;
-  handleTexture(dstMat.thicknessTexture, volume.thicknessMap);
+  // (no thickness map: a surface is thin-walled or a volume by thicknessFactor alone, and no shader
+  // samples the map; the material keeps it, for export)
 #endif
 
 #if MAT_EXT_CLEARCOAT

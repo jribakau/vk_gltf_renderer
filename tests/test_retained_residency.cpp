@@ -536,13 +536,65 @@ TEST(RetainedResidency, ASyncLooksOnlyAtWhatChanged)
   EXPECT_EQ(residency.instanceHighWater(), 2u * 5041u);
   EXPECT_LE(residency.lastSyncWork().instances, 160u);  // made, and placed as what is new is
   EXPECT_LE(residency.lastSyncWork().tlasRows, 80u);
+  EXPECT_EQ(residency.lastSyncWork().emissiveBuilds, 0u) << "nothing that emits came";
   sync("rest: ");
   scene.destroyEntity(more);
   r = sync("gone again: ");
   EXPECT_TRUE(r.drawListChanged);
   EXPECT_EQ(residency.lastSyncWork().instances, 0u);
   EXPECT_LE(residency.lastSyncWork().tlasRows, 80u);
+  EXPECT_EQ(residency.lastSyncWork().emissiveBuilds, 0u) << "nothing that emits went";
   EXPECT_EQ(scene.bounds()[1].z, residency.shownBounds()[1].z);
+
+  // a mesh parked, and back: only what draws it is looked at, not the woods (audit 11-16)
+  const MeshId other = scene.addMesh(gridMesh(2, 0.f));
+  const EntityId lone = drawn(scene, "lone", other, {a});
+  sync("lone: ");
+  residency.setParked(other, true);
+  sync("parked: ");
+  EXPECT_EQ(residency.meshGpu(other), nullptr);
+  EXPECT_LE(residency.lastSyncWork().instances, 2u);
+  residency.setParked(other, false);
+  sync("back: ");
+  EXPECT_NE(residency.meshGpu(other), nullptr);
+  EXPECT_LE(residency.lastSyncWork().instances, 2u);
+  (void)lone;
+}
+
+// Instances that come, go, or are shown and hidden rebuild the emissive table only when they emit
+TEST(RetainedResidency, OnlyEmittersComingAndGoingRebuildTheEmissiveTable)
+{
+  RetainedScene scene;
+  const MeshId  grid = scene.addMesh(gridMesh(2, 0.f));
+  const EntityId dark = drawn(scene, "dark", grid, {material(scene, "dark")});
+  const EntityId glow = drawn(scene, "glow", grid, {emissive(scene, 2.f)});
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu);
+  residency.replace(scene);
+  const auto sync = [&](const char* when) {
+    gpu.beginFrame();
+    residency.sync(scene);
+    expectClean(scene, residency, gpu, when);
+    return residency.lastSyncWork().emissiveBuilds;
+  };
+  scene.setVisible(dark, false);
+  EXPECT_EQ(sync("dark hidden: "), 0u);
+  scene.setVisible(dark, true);
+  EXPECT_EQ(sync("dark shown: "), 0u);
+  drawn(scene, "more dark", grid, {material(scene, "more dark")});
+  EXPECT_EQ(sync("dark made: "), 0u);
+  scene.setVisible(glow, false);
+  EXPECT_EQ(sync("glow hidden: "), 1u);
+  EXPECT_EQ(residency.emissiveCount(), 0u);
+  scene.setVisible(glow, true);
+  EXPECT_EQ(sync("glow shown: "), 1u);
+  EXPECT_EQ(residency.emissiveCount(), 8u);
+  drawn(scene, "more glow", grid, {emissive(scene, 2.f)});
+  EXPECT_EQ(sync("glow made: "), 1u);
+  EXPECT_EQ(residency.emissiveCount(), 16u);
+  scene.destroyEntity(glow);
+  EXPECT_EQ(sync("glow gone: "), 1u);
+  EXPECT_EQ(residency.emissiveCount(), 8u);
 }
 
 // A copy hidden keeps its instance, as a hidden entity's does: its TLAS row loses its BLAS and no
@@ -889,6 +941,18 @@ TEST(RetainedResidency, AMeshThatFindsNoMemoryIsParkedAndTheRestDraws)
   expectClean(scene, residency, gpu, "back");
   drain(gpu);
   EXPECT_EQ(gpu.liveBytes(), before);
+
+  // a scene put in its place starts with nothing parked: the old scene's mesh ids are the next one's
+  residency.setParked(first, true);
+  gpu.beginFrame();
+  residency.sync(scene);
+  ASSERT_EQ(residency.meshGpu(first), nullptr);
+  gpu.beginFrame();
+  residency.replace(scene);
+  EXPECT_TRUE(residency.parked().empty());
+  EXPECT_EQ(residency.parkedForMemory(), 0u);
+  EXPECT_NE(residency.meshGpu(first), nullptr);
+  expectClean(scene, residency, gpu, "replaced");
 }
 
 // What is new comes a few at a time, so that their BVHs don't all go in one submission: each sync takes what fits,
@@ -2681,9 +2745,9 @@ MaterialId withTextures(RetainedScene& scene, std::shared_ptr<const TextureTable
 {
   MaterialRecord m;
   m.payload.name = name;
-  int* fields[]  = {&m.payload.baseColorMap.index, &m.payload.normalMap.index,
-                    &m.payload.emissiveMap.index, &m.payload.occlusionMap.index,
-                    &m.payload.metallicRoughnessMap.index};
+  // (maps the shader samples: an occlusion map isn't made resident)
+  int* fields[] = {&m.payload.baseColorMap.index, &m.payload.normalMap.index, &m.payload.emissiveMap.index,
+                   &m.payload.metallicRoughnessMap.index};
   for(int i = 0; i < count; i++)
     *fields[i] = 0;
   m.textures = std::move(table);
@@ -2727,8 +2791,8 @@ TEST(RetainedResidency, AMaterialEditWritesItsRowAndSpanOnly)
   EXPECT_EQ(materialUploads, want);
 
   // two more references: a longer span elsewhere; b's stays
-  payload.emissiveMap.index  = 0;
-  payload.occlusionMap.index = 0;
+  payload.emissiveMap.index          = 0;
+  payload.metallicRoughnessMap.index = 0;
   scene.setMaterial(a, payload);
   gpu.beginFrame();
   residency.sync(scene);
@@ -2836,9 +2900,8 @@ TEST(RetainedResidency, AnUnreadableTextureLeavesTheDefaultImage)
 }
 
 // An edit that swaps a texture frees the old slot only at its retire frame, rewritten to the default
-// image; one that makes the surface a cutout moves its instances to the blend list and its TLAS rows'
-// flags with them.
-TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
+// image; one that makes the surface a cutout moves its TLAS rows' flags with it.
+TEST(RetainedResidency, AMaterialEditMovesItsTexturesAndFlags)
 {
   RetainedScene    scene;
   const auto       table = textureTable(scene);
@@ -2847,9 +2910,7 @@ TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
   FakeGpuBackend gpu(2);
   Residency      residency(gpu);
   residency.replace(scene);
-  EXPECT_EQ(residency.drawList(Residency::DrawList::eSolid), std::vector<uint32_t>{0});
-  const int32_t  before   = residency.textureSlot((*table)[0].texture, {}, true);
-  const uint64_t revision = residency.drawListsRevision();
+  const int32_t before = residency.textureSlot((*table)[0].texture, {}, true);
 
   fv::mat::Material edited  = scene.material(mat)->payload;
   edited.baseColorMap.index = 1;  // the other sampler
@@ -2862,9 +2923,7 @@ TEST(RetainedResidency, AMaterialEditMovesItsTexturesListsAndFlags)
   expectClean(scene, residency, gpu);
   EXPECT_EQ(residency.textureSlot((*table)[0].texture, {}, true), -1);
   EXPECT_TRUE(gpu.textureDescriptors().at(uint32_t(before)));  // not yet: a frame in flight may sample it
-  EXPECT_EQ(residency.drawList(Residency::DrawList::eBlend), std::vector<uint32_t>{0});
-  EXPECT_TRUE(residency.drawList(Residency::DrawList::eSolid).empty());
-  EXPECT_GT(residency.drawListsRevision(), revision);
+  EXPECT_EQ(gpu.tlas(residency.tlas())->rows[0].flags & nvvkgltf::kInstanceForceOpaque, 0u);
   drain(gpu);
   EXPECT_FALSE(gpu.textureDescriptors().at(uint32_t(before)));
   for(const std::string& p : residencyLeaks(residency, gpu))

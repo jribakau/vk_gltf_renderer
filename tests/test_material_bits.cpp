@@ -18,7 +18,7 @@
  */
 
 // What a material decides for what draws with it (src/scene_material_bits.hpp): TLAS flags and
-// mask, and the raster lists.
+// mask.
 
 #include <gtest/gtest.h>
 
@@ -39,13 +39,11 @@ tinygltf::Material transmissive(double factor)
 
 }  // namespace
 
-TEST(MaterialBits, AnOpaqueSurfaceIsSolidAndSkipsAnyHit)
+TEST(MaterialBits, AnOpaqueSurfaceSkipsAnyHit)
 {
   const auto bits = materialBits(tinygltf::Material{});
   EXPECT_EQ(bits.instanceFlags, nvvkgltf::kInstanceForceOpaque);
   EXPECT_EQ(bits.instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_SHADOWS);
-  EXPECT_TRUE(bits.solid());
-  EXPECT_FALSE(bits.solidDoubleSided() || bits.blend());
 }
 
 TEST(MaterialBits, DoubleSidedTurnsCullingOff)
@@ -54,29 +52,20 @@ TEST(MaterialBits, DoubleSidedTurnsCullingOff)
   m.doubleSided   = true;
   const auto bits = materialBits(m);
   EXPECT_EQ(bits.instanceFlags, nvvkgltf::kInstanceForceOpaque | nvvkgltf::kInstanceCullDisable);
-  EXPECT_TRUE(bits.solidDoubleSided());
-  EXPECT_FALSE(bits.solid() || bits.blend());
 }
 
-TEST(MaterialBits, ACutoutIsSolidSoThePrepassTestsItAndTransmissionBlends)
+TEST(MaterialBits, ACutoutIsTestedAndGlassIsMetFromBehind)
 {
   tinygltf::Material mask;
   mask.alphaMode = "MASK";
-  // the prepass draws the solid lists and tests the cutoff: in the blend list its clear texels would be
-  // shaded and written opaque
-  EXPECT_TRUE(materialBits(mask).solid());
-  EXPECT_FALSE(materialBits(mask).blend());
-  // rays still stop to test it
+  // rays stop to test it
   EXPECT_EQ(materialBits(mask).instanceFlags, 0u);
   tinygltf::Material sided = mask;
   sided.doubleSided        = true;
-  EXPECT_TRUE(materialBits(sided).solidDoubleSided());
-  EXPECT_FALSE(materialBits(sided).solid() || materialBits(sided).blend());
+  EXPECT_EQ(materialBits(sided).instanceFlags, nvvkgltf::kInstanceCullDisable);
 
-  const auto glass = materialBits(transmissive(1.0));
-  EXPECT_TRUE(glass.blend() && glass.transmission);
-  EXPECT_EQ(glass.instanceFlags, nvvkgltf::kInstanceCullDisable);
-  EXPECT_FALSE(materialBits(transmissive(0.0)).transmission);
+  EXPECT_EQ(materialBits(transmissive(1.0)).instanceFlags, nvvkgltf::kInstanceCullDisable);
+  EXPECT_EQ(materialBits(transmissive(0.0)).instanceFlags, nvvkgltf::kInstanceForceOpaque);
 }
 
 TEST(MaterialBits, AWalkThroughSurfaceLeavesTheWalkMask)
@@ -186,4 +175,17 @@ TEST(MaterialBits, ASurfaceNoRayKeepsLeavesEveryRay)
   tinygltf::Material ghost = transparent("BLEND", 0.0);  // a ghost light: emits, never seen
   ghost.emissiveFactor     = {1.0, 1.0, 1.0};
   EXPECT_EQ(materialBits(ghost).instanceMask, INSTANCE_MASK_WALK | INSTANCE_MASK_OTHER | INSTANCE_MASK_CAMERA | INSTANCE_MASK_SHADOWS);
+}
+
+TEST(MaterialBits, EveryColourMapLowerAsksForAsSrgbIsDecodedAsSrgb)
+{
+  fv::mat::Material m;
+  m.baseColorMap.index = 0;
+  m.flakes             = fv::mat::Flakes{};
+  m.flakes->colorMap.index  = 1;  // Iray Uber's flake colour: lower() asks for it as sRGB
+  m.flakes->weightMap.index = 2;  // a weight, linear
+  const std::set<int> srgb = nvvkgltf::srgbTextures(m);
+  EXPECT_TRUE(srgb.contains(0));
+  EXPECT_TRUE(srgb.contains(1));
+  EXPECT_FALSE(srgb.contains(2));
 }

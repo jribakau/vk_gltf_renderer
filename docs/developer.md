@@ -121,7 +121,7 @@ src/
 ├── scene_residency.cpp/hpp     # rs::Residency: a RetainedScene kept resident through rs::GpuBackend,
 │                               #   synced once a frame (slots with holes, capacity tables, BLAS per
 │                               #   prim, the TLAS); Vulkan-free, held to tests/common/residency_oracle.*
-├── scene_material_bits.hpp     # A material's TLAS flags and mask, raster lists and sRGB textures
+├── scene_material_bits.hpp     # A material's TLAS flags and mask, and its sRGB textures
 ├── scene_gpu_tables.cpp/hpp    # Lights as the shaders read them; the emissive triangles' alias table
 ├── scene_water.cpp/hpp         # FV water's table: per material slot a grid over the UVs its domes reach
 ├── scene_gpu_backend.hpp       # rs::GpuBackend: all the retained residency layer will call on the GPU,

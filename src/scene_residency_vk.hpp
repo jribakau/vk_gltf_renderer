@@ -169,7 +169,7 @@ public:
   // not yet: compaction needs the built size read back a frame later (P7); returns none
   AccelHandle compactBlas(AccelHandle blas) override;
   AccelHandle createTlas(uint32_t capacity) override;
-  void        buildTlasRows(AccelHandle tlas, std::span<const TlasRow> rows, TlasMode mode, std::span<const uint32_t> changed, bool everyRow) override;
+  void        buildTlasRows(AccelHandle tlas, std::span<const TlasRow> rows, std::span<const uint32_t> changed, bool everyRow) override;
   void        destroyAccel(AccelHandle accel) override;
   uint64_t    accelBytes(AccelHandle accel) const override;
   uint64_t    buildScratchBytes() const override { return m_blasScratch.bufferSize; }
@@ -218,6 +218,7 @@ private:
     nvvk::AccelerationStructureBuildData data;
     nvvk::Buffer                         instances, scratch;
     uint32_t                             capacity = 0;
+    bool rowsLost = false;  // the last build found no memory to stage its rows: it was built empty
   };
   struct QueuedBuild
   {
@@ -242,7 +243,8 @@ private:
   void                                    checkInput(const BlasInput& input, const char* op) const;
   nvvk::AccelerationStructureGeometryInfo geometryOf(const BlasInput& input, const void* micromap) const;
   void                                    writeImageDescriptor(uint32_t slot, const nvvk::Image& image);
-  ImageHandle createFromDecoded(const ImageSource& source, nvvkgltf::LoadedImageData& loaded, ImageInfo& info);
+  // `meanLuminance` and `slopeVariance`: the image's statistics, worked out where it was decoded
+  ImageHandle createFromDecoded(const ImageSource& source, nvvkgltf::LoadedImageData& loaded, float meanLuminance, float slopeVariance, ImageInfo& info);
   void                                    ensureDefaults();
   bool                                    beginSpan();
   void                                    endSpan(BuildSpan span);
@@ -273,7 +275,10 @@ private:
     ImageInfo          info;
   };
   std::unordered_map<uint64_t, ImageMade>   m_imageMade;
-  std::unordered_map<uint32_t, uint64_t>    m_slotImage;  // what each texture slot shows (0: a default), to check at destroyImage
+  // what each texture slot shows that isn't a default, and how many slots show each image: to check at
+  // destroyImage, which looks through the slots only when that count says one still shows it
+  std::unordered_map<uint32_t, uint64_t>    m_slotImage;
+  std::unordered_map<uint64_t, uint32_t>    m_imageSlots;
   nvvk::Buffer                              m_blasScratch;
   uint64_t                                  m_blasScratchUsed = 0;  // the last frame that built with it
   std::unordered_map<uint32_t, VkSampler>   m_samplers;  // by sampler slot
@@ -370,12 +375,6 @@ public:
   VkDeviceAddress              sceneDesc() const override;
   VkAccelerationStructureKHR   tlas() const override;
   uint32_t                     renderNodeCapacity() const override;
-  const std::vector<uint32_t>& drawList(DrawList list) const override;
-  uint64_t                     drawListsRevision() const override { return m_residency.drawListsRevision(); }
-  uint64_t                     transformsRevision() const override { return m_transformsRevision; }
-  DrawRecord                   drawRecord(uint32_t renderNode) const override;
-  std::optional<glm::vec3>     worldCentre(uint32_t renderNode) const override;
-  bool                         hasTransmission() const override { return m_residency.hasTransmission(); }
   bool                         hasOpacityMicromaps() const override { return m_residency.hasOpacityMicromaps(); }
   bool variantMayBuildOffFrame() const override { return !m_residency.drawsBeyondShaderFeatures(); }
   // whether the scene it was imported from has a clip that plays (its clips are evaluated there)
@@ -394,7 +393,6 @@ private:
   VulkanGpuBackend       m_gpu;
   Residency              m_residency;
   bool                   m_hasScene           = false;
-  uint64_t               m_transformsRevision = 0;
   std::vector<LightInfo> m_lights;
   nvutils::Bbox          m_bounds;
 };

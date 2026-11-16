@@ -248,16 +248,17 @@ TEST(MaterialCache, EveryFieldOfAMaterialReachesItsRow)
   EXPECT_EQ(row.nrMask, glm::vec4(0.1f, 0.2f, 0.3f, 0.4f));
   EXPECT_EQ(row.unlit, 1);
 
-  // each map's info is the one its row names, by the texture it was given
-  ASSERT_EQ(infos.size(), 30u);
+  // each map's info is the one its row names, by the texture it was given; the occlusion and thickness
+  // maps are none, as nothing samples them (audit 11-16)
+  ASSERT_EQ(infos.size(), 28u);
   const auto textureOf = [&](uint16_t at) { return infos[at].index; };
   EXPECT_EQ(textureOf(row.emissiveTexture), 1);
   EXPECT_EQ(textureOf(row.normalTexture), 2);
   EXPECT_EQ(textureOf(row.pbrBaseColorTexture), 3);
   EXPECT_EQ(textureOf(row.pbrMetallicRoughnessTexture), 4);
-  EXPECT_EQ(textureOf(row.occlusionTexture), 5);
+  EXPECT_EQ(row.occlusionTexture, 0);
   EXPECT_EQ(textureOf(row.transmissionTexture), 6);
-  EXPECT_EQ(textureOf(row.thicknessTexture), 7);
+  EXPECT_EQ(row.thicknessTexture, 0);
   EXPECT_EQ(textureOf(row.clearcoatRoughnessTexture), 8);
   EXPECT_EQ(textureOf(row.clearcoatTexture), 9);
   EXPECT_EQ(textureOf(row.clearcoatNormalTexture), 10);
@@ -339,8 +340,8 @@ TEST(MaterialCache, BuildResolvesSamplerIndexFromSlots)
 TEST(MaterialCache, ATexturesCookedMipsReachItsInfo)
 {
   tinygltf::Material mat;
-  mat.normalTexture.index    = 0;
-  mat.occlusionTexture.index = 1;
+  mat.normalTexture.index                       = 0;
+  mat.pbrMetallicRoughness.baseColorTexture.index = 1;
   nvvkgltf::TextureSlotTable slots;
   slots.cookedMips = {0, 1};
   std::vector<shaderio::GltfTextureInfo> infos(1);
@@ -349,7 +350,7 @@ TEST(MaterialCache, ATexturesCookedMipsReachItsInfo)
     return (infos.at(slot).flags & static_cast<uint8_t>(shaderio::TextureInfoFlagBits::eTexInfoCookedMips)) != 0;
   };
   EXPECT_FALSE(flagged(uint16_t(row.normalTexture)));
-  EXPECT_TRUE(flagged(uint16_t(row.occlusionTexture)));
+  EXPECT_TRUE(flagged(uint16_t(row.pbrBaseColorTexture)));
 }
 
 TEST(MaterialCache, UpdateMaterialInPlace)

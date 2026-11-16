@@ -39,10 +39,23 @@ glm::mat4 Transform::local() const
 std::array<glm::vec3, 2> MeshRecord::bounds() const
 {
   std::array<glm::vec3, 2> b{glm::vec3(std::numeric_limits<float>::max()), glm::vec3(std::numeric_limits<float>::lowest())};
-  for(const glm::vec3& p : thinVertices ? cage : positions)
+  // A refined mesh's surface is made from its cage, which its morphs move while its positions stay as
+  // loaded (or there are none): the cage's box holds the surface, widened by as far as an offset or an
+  // HD edit moves a vertex from it (the residency's fitBounds)
+  const bool fromCage = refine && !cage.empty();
+  for(const glm::vec3& p : fromCage ? cage : positions)
   {
     b[0] = glm::min(b[0], p);
     b[1] = glm::max(b[1], p);
+  }
+  if(fromCage && b[0].x <= b[1].x)
+  {
+    float pad = hd ? hd->reach : 0.f;
+    float far = 0.f;
+    for(const glm::vec3& o : refine->offsets)
+      far = std::max(far, glm::length(o));
+    b[0] -= glm::vec3(pad + far);
+    b[1] += glm::vec3(pad + far);
   }
   return b;
 }
@@ -878,61 +891,72 @@ void RetainedScene::unlink(EntityId id)
   e.parent = {};
 }
 
-void RetainedScene::markTransformDirty(EntityId id)
+// The entity and its subtree into the change window's set, down to what an earlier call this window
+// put there (a stamp, not the set: moveCopies puts an entity there without its children). A pose frame
+// marks every bone: each subtree is walked once, not once a bone above it.
+void RetainedScene::markDirty(EntityId id, std::set<EntityId>& into, uint64_t Derived::*marked)
 {
   m_derived[id.index].dirty = true;
-  m_anyDirty                = true;
+  m_dirtyTops.push_back(id);  // (twice is no matter: a second is passed over once it is walked)
   std::vector<EntityId> stack{id};
   while(!stack.empty())
   {
     const EntityId e = stack.back();
     stack.pop_back();
-    m_changes.transforms.insert(e);
+    if(std::exchange(m_derived[e.index].*marked, m_changeWindow) == m_changeWindow)
+      continue;
+    into.insert(e);
     for(EntityId c : m_entities[e].children)
       stack.push_back(c);
   }
+}
+
+void RetainedScene::markTransformDirty(EntityId id)
+{
+  markDirty(id, m_changes.transforms, &Derived::transformsMarked);
 }
 
 void RetainedScene::markVisibilityDirty(EntityId id)
 {
-  m_derived[id.index].dirty = true;
-  m_anyDirty                = true;
-  std::vector<EntityId> stack{id};
-  while(!stack.empty())
-  {
-    const EntityId e = stack.back();
-    stack.pop_back();
-    m_changes.visibility.insert(e);
-    for(EntityId c : m_entities[e].children)
-      stack.push_back(c);
-  }
+  markDirty(id, m_changes.visibility, &Derived::visibilityMarked);
 }
 
+// Only the dirty entities' subtrees, each from its parent's Derived, current since nothing above it is
+// dirty: one entity's edit costs its subtree, not the scene
 void RetainedScene::updateWorld()
 {
-  if(!m_anyDirty)
+  if(m_dirtyTops.empty())
     return;
-  const std::function<void(EntityId, const glm::mat4&, bool, bool, LightLink, bool)> walk = [&](EntityId id, const glm::mat4& parentWorld, bool parentShown,
-                                                                                                bool parentOffCamera, LightLink parentLink, bool force) {
-    Derived&      d    = m_derived[id.index];
-    const Entity& e    = m_entities[id];
-    const bool    redo = force || d.dirty;
-    if(redo)
+  std::vector<EntityId> stack;
+  for(const EntityId top : std::exchange(m_dirtyTops, {}))
+  {
+    if(!m_entities.contains(top) || !m_derived[top.index].dirty)
+      continue;  // gone, or brought up to date under another
+    bool under = false;  // a dirty entity above it walks it
+    for(EntityId x = m_entities[top].parent; !x.isNone() && !under; x = m_entities[x].parent)
+      under = m_derived[x.index].dirty;
+    if(under)
+      continue;
+    stack.push_back(top);
+    while(!stack.empty())
     {
-      d.world     = parentWorld * e.local.local();
-      d.shown     = parentShown && e.visible;
-      d.offCamera = parentOffCamera || e.offCamera;
+      const EntityId id = stack.back();
+      stack.pop_back();
+      Derived&       d      = m_derived[id.index];
+      const Entity&  e      = m_entities[id];
+      const Derived* parent = e.parent.isNone() ? nullptr : &m_derived[e.parent.index];
+      const LightLink parentLink = parent ? parent->link : m_defaultLink;
+      d.world     = (parent ? parent->world : glm::mat4(1.f)) * e.local.local();
+      d.shown     = (!parent || parent->shown) && e.visible;
+      d.offCamera = (parent && parent->offCamera) || e.offCamera;
       d.link      = e.link.value_or(parentLink);
       // shadowless cascades as offCamera does, whatever link a child takes as its own
       d.link.shadowless = parentLink.shadowless || e.shadowless;
       d.dirty           = false;
+      for(EntityId c : e.children)
+        stack.push_back(c);
     }
-    for(EntityId c : e.children)
-      walk(c, d.world, d.shown, d.offCamera, d.link, redo);
-  };
-  for(EntityId r : m_roots)
-    walk(r, glm::mat4(1.f), true, false, m_defaultLink, false);
-  m_anyDirty = false;
+  }
 }
 
 glm::mat4 RetainedScene::world(EntityId id)
@@ -1159,35 +1183,43 @@ std::vector<LightItem> RetainedScene::lightItems()
   return out;
 }
 
-std::array<glm::vec3, 2> RetainedScene::bounds(EntityId except)
+std::array<glm::vec3, 2> RetainedScene::shownBounds(EntityId root, EntityId except)
 {
+  updateWorld();
   std::array<glm::vec3, 2> b{glm::vec3(std::numeric_limits<float>::max()), glm::vec3(std::numeric_limits<float>::lowest())};
-  // an entity's copies come one after another: whether it is left out is asked once for all of them
-  EntityId asked;
-  bool     left = false;
-  for(const DrawItem& item : drawItems())
+  std::map<MeshId, std::array<glm::vec3, 2>> boxes;  // each mesh's, once
+  std::vector<EntityId>                      stack;
+  if(root.isNone())
+    stack.assign(m_roots.begin(), m_roots.end());
+  else if(m_entities.contains(root))
+    stack.push_back(root);
+  while(!stack.empty())
   {
-    if(!item.shown)
+    const EntityId id = stack.back();
+    stack.pop_back();
+    if(id == except)
       continue;
-    if(!except.isNone())
+    const Entity& e = m_entities[id];
+    stack.insert(stack.end(), e.children.begin(), e.children.end());
+    if(!e.mesh)
+      continue;
+    const std::optional<Placement> at = placementOf(id);
+    if(!at || !at->shown)
+      continue;
+    for(const MeshPart& part : e.mesh->parts)
     {
-      if(item.entity != asked)
-      {
-        asked = item.entity;
-        left  = isWithin(item.entity, except);
-      }
-      if(left)
+      const MeshRecord* m = mesh(part.mesh);
+      if(!m)
         continue;
-    }
-    const std::array<glm::vec3, 2> mb = mesh(item.mesh)->bounds();
-    if(mb[0].x > mb[1].x)
-      continue;
-    for(int c = 0; c < 8; c++)
-    {
-      const glm::vec3 corner(c & 1 ? mb[1].x : mb[0].x, c & 2 ? mb[1].y : mb[0].y, c & 4 ? mb[1].z : mb[0].z);
-      const glm::vec3 w = glm::vec3(item.world * glm::vec4(corner, 1.f));
-      b[0]              = glm::min(b[0], w);
-      b[1]              = glm::max(b[1], w);
+      auto [box, first] = boxes.try_emplace(part.mesh);
+      if(first)
+        box->second = m->bounds();
+      const std::array<glm::vec3, 2>& mb = box->second;
+      if(mb[0].x > mb[1].x)
+        continue;
+      for(uint32_t c = 0; c < at->count(); c++)
+        if(at->shownOf(c))
+          growByBox(b, mb[0], mb[1], at->worldOf(c));
     }
   }
   return b;
@@ -1198,6 +1230,7 @@ SceneChanges RetainedScene::takeChanges()
   assertOwner();
   SceneChanges out = std::move(m_changes);
   m_changes        = {};
+  m_changeWindow++;
   std::erase_if(out.transforms, [&](EntityId id) { return !m_entities.contains(id); });
   std::erase_if(out.visibility, [&](EntityId id) { return !m_entities.contains(id); });
   std::erase_if(out.copies, [&](const auto& moved) { return !m_entities.contains(moved.first); });
