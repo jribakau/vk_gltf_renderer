@@ -683,6 +683,14 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                                      "film, which focuses it on the far side (the cornea's caustic); off: it goes straight",
                   .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
                  &m_resources.settings.ptEyeCaustic, Persist::eNo);
+  // Far cut-outs a cell of texels at a time on DLSS frames (surface_opacity.h.slang, cutoutCellUv)
+  m_settings.add({.name            = "ptCutoutCell",
+                  .help            = "PathTracer: while DLSS denoises the frame, a far cut-out (a leaf, a blade of grass) "
+                                     "is tested a cell of its map's texels at a time, as wide as this many times the "
+                                     "pixel's footprint, which keeps sub-pixel leaves from shimmering; 0: the texel each "
+                                     "ray falls on. Stills are untouched",
+                  .callbackSuccess = [this](const nvutils::ParameterBase* const) { resetFrame(); }},
+                 &m_resources.settings.ptCutoutCell, Persist::eNo, 0.0F, 8.0F);
   // Light groups (light_mix.h.slang, LightGroups)
   m_settings.add({.name            = "ptLightGroups",
                   .help            = "PathTracer: a still keeps each light group's share of the picture beside it, so the "

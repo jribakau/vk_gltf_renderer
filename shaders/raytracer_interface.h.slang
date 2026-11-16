@@ -41,6 +41,7 @@ struct HitPayload
   int    rprimID     = -1;
   int    primitiveID = -1;
   float2 bary        = float2(0);  // BuiltInTriangleIntersectionAttributes.barycentrics; third = 1 - x - y
+  float  coneWidth   = 0.0f;       // in: the ray cone's width where the ray starts (g_traceConeWidth), for the any-hit's cut-outs
 #if USE_VISUALIZE
   bool ommUnknown = false;  // Opacity-micromap debug view: set when any-hit ran (micro-triangle is "unknown")
 #endif
@@ -186,7 +187,8 @@ struct RayQueryRaytracer : IRaytracer
       }
 #endif
 
-      if(pathCandidateKept(uint(instanceID), uint(renderPrimID), uint(triangleID), barycentrics, rayQuery.CandidateObjectRayDirection(), seed))
+      if(pathCandidateKept(uint(instanceID), uint(renderPrimID), uint(triangleID), barycentrics, rayQuery.CandidateObjectRayDirection(), seed,
+                           cutoutFootprint(g_traceConeWidth, rayQuery.CandidateTriangleRayT())))
         rayQuery.CommitNonOpaqueTriangleHit();
     }
 
@@ -227,7 +229,8 @@ struct TraditionalRaytracer : IRaytracer
 {
   void Trace(RayDesc ray, inout HitPayload payload, inout uint seed, uint instanceMask, uint rayFlags)
   {
-    payload.seed = seed;
+    payload.seed      = seed;
+    payload.coneWidth = g_traceConeWidth;
 #if USE_VISUALIZE
     payload.ommUnknown = false;  // Clear stale debug state; any-hit re-sets it for the OMM viz
 #endif

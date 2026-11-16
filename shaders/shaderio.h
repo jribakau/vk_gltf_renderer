@@ -612,7 +612,10 @@ struct SceneFrameInfo
   float4 worldAirToward[WORLD_AIR_MAX];
   float4 worldAirLight[WORLD_AIR_MAX];
   int    worldAirCount = 0;
-  float  _worldAirPad0 = 0.0F;
+  // While DLSS denoises the frame, a far cut-out's texels are taken a cell of them at a time, as wide as
+  // this many times the pixel's footprint there (surface_opacity.h.slang, cutoutCellUv): 0, the texel
+  // the hit falls on. (In a pad.)
+  float  cutoutCell    = 1.0F;
   float  _worldAirPad1 = 0.0F;
   float  _worldAirPad2 = 0.0F;
 };

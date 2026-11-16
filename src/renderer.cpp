@@ -1210,6 +1210,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     finfo.estimator = std::clamp(m_resources.settings.ptEstimator, 0, 2);
     if(m_resources.settings.ptEyeCaustic)
       finfo.flags |= shaderio::eSceneEyeCaustic;
+    finfo.cutoutCell = std::clamp(m_resources.settings.ptCutoutCell, 0.0F, 8.0F);
     finfo.aerialSunShare = std::clamp(m_resources.settings.ptAerialSunShare, 0.0F, 1.0F);
     {
       // The light groups' mix, for the frames that take it as their paths add light (a still that keeps

@@ -317,6 +317,25 @@ float rayConeWorldFootprint(RayCone cone, float hitT, float3 N, float3 V)
 
 #include "surface_opacity.h.slang"  // getOpacity
 
+// The width of the ray cone where the ray being traced starts, metres (PathTracerState::cone's at the
+// vertex it leaves; 0 for a camera ray): what a far cut-out's cell is worked out from
+// (cutoutFootprint). The path sets it before it traces from a vertex, the camera's ray and the
+// shadow rays alike; the any-hit shader takes it in its payload (HitPayload::coneWidth).
+static float g_traceConeWidth = 0.0F;
+
+// The footprint a cut-out met `t` along a ray whose cone is `atOrigin` metres across where it starts
+// is read by (getOpacity, cutoutCellUv): while DLSS denoises the frame, the pixel's cone there times
+// SceneFrameInfo::cutoutCell. 0 on every other frame, whose samples a still averages over the pixel
+// as they are, and with the cells off.
+float cutoutFootprint(float atOrigin, float t)
+{
+#if USE_DLSS_SHADER
+  if(hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+    return (atOrigin + pushConst.pixelAngle * t) * pushConst.frameInfo->cutoutCell;
+#endif
+  return 0.0F;
+}
+
 // Cells across one barycentric axis. A fixed grid, so the decision is a property of the
 // triangle: a dolly does not reshuffle it, and motion vectors can follow it. On a card a few
 // hundred pixels wide a cell is several pixels, wider than DLSS's half-pixel jitter except at a
@@ -389,11 +408,13 @@ bool opacityFilmKept(GltfRenderNode renderNode, float opacity)
 // Whether a path ray keeps a candidate hit on a surface that is not opaque: by the opacity there,
 // stochastically, or as a film's cover whatever it is (opacityFilmKept). The ray query's traversal
 // (RayQueryRaytracer::Trace) and the any-hit shader (rahitMain) both ask it.
-bool pathCandidateKept(uint instanceID, uint renderPrimID, uint triangleID, float3 barycentrics, float3 objectRayDirection, inout uint seed)
+// `footprint`: a far cut-out's cell there (cutoutFootprint).
+bool pathCandidateKept(uint instanceID, uint renderPrimID, uint triangleID, float3 barycentrics, float3 objectRayDirection, inout uint seed,
+                       float footprint)
 {
   const GltfRenderNode      renderNode = pushConst.gltfScene->renderNodes[instanceID];
   const GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
-  const float               opacity    = getOpacity(renderNode, renderPrim, int(triangleID), barycentrics, objectRayDirection);
+  const float               opacity    = getOpacity(renderNode, renderPrim, int(triangleID), barycentrics, objectRayDirection, footprint);
   return stochasticOpacityU(instanceID, triangleID, barycentrics, seed) < opacity || opacityFilmKept(renderNode, opacity);
 }
 
@@ -663,7 +684,8 @@ bool shadowCrossSurface(GltfRenderNode      renderNode,
   // path is in (waterShadowTransmittance), not here
   if(worldWaterIs(pushConst.frameInfo, renderNode.materialID))
     return true;
-  const float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics, mul(float4(rayDirection, 0.0F), worldToObject).xyz);
+  const float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics, mul(float4(rayDirection, 0.0F), worldToObject).xyz,
+                                   cutoutFootprint(g_traceConeWidth, hitT));
   if(opacity <= 0.0F)
     return true;
   const bool boundsMedium = shadowSurfaceBoundsMedium(renderNode);
@@ -2843,7 +2865,8 @@ float3 dlssPaneTint(GltfShadeMaterial* mat, GltfRenderPrimitive prim, uint trian
 //
 // `instanceMask`: the instances the ray can meet, the camera's own (INSTANCE_MASK_CAMERA) where the
 // path it stands for still looks as the camera does (ptCameraView).
-HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float3 through, uint instanceMask)
+// `coneWidth`: the ray's cone where it starts (g_traceConeWidth's), for a far cut-out's cell.
+HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float3 through, uint instanceMask, float coneWidth = 0.0F)
 {
   GltfShadeMaterial*   materials        = pushConst.gltfScene->materials;
   GltfRenderNode*      renderNodes      = pushConst.gltfScene->renderNodes;
@@ -2873,7 +2896,8 @@ HitPayload dlssTraceSkipThinGlass(RayDesc ray, inout int glassCount, inout float
       const float2 bary         = rayQuery.CandidateTriangleBarycentrics();
       const float3 barycentrics = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
       const uint   triangleID   = rayQuery.CandidatePrimitiveIndex();
-      opacity = getOpacity(node, renderPrimitives[rayQuery.CandidateInstanceID()], triangleID, barycentrics, rayQuery.CandidateObjectRayDirection());
+      opacity = getOpacity(node, renderPrimitives[rayQuery.CandidateInstanceID()], triangleID, barycentrics,
+                           rayQuery.CandidateObjectRayDirection(), cutoutFootprint(coneWidth, candidateT));
       u       = alphaHashU(rayQuery.CandidateInstanceIndex(), triangleID, barycentrics);
     }
 

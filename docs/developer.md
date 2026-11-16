@@ -256,6 +256,7 @@ shaders/
 ├── shaderio.h                  # Host/device shared structures
 ├── pathtrace_functions.h.slang # Path-tracer hit/shading helpers (getShadowTransmission, etc.)
 ├── path_roulette.h.slang       # Where the surface roulette starts (still, a DLSS frame's cut-outs) and its chance (unit-tested)
+├── cutout_cell.h.slang         # Which texel a far cut-out's ray reads on a DLSS frame, a pixel-wide cell at a time (unit-tested)
 ├── sobol.h.slang               # Owen-scrambled Sobol points for the accumulation's sampling decisions (ptSampler)
 ├── common.h.slang              # Shared shader utilities
 ├── get_hit.h.slang             # Hit state interpolation

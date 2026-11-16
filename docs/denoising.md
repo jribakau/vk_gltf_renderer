@@ -428,6 +428,22 @@ gives the same at opacity 1 and 0).
 `dlssTraceSkipThinGlass` calls `alphaHashU` directly, so the clear-glass guides commit the cells
 the color keeps rather than cutting at half opacity.
 
+**Far cut-outs.** A `MASK` cut-out (a leaf card, a clump of grass) needs no draw: its texel is in or
+out. But far off, one ray a pixel reads one texel of the many the card puts in the pixel, and the
+half-pixel jitter picks another each frame, so a leaf thinner than the pixel is in one frame and out
+the next: foliage shimmers, and DLAA's full resolution only halves it. While DLSS denoises, every
+traversal (`pathCandidateKept`, `dlssTraceSkipThinGlass`, `shadowCrossSurface`) passes the ray cone's
+width where it meets the candidate (`cutoutFootprint`: the path's `cone` at the ray's origin, carried
+to the any-hit shader in `HitPayload::coneWidth`), and `getOpacity` reads the map a cell of texels at a
+time about that wide (`cutoutCellUv`, [`shaders/cutout_cell.h.slang`](../shaders/cutout_cell.h.slang)):
+every ray into a cell reads the same texel, so the decision stays put under the jitter, and since that
+texel is any of the cell's alike, the card keeps the share of it that is solid, where a cut-off on a
+mip's average would thin a leafy card away. Cells are powers of two; a card nearing or receding goes
+from one size to the next a cell at a time, and a cell reads what one of its quarters does, so the
+change is gradual. Hair is left out (its strands are its texels), and stills read the hit's own texel.
+`ptCutoutCell` sets the cell in footprints (`SceneFrameInfo::cutoutCell`; 0: off); the app's Render tab
+has it as Steady far leaves.
+
 **Films.** The grid is a fraction of the triangle, sized for a hair card. A window painted as a
 half-open cutout is two triangles, so its cells came out centimetres wide: blocks of the pane's own
 face beside blocks of the room behind. A prop's or a garment's cutout that is a sheet, not strands,

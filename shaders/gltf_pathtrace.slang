@@ -1176,6 +1176,7 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     // that still looks as the camera does passes what the camera looks through (ptViewMask).
     // (its sides as the camera's while it looks as the camera does, as its instances are: through a
     // clear pane too)
+    g_traceConeWidth = pt.cone.width;
     raytracer.Trace(ray, payload, seed, freeFlight.drawn ? uint(INSTANCE_MASK_WALK) : ptViewMask(pt),
                     ptCameraView(pt) || ptIsInside(pt) ? CAMERA_RAY_FLAGS : BOUNCE_RAY_FLAGS);
     ray.TMax = INFINITE;
@@ -2210,8 +2211,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 
     // Normal surface bounce: propagate the cone footprint to the next segment. The new ray
     // starts at hit.pos with the slant-corrected worldFoot as its starting width, so the
-    // next Trace()'s texture LOD inherits the full accumulated footprint.
-    pt.cone.width = worldFoot;
+    // next Trace()'s texture LOD inherits the full accumulated footprint (and the shadow rays from
+    // here their cut-outs' cells).
+    pt.cone.width    = worldFoot;
+    g_traceConeWidth = worldFoot;
 
     //-----------------------------------------------------------------------
     // Sampling the lights
@@ -4141,7 +4144,8 @@ void rahitMain(inout HitPayload payload, in BuiltInTriangleIntersectionAttribute
 
   float3 barycentrics = float3(1 - attr.barycentrics.x - attr.barycentrics.y, attr.barycentrics.x, attr.barycentrics.y);
 
-  if(!pathCandidateKept(InstanceIndex(), InstanceID(), PrimitiveIndex(), barycentrics, ObjectRayDirection(), payload.seed))
+  if(!pathCandidateKept(InstanceIndex(), InstanceID(), PrimitiveIndex(), barycentrics, ObjectRayDirection(), payload.seed,
+                        cutoutFootprint(payload.coneWidth, RayTCurrent())))
     IgnoreHit();
 }
 

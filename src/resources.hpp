@@ -395,6 +395,10 @@ struct Settings
   // The cornea's caustic (eye_caustic.h.slang, SceneFrameInfoFlags::eSceneEyeCaustic): a punctual
   // light's sample in an eye's chamber is bent through the tear film; off, it goes straight
   bool ptEyeCaustic = true;
+  // `ptCutoutCell` (SceneFrameInfo::cutoutCell): while DLSS denoises the frame, a far cut-out (a leaf,
+  // a blade of grass) is tested a cell of its map's texels at a time, as wide as this many pixel
+  // footprints, so the sub-pixel jitter doesn't flip it in and out from frame to frame; 0: off
+  float ptCutoutCell = 1.0F;
   // Light groups (shaders/light_mix.h.slang). `lightMix`: what each group's light is multiplied by, its
   // strength times its tint (shaderio LIGHT_GROUP_*: the sky, the sun, glowing surfaces, three of lamps).
   // `ptLightGroups`: a still keeps each group's share (LightGroups), so the mix changes a finished one
