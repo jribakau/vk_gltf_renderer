@@ -1085,10 +1085,19 @@ their kit when there is one. It needs no kit: without one it stands bare.
   and growing to its size over the last of the way in, in a few steps, fewer the further it is seen
   from, so it comes into view small; a frame gives no more entities other copies, and takes in no
   more quads' plants, than `kPlantsAFrame` instances, which the scene's sync goes through), again whenever
-  the eye has gone a few hundredths of its distance to the quad. Past the largest trees' reach a
-  wood is the colour of its ground,
-  which near, where its trees are drawn, is its floor's and not its canopy's (`Biome::floor`,
-  `World::planted`). Grass and its flowers and ferns are the meadow's tiles, laid by the meadow's own
+  the eye has gone a few hundredths of its distance to the quad. The trees a quad does not hold, the
+  smaller of a wood's, stand on its ground as a **canopy** (`canopyLift`, `groundMesh`'s `Lift`,
+  `World::canopied`): the quad's own mesh is raised as high as their crowns over the ground they would
+  stand on, by the same rule `standing` grows them by and none where it stands none. Where the mesh's
+  points are a few metres apart each one is a crown's top or the floor between it, by how much of the
+  ground those crowns cover (a hash of where the point is, so two quads of a level draw their edge
+  alike); tens of metres apart, the wood as a whole, its colour as much as a slanting view sees of its
+  crowns. A raised point takes the canopy's colour and none of the ground's layers; the rest is the
+  floor (`Biome::floor`, `World::planted`) at any distance, and the skirts hang as much further as the
+  canopy stands. Nothing reads the mesh back (every query of the ground asks `sample`), so the walker,
+  plants and roads stand on the ground under it. The quads round the eye hold every tree and lift
+  nothing; the `worldCanopy` setting turns it off for a comparison (the quads are made again). Without
+  it a far wood is flat ground its canopy's colour. Grass and its flowers and ferns are the meadow's tiles, laid by the meadow's own
   rule on a cube face's plane round the camera and the figures (`tilePlanet`), each leant and
   stretched to its square of the sphere. They are laid again every few metres the camera goes, and
   what grows on a tile's ground is looked up on the planet once a tile, not once a laying

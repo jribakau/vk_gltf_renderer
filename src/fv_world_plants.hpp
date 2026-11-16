@@ -11,8 +11,8 @@
 //   it is seen from, by its size among its kind's: a wood's largest trees for kilometres, its
 //   smallest and its undergrowth for a few hundred metres. A quad holds the plants whose reach passes
 //   where the quad can draw, so a plant is the same plant, in its place and of its size, whichever
-//   quad holds it, and whoever draws them shows each by its own distance (`grownAt`). Past the
-//   largest trees' reach a wood is the colour of its ground.
+//   quad holds it, and whoever draws them shows each by its own distance (`grownAt`). The trees a
+//   quad does not hold stand on its ground as a canopy (`canopyLift`).
 // - Grass, and the flowers and ferns in drifts in it, are tiles (`grassTiles`, `grassPlace`): a square
 //   of ground with its plants is one mesh, drawn wherever a square of its kind lies near where one
 //   looks from. The squares are a cube face's, laid by the meadow's own rule (fv::backdrop::
@@ -109,6 +109,27 @@ inline float grownAt(double away, double reach)
 // left out). `centre`: what the places are about, the quad's mesh's (ChunkMesh::centre). `density`:
 // of every plant's own, as the backdrop's.
 std::vector<Stand> standing(const World& world, const Quad& quad, const glm::dvec3& centre, std::span<const uint32_t> variants, double density = 1.0);
+
+// ---- far woods as a canopy -----------------------------------------------------------------------------
+
+// A quad holds only the trees seen from where it draws, the largest (heldFrom): the rest of a far
+// wood stands on its ground mesh as a canopy, its surface raised as high as their crowns over the
+// ground they stand on (groundMesh's lift). Where its points are a few metres apart each is a crown's
+// top or the floor between, by how much of the ground those trees' crowns cover; where they are tens
+// of metres apart, the wood as a whole, as high as its crowns stand on the whole and its colour as
+// much as a slanting view sees of them. Where `standing` would stand no tree, none.
+//
+// The kit's trees, as the canopy is made of them: each role's models on the whole, at a scale of 1
+// (none: the kit has none of the role, and none of its trees stand)
+struct Canopy
+{
+  double                                   density = 1.0;  // of every plant's own, as `standing`'s
+  std::array<float, kStandingRoles.size()> height{};       // metres from the foot to the top
+  std::array<float, kStandingRoles.size()> crown{};        // how far its crown reaches from the trunk, metres
+};
+// The lift of a quad's ground; none where the quad holds all its trees (the finest, and those near
+// them) or none stand
+LiftOf canopyLift(const World& world, const Quad& quad, const Canopy& canopy);
 
 // What stands on a quad's sea floor (fv_world_sea.hpp), of `meshes`: seagrass on the shallows, kelp
 // where the water is cool and deep enough to hold it, corals where it is warm, sponges deeper, rocks

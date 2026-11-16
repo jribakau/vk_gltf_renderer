@@ -457,6 +457,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                                      "own level (shaders/world_sea.h.slang). Off: clear glass, as their material is",
                   .callbackSuccess = seaChanged},
                  &m_resources.settings.worldInlandWater, Persist::eNo);
+  m_settings.add({.name = "worldCanopy",
+                  .help = "A planet's far woods: the trees not drawn stand on the ground's mesh as a canopy (fv_world_plants.hpp "
+                          "canopyLift); the host makes the quads again on a change. Off: flat ground the canopy's colour"},
+                 &m_resources.settings.worldCanopy, Persist::eNo);
 
   // The clouds over the physical sky. Each re-bakes the cloud image with the sky, through the same
   // preview-then-settle path; none of them touches the atmosphere's tables.

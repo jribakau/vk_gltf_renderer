@@ -20,10 +20,11 @@
 //   slopes down their fall finer than the map's cells, `water` cuts the rivers' beds. A planet made
 //   without one (Making::base) is the stages' alone.
 // - The mesh: a cube laid on the sphere, each face a quadtree (Quad). `select` says which quads draw
-//   for an eye: a quad splits into four while the eye is within about twice its width of it, so the
+//   for an eye: a quad splits into four while the eye is within kSplit of its widths of it, so the
 //   ground underfoot is a metre a vertex and the far side of the planet a kilometre. `groundMesh` and
 //   `waterMesh` make a quad's triangles, with skirts down its edges: where a quad meets a coarser one
-//   their edges differ, and a ray would find the crack.
+//   their edges differ, and a ray would find the crack. A far wood's trees that are not drawn stand
+//   on its ground mesh as a canopy (Lift, fv_world_plants.hpp canopyLift).
 //
 // What grows on it is a biome's too (Biome::plants, grass, drift): fv_world_plants.hpp places it.
 // What people left on it (places, the roads between them) is a catalogue's: fv_world_places.hpp
@@ -50,6 +51,7 @@
 #include <cmath>
 #include <compare>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -270,6 +272,9 @@ struct World
   glm::vec3 albedo{0.1F};
   // Its plants are drawn (fv_world_plants.hpp): the ground near is what lies under them (Biome::floor)
   bool planted = false;
+  // And the trees too far to be drawn are a canopy over their ground (fv_world_plants.hpp canopyLift,
+  // groundMesh's lift): the ground is what lies under them at any distance, the canopy its own colour
+  bool canopied = false;
   // What people left on it, with the stage that makes the ground theirs (withPlaces); none: null
   std::shared_ptr<const Places> places;
 };
@@ -415,7 +420,22 @@ struct ChunkMesh
   double                 lowest = 0.0, highest = 0.0;  // its elevations: under 0, the sea lies on it
   bool                   inland = false;  // a river or a lake lies on it
 };
-ChunkMesh groundMesh(const World& world, const Quad& quad);
+// What stands over a point of the ground and is drawn as the ground's own surface (a far wood's
+// canopy: fv_world_plants.hpp canopyLift): metres over it, and how much of the point it is, which
+// takes that share of the point's colour as its own and of its layers' shares, none
+struct Lift
+{
+  float     height = 0.0F;
+  float     share  = 0.0F;
+  glm::vec3 colour{0.0F};
+};
+// Asked at every point of a quad's grid, and of the ring round it: its direction, the ground there,
+// and the metres between the grid's points
+using LiftOf = std::function<Lift(const glm::dvec3& direction, const Sample& ground, double cell)>;
+// A quad's ground. With a lift its surface stands that much higher where it says, and the skirts hang
+// as much further; its centre, `lowest`, `highest` and `inland` are the ground's still, and so is the
+// slope its colour and layers go by. Without one, the ground alone.
+ChunkMesh groundMesh(const World& world, const Quad& quad, const LiftOf& lift = {});
 // The inland water over a quad, `cells` along its edge: the lakes' and rivers' surfaces where they
 // lie (waterLevel), cut at the ground's own points when it has as many cells as the ground. The sea
 // has no mesh: it is the sphere at its level, which the renderer meets by itself, waves and all

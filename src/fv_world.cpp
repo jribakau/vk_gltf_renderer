@@ -507,8 +507,10 @@ float within(float x, float from, float to, float soft)
 // The biome by the climate: each row's share, and the ground's colour and roughness as their blend
 void biome(const World& w, const Point& p, Sample& s)
 {
-  // (trees are drawn on quads up to some 8 m a vertex, fewer of them from 4: fv::world::keptOn)
-  const float canopy = w.planted ? float(smooth(4.0, 12.0, p.footprint)) : 1.0F;
+  // (a wood's trees are all drawn on quads of up to some 4 m a vertex, and fewer of them as the quads
+  // coarsen: fv_world_plants.hpp reachOf; with a canopy for those not drawn, its own colour stands
+  // over the floor, groundMesh's lift)
+  const float canopy = w.planted ? (w.canopied ? 0.0F : float(smooth(4.0, 12.0, p.footprint))) : 1.0F;
   glm::vec3 colour(0.0F);
   float     rough = 0.0F, total = 0.0F, most = 0.0F;
   for(size_t i = 0; i < w.biomes.size(); i++)
@@ -1239,7 +1241,7 @@ Selection select(const World& world, const glm::dvec3& eye, const Selection* was
 
 // ---- a quad's triangles ------------------------------------------------------------------------------
 
-ChunkMesh groundMesh(const World& world, const Quad& q)
+ChunkMesh groundMesh(const World& world, const Quad& q, const LiftOf& lift)
 {
   constexpr uint32_t N    = kGroundCells;
   constexpr int      G    = int(N) + 3;  // a ring of points round the quad's own, for its edges' normals
@@ -1248,13 +1250,36 @@ ChunkMesh groundMesh(const World& world, const Quad& q)
 
   std::vector<glm::dvec3> points(size_t(G) * size_t(G));
   std::vector<Sample>     samples(points.size());
+  // with a lift: what stands over each point, and the points as drawn, over it
+  std::vector<Lift>       lifts;
+  std::vector<glm::dvec3> lifted;
+  if(lift)
+  {
+    lifts.resize(points.size());
+    lifted.resize(points.size());
+  }
   for(int j = -1; j <= int(N) + 1; j++)
     for(int i = -1; i <= int(N) + 1; i++)
     {
       const glm::dvec3 d = direction(q.face, coordOf(q, q.x, i, N), coordOf(q, q.y, j, N));
       samples[at(i, j)]  = sample(world, d, cell);
       points[at(i, j)]   = toScene(world, d, samples[at(i, j)].elevation);
+      if(lift)
+      {
+        const size_t k = at(i, j);
+        lifts[k]       = lift(d, samples[k], cell);
+        // (an assignment and an `if`, not a `?:` of the two: built Release by MSVC, that gave every
+        // point of a row the ring's point at its start; the WorldCanopy tests catch it)
+        lifted[k] = points[k];
+        if(lifts[k].height > 0.0F)
+          lifted[k] = toScene(world, d, samples[k].elevation + double(lifts[k].height));
+      }
     }
+  // what is drawn; the ground's own points say its slope, which its colour and layers go by
+  const std::vector<glm::dvec3>& drawn = lift ? lifted : points;
+  const auto normalOf = [&](const std::vector<glm::dvec3>& of, int i, int j) {
+    return glm::normalize(glm::cross(of[at(i + 1, j)] - of[at(i - 1, j)], of[at(i, j + 1)] - of[at(i, j - 1)]));
+  };
 
   ChunkMesh m;
   m.centre  = points[at(int(N) / 2, int(N) / 2)];
@@ -1267,26 +1292,36 @@ ChunkMesh groundMesh(const World& world, const Quad& q)
   m.layers.reserve(count + 4 * size_t(N + 1));
   m.layersMore.reserve(count + 4 * size_t(N + 1));
   const uint32_t dither = lattice(uint32_t(world.spec.seed), kChDither);
+  float          tallest = 0.0F;  // the most the lift raises a vertex
   for(int j = 0; j <= int(N); j++)
     for(int i = 0; i <= int(N); i++)
     {
       const glm::dvec3& p      = points[at(i, j)];
       const Sample&     s      = samples[at(i, j)];
       const glm::dvec3  up     = glm::normalize(p - world.frame.centre);
-      glm::dvec3        normal = glm::normalize(glm::cross(points[at(i + 1, j)] - points[at(i - 1, j)], points[at(i, j + 1)] - points[at(i, j - 1)]));
+      const glm::dvec3  normal = normalOf(points, i, j);
       const double      level  = glm::dot(normal, up);
       const float       slope  = float(std::sqrt(std::max(1.0 - level * level, 0.0)) / std::max(level, 1e-3));
-      m.positions.push_back(glm::vec3(p - m.centre));
-      m.normals.push_back(glm::vec3(normal));
+      m.positions.push_back(glm::vec3(drawn[at(i, j)] - m.centre));
+      m.normals.push_back(glm::vec3(lift ? normalOf(drawn, i, j) : normal));
+      // what stands over it, if anything: that share of it is the lift's colour, and none of its layers
+      const Lift  over = lift ? lifts[at(i, j)] : Lift{};
+      const float kept = 1.0F - std::clamp(over.share, 0.0F, 1.0F);
+      tallest          = std::max(tallest, over.height);
       // a colour is kept in 8 bits a channel: dark ground would show its steps as contour lines, so
       // each vertex is nudged by up to half a step of its own
-      glm::vec3      c = surfaceColour(world, s, slope);
+      glm::vec3 c = surfaceColour(world, s, slope);
+      if(over.share > 0.0F)
+        c = glm::mix(over.colour, c, kept);
       const uint32_t h = mix(mix(mix(dither + q.face * 64U + q.level) + uint32_t(q.x * N + uint32_t(i))) + uint32_t(q.y * N + uint32_t(j)));
       c += (glm::vec3(float(h & 255U), float((h >> 8U) & 255U), float((h >> 16U) & 255U)) / 255.0F - 0.5F) / 255.0F;
       m.colors.emplace_back(glm::clamp(c, 0.0F, 1.0F), 1.0F);
       // what it is drawn with: a byte each of the first four layers, the rest as floats
-      uint32_t   packed = 0;
-      const auto layers = surfaceLayers(world, s, slope);
+      uint32_t packed = 0;
+      auto     layers = surfaceLayers(world, s, slope);
+      if(over.share > 0.0F)
+        for(float& l : layers)
+          l *= kept;
       for(size_t l = 0; l < 4; l++)
         packed |= uint32_t(std::lround(255.0F * std::clamp(layers[l], 0.0F, 1.0F))) << (8U * uint32_t(l));
       m.layers.push_back(packed);
@@ -1299,8 +1334,8 @@ ChunkMesh groundMesh(const World& world, const Quad& q)
   m.surface = uint32_t(m.positions.size());
   addGrid(m, N);
   // a coarser neighbour's edge misses what this one's finer ground adds, and the other way round:
-  // up to about a cell's worth
-  addSkirts(m, world, N, cell);
+  // up to about a cell's worth, and what stands over either edge
+  addSkirts(m, world, N, cell + double(tallest));
   return m;
 }
 

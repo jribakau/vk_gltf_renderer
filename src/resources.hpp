@@ -270,6 +270,10 @@ struct Settings
   // the water's surface. Off: the meshes as the clear glass their material is, as they were before
   // (no waves, nothing scattered, a camera in one sees as in air), for a timing or a look against it.
   bool worldInlandWater = true;
+  // ... and the trees of its far woods that are not drawn, as a canopy on their ground's mesh
+  // (fv_world_plants.hpp canopyLift), which the host asks for (HostRenderer::worldCanopy). Off: the
+  // ground flat under them and the canopy's colour from afar, as before, for a look or a timing.
+  bool worldCanopy = true;
   // ... and the other bodies in its sky as lights (src/fv_world_light.hpp): on the ground, the figures,
   // the air and the clouds, and on each other's dark sides. Off: drawn, lighting nothing, as before,
   // for a timing or a look against it.

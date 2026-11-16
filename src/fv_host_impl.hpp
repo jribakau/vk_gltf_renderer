@@ -1586,6 +1586,7 @@ struct FvHost::Impl
       rs::EntityId entity;
       glm::mat4    base{1.0F};  // its node's own turn and scale in its file, under each place
       float        halfWidth = 0.0F;  // how far from its foot it reaches on the plan, at a scale of 1
+      float        height    = 0.0F;  // and how high over it
       // the file and its mesh it draws, for what someone on foot meets of it (fv_host_play.cpp)
       std::shared_ptr<const tinygltf::Model> model;
       int                                    mesh = -1;
@@ -1798,6 +1799,11 @@ struct FvHost::Impl
     bool                               planted = false;
     double                             density = 1.0;  // the backdrop's, as planted
     std::array<uint32_t, fv::world::kStandingRoles.size()> variants{};  // how many the kit has of each role
+    // Its far woods' trees that a quad does not hold, as a canopy on its ground (fv::world::canopyLift),
+    // of the kit's trees; and whether that was asked (HostRenderer::worldCanopy) when the planet was
+    // planted or last made again for it (World::canopied says whether there is one: a kit with trees)
+    fv::world::Canopy                  canopy;
+    bool                               canopyAsked = false;
     std::vector<fv::world::TileKind>   tileKinds;
     std::vector<BackdropBuilt::Patch>  patches;  // by tile kind
     std::map<fv::world::GrassTile, rs::EntityId> tiles;       // drawn; none for a tile left out (too steep)

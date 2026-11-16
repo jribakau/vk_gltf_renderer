@@ -178,6 +178,32 @@ double byWater(float water, float shore)
   return water > 0.0F ? 1.0 - smooth(0.35 * double(water), double(water), double(shore)) : 1.0;
 }
 
+// Whether `d` is in a grove of what a biome grows in groves (Growth::cover under 1), 0 to 1 at its
+// edge: of the role (of kStandingRoles) `role`, in the biome (of World::biomes) `biome`
+double grove(const World& w, const glm::dvec3& d, const Growth& g, size_t role, size_t biome)
+{
+  const double level = coverLevel(double(g.cover));
+  return smooth(level - 0.03, level + 0.03, noise(w, d, double(g.patch), uint32_t(role * kMostBiomes + biome)));
+}
+
+// How thickly a biome's trees stand together over a wide ground, a square metre (or a role's own, for
+// what is no tree), its groves and its waters taken in: what decides how far a role is seen (Reach)
+double woodOf(const Biome& b, std::string_view role, double density)
+{
+  double kind = 0.0;
+  for(const Growth& g : b.plants)
+    if(isTree(role) ? isTree(g.role) : g.role == role)
+      kind += g.perSquareMetre * density * double(std::min(g.cover, 1.0F)) * (g.water > 0.0F ? kByWaterShare : 1.0);
+  return kind;
+}
+
+// Whether nothing as tall as a tree stands at `d`, whatever grows there: the water and its shores, the
+// figures' place, bare rock, what a place keeps, a place's floor
+bool noTree(const World& w, const glm::dvec3& d, const Sample& s)
+{
+  return bare(s, false) || cleared(w, d) || s.rock > 0.5F || (s.built.taken & (kGroundKept | kGroundOpen));
+}
+
 // The stands of a role, a variant each: the furthest seen first
 struct Placed
 {
@@ -259,9 +285,7 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
     bool  anywhere = false;
     for(size_t b = 0; b < w.biomes.size() && b < kMostBiomes; b++)
     {
-      double kind = 0.0;
       for(const Growth& g : w.biomes[b].plants)
-      {
         if(g.role == role)
         {
           grows[b] = &g;
@@ -269,12 +293,9 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
           water    = std::max(water, g.water);
           anywhere = anywhere || !(g.water > 0.0F);
         }
-        // (what else stands on land is counted by its role, as before there were several)
-        if(isTree(role) ? isTree(g.role) : g.role == role)
-          kind += g.perSquareMetre * density * double(std::min(g.cover, 1.0F)) * (g.water > 0.0F ? kByWaterShare : 1.0);
-      }
+      // (what else stands on land is counted by its role, as before there were several)
       if(grows[b])
-        wood = std::max(wood, kind);
+        wood = std::max(wood, woodOf(w.biomes[b], role, density));
     }
     if(!(thickest > 0.0))
       continue;
@@ -313,10 +334,7 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
             continue;
           double here = g->perSquareMetre * density / thickest;
           if(g->cover < 1.0F)
-          {
-            const double level = coverLevel(double(g->cover));
-            here *= smooth(level - 0.03, level + 0.03, noise(w, d, double(g->patch), uint32_t(r * kMostBiomes + b)));
-          }
+            here *= grove(w, d, *g, r, b);
           here *= byWater(g->water, s.shore);
           odds += double(s.share[b]) * here;
           if(s.share[b] > top)
@@ -338,6 +356,140 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
     standsOf(uint8_t(r), placed, out);
   }
   return out;
+}
+
+// ---- far woods as a canopy -----------------------------------------------------------------------------
+
+namespace {
+
+// What a wood's crowns are from afar, linear: a fir wood's (the forest's own colour from afar, Biome::
+// colour, as it was drawn before there was a canopy), a leafy one's a little lighter
+const glm::vec3 kNeedles{0.045F, 0.085F, 0.03F};
+const glm::vec3 kLeaves{0.055F, 0.095F, 0.03F};
+
+// A ground's points this far apart or nearer are each a crown's top or the floor between; this far or
+// further, the wood as a whole over each, as high as its crowns are on the whole; between, between
+constexpr double kCrownsTo = 12.0, kWoodFrom = 40.0;
+// Seen at a slant over a wide ground, how much of it is crowns: the gaps between them are hidden by the
+// crowns before them, as if they stood this many times as thickly
+constexpr double kSlant = 2.0;
+// A wood stands back from a river this far past its banks, and a cell of the ground's further
+constexpr double kRiverRoom = 2.0;
+constexpr uint32_t kCanopySalt = 0x6A09E667U;
+
+}  // namespace
+
+LiftOf canopyLift(const World& w, const Quad& q, const Canopy& canopy)
+{
+  // a quad holds the trees seen from where it draws (heldFrom): the finest, all of them
+  const double held = heldFrom(w, q);
+  if(!(held > 0.0) || !(canopy.density > 0.0))
+    return {};
+  struct Role
+  {
+    size_t                                 index = 0;  // of kStandingRoles
+    double                                 hidden = 0.0;  // the share of its plants the quad does not hold: the smallest
+    std::array<const Growth*, kMostBiomes> grows{};
+    double                                 top = 0.0, crown = 0.0;  // its models' height and crown at a scale of 1
+    bool                                   leafy = false;
+  };
+  std::vector<Role> roles;
+  for(size_t r = 0; r < kStandingRoles.size(); r++)
+  {
+    const std::string_view role = kStandingRoles[r];
+    if(!isTree(role) || !(canopy.height[r] > 0.0F))
+      continue;
+    Role   it{.index = r, .top = double(canopy.height[r]), .crown = double(canopy.crown[r]), .leafy = drawnAs(role) == "broadleaf"};
+    double wood     = 0.0;
+    bool   anywhere = false, any = false;
+    for(size_t b = 0; b < w.biomes.size() && b < kMostBiomes; b++)
+    {
+      for(const Growth& g : w.biomes[b].plants)
+        if(g.role == role)
+        {
+          it.grows[b] = &g;
+          any         = true;
+          anywhere    = anywhere || !(g.water > 0.0F);
+        }
+      if(it.grows[b])
+        wood = std::max(wood, woodOf(w.biomes[b], role, canopy.density));
+    }
+    // (as `standing`: by water only, where there is none, none stand)
+    if(!any || (!anywhere && !w.base))
+      continue;
+    // `standing` keeps a plant whose reach is the quad's at least: the largest (Reach::of)
+    const Reach  reach = reachOf(role, wood);
+    const double kept  = held > reach.most ? 0.0 : std::min(1.0, (reach.all / held) * (reach.all / held));
+    it.hidden          = 1.0 - kept;
+    if(it.hidden > 0.0)
+      roles.push_back(it);
+  }
+  if(roles.empty())
+    return {};
+  return [&w, roles = std::move(roles), density = canopy.density](const glm::dvec3& d, const Sample& s, double cell) -> Lift {
+    // where no tree stands: as `standing`, and nothing over a cliff's face nor a road, nor by a river,
+    // which would be buried under the slope up to the crowns
+    if(noTree(w, d, s) || s.cliff > 0.02F || s.steepened > 2.0F || s.built.road > 0.0F)
+      return {};
+    if(s.inland.river && s.inland.riverAway < s.inland.riverHalf + kRiverRoom + cell)
+      return {};
+    // the trees a square metre not drawn here, their crowns' share of the ground, and their heights
+    double    trees = 0.0, crowns = 0.0, mean = 0.0, low = 0.0, high = 0.0;
+    glm::vec3 colour(0.0F);
+    for(const Role& role : roles)
+      for(size_t b = 0; b < w.biomes.size() && b < kMostBiomes; b++)
+      {
+        const Growth* g = role.grows[b];
+        if(!g || s.share[b] <= 0.0F)
+          continue;
+        double here = double(s.share[b]) * g->perSquareMetre * density * role.hidden * byWater(g->water, s.shore);
+        // in its groves; on a ground coarser than they are, as much as they cover of it
+        if(g->cover < 1.0F)
+        {
+          const double wide = smooth(0.5 * double(g->patch), 2.0 * double(g->patch), cell);
+          here *= wide >= 1.0 ? double(g->cover) : glm::mix(grove(w, d, *g, role.index, b), double(g->cover), wide);
+        }
+        if(!(here > 0.0))
+          continue;
+        // those not drawn are the smallest: the sizes up to `hidden` of the whole range
+        const double least = double(g->scaleMin), most = least + double(g->scaleMax - g->scaleMin) * role.hidden;
+        const double mid = 0.5 * (least + most), top = role.top - double(g->sink);
+        trees += here;
+        crowns += here * kPi * (role.crown * mid) * (role.crown * mid);
+        mean += here * top * mid;
+        low += here * top * least;
+        high += here * top * most;
+        colour += float(here) * (role.leafy ? kLeaves : kNeedles);
+      }
+    if(!(trees > 0.0))
+      return {};
+    mean /= trees;
+    low /= trees;
+    high /= trees;
+    // near: each point a crown's top, by its share of the ground, or the floor between
+    const double covered = 1.0 - std::exp(-crowns);
+    const double wide    = smooth(kCrownsTo, kWoodFrom, cell);
+    double       topHeight = 0.0, topShare = 0.0;
+    if(wide < 1.0)
+    {
+      // (by where the point is, not which quad's it is: two quads of a level draw their edge alike)
+      const double   step = 0.25 * cell / w.spec.radius;
+      const auto     key  = [&](double x) { return uint32_t(uint64_t(std::llround(x / step))); };
+      const uint32_t h    = hash(uint32_t(w.spec.seed) + kCanopySalt, key(d.x), key(d.y), key(d.z));
+      if(double(unit(h)) < covered)
+      {
+        topHeight = low + (high - low) * double(unit(mix(h + 1U)));
+        topShare  = 1.0;
+      }
+    }
+    // far: the wood over each point, as high as its crowns stand on the whole, and as much of it seen
+    const double woodShare = 1.0 - std::exp(-kSlant * crowns);
+    Lift         out;
+    out.height = float(glm::mix(topHeight, covered * mean, wide));
+    out.share  = float(glm::mix(topShare, woodShare, wide));
+    out.colour = colour / float(trees);
+    return out;
+  };
 }
 
 namespace {

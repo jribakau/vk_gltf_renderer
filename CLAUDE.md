@@ -76,7 +76,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   ranges, peaks, basins and plains, shaping the land before the base map is baked),
   its base map (`src/fv_world_map.*`: rain, erosion, valley floors, lakes and rivers, baked once a
   planet) and the gullies on its steep slopes, laid down the fall that map has,
-  its plants by biome from the backdrop's kit (`src/fv_world_plants.*`) and its sea floor's, made
+  its plants by biome from the backdrop's kit (`src/fv_world_plants.*`; the far woods' trees not drawn
+  stand as a canopy on the ground's mesh) and its sea floor's, made
   from a seed (`src/fv_world_sea.*`), what people left on it from a catalogue of packs and rules
   (`src/fv_world_places.*`, `src/fv_host_world_places.cpp`: places on levelled ground, roads routed
   between them, things by the roads; a planet file's regions with more or fewer, and places by name;

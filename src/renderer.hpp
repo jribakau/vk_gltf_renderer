@@ -467,6 +467,7 @@ public:
   void setWorldGround(const WorldGround& ground) override;
   void setWorldWaterAtEye(float level) override;
   void setWaterMotion(float seconds, float heading) override;
+  bool worldCanopy() const override { return m_resources.settings.worldCanopy; }
   void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> observer) override
   {
     m_pivotObserver = std::move(observer);

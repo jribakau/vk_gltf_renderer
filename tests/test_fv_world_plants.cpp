@@ -5,7 +5,9 @@
 // own; and the grass's tiles lie on the ground, none of them twice.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <set>
 
@@ -87,6 +89,62 @@ glm::dvec3 inAWood(const W::World& w, uint32_t skip = 0)
   }
   ADD_FAILURE() << "no wood";
   return w.frame.site;
+}
+
+// A place well inside a biome, away from water
+glm::dvec3 inBiome(const W::World& w, std::string_view name)
+{
+  for(uint32_t i = 0; i < 6000; i++)
+  {
+    const glm::dvec3 d = spread(i, 6000);
+    const W::Sample  s = W::sample(w, d, 30.0);
+    if(s.elevation > 10.0 && w.biomes[size_t(s.biome)].name == name && s.share[size_t(s.biome)] > 0.95F && s.shore > 500.0F)
+      return d;
+  }
+  ADD_FAILURE() << "no " << name;
+  return w.frame.site;
+}
+
+// The planet planted, its far woods' trees a canopy (World::canopied), and a kit's trees for it
+const W::World& canopied()
+{
+  static const W::World w = [] {
+    W::World with = planet();
+    with.planted  = true;
+    with.canopied = true;
+    return with;
+  }();
+  return w;
+}
+const W::World& plantedOnly()
+{
+  static const W::World w = [] {
+    W::World with = planet();
+    with.planted  = true;
+    return with;
+  }();
+  return w;
+}
+W::Canopy kitCanopy()
+{
+  W::Canopy c;
+  for(size_t r = 0; r < W::kStandingRoles.size(); r++)
+    if(W::isTree(W::kStandingRoles[r]))
+    {
+      const bool leafy = W::drawnAs(W::kStandingRoles[r]) == "broadleaf";
+      c.height[r]      = leafy ? 5.0F : 7.5F;
+      c.crown[r]       = leafy ? 3.0F : 2.0F;
+    }
+  return c;
+}
+
+// How far each of a mesh's surface points stands over the ground's own, metres
+std::vector<double> raisedBy(const W::ChunkMesh& lifted, const W::ChunkMesh& ground)
+{
+  std::vector<double> out(lifted.surface);
+  for(uint32_t v = 0; v < lifted.surface; v++)
+    out[v] = glm::distance(lifted.centre + glm::dvec3(lifted.positions[v]), ground.centre + glm::dvec3(ground.positions[v]));
+  return out;
 }
 
 // A few quads of a level with plenty growing on them
@@ -649,4 +707,190 @@ TEST(WorldSea, ItsPlantsStandOnTheSeasFloorUnderItsSurface)
   // none on a quad too coarse to be seen from the water, and none on dry land
   EXPECT_TRUE(W::seaStanding(w, {0, uint8_t(level - 2), 3, 3}, glm::dvec3(0.0), meshes).empty());
   EXPECT_TRUE(W::seaStanding(w, quadAt(w.frame.site, level), glm::dvec3(0.0), meshes).empty());
+}
+
+// ---- far woods as a canopy (canopyLift, groundMesh's lift) ---------------------------------------------
+
+// Where a quad holds every tree, it lifts nothing, and its ground is what it was before there was a
+// canopy: the quads round the eye, on the three finest levels
+TEST(WorldCanopy, TheGroundNearIsWhatItWas)
+{
+  const W::World&  w    = canopied();
+  const W::Canopy  kit  = kitCanopy();
+  const glm::dvec3 wood = inAWood(w);
+  for(int up = 0; up <= 2; up++)
+  {
+    const W::Quad   q    = quadAt(wood, uint8_t(W::finestLevel(w) - up));
+    const W::LiftOf lift = W::canopyLift(w, q, kit);
+    EXPECT_FALSE(lift) << up;
+    const W::ChunkMesh m = W::groundMesh(w, q, lift), was = W::groundMesh(plantedOnly(), q);
+    ASSERT_EQ(m.positions.size(), was.positions.size());
+    EXPECT_EQ(m.indices, was.indices);
+    for(size_t v = 0; v < m.positions.size(); v++)
+    {
+      ASSERT_EQ(m.positions[v], was.positions[v]) << up << " " << v;
+      ASSERT_EQ(m.colors[v], was.colors[v]) << up << " " << v;
+      ASSERT_EQ(m.layers[v], was.layers[v]) << up << " " << v;
+    }
+  }
+  // and none without a kit's trees
+  EXPECT_FALSE(W::canopyLift(w, quadAt(wood, uint8_t(W::finestLevel(w) - 4)), {}));
+}
+
+// A far quad of a wood stands on a good share of its points, as high as the kit's trees; one of the
+// steppe, with its lone pines, on few
+TEST(WorldCanopy, AFarWoodStandsOverItsGroundAndASteppeHardly)
+{
+  const W::World& w      = canopied();
+  const W::Canopy kit    = kitCanopy();
+  const uint8_t   level  = uint8_t(W::finestLevel(w) - 3);
+  const auto      raised = [&](const glm::dvec3& d, double& tallest) {
+    const W::Quad   q    = quadAt(d, level);
+    const W::LiftOf lift = W::canopyLift(w, q, kit);
+    EXPECT_TRUE(lift);
+    const std::vector<double> by = raisedBy(W::groundMesh(w, q, lift), W::groundMesh(w, q));
+    tallest                      = *std::max_element(by.begin(), by.end());
+    return double(std::count_if(by.begin(), by.end(), [](double h) { return h > 0.5; })) / double(by.size());
+  };
+  double       woodTallest = 0.0, steppeTallest = 0.0;
+  const double wood = raised(inAWood(w), woodTallest), steppe = raised(inBiome(w, "steppe"), steppeTallest);
+  EXPECT_GT(wood, 0.1);
+  EXPECT_LT(wood, 0.95) << "a wood's floor shows between its crowns";
+  EXPECT_LT(steppe, 0.25 * wood);
+  // no higher than the kit's tallest at the largest a biome grows it (7.5 m at 2.4)
+  EXPECT_GT(woodTallest, 5.0);
+  EXPECT_LT(woodTallest, 7.5 * 2.4 + 0.5);
+}
+
+// Nothing stands where `standing` stands no tree: the sea and its beach, inland water and a river's
+// banks, bare rock, the snow, a desert away from water, the figures' place
+TEST(WorldCanopy, NoCanopyWhereNoTreeStands)
+{
+  const W::World& w     = canopied();
+  const W::Canopy kit   = kitCanopy();
+  const uint8_t   level = uint8_t(W::finestLevel(w) - 4);
+  const auto      biome = [&](std::string_view name) {
+    for(size_t b = 0; b < w.biomes.size(); b++)
+      if(w.biomes[b].name == name)
+        return b;
+    ADD_FAILURE() << name;
+    return size_t(0);
+  };
+  const size_t snow = biome("snow"), desert = biome("desert");
+  size_t       checked = 0, lifted = 0;
+  for(uint32_t i = 0; i < 20000; i++)
+  {
+    const glm::dvec3 d    = spread(i, 20000);
+    const W::Quad    q    = quadAt(d, level);
+    const W::LiftOf  lift = W::canopyLift(w, q, kit);
+    ASSERT_TRUE(lift);
+    const double    cell = W::width(w, q) / double(W::kGroundCells);
+    const W::Sample s    = W::sample(w, d, cell);
+    const W::Lift   at   = lift(d, s, cell);
+    const bool none = s.elevation < 2.5 || s.water > s.elevation - 0.2 || (s.inland.river && s.inland.riverAway < s.inland.riverHalf + 2.0)
+                      || s.rock > 0.5F;
+    if(none)
+    {
+      EXPECT_EQ(at.height, 0.0F) << i;
+      EXPECT_EQ(at.share, 0.0F) << i;
+      checked++;
+    }
+    // (a biome without trees: as little as the hundredth of another its edge has)
+    else if(s.share[snow] > 0.99F || (s.share[desert] > 0.99F && s.shore > 100.0F))
+    {
+      EXPECT_LT(at.height, 0.2F) << i;
+      EXPECT_LT(at.share, 0.02F) << i;
+      checked++;
+    }
+    lifted += at.height > 0.0F ? 1U : 0U;
+  }
+  EXPECT_GT(checked, 1000U);
+  EXPECT_GT(lifted, 500U);
+  // the figures' place
+  const W::Quad q    = quadAt(w.frame.site, level);
+  const double  cell = W::width(w, q) / double(W::kGroundCells);
+  const W::Lift at   = W::canopyLift(w, q, kit)(w.frame.site, W::sample(w, w.frame.site, cell), cell);
+  EXPECT_EQ(at.height, 0.0F);
+}
+
+// Two quads of a level beside each other still meet along their edge with a canopy on both, and a
+// point it stands on is the canopy's colour with none of the ground's layers; the rest is the ground
+TEST(WorldCanopy, NeighboursMeetAndTheCanopyIsItsOwn)
+{
+  const W::World& w     = canopied();
+  const W::Canopy kit   = kitCanopy();
+  const uint8_t   level = uint8_t(W::finestLevel(w) - 3);
+  W::Quad         a     = quadAt(inAWood(w), level), b = a;
+  if(a.x + 1 < (1U << level))
+    b.x = a.x + 1;
+  else
+    a.x = b.x - 1;
+  const W::ChunkMesh ma = W::groundMesh(w, a, W::canopyLift(w, a, kit)), mb = W::groundMesh(w, b, W::canopyLift(w, b, kit));
+  const uint32_t     side       = W::kGroundCells + 1;
+  size_t             raisedEdge = 0;
+  for(uint32_t j = 0; j < side; j++)
+  {
+    const glm::dvec3 pa = ma.centre + glm::dvec3(ma.positions[j * side + side - 1]), pb = mb.centre + glm::dvec3(mb.positions[j * side]);
+    EXPECT_NEAR(glm::distance(pa, pb), 0.0, 2e-3) << j;
+    double           r  = 0.0;
+    const glm::dvec3 on = W::toPlanet(w, pa, &r);
+    raisedEdge += r - w.spec.radius > W::sample(w, on, 1.0).elevation + 3.0 ? 1U : 0U;
+  }
+  EXPECT_GT(raisedEdge, 0U) << "the edge crosses the wood";
+
+  const W::ChunkMesh        ground = W::groundMesh(w, a);
+  const std::vector<double> by     = raisedBy(ma, ground);
+  size_t                    raised = 0;
+  for(uint32_t v = 0; v < ma.surface; v++)
+    if(by[v] > 0.5)
+    {
+      raised++;
+      EXPECT_EQ(ma.layers[v], 0U) << v;
+      EXPECT_EQ(ma.layersMore[v], glm::vec4(0.0F)) << v;
+      const glm::vec4 c = ma.colors[v];
+      EXPECT_GT(c.y, c.x) << v;  // green over red
+      EXPECT_LT(c.y, 0.12F) << v;
+    }
+    else
+    {
+      EXPECT_EQ(ma.colors[v], ground.colors[v]) << v;
+      EXPECT_EQ(ma.layers[v], ground.layers[v]) << v;
+    }
+  EXPECT_GT(raised, 100U);
+  // the skirts hang a cell under the ground's highest, past what a canopy raises the edge
+  const double cell = W::width(w, a) / double(W::kGroundCells);
+  for(uint32_t v = ma.surface; v < ma.positions.size(); v++)
+  {
+    double r = 0.0;
+    W::toPlanet(w, ma.centre + glm::dvec3(ma.positions[v]), &r);
+    EXPECT_LT(r - w.spec.radius, ground.highest - cell + 0.5) << v;
+  }
+}
+
+// What a canopy costs a quad's ground: alternately with and without, at four levels over a wood
+TEST(WorldCanopy, DISABLED_Cost)
+{
+  for(const double radius : {20000.0, 100000.0})
+  {
+    W::World w = radius > 50000.0 ? W::make({.radius = radius}) : planet();
+    w.planted = w.canopied = true;
+    const W::Canopy  kit  = kitCanopy();
+    const glm::dvec3 wood = inAWood(w);
+    std::printf("a planet %.0f km in radius\n", radius / 1000.0);
+    for(int up = 3; up <= 6; up++)
+    {
+      const W::Quad q     = quadAt(wood, uint8_t(W::finestLevel(w) - up));
+      double        ms[2] = {0.0, 0.0};
+      for(int round = 0; round < 6; round++)
+      {
+        const bool with = round % 2 == 1;
+        const auto from = std::chrono::steady_clock::now();
+        for(int k = 0; k < 10; k++)
+          W::groundMesh(w, q, with ? W::canopyLift(w, q, kit) : W::LiftOf{});
+        ms[with ? 1 : 0] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count() / 30.0;
+      }
+      std::printf("level %u (%.0f m a quad, %.1f m a cell): %.2f ms bare, %.2f ms with a canopy\n", unsigned(q.level), W::width(w, q),
+                  W::width(w, q) / double(W::kGroundCells), ms[0], ms[1]);
+    }
+  }
 }

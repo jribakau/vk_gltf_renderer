@@ -335,6 +335,21 @@ void FvHost::Impl::followPlanet()
   PlanetBuilt& p = *planetBuilt;
   if(!p.world)
     return;  // being made
+  // a far wood's canopy asked for, or no longer (the `worldCanopy` setting): the quads made again
+  if(p.planted && renderer->worldCanopy() != p.canopyAsked)
+  {
+    p.canopyAsked = renderer->worldCanopy();
+    bool anyCanopy = false;
+    for(size_t r = 0; r < W::kStandingRoles.size(); r++)
+      anyCanopy = anyCanopy || (W::isTree(W::kStandingRoles[r]) && p.canopy.height[r] > 0.0F);
+    if(const bool canopied = p.canopyAsked && anyCanopy; canopied != p.world->canopied)
+    {
+      fv::world::World with = *p.world;
+      with.canopied         = canopied;
+      p.world               = std::make_shared<const fv::world::World>(std::move(with));
+      restreamPlanet(scene);
+    }
+  }
   const fv::world::World& world = *p.world;
   struct Timed
   {
@@ -395,7 +410,7 @@ void FvHost::Impl::followPlanet()
     }
   }
   // selected again once it, or where it will be, has gone a twentieth of its height over the ground:
-  // a quad's reach is twice its width, and the nearest is no nearer than that height
+  // a quad's reach is kSplit of its widths, and the nearest is no nearer than that height
   const glm::dvec3 ahead = eye + p.velocity * W::kLead;
   if(const double gone = std::max(0.5, 0.05 * p.eyeHeight);
      !p.selected || glm::distance(eye, p.selectedFor) > gone || glm::distance(ahead, p.selectedAhead) > gone)
@@ -474,14 +489,15 @@ void FvHost::Impl::followPlanet()
   p.flights++;
   p.making.insert(ask.begin(), ask.end());
   loaders.spawn([this, held = p.world, ask = std::move(ask), generation = p.generation, planted = p.planted, variants = p.variants,
-                 density = p.density, seaMeshes = p.seaMeshes, roadTiles = p.roadTiles] {
+                 density = p.density, canopy = p.canopy, seaMeshes = p.seaMeshes, roadTiles = p.roadTiles] {
     auto made = std::make_shared<std::vector<PlanetMade>>(ask.size());
     fv::jobs::parallelFor(ask.size(), 1, [&](size_t begin, size_t end) {
       for(size_t i = begin; i < end; i++)
       {
         PlanetMade& m = (*made)[i];
         m.quad        = ask[i];
-        m.ground      = W::groundMesh(*held, ask[i]);
+        // the trees it does not hold, as a canopy on its ground
+        m.ground = W::groundMesh(*held, ask[i], planted && held->canopied ? W::canopyLift(*held, ask[i], canopy) : W::LiftOf{});
         // a river's or a lake's water, cut at the ground's own points; the sea is no mesh
         // (shaders/world_sea.h.slang)
         if(m.ground.inland)
@@ -1036,11 +1052,26 @@ void FvHost::Impl::plantPlanet(rs::RetainedScene& scene)
     if(const auto found = kitPlantsOf(*backdropBuilt, W::kStandingRoles[r]); found != backdropBuilt->variants.end())
       p.variants[r] = uint32_t(found->second.size());
   p.density   = backdropSpec.density;
+  // the kit's trees as a far wood's canopy is made of them: each role's models on the whole
+  p.canopy         = {.density = p.density};
+  bool anyCanopy   = false;
+  for(size_t r = 0; r < W::kStandingRoles.size(); r++)
+    if(const auto found = kitPlantsOf(*backdropBuilt, W::kStandingRoles[r]); found != backdropBuilt->variants.end() && !found->second.empty())
+    {
+      for(const BackdropBuilt::Variant& v : found->second)
+      {
+        p.canopy.height[r] += v.height / float(found->second.size());
+        p.canopy.crown[r] += v.halfWidth / float(found->second.size());
+      }
+      anyCanopy = anyCanopy || (W::isTree(W::kStandingRoles[r]) && p.canopy.height[r] > 0.0F);
+    }
+  p.canopyAsked = renderer->worldCanopy();
   // (the planet as one whose plants are drawn: the same, but for the ground under them)
-  if(!p.world->planted)
+  if(const bool canopied = p.canopyAsked && anyCanopy; !p.world->planted || p.world->canopied != canopied)
   {
     fv::world::World with = *p.world;
     with.planted         = true;
+    with.canopied        = canopied;
     p.world              = std::make_shared<const fv::world::World>(std::move(with));
   }
   p.tileKinds = W::tileKinds(*p.world, p.density);
@@ -1565,7 +1596,14 @@ Json FvHost::Impl::planetMap(const Json& args)
     if(planetBuilt && planetBuilt->world && fv::backdrop::isPlanet(backdropSpec))
     {
       s.world = planetBuilt->world;
-      s.plan  = backdropSpec.settlement;
+      // (a map's woods are their canopy's colour: on the ground's mesh that is the canopy's own)
+      if(s.world->canopied)
+      {
+        W::World with = *s.world;
+        with.canopied = false;
+        s.world       = std::make_shared<const W::World>(std::move(with));
+      }
+      s.plan = backdropSpec.settlement;
     }
     return s;
   });

@@ -909,8 +909,9 @@ void FvHost::Impl::holdBackdropPlants(rs::RetainedScene& scene)
       base[3]        = glm::vec4(0.0F, 0.0F, 0.0F, 1.0F);
       scene.setParent(e, built.root);
       scene.setLocal(e, {});
-      // how far from its foot it reaches on the plan: its meshes' boxes, as its node turns and sizes them
-      float halfWidth = 0.0F;
+      // how far from its foot it reaches on the plan, and how high: its meshes' boxes, as its node
+      // turns and sizes them
+      float halfWidth = 0.0F, height = 0.0F;
       for(const rs::MeshPart& part : entity->mesh->parts)
         if(const rs::MeshRecord* m = scene.mesh(part.mesh))
           if(const std::array<glm::vec3, 2> b = m->bounds(); b[0].x <= b[1].x)
@@ -918,9 +919,10 @@ void FvHost::Impl::holdBackdropPlants(rs::RetainedScene& scene)
             {
               const glm::vec3 p = glm::vec3(base * glm::vec4(b[size_t(c & 1)].x, b[size_t((c >> 1) & 1)].y, b[size_t((c >> 2) & 1)].z, 1.0F));
               halfWidth         = std::max({halfWidth, std::abs(p.x), std::abs(p.z)});
+              height            = std::max(height, p.y);
             }
       const int mesh = node < plant.model->nodes.size() ? plant.model->nodes[node].mesh : -1;
-      held.variants.push_back({.entity = e, .base = base, .halfWidth = halfWidth, .model = plant.model, .mesh = mesh});
+      held.variants.push_back({.entity = e, .base = base, .halfWidth = halfWidth, .height = height, .model = plant.model, .mesh = mesh});
       held.entities.push_back(e);
     }
   }

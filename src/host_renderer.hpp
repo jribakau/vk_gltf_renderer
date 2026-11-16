@@ -182,6 +182,9 @@ public:
   // where its waves go, radians round from +x toward +z. Every frame; a frame whose moment is new
   // starts the image again where there is water to draw.
   virtual void setWaterMotion(float /*seconds*/, float /*heading*/) {}
+  // Whether a planet's far woods stand on its ground as a canopy (the `worldCanopy` setting,
+  // fv_world_plants.hpp canopyLift): the host's quads are made so, and made again when it changes
+  virtual bool worldCanopy() const { return true; }
   virtual void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> /*observer*/) {}
   // The pixel readout: what is at a normalized viewport position (origin top-left) and how bright it
   // is, read a frame or two later and again while the still refines (a few times a second), so it
