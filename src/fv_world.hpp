@@ -419,6 +419,9 @@ struct ChunkMesh
   uint32_t               surface = 0;  // the first vertices are the surface's; the rest its skirts'
   double                 lowest = 0.0, highest = 0.0;  // its elevations: under 0, the sea lies on it
   bool                   inland = false;  // a river or a lake lies on it
+  // The ground's: the elevation of each of its surface's points, under any lift (groundAt). A water
+  // mesh has none.
+  std::vector<double> elevations;
 };
 // What stands over a point of the ground and is drawn as the ground's own surface (a far wood's
 // canopy: fv_world_plants.hpp canopyLift): metres over it, and how much of the point it is, which
@@ -436,6 +439,9 @@ using LiftOf = std::function<Lift(const glm::dvec3& direction, const Sample& gro
 // as much further; its centre, `lowest`, `highest` and `inland` are the ground's still, and so is the
 // slope its colour and layers go by. Without one, the ground alone.
 ChunkMesh groundMesh(const World& world, const Quad& quad, const LiftOf& lift = {});
+// How high the ground stands at a point of a quad as its mesh (`ground`, the quad's groundMesh) draws
+// it: on the triangle over the point, under any lift. What stands on the quad's ground stands on that.
+double groundAt(const World& world, const Quad& quad, const ChunkMesh& ground, const glm::dvec3& direction);
 // The inland water over a quad, `cells` along its edge: the lakes' and rivers' surfaces where they
 // lie (waterLevel), cut at the ground's own points when it has as many cells as the ground. The sea
 // has no mesh: it is the sphere at its level, which the renderer meets by itself, waves and all

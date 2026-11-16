@@ -1072,7 +1072,9 @@ their kit when there is one. It needs no kit: without one it stands bare.
   riverside models of its own (the app's download has none) draws them with its leafy trees
   (`drawnAs`). A tree, a bush or a rock
   has a place that follows from the planet alone (a grid a role over a cube face) and a reach, how
-  far it is seen from, by its size among its kind's (`reachOf`): a wood's largest trees for
+  far it is seen from, by its size among its kind's (`reachOf`; its rank is its cell's place in its
+  block's own order, so a far quad walks only the largest, and a cell no grove of its biomes keeps
+  is passed by before the ground is asked): a wood's largest trees for
   kilometres, the dry land's small trees for a couple, a wood's smallest and its undergrowth for a
   few hundred metres, the share seen at a distance falling as its square, so those seen from one
   place stay about as many however far the largest are seen (a wood of several kinds of tree is
@@ -1080,7 +1082,7 @@ their kit when there is one. It needs no kit: without one it stands bare.
   can draw (`heldFrom`), each decided on the ground as the finest quads have it: a plant is the same
   plant, in its place and of its size, whichever quad holds it, and a quad taking another's place
   changes none. They are made with the quad's ground on the pool and arrive with it, a variant an
-  entity. The host gives the entity as copies the plants that may be seen from where the eye is and
+  entity, each standing on the triangle of that ground under it (`groundAt`). The host gives the entity as copies the plants that may be seen from where the eye is and
   shows each by its own distance (`showPlanetPlants`: hidden past its reach, by the copy's own flag,
   and growing to its size over the last of the way in, in a few steps, fewer the further it is seen
   from, so it comes into view small; a frame gives no more entities other copies, and takes in no

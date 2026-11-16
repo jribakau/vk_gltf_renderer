@@ -1291,6 +1291,7 @@ ChunkMesh groundMesh(const World& world, const Quad& q, const LiftOf& lift)
   m.colors.reserve(count + 4 * size_t(N + 1));
   m.layers.reserve(count + 4 * size_t(N + 1));
   m.layersMore.reserve(count + 4 * size_t(N + 1));
+  m.elevations.reserve(count);
   const uint32_t dither = lattice(uint32_t(world.spec.seed), kChDither);
   float          tallest = 0.0F;  // the most the lift raises a vertex
   for(int j = 0; j <= int(N); j++)
@@ -1327,6 +1328,7 @@ ChunkMesh groundMesh(const World& world, const Quad& q, const LiftOf& lift)
       m.layers.push_back(packed);
       static_assert(kGroundLayers == 8, "four layers in a word, four as floats");
       m.layersMore.emplace_back(layers[4], layers[5], layers[6], layers[7]);
+      m.elevations.push_back(s.elevation);
       m.lowest  = std::min(m.lowest, s.elevation);
       m.highest = std::max(m.highest, s.elevation);
       m.inland  = m.inland || s.water > s.elevation - 0.3;
@@ -1337,6 +1339,42 @@ ChunkMesh groundMesh(const World& world, const Quad& q, const LiftOf& lift)
   // up to about a cell's worth, and what stands over either edge
   addSkirts(m, world, N, cell + double(tallest));
   return m;
+}
+
+double groundAt(const World& world, const Quad& q, const ChunkMesh& ground, const glm::dvec3& d)
+{
+  constexpr uint32_t N    = kGroundCells;
+  const uint32_t     side = N + 1;
+  if(ground.elevations.size() < size_t(side) * side)
+    return 0.0;
+  // the cell the point is in, and where in it: the grid is even in the face's own measure
+  const FacePoint p    = onFace(q.face, d);
+  const double    step = coordOf(q, q.x, 1, N) - coordOf(q, q.x, 0, N);
+  const double    fx = std::clamp((p.u - coordOf(q, q.x, 0, N)) / step, 0.0, double(N));
+  const double    fy = std::clamp((p.v - coordOf(q, q.y, 0, N)) / step, 0.0, double(N));
+  const uint32_t  i = std::min(uint32_t(fx), N - 1), j = std::min(uint32_t(fy), N - 1);
+  const double    a = fx - double(i), b = fy - double(j);
+  // its corners as the mesh has them, under any lift, and its triangles cut as addGrid cuts them
+  const auto corner = [&](uint32_t ci, uint32_t cj) {
+    return toScene(world, direction(q.face, coordOf(q, q.x, int(ci), N), coordOf(q, q.y, int(cj), N)), ground.elevations[size_t(cj) * side + ci]);
+  };
+  const glm::dvec3 c00 = corner(i, j), c10 = corner(i + 1, j), c01 = corner(i, j + 1), c11 = corner(i + 1, j + 1);
+  const auto       apart = [&](const glm::dvec3& x, const glm::dvec3& y) {
+    const glm::vec3 e = glm::vec3(x - ground.centre) - glm::vec3(y - ground.centre);
+    return glm::dot(e, e);
+  };
+  std::array<glm::dvec3, 3> t;
+  if(apart(c00, c11) <= apart(c10, c01))
+    t = a >= b ? std::array<glm::dvec3, 3>{c00, c10, c11} : std::array<glm::dvec3, 3>{c00, c11, c01};
+  else
+    t = a + b <= 1.0 ? std::array<glm::dvec3, 3>{c00, c10, c01} : std::array<glm::dvec3, 3>{c10, c11, c01};
+  // where the planet's radius through the point meets that triangle's plane
+  const glm::dvec3 along  = world.frame.turn * d;
+  const glm::dvec3 normal = glm::cross(t[1] - t[0], t[2] - t[0]);
+  const double     facing = glm::dot(normal, along);
+  if(std::abs(facing) < 1e-12 * glm::length(normal))
+    return ground.elevations[size_t(j) * side + i];
+  return glm::dot(normal, t[0] - world.frame.centre) / facing - world.spec.radius;
 }
 
 ChunkMesh waterMesh(const World& world, const Quad& q, uint32_t cells)

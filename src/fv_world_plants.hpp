@@ -8,7 +8,8 @@
 //   the planet's ground are drawn with it, a variant's as instancing copies. A place follows from the
 //   planet alone, not from the quad: each role has a grid of its own over a cube face, a plant a
 //   cell at the most, kept by how thickly the biomes there grow it. Each plant has a reach, how far
-//   it is seen from, by its size among its kind's: a wood's largest trees for kilometres, its
+//   it is seen from, by its size among its kind's (its rank: its cell's place in its block's own
+//   order, so a far quad finds the largest without walking the rest): a wood's largest trees for kilometres, its
 //   smallest and its undergrowth for a few hundred metres. A quad holds the plants whose reach passes
 //   where the quad can draw, so a plant is the same plant, in its place and of its size, whichever
 //   quad holds it, and whoever draws them shows each by its own distance (`grownAt`). The trees a
@@ -107,8 +108,10 @@ inline float grownAt(double away, double reach)
 
 // What stands on a quad's ground. `variants`: how many the kit has of each role (none: the role is
 // left out). `centre`: what the places are about, the quad's mesh's (ChunkMesh::centre). `density`:
-// of every plant's own, as the backdrop's.
-std::vector<Stand> standing(const World& world, const Quad& quad, const glm::dvec3& centre, std::span<const uint32_t> variants, double density = 1.0);
+// of every plant's own, as the backdrop's. `drawn`: the quad's ground mesh, whose triangles each
+// stands on (groundAt); none: on the ground as a mesh of the quad would draw it, near enough.
+std::vector<Stand> standing(const World& world, const Quad& quad, const glm::dvec3& centre, std::span<const uint32_t> variants, double density = 1.0,
+                            const ChunkMesh* drawn = nullptr);
 
 // ---- far woods as a canopy -----------------------------------------------------------------------------
 

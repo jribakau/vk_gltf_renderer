@@ -107,26 +107,87 @@ fv::backdrop::Spec flatSpec(const World& w, const char* kind, double density)
   return flat;
 }
 
-// A role's grid over a cube face, a plant a cell at the most, `thickest` of them a square metre where
-// they stand thickest: calls each(u, v, cell, h) for every cell whose plant falls on the quad (a cell
-// on the quad's edge is the quad's the plant falls in). `h`: the cell's own hash.
-template <class Each>
-void overCells(const World& w, const Quad& q, double thickest, uint32_t salt, Each&& each)
+// A plant's rank among its kind's by size, 0 the largest, is its cell's place in its block: a role's
+// grid is in blocks of kBlock by kBlock cells, each with an order of its own (`blockOrder`, a
+// permutation its hash keys), and the k-th cell of that order has a rank from k to k + 1 of the
+// block's cells. So the largest of a block come first, and a quad that holds only the largest (a far
+// one) finds them without looking at the rest; each block has its share of them, spread as it may.
+constexpr uint32_t kBlock = 16, kBlockCells = kBlock * kBlock;  // (a byte: a Feistel of two halves of 4 bits)
+uint32_t blockOrder(uint32_t key, uint32_t k)
 {
-  const double  span = 2.0 / double(uint64_t(1) << q.level);
-  const double  u0 = double(q.x) * span - 1.0, v0 = double(q.y) * span - 1.0;
-  const double  n    = std::max(1.0, std::round(2.0 * halfFace(w) * std::sqrt(thickest)));
-  const double  cell = 2.0 / n;  // in the face's own measure, -1 to 1 across it
-  const int64_t x0 = int64_t(std::floor((u0 + 1.0) / cell)), x1 = int64_t(std::ceil((u0 + span + 1.0) / cell));
-  const int64_t y0 = int64_t(std::floor((v0 + 1.0) / cell)), y1 = int64_t(std::ceil((v0 + span + 1.0) / cell));
+  uint32_t l = k >> 4U, r = k & 15U;
+  for(uint32_t round = 0; round < 4; round++)
+  {
+    const uint32_t next = l ^ (mix(key + round * 0x9E3779B9U + r) & 15U);
+    l                   = r;
+    r                   = next;
+  }
+  return (l << 4U) | r;
+}
+// And back: where in its block's order a cell (by its place in the block) comes
+uint32_t blockPlace(uint32_t key, uint32_t cell)
+{
+  uint32_t l = cell >> 4U, r = cell & 15U;
+  for(int round = 3; round >= 0; round--)
+  {
+    const uint32_t before = r ^ (mix(key + uint32_t(round) * 0x9E3779B9U + l) & 15U);
+    r                     = l;
+    l                     = before;
+  }
+  return (l << 4U) | r;
+}
+
+// A role's grid over a cube face, a plant a cell at the most, `thickest` of them a square metre where
+// they stand thickest: calls each(u, v, cell, h, rank) for every cell whose plant falls on the quad (a
+// cell on the quad's edge is the quad's the plant falls in) and ranks no further than `ranked` among
+// its kind's by size (0 the largest; 1 or more: every one). `h`: the cell's own hash. A quad holding
+// few of them is walked a block at a time, its largest first; one holding many, a cell at a time:
+// the same plants either way.
+template <class Each>
+void overCells(const World& w, const Quad& q, double thickest, uint32_t salt, double ranked, Each&& each)
+{
+  if(!(ranked > 0.0))
+    return;
+  const double   span = 2.0 / double(uint64_t(1) << q.level);
+  const double   u0 = double(q.x) * span - 1.0, v0 = double(q.y) * span - 1.0;
+  const double   n    = std::max(1.0, std::round(2.0 * halfFace(w) * std::sqrt(thickest)));
+  const double   cell = 2.0 / n;  // in the face's own measure, -1 to 1 across it
+  const int64_t  x0 = int64_t(std::floor((u0 + 1.0) / cell)), x1 = int64_t(std::ceil((u0 + span + 1.0) / cell));
+  const int64_t  y0 = int64_t(std::floor((v0 + 1.0) / cell)), y1 = int64_t(std::ceil((v0 + span + 1.0) / cell));
+  const uint32_t seed = uint32_t(w.spec.seed) + salt;
+  const auto     keyOf = [&](int64_t bx, int64_t by) { return hash(seed ^ 0xB5297A4DU, uint32_t(q.face), uint32_t(bx), uint32_t(by)); };
+  // a cell's plant, if it falls on the quad and ranks so far: its place in its block's order and the
+  // hash's own share of a place make its rank
+  const auto visit = [&](int64_t ix, int64_t iy, uint32_t place) {
+    const uint32_t h    = hash(seed, uint32_t(q.face), uint32_t(ix), uint32_t(iy));
+    const double   rank = (double(place) + double(unit(mix(h + 5U)))) / double(kBlockCells);
+    if(rank > ranked)
+      return;
+    const double u = (double(ix) + double(unit(h))) * cell - 1.0, v = (double(iy) + double(unit(mix(h + 1U)))) * cell - 1.0;
+    if(u >= u0 && u < u0 + span && v >= v0 && v < v0 + span)
+      each(u, v, cell, h, rank);
+  };
+  const int64_t bx0 = x0 / int64_t(kBlock), bx1 = (x1 - 1) / int64_t(kBlock), by0 = y0 / int64_t(kBlock), by1 = (y1 - 1) / int64_t(kBlock);
+  const double  places = std::min(double(kBlockCells), std::ceil(ranked * double(kBlockCells)));
+  if(double((bx1 - bx0 + 1) * (by1 - by0 + 1)) * places < double((x1 - x0) * (y1 - y0)))
+  {
+    for(int64_t by = by0; by <= by1; by++)
+      for(int64_t bx = bx0; bx <= bx1; bx++)
+      {
+        const uint32_t key = keyOf(bx, by);
+        for(uint32_t k = 0; double(k) < places; k++)
+        {
+          const uint32_t c  = blockOrder(key, k);
+          const int64_t  ix = bx * int64_t(kBlock) + int64_t(c % kBlock), iy = by * int64_t(kBlock) + int64_t(c / kBlock);
+          if(ix >= x0 && ix < x1 && iy >= y0 && iy < y1)
+            visit(ix, iy, k);
+        }
+      }
+    return;
+  }
   for(int64_t iy = y0; iy < y1; iy++)
     for(int64_t ix = x0; ix < x1; ix++)
-    {
-      const uint32_t h = hash(uint32_t(w.spec.seed) + salt, uint32_t(q.face), uint32_t(ix), uint32_t(iy));
-      const double   u = (double(ix) + double(unit(h))) * cell - 1.0, v = (double(iy) + double(unit(mix(h + 1U)))) * cell - 1.0;
-      if(u >= u0 && u < u0 + span && v >= v0 && v < v0 + span)
-        each(u, v, cell, h);
-    }
+      visit(ix, iy, blockPlace(keyOf(ix / int64_t(kBlock), iy / int64_t(kBlock)), uint32_t((iy % int64_t(kBlock)) * int64_t(kBlock) + ix % int64_t(kBlock))));
 }
 
 // A cell's share of a plant where they stand thickest: a face's cells are smaller toward its edges,
@@ -262,7 +323,8 @@ double heldFrom(const World& w, const Quad& q)
   return q.level >= finestLevel(w) ? 0.0 : kHeldMargin * kSplit * width(w, q);
 }
 
-std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& centre, std::span<const uint32_t> variants, double density)
+std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& centre, std::span<const uint32_t> variants, double density,
+                            const ChunkMesh* drawn)
 {
   std::vector<Stand> out;
   if(!(density > 0.0))
@@ -307,15 +369,31 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
       continue;  // a quad too far for any of them
     const bool                       rock = isStone(role);
     std::vector<std::vector<Placed>> placed(variants[r]);
-    overCells(w, q, thickest, 7919U * uint32_t(r + 1), [&](double u, double v, double cell, uint32_t h) {
+    // those seen from where the quad draws are the largest: as far down their ranks as that (Reach::of)
+    const double ranked = held > 0.0 ? std::min(1.0, (reach.all / held) * (reach.all / held)) * (1.0 + 1e-9) : 1.0;
+    overCells(w, q, thickest, 7919U * uint32_t(r + 1), ranked, [&](double u, double v, double cell, uint32_t h, double rank) {
         // its size among its kind's, and by that how far it is seen from: the quad's, if that far
-        const float  size = unit(mix(h + 5U));
-        const double seen = reach.of(1.0 - double(size));
+        const float  size = float(1.0 - rank);
+        const double seen = reach.of(rank);
         if(seen < held)
           return;
         const glm::dvec3 d = direction(q.face, u, v);
         // what grows by water only, nowhere near any: one look at the base map, not the ground
         if(!anywhere && mapInland(*w.base, w.spec.radius, d).shore() >= double(water))
+          return;
+        // its groves, before the ground, which costs most: the odds below are the biomes' own by
+        // their shares, which sum to 1, so no more than the most any of them gives here (the ground's
+        // share of water taken as none). A cell in none of its biomes' groves is passed by.
+        std::array<double, kMostBiomes> groves;
+        double                          could = 0.0;
+        for(size_t b = 0; b < w.biomes.size() && b < kMostBiomes; b++)
+          if(const Growth* g = grows[b])
+          {
+            groves[b] = g->cover < 1.0F ? grove(w, d, *g, r, b) : 1.0;
+            could     = std::max(could, g->perSquareMetre * density / thickest * groves[b]);
+          }
+        const double share = cellShare(w, q.face, u, v, cell, thickest);
+        if(double(unit(mix(h + 2U))) >= could * (1.0 + 1e-6) * share)
           return;
         const Sample s = sample(w, d, kPlantFootprint);
         if(bare(s, rock) || cleared(w, d) || (!rock && s.rock > 0.5F) || (s.built.taken & kGroundKept))
@@ -334,7 +412,7 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
             continue;
           double here = g->perSquareMetre * density / thickest;
           if(g->cover < 1.0F)
-            here *= grove(w, d, *g, r, b);
+            here *= groves[b];
           here *= byWater(g->water, s.shore);
           odds += double(s.share[b]) * here;
           if(s.share[b] > top)
@@ -343,14 +421,14 @@ std::vector<Stand> standing(const World& w, const Quad& q, const glm::dvec3& cen
             most = g;
           }
         }
-        if(!most || double(unit(mix(h + 2U))) >= odds * cellShare(w, q.face, u, v, cell, thickest))
+        if(!most || double(unit(mix(h + 2U))) >= odds * share)
           return;
         // nothing but rocks on a cliff's shoulders or a bluff: where the tiers stand the land up, by
         // the ground's own slope (asked only there: two more looks at the ground)
         if(!rock && (s.cliff > 0.02F || s.steepened > 2.0F) && slopeAt(w, d, s.elevation, kPlantFootprint) > kStandSlope)
           return;
         const float  scale  = most->scaleMin + (most->scaleMax - most->scaleMin) * size;
-        const double ground = footprint > 1.5 * kPlantFootprint ? sample(w, d, footprint).elevation : s.elevation;
+        const double ground = drawn ? groundAt(w, q, *drawn, d) : footprint > 1.5 * kPlantFootprint ? sample(w, d, footprint).elevation : s.elevation;
         placed[mix(h + 3U) % variants[r]].push_back({placeOn(w, d, ground - double(most->sink * scale), centre, unit(mix(h + 4U)), scale), float(seen)});
     });
     standsOf(uint8_t(r), placed, out);
@@ -574,9 +652,10 @@ std::vector<Stand> seaStanding(const World& w, const Quad& q, const glm::dvec3& 
     if(reach.most < held)
       continue;
     std::vector<std::vector<Placed>> placed(of.size());
-    overCells(w, q, thickest, 104729U * uint32_t(r + 1), [&](double u, double v, double cell, uint32_t h) {
-      const float  size = unit(mix(h + 5U));
-      const double seen = reach.of(1.0 - double(size));
+    const double ranked = held > 0.0 ? std::min(1.0, (reach.all / held) * (reach.all / held)) * (1.0 + 1e-9) : 1.0;
+    overCells(w, q, thickest, 104729U * uint32_t(r + 1), ranked, [&](double u, double v, double cell, uint32_t h, double rank) {
+      const float  size = float(1.0 - rank);
+      const double seen = reach.of(rank);
       if(seen < held)
         return;
       const glm::dvec3 d = direction(q.face, u, v);

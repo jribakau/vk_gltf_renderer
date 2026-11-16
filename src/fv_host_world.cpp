@@ -507,7 +507,7 @@ void FvHost::Impl::followPlanet()
             m.sea.reset();
         }
         if(planted && m.ground.highest > 0.0)
-          m.stands = W::standing(*held, ask[i], m.ground.centre, variants, density);
+          m.stands = W::standing(*held, ask[i], m.ground.centre, variants, density, &m.ground);
         if(seaMeshes && m.ground.lowest < 0.0)
           m.seaStands = W::seaStanding(*held, ask[i], m.ground.centre, *seaMeshes, density);
         if(held->places)

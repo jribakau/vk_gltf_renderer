@@ -868,6 +868,128 @@ TEST(WorldCanopy, NeighboursMeetAndTheCanopyIsItsOwn)
   }
 }
 
+// A far quad walks its trees' grids a block at a time, the largest first, where a near one walks
+// them a cell at a time: the plants are the same, each where its children have it, of its size and
+// with its reach (matched by where on the planet it stands, the coarser ground putting its foot
+// higher or lower)
+TEST(WorldPlants, AFarQuadFindsTheLargestAsItsChildrenHaveThem)
+{
+  const W::World& w = planet();
+  for(const int up : {4, 5, 6})
+  {
+    const W::Quad      q    = quadAt(inAWood(w), uint8_t(W::finestLevel(w) - up));
+    const double       held = W::heldFrom(w, q);
+    std::vector<Plant> whole = plantsOf(w, q), parts;
+    for(const W::Quad& child : W::children(q))
+      for(const Plant& p : plantsOf(w, child))
+        if(p.reach >= held)
+          parts.push_back(p);
+    ASSERT_GT(whole.size(), 20U) << up;
+    EXPECT_EQ(whole.size(), parts.size()) << up;
+    const auto same = [&](const Plant& a, const Plant& b) {
+      return a.role == b.role && glm::length(W::toPlanet(w, a.at) - W::toPlanet(w, b.at)) * w.spec.radius < 0.01 && std::abs(a.scale - b.scale) < 1e-4
+             && std::abs(a.reach - b.reach) < 1e-2;
+    };
+    for(const Plant& p : whole)
+      EXPECT_TRUE(std::any_of(parts.begin(), parts.end(), [&](const Plant& o) { return same(p, o); })) << up << " " << int(p.role);
+  }
+}
+
+// `standing` passes a cell by before it asks the ground when none of its biomes' groves would keep it
+// there, which holds only while a point's biomes' shares sum to no more than 1: the biome table's rows
+// meet with soft edges that sum to 1
+TEST(WorldPlants, ThePlacesBiomesShareItWhole)
+{
+  const W::World& w = planet();
+  for(uint32_t i = 0; i < 20000; i++)
+  {
+    const W::Sample s   = W::sample(w, spread(i, 20000), 5.0);
+    double          sum = 0.0;
+    for(const float share : s.share)
+      sum += double(share);
+    ASSERT_LE(sum, 1.0 + 1e-6) << i;
+    ASSERT_GT(sum, 1.0 - 1e-4) << i;
+  }
+}
+
+// Given its quad's ground mesh, each plant stands on the triangle under it, sunk by its own sink
+TEST(WorldPlants, EachStandsOnTheTrianglesItsQuadDraws)
+{
+  const W::World& w = planet();
+  for(const int up : {0, 3, 5})
+  {
+    const W::Quad      q      = quadAt(inAWood(w), uint8_t(W::finestLevel(w) - up));
+    const W::ChunkMesh ground = W::groundMesh(w, q);
+    size_t             plants = 0;
+    for(const W::Stand& stand : W::standing(w, q, ground.centre, kVariants, 1.0, &ground))
+      for(const glm::mat4& m : stand.places)
+      {
+        // the radius through its foot meets one of the surface's triangles: as high as the foot,
+        // less how far a plant of its role and scale is sunk
+        const glm::dvec3 foot = ground.centre + glm::dvec3(m[3]);
+        double           r    = 0.0;
+        const glm::dvec3 d    = W::toPlanet(w, foot, &r);
+        const glm::dvec3 from = w.frame.centre, along = glm::normalize(foot - w.frame.centre);
+        double           met  = -1.0;
+        for(size_t k = 0; k + 2 < ground.indices.size() && met < 0.0; k += 3)
+        {
+          if(ground.indices[k] >= ground.surface || ground.indices[k + 1] >= ground.surface || ground.indices[k + 2] >= ground.surface)
+            continue;
+          const glm::dvec3 a = ground.centre + glm::dvec3(ground.positions[ground.indices[k]]);
+          const glm::dvec3 b = ground.centre + glm::dvec3(ground.positions[ground.indices[k + 1]]);
+          const glm::dvec3 c = ground.centre + glm::dvec3(ground.positions[ground.indices[k + 2]]);
+          // Moller-Trumbore
+          const glm::dvec3 e1 = b - a, e2 = c - a, p = glm::cross(along, e2);
+          const double     det = glm::dot(e1, p);
+          if(std::abs(det) < 1e-12)
+            continue;
+          const glm::dvec3 t0 = from - a;
+          const double     s = glm::dot(t0, p) / det, t = glm::dot(along, glm::cross(t0, e1)) / det;
+          if(s >= -1e-6 && t >= -1e-6 && s + t <= 1.0 + 1e-6)
+            met = glm::dot(e2, glm::cross(t0, e1)) / det;
+        }
+        ASSERT_GT(met, 0.0) << up;
+        const double sunk = met - r;  // how far under the triangle the foot is
+        EXPECT_GE(sunk, -0.02) << up << " " << int(stand.role);
+        EXPECT_LT(sunk, 0.25 * double(glm::length(glm::vec3(m[1]))) + 0.02) << up << " " << int(stand.role);
+        (void)d;
+        plants++;
+      }
+    EXPECT_GT(plants, 20U) << up;
+  }
+}
+
+// What planting a quad costs beside its ground, at levels from near to far over a wood: the trees'
+// grids are walked whole however few of their plants a far quad holds
+TEST(WorldPlants, DISABLED_Cost)
+{
+  for(const double radius : {20000.0, 100000.0})
+  {
+    W::World w = radius > 50000.0 ? W::make({.radius = radius}) : planet();
+    w.planted  = true;
+    const glm::dvec3 wood = inAWood(w);
+    std::printf("a planet %.0f km in radius\n", radius / 1000.0);
+    for(int up = 1; up <= 7; up++)
+    {
+      const W::Quad q      = quadAt(wood, uint8_t(W::finestLevel(w) - up));
+      double        ground = 0.0, plants = 0.0;
+      size_t        count  = 0;
+      for(int k = 0; k < 5; k++)
+      {
+        auto               from = std::chrono::steady_clock::now();
+        const W::ChunkMesh mesh = W::groundMesh(w, q);
+        ground += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count() / 5.0;
+        from = std::chrono::steady_clock::now();
+        count = 0;
+        for(const W::Stand& s : W::standing(w, q, mesh.centre, kVariants, 1.0, &mesh))
+          count += s.places.size();
+        plants += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count() / 5.0;
+      }
+      std::printf("level %u (%.0f m a quad): ground %.2f ms, plants %.2f ms (%zu of them)\n", unsigned(q.level), W::width(w, q), ground, plants, count);
+    }
+  }
+}
+
 // What a canopy costs a quad's ground: alternately with and without, at four levels over a wood
 TEST(WorldCanopy, DISABLED_Cost)
 {
