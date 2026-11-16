@@ -49,12 +49,9 @@ depth starts over where the picture does (`sample_schedule::frameStartsDepth`: a
 frame a still takes over from DLSS), and a still's later frames only bring it nearer, so a strand one
 sample missed still hides the grid. The overlays read it at the size of the frame that last started it
 (`PathTracer::depthExtent`), not by whether DLSS is up: DLSS stays up through a still it has handed to
-the accumulation. It writes the G-buffer depth image directly as a storage image when the depth format
-supports it.
-`nvvk::RenderTarget` only grants STORAGE usage in that case, and Vulkan does not require it for any
-depth format; `D32_SFLOAT` lacks it on AMD. There `PathTracer` binds an `R32_SFLOAT` staging image
-instead and copies it into the depth image through a buffer (`PathTracer::cmdCopyStagedDepth`),
-since core Vulkan has no direct copy between color and depth images.
+the accumulation. It writes the G-buffer depth image directly as a storage image: `D32_SFLOAT` is
+one on every NVIDIA RTX GPU, the renderer's only target (`PathTracer::onAttach` says so where it isn't;
+the staging copy other GPUs needed was removed 2026-11-16).
 
 ---
 
@@ -102,7 +99,6 @@ src/
 ├── camera_controls.cpp/hpp     # What a viewport drag does to the camera (dragMotion), and the manipulator it drives
 ├── settings_registry.hpp       # One declaration per setting -> CLI + MCP + ImGui.ini
 ├── animation_control.cpp/hpp   # Animation playback state, scrubbing and clip choice
-├── busy_state.hpp              # Busy flag: a background scene job is running
 ├── resources.hpp               # Shared Vulkan resources and settings (`nvvk::FrameUploader` staging)
 │
 ├── deform_pipelines.cpp/hpp    # The skinning and morph compute pipelines

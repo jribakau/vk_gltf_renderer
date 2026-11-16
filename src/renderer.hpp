@@ -71,7 +71,6 @@
 #include "sky_sun.hpp"
 #include "gltf_environment_sky.hpp"
 #include "camera_controls.hpp"
-#include "busy_state.hpp"
 #include "gizmo_visuals_vk.hpp"
 #include "timeline_pipeline.hpp"
 #include "scene_clip_player.hpp"
@@ -719,7 +718,6 @@ private:
 
   SkySun         m_skySun;          // Who the sun is, and where it points
 
-  BusyState    m_busy;
   Silhouette    m_silhouette;     // Silhouette renderer
   HdrOutput     m_hdrOutput;      // The frame an HDR display is shown, and EXR exports
   float         m_rainRingTime = 0.0f;  // the rain's clock when the accumulation began: its rings' moment

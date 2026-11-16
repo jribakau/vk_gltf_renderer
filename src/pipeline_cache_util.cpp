@@ -133,7 +133,8 @@ VkResult PipelineCacheManager::init(VkDevice device, const std::filesystem::path
   std::vector<char> cacheData;
 
   // Try to load existing cache data from disk
-  if(std::filesystem::exists(m_cacheFilePath))
+  std::error_code existsError;  // a path that can't be checked is a cache that isn't there
+  if(std::filesystem::exists(m_cacheFilePath, existsError))
   {
     try
     {
@@ -151,7 +152,7 @@ VkResult PipelineCacheManager::init(VkDevice device, const std::filesystem::path
           m_initialSize   = fileSize;
           m_lastSavedSize = fileSize;
           m_lastSavedHash = fnv1a64(cacheData.data(), cacheData.size());
-          LOGI("Loaded pipeline cache from %s (%zu bytes)\n", m_cacheFilePath.string().c_str(), fileSize);
+          LOGI("Loaded pipeline cache from %s (%zu bytes)\n", nvutils::utf8FromPath(m_cacheFilePath).c_str(), fileSize);
         }
         else if(fileSize > kMaxPipelineCacheFileSize)
         {
@@ -289,7 +290,7 @@ bool PipelineCacheManager::save()
   m_lastSavedSize       = cacheData.size();
   m_lastSavedHash       = hash;
   const ptrdiff_t delta = static_cast<ptrdiff_t>(cacheData.size()) - static_cast<ptrdiff_t>(m_initialSize);
-  LOGI("Saved pipeline cache to %s (%zu bytes, %+td vs load)\n", m_cacheFilePath.string().c_str(), cacheData.size(), delta);
+  LOGI("Saved pipeline cache to %s (%zu bytes, %+td vs load)\n", nvutils::utf8FromPath(m_cacheFilePath).c_str(), cacheData.size(), delta);
   return true;
 }
 
@@ -335,7 +336,7 @@ void PipelineCacheManager::saveThreadMain()
       m_lastSavedSize       = cacheData.size();
       m_lastSavedHash       = hash;
       const ptrdiff_t delta = static_cast<ptrdiff_t>(cacheData.size()) - static_cast<ptrdiff_t>(initialSize);
-      LOGI("Saved pipeline cache to %s (%zu bytes, %+td vs load)\n", path.string().c_str(), cacheData.size(), delta);
+      LOGI("Saved pipeline cache to %s (%zu bytes, %+td vs load)\n", nvutils::utf8FromPath(path).c_str(), cacheData.size(), delta);
     }
     if(m_saveAgain && m_cache != VK_NULL_HANDLE)
     {
@@ -363,36 +364,6 @@ void PipelineCacheManager::saveAsync()
   m_saveAgain    = false;
   m_saveInFlight = true;
   m_saveThread   = std::thread([this] { saveThreadMain(); });
-}
-
-
-//--------------------------------------------------------------------------------------------------
-// Usage example
-//--------------------------------------------------------------------------------------------------
-static void usage_PipelineCacheManager()
-{
-  VkDevice device = nullptr;  // EX: get the device from the app (m_app->getDevice())
-
-  nvvk::PipelineCacheManager pipelineCacheManager;
-
-  // Initialize the pipeline cache, loading from file if it exists
-  pipelineCacheManager.init(device, "pipeline_cache.bin");
-
-  // Use the cache when creating pipelines
-  VkPipelineCache cache = pipelineCacheManager.getCache();
-
-  VkGraphicsPipelineCreateInfo pipelineInfo = {};  // EX: fill in pipeline create info
-  VkPipeline                   pipeline     = VK_NULL_HANDLE;
-  vkCreateGraphicsPipelines(device, cache, 1, &pipelineInfo, nullptr, &pipeline);
-
-  // The cache can also be used implicitly via conversion operator
-  vkCreateGraphicsPipelines(device, pipelineCacheManager, 1, &pipelineInfo, nullptr, &pipeline);
-
-  // Save the cache manually (optional, as it's saved automatically on deinit)
-  pipelineCacheManager.save();
-
-  // Cleanup - this will save the cache to disk and destroy it
-  pipelineCacheManager.deinit();
 }
 
 }  // namespace nvvk

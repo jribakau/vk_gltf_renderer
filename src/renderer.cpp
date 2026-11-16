@@ -327,7 +327,6 @@ void GltfRenderer::onAttach(nvapp::Application* app)
   m_pathTracer.setCacheDir(m_cacheDir);
   m_pathTracer.onAttach(m_resources, &m_profilerGpuTimer);
   m_pathTracer.setProfilerTimeline(m_profilerTimeline);
-  m_pathTracer.setBusyState(&m_busy);
 
   m_pathTracer.createPipeline(m_resources);
   // the RTX pipeline the first path-traced frame needs, built on a thread while the app starts
@@ -1004,18 +1003,10 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   // Before anything reads the sun: if the scene marks a light as the sky's sun, that light owns
   // its direction.
   m_skySun.syncFromMarkedLight();
-  // Don't do anything if the busy window is open
-  if(m_busy.isBusy())
-  {
-    return;
-  }
-
-  // Consume the done signal from the busy state.
-  if(m_busy.isDone())
-  {
-    m_busy.consumeDone();
-    resetFrame();
-  }
+  // A variant swapped in last frame that draws another image (a Display view, a still's light groups)
+  // than the one that stood in while it built: the accumulation starts again with it
+  if(m_pathTracer.takeAccumulationRestart())
+    resetFrame(/*sceneChanged=*/false);
 
   // Loading pipeline: submit queued work, poll completion, run callbacks
   if(isAutomatedRun())
@@ -1391,6 +1382,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
   }
   else
   {
+    m_pathTracer.stopStillClock();  // a paused still's idle time is none of its time limit
     // Print CPU time only once after render completes
     if(!m_cpuTimePrinted)
     {

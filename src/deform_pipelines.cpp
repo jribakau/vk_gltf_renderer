@@ -37,56 +37,8 @@ namespace nvvkgltf {
 
 void DeformPipelines::create(VkDevice device)
 {
-
-  // Skinning pipeline (push constants only, no descriptor sets)
-  {
-    VkPushConstantRange pushRange{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = sizeof(shaderio::SkinPushConstant)};
-    VkPipelineLayoutCreateInfo layoutInfo{.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                          .pushConstantRangeCount = 1,
-                                          .pPushConstantRanges    = &pushRange};
-    NVVK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &skinLayout));
-    NVVK_DBG_NAME(skinLayout);
-
-    VkShaderModuleCreateInfo shaderInfo{.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                        .codeSize = skinning_comp_slang_sizeInBytes,
-                                        .pCode    = skinning_comp_slang};
-
-    VkComputePipelineCreateInfo pipeInfo{.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                         .stage  = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                    .pNext = &shaderInfo,
-                                                    .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                    .pName = "main"},
-                                         .layout = skinLayout};
-    NVVK_CHECK(vkCreateComputePipelines(device, nullptr, 1, &pipeInfo, nullptr, &skin));
-    NVVK_DBG_NAME(skin);
-  }
-
-  // Morph pipeline
-  {
-    VkPushConstantRange pushRange{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = sizeof(shaderio::MorphPushConstant)};
-    VkPipelineLayoutCreateInfo layoutInfo{.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                          .pushConstantRangeCount = 1,
-                                          .pPushConstantRanges    = &pushRange};
-    NVVK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &morphLayout));
-    NVVK_DBG_NAME(morphLayout);
-
-    VkShaderModuleCreateInfo shaderInfo{.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                        .codeSize = morph_comp_slang_sizeInBytes,
-                                        .pCode    = morph_comp_slang};
-
-    VkComputePipelineCreateInfo pipeInfo{.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                         .stage  = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                    .pNext = &shaderInfo,
-                                                    .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                    .pName = "main"},
-                                         .layout = morphLayout};
-
-    NVVK_CHECK(vkCreateComputePipelines(device, nullptr, 1, &pipeInfo, nullptr, &morph));
-    NVVK_DBG_NAME(morph);
-  }
-
-  // The retained scene's figure passes: subdivision stencils, welded normals and tangents (push
-  // constants only)
+  // Each a compute pipeline of push constants only, no descriptor sets: skinning, morphs, and the
+  // retained scene's figure passes (subdivision stencils, welded normals and tangents)
   const auto pipeline = [device](uint32_t pushSize, const uint32_t* code, size_t codeSize, VkPipelineLayout& layout,
                                  VkPipeline& pipe) {
     VkPushConstantRange        pushRange{.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = pushSize};
@@ -107,6 +59,8 @@ void DeformPipelines::create(VkDevice device)
   };
   // Vulkan's guaranteed push constant space
   static_assert(sizeof(shaderio::StencilPushConstant) <= 128);
+  pipeline(sizeof(shaderio::SkinPushConstant), skinning_comp_slang, skinning_comp_slang_sizeInBytes, skinLayout, skin);
+  pipeline(sizeof(shaderio::MorphPushConstant), morph_comp_slang, morph_comp_slang_sizeInBytes, morphLayout, morph);
   pipeline(sizeof(shaderio::StencilPushConstant), stencil_comp_slang, stencil_comp_slang_sizeInBytes, stencilLayout, stencil);
   pipeline(sizeof(shaderio::NormalsPushConstant), vertex_normals_comp_slang, vertex_normals_comp_slang_sizeInBytes,
            normalsLayout, normals);
@@ -116,26 +70,18 @@ void DeformPipelines::create(VkDevice device)
 
 void DeformPipelines::destroy(VkDevice device)
 {
-  if(skin)
-    vkDestroyPipeline(device, skin, nullptr);
-  if(morph)
-    vkDestroyPipeline(device, morph, nullptr);
-  if(skinLayout)
-    vkDestroyPipelineLayout(device, skinLayout, nullptr);
-  if(morphLayout)
-    vkDestroyPipelineLayout(device, morphLayout, nullptr);
-  for(VkPipeline p : {stencil, normals, tangents})
-    if(p)
-      vkDestroyPipeline(device, p, nullptr);
-  for(VkPipelineLayout l : {stencilLayout, normalsLayout, tangentsLayout})
-    if(l)
-      vkDestroyPipelineLayout(device, l, nullptr);
-  stencil = normals = tangents = {};
-  stencilLayout = normalsLayout = tangentsLayout = {};
-  skin        = {};
-  morph       = {};
-  skinLayout  = {};
-  morphLayout = {};
+  for(VkPipeline* p : {&skin, &morph, &stencil, &normals, &tangents})
+  {
+    if(*p)
+      vkDestroyPipeline(device, *p, nullptr);
+    *p = {};
+  }
+  for(VkPipelineLayout* l : {&skinLayout, &morphLayout, &stencilLayout, &normalsLayout, &tangentsLayout})
+  {
+    if(*l)
+      vkDestroyPipelineLayout(device, *l, nullptr);
+    *l = {};
+  }
 }
 
 }  // namespace nvvkgltf

@@ -54,16 +54,6 @@
 #include "_autogen/gltf_pathtrace.slang_dlss.h"
 #endif
 
-// Toggle deferred host operations for RTX pipeline creation.
-// 1 = use VkDeferredOperationKHR to parallelize SPIR-V->ISA compilation across worker threads.
-// 0 = create the pipeline synchronously on the calling thread (useful for comparing compile
-//     times or as a workaround if the driver misbehaves with deferred ops).
-// NOTE: the NVIDIA driver currently does not populate VkPipelineCreationFeedback when a
-// deferred op is used, so the cache-hit flag is only meaningful with USE_DEFERRED_RTX_COMPILE=0.
-#ifndef USE_DEFERRED_RTX_COMPILE
-#define USE_DEFERRED_RTX_COMPILE 0
-#endif
-
 namespace {
 
 // The RTX pipeline's shader stages and groups. createRtxPipeline() and the warm-up both build from
@@ -137,9 +127,11 @@ VkPipelineCreateFlags rtxPipelineFlags(bool opacityMicromaps, bool captureStatis
   return flags;
 }
 
-// A path-tracer pipeline from `module`, as createRqPipeline() or createRtxPipeline() builds it (no
-// deferred operation): any thread, as it touches only the device and the pipeline cache.
-// VK_NULL_HANDLE when the creation failed (`result` says why).
+// A path-tracer pipeline from `module`: the one create info of createRqPipeline(), createRtxPipeline(),
+// the start-up warm-up and the variant jobs, which must match bit for bit for a warm-up to be a cache
+// hit. Any thread, as it touches only the device and the pipeline cache. `pNext`: the creation's own
+// chain (its feedback). VK_NULL_HANDLE when the creation failed (`result` says why). (A deferred
+// operation for the RTX one was measured and not taken.)
 VkPipeline createPathTracePipeline(VkDevice              device,
                                    VkPipelineCache       cache,
                                    VkPipelineLayout      layout,
@@ -150,7 +142,8 @@ VkPipeline createPathTracePipeline(VkDevice              device,
                                    int32_t               inlineShadow,
                                    VkPipelineCreateFlags rtxFlags,
                                    VkPipelineCreateFlags rqFlags,
-                                   VkResult&             result)
+                                   VkResult&             result,
+                                   const void*           pNext = nullptr)
 {
   nvvk::Specialization specialization;
   specialization.add(0, useSER);  // USE_SER
@@ -164,6 +157,7 @@ VkPipeline createPathTracePipeline(VkDevice              device,
   {
     const VkComputePipelineCreateInfo info{
         .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .pNext  = pNext,
         .flags  = rqFlags,
         .stage  = {.sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                    .stage               = VK_SHADER_STAGE_COMPUTE_BIT,
@@ -181,6 +175,7 @@ VkPipeline createPathTracePipeline(VkDevice              device,
     table.stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
     const VkRayTracingPipelineCreateInfoKHR info{
         .sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+        .pNext                        = pNext,
         .flags                        = rtxFlags,
         .stageCount                   = table.stageCount,
         .pStages                      = table.stages.data(),
@@ -202,7 +197,9 @@ VkPipeline createPathTracePipeline(VkDevice              device,
 
 namespace {
 
-constexpr uint64_t kSpirvCacheVersion   = 4;  // 4: the profile and capabilities hashed by name
+// Bump it when how the compiler is set up changes in a way spirvCacheKey doesn't hash (the session's
+// setup in SlangCompiler, an option added out of its options): the key no longer holds the exe's stamp.
+constexpr uint64_t kSpirvCacheVersion   = 5;  // 4: the profile and capabilities hashed by name; 5: no exe stamp
 constexpr size_t   kMaxCachedSpirvBytes = 64ULL * 1024 * 1024;
 // Keys kept in shaders/ after pruning, least recently used dropped first. Each key is one
 // variant (DLSS, wireframe, optimal-shader feature set, ...) of several MB.
@@ -268,23 +265,17 @@ void hashOption(uint64_t& hash, const slang::CompilerOptionEntry& option)
 }
 
 // Everything that changes the SPIR-V except the source text itself (that lives in .deps): macros,
-// every compiler option (capabilities included), targets, the search paths, this executable, and
-// the Slang build. Two trees or two builds therefore do not share a file.
+// every compiler option (capabilities included), targets, the search paths, the Slang build, and
+// kSpirvCacheVersion for how this code sets the compiler up beyond those. The executable's path, so
+// two trees do not share a file, but not its size or time: a relink that changes none of the
+// compiler's inputs kept every cached variant (minutes of Slang compiles on a planet) out of reach.
 uint64_t spirvCacheKey(nvslang::SlangCompiler& compiler)
 {
   uint64_t hash = fnv1a(nvvk::kFnv1aOffset, std::string_view("pt-spirv"));
   hash          = fnv1a(hash, &kSpirvCacheVersion, sizeof(kSpirvCacheVersion));
   const char* tag = spGetBuildTagString();
   hash            = fnv1a(hash, tag ? std::string_view(tag) : std::string_view{});
-
-  const std::filesystem::path executable = nvutils::getExecutablePath();
-  hash                                   = fnv1a(hash, nvutils::utf8FromPath(executable));
-  SourceStamp exeStamp{};
-  if(readStamp(executable, exeStamp))
-  {
-    hash = fnv1a(hash, &exeStamp.size, sizeof(exeStamp.size));
-    hash = fnv1a(hash, &exeStamp.mtimeNs, sizeof(exeStamp.mtimeNs));
-  }
+  hash            = fnv1a(hash, nvutils::utf8FromPath(nvutils::getExecutablePath()));
 
   for(const std::filesystem::path& searchPath : compiler.searchPaths())
     hash = fnv1a(hash, nvutils::utf8FromPath(canonicalDep(searchPath)));
@@ -383,8 +374,6 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
       compiled = m_compiled;
     }
     LOGI("[PathTracer] Shader recompile: %s\n", compiled.shaderDiff(makeVariantKey(resources)).c_str());
-    if(m_busy)
-      m_busy->setReason("Compiling Slang shaders...");
     {
       const ShaderWorkScope stage(ShaderWork::eCompile);
       compileShader(resources);
@@ -398,10 +387,7 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
   if(work.stalePipeline)
   {
     // SYNC NOTE: the previous frame may still use these pipelines. prepareFrame() (or reloadShader())
-    // drained the queue on the application thread before this ran, and no path-tracer frame is
-    // recorded until it is done (the BusyState gates GltfRenderer::onRender). No wait here: this
-    // runs on the compile worker while the application thread submits the BusyState's frames, and
-    // host access to a queue must be externally synchronized.
+    // drained the queue before this ran, on the application thread, which this runs on too.
     const VariantKey wantKey = makeVariantKey(resources);
     {
       std::lock_guard<std::mutex> lock(m_compileMutex);
@@ -422,38 +408,10 @@ void PathTracer::ensureShadersAndPipelines(Resources& resources)
   {
     const ShaderWorkScope stage(ShaderWork::ePipeline);
     if(m_renderTechnique == RenderTechnique::RayQuery)
-    {
-      if(m_busy)
-        m_busy->setReason("Creating Ray Query pipeline...");
       createRqPipeline(resources);
-    }
     else
-    {
-      if(m_busy)
-        m_busy->setReason("Creating RTX pipeline...");
       createRtxPipeline(resources);
-    }
   }
-}
-
-//--------------------------------------------------------------------------------------------------
-// Launches a background worker that (re)compiles the Slang shader and builds the ray
-// tracing pipeline for the currently selected technique.
-void PathTracer::startAsyncCompile(Resources& resources)
-{
-  if(m_compileThread.joinable())
-    m_compileThread.join();
-
-  // Without a BusyState nothing gates the next frame, which then joins this thread in
-  // startAsyncCompile(): the compile still completes, synchronously.
-  if(m_busy)
-    m_busy->start("Preparing path tracer...");
-
-  m_compileThread = std::thread([this, &resources]() {
-    ensureShadersAndPipelines(resources);
-    if(m_busy)
-      m_busy->stop();
-  });
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -538,12 +496,15 @@ void PathTracer::startPipelineWarm(Resources& resources)
       m_pipelineCache.saveAsync();
   };
   // each build with the technique its view renders with (onRender)
-  const bool rqDlss  = m_supportRayQuery && m_techniqueDlss == RenderTechnique::RayQuery;
-  const bool rqStill = m_supportRayQuery && m_techniqueStill == RenderTechnique::RayQuery;
-  m_warmThreads.emplace_back(warm, std::span<const uint32_t>(gltf_pathtrace_slang_dlss, gltf_pathtrace_slang_dlss_sizeInBytes / sizeof(uint32_t)),
-                             "DLSS", rqDlss);
-  m_warmThreads.emplace_back(warm, std::span<const uint32_t>(gltf_pathtrace_slang, gltf_pathtrace_slang_sizeInBytes / sizeof(uint32_t)),
-                             "still", rqStill);
+  const bool rqDlss  = m_techniqueDlss == RenderTechnique::RayQuery;
+  const bool rqStill = m_techniqueStill == RenderTechnique::RayQuery;
+  const auto start   = [&](std::span<const uint32_t> code, const char* build, bool rayQuery) {
+    m_warmThreads.push_back({std::thread(warm, code, build, rayQuery), nvvk::fnv1a64(code.data(), code.size_bytes()), rayQuery});
+  };
+  start(std::span<const uint32_t>(gltf_pathtrace_slang_dlss, gltf_pathtrace_slang_dlss_sizeInBytes / sizeof(uint32_t)), "DLSS", rqDlss);
+  // Under DLSS-RR's still (the app's) every frame draws the DLSS build, and the first frame waits only
+  // for that one's thread (joinPipelineWarm): this one is for a still without the denoiser
+  start(std::span<const uint32_t>(gltf_pathtrace_slang, gltf_pathtrace_slang_sizeInBytes / sizeof(uint32_t)), "still", rqStill);
 #endif
 }
 
@@ -586,14 +547,34 @@ void PathTracer::notePipelineBuild(uint64_t code, bool rayQuery, int32_t useSER,
 
 void PathTracer::joinPipelineWarm()
 {
-  std::vector<std::thread> warm;
+  std::vector<PipelineWarm> warm;
   {
     std::lock_guard lock(m_warmMutex);
     warm.swap(m_warmThreads);
   }
-  for(std::thread& t : warm)
-    if(t.joinable())
-      t.join();
+  for(PipelineWarm& w : warm)
+    if(w.thread.joinable())
+      w.thread.join();
+}
+
+// A warm-up of the pipeline about to be created, still running: waited for, not repeated, so the
+// creation finds it in the cache. The others go on: the first frame of the app's default draws the DLSS
+// build, and waited on the still's too, which it never draws.
+void PathTracer::joinPipelineWarm(uint64_t code, bool rayQuery)
+{
+  std::thread mine;
+  {
+    std::lock_guard lock(m_warmMutex);
+    for(auto it = m_warmThreads.begin(); it != m_warmThreads.end(); ++it)
+      if(it->code == code && it->rayQuery == rayQuery)
+      {
+        mine = std::move(it->thread);
+        m_warmThreads.erase(it);
+        break;
+      }
+  }
+  if(mine.joinable())
+    mine.join();
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -602,21 +583,7 @@ void PathTracer::createRqPipeline(Resources& /*resources*/)
 {
   SCOPED_TIMER(__FUNCTION__);
   // as createRtxPipeline(): a warm-up of this pipeline still running is waited for, not repeated
-  joinPipelineWarm();
-
-  nvvk::Specialization specialization;
-  specialization.add(0, m_useSER ? 1 : 0);  // USE_SER
-#if defined(USE_DLSS)
-  specialization.add(1, static_cast<int32_t>(m_dlss->getTransparencyMode()));  // USE_DLSS_TRANSP
-#endif
-
-  VkPipelineShaderStageCreateInfo shaderStage{
-      .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-      .stage               = VK_SHADER_STAGE_COMPUTE_BIT,
-      .module              = m_shaderModule,
-      .pName               = "computeMain",
-      .pSpecializationInfo = specialization.getSpecializationInfo(),
-  };
+  joinPipelineWarm(moduleCode(m_shaderModule), true);
 
   // Query the driver about pipeline cache hit / compilation duration (core in Vulkan 1.3)
   VkPipelineCreationFeedback           feedback{};
@@ -624,21 +591,16 @@ void PathTracer::createRqPipeline(Resources& /*resources*/)
       .sType                     = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
       .pPipelineCreationFeedback = &feedback,
   };
-
-  VkComputePipelineCreateInfo cpCreateInfo{
-      .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-      .pNext  = &feedbackInfo,
-      .flags  = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u,
-      .stage  = shaderStage,
-      .layout = m_pipelineLayout,
-  };
+  const VkPipelineCreateFlags rqFlags = m_capturePipelineStats ? VkPipelineCreateFlags(VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) : 0u;
 
   // NOTE: if the creation is slow, disable the validation layers for faster creation (--vvl 0)
-  VkPipeline rqPipeline = VK_NULL_HANDLE;
-  const auto rqStart    = std::chrono::steady_clock::now();
-  NVVK_CHECK(vkCreateComputePipelines(m_device, m_pipelineCache.getCache(), 1, &cpCreateInfo, nullptr, &rqPipeline));
+  VkResult         result     = VK_ERROR_UNKNOWN;
+  const auto       rqStart    = std::chrono::steady_clock::now();
+  const VkPipeline rqPipeline = createPathTracePipeline(m_device, m_pipelineCache.getCache(), m_pipelineLayout, m_shaderModule, true,
+                                                        m_useSER ? 1 : 0, transparencyMode(), 0, 0, rqFlags, result, &feedbackInfo);
+  NVVK_CHECK(result);
   NVVK_DBG_NAME(rqPipeline);
-  notePipelineBuild(moduleCode(m_shaderModule), true, m_useSER ? 1 : 0, transparencyMode(), 0, cpCreateInfo.flags,
+  notePipelineBuild(moduleCode(m_shaderModule), true, m_useSER ? 1 : 0, transparencyMode(), 0, rqFlags,
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rqStart).count());
 
   {
@@ -711,21 +673,7 @@ void PathTracer::createRtxPipeline(Resources& resources)
   SCOPED_TIMER(__FUNCTION__);
   // A warm-up of this pipeline still running: wait for it and find it in the cache, rather than
   // have the driver compile it a second time beside it
-  joinPipelineWarm();
-  // Creating all shaders
-  RtxStages table(m_shaderModule, m_inlineShadow);
-  auto&     stages        = table.stages;
-  auto&     shader_groups = table.groups;
-
-  // Shader Execution Reorder (SER)
-  nvvk::Specialization specialization;
-  specialization.add(0, m_useSER ? 1 : 0);  // USE_SER
-#if defined(USE_DLSS)
-  specialization.add(1, static_cast<int32_t>(m_dlss->getTransparencyMode()));  // USE_DLSS_TRANSP
-#endif
-  specialization.add(2, m_inlineShadow ? 1 : 0);  // USE_INLINE_SHADOW
-  stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
-
+  joinPipelineWarm(moduleCode(m_shaderModule), false);
 
   // Query the driver about pipeline cache hit / compilation duration (core in Vulkan 1.3)
   VkPipelineCreationFeedback           feedback{};
@@ -733,111 +681,32 @@ void PathTracer::createRtxPipeline(Resources& resources)
       .sType                     = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
       .pPipelineCreationFeedback = &feedback,
   };
-
   const VkPipelineCreateFlags flags = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats);
-
-  // Assemble the shader stages and recursion depth info into the ray tracing pipeline
-  VkRayTracingPipelineCreateInfoKHR rtPipelineCreateInfo{
-      .sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
-      .pNext                        = &feedbackInfo,
-      .flags                        = flags,
-      .stageCount                   = table.stageCount,  // Stages are shaders
-      .pStages                      = stages.data(),
-      .groupCount                   = static_cast<uint32_t>(shader_groups.size()),
-      .pGroups                      = shader_groups.data(),
-      .maxPipelineRayRecursionDepth = 2,  // Ray depth
-      .layout                       = m_pipelineLayout,
-  };
   {
     std::lock_guard<std::mutex> lock(m_compileMutex);
     vkDestroyPipeline(m_device, m_rtxPipeline, nullptr);
     m_rtxPipeline = VK_NULL_HANDLE;
   }
 
-
-  // Time the create (+ join, when deferred) wall-clock ourselves. The NVIDIA driver does
-  // not populate VkPipelineCreationFeedback when a VkDeferredOperationKHR is used, so
-  // feedback.duration and the VALID_BIT cannot be relied on on the deferred path.
   // NOTE: if the creation is slow, disable the validation layers for faster creation (--vvl 0)
-  const auto createStart = std::chrono::steady_clock::now();
-  VkPipeline rtxPipeline = VK_NULL_HANDLE;
-
-#if USE_DEFERRED_RTX_COMPILE
-  // Deferred host operation: lets the driver split the SPIR-V->ISA compile across worker
-  // threads. On a cache hit the call returns VK_SUCCESS immediately and the join loop is a
-  // no-op, so this is safe to do unconditionally.
-  VkDeferredOperationKHR deferredOp = VK_NULL_HANDLE;
-  NVVK_CHECK(vkCreateDeferredOperationKHR(m_device, nullptr, &deferredOp));
-
-  VkResult createResult = vkCreateRayTracingPipelinesKHR(m_device, deferredOp, m_pipelineCache.getCache(), 1,
-                                                         &rtPipelineCreateInfo, nullptr, &rtxPipeline);
-
-  if(createResult == VK_OPERATION_DEFERRED_KHR)
-  {
-    // Parallelize the compile across worker threads. We spawn (maxConcurrency - 1) workers
-    // and have the calling thread also participate, so we use all available parallelism
-    // reported by the driver without over-subscribing.
-    const uint32_t maxConcurrency = vkGetDeferredOperationMaxConcurrencyKHR(m_device, deferredOp);
-    const uint32_t hwConcurrency  = std::max(1u, std::thread::hardware_concurrency());
-    const uint32_t threadCount    = std::min(maxConcurrency, hwConcurrency);
-
-    auto joinLoop = [this, deferredOp]() {
-      VkResult r;
-      do
-      {
-        r = vkDeferredOperationJoinKHR(m_device, deferredOp);
-      } while(r == VK_THREAD_IDLE_KHR);
-      // VK_THREAD_DONE_KHR: no more work available for this thread (others may still be running)
-      // VK_SUCCESS: whole deferred op finished
-    };
-
-    std::vector<std::thread> workers;
-    workers.reserve(threadCount > 0 ? threadCount - 1 : 0);
-    for(uint32_t i = 1; i < threadCount; ++i)
-      workers.push_back(std::thread(joinLoop));
-    joinLoop();
-    for(auto& t : workers)
-      t.join();
-
-    // All threads returned either VK_THREAD_DONE_KHR or VK_SUCCESS; poll the final result
-    // (per spec, VK_NOT_READY means workers are done but some bookkeeping remains).
-    VkResult finalResult;
-    do
-    {
-      finalResult = vkGetDeferredOperationResultKHR(m_device, deferredOp);
-    } while(finalResult == VK_NOT_READY);
-    NVVK_CHECK(finalResult);
-  }
-  else
-  {
-    NVVK_CHECK(createResult);
-  }
-
-  vkDestroyDeferredOperationKHR(m_device, deferredOp, nullptr);
-  const bool wasDeferred = (createResult == VK_OPERATION_DEFERRED_KHR);
-#else
-  // Synchronous path: no deferred op, driver is expected to populate VkPipelineCreationFeedback.
-  NVVK_CHECK(vkCreateRayTracingPipelinesKHR(m_device, VK_NULL_HANDLE, m_pipelineCache.getCache(), 1,
-                                            &rtPipelineCreateInfo, nullptr, &rtxPipeline));
-  const bool wasDeferred = false;
-#endif
-
+  const auto       createStart = std::chrono::steady_clock::now();
+  VkResult         result      = VK_ERROR_UNKNOWN;
+  const VkPipeline rtxPipeline = createPathTracePipeline(m_device, m_pipelineCache.getCache(), m_pipelineLayout, m_shaderModule, false,
+                                                         m_useSER ? 1 : 0, transparencyMode(), m_inlineShadow ? 1 : 0, flags, 0,
+                                                         result, &feedbackInfo);
+  NVVK_CHECK(result);
   NVVK_DBG_NAME(rtxPipeline);
 
   const double elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - createStart).count();
 
-  // Log pipeline creation status and whether deferred compilation was used. On the deferred
-  // path the driver may skip filling in VkPipelineCreationFeedback, so we rely on our own
-  // wall-clock timing and treat the cache-hit bit as a best-effort hint.
   const bool  valid = (feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT) != 0;
   const char* cacheStatus =
       valid ? ((feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) ? "CACHE HIT" : "cache miss") :
               "cache status unknown";
-  LOGI("RTX pipeline creation: %s, deferred=%s, shadow rays %s (%.2f ms)\n", cacheStatus, wasDeferred ? "yes" : "no",
-       m_inlineShadow ? "inline" : "any-hit", elapsedMs);
+  LOGI("RTX pipeline creation: %s, shadow rays %s (%.2f ms)\n", cacheStatus, m_inlineShadow ? "inline" : "any-hit", elapsedMs);
   notePipelineBuild(moduleCode(m_shaderModule), false, m_useSER ? 1 : 0, transparencyMode(), m_inlineShadow ? 1 : 0, flags, elapsedMs);
   logPipelineStatistics(rtxPipeline, "RTX");
-  // Unknown feedback (the deferred path leaves it unset) is not a hit, so it still saves.
+  // Unknown feedback is not a hit, so it still saves.
   if((feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) == 0)
     m_pipelineCache.saveAsync();
 
@@ -1095,9 +964,6 @@ void PathTracer::storeCachedSpirv(uint64_t key, nvslang::SlangCompiler& compiler
 // Compile the shader
 bool PathTracer::reloadShader(Resources& resources)
 {
-  if(m_compileThread.joinable())
-    m_compileThread.join();
-
   // SYNC NOTE: User-initiated shader reload — cached pipelines may still be in flight from a
   // recent variant switch; live handles are destroyed in compileShader() below.
   NVVK_CHECK(vkQueueWaitIdle(resources.app->getQueue(0).queue));
@@ -1163,7 +1029,7 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
     // A user-forced reload (reloadShader) compiles from source even when the embedded DLSS build
     // or the disk cache would serve, and the result replaces that disk entry.
     const uint64_t spirvKey = spirvCacheKey(resources.slangCompiler);
-    if(!m_skipVariantCache && isEmbeddedDlssVariant(resources))
+    if(!m_skipVariantCache && isEmbeddedDlssVariant(key))
     {
 #if defined(USE_DLSS)
       spirv            = {gltf_pathtrace_slang_dlss, gltf_pathtrace_slang_dlss_sizeInBytes / sizeof(uint32_t)};
@@ -1171,7 +1037,7 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
       LOGI("Slang: embedded DLSS path tracer, no compile\n");
 #endif
     }
-    else if(!m_skipVariantCache && isEmbeddedBaseVariant(resources))
+    else if(!m_skipVariantCache && isEmbeddedBaseVariant(key))
     {
       // the variant a still hands off from (DLSS off, guides on) is the embedded build itself
       spirv            = {gltf_pathtrace_slang, gltf_pathtrace_slang_sizeInBytes / sizeof(uint32_t)};
@@ -1254,12 +1120,12 @@ bool PathTracer::compileShader(Resources& resources, bool fromFile)
 // The embedded DLSS build is CMake's path tracer flags plus USE_DLSS_SHADER=1: guide buffers on
 // (USE_DLSS implies them), SER available, and wireframe, visualization, opacity micromaps and the
 // optimal shader at their off defaults. Any other variant still compiles from source.
-bool PathTracer::isEmbeddedDlssVariant(const Resources& resources) const
+bool PathTracer::isEmbeddedDlssVariant(const VariantKey& key) const
 {
 #if defined(USE_DLSS)
   if(!m_supportSER)
     return false;
-  return makeVariantKey(resources).sameShader(VariantKey{.dlss = true, .dlssGuide = true});
+  return key.sameShader(VariantKey{.dlss = true, .dlssGuide = true});
 #else
   return false;
 #endif
@@ -1270,14 +1136,14 @@ bool PathTracer::isEmbeddedDlssVariant(const Resources& resources) const
 // when DLSS is built in, which is what a still accumulated without a denoiser asks for. Taking
 // it saves the Slang compile and, as its SPIR-V is the one the warm-up built a pipeline from, the
 // pipeline build too.
-bool PathTracer::isEmbeddedBaseVariant(const Resources& resources) const
+bool PathTracer::isEmbeddedBaseVariant(const VariantKey& key) const
 {
   if(!m_supportSER)
     return false;
 #if defined(USE_DLSS)
-  return makeVariantKey(resources).sameShader(VariantKey{.dlssGuide = true});
+  return key.sameShader(VariantKey{.dlssGuide = true});
 #else
-  return makeVariantKey(resources).sameShader(VariantKey{});
+  return key.sameShader(VariantKey{});
 #endif
 }
 
@@ -1365,10 +1231,9 @@ std::string PathTracer::VariantKey::shaderDiff(const VariantKey& to) const
 }
 
 //--------------------------------------------------------------------------------------------------
-// Swap in the wanted variant if the cache already holds it. A hit is only a handle swap, so
-// onRender() does it inline instead of going through the async worker and the BusyState, whose
-// completion resets the accumulation. On a miss nothing is touched: the live handles stay put for
-// compileShader() to park.
+// Swap in the wanted variant if the cache already holds it. A hit is only a handle swap, done inline
+// with no queue wait (swapVariant restarts the accumulation only for a variant that draws another
+// image). On a miss nothing is touched: the live handles stay put for compileShader() to park.
 bool PathTracer::tryRestoreCachedVariant(Resources& resources)
 {
   if(m_skipVariantCache)
@@ -1496,6 +1361,11 @@ bool PathTracer::swapVariant(Resources& resources, const VariantKey& newKey, boo
         m_sbtBuffer   = {};
         m_sbtRegions  = {};
       }
+      // A swap to a variant that draws another image (a view, a still's light groups, a medium inside
+      // another) restarts the accumulation, whose samples so far are the variant that stood in for it
+      // (buildsOffTheFrame). Not on a new accumulation's frame: that one starts with it.
+      if(resources.frameCount > 0 && drawsAnotherImage(currentKey, newKey))
+        m_accumulationRestart = true;
       m_compiled = newKey;
       m_variantCache.erase(it);
       return true;
@@ -1669,22 +1539,29 @@ bool PathTracer::buildsOffTheFrame(Resources& resources, const PendingCompileWor
   // expectation: both are unbiased), so either stands in while the other builds as a job, with no frame
   // waiting on a Slang compile and the driver's pipeline (seconds, tens of them cold). So does one with
   // the moving view's bounce cache compiled in or out: without the code a frame traces its paths whole,
-  // and with it but no table (the setting off, RadianceCache::prepare) it does the same. While the full
-  // build stands in for an optimal variant, one without nested media stands in too: for the seconds
-  // until that variant comes, a medium inside another is drawn by the one-medium rules, where making
-  // the full build with it would hold the frame through its compile (72-90 s cold on a planet) only to
-  // be replaced. Not once the optimal variant failed: then the full build is what draws.
+  // and with it but no table (the setting off, RadianceCache::prepare) it does the same.
+  // The rest draw another image, which stands until the wanted variant swaps in, the accumulation then
+  // starting again (swapVariant): a Display view (Clay, Normals, Material, Object, Density, Facing:
+  // USE_VISUALIZE; Wire; Time), a still's light groups (Light mix's re-mix), a medium inside another
+  // (the one-medium rules meanwhile). Each held the application thread through its compile, the driver's
+  // pipeline too when cold. Not while the full build stands in for an optimal variant that failed: then
+  // nothing builds the wanted one, and it is compiled before the frame.
   if(work.recompile && !work.stalePipeline && !(m_failedVariant && *m_failedVariant == wanted))
   {
-    const bool looseMedia = m_optimalStandIn && !(m_failedVariant && *m_failedVariant == targetVariantKey(resources));
-    const auto otherRis   = [&](const VariantKey& k) {
-      VariantKey same = k;
+    const bool loose    = !m_optimalStandIn || !(m_failedVariant && *m_failedVariant == targetVariantKey(resources));
+    const auto otherRis = [&](const VariantKey& k) {
+      VariantKey same    = k;
       same.lightRis      = wanted.lightRis;
       same.radianceCache = wanted.radianceCache;
-      if(looseMedia)
+      if(loose)
+      {
         same.nestedMedia = wanted.nestedMedia;
-      return (k.lightRis != wanted.lightRis || k.radianceCache != wanted.radianceCache || k.nestedMedia != wanted.nestedMedia)
-             && same == wanted;
+        same.visualize   = wanted.visualize;
+        same.wireframe   = wanted.wireframe;
+        same.pixelTime   = wanted.pixelTime;
+        same.lightGroups = wanted.lightGroups;
+      }
+      return !(k == wanted) && same == wanted;
     };
     const bool rayQuery = m_renderTechnique == RenderTechnique::RayQuery;
     bool       standIn  = false;
@@ -1765,7 +1642,7 @@ void PathTracer::startVariantJob(Resources& resources, const VariantKey& key)
       .profile      = resources.slangCompiler.profile(),
       .capabilities = resources.slangCompiler.capabilities(),
       // the technique of the view the variant draws (a sibling is built for the other view)
-      .rayQuery     = m_supportRayQuery && (key.dlss ? m_techniqueDlss : m_techniqueStill) == RenderTechnique::RayQuery,
+      .rayQuery     = (key.dlss ? m_techniqueDlss : m_techniqueStill) == RenderTechnique::RayQuery,
       .useSER       = m_useSER && m_supportSER,
       .layout       = m_pipelineLayout,
       .rtxFlags     = rtxPipelineFlags(resources.settings.opacityMicromapSupported, m_capturePipelineStats),
@@ -1797,7 +1674,16 @@ PathTracer::VariantBuilt PathTracer::buildVariant(const VariantCompileJob& job)
     compiler.addMacro({name.c_str(), value.c_str()});
   const uint64_t        spirvKey = spirvCacheKey(compiler);
   std::vector<uint32_t> spirv;
-  if(!loadCachedSpirv(spirvKey, spirv))
+  // The two embedded builds need no compile, as compileShader takes them, and theirs is the SPIR-V the
+  // start-up warm-up built a pipeline from: a compile from source could differ, and miss the driver's cache
+#if defined(USE_DLSS)
+  if(isEmbeddedDlssVariant(job.key))
+    spirv.assign(gltf_pathtrace_slang_dlss, gltf_pathtrace_slang_dlss + gltf_pathtrace_slang_dlss_sizeInBytes / sizeof(uint32_t));
+  else
+#endif
+  if(isEmbeddedBaseVariant(job.key))
+    spirv.assign(gltf_pathtrace_slang, gltf_pathtrace_slang + gltf_pathtrace_slang_sizeInBytes / sizeof(uint32_t));
+  else if(!loadCachedSpirv(spirvKey, spirv))
   {
     const auto compileStart = std::filesystem::file_time_type::clock::now();
     if(!compiler.compileFile("gltf_pathtrace.slang"))
@@ -1890,12 +1776,23 @@ void PathTracer::installBuiltVariant(Resources& resources)
   // an optimal variant the scene no longer wants (its features or settings changed while it built) gets no twin
   if(!isDlssEnabled() || (job.key.optimal && !(job.key == targetVariantKey(resources))))
     return;
-  VariantKey sibling = job.key;
-  sibling.dlss       = !job.key.dlss;
-  sibling.lightRis   = lightRisFor(sibling.dlss);  // the still's settings, not DLSS's (or the other way)
-  sibling.radianceCache = radianceCacheFor(sibling.dlss);
-  sibling.lightGroups   = lightGroupsFor(resources, sibling.dlss);
-  bool known         = false;
+  // The twin is the same features for the other view: DLSS's frames, or the still's, each with its own
+  // settings (targetVariantKey). Under DLSS-RR's still both views have DLSS's variant, which gathers RR's
+  // guides, so they differ only in those settings, and with the defaults are one variant: no twin.
+  const auto forView = [&](bool dlssFrame) {
+    VariantKey k    = job.key;
+    k.dlss          = dlssFrame || rrStillOn();
+    k.lightRis      = lightRisFor(dlssFrame);
+    k.radianceCache = radianceCacheFor(dlssFrame);
+    k.lightGroups   = lightGroupsFor(resources, dlssFrame);
+    return k;
+  };
+  const VariantKey moving = forView(true);
+  const VariantKey still  = forView(false);
+  if(moving == still || !(job.key == moving || job.key == still))
+    return;  // one variant draws both, or the job is for neither view as the settings now stand
+  const VariantKey sibling = job.key == moving ? still : moving;
+  bool             known   = false;
   {
     std::lock_guard<std::mutex> lock(m_compileMutex);
     known = m_compiled == sibling

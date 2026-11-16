@@ -55,7 +55,6 @@
 #include "pipeline_cache_util.hpp"
 #include "pixel_time.hpp"
 #include "scene_feature_detection.hpp"
-#include "busy_state.hpp"
 #include "variant_compile_job.hpp"
 
 // #DLSS
@@ -92,7 +91,9 @@ public:
   void                         notifyDlssContentReset(Resources& resources) override;
 
   void updateDlssResources(VkCommandBuffer cmd, Resources& resources);
-  void pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, VkPipelineBindPoint bindPoint) const;
+  // `shownResult`: the result slot is the image shown (eImgRendered) even while the light groups keep
+  // the accumulation in their total (the pixel readout's dispatch)
+  void pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, VkPipelineBindPoint bindPoint, bool shownResult = false) const;
   void createPipeline(Resources& resources) override;
   void createRqPipeline(Resources& resources);
   void createRtxPipeline(Resources& resources);
@@ -157,7 +158,16 @@ public:
   bool driverCacheFull() const { return m_buildRecord.driverDropped(); }
   // User-initiated hot reload: drop cached variants and recompile from Slang source.
   bool reloadShader(Resources& resources);
-  void setBusyState(BusyState* busy) { m_busy = busy; }
+  // A variant swapped in that draws another image than the one it replaced: the accumulation starts
+  // again on the next frame (GltfRenderer asks once a frame)
+  // A frame that traces nothing (the still complete or paused): the still's time stands (ptTimeLimit)
+  void stopStillClock() { m_stillClockOn = false; }
+  bool takeAccumulationRestart()
+  {
+    const bool restart    = m_accumulationRestart;
+    m_accumulationRestart = false;
+    return restart;
+  }
   // --cacheDir. Empty (the default) keeps the caches next to the executable. Set before onAttach.
   void setCacheDir(const std::filesystem::path& dir) { m_cacheDir = dir; }
   // Lens radius squared in metres (0: a pinhole). autoFocus uses the eye-to-target distance. Blades:
@@ -210,15 +220,8 @@ public:
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_PROPERTIES_EXT};
 
   bool m_supportSER{false};      // True when the device supports SER (Shader Execution Reordering).
-  bool m_supportRayQuery{true};  // False where the driver cannot build the ray-query pipeline (see onAttach).
 
-  // Path-traced depth when the G-buffer depth format cannot be a storage image (D32_SFLOAT on AMD):
-  // the shader writes it into m_depthStaging, and the first frame copies it into the depth buffer.
-  bool               m_depthViaStaging{false};
-  bool               m_depthCopyable{true};  // The depth format is 32-bit float, so the staged depth can be copied in
-  nvvk::RenderTarget m_depthStaging;         // R32_SFLOAT, G-buffer size
   nvvk::RenderTarget m_convergence;          // RG32_SFLOAT, G-buffer size: shaderio::eConvergence
-  nvvk::Buffer       m_depthCopyBuffer;      // Bridge for the color -> depth copy (no direct image copy between them)
   nvvk::Buffer       m_cameraMediumBuffer;   // shaderio::CameraMedium: the medium camera paths start in
   nvvk::Buffer       m_pixelInspectBuffer;   // shaderio::PixelInspect, host-mapped: the pixel readout (cmdInspectPixel)
   // ptCameraMedium: whether to probe it. The probe passes through surfaces that bound no medium, so
@@ -405,6 +408,14 @@ public:
     // The fields sameShader() sees differ on, e.g. "omm 0->1, dlss 1->0", for the recompile log.
     std::string shaderDiff(const VariantKey& to) const;
   };
+  // Whether two variants draw another image, not only another estimate of it: the views, the light
+  // groups, nested media (a swap between them restarts the accumulation, swapVariant)
+  static bool drawsAnotherImage(const VariantKey& a, const VariantKey& b)
+  {
+    return a.visualize != b.visualize || a.wireframe != b.wireframe || a.pixelTime != b.pixelTime
+           || a.lightGroups != b.lightGroups || a.nestedMedia != b.nestedMedia;
+  }
+  bool m_accumulationRestart = false;  // swapVariant: the next frame starts the accumulation again (takeAccumulationRestart)
   VariantKey m_compiled{};  // The variant the live shader module and pipelines were built as. Guarded by m_compileMutex.
   // The live module is the embedded SPIR-V standing in for a variant whose compile failed. It is not
   // parked in the variant cache, so the variant compiles again when it is next asked for after a
@@ -449,9 +460,9 @@ public:
   static VariantKey fullBuildOf(const VariantKey& key);
   // True when that variant is the embedded DLSS build (gltf_pathtrace.slang_dlss.h): DLSS and the
   // guide buffers on, nothing else, on a GPU with SER (the embedded build has AVAILABLE_SER=1).
-  bool isEmbeddedDlssVariant(const Resources& resources) const;
-  bool isEmbeddedBaseVariant(const Resources& resources) const;
-  // Swaps in the wanted variant if it is cached (cheap; no BusyState). Leaves live handles alone on a miss.
+  bool isEmbeddedDlssVariant(const VariantKey& key) const;
+  bool isEmbeddedBaseVariant(const VariantKey& key) const;
+  // Swaps in the wanted variant if it is cached (cheap: handles only). Leaves live handles alone on a miss.
   bool tryRestoreCachedVariant(Resources& resources);
   // Destroys a variant's handles now (gpuIdle) or through the app's frame ring
   void releaseVariant(Resources& resources, VkShaderModule module, VkPipeline rtx, VkPipeline rq, nvvk::Buffer sbt, bool gpuIdle);
@@ -492,17 +503,24 @@ public:
   bool                      takeBuiltVariant(Resources& resources);
   void                      discardVariantJob();
 
-  BusyState* m_busy{nullptr};  // Says what the async shader and pipeline compiles are doing
   std::mutex  m_compileMutex;         // Guards compile metadata and live pipeline handles.
-  std::thread m_compileThread;        // Joined in onDetach().
-  std::mutex               m_warmMutex;
-  std::vector<std::thread> m_warmThreads;  // startPipelineWarm(); joined before a creation and in onDetach()
-  void        joinPipelineWarm();
+  // startPipelineWarm()'s threads, each with the pipeline it builds: the SPIR-V's hash (moduleCode) and
+  // the technique. A creation joins the one that builds its pipeline, onDetach() all of them.
+  struct PipelineWarm
+  {
+    std::thread thread;
+    uint64_t    code     = 0;
+    bool        rayQuery = false;
+  };
+  std::mutex                m_warmMutex;
+  std::vector<PipelineWarm> m_warmThreads;
+  void                      joinPipelineWarm();
+  void                      joinPipelineWarm(uint64_t code, bool rayQuery);
   // The DLSS transparency mode the pipelines are specialized on; 0 without DLSS
   int32_t transparencyMode() const;
 
-  // The technique of the frame being rendered: m_techniqueDlss on the DLSS variant's frames,
-  // m_techniqueStill on the others (onRender). Each variant keeps its own pipeline in the cache.
+  // The technique of the frame being rendered: m_techniqueDlss on the frames DLSS draws,
+  // m_techniqueStill on the accumulation's (onRender). A cached variant keeps a pipeline of each.
   RenderTechnique m_renderTechnique{RenderTechnique::RayQuery};
   // Measured 2026-10-28/29 at 4K on the dressed figure: the pipeline with SER took the moving trace
   // from 31 to 19 ms, and once Sobol read no table (sobol.h.slang) the still's frame from 162 to
@@ -558,7 +576,6 @@ public:
   // Samples traced by the last frames, as far back as the profiler's GPU times lag (Auto SPP)
   std::array<int, nvutils::ProfilerTimeline::MAX_FRAME_DELAY + 1> m_recentFrameSamples{};
 
-  nvsamples::RollingAverage<float, 100> m_throughputRollingAvg;  // Rolling average of mega-sample-pixels per second (MSPP/s)
 
   // Adaptive performance targets
   enum class PerformanceTarget
@@ -604,16 +621,6 @@ public:
   // (the still begins again once it is up), or its final pass has not run
   bool stillDenoisePending(const Resources& resources) const;
 
-  // Samples per frame the next frame traces before it ends on a stop: Auto SPP's count, the
-  // setting (ptSamples), or when DLSS renders every frame dlssFrameSamples()
-  int samplesPerFrame() const
-  {
-    return isDlssEveryFrame() ? dlssFrameSamples() : (m_adaptiveSampling ? m_adaptiveSamples : m_samplesPerFrame);
-  }
-
-  // DLSS-RR renders every frame, one sample each. Not with the still's denoiser on: DLSS renders only
-  // frame 0, and the frames it takes trace the samples Auto SPP or Samples per Frame ask for.
-  bool isDlssEveryFrame() const { return isDlssEnabled() && !rrStillOn(); }
   // Whether the path tracer's variant for DLSS's frames, or the still's, has the light candidates and
   // reuse compiled in (VariantKey::lightRis): only for the frames whose settings take them
   bool lightRisFor(bool dlssFrame) const
@@ -712,14 +719,13 @@ private:
   };
   PendingCompileWork getPendingCompileWork(const Resources& resources);
   bool               buildsOffTheFrame(Resources& resources, const PendingCompileWork& work);  // D15
-  bool               prepareFrame(Resources& resources);  // false: skip this frame (async build started)
+  void               prepareFrame(Resources& resources);
   void               ensureShadersAndPipelines(Resources& resources);
-  void               startAsyncCompile(Resources& resources);
   void               updateLightReuse(Resources& resources, VkExtent2D size, bool useDlss);
   void               updateStatistics(Resources& resources);
   // Bind the selected technique's pipeline and descriptors once per frame (false: it has no
   // pipeline), then launch it over `size`, once per launch; the caller times each launch.
-  bool bindTechnique(VkCommandBuffer cmd, Resources& resources);
+  bool bindTechnique(VkCommandBuffer cmd, Resources& resources, bool shownResult = false);
   void cmdTraceFrameSamples(VkCommandBuffer cmd, const shaderio::PathtracePushConstant& first, VkExtent2D size) const;
   void dispatchRays(VkCommandBuffer cmd, VkExtent2D size) const;
   // Find the medium the camera is in (ePtProbeCameraMedium) on the bound pipeline, then push
@@ -755,8 +761,6 @@ private:
   bool rrStillWanted() const;
   // The frame runs the DLSS shader variant: DLSS renders it, or DLSS-RR's still gathers its guides
   bool dlssVariantFrame() const;
-  // Size m_depthStaging / m_depthCopyBuffer to the G-buffer (no-op unless m_depthViaStaging).
-  void updateDepthStaging(VkCommandBuffer cmd, Resources& resources);
   // Size m_convergence to the G-buffer
   void updateConvergence(VkCommandBuffer cmd, Resources& resources);
   // The adaptive stop's count of the pixels still sampling: reads the one this frame's slot holds
@@ -776,8 +780,6 @@ private:
   // The Time view's: what came back to this frame's slot, and this frame's sums copied there
   void takePixelTimes(Resources& resources);
   void copyPixelTimes(VkCommandBuffer cmd, Resources& resources);
-  // Copy the path-traced depth from m_depthStaging into the G-buffer depth image.
-  void cmdCopyStagedDepth(VkCommandBuffer cmd, Resources& resources);
   // Destroy the pipelines for both Ray Query and Ray Tracing
   void destroyPipelinesLocked();
   // True when the scene's BLAS carry opacity micromaps, so the shader must be built with USE_OMM.

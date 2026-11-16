@@ -215,21 +215,10 @@ std::string GltfRenderer::waitUntilMeasurable() const
       return kNoTimeline;
   }
 
-  // Wait out any UI-initiated load (drag-and-drop / File menu) that set m_busy: those still run
-  // on a worker thread with a "Loading" overlay, and frames drawn during that window would time a
-  // partial scene. The scenefile/hdrfile parameter path is now synchronous and does NOT set
-  // m_busy, so this wait is a no-op for MCP-driven loads -- the safeguard for those is the
-  // per-sample budget of the measurement, which refuses to return until the requested timer produces a
-  // non-zero sample (the target section does not run until the pipeline it needs is live).
+  // Loads are synchronous (the scenefile/hdrfile parameters): the safeguard against timing a partial
+  // scene is the measurement's per-sample budget, which refuses to return until the requested timer
+  // produces a non-zero sample (the target section does not run until the pipeline it needs is live).
   // Measured on Sponza, sampling into an un-warmed scene understates cost by ~4x.
-  const auto busyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
-  while(m_busy.isBusy() && std::chrono::steady_clock::now() < busyDeadline)
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  // Still loading when the wait ran out: sampling now would time a partial scene and report that
-  // understatement as a result. Fail instead -- a timeout the caller can retry beats a wrong number.
-  if(m_busy.isBusy())
-    return "the renderer was still loading after 120 s; measuring now would time a "
-           "partially loaded scene. Retry once the load completes.";
   return {};
 }
 

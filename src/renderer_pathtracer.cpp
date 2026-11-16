@@ -123,24 +123,15 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
                                               VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT));
   NVVK_DBG_NAME(m_pixelInspectBuffer.buffer);
 
-  // The path tracer writes depth as a storage image. nvvk::RenderTarget only gives the G-buffer depth
-  // STORAGE usage when the format supports it, which D32_SFLOAT does not on every GPU (AMD); there the
-  // shader writes an R32_SFLOAT image instead, so the binding stays valid, and a copy brings it into the
-  // depth buffer. That copy reinterprets 32-bit float depth only; other formats get no path-traced depth.
+  // The path tracer writes depth as a storage image: the G-buffer's depth format (D32_SFLOAT) is one on
+  // every NVIDIA RTX GPU, the renderer's only target (the staging copy for other GPUs is gone)
   {
     const VkFormat     depthFormat = resources.gBuffers.getDepthFormat();
     VkFormatProperties depthProps{};
     vkGetPhysicalDeviceFormatProperties(resources.allocator.getPhysicalDevice(), depthFormat, &depthProps);
-    const bool storageDepth = (depthProps.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
-    const bool floatDepth   = depthFormat == VK_FORMAT_D32_SFLOAT || depthFormat == VK_FORMAT_D32_SFLOAT_S8_UINT;
-    m_depthViaStaging       = !storageDepth;
-    m_depthCopyable         = floatDepth;
-    if(!storageDepth && !floatDepth)
-      LOGW("PathTracer: depth format %d is neither a storage image nor 32-bit float; path-traced depth is not written\n",
-           int(depthFormat));
-    if(m_depthViaStaging)
-      NVVK_CHECK(m_depthStaging.init(
-          {.device = m_device, .alloc = &resources.allocator, .colorFormats = {VK_FORMAT_R32_SFLOAT}, .debugName = "PathTracer-DepthStaging"}));
+    if((depthProps.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) == 0)
+      LOGE("PathTracer: depth format %d is not a storage image on this GPU: the path tracer cannot write depth\n", int(depthFormat));
+    assert((depthProps.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0);
   }
   NVVK_CHECK(m_convergence.init(
       {.device = m_device, .alloc = &resources.allocator, .colorFormats = {VK_FORMAT_R32G32_SFLOAT}, .debugName = "PathTracer-Convergence"}));
@@ -159,18 +150,12 @@ void PathTracer::onAttach(Resources& resources, nvvk::ProfilerGpuTimer* profiler
   m_supportSER = resources.settings.serHardwareAvailable
                  && (m_reorderProperties.rayTracingInvocationReorderReorderingHint & VK_RAY_TRACING_INVOCATION_REORDER_MODE_REORDER_EXT);
 
-  // AMD's driver crashes creating the compute (ray-query) pipeline from this module, which also
-  // holds the ray-tracing entry points; the ray-tracing pipeline works. Keep the path tracer on it.
-  constexpr uint32_t kAmdVendorId = 0x1002;
-  m_supportRayQuery               = prop2.properties.vendorID != kAmdVendorId;
-  m_capturePipelineStats          = false;
+  m_capturePipelineStats = false;
   for(size_t i = 0; i < resources.deviceExtensions.size(); i++)
   {
     if(resources.deviceExtensions[i] == VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)
       m_capturePipelineStats = true;
   }
-  if(!m_supportRayQuery)
-    LOGI("PathTracer: the Ray Query technique is not supported with this driver; using the Ray Tracing Pipeline\n");
   // Keep whatever --ptUseSER asked for (the parameter is parsed before this runs); the device
   // capability only ever turns it off.
   m_useSER         = m_useSER && m_supportSER;
@@ -527,14 +512,10 @@ void PathTracer::registerParameters(SettingsRegistry* settings, std::function<vo
 // Destroy the resources
 void PathTracer::onDetach(Resources& resources)
 {
-  // Wait for any background compile to finish before destroying the Vulkan objects it owns.
-  if(m_compileThread.joinable())
-    m_compileThread.join();
   joinPipelineWarm();
   discardVariantJob();
 
   resources.allocator.destroyBuffer(m_sbtBuffer);
-  resources.allocator.destroyBuffer(m_depthCopyBuffer);
   resources.allocator.destroyBuffer(m_cameraMediumBuffer);
   resources.allocator.destroyBuffer(m_pixelInspectBuffer);
   resources.allocator.destroyBuffer(m_lightReservoirs);
@@ -553,7 +534,6 @@ void PathTracer::onDetach(Resources& resources)
   m_hitReadback.clear();
   m_hitCopied.clear();
   m_hitFrames = 0;
-  m_depthStaging.deinit();
   m_convergence.deinit();
   m_lightGroups.deinit(resources);
 
@@ -576,7 +556,6 @@ void PathTracer::onDetach(Resources& resources)
 void PathTracer::onResize(VkCommandBuffer cmd, const VkExtent2D& /*size*/, Resources& resources)
 {
   m_depthExtent = {};  // a new depth image: nothing in it until a frame is traced
-  updateDepthStaging(cmd, resources);
   updateConvergence(cmd, resources);
   updateDlssResources(cmd, resources);
   m_handoff.onResize(cmd, resources.gBuffers.getSize());
@@ -592,6 +571,9 @@ void PathTracer::onSceneInvalidated(Resources& /*resources*/)
   // a variant that failed to build off the frame may build for the next scene (it may have run out of memory)
   m_failedVariant.reset();
   m_radianceCache.clear();  // the cells hold the outgoing scene's light
+  // first-hit counts copied for the outgoing scene are its materials', not the next one's
+  std::fill(m_hitCopied.begin(), m_hitCopied.end(), uint8_t(0));
+  m_hitFrames = 0;
 #if defined(USE_DLSS)
   m_dlss->notifyReset();
 #endif
@@ -638,8 +620,8 @@ void PathTracer::updateDlssResources(VkCommandBuffer cmd, Resources& resources)
 bool PathTracer::takeBuiltVariant(Resources& resources)
 {
   // A variant already in the cache is swapped in right here: only handles move (what the previous
-  // frame may still use is released through the app's frame ring), so there is no queue wait, no
-  // BusyState and no accumulation reset.
+  // frame may still use is released through the app's frame ring), so there is no queue wait, and no
+  // accumulation reset unless it draws another image (swapVariant).
   installBuiltVariant(resources);   // a variant built off the frame goes into the cache, swapped in below
   chooseOptimalStandIn(resources);  // the full build draws while the optimal one wanted builds
   PendingCompileWork work = getPendingCompileWork(resources);
@@ -650,27 +632,21 @@ bool PathTracer::takeBuiltVariant(Resources& resources)
   return !work.any();
 }
 
-bool PathTracer::prepareFrame(Resources& resources)
+void PathTracer::prepareFrame(Resources& resources)
 {
-  // Anything takeBuiltVariant leaves goes to an async job that shows the BusyState.
+  // Anything takeBuiltVariant leaves is built here, before the frame, on the application thread (the
+  // renderer has no window: frames are drawn for the stream and the host, which wait for it). What
+  // may build off the frame does (buildsOffTheFrame).
   if(!takeBuiltVariant(resources))
   {
-    // SYNC NOTE: a rebuild destroys live handles the previous frame may still use. The wait is here,
-    // on the application thread, before the worker starts; the worker itself never touches the queue.
+    // SYNC NOTE: a rebuild destroys live handles the previous frame may still use
     NVVK_CHECK(vkQueueWaitIdle(resources.app->getQueue(0).queue));
-    if(!resources.app->isHeadless())
-    {
-      startAsyncCompile(resources);
-      return false;
-    }
-    // In headless mode we must compile/build synchronously so frames are actually rendered before the application frame loop exits.
     ensureShadersAndPipelines(resources);
   }
 
 #if defined(USE_DLSS)
   m_rrStill->ensureTargets(resources);
 #endif
-  return true;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -696,13 +672,11 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   m_rrStill->setContext(m_dlss->ngxContext());
 #endif
   m_dlssShaderFrame = !rrStillOn() || resources.frameCount == 0 || inHandoffDelay();
-  // The technique follows the variant (makeVariantKey's dlss), so a view's pipeline is the cached one
-  m_renderTechnique = dlssVariantFrame() ? m_techniqueDlss : m_techniqueStill;
-  if(!m_supportRayQuery)
-    m_renderTechnique = RenderTechnique::RayTracing;
+  // The technique follows the frame: DLSS's frames take ptTechniqueDlss, the accumulation's ptTechnique,
+  // also under DLSS-RR's still, whose frames have DLSS's variant (a cached variant keeps both pipelines)
+  m_renderTechnique = (isDlssEnabled() && m_dlssShaderFrame) ? m_techniqueDlss : m_techniqueStill;
 
-  if(!prepareFrame(resources))
-    return;
+  prepareFrame(resources);
 
 #if defined(USE_DLSS)
   // Drive the DLSS state machine, then decide the frame: DLSS renders it (every frame without the
@@ -737,7 +711,6 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
 
   // Finding the rendering size (needed before setupPushConstant so pixelAngle can be derived).
   VkExtent2D renderingSize = resources.gBuffers.getSize();
-  updateDepthStaging(cmd, resources);  // first frame: onResize may not have run yet
   updateConvergence(cmd, resources);
   // A still that keeps its lights apart: its images, and whether this frame's paths write them (as
   // makeVariantKey chose the frame's variant)
@@ -837,12 +810,6 @@ void PathTracer::onRender(VkCommandBuffer cmd, Resources& resources)
   else if(!(pushConst.flags & shaderio::ePtUseDlss))
     m_lightGroups.setHoldsStill(false);  // an accumulation without them: what they hold is no part of it
 
-  // Where the depth format cannot be a storage image the trace wrote a staging image: the frame that
-  // starts the depth brings it into the depth buffer before the overlays read it. (What a still's later
-  // frames bring nearer, processPixel, stays in the staging image on such a device.)
-  if(m_depthViaStaging && m_depthCopyable && depthStarts)
-    cmdCopyStagedDepth(cmd, resources);
-
 #if defined(USE_DLSS)
   // If DLSS is effectively enabled for this frame, perform denoising
   if(getEffectiveDlssEnabled(resources))
@@ -879,7 +846,10 @@ uint32_t PathTracer::lightGroupsUsed(const Resources& resources)
   {
     const rs::Residency& residency = resources.retainedGpu->residency();
     used = residency.lightGroupMask();
-    if(residency.emissiveTotalWeight() > 0.0F)
+    // glowing surfaces: the emitters' table, and an unlit material, whose colour the path adds as glow
+    // with no weight in the table (a still that left the group out mixed it as the moving frame doesn't)
+    if(residency.emissiveTotalWeight() > 0.0F || residency.emissiveCount() > 0
+       || resources.currentFeatureSet.has(nvvkgltf::SceneFeatureSet::eUnlit))
       used |= 1u << LIGHT_GROUP_GLOW;
   }
   if(skyHasSun(resources.settings.envSystem))
@@ -897,7 +867,6 @@ void PathTracer::onAccumulationComplete(VkCommandBuffer cmd, Resources& resource
   // frame's commands do, and is read when the slot comes round again (reading it here took whatever the
   // buffer held before, and cleared the flag, so the count itself was never read)
   takeHitCounts(resources);
-  m_stillClockOn = false;  // no frame of the still is tracing: its time stands (ptTimeLimit)
   // a view whose samples ended before its window did counted what it counted, and traces nothing from here
   if(m_hitFrames > 0)
     copyHitCounts(cmd, resources);
@@ -919,25 +888,6 @@ void PathTracer::onAccumulationComplete(VkCommandBuffer cmd, Resources& resource
     m_rrStill->denoiseFinal(cmd, resources, m_profiler, resources.accumulatedSamples, resources.cameraManip->getViewMatrix(),
                             resources.cameraManip->getPerspectiveMatrix());
 #endif
-}
-
-//--------------------------------------------------------------------------------------------------
-// Size the depth staging image and copy buffer to the G-buffer (path-traced depth on GPUs whose
-// depth format cannot be a storage image).
-void PathTracer::updateDepthStaging(VkCommandBuffer cmd, Resources& resources)
-{
-  if(!m_depthViaStaging)
-    return;
-  const VkExtent2D size = resources.gBuffers.getSize();
-  const VkExtent2D cur  = m_depthStaging.getSize();
-  if(size.width == cur.width && size.height == cur.height && m_depthCopyBuffer.buffer != VK_NULL_HANDLE)
-    return;
-
-  NVVK_CHECK(m_depthStaging.update(cmd, size));
-  resources.allocator.destroyBuffer(m_depthCopyBuffer);
-  NVVK_CHECK(resources.allocator.createBuffer(m_depthCopyBuffer, VkDeviceSize(size.width) * size.height * sizeof(float),
-                                              VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT));
-  NVVK_DBG_NAME(m_depthCopyBuffer.buffer);
 }
 
 uint32_t* PathTracer::countAdaptivePixels(VkCommandBuffer cmd, Resources& resources, VkExtent2D renderingSize)
@@ -1089,7 +1039,7 @@ uint32_t* PathTracer::countHits(VkCommandBuffer cmd, Resources& resources)
 
 void PathTracer::takeHitCounts(Resources& resources)
 {
-  if(m_hitCopied.empty())
+  if(m_hitCopied.empty() || !resources.retainedGpu || !resources.retainedScene)
     return;
   // The application waited for the frame that last used this slot
   const uint32_t slot = resources.app->getFrameCycleIndex() % uint32_t(m_hitCopied.size());
@@ -1192,37 +1142,9 @@ void PathTracer::updateConvergence(VkCommandBuffer cmd, Resources& resources)
 }
 
 //--------------------------------------------------------------------------------------------------
-// Copy the depth the path tracer wrote into m_depthStaging (R32_SFLOAT) to the G-buffer depth image.
-// Core Vulkan has no direct copy between a color and a depth image, so it goes through a buffer:
-// both use the same 32-bit float texel layout.
-void PathTracer::cmdCopyStagedDepth(VkCommandBuffer cmd, Resources& resources)
-{
-  NVVK_DBG_SCOPE(cmd);
-  const VkExtent2D size = resources.gBuffers.getSize();
-
-  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-                         VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-
-  VkBufferImageCopy region{
-      .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1},
-      .imageExtent      = {size.width, size.height, 1},
-  };
-  vkCmdCopyImageToBuffer(cmd, m_depthStaging.getColorImage(0), VK_IMAGE_LAYOUT_GENERAL, m_depthCopyBuffer.buffer, 1, &region);
-
-  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
-                         VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-
-  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-  vkCmdCopyBufferToImage(cmd, m_depthCopyBuffer.buffer, resources.gBuffers.getDepthImage(), VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-
-  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COPY_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                         VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
-}
-
-//--------------------------------------------------------------------------------------------------
 // Push the descriptor set
 // This is making sure our shader has the latest TLAS, and the latest output images
-void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, VkPipelineBindPoint bindPoint) const
+void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, VkPipelineBindPoint bindPoint, bool shownResult) const
 {
   nvvk::WriteSetContainer write{};
   write.append(resources.descriptorBinding[1].getWriteSet(shaderio::BindingPoints::eTlas), resources.gpuView().tlas());
@@ -1281,7 +1203,8 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
   if(m_lightGroupsFrame)
   {
     outputCount                          = std::max<uint32_t>(outputCount, shaderio::eLightGroup0 + LIGHT_GROUP_COUNT);
-    outputImages[shaderio::eResultImage] = m_lightGroups.total();
+    if(!shownResult)
+      outputImages[shaderio::eResultImage] = m_lightGroups.total();
     for(int i = 0; i < LIGHT_GROUP_COUNT; i++)
       outputImages[shaderio::eLightGroup0 + i] = m_lightGroups.group(i);
   }
@@ -1298,12 +1221,10 @@ void PathTracer::pushDescriptorSet(VkCommandBuffer cmd, Resources& resources, Vk
   write.append(allTextures, outputImages.data());
 
   // Bind GBuffer depth as storage image for writing hardware depth from path tracer (frame 0)
-  // (or the R32_SFLOAT staging image when the depth format cannot be a storage image; see onAttach)
-  const VkDescriptorImageInfo depthStorageInfo = m_depthViaStaging ? m_depthStaging.getColorStorageImageInfo(0) :
-                                                                     VkDescriptorImageInfo{
-                                                                         .imageView = resources.gBuffers.getDepthImageView(),
-                                                                         .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-                                                                     };
+  const VkDescriptorImageInfo depthStorageInfo{
+      .imageView   = resources.gBuffers.getDepthImageView(),
+      .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+  };
   write.append(resources.descriptorBinding[1].getWriteSet(shaderio::BindingPoints::eOutDepth), depthStorageInfo);
 
   vkCmdPushDescriptorSetKHR(cmd, bindPoint, m_pipelineLayout, 1, write.size(), write.data());
@@ -1441,25 +1362,6 @@ void PathTracer::updateStatistics(Resources& resources)
 {
 
 
-  // Update rolling average throughput calculation using wall-clock time
-  {
-    // Time elapsed for this frame (wall-clock time from user perspective)
-    float wallClockFrameTime = std::max(ImGui::GetIO().DeltaTime, 1e-6f);
-
-    // Total number of pixels in the image
-    VkExtent2D imageSize   = resources.gBuffers.getSize();
-    uint64_t   totalPixels = static_cast<uint64_t>(imageSize.width) * static_cast<uint64_t>(imageSize.height);
-
-    // Calculate mega-sample-pixels per second of wall-clock time
-    // This tells the user how much rendering work is being done per real-world second
-    const float MEGA_SCALE_FACTOR = 1000000.0f;  // Convert to mega-sample-pixels
-    float       megaSamplePixelsPerSecond =
-        (static_cast<float>(m_frameSamples) * static_cast<float>(totalPixels) / MEGA_SCALE_FACTOR) / wallClockFrameTime;
-
-    // Update rolling average with wall-clock throughput for this frame
-    m_throughputRollingAvg.addValue(megaSamplePixelsPerSecond);
-  }
-
   // Track total samples accumulated. DLSS's frames before a hand-off (frame 0, the delay's) add
   // nothing to it: the hand-off frame starts it over, and their count must not reach the cap first.
   if(!(m_dlssFrame && rrStillOn()))
@@ -1475,8 +1377,8 @@ void PathTracer::updateStatistics(Resources& resources)
 // environment is; the shader reads them only when the frame says the sky is the physical one), and
 // the pushed set 1. Once per frame; dispatchRays() launches it, for the probe and for the paths.
 // prepareFrame() builds the pipeline before a frame is recorded, so a missing one is a logic error,
-// not something to build here, inside command recording and with no BusyState.
-bool PathTracer::bindTechnique(VkCommandBuffer cmd, Resources& resources)
+// not something to build here, inside command recording.
+bool PathTracer::bindTechnique(VkCommandBuffer cmd, Resources& resources, bool shownResult)
 {
   const bool                rayQuery  = m_renderTechnique == RenderTechnique::RayQuery;
   const VkPipelineBindPoint bindPoint = rayQuery ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR;
@@ -1494,7 +1396,7 @@ bool PathTracer::bindTechnique(VkCommandBuffer cmd, Resources& resources)
   vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 2, 1, &hdrDescSet, 0, nullptr);
   vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 3, 1, &resources.skyLutDescriptorSet, 0, nullptr);
   vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 4, 1, &resources.skyCloudDescriptorSet, 0, nullptr);
-  pushDescriptorSet(cmd, resources, bindPoint);
+  pushDescriptorSet(cmd, resources, bindPoint, shownResult);
   return true;
 }
 
@@ -1585,7 +1487,8 @@ bool PathTracer::cmdInspectPixel(VkCommandBuffer cmd, Resources& resources, glm:
   // The frame's paths wrote the image it reads
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR);
-  if(!bindTechnique(cmd, resources))
+  // the pixel shown: with the light groups kept apart, their mix in the rendered image, not the total
+  if(!bindTechnique(cmd, resources, /*shownResult=*/true))
     return false;
   shaderio::PathtracePushConstant inspect = m_pushConst;
   inspect.flags |= shaderio::ePtInspectPixel;
@@ -1720,8 +1623,8 @@ shaderio::PathtracePushConstant PathTracer::setupPushConstant(VkCommandBuffer cm
     m_accumulationId++;
   }
   // The seconds this accumulation's frames have taken (ptTimeLimit): the last frame's, from when it
-  // began to when this one does. A frame that traced nothing in between (the still was complete, and a
-  // raised limit or cap let it go on) stopped the clock (onAccumulationComplete).
+  // began to when this one does. A frame that traced nothing in between (the still complete or paused,
+  // and a raised limit or cap let it go on) stopped the clock (stopStillClock).
   const auto now = std::chrono::steady_clock::now();
   if(m_stillClockOn)
     resources.stillSeconds += std::chrono::duration<double>(now - m_stillClock).count();
