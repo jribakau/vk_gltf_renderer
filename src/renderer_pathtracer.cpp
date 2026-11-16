@@ -640,7 +640,8 @@ bool PathTracer::takeBuiltVariant(Resources& resources)
   // A variant already in the cache is swapped in right here: only handles move (what the previous
   // frame may still use is released through the app's frame ring), so there is no queue wait, no
   // BusyState and no accumulation reset.
-  installBuiltVariant(resources);  // a variant built off the frame goes into the cache, swapped in below
+  installBuiltVariant(resources);   // a variant built off the frame goes into the cache, swapped in below
+  chooseOptimalStandIn(resources);  // the full build draws while the optimal one wanted builds
   PendingCompileWork work = getPendingCompileWork(resources);
   if(work.recompile && tryRestoreCachedVariant(resources))
     work = getPendingCompileWork(resources);  // the cached pipelines may still need a rebuild (SER, technique)

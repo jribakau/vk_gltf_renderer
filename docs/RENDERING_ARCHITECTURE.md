@@ -104,7 +104,9 @@ written positions copied for motion; instances for the draw items that came, hol
 went, and their prims, meshes and material slots; the materials edited (an edit the live variant
 can't draw held, D15: the variant it needs builds off the frame, and is taken in by the next frame
 that traces, or with no frame traced when the still is complete, `PathTracer::takeBuiltVariant`; the
-sync after that lets the edit through); the images those need, decoded in one batch; vertex edits uploaded and their
+sync after that lets the edit through. With the optimal shader on, the full build, every feature
+compiled in, draws while the scene's variant builds, `PathTracer::chooseOptimalStandIn`, so an edit is
+held only where that build isn't at hand); the images those need, decoded in one batch; vertex edits uploaded and their
 BLASes refit; the deform passes; capacity grown; material rows and spans; the draw lists; the
 render-node and prim rows and the TLAS; the motion tables; IES profiles, the materials' water
 (`scene_water.*`), lights and the emissive table; the scene descriptor; then a transfer-to-shader

@@ -431,7 +431,18 @@ public:
   // frame in flight may still use are released through the app's frame ring (submitResourceFree).
   bool       swapVariant(Resources& resources, const VariantKey& newKey, bool gpuIdle);
   void       destroyVariantCache(Resources& resources);
-  VariantKey makeVariantKey(const Resources& resources) const;  // The variant the current settings ask for.
+  // The variant a frame asks for: the settings' (targetVariantKey), or the full build standing in for
+  // their optimal one while it builds off the frame (m_optimalStandIn)
+  VariantKey makeVariantKey(const Resources& resources) const;
+  VariantKey targetVariantKey(const Resources& resources) const;  // The variant the current settings ask for.
+  // The optimal shader's variants are built off the frame while the full build (every GLTF_USE_* gate
+  // on, as with ptOptimalShader off) draws whatever they would: set by chooseOptimalStandIn() at each
+  // frame's top, on the application thread, while the variant the settings want is neither live nor cached
+  bool m_optimalStandIn{false};
+  void chooseOptimalStandIn(Resources& resources);
+  // An optimal variant's full build: the one ptOptimalShader off asks for, its guides on as the
+  // embedded build's are (GltfRenderer::dlssGuideRequired)
+  static VariantKey fullBuildOf(const VariantKey& key);
   // True when that variant is the embedded DLSS build (gltf_pathtrace.slang_dlss.h): DLSS and the
   // guide buffers on, nothing else, on a GPU with SER (the embedded build has AVAILABLE_SER=1).
   bool isEmbeddedDlssVariant(const Resources& resources) const;
@@ -465,7 +476,9 @@ public:
     double         ms       = 0.0;
   };
   VariantJobs<VariantCompileJob, VariantBuilt> m_variantJobs;
-  std::optional<VariantKey> m_failedVariant;  // a job that failed: that variant is compiled before the frame
+  // a job that failed: that variant is compiled before the frame, or for an optimal one the full build
+  // keeps drawing until the scene wants another
+  std::optional<VariantKey> m_failedVariant;
   void                      startVariantJob(Resources& resources, const VariantKey& key);
   VariantBuilt              buildVariant(const VariantCompileJob& job);  // on the worker
   void                      installBuiltVariant(Resources& resources);

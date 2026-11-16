@@ -1282,6 +1282,25 @@ bool PathTracer::isEmbeddedBaseVariant(const Resources& resources) const
 // While DLSS is still loading, its variant is compiled ahead of its first frame.
 PathTracer::VariantKey PathTracer::makeVariantKey(const Resources& resources) const
 {
+  const VariantKey target = targetVariantKey(resources);
+  return m_optimalStandIn && target.optimal ? fullBuildOf(target) : target;
+}
+
+PathTracer::VariantKey PathTracer::fullBuildOf(const VariantKey& key)
+{
+  VariantKey full = key;
+  full.optimal    = false;
+  full.features   = {};
+#if defined(USE_DLSS)
+  full.dlssGuide = true;
+#else
+  full.dlssGuide = false;
+#endif
+  return full;
+}
+
+PathTracer::VariantKey PathTracer::targetVariantKey(const Resources& resources) const
+{
   return VariantKey{
       resources.settings.wireframe,
       resources.settings.visualization != shaderio::Visualization::eRendered,
@@ -1567,6 +1586,53 @@ void PathTracer::createSbt(Resources& resources, VkPipeline pipeline, VkShaderMo
 }
 
 //--------------------------------------------------------------------------------------------------
+// The optimal shader without waiting on it. The scene's own feature set compiled took a third off a
+// planet's frames (2026-11-16: the full build's warps wait on instruction fetch), but a variant of it
+// takes seconds to build, tens of them cold, and the full build draws whatever it would. So while the
+// variant the settings want is neither live nor cached, it builds off the frame and makeVariantKey()
+// asks for the full build: live, swapped in from the cache, or else made before the frame as with the
+// optimal shader off (the embedded build at a first frame). Turning the optimal shader on, a scene
+// loaded or a feature added then never waits on a compile, and nothing is held back meanwhile. Only
+// where the full build would have to be made and the live optimal variant can stand in for the one
+// wanted (D15, buildsOffTheFrame) does that one draw instead. A variant whose build failed leaves the
+// full build drawing until the scene wants another.
+void PathTracer::chooseOptimalStandIn(Resources& resources)
+{
+  const VariantKey target = targetVariantKey(resources);
+  if(!target.optimal)
+  {
+    m_optimalStandIn = false;
+    return;
+  }
+  const VariantKey full        = fullBuildOf(target);
+  const bool       rayQuery    = m_renderTechnique == RenderTechnique::RayQuery;
+  bool             targetReady = false;
+  bool             fullReady   = false;
+  bool             liveCovers  = false;  // the live optimal variant may stand in (D15)
+  {
+    std::lock_guard<std::mutex> lock(m_compileMutex);
+    const bool liveDraws = !m_compiledIsFallback && (rayQuery ? m_rqPipeline : m_rtxPipeline) != VK_NULL_HANDLE;
+    const auto cached    = [&](const VariantKey& k) {
+      return std::any_of(m_variantCache.begin(), m_variantCache.end(), [&](const VariantCacheEntry& e) { return e.key == k; });
+    };
+    targetReady = (liveDraws && m_compiled == target) || cached(target);
+    fullReady   = (liveDraws && m_compiled == full) || cached(full);
+    VariantKey same = m_compiled;
+    same.features   = target.features;
+    liveCovers = liveDraws && m_compiled.optimal && same == target && target.features.isSupersetOf(m_compiled.features);
+  }
+  if(targetReady)
+  {
+    m_optimalStandIn = false;
+    return;
+  }
+  const bool failed = m_failedVariant && *m_failedVariant == target;
+  if(!failed && !m_variantJobs.job())
+    startVariantJob(resources, target);
+  m_optimalStandIn = fullReady || failed || !(liveCovers && resources.gpuView().variantMayBuildOffFrame());
+}
+
+//--------------------------------------------------------------------------------------------------
 // D15 (daz-viewer docs/retained-scene-plan.md, "Shader variants under incremental edits"): on the
 // retained scene, a variant that only adds scene features to the optimal build is built off the
 // frame. The live variant draws meanwhile, or a cached one with the same shader otherwise and
@@ -1750,7 +1816,8 @@ void PathTracer::installBuiltVariant(Resources& resources)
   VariantBuilt&            built = done->second;
   if(!built.module)
   {
-    LOGW("[PathTracer] The variant built off the frame failed; it is compiled before the frame instead\n");
+    LOGW("[PathTracer] The variant built off the frame failed; %s\n",
+         job.key.optimal ? "the full build draws instead" : "it is compiled before the frame instead");
     m_failedVariant = job.key;
     return;
   }

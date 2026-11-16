@@ -75,7 +75,8 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                  &m_presentHdrPeak, Persist::eYes, 0.0F, 10000.0F);
   m_settings.add({"ptOptimalShader",
                   "Compile gltf_pathtrace.slang with GLTF_USE_* gates specialized per scene "
-                  "(no runtime MAT_EXT_* changes; triggers shader recompile on scene/material change). Default off."},
+                  "(no runtime MAT_EXT_* changes): a scene's variant builds off the frame, the full build drawing "
+                  "meanwhile, and a feature added builds another. Default off; the app sends it on."},
                  &m_resources.settings.optimalShader, Persist::eYes);
   // A value rather than a trigger, so a host can turn it off again over MCP (triggers aren't exposed there).
   m_settings.add({.name = "useSolidBackground", .help = "Use solid color background", .callbackSuccess = restartStill},
