@@ -23,46 +23,11 @@
 #include <cmath>
 #include <numbers>
 
+#include "fv_play_detail.hpp"
+
 namespace fv::play {
 
-namespace {
-
-double ease(double t)
-{
-  t = std::clamp(t, 0.0, 1.0);
-  return t * t * (3.0 - 2.0 * t);
-}
-
-// The share of what is left that a step of `dt` takes, easing at time constant `tau`: the same over
-// a second however the second is cut into frames
-double share(double dt, double tau)
-{
-  return tau > 0.0 ? 1.0 - std::exp(-dt / tau) : 1.0;
-}
-
-glm::dvec3 level(const glm::dvec3& v, const glm::dvec3& up)
-{
-  return v - up * glm::dot(v, up);
-}
-
-// A unit direction square to `up`, the nearest to `v`; any level one for `v` along up
-glm::dvec3 levelUnit(const glm::dvec3& v, const glm::dvec3& up)
-{
-  for(const glm::dvec3& d : {v, glm::dvec3(0.0, 0.0, -1.0), glm::dvec3(1.0, 0.0, 0.0)})
-  {
-    const glm::dvec3 l = level(d, up);
-    if(glm::length(l) > 1e-6)
-      return glm::normalize(l);
-  }
-  return {1.0, 0.0, 0.0};
-}
-
-double key(uint32_t keys, Key k)
-{
-  return (keys & k) ? 1.0 : 0.0;
-}
-
-}  // namespace
+using namespace detail;
 
 Pose blend(const Pose& a, const Pose& b, double t)
 {
@@ -626,28 +591,58 @@ void stepShip(Ship& s, const ShipShape& shape, const World& world, double dt, bo
   s.height     = g ? std::max(0.0, glm::dot(s.com - g->at, up) - padsUnder) : -1.0;
 }
 
-Pose chaseView(Chase& c, const Ship& s, double size, double dt)
+Pose chaseView(Chase& c, const Body& b, double size, double dt, const ChaseTuning& t)
 {
   if(!c.placed)
   {
-    c.turn   = s.orientation;
+    c.turn   = b.orientation;
     c.placed = true;
   }
-  c.turn                 = glm::normalize(glm::slerp(c.turn, s.orientation, share(dt, 0.16)));
+  c.turn                 = glm::normalize(glm::slerp(c.turn, b.orientation, share(dt, t.lag)));
   const glm::dmat3 turn  = glm::mat3_cast(c.turn);
-  const double     speed = glm::length(s.velocity);
-  const double     back  = size * (1.05 + 0.25 * std::min(speed / 120.0, 1.0)) * c.zoom;
-  const glm::dvec3 eye   = s.com + turn * glm::dvec3(0.0, 0.24 * size * c.zoom, -back);
-  const glm::dvec3 at    = s.com + turn * glm::dvec3(0.0, 0.08 * size, 0.6 * size);
+  const double     speed = glm::length(b.velocity);
+  const double     back  = size * (t.back + t.backFast * std::min(speed / t.fastAt, 1.0)) * c.zoom;
+  const glm::dvec3 eye   = b.at + turn * glm::dvec3(0.0, t.over * size * c.zoom, -back);
+  const glm::dvec3 at    = b.at + turn * glm::dvec3(0.0, t.aimOver * size, t.aimAhead * size);
   const glm::dvec3 ahead = glm::normalize(at - eye);
   glm::dvec3       up    = turn * glm::dvec3(0.0, 1.0, 0.0);
   up                     = glm::normalize(up - ahead * glm::dot(up, ahead));
   return {eye, ahead, up};
 }
 
-Pose cockpitView(const Ship& s, const glm::dvec3& eye)
+Pose cockpitView(const Body& b, const glm::dvec3& eye, const glm::dvec2& gaze)
 {
-  return {s.com + s.orientation * eye, shipForward(s), shipUp(s)};
+  // the look turned about the body's up, then raised about its own right
+  const glm::dvec3 look = glm::angleAxis(gaze.x, glm::dvec3(0.0, 1.0, 0.0)) * glm::angleAxis(-gaze.y, glm::dvec3(1.0, 0.0, 0.0)) * glm::dvec3(0.0, 0.0, 1.0);
+  const glm::dvec3 forward = glm::normalize(b.orientation * look);
+  glm::dvec3       up      = glm::normalize(b.orientation * glm::dvec3(0.0, 1.0, 0.0));
+  if(gaze != glm::dvec2(0.0))
+    up = glm::normalize(up - forward * glm::dot(up, forward));
+  return {b.at + b.orientation * eye, forward, up};
+}
+
+Pose clearView(const Pose& view, const glm::dvec3& target, const World& world)
+{
+  constexpr double kKeep  = 0.3;  // metres short of what stands between
+  constexpr double kAbove = 0.4;  // metres over the ground at least
+  Pose             out    = view;
+  const glm::dvec3 d      = view.eye - target;
+  const double     length = glm::length(d);
+  if(length < 1e-6)
+    return out;
+  const glm::dvec3 dir = d / length;
+  if(world.ray)
+    if(const auto hit = world.ray(target, dir, length + kKeep))
+      if(const double t = glm::dot(hit->at - target, dir); t - kKeep < length)
+        out.eye = target + dir * std::max(0.2, t - kKeep);
+  if(world.ground && world.up)
+  {
+    const glm::dvec3 up = world.up(out.eye);
+    if(const auto g = world.ground(out.eye + up * 2.0, up, 2.0 + kAbove + 1.0))
+      if(const double over = glm::dot(out.eye - g->at, up); over < kAbove)
+        out.eye += up * (kAbove - over);
+  }
+  return out;
 }
 
 }  // namespace fv::play

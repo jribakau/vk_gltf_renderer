@@ -20,16 +20,17 @@
 #pragma once
 
 //
-// Play mode's two controllers, as pure functions of their state, the keys held and a world they ask
-// about (fv_host_play.cpp gives them the scene's): someone on foot who walks, runs and jumps, collides
-// with what stands and climbs steps (collide and slide: rays against the props, the ground under the
-// feet), with a torch in hand; and a small ship that flies on a throttle with flight assist (its
-// velocity eased toward what the keys ask, its turn toward what the mouse asks, levelled into a bank),
-// stops short of what its nose, tail or wingtips would meet, rests on its landing pads, and a camera
-// that follows it. A tree's trunk is found from its mesh (trunkOf) for the host to collide with.
-// No Vulkan, no host: the unit tests drive them on made-up worlds.
+// Play mode's controllers, as pure functions of their state, the keys held and a world they ask about
+// (fv_host_play.cpp gives them the scene's): someone on foot who walks, runs and jumps, collides with
+// what stands and climbs steps (collide and slide: rays against the props, the ground under the feet),
+// with a torch in hand; a small ship that flies on a throttle with flight assist (its velocity eased
+// toward what the keys ask, its turn toward what the mouse asks, levelled into a bank), stops short of
+// what its nose, tail or wingtips would meet and rests on its landing pads; a car on four suspension
+// rays (fv_play_car.cpp); and the cameras that follow them, behind or from the seat. A tree's trunk is
+// found from its mesh (trunkOf) for the host to collide with. No Vulkan, no host: the unit tests drive
+// them on made-up worlds.
 //
-// The ship's own axes are glTF's: forward +z, up +y, so the pilot's right is -x.
+// The ship's and the car's own axes are glTF's: forward +z, up +y, so the driver's right is -x.
 //
 
 #include <array>
@@ -60,6 +61,7 @@ enum Key : uint32_t
   kTorch     = 1u << 11,  // L: the torch on or off
   kShipHere  = 1u << 12,  // B: a ship put down ahead
   kEye       = 1u << 13,  // X: the eye adapting to the view, or the exposure as it is
+  kCarHere   = 1u << 14,  // N: a car put down ahead
 };
 
 struct Surface
@@ -226,15 +228,173 @@ double shipSpeedRange(const Ship& s, double speedCap, const ShipTuning& t = {});
 // A step of `dt` seconds; `piloted` false is a ship with nobody in it (it settles and stops)
 void stepShip(Ship& s, const ShipShape& shape, const World& world, double dt, bool piloted, const ShipTuning& t = {});
 
-// The chase camera: behind and over the ship, turning after it a moment late, further back as it speeds
+// ---- the car -------------------------------------------------------------------------------------------
+//
+// A raycast vehicle, as games drive one: a rigid body on four suspension rays. Each wheel's spring and
+// damper push along the ground's normal where its ray meets the ground, with the force its tyre then has
+// to hold the road; the tyres' friction is solved as impulses (drive and brakes first, then the grip
+// across, to a friction circle), the side grip growing with the slip angle so it corners and slides as
+// a car does, and holding it still when slow. Its body's far points meet walls and the ground as the
+// ship's hull does. An automatic gearbox: S stops it, then backs; Space is the handbrake. Parked, it
+// sleeps, and costs nothing until a pedal or its ground wakes it. Its own axes are glTF's, as the ship's:
+// forward +z, up +y, its left +x.
+
+struct CarTuning
+{
+  double mass      = 2200.0;  // kg: an off-road truck's
+  double frequency = 1.3;     // Hz each wheel's spring bounces at under its share of the weight
+  double damping   = 0.35;    // share of critical, pushed in
+  double rebound   = 2.0;     // the damper's pull coming back out, this many times its push going in
+  double travelUp = 0.12, travelDown = 0.18;  // metres the wheels move from where the file has them (past the top: a stop)
+  double maxLoad = 5.0;       // a spring's push at most this many times its share of the weight
+  double grip      = 1.0;     // the tyres' friction, μ
+  double cornering = 12.0;    // side force for a radian of slip, per newton of load (the peak at 1/12 rad)
+  double slideGrip = 0.85;    // a share of the peak left to a tyre slid well past it
+  double lowSpeed  = 1.0;     // m/s: slower than this a tyre holds as it stands
+  double handbrakeGrip = 0.45;  // the rear's side grip with the handbrake pulled, a share
+  double rolling   = 0.015;   // rolling resistance, a share of the load
+  double power = 120e3, tractive = 9000.0;  // W at the wheels, and N at most
+  double boost      = 1.5;    // Shift: the power this many times over
+  double driveFront = 0.5;    // the share of the drive to the front wheels: 4x4
+  double topSpeed = 38.0, reverseSpeed = 8.0;  // m/s
+  double brake = 16000.0, frontBrake = 0.6;    // N all four together, and the front's share
+  double engineBrake = 600.0;                  // N on the driven wheels off the throttle
+  double holdBelow   = 0.3;                    // m/s: slower, with no pedal, the brakes hold it
+  double dragArea = 0.95, air = 1.225;         // Cd·A, m²; kg/m³
+  double lock = 0.6, minLock = 0.02;  // radians the steering turns at most, and at least however fast
+  double turnLimit = 1.1;             // g sideways the steering's lock is cut to as it speeds
+  double steerRate = 2.2, returnRate = 4.0;  // rad/s the steering turns, and comes back
+  double substep   = 1.0 / 240.0;     // seconds a step of its integration is at most
+  double stepUp    = 0.25;            // metres over its travel's top a wheel's ground may come: higher is a wall
+  double sleepSpeed = 0.05, sleepSpin = 0.03, sleepAfter = 0.4;  // m/s, rad/s, seconds still to sleep
+  double rightAfter = 2.5, rightTime = 0.8;  // seconds on its roof before it rights itself, and to do it
+  double hullGrip   = 0.5, hullBounce = 0.1;  // its body against what it meets
+  double turnPerPixel = 0.0022;              // radians the driver's look turns for a pixel of the mouse
+  double lookYaw = 2.3, lookPitch = 1.2;     // radians the look turns at most, aside and up or down
+  double lookBack = 1.0, lookReturn = 0.6;   // seconds after the mouse stops, and to come back ahead (moving)
+};
+
+struct CarWheel
+{
+  glm::dvec3 hub{0.0};  // its middle in the car's frame about its centre of mass, as the file has it
+  double     radius = 0.4;
+};
+
+// The car's shape about its centre of mass: its wheels front left, front right, rear left, rear right
+// (left is +x), and its body's far points
+struct CarShape
+{
+  std::array<CarWheel, 4> wheels;
+  std::vector<glm::dvec3> hull;
+  glm::dvec3              half{0.95, 0.85, 2.4};  // the body's half sizes
+  double                  radius = 2.6;           // about its centre
+};
+// A car's shape from its wheels and its body's box (`lo`, `hi`), all about its centre of mass: the body's
+// corners (their bottom no lower than a little over the tyres'), its bumpers' middles, its sides', its
+// roof's, and the tyres' fronts and backs
+CarShape carShape(const std::array<CarWheel, 4>& wheels, const glm::dvec3& lo, const glm::dvec3& hi);
+
+struct CarWheelState
+{
+  double                 length   = 0.12;  // the suspension's, from the top of its travel down
+  double                 spin     = 0.0;   // radians about its axle
+  double                 rate     = 0.0;   // rad/s
+  double                 steer    = 0.0;   // radians, its own (the inner front wheel turns more)
+  double                 load     = 0.0;   // N its tyre holds the ground with
+  bool                   touching = false;
+  std::optional<Surface> ground;           // the plane it meets, asked once a step
+  glm::dvec3             normal{0.0, 1.0, 0.0};  // that plane's normal, eased
+};
+
+struct Car
+{
+  glm::dvec3 com{0.0};
+  glm::dquat orientation{1.0, 0.0, 0.0, 0.0};
+  glm::dvec3 velocity{0.0};  // m/s, the world's
+  glm::dvec3 spin{0.0};      // rad/s, the world's
+  uint32_t   keys = 0;
+  glm::dvec2 look{0.0};      // the mouse's move still to take, pixels
+  glm::dvec2 gaze{0.0};      // the driver's look about the car: yaw (left +) and pitch (up +), radians
+  double     lookIdle = 0.0; // seconds since the mouse last moved
+  double     steer    = 0.0; // radians: the steering's turn, as one front wheel in the middle would have it
+  int        gear     = 1;   // 1 drive, -1 reverse
+  bool       handbrake = false;
+  double     throttle  = 0.0;  // -1 to 1, as the pedals have it this step
+  std::array<CarWheelState, 4> wheels;
+  bool       asleep   = false;
+  double     still    = 0.0;  // seconds at rest
+  double     nap      = 0.0;  // seconds asleep since its ground was last looked at
+  double     tipped   = 0.0;  // seconds on its side or roof
+  double     righting = 0.0;  // seconds left of righting itself
+  glm::dvec3 lastGround{0.0}; // where it last stood, to come back to after a fall through the world
+};
+
+glm::dvec3 carForward(const Car& c);
+glm::dvec3 carUp(const Car& c);
+glm::dvec3 carLeft(const Car& c);
+// Its speed along its nose, m/s: backing is negative
+double carSpeed(const Car& c);
+// The height of its centre over level ground when it stands at rest on its wheels
+double carRideHeight(const CarShape& shape);
+// A car at `com` turned `q`, its suspension as its file has it
+Car carAt(const glm::dvec3& com, const glm::dquat& q, const CarShape& shape, const CarTuning& t = {});
+// A step of `dt` seconds; `driven` false is a car with nobody at the wheel (every brake on)
+void stepCar(Car& c, const CarShape& shape, const World& world, double dt, bool driven, const CarTuning& t = {});
+
+// ---- cameras ---------------------------------------------------------------------------------------------
+
+// What a camera follows: where its centre is, how it is turned (its own axes glTF's), how fast it goes
+struct Body
+{
+  glm::dvec3 at{0.0};
+  glm::dquat orientation{1.0, 0.0, 0.0, 0.0};
+  glm::dvec3 velocity{0.0};
+};
+
+// The chase camera: behind and over what it follows, turning after it a moment late, further back as it
+// speeds
 struct Chase
 {
   glm::dquat turn{1.0, 0.0, 0.0, 0.0};
   bool       placed = false;
   double     zoom   = 1.0;  // the wheel's: 0.5 near to 3 far
 };
-Pose chaseView(Chase& c, const Ship& s, double size, double dt);
-// From the seat: `eye` in the ship's frame about its centre
-Pose cockpitView(const Ship& s, const glm::dvec3& eye);
+// How far behind and over, in its sizes, and how quickly it turns after it (the ship's)
+struct ChaseTuning
+{
+  double lag      = 0.16;  // seconds
+  double back     = 1.05;  // sizes behind ...
+  double backFast = 0.25;  // ... and this many more at `fastAt` m/s
+  double fastAt   = 120.0;
+  double over     = 0.24;  // sizes over
+  double aimOver = 0.08, aimAhead = 0.6;  // what it looks at, in sizes over and ahead of the centre
+};
+// A car's: nearer and lower, turning after it quicker
+inline constexpr ChaseTuning kCarChase{.lag = 0.1, .back = 1.15, .backFast = 0.15, .fastAt = 40.0, .over = 0.3, .aimOver = 0.12, .aimAhead = 0.5};
+Pose chaseView(Chase& c, const Body& b, double size, double dt, const ChaseTuning& t = {});
+// From a seat: `eye` in its frame about its centre, the look turned `gaze` (yaw, pitch) about it
+Pose cockpitView(const Body& b, const glm::dvec3& eye, const glm::dvec2& gaze = glm::dvec2(0.0));
+// The view brought in front of what stands between it and `target`, and over the ground
+Pose clearView(const Pose& view, const glm::dvec3& target, const World& world);
+
+inline Body bodyOf(const Ship& s)
+{
+  return {s.com, s.orientation, s.velocity};
+}
+inline Pose chaseView(Chase& c, const Ship& s, double size, double dt)
+{
+  return chaseView(c, bodyOf(s), size, dt);
+}
+inline Pose cockpitView(const Ship& s, const glm::dvec3& eye)
+{
+  return cockpitView(bodyOf(s), eye);
+}
+// What the chase follows of a car: its heading and pitch, never its roll, turned round it by the
+// driver's look
+Body chaseBody(const Car& c, const glm::dvec3& up);
+inline Body bodyOf(const Car& c)
+{
+  return {c.com, c.orientation, c.velocity};
+}
 
 }  // namespace fv::play

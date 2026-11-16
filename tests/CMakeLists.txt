@@ -202,9 +202,10 @@ set(TEST_SOURCES
     # rivers that never rise, their beds under their water
     test_fv_world_map.cpp
     # Play mode's controllers: someone on foot against floors, steps and walls; a ship's throttle, flight
-    # assist, turn and landing; the chase camera
+    # assist, turn and landing; a car's suspension, tyres, brakes and steering; the chase and seat cameras
     test_fv_play.cpp
     ${CMAKE_SOURCE_DIR}/src/fv_play.cpp
+    ${CMAKE_SOURCE_DIR}/src/fv_play_car.cpp
     # Auto white balance: the light in a frame, and the white balance that makes it grey
     test_white_balance.cpp
     ${CMAKE_SOURCE_DIR}/src/white_balance.cpp

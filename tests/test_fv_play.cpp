@@ -705,4 +705,468 @@ TEST(PlayTrunk, TheColumnIsClosedAndAsWideAsTheTrunk)
     EXPECT_EQ(n, 2);
 }
 
+// ---- the car -------------------------------------------------------------------------------------------
+
+// An off-road truck's shape about its centre: wheels 0.4 m in radius, their hubs 0.28 m under the centre,
+// 1.56 m apart across and 2.71 m along; its body 1.9 m wide and 4.8 long, 0.3 m over the ground at its
+// lowest and 1.2 m over the centre at its top
+CarShape truck()
+{
+  const double                  r = 0.4, y = -0.28, x = 0.78, front = 1.33, rear = -1.38;
+  const std::array<CarWheel, 4> wheels{{{{x, y, front}, r}, {{-x, y, front}, r}, {{x, y, rear}, r}, {{-x, y, rear}, r}}};
+  return carShape(wheels, {-0.95, y - r + 0.3, -2.4}, {0.95, 1.2, 2.4});
+}
+
+// Standing at `at` (its x and z) on level ground, its nose turned `heading` from +z toward +x
+Car truckAt(const glm::dvec3& at = glm::dvec3(0.0), double heading = 0.0)
+{
+  const CarShape shape = truck();
+  return carAt(at + glm::dvec3(0.0, carRideHeight(shape), 0.0), glm::angleAxis(heading, glm::dvec3(0.0, 1.0, 0.0)), shape);
+}
+
+void drive(Car& c, const CarShape& shape, const World& world, double seconds, bool driven = true, double dt = 1.0 / 60.0)
+{
+  for(double t = 0.0; t < seconds; t += dt)
+    stepCar(c, shape, world, dt, driven);
+}
+
+// Ground rising `angle` along +z through the origin, and nothing else
+World hillWorld(double angle)
+{
+  World            w = flatWorld({}, false);
+  const double     k = std::tan(angle);
+  const glm::dvec3 n = glm::normalize(glm::dvec3(0.0, 1.0, -k));
+  w.ground           = [k, n](const glm::dvec3& from, const glm::dvec3&, double reach) -> std::optional<Surface> {
+    const double y = k * from.z;
+    if(from.y < y || from.y - reach > y)
+      return std::nullopt;
+    return Surface{{from.x, y, from.z}, n};
+  };
+  return w;
+}
+
+// The car on that hill at the origin, its nose turned `heading` from up the hill toward +x
+Car truckOnHill(double angle, double heading)
+{
+  const CarShape   shape = truck();
+  const glm::dquat q     = glm::angleAxis(-angle, glm::dvec3(1.0, 0.0, 0.0)) * glm::angleAxis(heading, glm::dvec3(0.0, 1.0, 0.0));
+  return carAt(q * glm::dvec3(0.0, carRideHeight(shape), 0.0), q, shape);
+}
+
+TEST(PlayCar, SitsAtItsRideHeightAndSleeps)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  c.com.y += 0.3;  // dropped
+  drive(c, shape, world, 4.0, false);
+  EXPECT_NEAR(c.com.y, carRideHeight(shape), 0.01);
+  for(const CarWheelState& w : c.wheels)
+  {
+    EXPECT_TRUE(w.touching);
+    EXPECT_NEAR(w.length, CarTuning{}.travelUp, 0.01);
+  }
+  EXPECT_TRUE(c.asleep);
+  EXPECT_GT(carUp(c).y, 0.9999);
+  const glm::dvec3 at = c.com;
+  drive(c, shape, world, 10.0, false);
+  EXPECT_LT(glm::distance(c.com, at), 1e-9) << "asleep, nothing moves";
+}
+
+TEST(PlayCar, AcceleratesLikeACarAndStopsAtItsTopSpeed)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  c.keys               = kForward;
+  double hundred       = -1.0;  // seconds to 100 km/h
+  for(double t = 0.0; t < 20.0 && hundred < 0.0; t += 1.0 / 60.0)
+  {
+    stepCar(c, shape, world, 1.0 / 60.0, true);
+    if(carSpeed(c) >= 27.8)
+      hundred = t;
+  }
+  EXPECT_GT(hundred, 6.0);
+  EXPECT_LT(hundred, 12.0);
+  drive(c, shape, world, 40.0);
+  EXPECT_NEAR(carSpeed(c), CarTuning{}.topSpeed, 1.0);
+  EXPECT_LT(std::abs(c.com.x), 0.05) << "straight ahead";
+  EXPECT_EQ(c.gear, 1);
+  EXPECT_GT(carUp(c).y, 0.99);
+}
+
+TEST(PlayCar, BrakesToAStopAndHolds)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  c.velocity           = {0.0, 0.0, 25.0};
+  c.keys               = kBack;
+  const double from    = c.com.z;
+  for(int i = 0; i < 15 * 60 && carSpeed(c) > 0.5; i++)
+    stepCar(c, shape, world, 1.0 / 60.0, true);
+  EXPECT_GT(c.com.z - from, 30.0);
+  EXPECT_LT(c.com.z - from, 55.0);
+  EXPECT_EQ(c.gear, 1) << "it braked: it hasn't backed yet";
+  c.keys = 0;
+  drive(c, shape, world, 1.0);
+  const glm::dvec3 stopped = c.com;
+  drive(c, shape, world, 3.0);
+  EXPECT_LT(glm::distance(c.com, stopped), 0.01) << "no pedal: it holds";
+}
+
+TEST(PlayCar, BacksWithSAndTheGearSaysSo)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  drive(c, shape, world, 1.0);
+  c.keys = kBack;
+  drive(c, shape, world, 3.0);
+  EXPECT_EQ(c.gear, -1);
+  EXPECT_LT(carSpeed(c), -1.0);
+  drive(c, shape, world, 6.0);
+  EXPECT_GT(carSpeed(c), -CarTuning{}.reverseSpeed - 0.3) << "no faster than reverse goes";
+  // W brakes it first, then drives
+  c.keys            = kForward;
+  const double was = carSpeed(c);
+  drive(c, shape, world, 0.3);
+  EXPECT_EQ(c.gear, -1);
+  EXPECT_GT(carSpeed(c), was);
+  drive(c, shape, world, 4.0);
+  EXPECT_EQ(c.gear, 1);
+  EXPECT_GT(carSpeed(c), 1.0);
+}
+
+TEST(PlayCar, SteersTheWayAskedAndTheInnerWheelTurnsMore)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  c.velocity           = {0.0, 0.0, 5.0};
+  c.keys               = kLeft;
+  drive(c, shape, world, 1.0);
+  EXPECT_GT(c.steer, 0.3);
+  EXPECT_GT(c.wheels[0].steer, c.wheels[1].steer) << "the left wheel is inside a left turn";
+  EXPECT_GT(c.wheels[1].steer, 0.0);
+  EXPECT_EQ(c.wheels[2].steer, 0.0);
+  EXPECT_GT(c.spin.y, 0.3) << "the nose goes left (+x)";
+  // as tight as its steering asks, a little wider for the tyres' slip
+  const double radius = glm::length(c.velocity) / c.spin.y;
+  const double asked  = 2.71 / std::tan(c.steer);
+  EXPECT_GT(radius, 0.9 * asked);
+  EXPECT_LT(radius, 1.5 * asked);
+}
+
+TEST(PlayCar, SteersLessTheFasterItGoes)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  c.velocity           = {0.0, 0.0, 30.0};
+  c.keys               = kForward | kLeft;
+  double sideways      = 0.0;  // the most it is pushed across its way, m/s²
+  double slide         = 0.0;  // the most its nose is off its way, radians
+  for(int i = 0; i < 120; i++)
+  {
+    const glm::dvec3 was = c.velocity;
+    stepCar(c, shape, world, 1.0 / 60.0, true);
+    const glm::dvec3 way = glm::normalize(c.velocity);
+    const glm::dvec3 a   = (c.velocity - was) * 60.0;
+    sideways             = std::max(sideways, glm::length(a - way * glm::dot(a, way)));
+    slide                = std::max(slide, std::acos(std::clamp(glm::dot(carForward(c), way), -1.0, 1.0)));
+  }
+  EXPECT_LT(c.steer, 0.1);
+  EXPECT_GT(c.spin.y, 0.05) << "it turns";
+  EXPECT_LT(sideways, 1.2 * 9.81) << "no more than its tyres hold";
+  EXPECT_LT(slide, 0.15) << "it doesn't spin out";
+  EXPECT_GT(carUp(c).y, 0.85) << "it leans, but stays on its wheels";
+}
+
+TEST(PlayCar, HoldsOnAHillAndSitsAlongIt)
+{
+  const double angle = 15.0 * std::numbers::pi / 180.0;
+  const World  world = hillWorld(angle);
+  const CarShape shape = truck();
+  const glm::dvec3 slope = glm::normalize(glm::dvec3(0.0, 1.0, -std::tan(angle)));
+  for(const double heading : {0.0, std::numbers::pi / 2.0, std::numbers::pi})  // up it, across it, down it
+    for(const bool driven : {false, true})
+    {
+      SCOPED_TRACE(testing::Message() << heading << (driven ? " driven" : " parked"));
+      Car c = truckOnHill(angle, heading);
+      drive(c, shape, world, 4.0, driven);
+      const glm::dvec3 at = c.com;
+      drive(c, shape, world, 10.0, driven);
+      EXPECT_LT(glm::distance(c.com, at), 0.01) << "no creep";
+      EXPECT_TRUE(c.asleep);
+      // along the hill: across it, leaning a little toward the downhill side as a car on a camber does
+      EXPECT_GT(glm::dot(carUp(c), slope), std::cos(3.5 * std::numbers::pi / 180.0)) << "along the hill";
+    }
+}
+
+TEST(PlayCar, TheHandbrakeLocksTheRearAndItSlides)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  double         turned[2] = {};
+  for(const bool pulled : {false, true})
+  {
+    Car c      = truckAt();
+    c.velocity = {0.0, 0.0, 15.0};
+    c.keys     = kLeft | (pulled ? kUp : 0u);
+    for(int i = 0; i < 60; i++)
+    {
+      stepCar(c, shape, world, 1.0 / 60.0, true);
+      turned[pulled] = std::max(turned[pulled], c.spin.y);
+    }
+    if(pulled)
+    {
+      EXPECT_TRUE(c.handbrake);
+      EXPECT_EQ(c.wheels[2].rate, 0.0);
+      EXPECT_EQ(c.wheels[3].rate, 0.0);
+      EXPECT_NE(c.wheels[0].rate, 0.0) << "the front still rolls";
+    }
+  }
+  EXPECT_GT(turned[1], 1.3 * turned[0]) << "the rear slides out: it turns quicker";
+}
+
+TEST(PlayCar, StopsAtAWallAndAtAPoleBetweenItsLights)
+{
+  const CarShape shape = truck();
+  for(const Box& in : {Box{{-5.0, 0.0, 10.0}, {5.0, 3.0, 11.0}}, Box{{-0.15, 0.0, 10.0}, {0.15, 3.0, 10.3}}})
+  {
+    const World world = flatWorld({in});
+    Car         c     = truckAt();
+    c.velocity        = {0.0, 0.0, 10.0};
+    c.keys            = kForward;
+    double front      = -1e30;
+    for(int i = 0; i < 180; i++)
+    {
+      stepCar(c, shape, world, 1.0 / 60.0, true);
+      front = std::max(front, c.com.z + 2.4);
+    }
+    EXPECT_LT(front, 10.06) << "never past it";
+    EXPECT_GT(front, 9.5) << "up to it";
+    EXPECT_GT(carUp(c).y, 0.9);
+  }
+}
+
+TEST(PlayCar, DrivesUpAKerbButNotAWall)
+{
+  const CarShape shape = truck();
+  {
+    const World world = flatWorld({Box{{-5.0, 0.0, 6.0}, {5.0, 0.12, 400.0}}});
+    Car         c     = truckAt();
+    c.keys            = kForward;
+    drive(c, shape, world, 5.0);
+    EXPECT_GT(c.com.z, 12.0) << "up on it and on";
+    EXPECT_NEAR(c.com.y, carRideHeight(shape) + 0.12, 0.06);
+  }
+  const World world = flatWorld({Box{{-5.0, 0.0, 6.0}, {5.0, 0.5, 40.0}}});
+  Car         c     = truckAt();
+  c.keys            = kForward;
+  drive(c, shape, world, 5.0);
+  EXPECT_LT(c.com.z + 2.4, 6.06) << "against it";
+  EXPECT_GT(carUp(c).y, 0.9);
+}
+
+TEST(PlayCar, LandsAfterADropWithoutBouncingAway)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  c.com.y += 2.0;
+  double rising = 0.0;  // the fastest it goes up after it first lands
+  bool   landed = false;
+  for(int i = 0; i < 180; i++)
+  {
+    stepCar(c, shape, world, 1.0 / 60.0, false);
+    landed = landed || c.wheels[0].touching;
+    if(landed)
+      rising = std::max(rising, c.velocity.y);
+  }
+  EXPECT_TRUE(landed);
+  EXPECT_LT(rising, 1.5);
+  EXPECT_NEAR(c.com.y, carRideHeight(shape), 0.02);
+}
+
+TEST(PlayCar, AWheelOverAPitHangs)
+{
+  // a platform a metre high with a pit under the front left wheel, and nothing under that
+  const World world = flatWorld({Box{{-10.0, 0.0, -10.0}, {10.0, 1.0, 1.0}}, Box{{-10.0, 0.0, 1.0}, {0.5, 1.0, 10.0}},
+                                 Box{{0.5, 0.0, 1.7}, {10.0, 1.0, 10.0}}},
+                                false);
+  const CarShape shape = truck();
+  Car            c     = truckAt({0.0, 1.0, 0.0});
+  drive(c, shape, world, 3.0, false);
+  EXPECT_FALSE(c.wheels[0].touching);
+  EXPECT_NEAR(c.wheels[0].length, CarTuning{}.travelUp + CarTuning{}.travelDown, 1e-6);
+  for(size_t i = 1; i < 4; i++)
+    EXPECT_TRUE(c.wheels[i].touching) << i;
+  EXPECT_TRUE(std::isfinite(c.com.y));
+  EXPECT_GT(c.com.y, 1.0) << "on the platform still";
+  EXPECT_GT(carUp(c).y, 0.95);
+}
+
+TEST(PlayCar, RightsItselfAfterLandingOnItsRoof)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  Car            c     = carAt({0.0, 1.3, 0.0}, glm::angleAxis(std::numbers::pi, glm::dvec3(0.0, 0.0, 1.0)), shape);
+  drive(c, shape, world, 8.0, false);
+  EXPECT_GT(carUp(c).y, 0.99);
+  EXPECT_GT(carForward(c).z, 0.99) << "heading as it was";
+  EXPECT_NEAR(c.com.y, carRideHeight(shape), 0.03);
+}
+
+TEST(PlayCar, UnevenGroundDoesNotShakeItAtRest)
+{
+  // the ground as a mesh's facets give it: its height a couple of millimetres off, its normal some degrees
+  uint32_t seed  = 12345;
+  const auto rnd = [&seed] {
+    seed = seed * 1664525u + 1013904223u;
+    return double(seed >> 8) / double(1u << 24) * 2.0 - 1.0;
+  };
+  World world  = flatWorld();
+  world.ground = [&rnd](const glm::dvec3& from, const glm::dvec3&, double reach) -> std::optional<Surface> {
+    const double y = 0.002 * rnd();
+    if(from.y < y || from.y - reach > y)
+      return std::nullopt;
+    return Surface{{from.x, y, from.z}, glm::normalize(glm::dvec3(0.05 * rnd(), 1.0, 0.05 * rnd()))};
+  };
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  drive(c, shape, world, 3.0, false);
+  double lo = 1e30, hi = -1e30;
+  for(int i = 0; i < 120; i++)
+  {
+    stepCar(c, shape, world, 1.0 / 60.0, false);
+    lo = std::min(lo, c.com.y);
+    hi = std::max(hi, c.com.y);
+  }
+  EXPECT_LT(hi - lo, 0.005);
+  EXPECT_TRUE(c.asleep);
+  EXPECT_GT(carUp(c).y, std::cos(0.5 * std::numbers::pi / 180.0));
+}
+
+TEST(PlayCar, WakesWhenDrivenAndWhenItsGroundGoes)
+{
+  double floor = 0.0;
+  World  world = flatWorld({}, false);
+  world.ground = [&floor](const glm::dvec3& from, const glm::dvec3& up, double reach) -> std::optional<Surface> {
+    if(from.y < floor || from.y - reach > floor)
+      return std::nullopt;
+    return Surface{{from.x, floor, from.z}, up};
+  };
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  drive(c, shape, world, 3.0, false);
+  ASSERT_TRUE(c.asleep);
+  // its ground lowered: it notices within a second and falls
+  floor = -1.0;
+  drive(c, shape, world, 2.5, false);
+  EXPECT_NEAR(c.com.y, carRideHeight(shape) - 1.0, 0.03);
+  drive(c, shape, world, 2.0, false);
+  ASSERT_TRUE(c.asleep);
+  c.keys = kForward;
+  stepCar(c, shape, world, 1.0 / 60.0, true);
+  EXPECT_FALSE(c.asleep);
+  drive(c, shape, world, 1.0);
+  EXPECT_GT(carSpeed(c), 1.0);
+}
+
+TEST(PlayCar, TheSameDriveAtAnyFrameRate)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  std::vector<glm::dvec3> ends;
+  for(const double dt : {1.0 / 30.0, 1.0 / 60.0, 1.0 / 144.0})
+  {
+    Car c  = truckAt();
+    c.keys = kForward | kLeft;
+    for(int i = 0; i < int(std::round(3.0 / dt)); i++)
+      stepCar(c, shape, world, dt, true);
+    ends.push_back(c.com);
+  }
+  EXPECT_LT(glm::distance(ends[0], ends[1]), 0.1);
+  EXPECT_LT(glm::distance(ends[2], ends[1]), 0.1);
+  EXPECT_GT(glm::length(ends[1]), 5.0) << "it went somewhere";
+}
+
+TEST(PlayCar, TheWheelsRollAsTheGroundGoesBy)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  c.velocity           = {0.0, 0.0, 10.0};
+  c.keys               = kForward;
+  double     turned    = 0.0;
+  double     was       = c.wheels[0].spin;
+  const auto from      = c.com;
+  for(int i = 0; i < 120; i++)
+  {
+    stepCar(c, shape, world, 1.0 / 60.0, true);
+    turned += std::remainder(c.wheels[0].spin - was, 2.0 * std::numbers::pi);
+    was = c.wheels[0].spin;
+  }
+  EXPECT_NEAR(turned, glm::distance(c.com, from) / 0.4, 0.01 * turned);
+}
+
+TEST(PlayCar, NobodyAtTheWheelItStops)
+{
+  const World    world = flatWorld();
+  const CarShape shape = truck();
+  Car            c     = truckAt();
+  c.velocity           = {0.0, 0.0, 10.0};
+  c.keys               = kForward;  // held, but nobody is there
+  const double from    = c.com.z;
+  drive(c, shape, world, 5.0, false);
+  EXPECT_LT(c.com.z - from, 10.0);
+  EXPECT_TRUE(c.asleep);
+}
+
+TEST(PlayCamera, TheChaseFollowsACarLevelThroughItsRoll)
+{
+  Car c         = truckAt();
+  c.orientation = glm::angleAxis(0.5, glm::dvec3(0.0, 0.0, 1.0));  // rolled
+  const Body b  = chaseBody(c, {0.0, 1.0, 0.0});
+  EXPECT_GT((b.orientation * glm::dvec3(0.0, 1.0, 0.0)).y, 0.9999);
+  EXPECT_GT((b.orientation * glm::dvec3(0.0, 0.0, 1.0)).z, 0.9999);
+  Chase      chase;
+  const Pose p = chaseView(chase, b, 4.8, 1.0 / 60.0, kCarChase);
+  EXPECT_LT(p.eye.z, -4.0);
+  EXPECT_GT(p.eye.y, 1.0);
+  EXPECT_GT(p.up.y, 0.95);
+  // the driver's look turns it round the car
+  c.gaze.x = std::numbers::pi;
+  EXPECT_LT((chaseBody(c, {0.0, 1.0, 0.0}).orientation * glm::dvec3(0.0, 0.0, 1.0)).z, -0.999);
+}
+
+TEST(PlayCamera, TheDriverLooksAroundInsideTheCar)
+{
+  const Body b{{0.0, 1.0, 0.0}, glm::dquat(1.0, 0.0, 0.0, 0.0), glm::dvec3(0.0)};
+  const glm::dvec3 seat(0.4, 0.5, 0.2);
+  const Pose ahead = cockpitView(b, seat);
+  EXPECT_LT(glm::distance(ahead.eye, glm::dvec3(0.4, 1.5, 0.2)), 1e-12);
+  EXPECT_GT(ahead.forward.z, 0.999999);
+  const Pose aside = cockpitView(b, seat, {1.0, 0.0});
+  EXPECT_NEAR(aside.forward.x, std::sin(1.0), 1e-9) << "a look to the left";
+  EXPECT_NEAR(aside.forward.z, std::cos(1.0), 1e-9);
+  const Pose up = cockpitView(b, seat, {0.0, 0.5});
+  EXPECT_NEAR(up.forward.y, std::sin(0.5), 1e-9);
+  EXPECT_NEAR(glm::dot(up.forward, up.up), 0.0, 1e-9);
+}
+
+TEST(PlayCamera, TheChaseComesInFrontOfAWallAndOverTheGround)
+{
+  const World      world = flatWorld({Box{{-5.0, 0.0, -4.0}, {5.0, 3.0, -3.0}}});
+  const glm::dvec3 target(0.0, 1.0, 0.0);
+  const Pose       behind{{0.0, 2.0, -6.0}, glm::normalize(target - glm::dvec3(0.0, 2.0, -6.0)), {0.0, 1.0, 0.0}};
+  const Pose       cleared = clearView(behind, target, world);
+  EXPECT_GT(cleared.eye.z, -3.0) << "in front of the wall";
+  EXPECT_LT(cleared.eye.z, -2.0);
+  const Pose low{{0.0, 0.1, -3.0}, {0.0, 0.0, 1.0}, {0.0, 1.0, 0.0}};
+  EXPECT_GE(clearView(low, target, flatWorld()).eye.y, 0.4 - 1e-9);
+}
+
 }  // namespace
