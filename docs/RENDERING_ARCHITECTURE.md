@@ -1159,8 +1159,9 @@ their kit when there is one. It needs no kit: without one it stands bare.
   - `withPlaces` adds a stage before the ground's colour: a place's floor is level on the plane
     that touches the planet at its middle and eases into the land, a road is cut and banked to its
     own level across its width (finely drawn quads only; from afar it is a share of the colour),
-    but not over a bridge's water, where the ground stays the river's, and `Sample::built` says
-    what a point has of it. The planet's plants and grass read that:
+    but not over a bridge's water, where the ground stays the river's, nor past an open end of a
+    way (`Places::wayEnds`: a gate, or where a road gives out), where it stops square; and
+    `Sample::built` says what a point has of it. The planet's plants and grass read that:
     nothing planted where a pack keeps clear or a road runs, no tree on a place's floor. A point
     finds what is near it through lists by base-map cell, which hold every cell a place or a road
     reaches into (a cell only clipped at a corner too).
@@ -1185,9 +1186,15 @@ their kit when there is one. It needs no kit: without one it stands bare.
     old road's wear laid across its carriageway edge to edge and along it for a repeat (paler, smoother
     wheel paths, dusty and broken edges, cracks, some of them tarred, crazing, repairs, potholes), its
     stones' grain as the material's detail layer, and the markings' paint worn on the same
-    coordinates, so a crack runs on through a line. Each way starts at its own place in the repeat,
-    and the vertices' colours tint it by a weathering wider than the repeat. A bridge takes the kit's
-    concrete once the kit has it (`mapPlanetRoads`).
+    coordinates, so a crack runs on through a line. The wear is cut into stretches by joints
+    (`kAsphaltJoints`, straight cracks across it, some sealed) that nothing else crosses: each way
+    lays the stretches in an order of its own, each either way along and either way across, the
+    surface cut on a joint where one gives way to the next, so no run of road is another's; and the
+    vertices' colours tint it by a weathering wider than a stretch. Where a way ends (`WayEnd`, found
+    as the planet is settled): running on into the next way, their surfaces meet; joining a road
+    from the side, its surface stops at that road's edge; at an open end it is broken off, dusty, its
+    edge going down into the ground, its paint stopping short. A bridge takes the kit's concrete once
+    the kit has it (`mapPlanetRoads`).
 - **Its map** (`src/fv_world_chart.hpp`, the `planet.map` command, the app's World › Planet › Map):
   an author's view of the planet, north up. `chartImage` draws a window of latitude and longitude as
   an image, a sample a pixel at the pixel's footprint (so the stages leave out what is finer than it):

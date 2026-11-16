@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <map>
 
 #include "fv_world_places.hpp"
 
@@ -127,13 +128,32 @@ void face(RoadMesh& m, const std::array<glm::vec3, 4>& p, const std::array<glm::
 
 // ---- a road's surface ---------------------------------------------------------------------------------------
 
+// A section's points across a road: a skirt, the carriageway's columns, a skirt
+constexpr int kAcross = kColumns + 2;
+
 struct Section
 {
-  glm::dvec3                    centre{0.0}, side{0.0};  // the middle line's point; the unit way across it
-  double                        along = 0.0;
-  std::array<double, kColumns>  h{};                     // the surface's elevation at each column
-  std::array<double, 2>         skirt{};                 // and where its edges go down to, each side
-  uint32_t                      first = 0;               // its vertices in the mesh
+  glm::dvec3                      centre{0.0}, side{0.0};  // the middle line's point; the unit way across it
+  double                          along = 0.0;             // metres along its way
+  std::array<glm::dvec3, kAcross> dir{};                   // each point's
+  std::array<double, kAcross>     x{}, h{}, at{};          // metres across, its elevation, metres along the way
+  bool                            dusty = false;           // at an open end: soil washed onto it
+};
+
+// A stretch of the asphalt's wear (between two of kAsphaltJoints) laid on a way: which, from where to
+// where along the way, and whether it runs backward along it or is turned across it
+struct Laid
+{
+  size_t k    = 0;
+  double from = 0.0, to = 0.0;
+  bool   back = false, flip = false;
+
+  glm::vec2 uv(double x, double half, double along) const
+  {
+    const double    d  = along - from;
+    const glm::vec2 on = roadUv(x, half, back ? kAsphaltJoints[k + 1] - d : kAsphaltJoints[k] + d);
+    return glm::vec2(flip ? 1.0F - on.x : on.x, on.y);
+  }
 };
 
 struct Surfaces
@@ -145,14 +165,8 @@ struct Surfaces
   RoadMeshes&       out;
   double            R, lift;
   uint32_t          seed;
-  // metres added to a piece's own along to place it on the asphalt's maps: its way's own start in
-  // their repeat, less whole repeats (so its coordinates stay small however long the way)
-  double shift = 0.0;
 
   glm::vec3 at(const glm::dvec3& d, double elevation) const { return glm::vec3(toScene(w, d, elevation) - centre); }
-
-  // Where `along` metres of the piece's way and `x` across it is on the asphalt's maps
-  glm::vec2 uv(double x, double half, double along) const { return roadUv(x, half, along + shift); }
 
   // The asphalt's tint at `d`: weathered wider than its maps' repeat, warmer or cooler here and there
   glm::vec4 tint(const glm::dvec3& d) const
@@ -162,35 +176,106 @@ struct Surfaces
     return glm::vec4(float(grey * (1.0 + warm)), float(grey), float(grey * (1.0 - warm)), 1.0F);
   }
 
+  // The stretches of the wear laid along a way that reach from `from` to `to` metres along it, in
+  // order: from the way's start (part of the way into the first), each another than the one before,
+  // each either way along and either way across
+  std::vector<Laid> laidAlong(uint32_t way, double from, double to) const
+  {
+    constexpr uint32_t N      = uint32_t(kAsphaltJoints.size()) - 1;
+    const auto         length = [](uint32_t k) { return kAsphaltJoints[k + 1] - kAsphaltJoints[k]; };
+    std::vector<Laid>  laid;
+    uint32_t           k   = hash(seed, way, 0xB10CU) % N;
+    double             end = -length(k) * unit(hash(seed, way, 0x5EA7U));
+    for(uint32_t m = 0;; m++)
+    {
+      if(m > 0)
+        k = (k + 1U + hash(seed + 1U, way, m) % (N - 1U)) % N;
+      const uint32_t turn = hash(seed + 2U, way, m);
+      const Laid     l{k, end, end + length(k), (turn & 1U) != 0, (turn & 2U) != 0};
+      if(l.to > from)
+        laid.push_back(l);
+      end = l.to;
+      if(end >= to)
+        return laid;
+    }
+  }
+
+  // The way along a piece at `t`, along the sphere at `on`
+  static glm::dvec3 runOf(const RoadPiece& p, double t, const glm::dvec3& on)
+  {
+    glm::dvec3 run = (p.b - p.a) * (1.0 - t) + (p.c - p.b) * t;
+    run -= on * glm::dot(run, on);
+    if(glm::dot(run, run) < 1e-30)
+      run = p.c - p.a;
+    return glm::normalize(run);
+  }
+
   Section section(const RoadPiece& p, double t) const
   {
     Section s;
-    s.centre       = glm::normalize(bent(p.a, p.b, p.c, t));
-    glm::dvec3 run = (p.b - p.a) * (1.0 - t) + (p.c - p.b) * t;
-    run -= s.centre * glm::dot(run, s.centre);
-    if(glm::dot(run, run) < 1e-30)
-      run = p.c - p.a;
-    s.side             = glm::normalize(glm::cross(glm::normalize(run), s.centre));
+    s.centre           = glm::normalize(bent(p.a, p.b, p.c, t));
+    s.side             = glm::normalize(glm::cross(runOf(p, t, s.centre), s.centre));
     s.along            = double(p.start) + t * double(p.length);
     const double level = bent(double(p.level[0]), double(p.level[1]), double(p.level[2]), t);
     // on a bridge and on to its ends the road is its own level (over the water the ground is the
     // river's bed); elsewhere it lies on the ground as drawn, which is the road's where it is fine
-    const bool deck = bridgeAt(pl, p.way, s.along, kBridgeEnds) != nullptr;
+    const bool   deck = bridgeAt(pl, p.way, s.along, kBridgeEnds) != nullptr;
     const double half = double(p.half);
-    for(int c = 0; c < kColumns; c++)
+    for(int c = 0; c < kAcross; c++)
     {
-      const double x = -half + 2.0 * half * double(c) / double(kColumns - 1);
-      const double g = drawn.at(glm::normalize(s.centre + s.side * (x / R)));
+      const size_t i = size_t(c);
+      s.x[i]         = c == 0 ? -(half + kSkirtOut) : c == kAcross - 1 ? half + kSkirtOut : -half + 2.0 * half * double(c - 1) / double(kColumns - 1);
+      s.dir[i]       = glm::normalize(s.centre + s.side * (s.x[i] / R));
+      s.at[i]        = s.along;
+    }
+    for(int c = 1; c <= kColumns; c++)
+    {
+      const double g   = drawn.at(s.dir[size_t(c)]);
       s.h[size_t(c)] = (deck ? std::max(level, g) : g) + lift;
     }
-    for(int k = 0; k < 2; k++)
+    for(const int c : {0, kAcross - 1})
     {
-      const double x    = (k ? 1.0 : -1.0) * (half + kSkirtOut);
-      const double edge = s.h[k ? kColumns - 1 : 0];
+      const double edge = s.h[c == 0 ? 1U : size_t(kColumns)];
       // (down into the ground, a lip on a bridge, and never a wall: a culvert's stream is under it)
-      s.skirt[size_t(k)] = deck ? edge - 0.25 : std::clamp(drawn.at(glm::normalize(s.centre + s.side * (x / R))) - kSkirtUnder, edge - 1.5, edge - 0.05);
+      s.h[size_t(c)] = deck ? edge - 0.25 : std::clamp(drawn.at(s.dir[size_t(c)]) - kSkirtUnder, edge - 1.5, edge - 0.05);
     }
     return s;
+  }
+
+  // A section at an open end of its way, `toward` it +1 (its end) or -1 (its start): the asphalt
+  // broken off there, each point a little short of the end, with soil washed onto it
+  Section broken(const RoadPiece& p, double t, double toward) const
+  {
+    Section s = section(p, t);
+    std::array<double, kAcross> back{};
+    for(int c = 1; c <= kColumns; c++)
+      back[size_t(c)] = 0.6 * unit(hash(seed, p.way, uint32_t(c) + (toward > 0.0 ? 16U : 0U)));
+    back[0]                   = back[1];
+    back[size_t(kAcross - 1)] = back[size_t(kColumns)];
+    for(int c = 0; c < kAcross; c++)
+    {
+      const Section o = section(p, std::clamp(t - toward * back[size_t(c)] / double(p.length), 0.0, 1.0));
+      s.dir[size_t(c)] = o.dir[size_t(c)];
+      s.h[size_t(c)]   = o.h[size_t(c)];
+      s.at[size_t(c)]  = o.at[size_t(c)];
+    }
+    s.dusty = true;
+    return s;
+  }
+
+  // Past an open end's section, its edge going down into the ground as its sides do
+  Section endSkirt(const Section& s, const RoadPiece& p, double t, double toward) const
+  {
+    Section          e   = s;
+    const glm::dvec3 out = runOf(p, t, s.centre) * toward;
+    for(size_t c = 0; c < size_t(kAcross); c++)
+    {
+      e.dir[c] = glm::normalize(s.dir[c] + out * (kSkirtOut / R));
+      e.at[c]  = s.at[c] + toward * kSkirtOut;
+      e.h[c]   = std::clamp(drawn.at(e.dir[c]) - kSkirtUnder, s.h[c] - 1.5, s.h[c] - 0.05);
+    }
+    e.dusty = false;
+    return e;
   }
 
   // The surface's height `x` metres across a section
@@ -198,33 +283,34 @@ struct Surfaces
   {
     const double c = std::clamp((x + half) / (2.0 * half) * double(kColumns - 1), 0.0, double(kColumns - 1));
     const int    i = std::min(int(c), kColumns - 2);
-    return s.h[size_t(i)] + (c - double(i)) * (s.h[size_t(i) + 1] - s.h[size_t(i)]);
+    return s.h[size_t(i) + 1] + (c - double(i)) * (s.h[size_t(i) + 2] - s.h[size_t(i) + 1]);
   }
 
-  void vertices(Section& s, double half)
+  // A section's vertices on a stretch of the wear (`down`: all of them a skirt, darker); the first's index
+  uint32_t vertices(const Section& s, const Laid& l, double half, bool down)
   {
-    RoadMesh& m = out.surface;
-    s.first     = uint32_t(m.positions.size());
-    for(int k = 0; k < kColumns + 2; k++)
+    RoadMesh&      m     = out.surface;
+    const uint32_t first = uint32_t(m.positions.size());
+    for(size_t c = 0; c < size_t(kAcross); c++)
     {
-      const double x = k == 0 ? -(half + kSkirtOut) : k == kColumns + 1 ? half + kSkirtOut : -half + 2.0 * half * double(k - 1) / double(kColumns - 1);
-      const double     h = k == 0 ? s.skirt[0] : k == kColumns + 1 ? s.skirt[1] : s.h[size_t(k - 1)];
-      const glm::dvec3 d = glm::normalize(s.centre + s.side * (x / R));
-      m.positions.push_back(at(d, h));
+      m.positions.push_back(at(s.dir[c], s.h[c]));
       m.normals.emplace_back(0.0F);
-      m.uvs.push_back(uv(x, half, s.along));
-      // (its skirts go down into the soil: darker)
-      m.colours.push_back(tint(d) * (k == 0 || k == kColumns + 1 ? glm::vec4(0.8F, 0.8F, 0.8F, 1.0F) : glm::vec4(1.0F)));
+      m.uvs.push_back(l.uv(s.x[c], half, s.at[c]));
+      // (its skirts go down into the soil: darker; at an open end, soil on it)
+      const bool      skirt = down || c == 0 || c == size_t(kAcross - 1);
+      const glm::vec4 shade = skirt ? glm::vec4(0.8F, 0.8F, 0.8F, 1.0F) : s.dusty ? glm::vec4(1.25F, 1.15F, 1.0F, 1.0F) : glm::vec4(1.0F);
+      m.colours.push_back(tint(s.dir[c]) * shade);
     }
+    return first;
   }
 
-  // The surface between two sections, as strips across: its normals are summed from its faces
-  void between(const Section& a, const Section& b)
+  // The surface between two sections' vertices, as strips across: its normals are summed from its faces
+  void between(uint32_t a, uint32_t b)
   {
     RoadMesh& m = out.surface;
-    for(uint32_t k = 0; k + 1 < uint32_t(kColumns + 2); k++)
+    for(uint32_t k = 0; k + 1 < uint32_t(kAcross); k++)
     {
-      const uint32_t A = a.first + k, A1 = A + 1, B = b.first + k, B1 = B + 1;
+      const uint32_t A = a + k, A1 = A + 1, B = b + k, B1 = B + 1;
       for(const std::array<uint32_t, 3>& t : {std::array<uint32_t, 3>{A, A1, B1}, std::array<uint32_t, 3>{A, B1, B}})
       {
         const glm::vec3 n = glm::cross(m.positions[t[1]] - m.positions[t[0]], m.positions[t[2]] - m.positions[t[0]]);
@@ -239,29 +325,30 @@ struct Surfaces
 
   // A stripe of paint over the surface between two sections: from `f0` to `f1` of the way from one
   // to the other, from `x0` to `x1` across
-  void paint(const Section& a, const Section& b, double half, double f0, double f1, double x0, double x1)
+  void paint(const Section& a, const Section& b, const Laid& l, double half, double f0, double f1, double x0, double x1)
   {
-    const auto dir = [&](double f, double x) { return glm::normalize(glm::mix(a.centre, b.centre, f) + glm::mix(a.side, b.side, f) * (x / R)); };
+    const auto dir   = [&](double f, double x) { return glm::normalize(glm::mix(a.centre, b.centre, f) + glm::mix(a.side, b.side, f) * (x / R)); };
     const auto point = [&](double f, double x) { return at(dir(f, x), across(a, half, x) + f * (across(b, half, x) - across(a, half, x)) + kPaintOver); };
-    const auto on    = [&](double f, double x) { return uv(x, half, a.along + f * (b.along - a.along)); };
+    const auto on    = [&](double f, double x) { return l.uv(x, half, a.along + f * (b.along - a.along)); };
     face(out.marking, {point(f0, x0), point(f0, x1), point(f1, x1), point(f1, x0)}, {on(f0, x0), on(f0, x1), on(f1, x1), on(f1, x0)},
          w.frame.turn * glm::mix(a.centre, b.centre, f0));
     for(const auto& [f, x] : {std::pair{f0, x0}, std::pair{f0, x1}, std::pair{f1, x1}, std::pair{f1, x0}})
       out.marking.colours.push_back(tint(dir(f, x)));
   }
 
-  void markings(const Section& a, const Section& b, const RoadPiece& p)
+  // The markings between two sections, from `lo` to `hi` metres along the way at most
+  void markings(const Section& a, const Section& b, const RoadPiece& p, const Laid& l, double lo, double hi)
   {
-    const double half = double(p.half), s0 = a.along, s1 = b.along;
-    if(!(s1 > s0))
+    const double half = double(p.half), A = a.along, B = b.along, s0 = std::max(A, lo), s1 = std::min(B, hi);
+    if(!(s1 > s0) || !(B > A))
       return;
-    const auto f = [&](double s) { return (s - s0) / (s1 - s0); };
+    const auto f = [&](double s) { return (s - A) / (B - A); };
     // a dash down the middle
     for(double k = std::floor(s0 / kDashEvery); k * kDashEvery < s1; k += 1.0)
     {
-      const double lo = std::max(s0, k * kDashEvery), hi = std::min(s1, k * kDashEvery + kDashLong);
-      if(hi > lo && unit(hash(seed, p.way, uint32_t(int64_t(k)))) >= kDashGone)
-        paint(a, b, half, f(lo), f(hi), -0.5 * kDashWide, 0.5 * kDashWide);
+      const double from = std::max(s0, k * kDashEvery), to = std::min(s1, k * kDashEvery + kDashLong);
+      if(to > from && unit(hash(seed, p.way, uint32_t(int64_t(k)))) >= kDashGone)
+        paint(a, b, l, half, f(from), f(to), -0.5 * kDashWide, 0.5 * kDashWide);
     }
     // and a line along each edge, broken
     for(int side = 0; side < 2; side++)
@@ -269,39 +356,97 @@ struct Surfaces
       const double x = (side ? 1.0 : -1.0) * (half - kEdgeIn);
       for(double k = std::floor(s0 / kEdgeBlock); k * kEdgeBlock < s1; k += 1.0)
       {
-        const double lo = std::max(s0, k * kEdgeBlock), hi = std::min(s1, (k + 1.0) * kEdgeBlock);
-        if(hi > lo && unit(hash(seed + 1U + uint32_t(side), p.way, uint32_t(int64_t(k)))) >= kEdgeGone)
-          paint(a, b, half, f(lo), f(hi), x - 0.5 * kEdgeWide, x + 0.5 * kEdgeWide);
+        const double from = std::max(s0, k * kEdgeBlock), to = std::min(s1, (k + 1.0) * kEdgeBlock);
+        if(to > from && unit(hash(seed + 1U + uint32_t(side), p.way, uint32_t(int64_t(k)))) >= kEdgeGone)
+          paint(a, b, l, half, f(from), f(to), x - 0.5 * kEdgeWide, x + 0.5 * kEdgeWide);
       }
     }
   }
 
-  // The stretches of a piece whose middles fall in the quad
-  void piece(const RoadPiece& p, const Quad& q)
+  // The stretches of a piece (pieces[index]) whose middles fall in the quad: from where its way's
+  // start stops to where its end does (WayEnd), cut where one stretch of the wear laid on it gives way
+  // to the next; broken off at an open end, its edge going down into the ground there
+  void piece(const RoadPiece& p, size_t index, const Quad& q)
   {
-    const double from = double(p.start) + kAsphaltRepeat * unit(hash(seed, p.way, 0xA5F417U));
-    shift             = from - double(p.start) - kAsphaltRepeat * std::floor(from / kAsphaltRepeat);
+    const double len = double(p.length);
+    if(!(len > 0.0))
+      return;
+    const bool    ended = p.way < pl.wayEnds.size();
+    const WayEnd  none{};
+    const WayEnd& head  = ended && index == pl.wayPieces[p.way] ? pl.wayEnds[p.way][0] : none;
+    const WayEnd& tail  = ended && index + 1 == pl.wayPieces[p.way + 1] ? pl.wayEnds[p.way][1] : none;
+    const double  tFrom = std::clamp(double(head.cut) / len, 0.0, 1.0), tTo = 1.0 - std::clamp(double(tail.cut) / len, 0.0, 1.0);
+    if(tTo - tFrom < 1e-6)
+      return;
+    const double half = double(p.half);
     const double step = std::clamp(drawn.cell(), 1.0, 4.0);
-    const int    n    = std::max(1, int(std::ceil(double(p.length) / step)));
-    std::vector<Section> made(size_t(n) + 1);
-    std::vector<uint8_t> has(size_t(n) + 1, 0);
-    const auto           get = [&](int k) -> Section& {
-      if(!has[size_t(k)])
-      {
-        made[size_t(k)] = section(p, double(k) / n);
-        vertices(made[size_t(k)], double(p.half));
-        has[size_t(k)] = 1;
-      }
-      return made[size_t(k)];
+    const int    n    = std::max(1, int(std::ceil(len / step)));
+    // (no paint on the broken end of the asphalt)
+    const double            lo   = head.open ? double(p.start) + tFrom * len + 0.8 : -1e30;
+    const double            hi   = tail.open ? double(p.start) + tTo * len - 0.8 : 1e30;
+    const std::vector<Laid> laid = laidAlong(p.way, double(p.start) + tFrom * len, double(p.start) + tTo * len);
+    // the sections made, by where along the piece; their vertices, by that and the stretch of the wear on them
+    std::map<double, Section>                     sections;
+    std::map<std::pair<double, size_t>, uint32_t> copies;
+    const auto                                    sectionAt = [&](double t) -> const Section& {
+      auto it = sections.find(t);
+      if(it == sections.end())
+        it = sections.emplace(t, head.open && t == tFrom ? broken(p, t, -1.0) : tail.open && t == tTo ? broken(p, t, 1.0) : section(p, t)).first;
+      return it->second;
+    };
+    const auto copyOf = [&](double t, size_t i) {
+      auto it = copies.find({t, i});
+      if(it == copies.end())
+        it = copies.emplace(std::make_pair(t, i), vertices(sectionAt(t), laid[i], half, false)).first;
+      return it->second;
+    };
+    const auto laidAt = [&](double along) {
+      size_t i = 0;
+      while(i + 1 < laid.size() && laid[i].to <= along)
+        i++;
+      return i;
     };
     for(int k = 0; k < n; k++)
     {
       if(!contains(q, glm::normalize(bent(p.a, p.b, p.c, (double(k) + 0.5) / n))))
         continue;
-      Section& a = get(k);
-      Section& b = get(k + 1);
-      between(a, b);
-      markings(a, b, p);
+      const double t0 = std::max(double(k) / n, tFrom), t1 = std::min(double(k + 1) / n, tTo);
+      if(!(t1 > t0))
+        continue;
+      std::vector<double> cuts{t0};
+      for(const Laid& l : laid)
+        if(const double t = (l.from - double(p.start)) / len; t > t0 + 1e-9 && t < t1 - 1e-9)
+          cuts.push_back(t);
+      cuts.push_back(t1);
+      for(size_t j = 0; j + 1 < cuts.size(); j++)
+      {
+        const size_t i = laidAt(double(p.start) + 0.5 * (cuts[j] + cuts[j + 1]) * len);
+        between(copyOf(cuts[j], i), copyOf(cuts[j + 1], i));
+        markings(sectionAt(cuts[j]), sectionAt(cuts[j + 1]), p, laid[i], lo, hi);
+      }
+      if(t0 == tFrom && head.open)
+      {
+        const size_t i = laidAt(double(p.start) + tFrom * len);
+        between(vertices(endSkirt(sectionAt(tFrom), p, tFrom, -1.0), laid[i], half, true), copyOf(tFrom, i));
+      }
+      if(t1 == tTo && tail.open)
+      {
+        const size_t i = laidAt(double(p.start) + tTo * len);
+        between(copyOf(tTo, i), vertices(endSkirt(sectionAt(tTo), p, tTo, 1.0), laid[i], half, true));
+      }
+    }
+    // a point's normal from every face round it, whichever stretch of the wear they were laid on
+    std::vector<glm::vec3>& normals = out.surface.normals;
+    for(auto it = copies.begin(); it != copies.end();)
+    {
+      auto                            next = it;
+      std::array<glm::vec3, kAcross> sum{};
+      for(; next != copies.end() && next->first.first == it->first.first; ++next)
+        for(size_t c = 0; c < size_t(kAcross); c++)
+          sum[c] += normals[next->second + c];
+      for(; it != next; ++it)
+        for(size_t c = 0; c < size_t(kAcross); c++)
+          normals[it->second + c] = sum[c];
     }
   }
 };
@@ -438,13 +583,14 @@ RoadMeshes roadMeshes(const World& w, const Quad& q, const glm::dvec3& centre, c
   const double     span   = 2.0 / double(uint64_t(1) << q.level);
   const glm::dvec3 middle = direction(q.face, (double(q.x) + 0.5) * span - 1.0, (double(q.y) + 0.5) * span - 1.0);
   Surfaces         surfaces{w, pl, centre, drawn, out, R, surfaceLift(drawn.cell()), uint32_t(w.spec.seed) * 2246822519U + 13U};
-  for(const RoadPiece& p : pl.roads)
+  for(size_t i = 0; i < pl.roads.size(); i++)
   {
+    const RoadPiece& p = pl.roads[i];
     if(pl.catalogue->roads[p.kind].earth)
       continue;  // (a track is the ground's earth)
     if(glm::length(p.b - middle) * R > 0.75 * wide + 0.6 * double(p.length) + double(p.half) + 5.0)
       continue;
-    surfaces.piece(p, q);
+    surfaces.piece(p, i, q);
   }
   RoadMesh& m = out.surface;
   for(glm::vec3& n : m.normals)

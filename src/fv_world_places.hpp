@@ -29,8 +29,10 @@
 // like the figures' own clearing), cut and filled to a road's level across its width and eased into
 // the land over its verges, a ford where a track meets a stream; and the ground's colour and layers
 // under a road. A river too wide to ford is crossed by a bridge (Bridge): the road's level is held
-// over the water from bank to bank, the ground under it left as the river has it. Sample::built says
-// what a point has of all this, which keeps the planet's plants and grass off it (fv_world_plants.cpp).
+// over the water from bank to bank, the ground under it left as the river has it. Each end of a way
+// says what it meets (WayEnd): past an open one there is nothing of the road's surface on the ground.
+// Sample::built says what a point has of all this, which keeps the planet's plants and grass off it
+// (fv_world_plants.cpp).
 // What a road and a bridge are drawn with near the eye: fv_world_roads.hpp.
 //
 // Nothing here draws: the host holds the packs' models and stands the sites near the eye
@@ -39,6 +41,7 @@
 // Vulkan-free; `settle` uses the job pool.
 //-------------------------------------------------------------------------------------------------------
 
+#include <array>
 #include <memory>
 #include <span>
 #include <string>
@@ -171,6 +174,15 @@ struct Bridge
   float    water = 0.0F;             // the water's surface under it
 };
 
+// What one end of an asphalt way meets: another asphalt road, which it runs on into (a way ends at
+// every junction) or joins from the side, its surface stopping at that road's edge; or none, an open
+// end (a place's gate, or where a road gives out), past which there is nothing of its surface
+struct WayEnd
+{
+  float cut  = 0.0F;   // metres short of its end its surface stops: the edge of the road it joins
+  bool  open = false;
+};
+
 struct Places
 {
   explicit Places(uint32_t cells) : grid(cells) {}
@@ -185,6 +197,7 @@ struct Places
   std::vector<uint32_t>            wayPieces;  // a way's pieces are roads[wayPieces[w]] to roads[wayPieces[w + 1]], in their order
   std::vector<Bridge>              bridges;    // by way, then along it
   std::vector<uint32_t>            wayBridges; // a way's bridges are bridges[wayBridges[w]] to bridges[wayBridges[w + 1]]
+  std::vector<std::array<WayEnd, 2>> wayEnds;  // a way's start's and end's (a track's: none of either)
 
   // What is near a point: by cell of `grid`, the sites whose ground reaches into it and the road
   // pieces whose verges do. An item with kRoadItem set is a piece.

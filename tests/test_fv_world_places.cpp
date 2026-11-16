@@ -1328,32 +1328,45 @@ TEST(WorldRoads, ItsSurfaceIsLaidOnItsAsphaltFromEdgeToEdge)
       float     along;
     };
     std::vector<Across> sections;
+    const auto atJoint = [](float v) {
+      return std::any_of(W::kAsphaltJoints.begin(), W::kAsphaltJoints.end(), [&](double j) { return std::abs(double(v) * W::kAsphaltRepeat - j) < 2e-3; });
+    };
+    size_t ragged = 0;
     for(size_t s = 0; s < m.surface.positions.size(); s += 7)
     {
       const std::vector<glm::vec2>& uv = m.surface.uvs;
-      EXPECT_LT(uv[s].x, 0.0F);
-      EXPECT_NEAR(uv[s + 1].x, 0.0F, 1e-5F);
+      // either way across: one edge at 0, the other at 1, its skirts past them
+      const bool turned = uv[s + 1].x > 0.5F;
+      EXPECT_NEAR(uv[s + 1].x, turned ? 1.0F : 0.0F, 1e-5F);
       EXPECT_NEAR(uv[s + 3].x, 0.5F, 1e-5F);
-      EXPECT_NEAR(uv[s + 5].x, 1.0F, 1e-5F);
-      EXPECT_GT(uv[s + 6].x, 1.0F);
+      EXPECT_NEAR(uv[s + 5].x, turned ? 0.0F : 1.0F, 1e-5F);
+      EXPECT_TRUE(turned ? uv[s].x > 1.0F && uv[s + 6].x < 0.0F : uv[s].x < 0.0F && uv[s + 6].x > 1.0F);
+      // on one repeat of the maps (a little past it at a broken end), all of it at one place along
+      // (but at a broken end)
+      float lo = uv[s].y, hi = uv[s].y;
       for(size_t k = 1; k < 7; k++)
-        EXPECT_NEAR(uv[s + k].y, uv[s].y, 1e-5F);
-      // (small however long its way: a repeat and a piece at most)
-      EXPECT_GE(uv[s].y, 0.0F);
-      EXPECT_LE(uv[s].y, 1.0F + longest / float(W::kAsphaltRepeat) + 1e-3F);
-      sections.push_back({m.surface.positions[s + 1], m.surface.positions[s + 3], m.surface.positions[s + 5], uv[s].y});
+      {
+        lo = std::min(lo, uv[s + k].y);
+        hi = std::max(hi, uv[s + k].y);
+      }
+      EXPECT_GE(lo, -0.04F);
+      EXPECT_LE(hi, 1.04F);
+      EXPECT_LT(hi - lo, 0.7F / float(W::kAsphaltRepeat));
+      ragged += hi - lo > 1e-5F ? 1 : 0;
+      sections.push_back({m.surface.positions[s + 1], m.surface.positions[s + 3], m.surface.positions[s + 5], uv[s + 3].y});
     }
-    // where one piece ends and the next of its way begins (a section twice, edge to edge), both at a
-    // place on the maps that is the same but for whole repeats
+    // a section twice, edge to edge: where one piece of a way gives way to the next (the same place on
+    // the maps) or one stretch of the maps to another (each at one of their joints)
     for(size_t a = 0; a < sections.size(); a++)
       for(size_t b = a + 1; b < sections.size(); b++)
         if(glm::length(sections[a].middle - sections[b].middle) < 1e-3F && glm::length(sections[a].left - sections[b].left) < 1e-3F
            && glm::length(sections[a].right - sections[b].right) < 1e-3F)
         {
-          const float apart = std::abs(sections[a].along - sections[b].along);
-          EXPECT_NEAR(apart, std::round(apart), 1e-4F);
+          const bool same = std::abs(sections[a].along - sections[b].along) < 1e-5F;
+          EXPECT_TRUE(same || (atJoint(sections[a].along) && atJoint(sections[b].along))) << sections[a].along << " and " << sections[b].along;
           joins++;
         }
+    (void)ragged;
     // the paint on a line: an edge's, or the middle's
     for(const glm::vec2& uv : m.marking.uvs)
     {
@@ -1369,8 +1382,92 @@ TEST(WorldRoads, ItsSurfaceIsLaidOnItsAsphaltFromEdgeToEdge)
       most  = std::max(most, c.y);
     }
   }
-  EXPECT_GT(joins, 0U) << "pieces of a way meet on these quads";
+  EXPECT_GT(joins, 0U) << "stretches of the maps meet on these quads";
   EXPECT_GT(most - least, 0.05F) << "the tint varies";
+  (void)longest;
+}
+
+// Each end of an asphalt way: an open one stops the road square, nothing of its surface on the ground
+// past it and its own edge going down into the ground; one that joins a road from the side stops at
+// that road's edge, not over it
+TEST(WorldRoads, AnOpenEndStopsItAndASideRoadStopsAtTheEdgeOfTheRoadItJoins)
+{
+  const W::World&  w      = settled();
+  const W::Places& pl     = places();
+  const double     R      = w.spec.radius;
+  const uint8_t    finest = W::finestLevel(w);
+  ASSERT_EQ(pl.wayEnds.size(), size_t(pl.ways));
+  // the middle lines of the asphalt roads, as points a metre apart, by way
+  std::vector<std::pair<uint32_t, glm::dvec3>> lines;
+  for(const W::RoadPiece& p : pl.roads)
+    if(!catalogue()->roads[p.kind].earth)
+      for(int k = 0, n = std::max(2, int(p.length)); k <= n; k++)
+      {
+        const double t = double(k) / n, s = 1.0 - t;
+        lines.emplace_back(p.way, glm::normalize(p.a * (s * s) + p.b * (2.0 * s * t) + p.c * (t * t)));
+      }
+  const auto awayFrom = [&](uint32_t way, const glm::dvec3& d) {
+    double best = 1e30;
+    for(const auto& [other, at] : lines)
+      if(other != way)
+        best = std::min(best, glm::length(at - d) * R);
+    return best;
+  };
+  size_t open = 0, side = 0, ground = 0, skirted = 0, looked = 0;
+  for(uint32_t way = 0; way < pl.ways; way++)
+  {
+    if(pl.wayPieces[way] == pl.wayPieces[way + 1] || catalogue()->roads[pl.roads[pl.wayPieces[way]].kind].earth)
+      continue;
+    const double length = W::wayLength(pl, way);
+    for(int end = 0; end < 2; end++)
+    {
+      const W::WayEnd& e = pl.wayEnds[way][size_t(end)];
+      const double     half = double(pl.roads[pl.wayPieces[way]].half);
+      if(e.cut > 0.0F)
+      {
+        side++;
+        // where its surface stops: at the edge of the road it joins, neither over it nor short of it
+        const W::OnWay stop = W::onWay(pl, way, end ? length - double(e.cut) : double(e.cut));
+        const double   away = awayFrom(way, stop.direction);
+        EXPECT_GT(away, half - 0.3) << "way " << way << " end " << end;
+        EXPECT_LT(away, 2.0 * half + 1.0) << "way " << way << " end " << end;
+      }
+      if(!e.open)
+        continue;
+      open++;
+      EXPECT_GT(awayFrom(way, W::onWay(pl, way, end ? length : 0.0).direction), half) << "nothing of another road at an open end";
+      // past it, nothing of its surface on the ground; before it, all of it
+      const W::OnWay   at  = W::onWay(pl, way, end ? length : 0.0);
+      const glm::dvec3 out = at.forward * (end ? 1.0 : -1.0);
+      const W::Sample  past = W::sample(w, glm::normalize(at.direction + out * (2.5 / R)), 1.0);
+      const W::Sample  in   = W::sample(w, W::onWay(pl, way, end ? length - 3.0 : 3.0).direction, 1.0);
+      if(in.shore > 10.0F && in.built.road > 0.9F)
+        ground += past.built.road < 0.05F ? 1 : 0;
+      else
+        ground++;  // (by water, or where a track runs on)
+      // its surface's edge going down into the ground there
+      if(looked < 6)
+      {
+        const W::Quad       q      = quadOf(W::onWay(pl, way, end ? length - 0.5 : 0.5).direction, finest);
+        const glm::dvec3    centre = W::toScene(w, at.direction, 0.0);
+        const W::RoadMeshes m      = W::roadMeshes(w, q, centre);
+        bool                under  = false;
+        for(const glm::vec3& v : m.surface.positions)
+        {
+          double           r = 0.0;
+          const glm::dvec3 d = W::toPlanet(w, centre + glm::dvec3(v), &r);
+          if(glm::length(d - at.direction) * R < 1.0)
+            under = under || r - R < W::sample(w, d, 1.0).elevation - 0.02;
+        }
+        looked++;
+        skirted += under ? 1 : 0;
+      }
+    }
+  }
+  EXPECT_GT(open, 0U);
+  EXPECT_GT(side, 0U);
+  EXPECT_GE(ground, open * 9 / 10) << "of " << open;
+  EXPECT_GE(skirted, looked * 2 / 3) << "of " << looked;
 }
 
 // The asphalt's maps: a seed's every time, another seed's others, and each of them going on round
@@ -1462,6 +1559,20 @@ TEST(WorldRoads, TheAsphaltIsWornWhereTheWheelsWentAndDustyAtItsEdges)
   EXPECT_GT(band(red, W::kAsphaltWidth - 0.25, W::kAsphaltWidth) / band(blue, W::kAsphaltWidth - 0.25, W::kAsphaltWidth), middle + 0.1);
   EXPECT_GT(grey, 0.06);
   EXPECT_LT(grey, 0.2);
+  // its joints: a crack (or tar) from one edge to the other, where a road may go on to another stretch
+  for(size_t j = 0; j + 1 < W::kAsphaltJoints.size(); j++)
+  {
+    const int row = int(std::lround(W::kAsphaltJoints[j] / W::kAsphaltWidth * double(across)));
+    double    darkest = 1e9;
+    for(int r = row - 1; r <= row; r++)
+    {
+      double mean = 0.0;
+      for(int i = 0; i < across; i++)
+        mean += linear(a.colour.pixels[(size_t((r + along) % along) * size_t(across) + size_t(i)) * 4U + 1U]) / double(across);
+      darkest = std::min(darkest, mean);
+    }
+    EXPECT_LT(darkest, 0.75 * grey) << "the joint at " << W::kAsphaltJoints[j] << " m";
+  }
   EXPECT_LT(std::abs(leanX), 0.03);
   EXPECT_LT(std::abs(leanY), 0.03);
   // the grain: stones standing out of their sand

@@ -197,6 +197,7 @@ struct Nearest
   double away = std::numeric_limits<double>::max();
   double level = 0.0;
   double t     = 0.0;  // how far along the piece, 0 to 1
+  double beyond = 0.0;  // metres past its start or its end, along it, when its nearest point is that end
 };
 Nearest nearestOn(const RoadPiece& p, const glm::dvec3& d, double radius)
 {
@@ -208,12 +209,14 @@ Nearest nearestOn(const RoadPiece& p, const glm::dvec3& d, double radius)
     const glm::dvec3 to    = bent(p.a, p.b, p.c, double(k) / stretches);
     const glm::dvec3 along = to - from;
     const double     len2  = glm::dot(along, along);
-    const double     s     = len2 > 0.0 ? std::clamp(glm::dot(d - from, along) / len2, 0.0, 1.0) : 0.0;
+    const double     raw   = len2 > 0.0 ? glm::dot(d - from, along) / len2 : 0.0;
+    const double     s     = std::clamp(raw, 0.0, 1.0);
     const double     away  = glm::length(d - (from + along * s)) * radius;
     if(away < best.away)
     {
-      const double t = (double(k - 1) + s) / stretches;
-      best           = {away, bent(double(p.level[0]), double(p.level[1]), double(p.level[2]), t), t};
+      const double t    = (double(k - 1) + s) / stretches;
+      const double past = k == 1 && raw < 0.0 ? -raw : k == stretches && raw > 1.0 ? raw - 1.0 : 0.0;
+      best              = {away, bent(double(p.level[0]), double(p.level[1]), double(p.level[2]), t), t, past * std::sqrt(len2) * radius};
     }
     from = to;
   }
@@ -340,6 +343,110 @@ void wayIndex(Places& pl)
   {
     pl.wayPieces[w + 1] += pl.wayPieces[w];
     pl.wayBridges[w + 1] += pl.wayBridges[w];
+  }
+}
+
+// What each end of each asphalt way meets (WayEnd), once the pieces are indexed. Ends within a metre
+// of each other are a junction: of the ways there, the two most nearly in line run on into each
+// other, and any other joins them from the side, stopping at the edge of the wider of the two. An end
+// on another road that runs on past it joins it from the side; an end at no asphalt is open.
+void wayEnds(Places& pl, double radius)
+{
+  pl.wayEnds.assign(pl.ways, {});
+  const auto asphalt = [&](const RoadPiece& p) { return !pl.catalogue->roads[p.kind].earth; };
+  // (the way out of a way at its end: along the sphere, away from the way)
+  const auto outOf = [](const glm::dvec3& at, const glm::dvec3& from) {
+    glm::dvec3 v = at - from;
+    v -= at * glm::dot(v, at);
+    return glm::dot(v, v) > 1e-30 ? glm::normalize(v) : glm::dvec3(0.0);
+  };
+  struct End
+  {
+    glm::dvec3 at, out;
+    float      half;
+    uint32_t   way;
+    int        side;
+  };
+  std::vector<End> ends;
+  for(uint32_t w = 0; w < pl.ways; w++)
+  {
+    if(pl.wayPieces[w] == pl.wayPieces[w + 1] || !asphalt(pl.roads[pl.wayPieces[w]]))
+      continue;
+    const RoadPiece &first = pl.roads[pl.wayPieces[w]], &last = pl.roads[pl.wayPieces[w + 1] - 1];
+    const glm::dvec3 a = glm::normalize(first.a), c = glm::normalize(last.c);
+    ends.push_back({a, outOf(a, glm::normalize(first.b)), first.half, w, 0});
+    ends.push_back({c, outOf(c, glm::normalize(last.b)), last.half, w, 1});
+  }
+  // by base-map cell, for the ends near one
+  std::multimap<uint32_t, size_t> byCell;
+  for(size_t i = 0; i < ends.size(); i++)
+    byCell.emplace(cellOf(pl.grid, ends[i].at), i);
+  for(const End& e : ends)
+  {
+    // the other ends here: a junction
+    std::vector<const End*> here{&e};
+    const auto [lo, hi] = byCell.equal_range(cellOf(pl.grid, e.at));
+    for(auto it = lo; it != hi; ++it)
+      if(const End& o = ends[it->second]; &o != &e && glm::length(o.at - e.at) * radius < 1.0)
+        here.push_back(&o);
+    // a road running on past it, which it ends on: its half-width, and its pieces there
+    double                        onto = 0.0;
+    std::vector<const RoadPiece*> joins;
+    const uint32_t                c = cellOf(pl.grid, e.at);
+    for(uint32_t k = pl.first[c]; k < pl.first[c + 1]; k++)
+    {
+      const uint32_t item = pl.items[k];
+      if(!(item & Places::kRoadItem))
+        continue;
+      const RoadPiece& p = pl.roads[item & ~Places::kRoadItem];
+      if(!asphalt(p) || std::any_of(here.begin(), here.end(), [&](const End* o) { return o->way == p.way; }))
+        continue;
+      if(nearestOn(p, e.at, radius).away < double(p.half))
+      {
+        onto = std::max(onto, double(p.half));
+        joins.push_back(&p);
+      }
+    }
+    WayEnd& out = pl.wayEnds[e.way][size_t(e.side)];
+    if(here.size() == 1 && onto <= 0.0)
+    {
+      out.open = true;
+      continue;
+    }
+    // of the ways ending here, the two most nearly in line
+    const End* pair[2] = {nullptr, nullptr};
+    double     straightest = 2.0;
+    for(size_t i = 0; i < here.size(); i++)
+      for(size_t j = i + 1; j < here.size(); j++)
+        if(const double d = glm::dot(here[i]->out, here[j]->out); d < straightest)
+        {
+          straightest = d;
+          pair[0]     = here[i];
+          pair[1]     = here[j];
+        }
+    if(pair[0] && pair[0] != &e && pair[1] != &e)
+      for(const End* o : {pair[0], pair[1]})
+      {
+        const uint32_t piece = o->side ? pl.wayPieces[o->way + 1] - 1 : pl.wayPieces[o->way];
+        joins.push_back(&pl.roads[piece]);
+      }
+    if(joins.empty())
+      continue;  // (it runs on into the other)
+    // back along its own middle line to the edge of the road it joins (which may pass a little off
+    // the junction's point, and slantwise)
+    const double length = wayLength(pl, e.way);
+    for(double back = 0.0; back < std::min(length, 12.0); back += 0.05)
+    {
+      const glm::dvec3 at   = onWay(pl, e.way, e.side ? length - back : back).direction;
+      bool             clear = true;
+      for(const RoadPiece* p : joins)
+        clear = clear && nearestOn(*p, at, radius).away >= double(p->half) - 0.02;
+      if(clear)
+      {
+        out.cut = float(back);
+        break;
+      }
+    }
   }
 }
 
@@ -1995,6 +2102,7 @@ std::shared_ptr<const Places> settle(const World& world, std::shared_ptr<const C
     return nullptr;
   wayIndex(*out);
   index(*out, R);
+  wayEnds(*out, R);
   job.alone();
   job.along();
   if(job.stopped())
@@ -2073,9 +2181,19 @@ void built(const World& w, const Point& p, Sample& s)
       top   = &piece;
       topAt = near.t;
     }
-    // how much of what draws the sample is its surface: a soft edge near, a share of a wide sample
+    // how much of what draws the sample is its surface: a soft edge near, a share of a wide sample;
+    // none past an open end of its way (it stops there square, as its surface does: fv_world_roads)
     const double across = std::max(p.footprint, 1.5);
-    cover = std::max(cover, std::clamp((double(piece.half) - near.away) / across + 0.5, 0.0, 1.0) * std::min(1.0, 2.0 * double(piece.half) / across));
+    double       on     = std::clamp((double(piece.half) - near.away) / across + 0.5, 0.0, 1.0) * std::min(1.0, 2.0 * double(piece.half) / across);
+    if(near.beyond > 0.0 && piece.way < pl.wayEnds.size())
+    {
+      const size_t i    = size_t(&piece - pl.roads.data());
+      const bool   open = (near.t <= 0.0 && i == pl.wayPieces[piece.way] && pl.wayEnds[piece.way][0].open)
+                        || (near.t >= 1.0 && i + 1 == pl.wayPieces[piece.way + 1] && pl.wayEnds[piece.way][1].open);
+      if(open)
+        on *= std::clamp(1.0 - 2.0 * near.beyond / across, 0.0, 1.0);
+    }
+    cover = std::max(cover, on);
   }
   // over a bridge's water the ground is the river's own, and the road is the bridge's deck (drawn
   // by fv_world_roads); nothing grows under it, out to the ends of its deck

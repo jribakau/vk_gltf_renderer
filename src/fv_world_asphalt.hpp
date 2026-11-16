@@ -10,7 +10,10 @@
 //   them; dust, crumbs and broken asphalt at the edges; cracks across it, one down its middle where
 //   it was laid in two halves and some along the wheel paths, some of them sealed with tar; crazing
 //   in a wheel path; repairs laid over it; potholes. Its colour, its normals and its roughness (and
-//   in the roughness map's red, how much of the grain shows: little on tar).
+//   in the roughness map's red, how much of the grain shows: little on tar). It is cut into stretches
+//   by joints (kAsphaltJoints), straight cracks from one edge to the other, some of them sealed, as an
+//   old road over a jointed base cracks; nothing crosses one, so a road may lay the stretches in any
+//   order, each either way along and either way across, cut at the joints (fv_world_roads.cpp).
 // - The grain: the stones' relief, a normal map tiled every kAsphaltGrain metres both ways, to lay
 //   over the wear's (a material's detail layer).
 // - The markings': the paint's colour where it is whole, the asphalt's where it is worn through,
@@ -24,6 +27,7 @@
 // Vulkan-free.
 //-------------------------------------------------------------------------------------------------------
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -33,6 +37,8 @@ namespace fv::world {
 inline constexpr double kAsphaltWidth  = 6.0;
 inline constexpr double kAsphaltRepeat = 24.0;
 inline constexpr double kAsphaltGrain  = 1.5;
+// Its joints, metres along it: its first at its start, its last its repeat's end (the first again)
+inline constexpr std::array<double, 5> kAsphaltJoints{0.0, 5.0, 11.0, 16.5, 24.0};
 
 struct AsphaltImage
 {

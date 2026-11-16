@@ -302,63 +302,138 @@ Path tarOver(const Path& c, double half, uint32_t seed)
   return t;
 }
 
+// A crack held to the stretch from y0 to y1 along: it stops where it would cross a joint
+Path within(const Path& p, double y0, double y1)
+{
+  Path out;
+  for(size_t i = 0; i < p.at.size() && p.at[i].y >= y0 && p.at[i].y <= y1; i++)
+  {
+    out.at.push_back(p.at[i]);
+    out.half.push_back(p.half[i]);
+  }
+  return out;
+}
+
 Layout layout(uint32_t seed)
 {
   Layout L;
   Dice   d{hash(seed, 1U)};
-  // repairs: one or two, in a lane or most of the road's width, sawn square
-  const int patches = d() < 0.6 ? 2 : 1;
-  for(int tries = 0; int(L.patches.size()) < patches && tries < 30; tries++)
+  // the joints: straight across from edge to edge, some sealed
+  for(size_t j = 0; j + 1 < kAsphaltJoints.size(); j++)
   {
-    Patch        p;
-    const bool   wide = d() < 0.25;
-    const double w    = wide ? d.in(3.2, 5.6) : d.in(0.9, 2.4);
-    p.x0              = wide ? d.in(0.1, kAsphaltWidth - w - 0.1) : double(d.below(2)) * 0.5 * kAsphaltWidth + d.in(0.1, 0.5 * kAsphaltWidth - 0.1 - w);
-    p.x1              = p.x0 + w;
-    p.y0              = d.in(0.0, kAsphaltRepeat);
-    p.length          = d.in(1.2, 4.5);
-    p.age             = d();
-    p.step            = d.in(-2.5, 1.5);
-    p.sealed          = d() < 0.6;
-    bool clear        = true;
-    for(const Patch& q : L.patches)
-      clear = clear && (p.x1 + 0.3 < q.x0 || q.x1 + 0.3 < p.x0 || (onFrom(p.y0, q.y0) > q.length + 0.5 && onFrom(q.y0, p.y0) > p.length + 0.5));
-    if(clear)
-      L.patches.push_back(p);
-  }
-  // cracks across it, wandering, some from an edge part of the way; half of them sealed with tar,
-  // and branches off them
-  const int across = 3 + (d() < 0.5 ? 1 : 0);
-  for(int k = 0; k < across; k++)
-  {
-    const uint32_t s  = hash(seed, 100U + uint32_t(k));
-    const double   y0 = (double(k) + d.in(0.15, 0.85)) * kAsphaltRepeat / double(across);
-    double         xa = 0.0, xb = kAsphaltWidth;
-    if(const double r = d(); r < 0.25)
-      xb = d.in(1.5, 4.5);
-    else if(r < 0.5)
-      xa = d.in(1.5, 4.5);
-    const double slope = d.in(-0.08, 0.08);
-    Path         c;
-    double       walk = 0.0;
-    for(double x = xa; x <= xb + 1e-9; x += 0.02)
+    const uint32_t s = hash(seed, 50U + uint32_t(j));
+    const double   y = kAsphaltJoints[j];
+    const bool     sealed = d() < 0.5;
+    const double   half   = d.in(0.015, 0.022);
+    Path           c, t;
+    for(double x = -0.1; x <= kAsphaltWidth + 0.1 + 1e-9; x += 0.05)
     {
-      walk = 0.85 * walk + 0.004 * (2.0 * unit(hash(s, uint32_t(c.at.size()))) - 1.0);
-      c.at.emplace_back(x, y0 + slope * (x - 0.5 * kAsphaltWidth) + 0.09 * wearNoise(x, y0, 1.2, 2, s) + walk);
-      const double edge = std::min(x, kAsphaltWidth - x);
-      c.half.push_back(0.0012 + 0.0016 * clamp01(0.5 + 0.7 * wearNoise(x, y0, 0.4, 1, s + 1U)) + 0.0015 * smooth(0.8, 0.0, edge));
-    }
-    if(d() < 0.5)
-      L.tar.push_back(tarOver(c, d.in(0.014, 0.024), s + 2U));
-    const int branches = d.below(4);
-    for(int b = 0; b < branches; b++)
-    {
-      const glm::dvec2 from = c.at[size_t(d.below(int(c.at.size())))];
-      const double     side = d() < 0.5 ? 1.0 : -1.0;
-      const double     away = (d() < 0.5 ? 0.0 : kPi) + side * d.in(0.35, 1.2);
-      L.cracks.push_back(wander(from, away, d.in(0.15, 0.7), d.in(0.0008, 0.0014), s + 10U + uint32_t(b)));
+      c.at.emplace_back(x, y);
+      c.half.push_back(0.003 + 0.0015 * clamp01(0.5 + 0.7 * wearNoise(x, y, 0.3, 1, s)));
+      t.at.emplace_back(x, y);
+      t.half.push_back(half * (0.8 + 0.4 * clamp01(0.5 + 0.8 * wearNoise(x, y, 0.25, 2, s + 1U))));
     }
     L.cracks.push_back(std::move(c));
+    if(sealed)
+      L.tar.push_back(std::move(t));
+  }
+  // between them, each stretch its own things, none of them across a joint
+  for(size_t k = 0; k + 1 < kAsphaltJoints.size(); k++)
+  {
+    const double   y0 = kAsphaltJoints[k], y1 = kAsphaltJoints[k + 1];
+    const uint32_t s  = hash(seed, 100U + uint32_t(k));
+    // a crack across it, wandering, some from an edge part of the way; half of them sealed with
+    // tar, and branches off them
+    if(d() < 0.35)
+    {
+      const double ya = d.in(y0 + 0.8, y1 - 0.8);
+      double       xa = 0.0, xb = kAsphaltWidth;
+      if(const double r = d(); r < 0.25)
+        xb = d.in(1.5, 4.5);
+      else if(r < 0.5)
+        xa = d.in(1.5, 4.5);
+      const double slope = d.in(-0.08, 0.08);
+      Path         c;
+      double       walk = 0.0;
+      for(double x = xa; x <= xb + 1e-9; x += 0.02)
+      {
+        walk = 0.85 * walk + 0.004 * (2.0 * unit(hash(s, uint32_t(c.at.size()))) - 1.0);
+        c.at.emplace_back(x, ya + slope * (x - 0.5 * kAsphaltWidth) + 0.09 * wearNoise(x, ya, 1.2, 2, s) + walk);
+        const double edge = std::min(x, kAsphaltWidth - x);
+        c.half.push_back(0.0012 + 0.0016 * clamp01(0.5 + 0.7 * wearNoise(x, ya, 0.4, 1, s + 1U)) + 0.0015 * smooth(0.8, 0.0, edge));
+      }
+      if(d() < 0.5)
+        L.tar.push_back(tarOver(c, d.in(0.014, 0.024), s + 2U));
+      const int branches = d.below(4);
+      for(int b = 0; b < branches; b++)
+      {
+        const glm::dvec2 from = c.at[size_t(d.below(int(c.at.size())))];
+        const double     side = d() < 0.5 ? 1.0 : -1.0;
+        const double     away = (d() < 0.5 ? 0.0 : kPi) + side * d.in(0.35, 1.2);
+        L.cracks.push_back(within(wander(from, away, d.in(0.15, 0.7), d.in(0.0008, 0.0014), s + 10U + uint32_t(b)), y0 + 0.1, y1 - 0.1));
+      }
+      L.cracks.push_back(std::move(c));
+    }
+    // a repair: in a lane or most of the road's width, sawn square, weathered some
+    if(d() < 0.35)
+    {
+      Patch        p;
+      const bool   wide = d() < 0.25;
+      const double w    = wide ? d.in(3.2, 5.6) : d.in(0.9, 2.4);
+      p.x0              = wide ? d.in(0.1, kAsphaltWidth - w - 0.1) : double(d.below(2)) * 0.5 * kAsphaltWidth + d.in(0.1, 0.5 * kAsphaltWidth - 0.1 - w);
+      p.x1              = p.x0 + w;
+      p.length          = std::min(d.in(1.0, 3.2), y1 - y0 - 1.2);
+      p.y0              = d.in(y0 + 0.5, y1 - 0.5 - p.length);
+      p.age             = d.in(0.35, 1.0);
+      p.step            = d.in(-2.0, 1.2);
+      p.sealed          = d() < 0.6;
+      L.patches.push_back(p);
+    }
+    // a pothole by an edge or in a wheel path, clear of the repair
+    if(d() < 0.35)
+      for(int tries = 0; tries < 10; tries++)
+      {
+        Hole h;
+        if(d() < 0.55)
+          h.at.x = d() < 0.5 ? d.in(0.1, 0.7) : kAsphaltWidth - d.in(0.1, 0.7);
+        else
+          h.at.x = kWheels[size_t(d.below(4))] + d.in(-0.2, 0.2);
+        h.radius = d.in(0.08, 0.28);
+        h.at.y   = d.in(y0 + 1.5 * h.radius + 0.2, y1 - 1.5 * h.radius - 0.2);
+        h.depth  = d.in(0.015, 0.045);
+        h.seed   = hash(s, 500U + uint32_t(tries));
+        bool far = true;
+        for(const Patch& p : L.patches)
+          far = far && (h.at.x + h.radius < p.x0 - 0.2 || h.at.x - h.radius > p.x1 + 0.2 || h.at.y + h.radius < p.y0 - 0.2 || h.at.y - h.radius > p.y0 + p.length + 0.2);
+        if(far)
+        {
+          L.holes.push_back(h);
+          break;
+        }
+      }
+    // crazing in a wheel path
+    if(d() < 0.35)
+    {
+      const double along = std::min(d.in(0.6, 1.8), (y1 - y0 - 0.4) / 2.4);
+      L.crazed.push_back({.at = glm::dvec2(kWheels[size_t(d.below(4))] + d.in(-0.1, 0.1), d.in(y0 + 1.2 * along + 0.2, y1 - 1.2 * along - 0.2)), .along = along, .across = d.in(0.3, 0.5)});
+    }
+    // a crack along a wheel path, and a few fine ones anywhere
+    if(d() < 0.4)
+    {
+      const glm::dvec2 from(kWheels[size_t(d.below(4))] + d.in(-0.12, 0.12), d.in(y0 + 0.3, y1 - 2.0));
+      L.cracks.push_back(within(wander(from, 0.5 * kPi, d.in(1.0, y1 - from.y - 0.3), d.in(0.0012, 0.002), s + 20U), y0 + 0.1, y1 - 0.1));
+    }
+    for(int f = 0; f < 2; f++)
+    {
+      const glm::dvec2 from(d.in(0.3, kAsphaltWidth - 0.3), d.in(y0 + 1.0, y1 - 1.0));
+      L.cracks.push_back(within(wander(from, d.in(0.0, 2.0 * kPi), d.in(0.2, 0.9), d.in(0.0007, 0.0012), s + 30U + uint32_t(f)), y0 + 0.1, y1 - 0.1));
+    }
+    // oil between the wheels
+    for(int o = 0, n = 1 + d.below(2); o < n; o++)
+    {
+      const double r = d.in(0.12, 0.45);
+      L.stains.push_back({.at = glm::dvec2(kOil[size_t(d.below(2))] + d.in(-0.3, 0.3), d.in(y0 + 1.3 * r + 0.1, y1 - 1.3 * r - 0.1)), .radius = r, .strength = d.in(0.2, 0.5)});
+    }
   }
   // down the middle, where the road was laid in two halves: open along most of it, sealed in places
   {
@@ -376,7 +451,7 @@ Layout layout(uint32_t seed)
     bool wasSealed = false;
     for(double y = 0.0; y < kAsphaltRepeat; y += 0.02)
     {
-      const bool open     = wearNoise(0.5, y, 4.0, 2, s + 2U) > -0.15;
+      const bool open       = wearNoise(0.5, y, 4.0, 2, s + 2U) > -0.15;
       const bool sealedHere = wearNoise(1.5, y, 5.0, 1, s + 3U) > 0.25;
       if(!open || sealedHere != wasSealed)
         close(run, wasSealed);
@@ -388,43 +463,6 @@ Layout layout(uint32_t seed)
     }
     close(run, wasSealed);
   }
-  // along the wheel paths, and a few fine ones anywhere
-  for(int k = 0; k < 2; k++)
-  {
-    const glm::dvec2 from(kWheels[size_t(d.below(4))] + d.in(-0.12, 0.12), d.in(0.0, kAsphaltRepeat));
-    L.cracks.push_back(wander(from, 0.5 * kPi * (d() < 0.5 ? 1.0 : -1.0), d.in(1.5, 6.0), d.in(0.0012, 0.002), hash(seed, 300U + uint32_t(k))));
-  }
-  for(int k = 0; k < 8; k++)
-  {
-    const glm::dvec2 from(d.in(0.3, kAsphaltWidth - 0.3), d.in(0.0, kAsphaltRepeat));
-    L.cracks.push_back(wander(from, d.in(0.0, 2.0 * kPi), d.in(0.2, 1.0), d.in(0.0007, 0.0012), hash(seed, 400U + uint32_t(k))));
-  }
-  // potholes: by an edge mostly, or in a wheel path; none in a repair
-  for(int tries = 0; int(L.holes.size()) < 3 && tries < 30; tries++)
-  {
-    Hole h;
-    if(d() < 0.55)
-      h.at.x = d() < 0.5 ? d.in(0.1, 0.7) : kAsphaltWidth - d.in(0.1, 0.7);
-    else
-      h.at.x = kWheels[size_t(d.below(4))] + d.in(-0.2, 0.2);
-    h.at.y     = d.in(0.0, kAsphaltRepeat);
-    h.radius   = d.in(0.08, 0.3);
-    h.depth    = d.in(0.015, 0.045);
-    h.seed     = hash(seed, 500U + uint32_t(tries));
-    double in  = 0.0;
-    bool   far = true;
-    for(const Patch& p : L.patches)
-      far = far && (h.at.x + h.radius < p.x0 - 0.2 || h.at.x - h.radius > p.x1 + 0.2 || onFrom(h.at.y, p.y0) > p.length + h.radius + 0.2);
-    if(far && !patchAt(L, h.at.x, h.at.y, in))
-      L.holes.push_back(h);
-  }
-  // crazing in a wheel path or two
-  const int crazed = 1 + (d() < 0.5 ? 1 : 0);
-  for(int k = 0; k < crazed; k++)
-    L.crazed.push_back({.at = glm::dvec2(kWheels[size_t(d.below(4))] + d.in(-0.1, 0.1), d.in(0.0, kAsphaltRepeat)), .along = d.in(0.8, 2.5), .across = d.in(0.3, 0.5)});
-  // oil between the wheels
-  for(int k = 0; k < 4; k++)
-    L.stains.push_back({.at = glm::dvec2(kOil[size_t(d.below(2))] + d.in(-0.3, 0.3), d.in(0.0, kAsphaltRepeat)), .radius = d.in(0.12, 0.5), .strength = d.in(0.2, 0.5)});
   return L;
 }
 
@@ -484,10 +522,15 @@ struct Setting
   double broken = 0.0;        // the edge broken away
 };
 
-// How far the wheels' paths drift across at `y` (cars keep to their lanes, more or less)
+// How far the wheels' paths drift across at `y` (cars keep to their lanes, more or less): none at a
+// joint, where the stretch on from it may be another
 double driftAt(double y, uint32_t seed)
 {
-  return 0.1 * wearNoise(0.0, y, 3.0, 2, seed + 4U);
+  size_t k = 0;
+  while(k + 2 < kAsphaltJoints.size() && y >= kAsphaltJoints[k + 1])
+    k++;
+  const double t = (y - kAsphaltJoints[k]) / (kAsphaltJoints[k + 1] - kAsphaltJoints[k]);
+  return 0.1 * wearNoise(0.0, y, 3.0, 2, seed + 4U) * std::sin(kPi * std::clamp(t, 0.0, 1.0));
 }
 
 Setting settingAt(double x, double y, double drift, uint32_t seed)

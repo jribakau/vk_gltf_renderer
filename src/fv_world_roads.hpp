@@ -13,8 +13,13 @@
 // - On an asphalt road, its markings: a dashed line down its middle and a line along each edge, worn,
 //   some dashes gone and the edge lines broken.
 // - The surface and its markings are laid on the asphalt's maps (fv_world_asphalt.hpp) edge to edge,
-//   each way from its own place in their repeat, and tinted by a weathering wider than that repeat
-//   (their vertices' colours), so no two repeats look alike.
+//   a stretch of them between two of their joints at a time: each way lays the stretches in an order
+//   of its own, each either way along and either way across, cut where one gives way to the next (on
+//   a joint, a crack across the road). And tinted by a weathering wider than a stretch (the vertices'
+//   colours), so no run of road is another's.
+// - Where a way ends (WayEnd): on into the next way, the surfaces meeting; joining another road from
+//   the side, short of that road's edge; or at an open end, broken off there with soil on it and its
+//   edge going down into the ground, its markings stopping short of it.
 // - A bridge: its deck under the road from bank to bank and on into each (kBridgeEnds), a parapet
 //   each side, piers in the water when it is long, and an abutment at each end down into the bank.
 //   On whichever quad holds its middle, however coarse: a bridge is seen from further than a road's
@@ -60,7 +65,7 @@ struct RoadTiles
 
 // Where a point of a road's surface is on its asphalt's maps: `x` metres across from the middle line
 // of a carriageway `half` wide either side (0 at one edge, 1 at the other) and `along` metres along
-// it, a repeat a unit
+// the maps, a repeat a unit
 inline glm::vec2 roadUv(double x, double half, double along)
 {
   return glm::vec2(float(0.5 + 0.5 * x / half), float(along / kAsphaltRepeat));
