@@ -938,7 +938,8 @@ mesh with drawers only, none written for `settleQuietFrames`, the selected figur
 wakes it as it becomes selected). What only remakes it goes: tables, cage, skin inputs, morph deltas, its own streams, last
 frame's positions. Its drawers' outputs stay, so the picture does, and its BVHs are built again compacted, one a
 sync and only with room for it beside the old one (`m_settleBuilds`). Anything that would change it wakes it first
-in the same sync (`wakeWhatChanged`: a pose, a morph weight, a vertex edit, a new draw, being selected); an unchanged
+in the same sync (`wakeWhatChanged`: a pose, a morph weight, a vertex edit, a new draw, being selected), and what
+woke isn't settled again by that sync's fit to memory before its deforms run (`m_wokeThisSync`); an unchanged
 wake writes nothing. A drawer's matrices are written before each run, so a pack laid out again no longer runs every
 drawer: a wear doesn't skin every other figure.
 
@@ -1407,9 +1408,13 @@ What is new comes a few at a time, since every BVH a sync asks for goes in the f
 `ResidencyOptions::arrivalTriangles` of new meshes, and always one however large. The rest wait in `Residency::arriving()`, not drawn and not
 parked, and the next sync takes them with no change in the scene.
 
-A sync decodes the images it needs in one batch, side by side on the worker pool
-(`VulkanGpuBackend::createImages`), a file the host prefetched taken from
-`ImagePrefetch::take` instead. Each material slot owns a span of the texture-info table
+A sync begins decoding the images it needs on the worker pool (`GpuBackend::startDecode`), as many as
+`ResidencyOptions::decodeBatchBytes` stage, and a later sync makes those done into images (`takeDecodes`), a file
+the host prefetched taken from `ImagePrefetch::take` instead; the rest wait in the queue, drawn with the default
+image meanwhile. A decode waiting there reads the store's record, which may go before its turn (a prop removed,
+another file opened), so each sync first points every waiting one at a record still in use, of its own texture or
+of one with the same key, and drops one with neither (`Residency::rebindQueuedDecodes`, every one at a replace); a
+decode once begun holds its own copy (`HeldImageSource`). Each material slot owns a span of the texture-info table
 (`MaterialCache::convertOne` at its start), so a material edit uploads its row and span only; a span
 that finds no room below the uint16 limit repacks every span once, and one that still doesn't fit is
 drawn without its textures, logged as `Retained scene: the texture-info table is full`. A material

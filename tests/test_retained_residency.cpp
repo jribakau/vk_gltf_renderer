@@ -1572,6 +1572,92 @@ TEST(RetainedResidency, TexturesComeABatchOfBytesASync)
   }
 }
 
+// Textures waiting their turn to decode read the store's records, which go with their last reference: one let
+// go of while it waits is never decoded, and a replace leaves nothing waiting on the store it leaves. A shared
+// decode that was to come for a key goes with it, so the key taken again later is decoded, not waited on
+// (audit 11-16: a read of freed memory at startDecode)
+TEST(RetainedResidency, TexturesLetGoOfWhileQueuedAreNeverDecoded)
+{
+  const char*            uris[] = {"chain_1", "chain_2", "chain_3", "chain_4"};
+  RetainedScene          scene;
+  std::vector<TextureId> textures;
+  std::vector<EntityId>  entities;
+  auto                   table = std::make_shared<TextureTable>();
+  for(const char* uri : uris)
+  {
+    textures.push_back(scene.addTexture(chainTexture(uri, 64)));
+    table->push_back({textures.back(), {}});
+  }
+  for(int i = 0; i < int(textures.size()); i++)
+    entities.push_back(drawn(scene, uris[i], scene.addMesh(gridMesh(2, 0.f)), {coloured(scene, table, i)}));
+  FakeGpuBackend gpu(2);
+  Residency      residency(gpu, {.decodeBatchBytes = 1});
+  gpu.holdDecodes(true);
+  residency.replace(scene);
+  ASSERT_EQ(gpu.decodesRunning(), std::vector<std::string>{"chain_1"});
+  ASSERT_EQ(residency.queuedDecodes(), textures.size());
+
+  // the last two go, entity and record, while they wait
+  for(size_t i = 2; i < textures.size(); i++)
+  {
+    scene.destroyEntity(entities[i]);
+    scene.release(textures[i]);
+  }
+  gpu.beginFrame();
+  residency.sync(scene);
+  EXPECT_EQ(residency.queuedDecodes(), 2u) << "the one decoding and the one still drawn";
+  gpu.holdDecodes(false);
+  for(int frame = 0; frame < 4; frame++)
+  {
+    gpu.beginFrame();
+    residency.sync(scene);
+  }
+  EXPECT_EQ(residency.queuedDecodes(), 0u);
+  EXPECT_EQ(residency.imageCounts().decoded, 2u);
+  EXPECT_TRUE(residency.image(textures[0], true));
+  EXPECT_TRUE(residency.image(textures[1], true));
+  drain(gpu);
+  EXPECT_EQ(gpu.liveImages(), 2u) << "nothing decoded for what went";
+  expectClean(scene, residency, gpu, "let go of while queued: ");
+
+  // a replace while a backlog waits: only what has begun is left, and the scene taken again decodes the rest
+  RetainedScene          next;
+  std::vector<TextureId> nextTextures;
+  auto                   nextTable = std::make_shared<TextureTable>();
+  for(const char* uri : {"chain_5", "chain_6", "chain_7"})
+  {
+    nextTextures.push_back(next.addTexture(chainTexture(uri, 64)));
+    nextTable->push_back({nextTextures.back(), {}});
+  }
+  for(int i = 0; i < int(nextTextures.size()); i++)
+    drawn(next, "e", next.addMesh(gridMesh(2, 0.f)), {coloured(next, nextTable, i)});
+  RetainedScene plain;
+  drawn(plain, "e", plain.addMesh(gridMesh(2, 0.f)), {material(plain, "m")});
+  gpu.holdDecodes(true);
+  gpu.beginFrame();
+  residency.replace(next);
+  ASSERT_EQ(residency.queuedDecodes(), nextTextures.size());
+  gpu.beginFrame();
+  residency.replace(plain);
+  EXPECT_EQ(residency.queuedDecodes(), 1u) << "the decode begun, kept for its key";
+  gpu.holdDecodes(false);
+  gpu.beginFrame();
+  residency.sync(plain);
+  gpu.beginFrame();
+  residency.replace(next);
+  for(int frame = 0; frame < 4 && residency.queuedDecodes() > 0; frame++)
+  {
+    gpu.beginFrame();
+    residency.sync(next);
+  }
+  for(const TextureId id : nextTextures)
+    EXPECT_TRUE(residency.image(id, true));
+  expectClean(next, residency, gpu, "taken again: ");
+  drain(gpu);
+  for(const std::string& p : residencyLeaks(residency, gpu))
+    ADD_FAILURE() << p;
+}
+
 // The render thread never waits for a decode: a texture is drawn with the default image while its decode
 // runs, a sync meanwhile has nothing to do for it, and its image's arrival is another picture
 TEST(RetainedResidency, ATextureIsDrawnWithTheDefaultImageUntilItsDecodeIsDone)

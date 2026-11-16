@@ -453,6 +453,40 @@ TEST(RetainedDeform, APoseWakesASettledMeshAsIfItHadNeverSettled)
   expectClean(settled.scene, a, gpuA, "after its retires: ");
 }
 
+// Short of memory as a pose wakes a settled mesh: the fit later in that sync doesn't settle it again before its
+// deforms run, which would read what settling frees (its refine tables, cage and skin; audit 11-16)
+TEST(RetainedDeform, AMeshWokenThisSyncDoesntSettleAgainBeforeItsDeformsRun)
+{
+  RibbonRig      rig;
+  FakeGpuBackend gpu;
+  Residency      residency(gpu, {.settleQuietFrames = 0});
+  residency.replace(rig.scene);
+  residency.settle(rig.mesh);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  drain(gpu);
+  ASSERT_TRUE(residency.isSettled(rig.mesh));
+
+  Transform t;
+  t.rotation = glm::angleAxis(glm::radians(40.f), glm::vec3(0, 0, 1));
+  rig.scene.setLocal(rig.bone, t);
+  gpu.setImageHeadroom(-1);
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_FALSE(residency.isSettled(rig.mesh));
+  EXPECT_EQ(residency.deformCounts().skins, 1u);
+  expectClean(rig.scene, residency, gpu, "posed, short of memory: ");
+
+  // and the next sync, quiet and still short, settles it as it would any other
+  residency.lowerImages(0);
+  gpu.beginFrame();
+  residency.sync(rig.scene);
+  EXPECT_TRUE(residency.isSettled(rig.mesh));
+  drain(gpu);
+  expectClean(rig.scene, residency, gpu, "settled again: ");
+}
+
 // Waking with nothing changed writes nothing: no pass, no refit, and the still goes on. A second drawer on
 // a settled mesh wakes it too, and is what it should be.
 TEST(RetainedDeform, WakingWithNothingChangedWritesNothing)

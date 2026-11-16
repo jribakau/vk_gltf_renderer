@@ -719,6 +719,8 @@ private:
     bool arrived  = false;  // a texture's first: another picture
   };
   DecodesLanded decodeQueued(const RetainedScene& scene, bool sceneGrew);
+  // each queued decode pointed again at a record in use before any is read, or dropped (rebindQueuedDecodes)
+  void          rebindQueuedDecodes(const RetainedScene* scene);
   // the slots of the textures whose image changed, each moved to a fresh one (a slot in use is never written again)
   void     moveSlots(const std::set<ImageKey>& written);
   void     fitQueuedToMemory(const RetainedScene& scene, uint64_t slack);
@@ -939,7 +941,9 @@ private:
   struct QueuedDecode
   {
     ImageKey                  image;
-    ImageSource               source;  // over the store's record, which outlives the sync
+    // its bytes and pixels are spans over the store's record, which may go while it waits: pointed again
+    // at a record in use at each decodeQueued (rebindQueuedDecodes), and copied once begun (HeldImageSource)
+    ImageSource               source;
     std::optional<TextureKey> key;
     bool                      lowered  = false;  // below what Max texture size allows, to fit GPU memory
     bool                      replaces = false;  // a resident image taken down: it stays if this fails
@@ -971,6 +975,8 @@ private:
   std::set<uint32_t>                                   m_settleBuilds;  // prims of settled meshes, to build again compacted
   std::set<MeshId>                                     m_live, m_wakeAsked;  // setLive
   bool                                                 m_woke = false;  // this sync uploaded what a settled mesh let go of
+  // woken this sync, for a change its deforms run later in it: none of these settles again before they do
+  std::set<MeshId>                                     m_wokeThisSync;
   uint64_t                                             m_graceBytes   = 0;
   uint64_t                                             m_releaseClock = 0;
   ImageCounts                                          m_imageCounts;

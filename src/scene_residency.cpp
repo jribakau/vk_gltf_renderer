@@ -229,6 +229,7 @@ void Residency::clear()
   m_hitsToFollow = false;
   m_settleBuilds.clear();
   m_wakeAsked.clear();
+  m_wokeThisSync.clear();
   m_drawersWrittenLast.clear();
   m_compacting.clear();
   m_refineAcquired.clear();
@@ -275,6 +276,8 @@ void Residency::clear()
     }
     else
       ++it;
+  // what waits to begin reads the store going with this scene (the decodes begun hold their own copies)
+  rebindQueuedDecodes(nullptr);
   retireBuffer(m_renderNodes);
   retireBuffer(m_renderPrims);
   retireBuffer(m_sceneDesc);
@@ -1528,6 +1531,10 @@ std::vector<std::pair<MeshId, uint64_t>> Residency::settleableMeshes() const
     const auto mesh = m_meshes.find(m.mesh);
     if(mesh == m_meshes.end() || mesh->second.settled || m_parked.count(m.mesh))
       continue;
+    // woken for a change this sync's deforms have still to run: its drawers' writtenAt is from before it
+    // settled, so it would look quiet, and settling it again frees what those deforms read
+    if(m_wokeThisSync.count(m.mesh))
+      continue;
     if(std::any_of(mesh->second.prims.begin(), mesh->second.prims.end(), [](int32_t p) { return p >= 0; }))
       continue;  // a static draw reads what would go
     bool drawn = false, quiet = true;
@@ -1629,6 +1636,7 @@ void Residency::wake(const RetainedScene& scene, MeshId id)
   MeshGpu& mesh = it->second;
   mesh.settled  = false;
   m_woke        = true;
+  m_wokeThisSync.insert(id);
   makeRefine(*record, mesh);
   if(std::exchange(mesh.hadBase, false))
     ensureBase(*record, mesh);
@@ -2244,8 +2252,46 @@ void Residency::cancelDecodesOf(const QueuedDecode& q)
 // default one before its first. What only comes down, or only moves, is copied in this frame. One
 // nothing took meanwhile goes to grace; an unreadable one leaves the default image and is tried again
 // at its next acquisition.
+// A queued decode's source is spans over the store's record, and an entry past decodeBatchBytes waits for
+// later syncs while the store lets go of a record with its last reference (a prop removed, another file
+// opened). So before anything of the queue is read, each entry is pointed again at a record in use: its own
+// texture's, else one that is the same image (its key). One with neither goes, and with it the shared decode
+// it would have made that nothing uses or decodes now, which a texture taking that key later would otherwise
+// wait on for ever. Without a scene (clear) every entry goes: the next scene's handles may name other records.
+void Residency::rebindQueuedDecodes(const RetainedScene* scene)
+{
+  const auto inUse = [&](const ImageKey& id) -> const TextureRecord* {
+    return scene && m_images.count(id) ? scene->texture(id.first) : nullptr;
+  };
+  std::vector<QueuedDecode> kept;
+  kept.reserve(m_decodeQueue.size());
+  for(QueuedDecode& q : m_decodeQueue)
+  {
+    const TextureRecord* record = inUse(q.image);
+    if(!record && q.key)
+      for(const auto& [id, image] : m_images)
+        if(image.key == q.key && (record = inUse(id)))
+        {
+          q.image = id;
+          break;
+        }
+    if(record)
+    {
+      q.source.bytes  = record->bytes;
+      q.source.pixels = record->pixels;
+      kept.push_back(std::move(q));
+    }
+    else if(q.key)
+      if(const auto it = m_decoded.find(*q.key);
+         it != m_decoded.end() && !it->second.image && it->second.users == 0 && !decodingNow(q.image, q.key))
+        m_decoded.erase(it);
+  }
+  m_decodeQueue = std::move(kept);
+}
+
 Residency::DecodesLanded Residency::decodeQueued(const RetainedScene& scene, bool sceneGrew)
 {
+  rebindQueuedDecodes(&scene);
   const std::optional<uint64_t> slack = std::exchange(m_fitSlack, std::nullopt);
   const bool                    ready = m_gpu.decodesReady();
   if(m_decodeQueue.empty() && !sceneGrew && !slack && !ready)
@@ -2971,6 +3017,10 @@ void Residency::syncDeforms(RetainedScene& scene, std::set<MeshId>& written, Syn
     const MeshRecord* record = scene.mesh(d.mesh);
     if(!e || !e->mesh || !record)
       continue;
+    // a settled mesh's inputs (cage, skin, deltas, refine tables) are gone: a change wakes it first
+    // (wakeWhatChanged), so one still settled here has nothing to run
+    if(const auto mesh = m_meshes.find(d.mesh); mesh == m_meshes.end() || mesh->second.settled)
+      continue;
     Run run{.d = &d};
     if(d.morph)
     {
@@ -3316,6 +3366,7 @@ SyncResult Residency::sync(RetainedScene& scene)
   SyncResult         result;
   const SceneChanges changes = scene.takeChanges();
   m_work                     = {};
+  m_wokeThisSync.clear();
   const bool         fresh   = !m_renderNodes;
   // an emitter's vertex writes have stopped long enough: the table takes the areas they left
   const bool emissiveSettled = m_emissiveStale && m_gpu.frame() >= m_emitterWriteFrame + m_options.emissiveSettleFrames;

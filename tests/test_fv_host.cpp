@@ -5712,6 +5712,38 @@ TEST(FvHost, theGizmoMovesSeveralAsOneStep)
   EXPECT_NEAR(t.at(t.b).y, 1.f, 1e-5f);
 }
 
+// What rides on another selected prop is left to its carrier, judged against the whole selection. With the
+// first of the others riding on the second, the thinning once met the slot erase_if had moved the second out
+// of, and a later one riding on anything read a prop at address 0 (audit 11-16, a crash on the drag's first frame)
+TEST(FvHost, theGizmoLeavesWhatRidesOnAnotherSelectedToItsCarrier)
+{
+  Three      t;
+  const auto add = [&](std::array<double, 3> at) {
+    return t.rig.cmd("prop.add", {{"kind", "light"}, {"transform", {{"t", {at[0], at[1], at[2]}}}}}).value("result", Json::object()).value("prop", std::string());
+  };
+  const std::string d = add({2, 1, 0}), e = add({3, 1, 0});  // d rides on e, which isn't selected
+  ASSERT_FALSE(d.empty() || e.empty());
+  ASSERT_TRUE(t.rig.cmd("prop.set", {{"prop", t.b}, {"parent", t.c}}).value("ok", false));
+  ASSERT_TRUE(t.rig.cmd("prop.set", {{"prop", d}, {"parent", e}}).value("ok", false));
+  ASSERT_TRUE(t.rig.settle());
+  const glm::vec3 carried = t.at(t.b), held = t.at(d);  // in their carriers' spaces
+  const auto      turnOf  = [&](const std::string& id) {
+    const Json r = t.rig.topic("scene")["props"][id]["transform"]["r"];
+    return glm::quat(r[3].get<float>(), r[0].get<float>(), r[1].get<float>(), r[2].get<float>());
+  };
+  ASSERT_TRUE(t.rig.cmd("select", {{"props", {t.a, t.b, t.c, d}}}).value("ok", false));
+  const rs::EntityId root = t.rig.renderer.selectedEntity();
+  ASSERT_TRUE(t.rig.renderer.gizmo.edit);
+  // a move only: the primary keeps its turn (a light is made aimed down at the orbit target)
+  t.rig.renderer.gizmo.edit(root, {0.f, 2.f, 0.f}, turnOf(t.a), glm::vec3(1.f), true);
+  t.rig.host->onUpdate();
+  EXPECT_NEAR(t.at(t.a).y, 2.f, 1e-5f);
+  EXPECT_NEAR(t.at(t.c).y, 2.f, 1e-5f);
+  EXPECT_LT(glm::distance(t.at(t.b), carried), 1e-5f) << "moved by its carrier only, not twice";
+  EXPECT_LT(glm::distance(t.at(d), held + glm::inverse(turnOf(e)) * glm::vec3(0.f, 1.f, 0.f)), 1e-5f) << "up by one in the world";
+  EXPECT_EQ(t.rig.topic("history").at("undo")[0], "Move 3 props");
+}
+
 // Grouped, the lights ride on a group at their bottom middle, in place; one undo takes it back.
 // Ungrouped, they ride on nothing again, still in place, and the group is gone.
 TEST(FvHost, aGroupHoldsWhatItWasGivenInPlace)

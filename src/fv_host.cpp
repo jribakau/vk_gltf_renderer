@@ -610,11 +610,15 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
               // the rest of a selection of several go as it goes: what it did in the world, done to
               // each of them (but what rides on another of them, which its carrier takes along)
               std::vector<std::shared_ptr<Prop>> others;
-              for(const std::string& id : impl->view->selectedProps())
+              std::vector<std::string>           selected{p->id};  // judged against the whole selection, not
+              for(const std::string& id : impl->view->selectedProps())  // the list erase_if is compacting
                 if(auto q = impl->findProp(id); q && q != p)
+                {
                   others.push_back(q);
+                  selected.push_back(q->id);
+                }
               std::erase_if(others, [&](const auto& q) {
-                return impl->ridesOn(*q, p->id) || std::any_of(others.begin(), others.end(), [&](const auto& o) { return o != q && impl->ridesOn(*q, o->id); });
+                return std::any_of(selected.begin(), selected.end(), [&](const std::string& id) { return id != q->id && impl->ridesOn(*q, id); });
               });
               // one step of the history from press to release
               const Json gesture = {{"id", "gizmo:" + std::to_string(impl->gizmoGesture)}, {"end", done}};
