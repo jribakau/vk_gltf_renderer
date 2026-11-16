@@ -1145,7 +1145,6 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
     const VkExtent2D         gbufSize = m_resources.gBuffers.getSize();
     const glm::quat          envRot   = m_resources.settings.envRotationQuat();  // normalised
     shaderio::SceneFrameInfo finfo{
-        .viewMatrix     = m_cameraManip->getViewMatrix(),
         .projInv        = glm::inverse(m_cameraManip->getPerspectiveMatrix()),
         .viewInv        = glm::inverse(m_cameraManip->getViewMatrix()),
         .viewProjMatrix = viewProj,

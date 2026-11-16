@@ -242,7 +242,7 @@ HostStruct sceneFrameInfo()
 {
   using Self = SceneFrameInfo;
   return {"SceneFrameInfo", sizeof(Self), {
-    F(viewMatrix), F(projInv), F(viewInv), F(viewProjMatrix), F(prevMVP), F(jitter), F(imageSize), F(flags),
+    F(projInv), F(viewInv), F(viewProjMatrix), F(prevMVP), F(jitter), F(imageSize), F(flags),
     F(envRotation), F(envBlur), F(envIntensity), F(backgroundColor), F(visualization), F(infinitePlaneDistance),
     F(infinitePlaneBaseColor), F(infinitePlaneMetallic), F(infinitePlaneRoughness), F(shadowCatcherDarkenAmount),
     F(sunDisk), F(sunDirection), F(rendererSunLight), F(sunLightIndex), F(envSkyType), F(skyOmi),

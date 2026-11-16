@@ -31,7 +31,6 @@ struct HitState
   float4 masks;                // Where procedural layers land (FV_materials_procedural)
   float3 geonrm;               // Geometric normal (face normal, for back-face detection)
   float3 shadowPos;            // Shadow position
-  float3 shadowPosOther = float3(0.0);  // The same for a ray leaving through the other side: a walk's exit, met from inside
   float2 uv[2];                // UV0 and UV1
   float3 tangent;              // Tangent
   float3 bitangent;            // Bitangent
@@ -92,6 +91,35 @@ float triangleOffsetDistance(float3 pos0, float3 pos1, float3 pos2, float3 baryc
   const float  pointError   = (1.0F + roundingGamma(3)) * dot(normalWeight.xyz, objectError)
                            + roundingGamma(3) * (dot(normalWeight.xyz, abs(position)) + normalWeight.w);
   return pointError + RAY_TEST_ERROR_ULPS * FLOAT_UNIT_ROUNDOFF * triangleSize;
+}
+
+//-----------------------------------------------------------------------
+// The terminator offset (HitState::shadowPos) for a ray that leaves through the other side of the hit:
+// the vertex normals turned over. A subsurface walk that reaches a surface from inside leaves through it
+// and lights its exit from outside: without the offset on that side, its shadow rays start on the flat
+// triangle and the smooth surface around shadows them a face at a time (squares a face wide on lit
+// skin). Only a walk's exit asks for it, so it is worked out there from the triangle again, not at
+// every hit. The arguments are getHitState's, `frontFace` the hit's.
+float3 shadowPosOtherSide(GltfRenderPrimitive renderPrim, float3 barycentrics, float4x4 objectToWorld, int triangleID, bool frontFace)
+{
+  const uint3  triangleIndex = getTriangleIndices(renderPrim, triangleID);
+  const float3 pos0          = getVertexPosition(renderPrim, triangleIndex.x);
+  const float3 pos1          = getVertexPosition(renderPrim, triangleIndex.y);
+  const float3 pos2          = getVertexPosition(renderPrim, triangleIndex.z);
+  const float3 position      = pos0 * barycentrics.x + pos1 * barycentrics.y + pos2 * barycentrics.z;
+  const float3 geoNormal     = normalize(cross(pos1 - pos0, pos2 - pos0));
+  float3       nrm0          = geoNormal;
+  float3       nrm1          = geoNormal;
+  float3       nrm2          = geoNormal;
+  if(hasVertexNormal(renderPrim))
+  {
+    nrm0 = getVertexNormal(renderPrim, triangleIndex.x);
+    nrm1 = getVertexNormal(renderPrim, triangleIndex.y);
+    nrm2 = getVertexNormal(renderPrim, triangleIndex.z);
+  }
+  const float  sideFlip  = frontFace ? 1.0f : -1.0f;
+  const float3 shadowPos = pointOffset(position, pos0, pos1, pos2, -nrm0 * sideFlip, -nrm1 * sideFlip, -nrm2 * sideFlip, barycentrics);
+  return mul(float4(shadowPos, 1.0), objectToWorld).xyz;
 }
 
 //-----------------------------------------------------------------------
@@ -165,11 +193,7 @@ HitState getHitState(GltfRenderPrimitive renderPrim,  //
   // side for back-face hits on doubleSided meshes.
   float3 shadowPos = pointOffset(position, pos0, pos1, pos2, nrm0 * sideFlip, nrm1 * sideFlip, nrm2 * sideFlip, barycentrics);
   hit.shadowPos = mul(float4(shadowPos, 1.0), objectToWorld).xyz;
-  // A subsurface walk that reaches this surface from inside leaves through it and lights its exit
-  // from outside: without the offset on that side, its shadow rays start on the flat triangle and
-  // the smooth surface around shadows them a face at a time (squares a face wide on lit skin).
-  shadowPos          = pointOffset(position, pos0, pos1, pos2, -nrm0 * sideFlip, -nrm1 * sideFlip, -nrm2 * sideFlip, barycentrics);
-  hit.shadowPosOther = mul(float4(shadowPos, 1.0), objectToWorld).xyz;
+  // (the other side's: shadowPosOtherSide, where a walk's exit asks for it)
 
   // TexCoord
   hit.uv[0] = getInterpolatedVertexTexCoord(renderPrim, 0, triangleIndex, barycentrics);

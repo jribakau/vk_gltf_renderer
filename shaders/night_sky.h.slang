@@ -60,7 +60,7 @@ inline float3 nightGlowColor()
 // ---- the stars' grid ---------------------------------------------------------------------------------
 
 // The stars are binned by right ascension and declination, two degrees a cell (NightStarCell), so a
-// ray looks at its own cell and the eight round it.
+// ray looks only at the cells a star within its spot's reach can be in (nightStarRowsWithin).
 #define NIGHT_STAR_CELLS_RA 180
 #define NIGHT_STAR_CELLS_DEC 90
 
@@ -85,6 +85,57 @@ inline int nightStarRow(float3 v)
 {
   const float dec = asin(clamp(v.z, -1.0F, 1.0F));
   return clamp(int((dec + 1.57079632679F) * (float(NIGHT_STAR_CELLS_DEC) / 3.14159265359F)), 0, NIGHT_STAR_CELLS_DEC - 1);
+}
+
+// The cells a star within `reach` (radians) of the celestial direction `v` can be in: the rows `from`
+// to `to` (nightStarRowsWithin), and in each the columns `from` to `to` (nightStarColumnsWithin), taken
+// round the circle, so `from` may be below 0 and `to` past the last column. Mostly the ray's own cell:
+// a spot is a small part of a cell's two degrees.
+struct NightStarSpan
+{
+  int from;
+  int to;
+};
+
+inline NightStarSpan nightStarRowsWithin(float3 v, float reach)
+{
+  const float   up     = asin(clamp(v.z, -1.0F, 1.0F)) + 1.57079632679F;  // from the south pole
+  const float   perRow = float(NIGHT_STAR_CELLS_DEC) / 3.14159265359F;
+  NightStarSpan rows;
+  rows.from = clamp(int(floor((up - reach) * perRow)), 0, NIGHT_STAR_CELLS_DEC - 1);
+  rows.to   = clamp(int(floor((up + reach) * perRow)), 0, NIGHT_STAR_CELLS_DEC - 1);
+  return rows;
+}
+
+// Two directions `reach` apart at most differ in right ascension by no more than
+// 2 asin(sin(reach / 2) / sqrt(cos dec1 cos dec2)) (the haversine): taken with the ray's declination
+// and the row's edge nearest a pole, the widest the row holds. Where that passes half the circle, a
+// pole is within reach, and the row is whole: the polar rows always.
+inline NightStarSpan nightStarColumnsWithin(float3 v, int row, float reach)
+{
+  const float   rowHeight = 3.14159265359F / float(NIGHT_STAR_CELLS_DEC);
+  const float   poleward  = max(abs(float(row) * rowHeight - 1.57079632679F), abs(float(row + 1) * rowHeight - 1.57079632679F));
+  const float   cosRow    = max(cos(poleward), 0.0F);
+  const float   cosRay    = sqrt(max(1.0F - v.z * v.z, 0.0F));
+  const float   s         = sin(0.5F * reach) / sqrt(max(cosRow * cosRay, 1e-30F));
+  NightStarSpan columns;
+  columns.from = 0;
+  columns.to   = NIGHT_STAR_CELLS_RA - 1;
+  if(s >= 1.0F)
+    return columns;
+  const float halfSpan = 2.0F * asin(s);
+  float       ra       = atan2(v.y, v.x);
+  if(ra < 0.0F)
+    ra += 6.28318530718F;
+  const float perColumn = float(NIGHT_STAR_CELLS_RA) / 6.28318530718F;
+  const int   from      = int(floor((ra - halfSpan) * perColumn));
+  const int   to        = int(floor((ra + halfSpan) * perColumn));
+  if(to - from < NIGHT_STAR_CELLS_RA)
+  {
+    columns.from = from;
+    columns.to   = to;
+  }
+  return columns;
 }
 
 // A star's light against the sun's above the air, by its V magnitude (the sun's -26.74)

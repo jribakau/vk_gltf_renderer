@@ -9,6 +9,7 @@
 
 #include "nvshaders/bsdf_types.h.slang"
 #include "nvshaders/functions.h.slang"
+#include "fresnel.h.slang"  // dielectricFresnelOutside
 
 // A fibre BSDF for an OmniHair ribbon. The ribbon stands for a lock, so the response is Chiang's
 // near-field model (the practical one: R, TT, TRT, and the remaining orders) averaged over the
@@ -101,16 +102,10 @@ float hairMp(float cosThetaI, float cosThetaO, float sinThetaI, float sinThetaO,
   return exp(-b) * hairI0(a) / (sinh(1.0F / v) * 2.0F * v);
 }
 
+// The fibre's, from either side of its axis
 float hairFresnel(float cosThetaI, float eta)
 {
-  cosThetaI       = saturate(abs(cosThetaI));
-  float sin2ThetaT = (1.0F / (eta * eta)) * (1.0F - cosThetaI * cosThetaI);
-  if(sin2ThetaT >= 1.0F)
-    return 1.0F;
-  float cosThetaT = sqrt(1.0F - sin2ThetaT);
-  float rPar      = (eta * cosThetaI - cosThetaT) / (eta * cosThetaI + cosThetaT);
-  float rPerp     = (cosThetaI - eta * cosThetaT) / (cosThetaI + eta * cosThetaT);
-  return 0.5F * (rPar * rPar + rPerp * rPerp);
+  return dielectricFresnelOutside(abs(cosThetaI), eta);
 }
 
 float hairLogistic(float x, float s)
@@ -331,12 +326,12 @@ float hairColorFit(float b)
   return 5.969F - 0.215F * b + 2.532F * b2 - 10.73F * b3 + 5.574F * b2 * b2 + 0.245F * b2 * b3;
 }
 
-// The absorption that shows `color`: the fit inverted (Unreal's HairColorToAbsorption). Clamped,
-// since painted root shading near black inverts to an absorption no light gets through, and white
-// to none at all.
-float3 hairColorToAbsorption(float3 color, float b)
+// The absorption that shows `color`: the fit inverted (Unreal's HairColorToAbsorption). Clamped to
+// [lo, hi], since painted root shading near black inverts to an absorption no light gets through, and
+// white to none at all. OmniHair's dye keeps its own wider range (hairDyedAbsorption).
+float3 hairColorToAbsorption(float3 color, float b, float lo = 0.02F, float hi = 0.98F)
 {
-  float3 l = log(clamp(color, float3(0.02F), float3(0.98F))) / hairColorFit(b);
+  float3 l = log(clamp(color, float3(lo), float3(hi))) / hairColorFit(b);
   return l * l;
 }
 
@@ -356,8 +351,8 @@ float hairBlend(float along, float bias, float gain)
 float3 hairDyedAbsorption(GltfShadeMaterial mat, float along)
 {
   float3 color = lerp(mat.hairRootColor, mat.hairTipColor, hairBlend(along, mat.hairBlendBias, mat.hairBlendGain));
-  float3 l     = log(clamp(color, float3(0.001F), float3(1.0F))) / hairColorFit(mat.hairAzimuthal);
-  return lerp(l * l, mat.hairMelaninSigma, mat.hairMelaninMix);
+  // the dye's colours as OmniHairBase.mdl clamps them: a white tip is no absorption
+  return lerp(hairColorToAbsorption(color, mat.hairAzimuthal, 0.001F, 1.0F), mat.hairMelaninSigma, mat.hairMelaninMix);
 }
 
 // The colour a lock of these fibres shows (hairColorFit): what its multiply scattered light returns

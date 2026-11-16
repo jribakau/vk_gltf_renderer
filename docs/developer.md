@@ -257,6 +257,8 @@ shaders/
 ├── sobol.h.slang               # Owen-scrambled Sobol points for the accumulation's sampling decisions (ptSampler)
 ├── common.h.slang              # Shared shader utilities
 ├── get_hit.h.slang             # Hit state interpolation
+├── hash.h.slang                # lowbias32, the one integer hash of the noises and seeds (C++ too)
+├── fresnel.h.slang             # The exact dielectric Fresnel: skin's exit, the hair fibre, the ground's water (C++ too)
 ├── water.h.slang               # FV water at a hit: the domes in its material slot's grid cell
 ├── raytracer_interface.h.slang # RayQuery vs traditional RT abstraction
 ├── dlss_util.h                 # DLSS motion vector / guide buffer utilities

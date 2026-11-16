@@ -17,6 +17,8 @@
 #ifndef RAIN_H_SLANG
 #define RAIN_H_SLANG 1
 
+#include "hash.h.slang"
+
 // Marshall and Palmer's drop sizes (1948): N(D) = N0 exp(-L D) drops a cubic metre a millimetre of
 // diameter, L = 4.1 R^-0.21 for a rate R in mm/h. With Atlas's fall speeds below they give back the
 // rate within a fifth from drizzle to a downpour (tests/test_rain.cpp).
@@ -74,12 +76,7 @@ inline float rainSunPhase(float cosTheta)
 
 inline uint rainHash(uint x)
 {
-  x ^= x >> 16U;
-  x *= 0x7feb352dU;
-  x ^= x >> 15U;
-  x *= 0x846ca68bU;
-  x ^= x >> 16U;
-  return x;
+  return lowbias32(x);
 }
 
 inline float rainUnit(uint x)

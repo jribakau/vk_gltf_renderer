@@ -6,6 +6,8 @@
 #ifndef SOBOL_H
 #define SOBOL_H
 
+#include "hash.h.slang"
+
 // Owen-scrambled Sobol points for the accumulation's fixed sampling decisions (Burley 2020,
 // "Practical Hash-based Owen Scrambling", JCGT 9(4)): each decision -- the pixel's jitter, the
 // lens, a vertex's light sample, its BSDF sample -- draws one 4D point of a Sobol sequence at the
@@ -89,12 +91,7 @@ uint nestedUniformScramble(uint x, uint seed)
 // A well-mixed 32-bit hash (lowbias32), and Boost's hash_combine, for the per-decision seeds
 uint sobolHash(uint x)
 {
-  x ^= x >> 16u;
-  x *= 0x7feb352du;
-  x ^= x >> 15u;
-  x *= 0x846ca68bu;
-  x ^= x >> 16u;
-  return x;
+  return lowbias32(x);
 }
 
 uint sobolHashCombine(uint seed, uint v)

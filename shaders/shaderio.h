@@ -288,7 +288,6 @@ struct NightStarCell
 
 struct SceneFrameInfo
 {
-  float4x4 viewMatrix;      // View matrix
   float4x4 projInv;         // Inverse projection matrix
   float4x4 viewInv;         // Inverse view matrix
   float4x4 viewProjMatrix;  // View-projection matrix (P*V)

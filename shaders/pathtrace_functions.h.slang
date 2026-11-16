@@ -386,6 +386,17 @@ bool opacityFilmKept(GltfRenderNode renderNode, float opacity)
 #endif
 }
 
+// Whether a path ray keeps a candidate hit on a surface that is not opaque: by the opacity there,
+// stochastically, or as a film's cover whatever it is (opacityFilmKept). The ray query's traversal
+// (RayQueryRaytracer::Trace) and the any-hit shader (rahitMain) both ask it.
+bool pathCandidateKept(uint instanceID, uint renderPrimID, uint triangleID, float3 barycentrics, float3 objectRayDirection, inout uint seed)
+{
+  const GltfRenderNode      renderNode = pushConst.gltfScene->renderNodes[instanceID];
+  const GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
+  const float               opacity    = getOpacity(renderNode, renderPrim, int(triangleID), barycentrics, objectRayDirection);
+  return stochasticOpacityU(instanceID, triangleID, barycentrics, seed) < opacity || opacityFilmKept(renderNode, opacity);
+}
+
 //-----------------------------------------------------------------------
 // Shadow transmission
 //-----------------------------------------------------------------------
@@ -824,16 +835,18 @@ GltfLight getPunctualLightAt(int index, float3 pos)
 // The environment's pick estimate (light_pick.h.slang) at `pos`, 0 where there is none to sample.
 // On a planet in the scene the sky's light is the place's (worldSkyLight's scale): next to nothing
 // on its night side, where the pick is the moon's and the lamps'.
-float environmentPickEstimate(float3 pos)
+// `skyScale`: that scale, 1 off a planet.
+float environmentPickEstimate(float3 pos, out float3 skyScale)
 {
   SceneFrameInfo* frameInfo = pushConst.frameInfo;
+  skyScale                  = float3(1.0F);
   if(hasFlag(frameInfo->flags, SceneFrameInfoFlags::eSceneUseNoEnvironment))
     return 0.0F;
   const float estimate = max(frameInfo->envPickEstimate * frameInfo->envIntensity, 0.0F);
   if(estimate > 0.0F && skyHasWorld(frameInfo))
   {
-    const float3 scale = worldSkyLightAt(pos, frameInfo).scale;
-    return estimate * max(scale.x, max(scale.y, scale.z));
+    skyScale = worldSkyLightAt(pos, frameInfo).scale;
+    return estimate * max(skyScale.x, max(skyScale.y, skyScale.z));
   }
   return estimate;
 }
@@ -867,7 +880,24 @@ struct LightPickSet
   int       lights;       // of those, punctual lights
   bool      uniform;      // over LIGHT_PICK_MAX_LIGHTS lights: half to the environment, the lights evenly, none culled
   bool      groups;       // the light tree's cut nodes are candidates (not uniform, and emissiveTreeOn)
+  // What the scoring found at the point, for the draw there (sampleLightDraw, lightDrawOf), which
+  // would work it out again: on a planet, the sky's light against the origin's (worldSkyLightAt's
+  // scale), where the environment has an estimate; the sky's sun's colour, where not uniform
+  // (punctualLightOfPick)
+  float3    skyScale;
+  float3    sunColor;
 };
+
+// The punctual light `index` at the point `set` was scored at (getPunctualLightAt), the sky's sun's
+// colour there as the scoring took it (cloudSunShare, worldSunLightColor: the cloud images and the air)
+GltfLight punctualLightOfPick(LightPickSet set, int index, float3 pos)
+{
+  if(index != skySunPunctualIndex() || set.uniform)
+    return getPunctualLightAt(index, pos);
+  GltfLight light = getPunctualLight(index);
+  light.color     = set.sunColor;
+  return light;
+}
 
 // `cull`: drop the lights below the plane of `normal` (not for a vertex lit from both sides).
 LightPickSet lightPickSet(float3 pos, float3 normal, bool cull)
@@ -875,6 +905,14 @@ LightPickSet lightPickSet(float3 pos, float3 normal, bool cull)
   uint      noSeed = 0u;  // no number is drawn
   LightDraw none;
   return lightPickScore(pos, normal, cull, /*draw=*/false, noSeed, none);
+}
+
+// Whether next-event estimation drops the directional light `light` at a vertex that culls by `normal`:
+// singleLightContribution's rule, its whole disk below the plane. The even pick (LightPickSet::uniform)
+// still draws it, for nothing, so the BSDF's side must not weigh against it (sizedLightNeePdf, pick.sun).
+bool directionalLightCulled(GltfLight light, float3 normal)
+{
+  return light.type == LightType::eLightTypeDirectional && dot(normal, -light.direction) <= -sin(0.5F * light.angularSizeOrInvRange);
 }
 
 // A light's share of the rest at this vertex, `estimate` its pick estimate there.
@@ -1258,7 +1296,7 @@ LightDraw lightDrawOf(LightPickSet set, float3 pos, float3 normal, bool bothSide
     const int numPunctual = punctualLightCount();
     for(; walk.light < numPunctual; walk.light++)
     {
-      const float p = punctualPickShare(set, set.uniform ? 1.0f : punctualPickEstimate(getPunctualLightAt(walk.light, pos), pos, normal, !bothSides));
+      const float p = punctualPickShare(set, set.uniform ? 1.0f : punctualPickEstimate(punctualLightOfPick(set, walk.light, pos), pos, normal, !bothSides));
       if(p <= 0.0f)
         continue;
       walk.lastLight = walk.light;
@@ -1318,7 +1356,8 @@ LightPickSet lightPickScore(float3 pos, float3 normal, bool cull, bool draw, ino
   LightPickSet s;
   const int numPunctual = punctualLightCount();
   const int sunIndex    = skySunPunctualIndex();
-  s.envEstimate         = environmentPickEstimate(pos);
+  s.envEstimate         = environmentPickEstimate(pos, s.skyScale);
+  s.sunColor            = float3(0.0F);
   s.uniform             = numPunctual > LIGHT_PICK_MAX_LIGHTS;
   s.total               = s.envEstimate;
   s.lights              = 0;
@@ -1336,7 +1375,8 @@ LightPickSet lightPickScore(float3 pos, float3 normal, bool cull, bool draw, ino
   {
     for(int i = 0; i < numPunctual; i++)
     {
-      const float e = punctualPickEstimate(getPunctualLightAt(i, pos), pos, normal, cull);
+      const GltfLight light = getPunctualLightAt(i, pos);
+      const float     e     = punctualPickEstimate(light, pos, normal, cull);
       if(e > 0.0F)
       {
         s.total += e;
@@ -1345,7 +1385,10 @@ LightPickSet lightPickScore(float3 pos, float3 normal, bool cull, bool draw, ino
           drawing = pickReservoirsTake(drawing, i, e, min(rand(seed), 0.99999994F));
       }
       if(i == sunIndex)
+      {
         sunEstimate = e;
+        s.sunColor  = light.color;
+      }
     }
   }
   if(s.groups)
@@ -1375,7 +1418,9 @@ LightPickSet lightPickScore(float3 pos, float3 normal, bool cull, bool draw, ino
   {
     const float envShare = hasEnv ? 0.5F : 0.0F;
     s.pick.env           = s.restShare * envShare;
-    s.pick.sun           = (sunIndex >= 0) ? s.restShare * (1.0F - envShare) / float(numPunctual) : 0.0F;
+    // (a sun below the plane is drawn but gives nothing: no share for the BSDF's side to weigh against)
+    const bool sunCulled = sunIndex >= 0 && cull && directionalLightCulled(getPunctualLight(sunIndex), normal);
+    s.pick.sun           = (sunIndex >= 0 && !sunCulled) ? s.restShare * (1.0F - envShare) / float(numPunctual) : 0.0F;
   }
   else
   {
@@ -1516,11 +1561,12 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
       directLight.direction       = quatRotate(pushConst.frameInfo->envRotation, directLight.direction);
       // On a planet in the scene the field is the origin's sky: its direction as this place's, and
       // its light scaled to the sky's here (sky_world.h.slang). A turn of the frame: the pdf stands.
+      // Its scale is the scoring's (an environment drawn had an estimate, so the scoring took it).
       if(skyHasWorld(pushConst.frameInfo))
       {
-        const WorldSkyLight sky   = worldSkyLightAt(pos, pushConst.frameInfo);
+        const WorldSkyLight sky   = worldSkyFrame(skyWorldPoint(pushConst.frameInfo, pos), pushConst.frameInfo->sunDirection);
         directLight.direction     = worldSkyFromField(sky, directLight.direction);
-        directLight.radianceOverPdf *= sky.scale;
+        directLight.radianceOverPdf *= set.skyScale;
       }
 #if USE_LIGHT_RIS
       directLight.reuseKind = LIGHT_REUSE_ENVIRONMENT;
@@ -1570,7 +1616,7 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
                          given ? xi.yz : float2(rand(seed), rand(seed)), directLight);
     return;
   }
-  const GltfLight light = getPunctualLightAt(lightIndex, pos);
+  const GltfLight light = punctualLightOfPick(set, lightIndex, pos);
 
   // singleLightContribution() drops any punctual light below the hemisphere of the normal it
   // is given. When the shading point is lit from both sides, hand it a normal pointing at the
@@ -1643,16 +1689,19 @@ void sampleLightDraw(LightPickSet set, LightDraw draw, float3 pos, float3 normal
 // Either way the light is placed by one call of sampleLightDraw: the driver inlines it whole (the
 // emitters, the environment's tables, the tree's descent, the punctual lights) at every call, and a
 // call in each branch made the path tracer's build some 6 s longer (2026-11-07).
-void sampleLights(in float3       pos,
-                  float3          normal,
-                  in float3       worldRayDirection,
-                  inout uint      seed,
-                  out DirectLight directLight,
-                  in bool         isVolumeSample      = false,
-                  in bool         lightsFromBothSides = false,
-                  in bool         compensatedEnv      = false,
-                  in float4       xi                  = float4(-1.0F),
-                  in bool         pointOnly           = false)
+//
+// `set`: the pick it scored, for more draws at the same vertex (a surface's light candidates).
+void sampleLightsScored(in float3        pos,
+                        float3           normal,
+                        in float3        worldRayDirection,
+                        inout uint       seed,
+                        out DirectLight  directLight,
+                        out LightPickSet set,
+                        in bool          isVolumeSample      = false,
+                        in bool          lightsFromBothSides = false,
+                        in bool          compensatedEnv      = false,
+                        in float4        xi                  = float4(-1.0F),
+                        in bool          pointOnly           = false)
 {
   // `xi`: the sample's random numbers (x picks the light, yz place the sample, w is the
   // environment's third and the emitter triangle's pick), e.g. a Sobol point; negative: drawn from
@@ -1665,9 +1714,9 @@ void sampleLights(in float3       pos,
   const bool asScored  = dlss ? !given
                               : (hasFlag(pushConst.flags, PathtracerFlags::ePtStillPickAsScored) && emissiveTreeOn()
                                  && punctualLightCount() <= LIGHT_PICK_MAX_LIGHTS);
-  LightDraw          drawn;
-  const LightPickSet set = lightPickScore(pos, normal, /*cull=*/!bothSides, /*draw=*/asScored, seed, drawn);
-  directLight.pick       = set.pick;
+  LightDraw drawn;
+  set              = lightPickScore(pos, normal, /*cull=*/!bothSides, /*draw=*/asScored, seed, drawn);
+  directLight.pick = set.pick;
   if(set.pick.emissive <= 0.0f && set.candidates == 0)
     return;  // nothing can light this point
   if(!asScored)
@@ -1680,6 +1729,21 @@ void sampleLights(in float3       pos,
   sampleLightDraw(set, drawn, pos, normal, seed, directLight, isVolumeSample, bothSides, compensatedEnv, xi, pointOnly);
 }
 
+void sampleLights(in float3       pos,
+                  float3          normal,
+                  in float3       worldRayDirection,
+                  inout uint      seed,
+                  out DirectLight directLight,
+                  in bool         isVolumeSample      = false,
+                  in bool         lightsFromBothSides = false,
+                  in bool         compensatedEnv      = false,
+                  in float4       xi                  = float4(-1.0F),
+                  in bool         pointOnly           = false)
+{
+  LightPickSet set = {};
+  sampleLightsScored(pos, normal, worldRayDirection, seed, directLight, set, isVolumeSample, lightsFromBothSides, compensatedEnv, xi, pointOnly);
+}
+
 // The pdf with which sampleLights(), at the vertex `pick` was made at, draws a direction in the
 // cone of sized light `light`, of `oneMinusCos` from there: its share of the pick over the cone's
 // solid angle. 0 where that vertex's pick gave it nothing.
@@ -1687,7 +1751,9 @@ float sizedLightNeePdf(LightPick pick, GltfLight light, float oneMinusCos)
 {
   const bool         cull  = any(pick.normal != float3(0.0F));
   const LightPickSet set   = lightPickSet(pick.pos, pick.normal, cull);
-  const float        share = punctualPickShare(set, set.uniform ? 1.0F : punctualPickEstimate(light, pick.pos, pick.normal, cull));
+  if(set.uniform && cull && directionalLightCulled(light, pick.normal))
+    return 0.0F;  // the even pick draws it, but its sample gives nothing: the BSDF's ray is its only way
+  const float share = punctualPickShare(set, set.uniform ? 1.0F : punctualPickEstimate(light, pick.pos, pick.normal, cull));
   return set.restShare * share / (M_TWO_PI * max(oneMinusCos, 1e-10F));
 }
 
@@ -2451,6 +2517,26 @@ struct HazeSegmentResult
   uint   group;  // the light group of the light `inScatter` is of
 };
 
+// The firefly clamp's level for this frame: an accumulation's frames may have their own, looser one
+// (fireflyClampStill; 0: the same), a still having its samples and its denoiser against the outliers
+// where a DLSS frame has one sample. 0 or less: no clamp.
+float fireflyClampLevel()
+{
+  if(pushConst.fireflyClampStill > 0.0F && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+    return pushConst.fireflyClampStill;
+  return pushConst.fireflyClampThreshold;
+}
+
+// `contribution` cut to the firefly clamp's level (fireflyClampLevel), its colour kept
+float3 clampToFirefly(float3 contribution)
+{
+  const float level   = fireflyClampLevel();
+  const float largest = max(contribution.x, max(contribution.y, contribution.z));
+  if(level > 0.0F && largest > level)
+    contribution *= level / largest;
+  return contribution;
+}
+
 HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir, float tEnd, inout uint seed)
 {
   SceneFrameInfo*   frameInfo = pushConst.frameInfo;
@@ -2592,12 +2678,7 @@ HazeSegmentResult hazeCameraSegment(IRaytracer raytracer, float3 eye, float3 dir
   // light's (addRadiance): a scatter point that lands by an emitter's face, lit by it at 1/r^2. Biased
   // down a little where such samples carry the light; a moving frame keeps them for DLSS.
   if(still && hasFlag(pushConst.flags, PathtracerFlags::ePtClampIndirect))
-  {
-    const float level   = pushConst.fireflyClampStill > 0.0F ? pushConst.fireflyClampStill : pushConst.fireflyClampThreshold;
-    const float largest = max(result.inScatter.x, max(result.inScatter.y, result.inScatter.z));
-    if(level > 0.0F && largest > level)
-      result.inScatter *= level / largest;
-  }
+    result.inScatter = clampToFirefly(result.inScatter);
   return result;
 }
 
@@ -3290,16 +3371,6 @@ static const float DIRECT_PATH_ROUGHNESS = 0.1F;
 // a random walk (ePtSimplifyScatter; Unreal's bSimplifySSS): its light is a bounce's, which blurs it anyway.
 static const float SCATTER_SIMPLIFY_ROUGHNESS = 0.15F;
 
-// The firefly clamp's level for this frame: an accumulation's frames may have their own, looser one
-// (fireflyClampStill; 0: the same), a still having its samples and its denoiser against the outliers
-// where a DLSS frame has one sample. 0 or less: no clamp.
-float fireflyClampLevel()
-{
-  if(pushConst.fireflyClampStill > 0.0F && !hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
-    return pushConst.fireflyClampStill;
-  return pushConst.fireflyClampThreshold;
-}
-
 #if USE_LIGHT_GROUPS
 // The light group whose share this sample's path notes (lightGroupOfSample; LIGHT_GROUP_COUNT: none)
 static uint g_shareGroup = uint(LIGHT_GROUP_COUNT);
@@ -3351,12 +3422,7 @@ void dimRadiance(inout PathTracerState pt, float3 by)
 void addRadiance(inout PathTracerState pt, float3 contribution, bool indirect, uint group)
 {
   if(indirect && hasFlag(pushConst.flags, PathtracerFlags::ePtClampIndirect))
-  {
-    const float level   = fireflyClampLevel();
-    const float largest = max(contribution.x, max(contribution.y, contribution.z));
-    if(level > 0.0F && largest > level)
-      contribution *= level / largest;
-  }
+    contribution = clampToFirefly(contribution);
   addLight(pt, contribution, group);
 }
 

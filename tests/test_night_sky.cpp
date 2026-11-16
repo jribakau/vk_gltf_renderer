@@ -68,6 +68,49 @@ TEST(NightSky, EveryStarIsInTheCellARayToItLooksIn)
   EXPECT_EQ(counted, t.stars.size());
 }
 
+TEST(NightSky, ARaysCellsHoldEveryStarWithinItsReach)
+{
+  // evalStars looks only in the cells nightStarRowsWithin and nightStarColumnsWithin give: every star
+  // of the catalogue within the reach of a ray is in one of them, at the poles too
+  const N::StarTables t = N::buildStarTables(N::catalog());
+  uint32_t            seed = 7u;
+  auto                next = [&seed]() {
+    seed = seed * 1664525u + 1013904223u;
+    return float(seed >> 8) / float(1u << 24);
+  };
+  size_t cells = 0, rays = 0;
+  for(const float reach : {1.2e-3F, 4.0e-3F, 0.02F})
+    for(int i = 0; i < 4000; ++i)
+    {
+      // round a star of the catalogue, or near a pole
+      vec3 v;
+      if(i % 4 == 0)
+        v = normalize(vec3(next() - 0.5F, next() - 0.5F, (i % 8 == 0 ? 1.0F : -1.0F) * 40.0F));
+      else
+        v = normalize(t.stars[size_t(next() * float(t.stars.size() - 1))].direction
+                      + reach * vec3(next() - 0.5F, next() - 0.5F, next() - 0.5F));
+      const NightStarSpan rows = nightStarRowsWithin(v, reach);
+      std::vector<bool>   looked(t.cells.size(), false);
+      for(int r = rows.from; r <= rows.to; ++r)
+      {
+        const NightStarSpan columns = nightStarColumnsWithin(v, r, reach);
+        ASSERT_LE(columns.to - columns.from, NIGHT_STAR_CELLS_RA - 1);
+        for(int c = columns.from; c <= columns.to; ++c)
+        {
+          looked[size_t(r) * NIGHT_STAR_CELLS_RA + size_t((c + NIGHT_STAR_CELLS_RA) % NIGHT_STAR_CELLS_RA)] = true;
+          cells += (i % 4 != 0) ? 1 : 0;
+        }
+      }
+      rays += (i % 4 != 0) ? 1 : 0;
+      for(const auto& star : t.stars)
+        if(dot(v, star.direction) >= cos(reach))
+          EXPECT_TRUE(looked[size_t(nightStarRow(star.direction)) * NIGHT_STAR_CELLS_RA + size_t(nightStarColumn(star.direction))])
+              << "reach " << reach << " ray " << v.x << " " << v.y << " " << v.z;
+    }
+  // away from the poles, fewer than the three by three the search used to take
+  EXPECT_LT(double(cells) / double(rays), 3.0);
+}
+
 TEST(NightSky, TheClockTurnsTheSkyAboutThePole)
 {
   fv::lighting::Night n;

@@ -409,7 +409,9 @@ treats a **committed hit as fully blocked**, which shapes the traversal:
   (`traceShadowInline`). In the RTX pipeline that loop runs in raygen, under the specialization
   constant `USE_INLINE_SHADOW`, which `--ptInlineShadow` sets when a pipeline is created. On Ada it
   took 15-18% off a moving frame's path trace and 12-16% off a still's (1TEST, 7TEST, 10TEST,
-  2026-11-08). `--ptInlineShadow 0` brings back the any-hit shader, `rahitShadow`, for an A/B:
+  2026-11-08). With it the pipeline is built without `rahitShadow` (the shadow hit group has no
+  any-hit; `RtxStages`), so the driver doesn't compile `shadowCrossSurface` a second time.
+  `--ptInlineShadow 0` brings back the any-hit shader, `rahitShadow`, for an A/B:
   - A surface that only filters the light (alpha, thin glass) multiplies in its expected
     transmission, `(1 - opacity) + opacity * getShadowTransmission`. Glass passes only where it
     is smooth (a clear crossing, which the path's own ray crosses as a null event for MIS); rough

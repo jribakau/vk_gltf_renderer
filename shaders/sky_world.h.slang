@@ -196,6 +196,21 @@ float3 worldSunward(float3 up, float3 sunDirection)
   return normalize(along);
 }
 
+// The frames of WorldSkyLight at the place `p` (km from the centre), its scale 1: what turns a
+// direction between the place and the origin's lighting field
+WorldSkyLight worldSkyFrame(float3 p, float3 sunDirection)
+{
+  WorldSkyLight sky = {};
+  sky.up            = p / max(length(p), 1e-6F);
+  sky.sunward       = worldSunward(sky.up, sunDirection);
+  sky.side          = cross(sky.up, sky.sunward);
+  const float3 originUp = float3(0.0F, 1.0F, 0.0F);
+  sky.originSunward     = worldSunward(originUp, sunDirection);
+  sky.originSide        = cross(originUp, sky.originSunward);
+  sky.scale             = float3(1.0F);
+  return sky;
+}
+
 // What the sky gives a level surface at the place `p` (km from the centre) lit from `lightDirection`:
 // the irradiance table's, as worldSkyLight takes it for the sky's light
 float3 worldSkyIrradiance(SkyAtmosphereParameters atmosphere, Sampler2D<float3> irradianceTexture, float3 p, float3 lightDirection)
@@ -218,14 +233,8 @@ WorldSkyLight worldSkyLight(SkyAtmosphereParameters atmosphere,
                             float3                  moreHere  = float3(0.0F),
                             float3                  moreThere = float3(0.0F))
 {
-  WorldSkyLight sky = {};
+  WorldSkyLight sky = worldSkyFrame(p, sunDirection);
   const float   r   = clamp(length(p), atmosphere.bottomRadius, atmosphere.topRadius);
-  sky.up            = p / max(length(p), 1e-6F);
-  sky.sunward       = worldSunward(sky.up, sunDirection);
-  sky.side          = cross(sky.up, sky.sunward);
-  const float3 originUp = float3(0.0F, 1.0F, 0.0F);
-  sky.originSunward     = worldSunward(originUp, sunDirection);
-  sky.originSide        = cross(originUp, sky.originSunward);
 
   float3 here  = GetIrradiance(atmosphere, irradianceTexture, r, dot(sky.up, sunDirection));
   float3 there = GetIrradiance(atmosphere, irradianceTexture, originRadius, sunDirection.y);

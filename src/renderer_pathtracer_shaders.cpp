@@ -68,6 +68,10 @@ namespace {
 
 // The RTX pipeline's shader stages and groups. createRtxPipeline() and the warm-up both build from
 // it, so they ask the driver for the same pipeline (a different one would only miss the cache).
+// `inlineShadow` (USE_INLINE_SHADOW): shadow rays are ray queries in raygen, and no ray reaches the
+// shadow hit group, so it has no any-hit and rahitShadow is left out of the stages: the driver
+// compiled its shadowCrossSurface a second time for nothing. The group stays, so the SBT's layout
+// does not depend on it.
 struct RtxStages
 {
   enum Stage
@@ -82,9 +86,11 @@ struct RtxStages
   };
   std::array<VkPipelineShaderStageCreateInfo, eShaderGroupCount> stages{};
   std::vector<VkRayTracingShaderGroupCreateInfoKHR>             groups;
+  uint32_t stageCount = eShaderGroupCount;  // of `stages`, the ones the pipeline is built with
 
-  explicit RtxStages(VkShaderModule module)
+  RtxStages(VkShaderModule module, bool inlineShadow)
   {
+    static_assert(eShadowAnyHit == eShaderGroupCount - 1, "the stage left out must be the last");
     stages[eRaygen]     = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_RAYGEN_BIT_KHR, module, "rgenMain"};
     stages[eMiss]         = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_MISS_BIT_KHR, module, "rmissMain"};
     stages[eClosestHit]   = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, module, "rchitMain"};
@@ -114,8 +120,10 @@ struct RtxStages
     groups.push_back(group);
     // Hit Group-1 (shadow): any-hit only -- shadow rays skip closest-hit (TraceShadow)
     group.closestHitShader = VK_SHADER_UNUSED_KHR;
-    group.anyHitShader     = eShadowAnyHit;
+    group.anyHitShader     = inlineShadow ? VK_SHADER_UNUSED_KHR : uint32_t(eShadowAnyHit);
     groups.push_back(group);
+    if(inlineShadow)
+      stageCount = eShadowAnyHit;
   }
 };
 
@@ -169,12 +177,12 @@ VkPipeline createPathTracePipeline(VkDevice              device,
   else
   {
     specialization.add(2, inlineShadow);  // USE_INLINE_SHADOW (raygen only: computeMain traces shadows inline always)
-    RtxStages table(module);
+    RtxStages table(module, inlineShadow != 0);
     table.stages[RtxStages::eRaygen].pSpecializationInfo = specialization.getSpecializationInfo();
     const VkRayTracingPipelineCreateInfoKHR info{
         .sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
         .flags                        = rtxFlags,
-        .stageCount                   = static_cast<uint32_t>(table.stages.size()),
+        .stageCount                   = table.stageCount,
         .pStages                      = table.stages.data(),
         .groupCount                   = static_cast<uint32_t>(table.groups.size()),
         .pGroups                      = table.groups.data(),
@@ -705,7 +713,7 @@ void PathTracer::createRtxPipeline(Resources& resources)
   // have the driver compile it a second time beside it
   joinPipelineWarm();
   // Creating all shaders
-  RtxStages table(m_shaderModule);
+  RtxStages table(m_shaderModule, m_inlineShadow);
   auto&     stages        = table.stages;
   auto&     shader_groups = table.groups;
 
@@ -733,7 +741,7 @@ void PathTracer::createRtxPipeline(Resources& resources)
       .sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
       .pNext                        = &feedbackInfo,
       .flags                        = flags,
-      .stageCount                   = static_cast<uint32_t>(stages.size()),  // Stages are shaders
+      .stageCount                   = table.stageCount,  // Stages are shaders
       .pStages                      = stages.data(),
       .groupCount                   = static_cast<uint32_t>(shader_groups.size()),
       .pGroups                      = shader_groups.data(),
@@ -1565,10 +1573,10 @@ std::vector<std::pair<std::string, std::string>> PathTracer::variantMacros(const
 // The SBT of a ray tracing pipeline built from `module`
 void PathTracer::createSbt(Resources& resources, VkPipeline pipeline, VkShaderModule module, nvvk::Buffer& sbtBuffer, nvvk::SBTGenerator::Regions& regions)
 {
-  RtxStages                               table(module);
+  RtxStages                               table(module, m_inlineShadow);
   const VkRayTracingPipelineCreateInfoKHR info{
       .sType      = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
-      .stageCount = static_cast<uint32_t>(table.stages.size()),
+      .stageCount = table.stageCount,
       .pStages    = table.stages.data(),
       .groupCount = static_cast<uint32_t>(table.groups.size()),
       .pGroups    = table.groups.data(),

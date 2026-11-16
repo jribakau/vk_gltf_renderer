@@ -30,6 +30,8 @@
 #ifndef HAZE_H
 #define HAZE_H
 
+#include "hash.h.slang"
+
 // Meteorological visibility: where a black object's contrast against the horizon falls to 2%
 // (Koschmieder), so the extinction is -ln(0.02) / V. 0 or less: no haze.
 float hazeExtinctionFromVisibility(float visibility)
@@ -338,12 +340,7 @@ float hazeHeightInvert(HazeShape s, float3 o, float3 d, float ta, float tb, floa
 // A smooth noise in [-1, 1]: two octaves of value noise on an integer lattice, quintic between
 float hazeHash(int x, int y, int z)
 {
-  uint h = uint(x) * 0x8da6b343u ^ uint(y) * 0xd8163841u ^ uint(z) * 0xcb1ab31fu;
-  h ^= h >> 16;
-  h *= 0x7feb352du;
-  h ^= h >> 15;
-  h *= 0x846ca68bu;
-  h ^= h >> 16;
+  const uint h = lowbias32(uint(x) * 0x8da6b343u ^ uint(y) * 0xd8163841u ^ uint(z) * 0xcb1ab31fu);
   return float(h >> 8) * (1.0F / 16777216.0F);
 }
 

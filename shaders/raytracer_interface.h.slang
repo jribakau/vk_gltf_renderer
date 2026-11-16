@@ -186,13 +186,7 @@ struct RayQueryRaytracer : IRaytracer
       }
 #endif
 
-      GltfRenderNode      renderNode = pushConst.gltfScene->renderNodes[instanceID];
-      GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
-
-      float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics, rayQuery.CandidateObjectRayDirection());
-
-      // do alpha blending the stochastically way
-      if(stochasticOpacityU(uint(instanceID), uint(triangleID), barycentrics, seed) < opacity || opacityFilmKept(renderNode, opacity))
+      if(pathCandidateKept(uint(instanceID), uint(renderPrimID), uint(triangleID), barycentrics, rayQuery.CandidateObjectRayDirection(), seed))
         rayQuery.CommitNonOpaqueTriangleHit();
     }
 

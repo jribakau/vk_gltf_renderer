@@ -9,6 +9,7 @@
 
 #include "shaderio.h"
 #include "water_optics.h.slang"  // the water's IOR, absorption and scattering
+#include "fresnel.h.slang"       // dielectricFresnelOutside
 
 // How much of the ground there is at `pos`: 1 over the inner 55% of the fade disk, falling linearly
 // to 0 at its edge -- the radial gradient the Figure Viewer's three.js floor disk is drawn with.
@@ -482,13 +483,7 @@ GroundWaterCrossing groundWaterCrossing(float3 origin, float3 direction, float t
 // at `cosTheta` to its normal (or leaving it into the air there: the same share)
 float groundWaterFresnel(float cosTheta)
 {
-  const float c     = saturate(cosTheta);
-  const float n     = GROUND_WATER_IOR;
-  const float sinT2 = (1.0F - c * c) / (n * n);
-  const float cosT  = sqrt(max(1.0F - sinT2, 0.0F));
-  const float rs    = (c - n * cosT) / (c + n * cosT);
-  const float rp    = (n * c - cosT) / (n * c + cosT);
-  return 0.5F * (rs * rs + rp * rp);
+  return dielectricFresnelOutside(cosTheta, GROUND_WATER_IOR);
 }
 
 // Whether there is a body of water: the plane is a floor (not the catcher) with a depth over it

@@ -106,14 +106,6 @@ bool hasVertexColor(GltfRenderPrimitive renderPrim)
   return renderPrim.vertexBuffer.colors != nullptr;
 }
 
-float4 getVertexColor(GltfRenderPrimitive renderPrim, uint idx)
-{
-  if(!hasVertexColor(renderPrim))
-    return float4(1.0f, 1.0f, 1.0f, 1.0f);
-
-  return unpackUnorm4x8(renderPrim.vertexBuffer.colors[idx]);
-}
-
 float4 getInterpolatedVertexColor(GltfRenderPrimitive renderPrim, uint3 idx, float3 barycentrics)
 {
   if(!hasVertexColor(renderPrim))

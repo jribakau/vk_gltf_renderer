@@ -8,6 +8,8 @@
 #ifndef THIN_SCATTER_H_SLANG
 #define THIN_SCATTER_H_SLANG
 
+#include "fresnel.h.slang"  // dielectricFresnelOutside
+
 struct ThinScatterLobes
 {
   float  transmission;               // the specular BTDF's weight that is left
@@ -79,21 +81,6 @@ ThinScatterLobes thinScatterLobes(float  transmission,
 // outside in proportion to Ft(theta) = 1 - F(theta), so the exit is Lambertian times Ft / c, with c
 // the cosine-weighted mean of Ft, which keeps what the walk hands back (the walk's albedo is
 // inverted from the surface's colour) and only moves it from grazing light to head-on light.
-
-// Unpolarised Fresnel reflectance for light from outside (index 1) at `cosI` onto a medium of `eta`.
-float dielectricFresnelOutside(float cosI, float eta)
-{
-  cosI              = clamp(cosI, 0.0F, 1.0F);
-  const float sinT2 = (1.0F - cosI * cosI) / (eta * eta);
-  const float cosT  = sqrt(max(1.0F - sinT2, 0.0F));
-  // grazing onto a medium of the same index (a light below the map's normal, eta 1): both ratios are
-  // 0 over 0, where every other index reflects it all
-  if(cosI + eta * cosT <= 0.0F)
-    return 1.0F;
-  const float rs    = (cosI - eta * cosT) / (cosI + eta * cosT);
-  const float rp    = (eta * cosI - cosT) / (eta * cosI + cosT);
-  return 0.5F * (rs * rs + rp * rp);
-}
 
 // c = 2 * integral of Ft(mu) mu dmu over [0, 1]: by reciprocity eta^2 (1 - Fdr), Fdr the diffuse
 // reflectance from inside, in Egan and Hilgeman's fit (as Jensen et al. 2001 use it).

@@ -10,15 +10,11 @@
 // permutation tables: the same spread of values, with no table for the shader to index.
 // Compiled as C++ too (tests/test_flake_noise.cpp).
 
-// Wellons' lowbias32
+#include "hash.h.slang"
+
 uint flakeHash(uint x)
 {
-  x ^= x >> 16;
-  x *= 0x7feb352dU;
-  x ^= x >> 15;
-  x *= 0x846ca68bU;
-  x ^= x >> 16;
-  return x;
+  return lowbias32(x);
 }
 
 uint flakeCellHash(int3 c)

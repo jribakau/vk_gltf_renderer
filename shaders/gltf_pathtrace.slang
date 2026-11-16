@@ -265,23 +265,34 @@ float4 cloudsAlong(float3 dir, SceneFrameInfo* frameInfo, out float depth)
 // horizon, where sky meets ground in a hard edge, is what a lat-long would otherwise smear, and the
 // clouds' edges what its 0.35 degrees would.
 // `cloudsLeave` is what the clouds along the ray leave of what is behind them, 1 with none.
+// The sun's disk above the air, in the sky's units: what SkySunDisk::radiance is before the air.
+float3 worldSunSpaceRadiance()
+{
+  return g_atmosphere.solarIrradiance / (M_PI * g_atmosphere.sunAngularRadius * g_atmosphere.sunAngularRadius) * SUN_RADIANCE_TO_LUMINANCE;
+}
+
 // The sun's light above the air, in the sky's units: its disk's radiance and its illuminance,
 // luminance alone (the night sky's light is given against them, night_sky.h.slang)
 float sunAboveAirRadiance()
 {
-  const float3 radiance = g_atmosphere.solarIrradiance / (M_PI * g_atmosphere.sunAngularRadius * g_atmosphere.sunAngularRadius) * SUN_RADIANCE_TO_LUMINANCE;
-  return dot(radiance, float3(0.2126F, 0.7152F, 0.0722F));
+  return dot(worldSunSpaceRadiance(), float3(0.2126F, 0.7152F, 0.0722F));
 }
 
-// The night sky along `dir` (world), past the air and through it, before `envIntensity` and against
-// the sky's light (SceneFrameInfo::nightScale): the glow and the Milky Way, the stars aside (evalStars)
+// The night's light along `worldDir`, before `envIntensity` and against the sky's light
+// (SceneFrameInfo::nightScale): the air's glow, `glow` (NIGHT_GLOW_ZENITH at its zenith), and the
+// Milky Way past it, both through what the air leaves, `through`. The stars aside (evalStars).
+float3 nightSkyLight(float3 worldDir, float3 through, float glow, SceneFrameInfo* frameInfo)
+{
+  const float3 v = float3(dot(worldDir, frameInfo->celestialX), dot(worldDir, frameInfo->celestialY), dot(worldDir, frameInfo->celestialZ));
+  return frameInfo->nightScale * sunAboveAirRadiance() * through * (glow * nightGlowColor() + NIGHT_GLOW_ZENITH * milkyWay(v));
+}
+
+// The night sky along `dir` (world), past the air and through it, from an eye at `eyeRadius`
 float3 evalNightSky(float3 worldDir, float eyeRadius, SceneFrameInfo* frameInfo)
 {
-  const float3 v      = float3(dot(worldDir, frameInfo->celestialX), dot(worldDir, frameInfo->celestialY), dot(worldDir, frameInfo->celestialZ));
-  const float3 dir    = quatRotateInverse(frameInfo->envRotation, worldDir);
+  const float3 dir     = quatRotateInverse(frameInfo->envRotation, worldDir);
   const float3 through = GetTransmittanceToSun(g_atmosphere, g_transmittance, eyeRadius, dir.y);
-  const float  glow   = NIGHT_GLOW_ZENITH * nightGlowPath(dir.y, g_atmosphere.bottomRadius);
-  return frameInfo->nightScale * sunAboveAirRadiance() * through * (glow * nightGlowColor() + NIGHT_GLOW_ZENITH * milkyWay(v));
+  return nightSkyLight(worldDir, through, NIGHT_GLOW_ZENITH * nightGlowPath(dir.y, g_atmosphere.bottomRadius), frameInfo);
 }
 
 // The stars along `dir` (world), before `envIntensity` and against the sky's light: each a spot as wide
@@ -300,19 +311,13 @@ float3 evalStars(float3 worldDir, SceneFrameInfo* frameInfo, bool world = false,
   const float3 v      = float3(dot(worldDir, frameInfo->celestialX), dot(worldDir, frameInfo->celestialY), dot(worldDir, frameInfo->celestialZ));
   const float  sigma  = max(pushConst.pixelAngle, 2.9e-4F);
   const float  reach  = 1.0F - 0.5F * (4.0F * sigma) * (4.0F * sigma);  // cos of four sigma
-  const int    column = nightStarColumn(v);
-  const int    row    = nightStarRow(v);
   float3       sum    = float3(0.0F);
-  for(int dr = -1; dr <= 1; ++dr)
+  // only the cells a star within four sigma can be in: mostly the ray's own, the whole row round a pole
+  const NightStarSpan rows = nightStarRowsWithin(v, 4.0F * sigma);
+  for(int r = rows.from; r <= rows.to; ++r)
   {
-    const int r = row + dr;
-    if(r < 0 || r >= NIGHT_STAR_CELLS_DEC)
-      continue;
-    // the rows at the poles are narrower than a star's spot: all of them
-    const bool polar = r == 0 || r == NIGHT_STAR_CELLS_DEC - 1;
-    const int  from  = polar ? 0 : column - 1;
-    const int  to    = polar ? NIGHT_STAR_CELLS_RA - 1 : column + 1;
-    for(int c = from; c <= to; ++c)
+    const NightStarSpan columns = nightStarColumnsWithin(v, r, 4.0F * sigma);
+    for(int c = columns.from; c <= columns.to; ++c)
     {
       const NightStarCell cell = frameInfo->nightStarCells[r * NIGHT_STAR_CELLS_RA + (c + NIGHT_STAR_CELLS_RA) % NIGHT_STAR_CELLS_RA];
       for(uint k = 0; k < cell.count; ++k)
@@ -458,19 +463,15 @@ float4 cloudsInFrontOf(float3 toPoint, SceneFrameInfo* frameInfo)
 // clouds drawn in front of it, pixel by pixel, so a cloud's edge crosses the disk, and the stars.
 float3 evalPhysicalSkyBehind(float3 worldDir, SceneFrameInfo* frameInfo, float3 sky, float cloudsLeave)
 {
-  const float3 stars = evalStars(worldDir, frameInfo) * cloudsLeave;
+  float3 stars = float3(0.0F);
+  if(cloudsLeave > 0.0F)  // none through a full cover
+    stars = evalStars(worldDir, frameInfo) * cloudsLeave;
   if(g_skyStars.y <= 0.0F)
     g_skyStars = float2(luminance(stars), max(luminance(sky), 1e-30F));
   return sky + evalSunDiskBackground(quatRotateInverse(frameInfo->envRotation, worldDir), frameInfo) * cloudsLeave + stars;
 }
 
 // ---- with a planet in the scene (sky_world.h.slang) --------------------------------------------------
-
-// The sun's disk above the air, in the sky's units: what SkySunDisk::radiance is before the air.
-float3 worldSunSpaceRadiance()
-{
-  return g_atmosphere.solarIrradiance / (M_PI * g_atmosphere.sunAngularRadius * g_atmosphere.sunAngularRadius) * SUN_RADIANCE_TO_LUMINANCE;
-}
 
 // The nearest of the planet's other bodies (world_bodies.h.slang) a ray meets before `tMax`: which
 // (-1: none) and how far along it.
@@ -654,10 +655,9 @@ float3 evalWorldSkyUnder(float3 origin, float3 worldDir, SceneFrameInfo* frameIn
   // the night's: the Milky Way past the air, and from inside it the air's own glow
   if(frameInfo->nightScale > 0.0F && any(through > 0.0F))
   {
-    const float3 v    = float3(dot(worldDir, frameInfo->celestialX), dot(worldDir, frameInfo->celestialY), dot(worldDir, frameInfo->celestialZ));
-    const float  r    = length(eye);
-    const float  glow = r < g_atmosphere.topRadius ? NIGHT_GLOW_ZENITH * nightGlowPath(max(dot(eye, worldDir) / r, 0.0F), g_atmosphere.bottomRadius) : 0.0F;
-    sky += frameInfo->nightScale * sunAboveAirRadiance() * through * (glow * nightGlowColor() + NIGHT_GLOW_ZENITH * milkyWay(v));
+    const float r    = length(eye);
+    const float glow = r < g_atmosphere.topRadius ? NIGHT_GLOW_ZENITH * nightGlowPath(max(dot(eye, worldDir) / r, 0.0F), g_atmosphere.bottomRadius) : 0.0F;
+    sky += nightSkyLight(worldDir, through, glow, frameInfo);
   }
   // The clouds lie over it as the images hold them for the camera (cloudsAlong): above the horizon
   // of the place they were baked from, or all round it when that is above their bases. What they
@@ -1030,14 +1030,15 @@ SlabFarSide probeSlabFarSide(float3 origin, float3 inward, float reach, int mate
     return far;
   const GltfRenderPrimitive prim = pushConst.gltfScene->renderPrimitives[rayQuery.CommittedInstanceID()];
   const float2              b    = rayQuery.CommittedTriangleBarycentrics();
-  HitState hit = getHitState(prim, float3(1.0F - b.x - b.y, b.x, b.y), node.worldToObject, node.objectToWorld,
-                             rayQuery.CommittedPrimitiveIndex(), inward);
+  const float3 barys = float3(1.0F - b.x - b.y, b.x, b.y);
+  HitState     hit   = getHitState(prim, barys, node.worldToObject, node.objectToWorld, rayQuery.CommittedPrimitiveIndex(), inward);
   hit.nrm       = -hit.nrm;
   hit.geonrm    = -hit.geonrm;
   hit.tangent   = -hit.tangent;
   hit.bitangent = -hit.bitangent;
   hit.frameSign = -hit.frameSign;
-  hit.shadowPos = hit.shadowPosOther;  // the terminator offset for the outer side, which the light is on
+  // the terminator offset for the outer side, which the light is on
+  hit.shadowPos = shadowPosOtherSide(prim, barys, node.objectToWorld, rayQuery.CommittedPrimitiveIndex(), hit.frontFace);
   far.found     = true;
   far.depth     = rayQuery.CommittedRayT();
   far.hit       = hit;
@@ -1083,6 +1084,56 @@ SpreadPoint probeSpreadPoint(float3 origin, float3 down, float reach)
                           rayQuery.CommittedPrimitiveIndex(), down);
   point.found = point.hit.frontFace;
   return point;
+}
+#endif
+
+#if USE_DLSS_SHADER
+// #DLSS - the specular hit distance at depth 1 (the first reflection bounce), and how the reflection's
+// image moves (RR's reflection motion): this point's motion mirrored in the first hit's plane, which
+// moves with the first hit (mirrorImageDelta). `moves`: the hit is a mesh's; the ground and the water
+// stay put. A first hit seen through glass has its guides elsewhere and no motion of its own here.
+void captureSpecularHit(inout PathTracerState pt, HitPayload payload, HitState hit, GltfRenderNode renderNode,
+                        GltfRenderPrimitive renderPrim, bool moves)
+{
+  pt.guide.specularHitDist    = float16_t(min(payload.hitT, 65504.0f));
+  pt.guide.captureSpecularHit = false;
+  float3 hitDelta             = float3(0.0F);
+  if(moves)
+  {
+    const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
+    hitDelta = dlssPrevHitPos(renderNode, renderPrim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos) - hit.pos;
+  }
+  const float3 mirrorDelta = pt.guide.psrValid ? float3(0.0F) : pt.firstHitPosPrev - pt.firstHitPos;
+  const float3 mirrorN     = float3(pt.guide.normalRoughness.xyz);
+  const float  mirrorN2    = dot(mirrorN, mirrorN);
+  // a first hit that left no guide normal: the point's own motion, unmirrored (never a NaN for RR)
+  pt.guide.specularDelta = float16_t3(mirrorN2 > 1e-8F ? mirrorImageDelta(hitDelta, mirrorDelta, mirrorN * rsqrt(mirrorN2)) : hitDelta);
+}
+#endif  // USE_DLSS_SHADER
+
+#if USE_DLSS_SHADER && GLTF_USE_TRANSMISSION
+// A film's cover (opacityFilmKept) on a DLSS frame: the traversal kept this hit whatever its opacity,
+// and the path goes on through it by its open share, as a still's any-hit lets a sample through. The
+// crossing is no event: nothing is lit or scattered here, and the light the ray reaches beyond is
+// weighed against the vertex before (a film passes that vertex's shadow ray by the same share,
+// shadowCrossSurface). It spends the glass's budget, as a pane does. True when the path goes on
+// through it, `ray` then starting past it.
+bool filmPassed(inout PathTracerState pt, inout RayDesc ray, inout uint seed, HitPayload payload, HitState hit,
+                GltfRenderNode renderNode, GltfRenderPrimitive renderPrim, float worldFoot)
+{
+  const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
+  // the opacity the traversal read: a weave's by the ray's direction, in the instance's space
+  const float cover = getOpacity(renderNode, renderPrim, payload.primitiveID, barys, mul(float4(ray.Direction, 0.0F), renderNode.worldToObject).xyz);
+  if(cover >= 1.0F || rand(seed) < cover)
+    return false;
+  pt.cone.width = worldFoot;
+  pt.nullDistance += payload.hitT;
+  ray.Origin = safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance);  // getHitState turned geonrm to the ray
+  if(pt.glassBounces < pushConst.glassBudget)
+    pt.glassBounces++;
+  else
+    pt.surfaceDepth++;
+  return true;
 }
 #endif
 
@@ -1598,7 +1649,23 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
         hit.tangent   = -hit.tangent;
         hit.bitangent = -hit.bitangent;
         hit.frameSign = -hit.frameSign;
-        hit.shadowPos = hit.shadowPosOther;  // the terminator offset for the outer side, which the light is on
+        // the terminator offset for the outer side, which the light is on
+        hit.shadowPos = shadowPosOtherSide(renderPrim, float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y),
+                                           renderNode.objectToWorld, payload.primitiveID, hit.frontFace);
+      }
+#endif
+
+#if USE_DLSS_SHADER && GLTF_USE_TRANSMISSION
+      // A film past the camera's first hit: whether the path goes on through it is decided before
+      // its material is evaluated, which a crossing would throw away. Its reflection's distance is
+      // taken all the same, as at any hit.
+      if(!firstRay && materials[materialIndex].opacityFilm != 0 && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss)
+         && filmPassed(pt, ray, seed, payload, hit, renderNode, renderPrim, worldFoot))
+      {
+        if(pt.guide.captureSpecularHit)
+          captureSpecularHit(pt, payload, hit, renderNode, renderPrim, true);
+        g_unlitLamps = unlitOfPick;
+        return PathStepResult.eEarlyContinue;
       }
 #endif
 
@@ -1755,26 +1822,8 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
 
 #if USE_DLSS_SHADER
-    // #DLSS - Capture specular hit distance on depth 1 (first reflection bounce)
     if(pt.guide.captureSpecularHit)
-    {
-      pt.guide.specularHitDist    = float16_t(min(payload.hitT, 65504.0f));
-      pt.guide.captureSpecularHit = false;
-      // How the reflection's image moves (RR's reflection motion): this point's motion mirrored in the
-      // first hit's plane, which moves with the first hit (mirrorImageDelta). The ground and the water
-      // stay put; a first hit seen through glass has its guides elsewhere and no motion of its own here.
-      float3 hitDelta = float3(0.0F);
-      if(!hitInfinitePlane && !hitWater)
-      {
-        const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
-        hitDelta = dlssPrevHitPos(renderNode, renderPrim, payload.rnodeID, payload.rprimID, payload.primitiveID, barys, hit.pos) - hit.pos;
-      }
-      const float3 mirrorDelta = pt.guide.psrValid ? float3(0.0F) : pt.firstHitPosPrev - pt.firstHitPos;
-      const float3 mirrorN     = float3(pt.guide.normalRoughness.xyz);
-      const float  mirrorN2    = dot(mirrorN, mirrorN);
-      // a first hit that left no guide normal: the point's own motion, unmirrored (never a NaN for RR)
-      pt.guide.specularDelta = float16_t3(mirrorN2 > 1e-8F ? mirrorImageDelta(hitDelta, mirrorDelta, mirrorN * rsqrt(mirrorN2)) : hitDelta);
-    }
+      captureSpecularHit(pt, payload, hit, renderNode, renderPrim, !hitInfinitePlane && !hitWater);
 #endif  // USE_DLSS_SHADER
 
     //-----------------------------------------------------------------------
@@ -1896,29 +1945,13 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     }
 
 #if USE_DLSS_SHADER && GLTF_USE_TRANSMISSION
-    // A film's cover (opacityFilmKept): the traversal kept this hit whatever its opacity, and the
-    // path goes on through it here by its open share, as a still's any-hit lets a sample through.
-    // After the guides: the camera's film is the first hit on every frame, whichever way this one's
-    // path went. The crossing is no event: nothing is lit or scattered here, and the light the ray
-    // reaches beyond is weighed against the vertex before (a film passes that vertex's shadow ray by
-    // the same share, shadowCrossSurface). It spends the glass's budget, as a pane does, then bounces.
-    if(materialIndex >= 0 && materials[materialIndex].opacityFilm != 0 && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss))
+    // The camera's own film (filmPassed), after the guides: it is the first hit on every frame,
+    // whichever way this one's path went. Past the first hit it was decided before the material.
+    if(firstRay && materialIndex >= 0 && materials[materialIndex].opacityFilm != 0 && hasFlag(pushConst.flags, PathtracerFlags::ePtUseDlss)
+       && filmPassed(pt, ray, seed, payload, hit, renderNode, renderPrim, worldFoot))
     {
-      const float3 barys = float3(1.0 - payload.bary.x - payload.bary.y, payload.bary.x, payload.bary.y);
-      // the opacity the traversal read: a weave's by the ray's direction, in the instance's space
-      const float cover = getOpacity(renderNode, renderPrim, payload.primitiveID, barys, mul(float4(ray.Direction, 0.0F), renderNode.worldToObject).xyz);
-      if(cover < 1.0F && rand(seed) >= cover)
-      {
-        pt.cone.width = worldFoot;
-        pt.nullDistance += payload.hitT;
-        ray.Origin = safeOffsetRay(hit.pos, -hit.geonrm, hit.offsetDistance);  // getHitState turned geonrm to the ray
-        if(pt.glassBounces < pushConst.glassBudget)
-          pt.glassBounces++;
-        else
-          pt.surfaceDepth++;
-        g_unlitLamps = unlitOfPick;
-        return PathStepResult.eEarlyContinue;
-      }
+      g_unlitLamps = unlitOfPick;
+      return PathStepResult.eEarlyContinue;
     }
 #endif
 
@@ -2269,8 +2302,10 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
     inEyeChamber = !hairOn && materialIndex >= 0 && materials[materialIndex].chamberIor < 0.0F
                    && hasFlag(pushConst.frameInfo->flags, SceneFrameInfoFlags::eSceneEyeCaustic);
 #endif
-    sampleLights(hit.pos, hit.nrm, ray.Direction, seed, directLight, /*isVolumeSample=*/false,
-                 /*lightsFromBothSides=*/bothSides || inEyeChamber, /*compensatedEnv=*/!lastVertex, g_sobol ? nextSobolDecision() : float4(-1.0F));
+    const bool   lightsBothSides = bothSides || inEyeChamber;
+    LightPickSet vertexPick      = {};  // the pick scored here, which every light candidate below draws from
+    sampleLightsScored(hit.pos, hit.nrm, ray.Direction, seed, directLight, vertexPick, /*isVolumeSample=*/false,
+                       lightsBothSides, /*compensatedEnv=*/!lastVertex, g_sobol ? nextSobolDecision() : float4(-1.0F));
     // The BSDF ray sampled below is weighed against this vertex's pick when it reaches a light
     pt.lightPick          = directLight.pick;
     pt.lightPick.bsdfOnly = smoothHere;
@@ -2327,12 +2362,28 @@ PathStepResult pathTraceOneBounce(IRaytracer raytracer, inout RayDesc ray, inout
 
       LightReservoir reservoir = lightReservoirEmpty();
       DirectLight    kept      = directLight;
+      // The candidates after the first are drawn from the pick the first was scored with, the c-th
+      // from the c-th of the others' equal slices of it: stratified, and drawn in rising order, so one
+      // walk over the lights finds them all (as the haze's, hazeCameraSegment). The slices together are
+      // the pick, so each candidate's weight stays what one draw gives. They used to score the lights
+      // again for each, at the same point and normal.
+      const bool    anyLight = vertexPick.pick.emissive > 0.0F || vertexPick.candidates > 0;
+      LightDrawWalk walk     = lightDrawWalk(vertexPick);
       for(int c = 0; c < candidates; c++)
       {
         DirectLight candidate = directLight;
         if(c > 0)
-          sampleLights(hit.pos, hit.nrm, ray.Direction, seed, candidate, /*isVolumeSample=*/false,
-                       /*lightsFromBothSides=*/bothSides, /*compensatedEnv=*/!lastVertex);
+        {
+          candidate      = noDirectLight();
+          candidate.pick = vertexPick.pick;
+          if(anyLight)
+          {
+            const float     u     = min((float(c - 1) + rand(seed)) / float(candidates - 1), 0.99999994F);
+            const LightDraw drawn = lightDrawOf(vertexPick, hit.pos, hit.nrm, lightsBothSides, u, walk);
+            sampleLightDraw(vertexPick, drawn, hit.pos, hit.nrm, seed, candidate, /*isVolumeSample=*/false, lightsBothSides,
+                            /*compensatedEnv=*/!lastVertex, float4(-1.0F), /*pointOnly=*/false);
+          }
+        }
         BsdfEvaluateData candidateEval = {};
         float weight      = 0.0F;
         if((dot(candidate.direction, hit.nrm) > 0.0f || bothSides) && candidate.pdf != 0.0f)
@@ -3347,7 +3398,8 @@ float2 gaussianSubpixelJitter(inout uint seed)
 // Adds one sample's denoiser guides. The normal is the world-space shading normal, zero on a miss.
 // Where nothing is hit, the albedo is the normalized background color, as Open Image Denoise
 // recommends for emitters: that radiance is signal, not noise.
-void addDenoiserGuides(SampleResult sampleResult, inout float3 albedoSum, inout float3 normalSum)
+// One sample's albedo guide for the still's denoiser: the background's colour where nothing is hit
+float3 denoiserGuideAlbedo(SampleResult sampleResult)
 {
   float3 albedo = sampleResult.guideOutput.albedo.xyz;
 #if USE_DLSS_SHADER
@@ -3362,22 +3414,21 @@ void addDenoiserGuides(SampleResult sampleResult, inout float3 albedoSum, inout 
     const float  maxComp    = max(background.x, max(background.y, background.z));
     albedo                  = maxComp > 0.0f ? saturate(background / maxComp) : float3(0.0f);
   }
-  albedoSum += albedo;
-  normalSum += sampleResult.guideOutput.normalRoughness.xyz;
+  return albedo;
 }
 
 #if USE_DLSS_SHADER
-// DLSS-RR's still (ePtRrStillGuides): one sample's specular albedo and linear roughness (w), and its guide
-// depth, the surface behind clear glass's (primary surface replacement), far where nothing is hit. The
-// albedo addDenoiserGuides takes is the diffuse one on this variant (the metal's share is the specular's).
-void addRrStillGuides(SampleResult sampleResult, inout float4 specularSum, inout float depthMin)
+// DLSS-RR's still (ePtRrStillGuides): one sample's guide depth, the surface behind clear glass's
+// (primary surface replacement), far (1) where nothing is hit. Its specular albedo and linear roughness
+// are the sample's own; the albedo denoiserGuideAlbedo gives is the diffuse one on this variant (the
+// metal's share is the specular's).
+float rrStillGuideDepth(SampleResult sampleResult)
 {
-  specularSum += float4(float3(sampleResult.guideOutput.specularAlbedo), float(sampleResult.guideOutput.normalRoughness.w));
   if(sampleResult.radiance.w <= 0.0f)
-    return;
+    return 1.0f;
   const float3 pos  = sampleResult.guideOutput.psrValid ? sampleResult.guideOutput.psrPos : sampleResult.hitPosition;
   const float4 clip = mul(float4(pos, 1.0), pushConst.frameInfo->viewProjMatrix);
-  depthMin          = min(depthMin, clip.z / clip.w);
+  return min(1.0f, clip.z / clip.w);
 }
 #endif  // USE_DLSS_SHADER
 #endif  // USE_GUIDE_SHADER
@@ -3544,25 +3595,11 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
 #endif
 
 #if USE_GUIDE_SHADER
-  // The denoiser guides average every sample of the frame, like the color
+  // The denoiser's guides: this sample's, averaged into the still's below like the color
   const bool denoiserGuides = hasFlag(pushConst.flags, PathtracerFlags::ePtDenoiserGuides);
-  float3     albedoSum      = float3(0.0f);
-  float3     normalSum      = float3(0.0f);
-  int        guideCount     = 0;
 #if USE_DLSS_SHADER
   const bool rrStillGuides = denoiserGuides && hasFlag(pushConst.flags, PathtracerFlags::ePtRrStillGuides);
-  float4     specularSum   = float4(0.0f);
-  float      depthMin      = 1.0f;
 #endif
-  if(denoiserGuides)
-  {
-    addDenoiserGuides(sampleResult, albedoSum, normalSum);
-    guideCount++;
-#if USE_DLSS_SHADER
-    if(rrStillGuides)
-      addRrStillGuides(sampleResult, specularSum, depthMin);
-#endif
-  }
 #endif
 
 
@@ -3762,13 +3799,15 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     // denoiser converts them to what it reads.
     // averaged into the still's guides for the rest of it, so what isn't finite is 0 instead, counted
     bool         stillFinite = true;
-    const float3 albedo      = finiteGuide(albedoSum / float(guideCount), stillFinite);
-    const float3 normal      = finiteGuide(normalSum / float(guideCount), stillFinite);
+    const float3 albedo      = finiteGuide(denoiserGuideAlbedo(sampleResult), stillFinite);
+    const float3 normal      = finiteGuide(sampleResult.guideOutput.normalRoughness.xyz, stillFinite);
     const int2   pixel       = int2(samplePos);
     float        normalW     = 1.0f;
 #if USE_DLSS_SHADER
     // DLSS-RR's still reads the roughness packed in the normal's w (RrStillDenoiser)
-    const float4 specular = rrStillGuides ? finiteGuide(specularSum / float(guideCount), stillFinite) : float4(0.0f);
+    const float4 specular = rrStillGuides ? finiteGuide(float4(float3(sampleResult.guideOutput.specularAlbedo),
+                                                               float(sampleResult.guideOutput.normalRoughness.w)), stillFinite) :
+                                            float4(0.0f);
     if(rrStillGuides)
       normalW = specular.w;
 #endif
@@ -3782,7 +3821,7 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
     }
     else
     {
-      const float weight = float(guideCount) / float(pushConst.guideSamples + guideCount);
+      const float weight = 1.0f / float(pushConst.guideSamples + 1);
       outImages[int(OutputImage::eDenoiserAlbedo)][pixel] =
           lerp(outImages[int(OutputImage::eDenoiserAlbedo)][pixel], float4(albedo, 1.0f), weight);
       outImages[int(OutputImage::eDenoiserNormal)][pixel] =
@@ -3794,9 +3833,10 @@ void processPixel(IRaytracer raytracer, float2 samplePos, float2 imageSize)
       const float4 spec = float4(specular.xyz, 1.0f);
       outImages[int(OutputImage::eRrStillSpecAlbedo)][pixel] =
           restart ? spec :
-                    lerp(outImages[int(OutputImage::eRrStillSpecAlbedo)][pixel], spec, float(guideCount) / float(pushConst.guideSamples + guideCount));
+                    lerp(outImages[int(OutputImage::eRrStillSpecAlbedo)][pixel], spec, 1.0f / float(pushConst.guideSamples + 1));
+      const float depth = rrStillGuideDepth(sampleResult);
       outImages[int(OutputImage::eRrStillDepth)][pixel] =
-          float4(restart ? depthMin : min(outImages[int(OutputImage::eRrStillDepth)][pixel].x, depthMin));
+          float4(restart ? depth : min(outImages[int(OutputImage::eRrStillDepth)][pixel].x, depth));
     }
 #endif
   }
@@ -4101,19 +4141,8 @@ void rahitMain(inout HitPayload payload, in BuiltInTriangleIntersectionAttribute
 
   float3 barycentrics = float3(1 - attr.barycentrics.x - attr.barycentrics.y, attr.barycentrics.x, attr.barycentrics.y);
 
-  uint instanceID   = InstanceIndex();
-  uint renderPrimID = InstanceID();
-  uint triangleID   = PrimitiveIndex();
-
-  // Retrieve the Primitive mesh buffer information
-  GltfRenderNode      renderNode = pushConst.gltfScene->renderNodes[instanceID];
-  GltfRenderPrimitive renderPrim = pushConst.gltfScene->renderPrimitives[renderPrimID];
-
-  float opacity = getOpacity(renderNode, renderPrim, triangleID, barycentrics, ObjectRayDirection());
-  if(stochasticOpacityU(instanceID, triangleID, barycentrics, payload.seed) >= opacity && !opacityFilmKept(renderNode, opacity))
-  {
+  if(!pathCandidateKept(InstanceIndex(), InstanceID(), PrimitiveIndex(), barycentrics, ObjectRayDirection(), payload.seed))
     IgnoreHit();
-  }
 }
 
 
