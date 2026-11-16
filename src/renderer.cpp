@@ -1295,9 +1295,7 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
         finfo.worldBodyPlace[i] = m_resources.settings.worldBodyPlace[i];
         finfo.worldBodyLook[i]  = m_resources.settings.worldBodyLook[i];
       }
-      finfo.worldBodyLight = m_resources.settings.skySunScale;
-      if(m_resources.settings.skyLightIsMoon)
-        finfo.worldBodyLight = float(1.0 / std::max(fv::moon::lightShare(fv::moon::phaseAngle(m_resources.settings.skySecondDirection, m_resources.sunDirection)), 1e-9));
+      finfo.worldBodyLight = worldBodySunScale();
       // ... and their light (src/fv_world_light.hpp): a body too dim to matter is none of the lights
       if(m_resources.settings.worldBodyLights && finfo.worldBodyCount > 0)
       {
@@ -1310,6 +1308,13 @@ void GltfRenderer::renderFrame(VkCommandBuffer cmd)
         }
         for(size_t i = 0; i < WORLD_BODY_MAX * WORLD_BODY_MAX; i++)
           finfo.worldBodyFill[i] = glm::vec4(lights.fill[i], 0.0F);
+        std::array<glm::vec4, WORLD_AIR_MAX> toward{}, light{};
+        finfo.worldAirCount = worldAirLights(glm::quat(1.0F, 0.0F, 0.0F, 0.0F), toward, light);
+        for(size_t i = 0; i < WORLD_AIR_MAX; i++)
+        {
+          finfo.worldAirToward[i] = toward[i];
+          finfo.worldAirLight[i]  = light[i];
+        }
       }
     }
     finfo.landFadeFrom   = m_resources.settings.landFadeFrom;

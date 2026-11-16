@@ -120,6 +120,13 @@ public:
   void setMoonDirection(const glm::vec3& direction) { m_moonDirection = direction; }
   // The night's glow against the sky's light (EnvBakePushConstant::nightScale), 0 none
   void setNightScale(float scale) { m_nightScale = scale; }
+  // A planet's bodies that light its air (EnvBakePushConstant::airToward), environment frame
+  void setAirLights(const std::array<glm::vec4, WORLD_AIR_MAX>& toward, const std::array<glm::vec4, WORLD_AIR_MAX>& light, int count)
+  {
+    m_airToward = toward;
+    m_airLight  = light;
+    m_airCount  = count;
+  }
 
   // Observer height above the planet surface, in kilometres. Fixed rather than tracking the
   // camera -- see the fixed-observer note on brunetonObserver() in shaders/env_bake.slang.
@@ -195,6 +202,9 @@ private:
   glm::vec3                  m_sunDirection{0.0F, 0.707F, 0.707F};
   glm::vec3                  m_secondDirection{0.0F, -1.0F, 0.0F};
   float                      m_secondScale = 0.0F;
+  std::array<glm::vec4, WORLD_AIR_MAX> m_airToward{};
+  std::array<glm::vec4, WORLD_AIR_MAX> m_airLight{};
+  int                                  m_airCount = 0;
   glm::vec3                  m_moonDirection{0.0F, -1.0F, 0.0F};
   float                      m_nightScale = 0.0F;
   float                      m_observerAltitude{0.001F};  // 1 m

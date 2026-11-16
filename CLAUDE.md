@@ -86,7 +86,8 @@ with the code, the code wins (fix the doc — see "Keep the docs true").
   one picked a hit), its sea (no mesh: the ground's body of water on a
   sphere, seen from over it and from in it; its lakes and rivers are meshes met as that water's
   surface), the sky scaled to it and asked from any place of
-  it, on the ground or in orbit, and the other bodies in that sky
+  it, on the ground or in orbit, and the other bodies in that sky, which light the scene, the air, the
+  clouds and each other (`src/fv_world_light.*`)
   ([docs/RENDERING_ARCHITECTURE.md](docs/RENDERING_ARCHITECTURE.md#a-planet)).
 - `src/sun_position.*` — NOAA solar position.
   A pure function with no dependency on the rest of the renderer; nothing else links against it.

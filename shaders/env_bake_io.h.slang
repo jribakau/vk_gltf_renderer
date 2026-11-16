@@ -32,6 +32,7 @@
 #define ENV_BAKE_IO_H 1
 
 #include "nvshaders/slang_types.h"
+#include "shaderio.h"  // WORLD_AIR_MAX
 
 NAMESPACE_SHADERIO_BEGIN()
 
@@ -106,6 +107,12 @@ struct EnvBakePushConstant
   float3 moonDirection;
   // The night's glow (night_sky.h.slang) against the sky's light, 0 none: what lights a moonless night
   float  nightScale;
+  // A planet's bodies that light its air (SceneFrameInfo::worldAirToward), environment frame, each
+  // added as a sun of its light would light it; how many. Past Vulkan's 128 bytes of push constants,
+  // within NVIDIA's 256 (the renderer is NVIDIA's alone).
+  float4 airToward[WORLD_AIR_MAX];
+  float4 airLight[WORLD_AIR_MAX];
+  int    airCount;
 };
 
 // The floor's reflectance the meter takes (the panel's default ground, 20% grey): the sky's light

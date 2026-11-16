@@ -506,12 +506,44 @@ are asked from (`worldEclipseSky`), down to a twilight at totality. That is righ
 kilometres across; the edge of the shadow is not drawn in the air.
 
 The moon of the Light tab (`evalMoonDisk`) is still its own thing beside these: it has no place, only
-a direction. Bodies give the ground no light of their own.
+a direction.
+
+**Their light.** The bodies light the scene as their faces are drawn (`src/fv_world_light.hpp`,
+tested in `tests/test_fv_world_light.cpp`). The renderer sums each body's face as the scene's origin
+sees it, again whenever the sun or a body moves (`GltfRenderer::worldBodyLightsNow`). That gives the
+light on a surface facing it, against the sun's above the air, and the light's mean direction. A giant
+60° across gives about a tenth of the sun when full, a night as bright as an overcast day.
+
+- **On the scene.** Each body is one of the lights the path tracer picks from, after the lamps and the
+  sky's sun (`worldBodyAsLight` in `pathtrace_functions.h.slang`). The pick scores it as the sphere it
+  is. Its sample is drawn evenly over the cone the body fills and takes the face there as drawn
+  (`sampleWorldBodyLight`), through the air over the point and the clouds' mean share. So a
+  crescent's light and its shadows come from its lit edge. A rough ray that leaves a surface and meets
+  a body is weighed against that sample (`sizedLightHits`). The camera and mirrors see the bodies with
+  the sky, as before. A body too dim beside the sun or the brightest body
+  (`fv::world_light::kLeast`) is none of the lights.
+- **On each other.** Each body's dark side is lit by the others' sunlit faces and by the planet's
+  (`SceneFrameInfo::worldBodyFill`, one bounce), a wide neighbour's terminator rounded by its width
+  (`worldBodyFillShade`). The sums include it, so what a body gives the ground is what is drawn.
+- **On the air and the clouds.** The brightest bodies, those bright enough beside the sun
+  (`fv::world_light::kAirLeast`, at most `WORLD_AIR_MAX`), light the air as a sun of their light at
+  their mean direction would. That covers the sky every ray sees and the lighting field's bake, the
+  sky's light at a place (`worldSkyLightAt`), and the air before a surface (`AerialLights`: their
+  light scattered once and their sky's, unshadowed). It also lights the clouds: each one's sky and its
+  light off the ground, and the brightest through them as the sun does, its own march where its light
+  reaches (`SkyCloudsParameters::airToward`). By day a giant's crescent is under that bar, and none of
+  it runs.
+
+Setting `worldBodyLights` (not persisted) turns all of it off for a timing or a look against it. The
+app's exposure meter counts the bodies' light (`bodyLight` in the app's `sunPath.ts`).
+
+Left out: the cloud shadow's pattern and its shafts in a body's light (the clouds' mean share is
+taken); the air before a surface brighter toward a body, and its shadow there; a second bounce between
+bodies.
 
 The clouds lie round the planet, scaled to it as its air is: see [Round a planet](#round-a-planet).
 
-What is not there yet: rain and haze on a planet; the night's glow seen from outside the air;
-a body's light on the ground; orbits.
+What is not there yet: rain and haze on a planet; the night's glow seen from outside the air; orbits.
 
 ### What to set white balance to
 

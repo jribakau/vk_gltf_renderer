@@ -880,6 +880,11 @@ private:
   fv::world_light::Lights        m_worldBodyLights;
   std::vector<float>             m_worldBodyLightsKey;
   const fv::world_light::Lights& worldBodyLightsNow();
+  // The sun's light on the bodies against the sky's light (SceneFrameInfo::worldBodyLight), and the
+  // bodies that light the air with theirs against the sky's, toward each in `frame` (the world's or
+  // the environment's): none without a planet, or while the bodies light nothing
+  float worldBodySunScale() const;
+  int   worldAirLights(const glm::quat& frame, std::array<glm::vec4, WORLD_AIR_MAX>& toward, std::array<glm::vec4, WORLD_AIR_MAX>& light);
   float       m_worldWaterAtEye = kNoWorldWater;  // the inland water the camera is in (setWorldWaterAtEye)
   float       m_waterTime       = 0.0F;           // the water's moment and its waves' way (setWaterMotion)
   float       m_waterHeading    = 0.52F;

@@ -165,6 +165,9 @@ src/
 │                               #   reads the catalogue, holds the packs' models and stands the sites near the eye
 ├── fv_world_roads.cpp/hpp      # What a quad draws of the roads: an asphalt road's surface on the ground as the
 │                               #   quad has it, its worn markings, and the bridges whose middles it holds
+├── fv_world_light.cpp/hpp      # The light of the bodies in a planet's sky: each one's face summed as a place sees
+│                               #   it, what they and the planet give each other's dark sides, which light the scene
+│                               #   and which the air and clouds (docs/sky.md, "Their light")
 ├── fv_world_chart.cpp/hpp      # A map of the planet: a window of latitude and longitude as an image, the ground
 │                               #   in its own colours, shaded, the sea by its depth, rivers and roads over it;
 │                               #   planet.map (fv_host_world.cpp) sends it with what stands on the planet
@@ -278,7 +281,8 @@ shaders/
 ├── sky_world.h.slang           # The physical sky round a planet that stands in the scene: the sky a ray sees
 │                               #   from any place, the sun's and the sky's light at a point of the planet
 ├── world_bodies.h.slang        # The other bodies in that planet's sky as spheres: where a ray meets one, what
-│                               #   one leaves of the sun's disk, its markings and shading; C++ too (unit-tested)
+│                               #   one leaves of the sun's disk, its markings and shading, how another body lights
+│                               #   its dark side; C++ too (unit-tested, and summed by src/fv_world_light.cpp)
 ├── water_optics.h.slang        # The ground's water as a medium (IOR, absorption, scattering) and its albedo; C++ too
 ├── world_sea.h.slang           # A planet's sea: the ground's body of water on a sphere (its surface, waves,
 │                               #   caustics, the light in the water), and its lakes and rivers as that water

@@ -358,6 +358,12 @@ float skyVisibility(float3 position, float3 up, float distance)
   return 1.0F / (1.0F + kSkyDiffusion * opticalDepth);
 }
 
+// Toward a planet's body `a` that lights the clouds (SkyCloudsParameters::airToward), in the march's frame
+float3 cloudAirToward(int a)
+{
+  return cloudRotateBack(pc.frame, g_params.airToward[a].xyz);
+}
+
 // Light from the ground under the clouds, bounced up into them (approximateRadianceFromGround): the
 // land lit by the sky and, where it gets through, the sun, attenuated through the cloud below.
 float3 radianceFromGround(float3 position, float3 normal, float mipLevel, float distance, float jitter)
@@ -368,7 +374,14 @@ float3 radianceFromGround(float3 position, float3 normal, float mipLevel, float 
   float3       skyIrradiance;
   const float3 sunIrradiance =
       GetSunAndSkyIrradiance(g_atmosphere, g_transmittance, g_irradiance, ground, normal, pc.sunDirection, skyIrradiance);
-  const float3 irradiance = skyIrradiance * (SKY_RADIANCE_TO_LUMINANCE * s_air.y) + sunIrradiance * (SUN_RADIANCE_TO_LUMINANCE * s_air.x);
+  float3 irradiance = skyIrradiance * (SKY_RADIANCE_TO_LUMINANCE * s_air.y) + sunIrradiance * (SUN_RADIANCE_TO_LUMINANCE * s_air.x);
+  // and a planet's bodies' light on the land, as the sun's (SkyCloudsParameters::airToward)
+  for(int a = 0; a < g_params.airCount; ++a)
+  {
+    float3       bodySky = float3(0.0F);
+    const float3 body    = GetSunAndSkyIrradiance(g_atmosphere, g_transmittance, g_irradiance, ground, normal, cloudAirToward(a), bodySky);
+    irradiance += g_params.airLight[a].xyz * (bodySky * (SKY_RADIANCE_TO_LUMINANCE * s_air.y) + body * (SUN_RADIANCE_TO_LUMINANCE * s_air.x));
+  }
   return g_atmosphere.groundAlbedo * (1.0F / M_PI) * irradiance * exp(-depth);
 }
 
@@ -541,16 +554,36 @@ float4 marchClouds(float r0, float3 dir, float jitter, out float depth)
       // air above, no cosine, and the sky's from all round. Each in its own spectrum's units.
       const float3 sunIrradiance =
           g_atmosphere.solarIrradiance * GetTransmittanceToSun(g_atmosphere, g_transmittance, r, muS) * SUN_RADIANCE_TO_LUMINANCE;
-      const float3 skyIrradiance = GetIrradiance(g_atmosphere, g_irradiance, r, muS) * (2.0F * M_PI) * SKY_RADIANCE_TO_LUMINANCE;
+      float3 skyIrradiance = GetIrradiance(g_atmosphere, g_irradiance, r, muS) * (2.0F * M_PI) * SKY_RADIANCE_TO_LUMINANCE;
 
+      // The sun through the cloud toward it, then a planet's brightest body as the sun (the march
+      // again toward it, where its light reaches: a night's bake marches it alone): one loop, so the
+      // marches are compiled once. Each body's sky with the sun's.
       float3 radiance = float3(0.0F);
-      if(max(sunIrradiance.x, max(sunIrradiance.y, sunIrradiance.z)) > 0.0F)
+      [loop]
+      for(int a = -1; a < min(g_params.airCount, 1); ++a)
       {
-        float       sunRayDistance;
-        const float nearDepth = marchOpticalDepth(position, sunDir, g_params.sunIterations, mipLevel, distance, jitter, sunRayDistance);
-        const float farDepth = farSunOpticalDepth(position, sunDir, max(sunRayDistance, g_params.minSecondaryStepSize), distance);
-        radiance              = sunIrradiance * cloudMultipleScattering(nearDepth + farDepth, cosTheta, g_params.octaves);
+        float3 toward     = sunDir;
+        float3 irradiance = sunIrradiance;
+        float  cosLight   = cosTheta;
+        if(a >= 0)
+        {
+          toward     = cloudAirToward(a);
+          irradiance = g_params.airLight[a].xyz * g_atmosphere.solarIrradiance
+                       * GetTransmittanceToSun(g_atmosphere, g_transmittance, r, dot(position, toward) / r) * SUN_RADIANCE_TO_LUMINANCE;
+          cosLight   = dot(dir, toward);
+        }
+        if(max(irradiance.x, max(irradiance.y, irradiance.z)) > 0.0F)
+        {
+          float       rayDistance;
+          const float nearDepth = marchOpticalDepth(position, toward, g_params.sunIterations, mipLevel, distance, jitter, rayDistance);
+          const float farDepth  = farSunOpticalDepth(position, toward, max(rayDistance, g_params.minSecondaryStepSize), distance);
+          radiance += irradiance * cloudMultipleScattering(nearDepth + farDepth, cosLight, g_params.octaves);
+        }
       }
+      for(int a = 0; a < g_params.airCount; ++a)
+        skyIrradiance += g_params.airLight[a].xyz * GetIrradiance(g_atmosphere, g_irradiance, r, dot(position, cloudAirToward(a)) / r)
+                         * (2.0F * M_PI) * SKY_RADIANCE_TO_LUMINANCE;
 
       if(g_params.groundIterations > 0 && height < g_params.shadowTopHeight && mipLevel < 0.5F)
         radiance += radianceFromGround(position, normal, mipLevel, distance, jitter) * kInvFourPi * g_params.groundBounceScale;
@@ -597,9 +630,16 @@ float4 marchClouds(float r0, float3 dir, float jitter, out float depth)
   // air's march needs some, or it has no direction.)
   const float frontDepth = max(transmittanceSum > 0.0F ? weightedDistanceSum / transmittanceSum : rayNear, 1e-3F);
   depth                  = frontDepth;
+  AerialLights more = noAerialLights();
+  more.count        = g_params.airCount;
+  for(int a = 0; a < g_params.airCount; ++a)
+  {
+    more.toward[a] = cloudAirToward(a);
+    more.light[a]  = g_params.airLight[a].xyz;
+  }
   const AerialMarch air =
       marchAerialPerspective(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, observer, r0,
-                             dir * frontDepth, sunDir, float2(0.5F));
+                             dir * frontDepth, sunDir, float2(0.5F), 0.25F, 16, true, more);
   // the sun's part lit where the sun gets through to it: the light shafts in front of the clouds
   const float  sunLit     = shaftShareAlong(observer, dir, 0.0F, frontDepth, 16, jitter);
   const float3 airInFront = (air.sunInScatter * sunLit + (air.inScatter - air.sunInScatter) * s_air.y) * SKY_RADIANCE_TO_LUMINANCE;

@@ -599,11 +599,21 @@ float3 evalWorldLightDisk(float3 origin, float3 worldDir, SceneFrameInfo* frameI
   return worldSunSpaceRadiance() * worldSunThroughAt(origin, frameInfo) * frameInfo->skySunScale;
 }
 
-// The sky's light at `worldPos`, from the lighting field baked at the origin (worldSkyLight).
+// The sky's light at `worldPos`, from the lighting field baked at the origin (worldSkyLight), the
+// bodies that light the air with their own (worldAirToward) as the field has them
 WorldSkyLight worldSkyLightAt(float3 worldPos, SceneFrameInfo* frameInfo)
 {
-  WorldSkyLight sky = worldSkyLight(g_atmosphere, g_irradiance, skyWorldPoint(frameInfo, worldPos), frameInfo->sunDisk->observerRadius,
-                                    frameInfo->sunDirection, frameInfo->skySecondDirection, frameInfo->skySecondScale);
+  const float3 p     = skyWorldPoint(frameInfo, worldPos);
+  float3       here  = float3(0.0F);
+  float3       there = float3(0.0F);
+  for(int a = 0; a < frameInfo->worldAirCount; ++a)
+  {
+    here += frameInfo->worldAirLight[a].xyz * worldSkyIrradiance(g_atmosphere, g_irradiance, p, frameInfo->worldAirToward[a].xyz);
+    there += frameInfo->worldAirLight[a].xyz
+             * GetIrradiance(g_atmosphere, g_irradiance, frameInfo->sunDisk->observerRadius, frameInfo->worldAirToward[a].y);
+  }
+  WorldSkyLight sky = worldSkyLight(g_atmosphere, g_irradiance, p, frameInfo->sunDisk->observerRadius, frameInfo->sunDirection,
+                                    frameInfo->skySecondDirection, frameInfo->skySecondScale, here, there);
   sky.scale *= worldEclipseSky(worldPos, frameInfo);
   return sky;
 }
@@ -620,21 +630,28 @@ float3 evalWorldSkyUnder(float3 origin, float3 worldDir, SceneFrameInfo* frameIn
   float3       sky = float3(0.0F);
   through          = float3(1.0F);
   // the sky's light's own sky, then the other body's (the moon's at twilight, the sun's twilight once
-  // the moon is the light); one loop, so the tables' reads are inlined once
-  const int lights = frameInfo->skySecondScale > 0.0F ? 2 : 1;
+  // the moon is the light), then the planet's bodies' that light the air (worldAirToward); one loop,
+  // so the tables' reads are inlined once
+  const int seconds = frameInfo->skySecondScale > 0.0F ? 1 : 0;
+  const int lights  = 1 + seconds + frameInfo->worldAirCount;
+  [loop]
   for(int i = 0; i < lights; ++i)
   {
     float3 leaves = float3(1.0F);
     float3 toward = frameInfo->sunDirection;
-    float  scale  = 1.0F;
-    if(i == 1)
+    float3 scale  = float3(1.0F);
+    if(i == 0)
+      scale = float3(worldEclipseSky(origin, frameInfo));  // the sky's light's own under an eclipse, where a body shades the place
+    else if(i <= seconds)
     {
       toward = frameInfo->skySecondDirection;
-      scale  = frameInfo->skySecondScale;
+      scale  = float3(frameInfo->skySecondScale);
     }
-    // (the sky's light's own under an eclipse, where a body shades the place)
-    if(i == 0)
-      scale = worldEclipseSky(origin, frameInfo);
+    else
+    {
+      toward = frameInfo->worldAirToward[i - 1 - seconds].xyz;
+      scale  = frameInfo->worldAirLight[i - 1 - seconds].xyz;
+    }
     sky += scale * evalWorldSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, eye, worldDir, toward, leaves);
     if(i == 0)
       through = leaves;

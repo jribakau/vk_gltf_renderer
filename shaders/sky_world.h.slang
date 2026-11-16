@@ -196,16 +196,27 @@ float3 worldSunward(float3 up, float3 sunDirection)
   return normalize(along);
 }
 
+// What the sky gives a level surface at the place `p` (km from the centre) lit from `lightDirection`:
+// the irradiance table's, as worldSkyLight takes it for the sky's light
+float3 worldSkyIrradiance(SkyAtmosphereParameters atmosphere, Sampler2D<float3> irradianceTexture, float3 p, float3 lightDirection)
+{
+  const float r = clamp(length(p), atmosphere.bottomRadius, atmosphere.topRadius);
+  return GetIrradiance(atmosphere, irradianceTexture, r, dot(p / max(length(p), 1e-6F), lightDirection));
+}
+
 // `p`: the place, km from the centre. `originRadius`: the bake's observer's (SkySunDisk::observerRadius),
 // which stands over the scene's origin, its zenith the world's +Y. `secondDirection`, `secondScale`: the
-// other body's sky (SceneFrameInfo::skySecondDirection), 0 for none.
+// other body's sky (SceneFrameInfo::skySecondDirection), 0 for none. `moreHere`, `moreThere`: what
+// other lights of the sky give a level surface at the place and at the origin (a planet's bodies).
 WorldSkyLight worldSkyLight(SkyAtmosphereParameters atmosphere,
                             Sampler2D<float3>       irradianceTexture,
                             float3                  p,
                             float                   originRadius,
                             float3                  sunDirection,
                             float3                  secondDirection,
-                            float                   secondScale)
+                            float                   secondScale,
+                            float3                  moreHere  = float3(0.0F),
+                            float3                  moreThere = float3(0.0F))
 {
   WorldSkyLight sky = {};
   const float   r   = clamp(length(p), atmosphere.bottomRadius, atmosphere.topRadius);
@@ -223,6 +234,8 @@ WorldSkyLight worldSkyLight(SkyAtmosphereParameters atmosphere,
     here += secondScale * GetIrradiance(atmosphere, irradianceTexture, r, dot(sky.up, secondDirection));
     there += secondScale * GetIrradiance(atmosphere, irradianceTexture, originRadius, secondDirection.y);
   }
+  here += moreHere;
+  there += moreThere;
   // the night's own light is the same all round the planet: a hundred-millionth of the sun's, which
   // also keeps a night at both places from dividing nothing by nothing
   const float3 night = atmosphere.solarIrradiance * 1e-8F;

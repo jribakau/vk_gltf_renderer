@@ -27,6 +27,7 @@
 #define SKY_CLOUDS_IO_H 1
 
 #include "nvshaders/slang_types.h"
+#include "shaderio.h"  // WORLD_AIR_MAX
 
 NAMESPACE_SHADERIO_BEGIN()
 
@@ -173,6 +174,17 @@ struct SkyCloudsParameters
   int   _pad4;
   int   _pad5;
   int   _pad6;
+
+  // A planet's bodies that light its air (SceneFrameInfo::worldAirToward), which light the clouds too:
+  // toward each one in the clouds' frame (a march's by its frame, cloudRotateBack), its light against
+  // the sun's (rgb); how many. The first, the brightest, lights them as the sun does, through them
+  // (its own march toward it); each lights them with its sky and its light off the ground.
+  float4 airToward[WORLD_AIR_MAX];
+  float4 airLight[WORLD_AIR_MAX];
+  int    airCount;
+  int    _pad7;
+  int    _pad8;
+  int    _pad9;
 };
 
 // What changes per bake: where the sun and the observer are, and which image it fills.

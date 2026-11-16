@@ -517,6 +517,21 @@ void SkyClouds::generateNoise(Resources& res)
   NVVK_CHECK(nvvk::endSingleTimeCommands(cmd, m_device, m_transientCmdPool, res.app->getQueue(0).queue));
 }
 
+void SkyClouds::withAirLights(shaderio::SkyCloudsParameters& params, bool current) const
+{
+  const auto& toward = current ? m_airToward : m_bakedAirToward;
+  const auto& light  = current ? m_airLight : m_bakedAirLight;
+  const int   count  = current ? m_airCount : m_bakedAirCount;
+  // the bodies stand where they do among the clouds as turned (placed() turns the sun so)
+  const bool world = m_settings.worldRadiusKm > 0.0F;
+  params.airCount  = world ? count : 0;
+  for(size_t i = 0; i < WORLD_AIR_MAX; i++)
+  {
+    params.airToward[i] = glm::vec4(world ? glm::conjugate(m_turn) * toward[i] : toward[i], 0.0F);
+    params.airLight[i]  = glm::vec4(light[i], 0.0F);
+  }
+}
+
 void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float observerAltitudeKm, bool preview)
 {
   assert(m_initialized && "init must be called first");
@@ -535,6 +550,9 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
   {
     m_bakedSettings = m_settings;
     m_bakedSun      = sunDirection;
+    m_bakedAirToward = m_airToward;
+    m_bakedAirLight  = m_airLight;
+    m_bakedAirCount  = m_airCount;
     m_bakedAltitude = observerAltitudeKm;
     m_bakedClouds   = hasClouds();
     m_bakedBaseKm   = m_bakedClouds ? cloudBakeParameters(m_settings, false).minHeight : 0.0F;
@@ -556,7 +574,8 @@ void SkyClouds::record(VkCommandBuffer cmd, const glm::vec3& sunDirection, float
   }
   else
   {
-    const shaderio::SkyCloudsParameters params = cloudBakeParameters(m_settings, preview);
+    shaderio::SkyCloudsParameters params = cloudBakeParameters(m_settings, preview);
+    withAirLights(params, /*current=*/true);
     vkCmdUpdateBuffer(cmd, m_paramsBuf.buffer, 0, sizeof(params), &params);
     nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
@@ -707,6 +726,7 @@ void SkyClouds::recordFollow(VkCommandBuffer cmd, const SkyCloudFollowStep& step
 {
   shaderio::SkyCloudsParameters params = cloudBakeParameters(m_bakedSettings, false);
   params.samples                       = kFollowSamples;
+  withAirLights(params, /*current=*/false);
   vkCmdUpdateBuffer(cmd, m_paramsBuf.buffer, 0, sizeof(params), &params);
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -754,7 +774,8 @@ void SkyClouds::recordShadow(VkCommandBuffer cmd)
 {
   assert(m_initialized && "init must be called first");
   assert(viewable() && "a shadow bake repeats a full bake's clouds");
-  const shaderio::SkyCloudsParameters params = cloudBakeParameters(m_bakedSettings, false);
+  shaderio::SkyCloudsParameters params = cloudBakeParameters(m_bakedSettings, false);
+  withAirLights(params, /*current=*/false);
   vkCmdUpdateBuffer(cmd, m_paramsBuf.buffer, 0, sizeof(params), &params);
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
@@ -800,6 +821,7 @@ void SkyClouds::recordView(VkCommandBuffer cmd, const SkyCloudView& view)
 
   shaderio::SkyCloudsParameters params = cloudBakeParameters(m_bakedSettings, false);
   params.samples                       = kViewSamples;
+  withAirLights(params, /*current=*/false);
   vkCmdUpdateBuffer(cmd, m_paramsBuf.buffer, 0, sizeof(params), &params);
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                          VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);

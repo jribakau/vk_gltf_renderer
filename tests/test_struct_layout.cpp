@@ -261,7 +261,8 @@ HostStruct sceneFrameInfo()
     F(lightMix), F(lightGroupsUsed), F(worldSeaRadius), F(worldSeaWaves), F(worldSeaRipples), F(worldSeaTop), F(_worldSeaPad),
     F(worldGroundLayer), F(worldGroundTile), F(worldGroundLayerMore), F(worldGroundTileMore), F(worldGround), F(worldWater), F(worldWaterAtEye), F(_worldWaterPad),
     F(waterTime), F(waterHeading), F(waterStep), F(_waterPad), F(cloudFrame),
-    F(cloudTurn), F(cloudShadowFrame), F(cloudShadowSpan), F(_cloudShadowPad), F(worldBodyShine), F(worldBodyToward), F(worldBodyFill)
+    F(cloudTurn), F(cloudShadowFrame), F(cloudShadowSpan), F(_cloudShadowPad), F(worldBodyShine), F(worldBodyToward), F(worldBodyFill),
+    F(worldAirToward), F(worldAirLight), F(worldAirCount), F(_worldAirPad0), F(_worldAirPad1), F(_worldAirPad2)
   }};
 }
 

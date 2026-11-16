@@ -23,8 +23,10 @@
 
 namespace fv::world_light {
 
-// As many bodies as a planet's sky holds (WORLD_BODY_MAX in shaders/shaderio.h)
-inline constexpr int kMost = 4;
+// As many bodies as a planet's sky holds (WORLD_BODY_MAX in shaders/shaderio.h), and as many of them as
+// light its air and its clouds (WORLD_AIR_MAX)
+inline constexpr int kMost    = 4;
+inline constexpr int kAirMost = 2;
 
 // A body that stands in the sky: its centre and radius (metres), its linear albedo, what it is made of
 // (WORLD_BODY_ROCK, WORLD_BODY_GAS), as SceneFrameInfo::worldBodyPlace and worldBodyLook carry it
@@ -66,11 +68,18 @@ struct Lights
   // what lights each body's dark side: [lit * kMost + source], the source's light on the lit body's
   // centre; the lit body's own slot is the planet's
   std::array<glm::vec3, kMost * kMost> fill{};
+  // the bodies that light the air and the clouds too, the brightest first (-1: none): lights whose
+  // light is at least kAirLeast of the sun's on a level surface there
+  std::array<int, kAirMost> air{-1, -1};
 };
 
 // A body is a light where its light is at least this share of the sun's on a level surface there, or of
 // the brightest body's (Celestia's cutoff for planetshine): a full moon by day is not, at night it is.
 inline constexpr float kLeast = 1.0e-4F;
+// A light lights the air and the clouds where it is at least this share of the sun's on a level surface
+// there: a giant at night or dusk, not its crescent beside a high sun (its sky would be 1% of the sun's,
+// for the cost of the sky's tables read again on every ray that sees the sky)
+inline constexpr float kAirLeast = 0.02F;
 
 // The light of the face of body `source` (-1: the planet) toward a place `toEye` from its `point`, per
 // unit of the sun's illuminance: the sun's on it (its phase, and where the planet or another body stands

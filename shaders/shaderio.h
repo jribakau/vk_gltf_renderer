@@ -63,6 +63,8 @@ NAMESPACE_SHADERIO_BEGIN()
 #define INSTANCE_SHADOW_SLOTS 3
 // How many other bodies the sky of a planet in the scene holds (SceneFrameInfo::worldBodyPlace)
 #define WORLD_BODY_MAX 4
+// ... and how many of them light its air and its clouds, the brightest (SceneFrameInfo::worldAirToward)
+#define WORLD_AIR_MAX 2
 
 
 // Indices into `texturesHdr[]` (eTexturesHdr binding).
@@ -597,6 +599,16 @@ struct SceneFrameInfo
   float4 worldBodyShine[WORLD_BODY_MAX];
   float4 worldBodyToward[WORLD_BODY_MAX];
   float4 worldBodyFill[WORLD_BODY_MAX * WORLD_BODY_MAX];
+  // Those of them bright enough to light the air (fv::world_light::Lights::air), the brightest first:
+  // toward each one (its light's mean direction from the scene's origin) and its light against the sky
+  // light's above the air, rgb (its share of the sun's times worldBodyLight), which lights the air as a
+  // sun of that light would; how many. (Appended.)
+  float4 worldAirToward[WORLD_AIR_MAX];
+  float4 worldAirLight[WORLD_AIR_MAX];
+  int    worldAirCount = 0;
+  float  _worldAirPad0 = 0.0F;
+  float  _worldAirPad1 = 0.0F;
+  float  _worldAirPad2 = 0.0F;
 };
 
 enum PathtracerFlags

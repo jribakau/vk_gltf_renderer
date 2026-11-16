@@ -302,6 +302,12 @@ void EnvBaker::recordBake(VkCommandBuffer cmd, bool preview)
   push.secondScale      = physical ? m_secondScale : 0.0F;
   push.moonDirection    = m_moonDirection;
   push.nightScale       = physical ? m_nightScale : 0.0F;
+  push.airCount         = physical ? m_airCount : 0;
+  for(size_t i = 0; i < WORLD_AIR_MAX; i++)
+  {
+    push.airToward[i] = m_airToward[i];
+    push.airLight[i]  = m_airLight[i];
+  }
   push.meterAddress     = physical ? m_meterBuf.address : 0;
 
   // One pipeline for every sky: env_bake.slang switches on pc.skyType. Set 1 carries the LUTs only

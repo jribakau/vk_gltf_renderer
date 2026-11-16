@@ -140,6 +140,12 @@ float3 evalSkyBruneton(float3 dir, out float3 clear)
   if(pc.secondScale > 0.0F)
     sky += pc.secondScale
            * evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r, dir, pc.secondDirection, 1.0F);
+  // a planet's bodies that light its air, each as a sun of its light would (a point at its light's
+  // mean direction: a wide body's glow is gathered toward its middle)
+  [loop]
+  for(int a = 0; a < pc.airCount; ++a)
+    sky += pc.airLight[a].xyz
+           * evalBrunetonSkyRadiance(g_atmosphere, g_transmittance, g_scattering, g_singleMie, g_irradiance, r, dir, pc.airToward[a].xyz, 1.0F);
   // the night's own glow, which lights a moonless night (the stars and the Milky Way it leaves to the
   // per-ray sky: their light is in the glow's)
   if(pc.nightScale > 0.0F)

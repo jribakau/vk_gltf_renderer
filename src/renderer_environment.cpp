@@ -51,6 +51,7 @@
 #include "gltf_environment_sky.hpp"
 #include "sun_position.hpp"
 #include "sky_preset.hpp"
+#include "moon.hpp"
 #include "staging_config.hpp"
 #include "tinygltf_utils.hpp"
 #include "utils.hpp"
@@ -886,6 +887,13 @@ void GltfRenderer::updateBakerParameters()
   // the moon's and the other body's sky, in the environment's frame as the sun is
   const glm::quat toEnvironment = glm::inverse(m_resources.settings.envRotationQuat());
   m_envBaker.setSecondSky(toEnvironment * m_resources.settings.skySecondDirection, m_resources.settings.skySecondScale);
+  // and a planet's bodies that light its air
+  {
+    std::array<glm::vec4, WORLD_AIR_MAX> toward{}, light{};
+    const int                            count = worldAirLights(toEnvironment, toward, light);
+    m_envBaker.setAirLights(toward, light, count);
+    m_skyClouds.setAirLights(toward, light, count);
+  }
   m_envBaker.setMoonDirection(toEnvironment * m_resources.settings.skyMoonDirection);
   m_envBaker.setNightScale(m_resources.settings.skyNightScale);
 
@@ -1202,6 +1210,38 @@ const fv::world_light::Lights& GltfRenderer::worldBodyLightsNow()
   sky.sunAngularRadius = double(s.atmoSunAngularRadius);
   m_worldBodyLights    = fv::world_light::sumLights(sky, glm::dvec3(0.0));
   return m_worldBodyLights;
+}
+
+// The sun's light on the bodies against the sky's light: the sun's dimmer, or while the moon is the
+// sky's light (everything the sky gives scaled by the moon's share) as many times as the sun is the moon's
+float GltfRenderer::worldBodySunScale() const
+{
+  const Settings& s = m_resources.settings;
+  if(s.skyLightIsMoon)
+    return float(1.0 / std::max(fv::moon::lightShare(fv::moon::phaseAngle(s.skySecondDirection, m_resources.sunDirection)), 1e-9));
+  return s.skySunScale;
+}
+
+int GltfRenderer::worldAirLights(const glm::quat& frame, std::array<glm::vec4, WORLD_AIR_MAX>& toward, std::array<glm::vec4, WORLD_AIR_MAX>& light)
+{
+  static_assert(fv::world_light::kAirMost == WORLD_AIR_MAX);
+  const Settings& s = m_resources.settings;
+  toward.fill(glm::vec4(0.0F, 1.0F, 0.0F, 0.0F));
+  light.fill(glm::vec4(0.0F));
+  if(!s.worldBodyLights || s.worldBodyCount <= 0 || !(s.worldRadius > 0.0F) || s.envSystem != shaderio::EnvSystem::eSky)
+    return 0;
+  const fv::world_light::Lights& lights = worldBodyLightsNow();
+  const float                    scale  = worldBodySunScale();
+  int                            count  = 0;
+  for(const int i : lights.air)
+    if(i >= 0)
+    {
+      const fv::world_light::Face& face = lights.shine[size_t(i)];
+      toward[size_t(count)]             = glm::vec4(frame * glm::vec3(face.toward), 0.0F);
+      light[size_t(count)]              = glm::vec4(face.light * scale, 0.0F);
+      count++;
+    }
+  return count;
 }
 
 void GltfRenderer::setWorldGround(const WorldGround& ground)

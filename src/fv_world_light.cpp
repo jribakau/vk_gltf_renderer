@@ -195,6 +195,19 @@ Lights sumLights(const Sky& sky, const glm::dvec3& place)
     const float l          = luminance(lights.shine[size_t(i)].light);
     lights.lit[size_t(i)] = l > 0.0F && l >= least;
   }
+  // the brightest lights that light the air
+  std::array<int, kMost> order{};
+  for(int i = 0; i < kMost; i++)
+    order[size_t(i)] = i;
+  std::sort(order.begin(), order.begin() + count,
+            [&](int a, int b) { return luminance(lights.shine[size_t(a)].light) > luminance(lights.shine[size_t(b)].light); });
+  int taken = 0;
+  for(int k = 0; k < count && taken < kAirMost; k++)
+  {
+    const int i = order[size_t(k)];
+    if(lights.lit[size_t(i)] && luminance(lights.shine[size_t(i)].light) >= kAirLeast * sun)
+      lights.air[size_t(taken++)] = i;
+  }
   return lights;
 }
 

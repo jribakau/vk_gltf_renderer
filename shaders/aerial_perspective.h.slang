@@ -188,6 +188,23 @@ struct AerialMarch
   float3 glow;           // what hazeGlow raised inScatter by, a part of it besides the sun's
 };
 
+// Lights of the air beside the sun, each as a sun of its light would light it: toward each, and its
+// light against the sun's (a planet's bodies that light its air, SceneFrameInfo::worldAirToward). Their
+// light in the air is not shadowed by the scene (the sun's is, by its one-sample estimate).
+struct AerialLights
+{
+  float3 toward[WORLD_AIR_MAX];
+  float3 light[WORLD_AIR_MAX];
+  int    count;
+};
+
+AerialLights noAerialLights()
+{
+  AerialLights lights = {};
+  lights.count        = 0;
+  return lights;
+}
+
 AerialMarch marchAerialPerspective(SkyAtmosphereParameters atmosphere,
                                    Sampler2D<float3>       transmittanceTexture,
                                    Sampler3D<float4>       scatteringTexture,
@@ -200,7 +217,8 @@ AerialMarch marchAerialPerspective(SkyAtmosphereParameters atmosphere,
                                    float2                  u,
                                    float                   maxStepKm = 0.25F,
                                    int                     maxSteps  = 16,
-                                   bool                    glowed    = true)
+                                   bool                    glowed    = true,
+                                   AerialLights            more      = noAerialLights())
 {
   // One step per quarter kilometre, between one and sixteen (`maxStepKm`, `maxSteps` for the
   // atmosphere's own planet): up to 4 km a step is at most 250 m, beyond that the sixteen steps
@@ -217,6 +235,14 @@ AerialMarch marchAerialPerspective(SkyAtmosphereParameters atmosphere,
   // Angular terms are constant along a straight segment, so they leave the loop.
   const float rayleighPhase = RayleighPhaseFunction(nu);
   const float miePhase      = MiePhaseFunction(atmosphere.miePhaseFunctionG, nu);
+  float       moreRayleighPhase[WORLD_AIR_MAX];
+  float       moreMiePhase[WORLD_AIR_MAX];
+  for(int a = 0; a < WORLD_AIR_MAX; ++a)
+  {
+    const float nuA      = dot(dir, more.toward[a]);
+    moreRayleighPhase[a] = RayleighPhaseFunction(nuA);
+    moreMiePhase[a]      = MiePhaseFunction(atmosphere.miePhaseFunctionG, nuA);
+  }
   const float stepLength    = d / float(kSteps);
 
   float3 inScatter  = float3(0.0F);
@@ -255,7 +281,16 @@ AerialMarch marchAerialPerspective(SkyAtmosphereParameters atmosphere,
 
     const float3 sunSource =
         atmosphere.solarIrradiance * sunTransmittance * (rayleighScatter * rayleighPhase + mieScatter * miePhase);
-    const float3 skySource = (rayleighScatter + mieScatter) * aerialSkyLight(atmosphere, irradianceTexture, r, muSun, sunTransmittance);
+    float3 skySource = (rayleighScatter + mieScatter) * aerialSkyLight(atmosphere, irradianceTexture, r, muSun, sunTransmittance);
+    // the other lights of the air: their light scattered once toward the eye, and their sky's
+    for(int a = 0; a < more.count; ++a)
+    {
+      const float  muA = dot(p, more.toward[a]) / r;
+      const float3 tA  = GetTransmittanceToSun(atmosphere, transmittanceTexture, r, muA);
+      skySource += more.light[a]
+                   * (atmosphere.solarIrradiance * tA * (rayleighScatter * moreRayleighPhase[a] + mieScatter * moreMiePhase[a])
+                      + (rayleighScatter + mieScatter) * aerialSkyLight(atmosphere, irradianceTexture, r, muA, tA));
+    }
 
     // Integrated over the step in closed form, assuming the source is constant across it: the
     // energy-conserving form, which does not lose light as the step count drops.
@@ -417,8 +452,19 @@ AerialMarch evalAerialPerspective(float3                  worldPos,
     sunDir    = quatRotateInverse(frameInfo->envRotation, frameInfo->sunDirection);
     skyRadius = skyEyeRadius(atmosphere, frameInfo->sunDisk->observerRadius, frameInfo->observerAltitudeKm, frameInfo->aerialPerspectiveScale);
   }
+  // a planet's bodies that light its air
+  AerialLights more = noAerialLights();
+  if(world)
+  {
+    more.count = frameInfo->worldAirCount;
+    for(int a = 0; a < WORLD_AIR_MAX; ++a)
+    {
+      more.toward[a] = frameInfo->worldAirToward[a].xyz;
+      more.light[a]  = frameInfo->worldAirLight[a].xyz;
+    }
+  }
   AerialMarch march = marchAerialPerspective(atmosphere, transmittanceTexture, scatteringTexture, singleMieScatteringTexture,
-                                             irradianceTexture, observer, skyRadius, displacement, sunDir, u, maxStepKm, maxSteps, !world);
+                                             irradianceTexture, observer, skyRadius, displacement, sunDir, u, maxStepKm, maxSteps, !world, more);
   march.sunPoint    = from + march.sunPoint * share;
 
   // Under a cloud the air in the scene is in its shadow as well as the scene is. The sums take the

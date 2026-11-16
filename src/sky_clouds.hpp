@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <span>
@@ -108,6 +110,17 @@ public:
   void deinit(Resources& res);
 
   void                     setSettings(const SkyCloudsSettings& settings) { m_settings = settings; }
+  // A planet's bodies that light its air and its clouds (SkyCloudsParameters::airToward): toward each
+  // in the environment's frame, as the sun record() takes, and its light against the sun's
+  void setAirLights(std::span<const glm::vec4> toward, std::span<const glm::vec4> light, int count)
+  {
+    m_airCount = std::min(count, int(WORLD_AIR_MAX));
+    for(int i = 0; i < WORLD_AIR_MAX; i++)
+    {
+      m_airToward[size_t(i)] = i < m_airCount ? glm::vec3(toward[size_t(i)]) : glm::vec3(0.0F, 1.0F, 0.0F);
+      m_airLight[size_t(i)]  = i < m_airCount ? glm::vec3(light[size_t(i)]) : glm::vec3(0.0F);
+    }
+  }
   const SkyCloudsSettings& settings() const { return m_settings; }
   bool hasClouds() const { return m_settings.coverage > 0.0F || m_settings.midCoverage > 0.0F || m_settings.highCoverage > 0.0F; }
   // The top of the highest layer the settings turn on, km above the surface; 0 with none. The air
@@ -219,6 +232,17 @@ private:
   // clouds of the one it was baked in.
   SkyCloudsSettings m_bakedSettings{};
   glm::vec3         m_bakedSun{0.0F, 1.0F, 0.0F};
+  // the bodies that light the clouds (setAirLights), and those of the last full bake, which a follow's
+  // and a view's bake repeat as they do its sun
+  std::array<glm::vec3, WORLD_AIR_MAX> m_airToward{};
+  std::array<glm::vec3, WORLD_AIR_MAX> m_airLight{};
+  int                                  m_airCount = 0;
+  std::array<glm::vec3, WORLD_AIR_MAX> m_bakedAirToward{};
+  std::array<glm::vec3, WORLD_AIR_MAX> m_bakedAirLight{};
+  int                                  m_bakedAirCount = 0;
+  // `params` with the bodies of the last full bake (or with `current`, the ones set now) in the
+  // clouds' frame as the wind has turned them
+  void withAirLights(shaderio::SkyCloudsParameters& params, bool current) const;
   float             m_bakedAltitude{0.0F};
   float             m_bakedBaseKm{0.0F};  // the lowest of the baked clouds' bases, km above the surface; 0 with none
   bool              m_bakedClouds{false};
