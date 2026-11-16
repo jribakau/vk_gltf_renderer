@@ -462,6 +462,10 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
                   .help = "A planet's far woods: the trees not drawn stand on the ground's mesh as a canopy (fv_world_plants.hpp "
                           "canopyLift); the host makes the quads again on a change. Off: flat ground the canopy's colour"},
                  &m_resources.settings.worldCanopy, Persist::eNo);
+  m_settings.add({.name = "worldGrassShadows",
+                  .help = "A planet's grass: its blades cast shadows, shading each other in the sun; the host sets its tiles "
+                          "so on a change. Off: no shadow ray meets a blade (rs::Entity::shadowless), for a faster meadow"},
+                 &m_resources.settings.worldGrassShadows, Persist::eNo);
 
   // The clouds over the physical sky. Each re-bakes the cloud image with the sky, through the same
   // preview-then-settle path; none of them touches the atmosphere's tables.

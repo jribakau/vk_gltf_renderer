@@ -469,6 +469,7 @@ public:
   void setWaterMotion(float seconds, float heading) override;
   void setPlayEye(bool on) override { m_exposureAdapt.setEye(on); }
   bool worldCanopy() const override { return m_resources.settings.worldCanopy; }
+  bool worldGrassShadows() const override { return m_resources.settings.worldGrassShadows; }
   void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> observer) override
   {
     m_pivotObserver = std::move(observer);

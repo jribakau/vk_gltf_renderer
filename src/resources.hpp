@@ -274,6 +274,11 @@ struct Settings
   // (fv_world_plants.hpp canopyLift), which the host asks for (HostRenderer::worldCanopy). Off: the
   // ground flat under them and the canopy's colour from afar, as before, for a look or a timing.
   bool worldCanopy = true;
+  // ... and whether the grass of its tiles casts shadows (HostRenderer::worldGrassShadows): off, no
+  // shadow ray meets a blade (rs::Entity::shadowless), the trees' shadows still fall on it and the
+  // bounces still meet it; on, the blades shade each other in the sun, for a meadow's frame that
+  // costs more
+  bool worldGrassShadows = false;
   // ... and the other bodies in its sky as lights (src/fv_world_light.hpp): on the ground, the figures,
   // the air and the clouds, and on each other's dark sides. Off: drawn, lighting nothing, as before,
   // for a timing or a look against it.

@@ -1819,6 +1819,7 @@ struct FvHost::Impl
     std::vector<BackdropBuilt::Patch>  patches;  // by tile kind
     std::map<fv::world::GrassTile, rs::EntityId> tiles;       // drawn; none for a tile left out (too steep)
     std::map<uint8_t, std::vector<rs::EntityId>> spareTiles;  // by kind: hidden, for the next tiles of it
+    bool grassShadows = false;  // whether the tiles cast shadows, as last set (HostRenderer::worldGrassShadows)
     fv::world::GrassWas                grassWas;
     std::shared_ptr<const fv::world::World> grassWasOf;  // the planet its tiles' grounds were looked up on
     glm::dvec3                         tiledFor{1.0e30};  // where the camera was when the tiles were laid

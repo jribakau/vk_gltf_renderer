@@ -369,6 +369,18 @@ void FvHost::Impl::followPlanet()
       restreamPlanet(scene);
     }
   }
+  // the grass's shadows asked for, or no longer (the `worldGrassShadows` setting): every tile set so,
+  // the spare ones too, and the next made so (tilePlanet)
+  if(renderer->worldGrassShadows() != p.grassShadows)
+  {
+    p.grassShadows = renderer->worldGrassShadows();
+    for(const auto& [tile, entity] : p.tiles)
+      if(!entity.isNone())
+        scene.setShadowless(entity, !p.grassShadows);
+    for(const auto& [kind, spare] : p.spareTiles)
+      for(const rs::EntityId entity : spare)
+        scene.setShadowless(entity, !p.grassShadows);
+  }
   const fv::world::World& world = *p.world;
   struct Timed
   {
@@ -1533,9 +1545,10 @@ void FvHost::Impl::tilePlanet(rs::RetainedScene& scene, const glm::dvec3& eye)
     {
       entity = scene.createEntity("Planet tile", {0, -1}, backdropBuilt->root);
       scene.setMeshInstance(entity, rs::MeshInstance(patch.instance));
-      // shadows no light: a grass blade's shadow rays crossing the blades round it were much of a
-      // meadow's frame (2026-11-16), for a shade the bounces still give; the trees' shadows fall on it
-      scene.setShadowless(entity, true);
+      // shadows no light unless asked (the `worldGrassShadows` setting): a grass blade's shadow rays
+      // crossing the blades round it were much of a meadow's frame (2026-11-16), for a shade the
+      // bounces still give; the trees' shadows fall on it either way
+      scene.setShadowless(entity, !p.grassShadows);
     }
     scene.setLocal(entity, {.translation = glm::vec3(place.position), .rotation = place.rotation, .scale = place.scale});
     scene.setVisible(entity, true);

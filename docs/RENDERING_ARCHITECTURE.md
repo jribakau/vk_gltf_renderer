@@ -783,7 +783,8 @@ wood). What a kind is made of is `layers`, `grassCovers` and `drifts`. Two halve
   the grass thins, from one level to the next, it doesn't turn paler. A move of the camera changes
   the few tiles at the levels' boundaries, tens of metres off, and nothing near it; a cell that
   split stays split a little further than where it splits, so a view hovering at a boundary
-  changes nothing. A tile shadows no light (`rs::Entity::shadowless`): shadow rays pass through its
+  changes nothing. A tile shadows no light (`rs::Entity::shadowless`) unless the `worldGrassShadows`
+  setting asks, the host setting every tile again on a change: shadow rays pass through its
   blades, which the trees' shadows still fall on and the bounces still meet, since a blade's shadow
   rays crossing the blades round it were much of a meadow's frame. What stands in drifts (a meadow's flowers, a forest's ferns) is tiles on the
   middle grid where a drift noise says. A forest's grass is a seventh as thick and in clumps

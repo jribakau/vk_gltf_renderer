@@ -188,6 +188,9 @@ public:
   // Whether a planet's far woods stand on its ground as a canopy (the `worldCanopy` setting,
   // fv_world_plants.hpp canopyLift): the host's quads are made so, and made again when it changes
   virtual bool worldCanopy() const { return true; }
+  // Whether a planet's grass casts shadows (the `worldGrassShadows` setting): the host's tiles are
+  // made so, and set again when it changes
+  virtual bool worldGrassShadows() const { return false; }
   virtual void setPivotObserver(std::function<void(const std::optional<glm::vec3>& at, bool recentred)> /*observer*/) {}
   // The pixel readout: what is at a normalized viewport position (origin top-left) and how bright it
   // is, read a frame or two later and again while the still refines (a few times a second), so it
