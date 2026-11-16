@@ -89,6 +89,11 @@ GltfRenderer::GltfRenderer(nvutils::ParameterRegistry* paramReg, const nvutils::
   m_settings.add({"ptTimeLimit", "Path tracer: stop accumulating once a still's frames have taken this many seconds, "
                                  "whatever its samples (0: no limit). Its denoiser runs over what it has then"},
                  &m_resources.settings.timeLimit, Persist::eNo, 0.0F, 86400.0F);
+  m_settings.add({.name = "liveWhenStill",
+                  .help = "Every frame drawn as if the camera moved: the moving view goes on while the view stands, no still "
+                          "begins and the loop never idles, so a moving frame's time can be read standing",
+                  .callbackSuccess = restartStill},
+                 &m_resources.settings.liveWhenStill, Persist::eNo);
   // Persisted. Headless and scripted runs neither read nor write the ini, so they can't change what
   // the next session plays.
   m_settings.add(

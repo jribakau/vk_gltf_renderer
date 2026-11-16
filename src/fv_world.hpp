@@ -368,6 +368,20 @@ double inlandWaterOver(const World& world, const glm::dvec3& point);
 // round. Eased from one to the other between these shares of the radius from the origin.
 inline constexpr double kUpOwnFrom = 0.01, kUpOwnTo = 0.1;
 glm::dvec3 viewUp(const World& world, const glm::dvec3& eye);
+
+// Ground to go to (the World tab's Go to): the nearest to `from` (a direction) of each of the
+// planet's biomes, and the nearest beach. Where the biome counts nearly alone, a few metres over the
+// sea, out of and away from inland water, not on rock or a cliff, and at least `fromNear` metres
+// off; found by a sweep of points about `spacing` metres apart, nearest first, so a sweep stops once
+// each kind has one. `what` is the biome's name, or kBeachGround; a kind the planet has none of is left out.
+inline constexpr std::string_view kBeachGround = "beach";
+struct Ground
+{
+  std::string_view what;
+  glm::dvec3       direction{0.0, 1.0, 0.0};
+  double           distance = 0.0;  // metres from `from`, round the sea's sphere
+};
+std::vector<Ground> nearestGrounds(const World& world, const glm::dvec3& from, double spacing, double fromNear);
 // How fast a flight goes at `height` over the ground, scene units a second: its own height in two
 // seconds, and no slower than `slowest`, a flight's speed among the figures.
 inline constexpr double kFlyHeightsASecond = 0.5;

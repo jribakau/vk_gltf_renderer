@@ -501,6 +501,9 @@ FvHost::FvHost(HostRenderer* renderer, std::shared_ptr<FvProtocol> protocol, nvu
   // a map of the planet: an image of a window of latitude and longitude, made on this thread (a few
   // hundred milliseconds), and what stands on it (fv_host_world.cpp)
   cmds.add("planet.map", [impl](const Json& args) { return impl->planetMap(args); });
+  // where Go to goes on it, made on this thread (a sweep of the planet for its biomes), and going there
+  cmds.add("planet.places", [impl](const Json&) { return impl->planetPlaces(); });
+  cmds.add("planet.goto", [impl](const Json& args) { return impl->onApp([impl, args] { return impl->planetGoto(args); }); });
   // how a planet's stream stands, for a measure of a flight (scripts/world-flight.py)
   cmds.add("backdrop.status", [impl](const Json& args) {
     return impl->onApp([impl, args] { return Json{{"state", impl->backdropState}, {"planet", impl->planetStatus(args)}}; });

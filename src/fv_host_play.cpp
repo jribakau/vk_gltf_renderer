@@ -725,6 +725,17 @@ Json FvHost::Impl::playStart(const Json& args)
   return {{"ok", true}};
 }
 
+void FvHost::Impl::playMoveTo(const glm::dvec3& eye, const glm::dvec3& ahead, const glm::dvec3& up)
+{
+  PlayState& P = *play;
+  if(P.mode != PlayState::Mode::eWalk)
+    throw std::runtime_error("get out of the ship first: Go to moves the one walking");
+  const auto sets  = PlayState::playSets(*this, "", eye);
+  const auto world = PlayState::playWorld(*this, sets);
+  P.walker         = game::walkerAt({eye, ahead, up}, world, 2000.0);
+  P.view           = game::walkerView(P.walker, world);
+}
+
 Json FvHost::Impl::playStop()
 {
   if(!playing())

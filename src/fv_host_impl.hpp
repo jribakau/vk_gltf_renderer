@@ -1407,6 +1407,9 @@ struct FvHost::Impl
   bool playing() const;
   Json playStart(const Json& args);
   Json playStop();
+  // While playing: the walker stood where a camera at `eye` looking along `ahead` would drop to
+  // (planet.goto). Throws when in a ship or getting in or out of one
+  void playMoveTo(const glm::dvec3& eye, const glm::dvec3& ahead, const glm::dvec3& up);
   void playInput(const Json& event);
   void applyPlay();  // once a frame, after the input
   void publishPlay(bool force);
@@ -1953,6 +1956,13 @@ struct FvHost::Impl
   // and what stands on it and what its file says of it. Off the application thread: the image is made
   // on the caller's.
   Json planetMap(const Json& args);
+  // planet.places: where the World tab's Go to goes on the planet that stands: where the figures
+  // stand, what its file names (places, regions, features) and the nearest ground of each biome and a
+  // beach (fv::world::nearestGrounds). Off the application thread: the sweep is made on the caller's.
+  Json planetPlaces();
+  // planet.goto: the view to a point of the planet, or while walking in play the walker. On the
+  // application thread
+  Json planetGoto(const Json& args);
   // Its centre in the scene (the root stands at the floor's height); zero with none
   glm::dvec3 planetCentre() const;
   // The scene's shown bounds without the backdrop: what a view frames, and what a flight's speed is by

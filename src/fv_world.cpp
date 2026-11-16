@@ -1159,6 +1159,58 @@ double farPlane(const World& world, const glm::dvec3& eye)
   return 2.0 * (glm::length(eye - world.frame.centre) + world.spec.radius);
 }
 
+std::vector<Ground> nearestGrounds(const World& world, const glm::dvec3& from, double spacing, double fromNear)
+{
+  const double R = world.spec.radius;
+  // the sweep's points, evenly over the sphere (a Fibonacci lattice), nearest first
+  const size_t n = size_t(std::clamp(4.0 * kPi * R * R / (spacing * spacing), 64.0, 4.0e5));
+  struct Point
+  {
+    glm::dvec3 d;
+    double     away;
+  };
+  std::vector<Point> points;
+  points.reserve(n);
+  const double turn = kPi * (3.0 - std::sqrt(5.0));
+  for(size_t i = 0; i < n; i++)
+  {
+    const double     y = 1.0 - 2.0 * (double(i) + 0.5) / double(n);
+    const double     r = std::sqrt(std::max(0.0, 1.0 - y * y));
+    const glm::dvec3 d(r * std::cos(turn * double(i)), y, r * std::sin(turn * double(i)));
+    const double     away = std::acos(std::clamp(glm::dot(d, from), -1.0, 1.0)) * R;
+    if(away >= fromNear)
+      points.push_back({d, away});
+  }
+  std::sort(points.begin(), points.end(), [](const Point& a, const Point& b) { return a.away < b.away; });
+
+  const size_t                     kinds = std::min(world.biomes.size(), kMostBiomes) + 1;  // the last a beach
+  std::vector<std::optional<Ground>> found(kinds);
+  size_t                           left = kinds;
+  constexpr float                  kAlone = 0.9F;  // the biome's share where it counts nearly alone
+  for(const Point& p : points)
+  {
+    if(left == 0)
+      break;
+    const Sample s = sample(world, p.d, 0.25 * spacing);
+    // dry ground to stand on, a little over the sea, not in a river or a lake nor by one
+    if(s.elevation < 1.0 || s.water > s.elevation - 0.5 || s.inland.river || s.inland.lake > 0.05 || s.shore < 50.0F
+       || s.rock > 0.3F || s.cliff > 0.1F)
+      continue;
+    const bool   beach = s.sand > 0.5F && s.elevation < 8.0;
+    const size_t kind  = beach ? kinds - 1 : size_t(s.biome);
+    if(kind >= kinds || found[kind] || (!beach && s.share[kind] < kAlone))
+      continue;
+    found[kind] = Ground{beach ? kBeachGround : world.biomes[kind].name, p.d, p.away};
+    left--;
+  }
+  std::vector<Ground> out;
+  for(const std::optional<Ground>& g : found)
+    if(g)
+      out.push_back(*g);
+  std::sort(out.begin(), out.end(), [](const Ground& a, const Ground& b) { return a.distance < b.distance; });
+  return out;
+}
+
 // ---- which quads draw --------------------------------------------------------------------------------
 
 namespace {

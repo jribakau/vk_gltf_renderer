@@ -180,7 +180,9 @@ namespace {
 // 87: play mode's eye: while playing the view's exposure adapts as the walker's eye does, unless
 // play.start's `eye` is false; X (the `play` event's kEye bit) turns it on or off, the topic's `eye`.
 // An older renderer has no eye, and takes neither.
-constexpr int kProtocolVersion = 87;
+// 88: a planet's Go to: planet.places (where the figures stand, what its file names, the nearest
+// ground of each biome) and planet.goto (the view there, or the one walking in play).
+constexpr int kProtocolVersion = 88;
 // An idle event stream sends a comment this often, which keeps it open and finds dead clients.
 constexpr auto kHeartbeat = 15s;
 }  // namespace

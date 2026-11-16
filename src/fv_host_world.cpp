@@ -49,7 +49,11 @@
 #include "fv_world_map.hpp"
 #include "scene_import_gltf.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <optional>
+#include <set>
 
 #include <figure/jobs/pool.hpp>
 #include <stb/stb_image_write.h>
@@ -1725,4 +1729,162 @@ Json FvHost::Impl::planetMap(const Json& args)
           {"regions", regions},
           {"places", places},
           {"unplaced", unplaced}};
+}
+
+namespace {
+
+// What the World tab's Go to calls the nearest ground of a biome (fv::world::nearestGrounds)
+std::string groundName(std::string_view biome)
+{
+  if(biome == W::kBeachGround)
+    return "the nearest beach";
+  if(biome == "forest")
+    return "the nearest wood";
+  if(biome == "snow")
+    return "the nearest snowfield";
+  return "the nearest " + std::string(biome);
+}
+
+// The middle of a feature's line, or its point
+glm::dvec3 middleOf(const W::Feature& f)
+{
+  const glm::dvec3 m = f.from + f.to;
+  return glm::length(m) > 1e-9 ? glm::normalize(m) : f.from;
+}
+
+// How far a place is on the sweep, and how fine: about 30 thousand points whatever the radius
+constexpr double kGroundsSweep = 1.0 / 50.0;  // of the radius
+constexpr double kGroundsNear  = 1500.0;      // metres: a biome's ground nearer the figures than this is theirs
+// How high over the ground Go to puts the view, and how far ahead it looks down to
+constexpr double kGotoOver  = 30.0;
+constexpr double kGotoAhead = 150.0;
+
+}  // namespace
+
+Json FvHost::Impl::planetPlaces()
+{
+  struct Standing
+  {
+    std::shared_ptr<const W::World>      world;
+    std::shared_ptr<const W::Settlement> plan;
+  };
+  const Standing got = onApp([this] {
+    Standing s;
+    if(planetBuilt && planetBuilt->world && fv::backdrop::isPlanet(backdropSpec))
+    {
+      s.world = planetBuilt->world;
+      s.plan  = backdropSpec.settlement;
+    }
+    return s;
+  });
+  if(!got.world)
+    throw std::runtime_error("no planet stands: World > Planet");
+  const W::World&  w    = *got.world;
+  const glm::dvec3 site = w.frame.site;
+
+  struct Entry
+  {
+    std::string             name, kind;
+    glm::dvec3              direction;
+    double                  distance = 0.0;
+    std::optional<uint32_t> placed;  // a named place's site
+  };
+  std::vector<Entry>    named;
+  std::set<std::string> seen;  // a region and a feature of one name are one place to go
+  const auto add = [&](std::vector<Entry>& to, const std::string& name, const char* kind, const glm::dvec3& d, std::optional<uint32_t> placed) {
+    std::string key = name;
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if(name.empty() || !seen.insert(key).second)
+      return;
+    to.push_back({name, kind, d, std::acos(std::clamp(glm::dot(d, site), -1.0, 1.0)) * w.spec.radius, placed});
+  };
+  // what the planet file names: the places as they came to stand, then its regions and its land's features
+  if(w.places)
+    for(const auto& [i, name] : w.places->names)
+      if(i < w.places->sites.size())
+        add(named, name, "place", w.places->sites[i].direction, i);
+  if(got.plan)
+    for(const W::PlacesRegion& r : got.plan->regions)
+      add(named, r.name, "region", middleOf(r.shape), std::nullopt);
+  if(w.spec.features)
+    for(const W::Feature& f : w.spec.features->list)
+      add(named, f.name, featureName(f.kind), middleOf(f), std::nullopt);
+  std::stable_sort(named.begin(), named.end(), [](const Entry& a, const Entry& b) { return a.distance < b.distance; });
+
+  const auto                    started = std::chrono::steady_clock::now();
+  const std::vector<W::Ground>  grounds = W::nearestGrounds(w, site, kGroundsSweep * w.spec.radius, kGroundsNear);
+  std::vector<Entry>            nearest;
+  for(const W::Ground& g : grounds)
+    add(nearest, groundName(g.what), "ground", g.direction, std::nullopt);
+  LOGI("planet: Go to's grounds in %.0f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+
+  Json list = Json::array();
+  list.push_back({{"name", "where the figures stand"}, {"kind", "home"}, {"at", latitudeLongitude(site)}, {"distance", 0.0}});
+  for(const std::vector<Entry>* part : {&named, &nearest})
+    for(const Entry& e : *part)
+    {
+      Json j = {{"name", e.name}, {"kind", e.kind}, {"at", latitudeLongitude(e.direction)}, {"distance", e.distance}};
+      if(e.placed)
+        j["site"] = *e.placed;
+      list.push_back(std::move(j));
+    }
+  return {{"places", list}};
+}
+
+Json FvHost::Impl::planetGoto(const Json& args)
+{
+  auto manip = renderer->getCameraManipulator();
+  if(!manip)
+    throw std::runtime_error("the view isn't ready yet");
+  if(!planetBuilt || !planetBuilt->world || !fv::backdrop::isPlanet(backdropSpec))
+    throw std::runtime_error("no planet stands: World > Planet");
+  const W::World&  w     = *planetBuilt->world;
+  const glm::dvec3 floor = glm::dvec3(0.0, double(groundHeight()), 0.0);
+  glm::dvec3       eye, target;
+  if(args.value("kind", std::string()) == "home")
+  {
+    // the figures, from a few metres off
+    eye    = floor + glm::dvec3(0.0, 4.0, 12.0);
+    target = floor + glm::dvec3(0.0, 1.2, 0.0);
+  }
+  else if(args.contains("site") && args["site"].is_number_unsigned() && w.places && w.places->catalogue
+          && args["site"].get<uint32_t>() < w.places->sites.size())
+  {
+    // before a place, as the World tab's Go there stands: at its rim, raised a little to see over what
+    // stands in it, facing its middle from the figures' side
+    const W::Site&   s      = w.places->sites[args["site"].get<uint32_t>()];
+    const glm::dmat4 frame  = W::siteFrame(w, s);
+    const glm::dvec3 middle = glm::dvec3(frame[3]) + floor;
+    const glm::dvec3 up     = glm::dvec3(frame[1]);
+    const double     radius = w.places->catalogue->packs[s.pack].radius;
+    glm::dvec3       toward = floor - middle;
+    toward -= up * glm::dot(toward, up);
+    toward = glm::length(toward) > 1e-6 ? glm::normalize(toward) : glm::dvec3(frame[2]);
+    eye    = middle + toward * std::max(radius - 4.0, 0.0) + up * (0.12 * radius + 4.0);
+    target = middle + up * 4.0;
+  }
+  else
+  {
+    // over a point, looking north and down to the ground ahead
+    if(!args.contains("at") || !args["at"].is_array() || args["at"].size() != 2 || !args["at"][0].is_number() || !args["at"][1].is_number())
+      throw std::invalid_argument("planet.goto: at is [latitude, longitude] in degrees");
+    const double latitude = args["at"][0].get<double>(), longitude = args["at"][1].get<double>();
+    if(!(latitude >= -90.0 && latitude <= 90.0 && longitude >= -360.0 && longitude <= 360.0))
+      throw std::invalid_argument("planet.goto: at is out of range");
+    const glm::dvec3 d     = W::directionOf(latitude, longitude);
+    const W::Sample  under = W::sample(w, d, 1.0);
+    const double     level = std::max({under.elevation, under.water, 0.0});  // over the ground, a lake or the sea
+    glm::dvec3       north = glm::dvec3(0.0, 1.0, 0.0) - d * d.y;
+    if(glm::length(north) < 1e-6)
+      north = glm::dvec3(1.0, 0.0, 0.0) - d * d.x;
+    north  = glm::normalize(north);
+    eye    = W::toScene(w, d, level + kGotoOver) + floor;
+    target = W::toScene(w, glm::normalize(d + north * (kGotoAhead / w.spec.radius)), level) + floor;
+  }
+  const glm::dvec3 up = W::viewUp(w, eye - floor);
+  if(playing())
+    playMoveTo(eye, glm::normalize(target - eye), up);
+  else
+    manip->setLookat(eye, target, up, true);
+  return {{"ok", true}};
 }

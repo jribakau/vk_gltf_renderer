@@ -1230,6 +1230,11 @@ their kit when there is one. It needs no kit: without one it stands bare.
   PNG with what goes over it as data: where the figures stand, the planet file's features and regions,
   the places a road leads to (by name where the file names them), and what could not stand. The app
   draws those, the grid and the outlines on the sphere, and asks again for each view it is moved to.
+- **Go to** (`planet.places`, `planet.goto`, the app's World › Planet): places to move the view to,
+  what the planet file names and the nearest ground of each biome and a beach
+  (`fv::world::nearestGrounds`, a sweep of the planet nearest first, on the command's thread). Going
+  there sets the free view over the point, or before a named place, or, while walking in play, puts
+  the walker there (`playMoveTo`); the quads stream in round the new eye as after a flight.
 - **The camera** (`FvHost::Impl::followPlanet`, `applyFly`): the free view's "up" is the scene's by
   the figures and the planet's own vertical away from them (`fv::world::viewUp`), so the horizon
   stays level on the far side; a flight's speed goes with its height over the ground

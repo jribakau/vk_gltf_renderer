@@ -291,6 +291,16 @@
 //                                                width in km, name), places: [{at, kind, name?}] those a road is
 //                                                led to, unplaced: what the file asked that could not stand}.
 //                                                No planet: an error
+//   planet.places   {}                           protocol 88: where the World tab's Go to goes on the planet
+//                                                that stands -> {places: [{name, kind, at: [latitude, longitude],
+//                                                distance (m from the figures), site?}]}: where the figures stand
+//                                                (kind home), what its file names (place, region, a feature's kind),
+//                                                the nearest ground of each biome and a beach (ground). A sweep of
+//                                                the planet, made on this thread. No planet: an error
+//   planet.goto     {at?, site?, kind?}          protocol 88: the view to a place of planet.places: over `at`
+//                                                looking north, before a named place's `site`, or kind home the
+//                                                figures; while walking in play the walker is put there (in a ship:
+//                                                an error)
 //   backdrop.status {at?: [x, y, z]}             -> {state, planet: null | {wanted, shown, arrived, waiting, late,
 //                                                busy, standing, tiled, eye, at, follow}}: a planet's stream, its quads
 //                                                asked for and drawn and how late the latest is (0..1), its plants,

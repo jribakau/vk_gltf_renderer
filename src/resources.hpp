@@ -157,6 +157,10 @@ struct Settings
   glm::vec3 solidBackgroundColor = {0.0f, 0.0f, 0.0f};        // Solid background color
   int       maxSamples           = {2000};  // Path tracer: stop accumulating at this many samples per pixel
   float     timeLimit            = {0.0F};  // Path tracer: stop accumulating after this many seconds of tracing (0: no limit)
+  // Every frame drawn as if the camera had moved (GltfRenderer::updateFrameCounter): the moving view
+  // while the view stands, never a still, so the loop never idles and a moving frame's time can be
+  // read standing
+  bool liveWhenStill = false;
   // Sun position as the UI and the command line express it. Resources::sunDirection stays the
   // single source of truth; these are kept in sync with it both ways (see syncSunAngles).
   float sunAzimuth   = 180.0f;  // degrees, compass bearing: 0 = north, 90 = east (SkySun::setAngles)

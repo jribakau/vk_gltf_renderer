@@ -2061,6 +2061,10 @@ bool GltfRenderer::updateFrameCounter()
     resetFrame(/*sceneChanged=*/false);
     ref_camera = currentCamera;
   }
+  // kept live (the `liveWhenStill` setting): every frame as a camera move's, so the view stays the
+  // moving one and draws on
+  else if(m_resources.settings.liveWhenStill)
+    resetFrame(/*sceneChanged=*/false);
 
   if(m_resources.accumulationComplete())
   {

@@ -2,7 +2,9 @@
 // the figures stand, quads that cover the sphere once from any height, and meshes whose edges meet.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <numeric>
 #include <set>
@@ -494,6 +496,41 @@ TEST(WorldSite, AFlightGoesWithItsHeightAndTheFarPlaneClearsThePlanet)
     // the far side's farthest point from the eye
     const double farthest = glm::length(eye - w.frame.centre) + w.spec.radius * 1.05;
     EXPECT_GT(W::farPlane(w, eye), farthest);
+  }
+}
+
+// Go to's grounds: each the biome it names, nearly alone, on dry ground over the sea and away from the
+// figures, one of each, nearest first
+TEST(WorldSite, TheNearestGroundOfEachBiomeIsThatBiomesAndDry)
+{
+  const W::World& w       = planet();
+  const double    R       = w.spec.radius;
+  const double    spacing = R / 50.0;
+  const auto      started = std::chrono::steady_clock::now();
+  const std::vector<W::Ground> grounds = W::nearestGrounds(w, w.frame.site, spacing, 1500.0);
+  std::printf("[ grounds  ] %zu in %.0f ms\n", grounds.size(),
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+  ASSERT_GE(grounds.size(), 3u);  // a planet of land, sea and climate has a few
+  std::set<std::string_view> kinds;
+  double                     was = 0.0;
+  for(const W::Ground& g : grounds)
+  {
+    EXPECT_TRUE(kinds.insert(g.what).second) << g.what;  // one of each
+    EXPECT_GE(g.distance, was);
+    was = g.distance;
+    EXPECT_GE(g.distance, 1500.0) << g.what;
+    EXPECT_NEAR(glm::length(g.direction), 1.0, 1e-9);
+    const W::Sample s = W::sample(w, g.direction, 0.25 * spacing);
+    EXPECT_GE(s.elevation, 1.0) << g.what;
+    EXPECT_FALSE(s.inland.river) << g.what;
+    if(g.what == W::kBeachGround)
+      EXPECT_GT(s.sand, 0.5F);
+    else
+    {
+      ASSERT_LT(size_t(s.biome), w.biomes.size());
+      EXPECT_EQ(w.biomes[size_t(s.biome)].name, g.what);
+      EXPECT_GE(s.share[size_t(s.biome)], 0.9F) << g.what;
+    }
   }
 }
 
